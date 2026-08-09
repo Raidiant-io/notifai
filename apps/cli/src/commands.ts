@@ -1857,7 +1857,7 @@ export async function configSetCommand(
  * 1.5.x, `owner/repo@name` selects a skill; a Git ref belongs after `#`.
  * Keep this immutable and public because the command is printed to users.
  */
-export const SKILLS_SOURCE = 'Raidiant-io/notifai#v0.2.0'
+export const SKILLS_SOURCE = 'Raidiant-io/notifai#v0.2.1'
 
 function skillSourceParts(): { source: string; ref: string } | null {
   const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)
