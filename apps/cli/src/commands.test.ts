@@ -2299,6 +2299,39 @@ describe('asking before the hooks have ever run', () => {
     expect(io.outLines.join('\n')).toMatch(/FAIL\s+Question routing:.*active Claude Code/is)
   })
 
+  it('treats an unfired pointer as informational, with a prompt as the remedy', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-unfired-pointer-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    // Hooks installed seconds ago, nothing has fired: the exact state a
+    // fresh-project agent `init` runs from. Neither pointer state may block
+    // the walk, and neither may prescribe a reinstall.
+    const readiness = await assessReadiness(deps)
+
+    const pointer = readiness.states.find((s) => s.id === 'hooks-active-session')
+    expect(pointer?.status).toBe('optional-gap')
+    expect(pointer?.detail).toMatch(/has not published a live pointer/)
+    expect(pointer?.remedy?.summary).toMatch(/send one Claude Code prompt/)
+    expect(pointer?.remedy?.by === 'user-here' ? pointer.remedy.command : '').toBe(
+      'notifai doctor',
+    )
+
+    const fired = readiness.states.find((s) => s.id === 'hooks-fired')
+    expect(fired?.status).toBe('optional-gap')
+    expect(fired?.remedy?.summary).not.toMatch(/hooks install/)
+  })
+
   it('shows resolved question-routing values with their winning config sources', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-routing-config-'))
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })

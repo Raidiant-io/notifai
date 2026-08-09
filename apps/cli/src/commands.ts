@@ -3036,12 +3036,16 @@ function remedyLine(state: ReadinessState): string {
  * way and is not worth re-deriving. The judgment added here is which failures
  * actually stand in the way.
  *
- * Two do not. A hook that has never fired is the normal condition of an
- * install thirty seconds old, and OpenCode's inability to resume an idle turn
- * is a property of that harness rather than a fault in this setup. Treating
- * either as blocking would mean `init` could never finish for an OpenCode
- * user, or could only finish after a session had already run — so both report
- * as things worth knowing rather than things to fix.
+ * Not everything failed is in the way. A pointer that has never been
+ * published is the normal condition of an install thirty seconds old — the
+ * next prompt fixes it and no command can — and OpenCode's inability to
+ * resume an idle turn is a property of that harness rather than a fault in
+ * this setup. Treating those as blocking would mean `init` could never
+ * finish for an OpenCode user, or could only finish after a session had
+ * already run — so they report as things worth knowing rather than things to
+ * fix, and `init` walks on to the states it can actually close, delivery
+ * proof included. Which failures are informational, and what the true remedy
+ * is, is each check's own call (`HookCheck`).
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.cwd, deps.env)
@@ -3084,7 +3088,6 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
 
   /** Real but not in the way; see the note above. */
   const informational = new Set(['hooks (opencode continuation)'])
-  if (active === null) informational.add('hooks (fired)')
   return [
     ...hookChecks(deps).map((check) => ({
       id: check.name.replace(/[ ()]+/g, '-').replace(/-$/, ''),
@@ -3092,15 +3095,24 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
         check.name === 'hooks' || check.name.startsWith('hooks (active')
           ? 'Question routing'
           : check.name,
-      status: check.ok ? 'ready' as const : informational.has(check.name) ? 'optional-gap' as const : 'gap' as const,
+      status: check.ok
+        ? 'ready' as const
+        : check.informational === true || informational.has(check.name)
+          ? 'optional-gap' as const
+          : 'gap' as const,
       detail: check.detail,
       ...(check.ok
         ? {}
         : {
             remedy: {
               by: 'user-here' as const,
-              summary: 'the detail above names what to change',
-              command: 'notifai hooks install',
+              // The check's own remedy when it has one; the generic reinstall
+              // line was wrong exactly where it mattered (an unfired pointer
+              // needs a prompt, not `hooks install`).
+              ...(check.remedy ?? {
+                summary: 'the detail above names what to change',
+                command: 'notifai hooks install',
+              }),
             },
           }),
     })),
@@ -3108,8 +3120,18 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
   ]
 }
 
-function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: string }[] {
-  const checks: { name: string; ok: boolean; detail: string }[] = []
+interface HookCheck {
+  name: string
+  ok: boolean
+  detail: string
+  /** Real but not in the way: worth a line, never a blocker. */
+  informational?: boolean
+  /** A remedy truer than the generic `notifai hooks install`. */
+  remedy?: { summary: string; command: string }
+}
+
+function hookChecks(deps: CommandDeps): HookCheck[] {
+  const checks: HookCheck[] = []
   const installations = findInstallations(deps.cwd, deps.env)
 
   // Not having hooks is a setup someone chose, not a fault: `send` works
@@ -3143,23 +3165,52 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
         activeInstallations.length > 0
           ? `active ${active.label} session has a matching hook installation`
           : `active ${active.label} session has no matching hook installation — run \`notifai hooks install --harness ${active.harness}\``,
+      ...(activeInstallations.length > 0
+        ? {}
+        : {
+            remedy: {
+              summary: `install hooks for the active ${active.label} session`,
+              command: `notifai hooks install --harness ${active.harness}`,
+            },
+          }),
     })
     if (activeInstallations.length > 0) {
       const pointer = readProjectSessionPointer(deps.cwd, deps.env, (deps.now ?? Date.now)())
-      const matches =
-        pointer !== null &&
-        pointer.harness === active.harness &&
-        (active.sessionId === undefined || pointer.sessionId === active.sessionId)
-      checks.push({
-        name: 'hooks (active session)',
-        ok: matches,
-        detail:
-          pointer === null
-            ? `active ${active.label} session has not published a live pointer — send one ${active.label} prompt, then check again`
-            : matches
-              ? `the project pointer belongs to the active ${active.label} session`
-              : `the project pointer belongs to another ${active.label} session or harness; refusing cross-session routing`,
-      })
+      if (pointer === null) {
+        // The normal condition of hooks installed moments ago: the pointer
+        // appears when the harness next fires a hook, and no command can
+        // force that. Informational, so `init` walks on to the states it can
+        // actually prove instead of exiting over evidence only time produces.
+        checks.push({
+          name: 'hooks (active session)',
+          ok: false,
+          informational: true,
+          detail: `active ${active.label} session has not published a live pointer — send one ${active.label} prompt, then check again`,
+          remedy: {
+            summary: `send one ${active.label} prompt — its hook publishes the routing pointer`,
+            command: 'notifai doctor',
+          },
+        })
+      } else {
+        const matches =
+          pointer.harness === active.harness &&
+          (active.sessionId === undefined || pointer.sessionId === active.sessionId)
+        checks.push({
+          name: 'hooks (active session)',
+          ok: matches,
+          detail: matches
+            ? `the project pointer belongs to the active ${active.label} session`
+            : `the project pointer belongs to another ${active.label} session or harness; refusing cross-session routing`,
+          ...(matches
+            ? {}
+            : {
+                remedy: {
+                  summary: `send one ${active.label} prompt in this session so the pointer belongs to it`,
+                  command: 'notifai doctor',
+                },
+              }),
+        })
+      }
     }
   }
 
@@ -3252,9 +3303,20 @@ function hookChecks(deps: CommandDeps): { name: string; ok: boolean; detail: str
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
+    // Never-fired is evidence about the past, not a fault in the setup, and
+    // the cure is a prompt no command can send.
+    informational: true,
     detail: fired
       ? 'a session in this directory has run them'
       : `no session pointer from the last 24 hours — ${hookActivationAdvice(activationInstallations)}`,
+    ...(fired
+      ? {}
+      : {
+          remedy: {
+            summary: 'send one prompt in a session here, then re-check',
+            command: 'notifai doctor',
+          },
+        }),
   })
 
   if (installations.some((installation) => installation.harness === 'opencode')) {
