@@ -17,9 +17,10 @@ export const COLLAPSE_KEY_MAX_BYTES = 64
 /** Fixed identifiers registered by the iOS Companion App for inline replies. */
 export const REPLY_CATEGORY_ID = 'notifai.reply'
 /**
- * Closed questions carry their own category so the notification presents the
- * answers only. Sharing one category would put a free-text field beside the
- * buttons and invite the open-ended answer the agent asked not to receive.
+ * Question sets carry their own category so the expanded notification is the
+ * answering surface: the content extension renders the choices (and the
+ * secondary typed-answer path — a free-text answer is always possible, it just
+ * never competes with the choices at equal prominence).
  */
 export const REPLY_CHOICE_CATEGORY_ID = 'notifai.reply.choice'
 export const REPLY_ACTION_ID = 'notifai.reply.text'
@@ -126,6 +127,43 @@ export const REPLY_MAX_CHOICES = 6
  */
 export const REPLY_MAX_WINDOW_SECONDS = 72 * 3600
 
+/**
+ * Upper bound on questions in one notification, matched to what one expanded
+ * card can step through and one glance can justify. The harness question
+ * tools settled on the same number.
+ */
+export const REPLY_MAX_QUESTIONS = 4
+
+/**
+ * Upper bound on one question's text. It must be readable in full on the
+ * surface that offers the answers; anything longer belongs in
+ * `presentation.detail`, which travels out-of-band and costs the envelope
+ * nothing.
+ */
+export const QUESTION_TEXT_MAX_LENGTH = 500
+
+/**
+ * One question in a reply request. With `choices` it is a closed question
+ * answered by id; without, a free-text question. Either way a typed answer is
+ * always possible on the companion — the choices are the primary surface, not
+ * a wall — so an agent must be prepared to receive text where it asked for a
+ * token.
+ */
+export const Question = Type.Object(
+  {
+    /** Agent-facing token naming this question inside the set. */
+    id: Type.String({ minLength: 1, maxLength: 32, pattern: '^[a-z0-9][a-z0-9_-]*$' }),
+    text: Type.String({ minLength: 1, maxLength: QUESTION_TEXT_MAX_LENGTH }),
+    choices: Type.Optional(
+      Type.Array(ReplyChoice, { minItems: 2, maxItems: REPLY_MAX_CHOICES }),
+    ),
+    /** The user may select several choices. Only meaningful with `choices`. */
+    multi: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+)
+export type QuestionT = Static<typeof Question>
+
 /** Opt-in reply channel. Presence enables the reply action. */
 export const ReplyRequest = Type.Object(
   {
@@ -136,19 +174,11 @@ export const ReplyRequest = Type.Object(
       default: 86400,
     }),
     /**
-     * `text` is the free-text composer. `choice` asks a closed question
-     * so the agent gets a checkable token back instead of prose it has to
-     * interpret. Optional rather than merely defaulted: `Value.Check` does not
-     * apply defaults, so a required `kind` would invalidate every reply block
-     * written before this field existed.
+     * What is being asked, in order. One entry is the common case; several
+     * are answered as a short form — one by one, back navigation, a single
+     * submission (the harness pattern).
      */
-    kind: Type.Optional(
-      Type.Union([Type.Literal('text'), Type.Literal('choice')], { default: 'text' }),
-    ),
-    /** Required by and only meaningful for `kind: 'choice'`. */
-    choices: Type.Optional(
-      Type.Array(ReplyChoice, { minItems: 2, maxItems: REPLY_MAX_CHOICES }),
-    ),
+    questions: Type.Array(Question, { minItems: 1, maxItems: REPLY_MAX_QUESTIONS }),
   },
   { additionalProperties: false },
 )

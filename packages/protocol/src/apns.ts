@@ -103,8 +103,12 @@ export function buildApnsEnvelope(
     aps['target-content-id'] = options.target_content_id
   }
   if (draft.reply !== undefined) {
-    aps['category'] =
-      draft.reply.kind === 'choice' ? REPLY_CHOICE_CATEGORY_ID : REPLY_CATEGORY_ID
+    // A single free-text question keeps the system inline-reply category, so
+    // the keyboard is one long-press away. Anything richer — choices, or a
+    // set of questions — is answered on the content-extension card.
+    const [first] = draft.reply.questions
+    const usesCard = draft.reply.questions.length > 1 || first?.choices !== undefined
+    aps['category'] = usesCard ? REPLY_CHOICE_CATEGORY_ID : REPLY_CATEGORY_ID
   }
   if (mediaUrl !== null || draft.project !== undefined) {
     // The Notification Service Extension downloads and attaches the image
@@ -178,11 +182,9 @@ function notifaiKey(
     ...(draft.reply !== undefined && replyExpiresAt !== null
       ? { reply_expires_at: replyExpiresAt.toISOString() }
       : {}),
-    // The choice set travels with the notification for the same reason the
-    // deadline does: the content extension and the in-app picker must render
-    // labels with no network round-trip and no server lookup.
-    ...(draft.reply?.kind === 'choice' && draft.reply.choices !== undefined
-      ? { reply_choices: draft.reply.choices }
-      : {}),
+    // The question set travels with the notification for the same reason the
+    // deadline does: the content extension and the in-app surfaces must render
+    // texts and labels with no network round-trip and no server lookup.
+    ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),
   }
 }

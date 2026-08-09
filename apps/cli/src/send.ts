@@ -3,6 +3,7 @@ import {
   COLLAPSE_KEY_MAX_BYTES,
   INTERRUPTION_LEVELS,
   NOTIFICATION_SCHEMA_VERSION,
+  QUESTION_TEXT_MAX_LENGTH,
   type IosOptionsT,
   type LifecycleT,
   type MacosOptionsT,
@@ -10,6 +11,7 @@ import {
   NOTIFICATION_KINDS,
   PLATFORMS,
   type Platform,
+  type QuestionT,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import type { CliConfig } from './config.js'
@@ -41,10 +43,17 @@ export interface SendFlags {
   /** How long the server accepts a reply after submission. */
   replyWindow?: number
   /**
-   * Answer labels; turns the reply into a closed question. One value splits on
-   * commas; repeating the flag passes each label through verbatim.
+   * Answer labels; turns the reply into a closed question. One flag occurrence
+   * per label, always — a label is a label, whatever characters it contains.
    */
-  replyChoice?: string | string[]
+  replyChoice?: string[]
+  /** The user may select several of the offered answers. */
+  replyMulti?: boolean
+  /**
+   * A full question set, overriding the single question the flags describe.
+   * Not a user-facing flag: `ask --form` and the hooks build it.
+   */
+  questions?: QuestionT[]
   /** Platform whose optional notification fields these flags configure. */
   platform?: string
   /**
@@ -149,6 +158,24 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
       error: CHOICE_USAGE,
     }
   }
+  if (flags.replyMulti && choices === null && flags.questions === undefined) {
+    return { ok: false, error: '--reply-multi needs answers to select between; add --reply-choice.' }
+  }
+  // The banner body doubles as the question text on a single-question send, so
+  // it inherits the question's readable-in-full bound; context beyond that
+  // belongs in --detail, which never rides the banner.
+  if (
+    flags.reply &&
+    flags.questions === undefined &&
+    flags.body.length > QUESTION_TEXT_MAX_LENGTH
+  ) {
+    return {
+      ok: false,
+      error:
+        `A question must be readable where it is answered: keep it within ${QUESTION_TEXT_MAX_LENGTH} ` +
+        'characters and put the longer context in --detail.',
+    }
+  }
 
   const draft: NotificationDraftT = {
     schema_version: NOTIFICATION_SCHEMA_VERSION,
@@ -174,7 +201,14 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
       ? {
           reply: {
             expires_in_seconds: flags.replyWindow ?? 3600,
-            ...(choices !== null ? { kind: 'choice' as const, choices } : {}),
+            questions: flags.questions ?? [
+              {
+                id: 'q1',
+                text: flags.body,
+                ...(choices !== null ? { choices } : {}),
+                ...(flags.replyMulti ? { multi: true } : {}),
+              },
+            ],
           },
         }
       : {}),
@@ -229,23 +263,19 @@ export function receiptExitCode(receipt: SubmissionReceipt): number {
 }
 
 /**
- * `"Staging,Production"` -> `[{id:'staging',label:'Staging'}, ...]`.
+ * One flag occurrence, one answer: `--choice Staging --choice Production` ->
+ * `[{id:'staging',label:'Staging'}, ...]`.
  *
- * A single occurrence splits on commas, which keeps the common one-liner
- * short. Repeating the flag is the escape hatch, and the only way to write a
- * label that itself contains a comma: passing `"Yes, ship it,No"` as one value
- * silently yields three choices, and nothing downstream can detect that the
- * agent meant two.
+ * Commas are ordinary characters. The old single-value comma split produced
+ * buttons the agent never intended ("Nothing, I'll review" became two answers)
+ * and nothing downstream could detect it, so the delimiter form is gone
+ * rather than guarded: a label is a label.
  */
 export function parseChoices(
-  value: string | string[] | undefined,
+  value: string[] | undefined,
 ): { id: string; label: string }[] | null | 'invalid' {
-  if (value === undefined) return null
-  const raw = Array.isArray(value) ? value : [value]
-  if (raw.length === 0) return null
-  const labels = (raw.length === 1 ? (raw[0] ?? '').split(',') : raw)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0)
+  if (value === undefined || value.length === 0) return null
+  const labels = value.map((part) => part.trim()).filter((part) => part.length > 0)
   if (labels.length < 2 || labels.length > 6) return 'invalid'
   const choices = labels.map((label) => ({ id: slugify(label), label }))
   if (choices.some((choice) => choice.id === '')) return 'invalid'
@@ -255,38 +285,10 @@ export function parseChoices(
 
 /** Message shared by every surface that accepts choice labels. */
 export const CHOICE_USAGE =
-  'Choices must be 2-6 non-empty labels, unique once slugified. One value splits on ' +
-  'commas ("Staging,Production"); repeat the flag when a label contains a comma.'
+  'Offer 2-6 answers, one --choice flag per answer, unique once slugified — ' +
+  'e.g. --choice "Yes, ship it" --choice "Not yet".'
 
-/**
- * Catches the split that looked like it worked.
- *
- * `--choice "macOS parity,Long-form detail,Nothing, I'll review"` produced four
- * buttons rather than three, because the third label contained a comma. Nothing
- * downstream can detect it — the labels are all well-formed — and the CLI
- * cheerfully echoed the wrong list back, so the user saw buttons the agent
- * never intended.
- *
- * The tell is a comma followed by a space. A delimiter list is written
- * "Yes,No"; prose is written "Nothing, I'll review". That is a heuristic and it
- * will occasionally be wrong, which is exactly why this warns and names the
- * escape hatch rather than rejecting: the split may well have been intended.
- */
-export function ambiguousChoiceSplit(value: string | string[] | undefined): string | null {
-  if (value === undefined || Array.isArray(value)) return null
-  if (!/,\s/.test(value)) return null
-  const parts = value
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0)
-  return (
-    `Heads up: "${value}" was split on commas into ${parts.length} answers ` +
-    `(${parts.join(' / ')}). If one of those labels was meant to contain a comma, ` +
-    'pass --choice once per answer instead.'
-  )
-}
-
-function slugify(label: string): string {
+export function slugify(label: string): string {
   return label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')

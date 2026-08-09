@@ -271,25 +271,36 @@ export function validateDraft(
     })
   }
 
-  // `kind` and `choices` are two halves of one statement, and the schema can
-  // only check them separately. A closed question with no answers, or answers
-  // that collide on id, would reach the device as an unanswerable notification.
+  // Identity rules the schema cannot express. A duplicate id would make an
+  // answer ambiguous to the agent; a `multi` flag on a free-text question
+  // claims a selection surface that does not exist. Either would reach the
+  // device as a question whose answer cannot be trusted or given.
   if (typed.reply !== undefined) {
-    const { kind, choices } = typed.reply
-    if (kind === 'choice') {
-      if (choices === undefined) {
+    const questionIds = new Set<string>()
+    for (const [index, question] of typed.reply.questions.entries()) {
+      const path = `reply.questions.${index}`
+      if (questionIds.has(question.id)) {
         errors.push({
           code: 'invalid_request',
-          path: 'reply.choices',
-          message: "A reply of kind 'choice' must list the choices to offer.",
+          path,
+          message: `Duplicate question id '${question.id}' — ids identify the answer to the agent and must be unique.`,
         })
-      } else {
+      }
+      questionIds.add(question.id)
+      if (question.multi === true && question.choices === undefined) {
+        errors.push({
+          code: 'invalid_request',
+          path: `${path}.multi`,
+          message: 'multi is only meaningful on a question with choices.',
+        })
+      }
+      if (question.choices !== undefined) {
         const seen = new Set<string>()
-        for (const choice of choices) {
+        for (const choice of question.choices) {
           if (seen.has(choice.id)) {
             errors.push({
               code: 'invalid_request',
-              path: 'reply.choices',
+              path: `${path}.choices`,
               message: `Duplicate choice id '${choice.id}' — ids identify the answer to the agent and must be unique.`,
             })
             break
@@ -297,12 +308,6 @@ export function validateDraft(
           seen.add(choice.id)
         }
       }
-    } else if (choices !== undefined) {
-      errors.push({
-        code: 'invalid_request',
-        path: 'reply.choices',
-        message: "Choices are only meaningful with kind: 'choice'.",
-      })
     }
   }
 

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
-import type { LifecycleEndState, ReplyView } from '@raidiant/notifai-protocol'
+import type { LifecycleEndState, QuestionT, ReplyView } from '@raidiant/notifai-protocol'
 import type { ApiClient } from './client.js'
 import {
   loadConfig,
@@ -120,6 +120,7 @@ const ORPHAN_TTL_MS = 24 * 3600 * 1000
 const ORPHAN_QUEUE_CAP = 50
 
 export interface PendingQuestion {
+  /** One-line summary: the single question's text, or the set's first. */
   question: string
   /**
    * Epoch ms when `notifai ask` registered this. The grace window runs from
@@ -128,11 +129,12 @@ export interface PendingQuestion {
    */
   asked_at?: number
   /**
-   * Canonical answer labels, already split and validated by `notifai ask`.
-   * Stored as a list rather than a comma-joined string so a label containing a
-   * comma survives the round trip.
+   * The full question set as `notifai ask` validated it: generated ids,
+   * texts, choices, multi flags. What actually rides the push.
    */
-  choices?: string[]
+  questions?: QuestionT[]
+  /** Long-form markdown context, shown in the companion's detail view. */
+  detail?: string
   /** Set once the question has actually been pushed, so it can be retired. */
   request_id?: string
   collapse_key?: string
@@ -641,7 +643,10 @@ export type HookHarness = 'claude-code' | 'codex' | 'cursor' | 'opencode'
 interface AskResult {
   requestId: string
   collapseKey: string
+  /** The answer to act on: the latest reply, because a later one corrects. */
   reply: ReplyView | null
+  /** Every reply in arrival order, for free-text answers given in parts. */
+  replies: ReplyView[]
   /** The devices the question went to; retirement must not reach any other. */
   devices: string[]
   /** The wait ended amid network failures, so "no answer" is unproven. */
@@ -658,8 +663,11 @@ const REPLY_PRESENCE_POLL_SECONDS = 5
 /**
  * Push a question and block for the answer.
  *
- * An answered question is closed immediately: the first answer wins, and the
- * other devices must stop offering to change it. An unanswered one stays open,
+ * An answered question is closed the moment this wait sees the answer: the
+ * first device to answer claims the question and the others are told. Until
+ * that close, a later reply is a correction — so what this returns as "the"
+ * answer is always the latest reply, with the full stream alongside for
+ * free-text answers given in parts. An unanswered question stays open,
  * because nobody has acted on the silence yet and the next turn can still
  * collect the answer with `notifai replies`.
  */
@@ -668,7 +676,8 @@ async function askAndWait(
   options: {
     title: string
     body: string
-    choices?: string[]
+    questions: QuestionT[]
+    detail?: string | undefined
     event: string
     /** Which agent is asking; two of them must not look alike. */
     session?: string | undefined
@@ -695,7 +704,8 @@ async function askAndWait(
     device: answerable,
     reply: true,
     replyWindow: Math.max(60, options.windowSeconds),
-    ...(options.choices !== undefined ? { replyChoice: options.choices } : {}),
+    questions: options.questions,
+    ...(options.detail !== undefined ? { detail: options.detail } : {}),
     collapseKey,
   })
   if (!build.ok) return { error: build.error }
@@ -718,6 +728,7 @@ async function askAndWait(
       requestId: receipt.request_id,
       collapseKey,
       reply: null,
+      replies: [],
       devices: answerable,
       degraded: false,
       waited: false,
@@ -730,7 +741,11 @@ async function askAndWait(
   return {
     requestId: receipt.request_id,
     collapseKey,
-    reply: result.replies[0] ?? null,
+    // The latest reply, not the first: an earlier conflicting answer was
+    // corrected by the one that followed it. The cross-device race is still
+    // first-answer-claims — that is what the close above enforces.
+    reply: result.replies.at(-1) ?? null,
+    replies: result.replies,
     devices: answerable,
     degraded: result.degraded,
     waited: true,
@@ -1088,7 +1103,10 @@ const LATE_PROMPT_POLL_SECONDS = 3
 const MAX_CONTINUATION_COUNT = 3
 
 interface PendingPoll {
+  /** The answer to act on: the latest reply, because a later one corrects. */
   reply: ReplyView | null
+  /** Every reply in arrival order, for free-text answers given in parts. */
+  replies: ReplyView[]
   degraded: boolean
   failed: boolean
 }
@@ -1099,34 +1117,64 @@ async function pollPendingReply(
   pending: PendingQuestion,
   timeoutSeconds: number,
 ): Promise<PendingPoll> {
-  if (pending.request_id === undefined) return { reply: null, degraded: false, failed: false }
+  if (pending.request_id === undefined) {
+    return { reply: null, replies: [], degraded: false, failed: false }
+  }
   try {
     const result = await ctx.waitForFirstReply(pending.request_id, timeoutSeconds)
     return {
-      reply: result.replies[0] ?? null,
+      reply: result.replies.at(-1) ?? null,
+      replies: result.replies,
       degraded: result.degraded === true,
       failed: false,
     }
   } catch {
-    return { reply: null, degraded: true, failed: true }
+    return { reply: null, replies: [], degraded: true, failed: true }
   }
 }
 
-function answerContext(reply: ReplyView): string {
-  return `Notifai — the user answered from ${reply.device_name}: "${reply.text}". Continue with that answer.`
+/** The question set this pending record pushes, however it was registered. */
+function pendingQuestions(pending: PendingQuestion): QuestionT[] {
+  return pending.questions ?? [{ id: 'q1', text: pending.question }]
 }
 
-function userPromptAnswerOutput(reply: ReplyView): string {
+/** Did any question in the set offer choices? Decides how replies combine. */
+function pendingHasChoices(pending: PendingQuestion): boolean {
+  return pendingQuestions(pending).some((question) => question.choices !== undefined)
+}
+
+/**
+ * The answer as the agent should read it. For a question with choices the
+ * latest reply IS the answer — an earlier conflicting one was corrected by
+ * it. Free-text answers can arrive in parts, and every part reaches the
+ * agent in the order it was written, so it can tell expansion from
+ * correction itself.
+ */
+function answerContext(replies: ReplyView[], hadChoices: boolean): string {
+  const latest = replies.at(-1)
+  if (latest === undefined) return 'Notifai — no answer was recorded.'
+  if (replies.length === 1 || hadChoices) {
+    return `Notifai — the user answered from ${latest.device_name}: "${latest.text}". Continue with that answer.`
+  }
+  const parts = replies.map((reply) => `"${reply.text}"`).join(', then ')
+  return (
+    `Notifai — the user answered from ${latest.device_name} in ${replies.length} parts, ` +
+    `in the order written: ${parts}. Later parts extend or correct earlier ones. ` +
+    'Continue with that answer.'
+  )
+}
+
+function userPromptAnswerOutput(replies: ReplyView[], hadChoices: boolean): string {
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: answerContext(reply),
+      additionalContext: answerContext(replies, hadChoices),
     },
   })
 }
 
-function stopAnswerOutput(reply: ReplyView): string {
-  return JSON.stringify({ decision: 'block', reason: answerContext(reply) })
+function stopAnswerOutput(replies: ReplyView[], hadChoices: boolean): string {
+  return JSON.stringify({ decision: 'block', reason: answerContext(replies, hadChoices) })
 }
 
 /**
@@ -1199,7 +1247,7 @@ export async function handleUserPromptSubmit(
       }
       await drainOrphanRetirements(ctx, ctx.env, ctx.now())
       notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
-      return { stdout: userPromptAnswerOutput(late.reply), notes }
+      return { stdout: userPromptAnswerOutput(late.replies, pendingHasChoices(pending)), notes }
     }
     if (late.failed || late.degraded) {
       notes.push('could not check the pending question for a late answer before the prompt')
@@ -1279,7 +1327,7 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     if (late.reply !== null) {
       await finishPendingAnswer(ctx, envelope, sessionId, pending, late.reply, true)
       notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
-      return { stdout: stopAnswerOutput(late.reply), notes }
+      return { stdout: stopAnswerOutput(late.replies, pendingHasChoices(pending)), notes }
     }
     // Already live on the user's devices from an earlier Stop; asking twice for
     // one question is the nagging failure this feature exists to avoid.
@@ -1352,13 +1400,20 @@ async function escalate(
     notes.push('no idle signal on this machine; asking now rather than holding the terminal')
   }
 
+  const questions = pendingQuestions(pending)
   const asked = await askAndWait(ctx, {
     title:
       ctx.config.project.value === null
         ? 'Question'
         : `Question · ${ctx.config.project.value}`,
-    body: pending.question,
-    ...(pending.choices !== undefined ? { choices: pending.choices } : {}),
+    // A set is answered on the expanded card; the banner leads with the first
+    // question and says how much more is waiting behind it.
+    body:
+      questions.length > 1
+        ? `${questions[0]!.text} (+${questions.length - 1} more)`
+        : pending.question,
+    questions,
+    ...(pending.detail !== undefined ? { detail: pending.detail } : {}),
     event: 'agent_question',
     session: sessionLabel(ctx, envelope),
     // Outlives the block, and stays open on purpose: the answer is still
@@ -1426,7 +1481,7 @@ async function escalate(
   }, asked.reply, true)
   notes.push(`answer from ${asked.reply.device_name}: ${asked.reply.text}`)
   return {
-    stdout: stopAnswerOutput(asked.reply),
+    stdout: stopAnswerOutput(asked.replies, pendingHasChoices(pending)),
     notes,
   }
 }

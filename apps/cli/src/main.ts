@@ -195,9 +195,10 @@ const send = program
   .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 3600)', (v: string) => Number(v))
   .option(
     '--reply-choice <label>',
-    'with --reply, ask a closed question (2-6 answers); one value splits on commas, or repeat the flag',
+    'with --reply, ask a closed question; repeat the flag once per answer (2-6)',
     (v: string, all: string[]) => [...all, v], [],
   )
+  .option('--reply-multi', 'with --reply-choice, several answers may be selected')
   // Kept registered, and always a usage error with --reply, so the caller gets
   // a message pointing at `ask` instead of "unknown option".
   .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
@@ -264,19 +265,55 @@ program
   })
 
 program
-  .command('ask <question>')
+  .command('ask [question]')
   .description('Register a question for the turn-end hook to route under your presence settings')
   .option(
     '--choice <label>',
-    'answers to offer instead of free text (2-6); one value splits on commas, or repeat the flag',
+    'answers to offer instead of free text; repeat the flag once per answer (2-6)',
     (v: string, all: string[]) => [...all, v], [],
   )
+  .option('--multi', 'with --choice, several answers may be selected')
+  .option('--detail <markdown>', 'long-form context shown only in the app, never on the banner')
+  .option('--detail-file <path>', 'read --detail from a file (use - for stdin)')
+  .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin)')
   .option('--session <id>', 'session id (default: the session working in this directory, else $NOTIFAI_SESSION)')
-  .action((question: string, opts: { choice?: string[]; session?: string }) => {
+  .action((question: string | undefined, opts: {
+    choice?: string[]
+    multi?: boolean
+    detail?: string
+    detailFile?: string
+    form?: string
+    session?: string
+  }) => {
+    let detail = opts.detail
+    if (typeof opts.detailFile === 'string') {
+      if (detail !== undefined) {
+        deps.io.err('Pass either --detail or --detail-file, not both.')
+        process.exit(2)
+      }
+      try {
+        detail = readFileSync(opts.detailFile === '-' ? 0 : opts.detailFile, 'utf8')
+      } catch (err) {
+        deps.io.err(`Could not read ${opts.detailFile}: ${String(err)}`)
+        process.exit(2)
+      }
+    }
+    let form: string | undefined
+    if (typeof opts.form === 'string') {
+      try {
+        form = readFileSync(opts.form === '-' ? 0 : opts.form, 'utf8')
+      } catch (err) {
+        deps.io.err(`Could not read ${opts.form}: ${String(err)}`)
+        process.exit(2)
+      }
+    }
     // commander's collector defaults to []; an empty list means "not asked".
     const flags: Parameters<typeof askCommand>[2] = {
       ...(opts.session !== undefined ? { session: opts.session } : {}),
       ...(opts.choice?.length ? { choice: opts.choice } : {}),
+      ...(opts.multi ? { multi: true } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+      ...(form !== undefined ? { form } : {}),
     }
     process.exit(askCommand(deps, question, flags))
   })

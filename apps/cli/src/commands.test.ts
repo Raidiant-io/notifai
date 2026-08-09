@@ -14,6 +14,7 @@ import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import {
   askCommand,
   accessStatusCommand,
+  buildQuestions,
   assessReadiness,
   capabilitiesCommand,
   configSetCommand,
@@ -379,7 +380,10 @@ describe('command contracts', () => {
         replyTimeout: 30,
       }),
     ).toBe(EXIT.ok)
-    expect(submitted?.draft.reply).toEqual({ expires_in_seconds: 3_600 })
+    expect(submitted?.draft.reply).toEqual({
+      expires_in_seconds: 3_600,
+      questions: [{ id: 'q1', text: 'Deploy?' }],
+    })
   })
 
   it('rejects --reply-timeout 0, the other spelling of nobody waiting', async () => {
@@ -1147,7 +1151,7 @@ describe('init', () => {
       source: 'Raidiant-io/notifai',
       sourceType: 'github',
       sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-      ref: 'v0.1.8',
+      ref: 'v0.2.0',
     }
   }
 
@@ -1250,7 +1254,7 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('Raidiant-io/notifai#v0.1.8')
+    expect(SKILLS_SOURCE).toBe('Raidiant-io/notifai#v0.2.0')
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
@@ -1273,7 +1277,7 @@ describe('init', () => {
             source: 'Raidiant-io/notifai',
             sourceType: 'github',
             sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-            ref: 'v0.1.8',
+            ref: 'v0.2.0',
           },
         ],
       }),
@@ -2173,7 +2177,7 @@ describe('asking before the hooks have ever run', () => {
                   source: 'Raidiant-io/notifai',
                   sourceType: 'github',
                   sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-                  ref: 'v0.1.8',
+                  ref: 'v0.2.0',
                 },
               ]
             : [],
@@ -2486,7 +2490,97 @@ describe('a server behind this CLI', () => {
   })
 })
 
-/** First-reply-wins is the right default, silently is the wrong way. */
+describe('question sets', () => {
+  it('maps --reply-multi into the single question', async () => {
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+      replies: async () => replyResponse([reply]),
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Question',
+        body: 'Which fronts?',
+        reply: true,
+        replyTimeout: 30,
+        replyChoice: ['CLI', 'Server', 'Apps'],
+        replyMulti: true,
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.reply?.questions?.[0]).toMatchObject({
+      text: 'Which fronts?',
+      multi: true,
+    })
+    expect(submitted?.draft.reply?.questions?.[0]?.choices).toHaveLength(3)
+  })
+
+  it('rejects a question body too long for the answering surface', async () => {
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Question',
+        body: 'x'.repeat(501),
+        reply: true,
+        replyTimeout: 30,
+      }),
+    ).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines.join(' ')).toContain('--detail')
+  })
+
+  it('generates unique question ids when texts collide', () => {
+    const built = buildQuestions(
+      {
+        form: JSON.stringify({
+          questions: [{ text: 'Ready?' }, { text: 'Ready?' }],
+        }),
+      },
+      undefined,
+    )
+    expect(built).toMatchObject({ ok: true })
+    if (built.ok) {
+      expect(built.questions.map((question) => question.id)).toEqual(['ready', 'q2'])
+    }
+  })
+
+  it('rejects forms outside the documented shape', () => {
+    expect(buildQuestions({ form: 'not json' }, undefined)).toMatchObject({ ok: false })
+    expect(
+      buildQuestions({ form: JSON.stringify({ questions: [] }) }, undefined),
+    ).toMatchObject({ ok: false })
+    expect(
+      buildQuestions(
+        { form: JSON.stringify({ questions: Array.from({ length: 5 }, (_, i) => ({ text: `Q${i}?` })) }) },
+        undefined,
+      ),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('1-4') })
+    expect(
+      buildQuestions(
+        { form: JSON.stringify({ questions: [{ text: 'Pick?', multi: true }] }) },
+        undefined,
+      ),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('--choice') })
+    // --form replaces the flag surface; mixing them is a usage error.
+    expect(
+      buildQuestions({ form: JSON.stringify({ questions: [{ text: 'Q?' }] }) }, 'Also a question?'),
+    ).toMatchObject({ ok: false })
+  })
+})
+
+/** Latest-reply-wins, and never silently: a correction is named as one. */
 describe('a second device that disagrees', () => {
   function view(overrides: Partial<ReplyView>): ReplyView {
     return {
@@ -2496,27 +2590,28 @@ describe('a second device that disagrees', () => {
       device_id: 'dev',
       device_name: 'iPhone',
       text: 'Yes',
-      choice_id: null,
+      answers: [],
+      source: null,
       created_at: new Date().toISOString(),
       ...overrides,
     }
   }
 
-  it('says which answer counted and which was discarded', () => {
+  it('says the latest answer counted and which were superseded', () => {
     const said = contradictingAnswer([
       view({ seq: 1, device_name: 'iPhone', text: 'Yes' }),
       view({ seq: 2, device_name: 'FurankuMac', text: 'No' }),
     ])
-    expect(said).toContain('"Yes" from iPhone')
-    expect(said).toContain('FurankuMac')
-    expect(said).toMatch(/arrived first/)
+    expect(said).toContain('"No" from FurankuMac')
+    expect(said).toContain('iPhone')
+    expect(said).toMatch(/corrects an earlier one/)
   })
 
   it('is silent when the second answer agrees', () => {
     expect(
       contradictingAnswer([
-        view({ seq: 1, device_name: 'iPhone', text: 'Ship it', choice_id: 'ship' }),
-        view({ seq: 2, device_name: 'FurankuMac', text: 'Ship it', choice_id: 'ship' }),
+        view({ seq: 1, device_name: 'iPhone', text: 'Ship it', answers: [{ question_id: 'q1', choice_ids: ['ship'], text: null }] }),
+        view({ seq: 2, device_name: 'FurankuMac', text: 'Ship it', answers: [{ question_id: 'q1', choice_ids: ['ship'], text: null }] }),
       ]),
     ).toBeNull()
   })

@@ -35,7 +35,7 @@ banner and is shown in the companion app for when you sit down.
 ## Asking you a question
 
 ```sh
-notifai ask "Deploy the migration to production?" --choice "Yes,No"
+notifai ask "Deploy the migration to production?" --choice Yes --choice No
 ```
 
 The agent registers the question, ends its turn, and your answer comes

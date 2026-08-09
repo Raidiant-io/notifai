@@ -6,12 +6,15 @@ import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import {
   CAPABILITIES_V1,
+  QUESTION_TEXT_MAX_LENGTH,
+  REPLY_MAX_QUESTIONS,
   REPLY_MAX_WINDOW_SECONDS,
   validateDraft,
   type EvidenceSnapshot,
   type AccountAccessResponse,
   type ListRepliesResponse,
   type Platform,
+  type QuestionT,
   type ReplyView,
   type RoutableDevice,
   type SubmissionReceipt,
@@ -82,11 +85,11 @@ import {
 } from './opencode-plugin.js'
 import {
   CHOICE_USAGE,
-  ambiguousChoiceSplit,
   buildDraft,
   formatReceipt,
   parseChoices,
   receiptExitCode,
+  slugify,
   type SendFlags,
 } from './send.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
@@ -770,28 +773,27 @@ function printReplies(deps: CommandDeps, replies: ReplyView[]): void {
 }
 
 /**
- * The other half of first-reply-wins.
+ * The correction note for a wait that saw more than one answer.
  *
- * A blocking send returns the first non-empty batch and acts on it, so a later
- * answer that disagrees is silently ignored. That is the right default — an
- * agent wants one answer, not a quorum — but silently is the wrong way to do
- * it. The server now retires the question on the other devices the moment one
- * answers, which makes this rare; it is still reachable, because a device can
- * answer between the first reply landing and its retirement arriving.
+ * A later reply that conflicts with an earlier one is a correction, so the
+ * latest answer is the one that counts. The server retires the question on
+ * the other devices the moment one answers, which makes this rare; it is
+ * still reachable, because a device can answer between the first reply
+ * landing and its retirement arriving.
  *
- * Ordered by seq, so `replies[0]` is the one that won.
+ * Ordered by seq, so `replies.at(-1)` is the answer to act on.
  */
 export function contradictingAnswer(replies: ReplyView[]): string | null {
-  const winner = replies[0]
+  const winner = replies.at(-1)
   if (winner === undefined || replies.length < 2) return null
-  const disagreeing = replies
-    .slice(1)
-    .filter((reply) => (reply.choice_id ?? reply.text) !== (winner.choice_id ?? winner.text))
-  if (disagreeing.length === 0) return null
-  const names = [...new Set(disagreeing.map((reply) => reply.device_name))].join(', ')
+  const key = (reply: ReplyView) =>
+    reply.answers.length > 0 ? JSON.stringify(reply.answers) : reply.text
+  const corrected = replies.slice(0, -1).filter((reply) => key(reply) !== key(winner))
+  if (corrected.length === 0) return null
+  const names = [...new Set(corrected.map((reply) => reply.device_name))].join(', ')
   return (
-    `note: "${winner.text}" from ${winner.device_name} is the answer that counts — it arrived first. ` +
-    `${names} answered differently afterwards and that answer was not used.`
+    `note: "${winner.text}" from ${winner.device_name} is the answer that counts — a later ` +
+    `answer corrects an earlier one. Earlier differing answers from ${names} were superseded.`
   )
 }
 
@@ -1096,8 +1098,110 @@ function rejectedPaths(details: unknown): string[] {
 }
 
 export interface AskFlags {
-  choice?: string | string[]
+  choice?: string[]
+  /** The single question is multi-select: several answers may be chosen. */
+  multi?: boolean
+  /** Long-form markdown context; shown in the app, never on the banner. */
+  detail?: string
+  /** Raw JSON for a multi-question form; replaces the positional question. */
+  form?: string
   session?: string
+}
+
+/** The `--form` document: what an agent writes to ask several things at once. */
+interface AskFormQuestion {
+  text: string
+  choices?: string[]
+  multi?: boolean
+}
+
+/**
+ * Turn ask input into the question set that will ride the push. Everything is
+ * validated here, at registration, because the push happens inside a hook
+ * where a rejection becomes a stderr note the agent never reads.
+ */
+export function buildQuestions(
+  flags: AskFlags,
+  question: string | undefined,
+): { ok: true; questions: QuestionT[]; detail?: string } | { ok: false; error: string } {
+  if (flags.form !== undefined) {
+    if (question !== undefined || flags.choice?.length || flags.multi) {
+      return { ok: false, error: '--form replaces the positional question, --choice, and --multi.' }
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(flags.form)
+    } catch {
+      return { ok: false, error: '--form must be JSON: {"questions": [{"text", "choices"?, "multi"?}], "detail"?}.' }
+    }
+    if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { questions?: unknown }).questions)) {
+      return { ok: false, error: '--form needs a "questions" array (1-4 entries).' }
+    }
+    const form = parsed as { questions: unknown[]; detail?: unknown }
+    if (form.questions.length < 1 || form.questions.length > REPLY_MAX_QUESTIONS) {
+      return { ok: false, error: `A form asks 1-${REPLY_MAX_QUESTIONS} questions; this one has ${form.questions.length}.` }
+    }
+    if (form.detail !== undefined && typeof form.detail !== 'string') {
+      return { ok: false, error: '"detail" must be a markdown string.' }
+    }
+    const questions: QuestionT[] = []
+    const usedIds = new Set<string>()
+    for (const [index, entry] of form.questions.entries()) {
+      if (typeof entry !== 'object' || entry === null || typeof (entry as AskFormQuestion).text !== 'string') {
+        return { ok: false, error: `Question ${index + 1} needs a "text" string.` }
+      }
+      const spec = entry as AskFormQuestion
+      const built = buildOneQuestion(spec.text, spec.choices, spec.multi === true, index, usedIds)
+      if ('error' in built) return { ok: false, error: `Question ${index + 1}: ${built.error}` }
+      questions.push(built.question)
+    }
+    return { ok: true, questions, ...(form.detail !== undefined ? { detail: form.detail } : {}) }
+  }
+
+  if (question === undefined || question.trim() === '') {
+    return { ok: false, error: 'The question cannot be empty.' }
+  }
+  const built = buildOneQuestion(question, flags.choice, flags.multi === true, 0, new Set())
+  if ('error' in built) return { ok: false, error: built.error }
+  return {
+    ok: true,
+    questions: [built.question],
+    ...(flags.detail !== undefined && flags.detail.trim() !== '' ? { detail: flags.detail } : {}),
+  }
+}
+
+function buildOneQuestion(
+  text: string,
+  choiceLabels: string[] | undefined,
+  multi: boolean,
+  index: number,
+  usedIds: Set<string>,
+): { question: QuestionT } | { error: string } {
+  const trimmed = text.trim()
+  if (trimmed === '') return { error: 'the question text cannot be empty.' }
+  if (trimmed.length > QUESTION_TEXT_MAX_LENGTH) {
+    return {
+      error:
+        `a question must be readable where it is answered: keep it within ` +
+        `${QUESTION_TEXT_MAX_LENGTH} characters and put the longer context in detail.`,
+    }
+  }
+  const choices = parseChoices(choiceLabels)
+  if (choices === 'invalid') return { error: CHOICE_USAGE }
+  if (multi && choices === null) {
+    return { error: '--multi needs answers to select between; add --choice.' }
+  }
+  let id = slugify(trimmed)
+  if (id === '' || usedIds.has(id)) id = `q${index + 1}`
+  usedIds.add(id)
+  return {
+    question: {
+      id,
+      text: trimmed,
+      ...(choices !== null ? { choices } : {}),
+      ...(multi ? { multi: true } : {}),
+    },
+  }
 }
 
 /**
@@ -1106,7 +1210,7 @@ export interface AskFlags {
  * default presence gate, recent keyboard or mouse activity keeps it local;
  * `require_idle = false` intentionally permits a push while the user is active.
  */
-export function askCommand(deps: CommandDeps, question: string, flags: AskFlags): number {
+export function askCommand(deps: CommandDeps, question: string | undefined, flags: AskFlags): number {
   // An agent calling this gets no hook payload. Harness-native environment
   // markers identify the active owner, while the UserPromptSubmit hook leaves
   // a pointer keyed on the project directory with the hook's canonical id.
@@ -1155,16 +1259,12 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
     for (const line of diagnoseMissingSession(deps)) deps.io.err(line)
     return EXIT.usage
   }
-  if (question.trim() === '') {
-    deps.io.err('The question cannot be empty.')
-    return EXIT.usage
-  }
   // Validate here, not at push time. The push happens inside a hook, where a
   // rejection becomes a stderr note the agent never reads — so a malformed
-  // choice set would look like it registered fine and then silently never ask.
-  const choices = parseChoices(flags.choice)
-  if (choices === 'invalid') {
-    deps.io.err(CHOICE_USAGE)
+  // question set would look like it registered fine and then silently never ask.
+  const built = buildQuestions(flags, question)
+  if (!built.ok) {
+    deps.io.err(built.error)
     return EXIT.usage
   }
   try {
@@ -1172,8 +1272,9 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
       sessionId,
       deps.env,
       {
-        question: question.trim(),
-        ...(choices !== null ? { choices: choices.map((choice) => choice.label) } : {}),
+        question: built.questions[0]!.text,
+        questions: built.questions,
+        ...(built.detail !== undefined ? { detail: built.detail } : {}),
       },
       (deps.now ?? Date.now)(),
     )
@@ -1181,14 +1282,20 @@ export function askCommand(deps: CommandDeps, question: string, flags: AskFlags)
     deps.io.err(`Could not register the question: ${err instanceof Error ? err.message : String(err)}`)
     return EXIT.failed
   }
-  if (choices !== null) {
-    deps.io.out(`Answers offered: ${choices.map((choice) => choice.label).join(' / ')}`)
+  for (const [index, entry] of built.questions.entries()) {
+    const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
+    if (entry.choices !== undefined) {
+      const kind = entry.multi === true ? 'answers offered (several may be chosen)' : 'answers offered'
+      deps.io.out(`${prefix}${entry.text} — ${kind}: ${entry.choices.map((choice) => choice.label).join(' / ')}`)
+    } else if (built.questions.length > 1) {
+      deps.io.out(`${prefix}${entry.text} — free text`)
+    }
   }
-  // On stdout, not stderr: the agent reads the former and this is only useful
-  // if it is read while there is still time to fix the question.
-  const ambiguous = ambiguousChoiceSplit(flags.choice)
-  if (ambiguous !== null) deps.io.out(ambiguous)
-  deps.io.out('Question registered. Ask it in the conversation as usual and end your turn.')
+  deps.io.out(
+    built.questions.length > 1
+      ? `${built.questions.length} questions registered as one form. Ask them in the conversation as usual and end your turn.`
+      : 'Question registered. Ask it in the conversation as usual and end your turn.',
+  )
   return EXIT.ok
 }
 
@@ -1729,7 +1836,7 @@ export async function configSetCommand(
  * 1.5.x, `owner/repo@name` selects a skill; a Git ref belongs after `#`.
  * Keep this immutable and public because the command is printed to users.
  */
-export const SKILLS_SOURCE = 'Raidiant-io/notifai#v0.1.8'
+export const SKILLS_SOURCE = 'Raidiant-io/notifai#v0.2.0'
 
 function skillSourceParts(): { source: string; ref: string } | null {
   const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)

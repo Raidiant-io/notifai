@@ -127,7 +127,8 @@ function reply(overrides: Partial<ReplyView> = {}): ReplyView {
     device_id: 'dev_test',
     device_name: 'Furankuphone',
     text: 'Allow',
-    choice_id: 'allow',
+    answers: [{ question_id: 'q1', choice_ids: ['allow'], text: null }],
+    source: null,
     created_at: new Date().toISOString(),
     ...overrides,
   }
@@ -915,11 +916,11 @@ describe('ask registration', () => {
     const h = harness()
     // Inside a hook, a rejection is only a stderr note the agent never reads —
     // so it would look registered and then silently never ask.
-    expect(askCommand(h.deps, 'Ship it?', { choice: 'Yes|No', session: 'a1' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], session: 'a1' })).toBe(EXIT.usage)
     expect(readSessionState('a1', h.env).pending).toBeUndefined()
   })
 
-  it('stores validated labels verbatim, commas and all', () => {
+  it('stores the validated question set, comma-bearing labels verbatim', () => {
     const h = harness()
     expect(
       askCommand(h.deps, 'Ship it?', {
@@ -927,7 +928,104 @@ describe('ask registration', () => {
         session: 'a2',
       }),
     ).toBe(EXIT.ok)
-    expect(readSessionState('a2', h.env).pending?.choices).toEqual(['Yes, ship it', 'No, hold'])
+    expect(readSessionState('a2', h.env).pending?.questions).toEqual([
+      {
+        id: 'ship-it',
+        text: 'Ship it?',
+        choices: [
+          { id: 'yes-ship-it', label: 'Yes, ship it' },
+          { id: 'no-hold', label: 'No, hold' },
+        ],
+      },
+    ])
+  })
+
+  it('registers a multi-question form and pushes it as one set', async () => {
+    const h = harness([reply({ text: 'Yes' })], 900)
+    writeSessionState('form1', h.env, { last_prompt_at: AWAY })
+    expect(
+      askCommand(h.deps, undefined, {
+        session: 'form1',
+        form: JSON.stringify({
+          questions: [
+            { text: 'Deploy where?', choices: ['Staging', 'Production'], multi: true },
+            { text: 'Anything to watch?' },
+          ],
+          detail: '## Context\nThe long story.',
+        }),
+      }),
+    ).toBe(EXIT.ok)
+    const pending = readSessionState('form1', h.env).pending
+    expect(pending?.questions).toHaveLength(2)
+    expect(pending?.detail).toContain('long story')
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
+    const draft = h.recorder.submitted[0]?.draft
+    // The banner leads with the first question and admits the rest exists;
+    // the full set rides the payload for the answering card.
+    expect(draft?.presentation.body).toBe('Deploy where? (+1 more)')
+    expect(draft?.presentation.detail).toContain('long story')
+    expect(draft?.reply?.questions).toEqual([
+      {
+        id: 'deploy-where',
+        text: 'Deploy where?',
+        choices: [
+          { id: 'staging', label: 'Staging' },
+          { id: 'production', label: 'Production' },
+        ],
+        multi: true,
+      },
+      { id: 'anything-to-watch', text: 'Anything to watch?' },
+    ])
+  })
+
+  it('acts on the latest reply when answers conflict, because it is a correction', async () => {
+    const h = harness(
+      [
+        reply({ seq: 1, text: 'Yes', answers: [{ question_id: 'ship-it', choice_ids: ['yes'], text: null }] }),
+        reply({
+          seq: 2,
+          reply_id: 'rpl_2',
+          text: 'No',
+          answers: [{ question_id: 'ship-it', choice_ids: ['no'], text: null }],
+        }),
+      ],
+      900,
+    )
+    writeSessionState('latest1', h.env, { last_prompt_at: AWAY })
+    expect(
+      askCommand(h.deps, 'Ship it?', { session: 'latest1', choice: ['Yes', 'No'] }),
+    ).toBe(EXIT.ok)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'latest1' }))
+
+    const decision = JSON.parse(h.io.outLines.at(-1)!) as { decision: string; reason: string }
+    expect(decision.decision).toBe('block')
+    expect(decision.reason).toContain('"No"')
+    expect(decision.reason).not.toContain('"Yes"')
+  })
+
+  it('hands a free-text answer written in parts to the agent in order', async () => {
+    const h = harness(
+      [
+        reply({ seq: 1, text: 'Use blue', answers: [{ question_id: 'which-color', choice_ids: [], text: 'Use blue' }] }),
+        reply({
+          seq: 2,
+          reply_id: 'rpl_2',
+          text: 'actually teal',
+          answers: [{ question_id: 'which-color', choice_ids: [], text: 'actually teal' }],
+        }),
+      ],
+      900,
+    )
+    writeSessionState('parts1', h.env, { last_prompt_at: AWAY })
+    expect(askCommand(h.deps, 'Which color?', { session: 'parts1' })).toBe(EXIT.ok)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parts1' }))
+
+    const decision = JSON.parse(h.io.outLines.at(-1)!) as { reason: string }
+    expect(decision.reason).toContain('in the order written')
+    expect(decision.reason).toContain('"Use blue", then "actually teal"')
   })
 
   it('resolves the session as flag, then hook pointer, then NOTIFAI_SESSION', async () => {

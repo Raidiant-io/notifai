@@ -44,28 +44,21 @@ function ours(): HookConfig {
 }
 
 describe('choice labels', () => {
-  it('splits a single value on commas for the one-liner case', () => {
-    expect(parseChoices('Staging,Production')).toEqual([
-      { id: 'staging', label: 'Staging' },
-      { id: 'production', label: 'Production' },
-    ])
-  })
-
-  it('keeps commas inside a label when the flag is repeated', () => {
-    // Observed live 2026-08-02: "Yes, it worked,No, something broke" passed as
-    // one value silently became four choices, and 2-6 validation let it
-    // through because four is in range. Repeating the flag is the escape.
+  it('treats a comma as an ordinary character, never a delimiter', () => {
+    // Observed live 2026-08-02 under the old comma-split grammar:
+    // "Yes, it worked,No, something broke" passed as one value silently
+    // became four choices. The delimiter form is gone; one flag, one answer.
     expect(parseChoices(['Yes, it worked', 'No, something broke'])).toEqual([
       { id: 'yes-it-worked', label: 'Yes, it worked' },
       { id: 'no-something-broke', label: 'No, something broke' },
     ])
-    expect(parseChoices('Yes, it worked,No, something broke')).toHaveLength(4)
+    expect(parseChoices(['Staging,Production', 'Neither'])).toEqual([
+      { id: 'staging-production', label: 'Staging,Production' },
+      { id: 'neither', label: 'Neither' },
+    ])
   })
 
   it('rejects a set that cannot become a valid closed question', () => {
-    // A pipe-separated string is one label, not two — the shape that reached
-    // the hook and failed there instead of at registration.
-    expect(parseChoices('Yes|No')).toBe('invalid')
     expect(parseChoices(['Only one'])).toBe('invalid')
     expect(parseChoices(['A', 'a'])).toBe('invalid')
     expect(parseChoices(['1', '2', '3', '4', '5', '6', '7'])).toBe('invalid')

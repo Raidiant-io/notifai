@@ -140,7 +140,23 @@ the harness itself; never invent an ID to bypass a failed doctor check.
 ## Ask for a decision
 
 A notification that asks must be answerable from the notification. Do not put
-an unanswerable question in a completion body.
+an unanswerable question in a completion body. Keep the question itself short
+enough to read where it is answered; put reasoning, logs, and context in
+`--detail` (markdown, shown only in the app) rather than stretching the
+question.
+
+Answering rules that hold for every question:
+
+- **One flag, one answer.** `--choice`/`--reply-choice` never splits on
+  commas or anything else — a comma in a label is just a comma. Repeat the
+  flag once per answer (2-6).
+- **A typed answer is always possible.** Choice buttons are the primary
+  surface, but the user can always write their own answer instead (or in
+  addition, on multi-select). Branch on choice ids when you get them, and be
+  ready to read text where you offered buttons.
+- **The latest answer counts.** A later reply corrects an earlier one. A
+  free-text answer may arrive in parts; you receive every part in the order
+  written — read them together.
 
 ### Block for the answer now
 
@@ -155,9 +171,9 @@ notifai send \
   --reply-timeout 900 --project release
 ```
 
-A single `--reply-choice "Staging,Production,Cancel"` splits on commas. Repeat
-the flag when a label itself contains a comma. Exit code 3 means no reply yet,
-not delivery failure. Retrieve a late answer with
+Add `--reply-multi` when several of the offered answers may be chosen at
+once; the reply then carries every chosen id. Exit code 3 means no reply
+yet, not delivery failure. Retrieve a late answer with
 `notifai replies <request_id>`, or retire a question that is no longer useful:
 
 ```bash
@@ -175,8 +191,28 @@ immediately so the agent can end its turn:
 
 ```bash
 notifai doctor
-notifai ask "Which environment should I deploy to?" --choice "Staging,Production,Cancel"
+notifai ask "Which environment should I deploy to?" \
+  --choice Staging --choice Production --choice Cancel
 ```
+
+`ask` takes the same question surface: `--multi` for multi-select,
+`--detail`/`--detail-file` for long-form context. Several questions that
+genuinely belong together can travel as one notification, answered as a
+short form on the device — pass `--form <path>` (or `-` for stdin) with:
+
+```json
+{
+  "questions": [
+    { "text": "Deploy where?", "choices": ["Staging", "Production"] },
+    { "text": "Which checks may I skip?", "choices": ["Lint", "E2E"], "multi": true },
+    { "text": "Anything to watch?" }
+  ],
+  "detail": "Optional markdown context."
+}
+```
+
+Prefer one question per notification; reach for `--form` only when the
+questions must be decided together (at most 4).
 
 Before the first `ask` in a harness session, require `doctor`'s **Question
 routing** line to name the active harness and **hooks (fired)** to confirm that

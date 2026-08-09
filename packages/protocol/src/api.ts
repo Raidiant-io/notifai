@@ -260,18 +260,37 @@ export type CompanionReceiptRequestT = Static<typeof CompanionReceiptRequest>
 // Inline replies (opaque text carried from Companion App to agent)
 // ---------------------------------------------------------------------------
 
+/**
+ * One question's answer inside a reply. Choice ids are validated against the
+ * stored draft and rewritten to canonical labels server-side; `text` is the
+ * typed answer, which is always possible even on a choice question (the
+ * "Other" path) and may accompany selections on a multi-select question.
+ * At least one of the two must be present — the server enforces what the
+ * schema cannot say.
+ */
+export const ReplyAnswer = Type.Object(
+  {
+    question_id: Type.String({ minLength: 1, maxLength: 32 }),
+    choice_ids: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 32 }), { minItems: 1, maxItems: 6 }),
+    ),
+    text: Type.Optional(Type.String({ minLength: 1, maxLength: REPLY_MAX_LENGTH })),
+  },
+  { additionalProperties: false },
+)
+export type ReplyAnswerT = Static<typeof ReplyAnswer>
+
 export const SubmitReplyRequest = Type.Object(
   {
     delivery_id: Type.String({ pattern: '^del_[A-Za-z0-9_-]+$' }),
-    text: Type.String({ minLength: 1, maxLength: REPLY_MAX_LENGTH }),
     /** Device-generated id; makes outbox retries idempotent. */
     client_reply_id: Type.String({ minLength: 8, maxLength: 64 }),
     /**
-     * Set when the user answered a closed question. The server validates it
-     * against that request's choice set and rewrites `text` to the canonical
-     * label, so a stored choice reply cannot disagree with what was asked.
+     * The answers, one per question answered, in question order. The server
+     * resolves each against the stored draft, so a stored reply cannot
+     * disagree with what was actually asked.
      */
-    choice_id: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+    answers: Type.Array(ReplyAnswer, { minItems: 1, maxItems: 4 }),
     /**
      * Which surface the user actually answered from. Two iOS
      * routes converge here — the custom text action and the system
@@ -302,6 +321,15 @@ export const REPLY_SOURCES = [
   'app',
 ] as const
 
+/** One question's answer as stored: canonical ids and labels, server-checked. */
+export interface ReplyAnswerView {
+  question_id: string
+  /** Chosen choice ids, in choice order; empty for a purely typed answer. */
+  choice_ids: string[]
+  /** The typed answer, when the user wrote one (the "Other" path). */
+  text: string | null
+}
+
 export interface ReplyView {
   reply_id: string
   /** Monotonic cursor within the Notification Request. */
@@ -309,9 +337,10 @@ export interface ReplyView {
   delivery_id: string
   device_id: string
   device_name: string
+  /** Human-readable rendering of the whole reply, assembled server-side. */
   text: string
-  /** The agent-facing token for a closed question; null for free text. */
-  choice_id: string | null
+  /** The checkable answers, one per question answered. */
+  answers: ReplyAnswerView[]
   /** Which surface it was answered from, when the device said. */
   source: string | null
   created_at: string

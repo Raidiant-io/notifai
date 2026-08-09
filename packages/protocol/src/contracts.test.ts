@@ -25,6 +25,11 @@ function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT 
   }
 }
 
+/** The smallest well-formed reply block: one free-text question. */
+function freeTextReply(expiresInSeconds = 86400): NotificationDraftT['reply'] {
+  return { expires_in_seconds: expiresInSeconds, questions: [{ id: 'q', text: 'Your call?' }] }
+}
+
 describe('validateDraft', () => {
   it('accepts a minimal valid draft', () => {
     const report = validateDraft(draft())
@@ -140,7 +145,7 @@ describe('validateDraft', () => {
 
   it('adds the fixed APNs reply category and accounts for it in the payload estimate', () => {
     const withoutReply = draft()
-    const withReply = draft({ reply: { expires_in_seconds: 86400 } })
+    const withReply = draft({ reply: freeTextReply() })
     const envelope = buildApnsEnvelope(withReply, { requestId: 'req_x', deliveryId: 'del_x' }, null)
 
     expect((envelope.payload['aps'] as Record<string, unknown>)['category']).toBe(REPLY_CATEGORY_ID)
@@ -148,7 +153,7 @@ describe('validateDraft', () => {
   })
 
   it('carries the reply window deadline so companions can offer an in-app reply', () => {
-    const withReply = draft({ reply: { expires_in_seconds: 86400 } })
+    const withReply = draft({ reply: freeTextReply() })
     const deadline = new Date('2026-08-03T09:15:00.000Z')
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
 
@@ -165,7 +170,7 @@ describe('validateDraft', () => {
   })
 
   it('validates replies on both companion platforms', () => {
-    const withReply = draft({ reply: { expires_in_seconds: 86400 } })
+    const withReply = draft({ reply: freeTextReply() })
 
     expect(validateDraft(withReply, IOS_CAPABILITIES_V1).ok).toBe(true)
     // The Mac registers the reply category and answers through the same
@@ -173,33 +178,48 @@ describe('validateDraft', () => {
     expect(validateDraft(withReply, MACOS_CAPABILITIES_V1).ok).toBe(true)
   })
 
-  it('carries the choice set to the device and only for closed questions', () => {
+  it('carries the question set to the device and picks the answering surface', () => {
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
     const choices = [
       { id: 'staging', label: 'Staging' },
       { id: 'prod', label: 'Production' },
     ]
-    const question = draft({ reply: { expires_in_seconds: 3600, kind: 'choice', choices } })
+    const questions = [{ id: 'target', text: 'Deploy where?', choices }]
+    const question = draft({ reply: { expires_in_seconds: 3600, questions } })
 
     const envelope = buildApnsEnvelope(question, ids, null)
-    expect((envelope.payload['notifai'] as Record<string, unknown>)['reply_choices']).toEqual(choices)
-    // A closed question must not present a free-text field beside its answers.
+    expect((envelope.payload['notifai'] as Record<string, unknown>)['questions']).toEqual(questions)
+    // Choices are answered on the content-extension card.
     expect((envelope.payload['aps'] as Record<string, unknown>)['category']).toBe(
       REPLY_CHOICE_CATEGORY_ID,
     )
 
-    // A free-text reply must not ship an empty picker to the device.
-    const text = buildApnsEnvelope(draft({ reply: { expires_in_seconds: 3600 } }), ids, null)
-    expect((text.payload['notifai'] as Record<string, unknown>)['reply_choices']).toBeUndefined()
+    // A single free-text question keeps the system inline-reply keyboard, and
+    // still carries its question set for the in-app surfaces.
+    const text = buildApnsEnvelope(draft({ reply: freeTextReply() }), ids, null)
+    expect((text.payload['notifai'] as Record<string, unknown>)['questions']).toHaveLength(1)
     expect((text.payload['aps'] as Record<string, unknown>)['category']).toBe(REPLY_CATEGORY_ID)
+
+    // Several questions are a form, and forms live on the card — even when
+    // every question is free text.
+    const form = draft({
+      reply: {
+        expires_in_seconds: 3600,
+        questions: [
+          { id: 'one', text: 'First?' },
+          { id: 'two', text: 'Second?' },
+        ],
+      },
+    })
+    const formEnvelope = buildApnsEnvelope(form, ids, null)
+    expect((formEnvelope.payload['aps'] as Record<string, unknown>)['category']).toBe(
+      REPLY_CHOICE_CATEGORY_ID,
+    )
   })
 
-  it('rejects closed questions that cannot be answered', () => {
-    // kind says 'choice' but nothing is offered.
-    expect(validateDraft(draft({ reply: { expires_in_seconds: 3600, kind: 'choice' } }))).toMatchObject({
-      ok: false,
-      errors: [expect.objectContaining({ path: 'reply.choices' })],
-    })
+  it('rejects question sets that cannot be answered unambiguously', () => {
+    // A reply block with nothing asked is not a question.
+    expect(validateDraft(draft({ reply: { expires_in_seconds: 3600 } as never })).ok).toBe(false)
 
     // Two answers the agent cannot tell apart.
     expect(
@@ -207,33 +227,69 @@ describe('validateDraft', () => {
         draft({
           reply: {
             expires_in_seconds: 3600,
-            kind: 'choice',
-            choices: [
-              { id: 'yes', label: 'Yes' },
-              { id: 'yes', label: 'Yeah' },
+            questions: [
+              {
+                id: 'q',
+                text: 'Yes?',
+                choices: [
+                  { id: 'yes', label: 'Yes' },
+                  { id: 'yes', label: 'Yeah' },
+                ],
+              },
             ],
           },
         }),
       ),
     ).toMatchObject({
       ok: false,
-      errors: [expect.objectContaining({ path: 'reply.choices' })],
+      errors: [expect.objectContaining({ path: 'reply.questions.0.choices' })],
     })
 
-    // Choices without a closed question would silently never be shown.
+    // Two questions the agent cannot tell apart.
     expect(
       validateDraft(
         draft({
-          reply: { expires_in_seconds: 3600, choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] },
+          reply: {
+            expires_in_seconds: 3600,
+            questions: [
+              { id: 'q', text: 'First?' },
+              { id: 'q', text: 'Second?' },
+            ],
+          },
         }),
       ),
-    ).toMatchObject({ ok: false, errors: [expect.objectContaining({ path: 'reply.choices' })] })
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'reply.questions.1' })],
+    })
+
+    // Multi-select needs choices to select between.
+    expect(
+      validateDraft(
+        draft({
+          reply: { expires_in_seconds: 3600, questions: [{ id: 'q', text: 'Say more?', multi: true }] },
+        }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'reply.questions.0.multi' })],
+    })
   })
 
-  it('keeps pre-existing reply blocks valid and defaulted to free text', () => {
-    const legacy = draft({ reply: { expires_in_seconds: 86400 } })
-    expect(validateDraft(legacy, IOS_CAPABILITIES_V1).ok).toBe(true)
-    expect(buildApnsEnvelope(legacy, { requestId: 'req_x', deliveryId: 'del_x' }, null).payload).toBeDefined()
+  it('rejects the pre-questions reply shape outright', () => {
+    // The product is not live and carries no compatibility shims: the old
+    // kind/choices reply block is an invalid draft, not a tolerated one.
+    const legacy = draft({
+      reply: {
+        expires_in_seconds: 86400,
+        kind: 'choice',
+        choices: [
+          { id: 'yes', label: 'Yes' },
+          { id: 'no', label: 'No' },
+        ],
+      } as never,
+    })
+    expect(validateDraft(legacy, IOS_CAPABILITIES_V1).ok).toBe(false)
   })
 
   it('describes the supported iOS and macOS capability contracts', () => {
@@ -413,7 +469,7 @@ describe('question lifecycle (D-A, D-B, D-C)', () => {
 
   it('keeps needs-you and lifecycle-less drafts as alerts', () => {
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
-    const question = draft({ lifecycle: { tier: 'needs_you' }, reply: { expires_in_seconds: 3600 } })
+    const question = draft({ lifecycle: { tier: 'needs_you' }, reply: freeTextReply(3600) })
     const envelope = buildApnsEnvelope(question, ids, null)
 
     expect(envelope.pushType).toBe('alert')
@@ -463,10 +519,10 @@ describe('notification kind', () => {
   it('derives question from the reply window rather than trusting the label', () => {
     // A reply block is a question by construction, so the sender cannot get
     // this one wrong — and cannot get it wrong in the other direction either.
-    const asked = draft({ reply: { expires_in_seconds: 3600 } })
+    const asked = draft({ reply: freeTextReply(3600) })
     expect(effectiveKind(asked)).toBe('question')
     expect(notifaiKeyOf(asked)['kind']).toBe('question')
-    expect(effectiveKind(draft({ kind: 'done', reply: { expires_in_seconds: 3600 } }))).toBe(
+    expect(effectiveKind(draft({ kind: 'done', reply: freeTextReply(3600) }))).toBe(
       'question',
     )
   })
@@ -476,7 +532,7 @@ describe('notification kind', () => {
       ok: false,
       errors: [expect.objectContaining({ code: 'invalid_request', path: 'kind' })],
     })
-    expect(validateDraft(draft({ kind: 'question', reply: { expires_in_seconds: 3600 } })).ok).toBe(
+    expect(validateDraft(draft({ kind: 'question', reply: freeTextReply(3600) })).ok).toBe(
       true,
     )
   })
