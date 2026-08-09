@@ -57,19 +57,26 @@ export interface HookEnvelope {
 export interface SessionState {
   /** Epoch ms of the user's last prompt in this session — our presence signal. */
   last_prompt_at?: number
-  /** Question registered by `notifai ask`, awaiting the turn to end. */
-  pending?: PendingQuestion
+  /**
+   * Questions registered by `notifai ask`, in registration order, each
+   * awaiting escalation or its answer. A list, deliberately: registering a
+   * question never ends an earlier one. Superseding is reply semantics — a
+   * later reply corrects an earlier reply to the same question — never
+   * question semantics; the single-slot model silently discarded a live
+   * question the moment a second was registered (2026-08-09).
+   */
+  pending?: PendingQuestion[]
   /**
    * Questions that have been delivered to the user's devices and are now dead,
    * but whose retirement has not been confirmed yet.
    *
    * A retirement needs a network call and the moment we learn a question is
-   * dead is not always a moment we can make one — `notifai ask` supersedes the
-   * previous question from a bare shell command, and the machine may be
-   * offline. Dropping the ids there is how a delivered question becomes
-   * permanently unretirable, so they are parked here instead and every later
-   * hook with a client drains them. Retirement is idempotent, so a duplicate
-   * attempt costs nothing and a missed one costs a stale notification for ever.
+   * dead is not always a moment we can make one — the user's return to the
+   * terminal is observed by a bare hook, and the machine may be offline.
+   * Dropping the ids there is how a delivered question becomes permanently
+   * unretirable, so they are parked here instead and every later hook with a
+   * client drains them. Retirement is idempotent, so a duplicate attempt
+   * costs nothing and a missed one costs a stale notification for ever.
    */
   retiring?: RetiringQuestion[]
   /** Tracks bounded Stop continuations so a follow-up ask is delivered once. */
@@ -640,21 +647,11 @@ export interface HookContext {
 
 export type HookHarness = 'claude-code' | 'codex' | 'cursor' | 'opencode'
 
-interface AskResult {
+interface SubmittedQuestion {
   requestId: string
   collapseKey: string
-  /** The answer to act on: the latest reply, because a later one corrects. */
-  reply: ReplyView | null
-  /** Every reply in arrival order, for free-text answers given in parts. */
-  replies: ReplyView[]
   /** The devices the question went to; retirement must not reach any other. */
   devices: string[]
-  /** The wait ended amid network failures, so "no answer" is unproven. */
-  degraded: boolean
-  /** False when the harness cannot consume a Stop answer and polling was skipped. */
-  waited: boolean
-  /** The user returned to this machine after the question was pushed. */
-  userReturned: boolean
 }
 
 /** Re-check local presence at this cadence while a pushed question is waiting. */
@@ -671,7 +668,11 @@ const REPLY_PRESENCE_POLL_SECONDS = 5
  * because nobody has acted on the silence yet and the next turn can still
  * collect the answer with `notifai replies`.
  */
-async function askAndWait(
+/**
+ * Put one registered question on the user's devices. Submission only — the
+ * wait happens once, across every live question, in the caller.
+ */
+async function submitQuestion(
   ctx: HookContext,
   options: {
     title: string
@@ -683,12 +684,9 @@ async function askAndWait(
     session?: string | undefined
     /** How long the server keeps accepting an answer. */
     windowSeconds: number
-    /** Called once the question is live, before the block begins. */
-    onSubmitted?: (live: { requestId: string; collapseKey: string; devices: string[] }) => void
   },
-): Promise<AskResult | { error: string }> {
+): Promise<SubmittedQuestion | { error: string }> {
   const collapseKey = `notifai-hook-${randomBytes(8).toString('base64url')}`
-  const timeoutSeconds = ctx.config.hook_reply_timeout_seconds.value
   // A draft carrying `reply` is rejected outright if it targets a device that
   // cannot answer, so resolve the healthy companion platforms explicitly.
   const answerable = await answerableDevices(ctx)
@@ -714,50 +712,20 @@ async function askAndWait(
     { idempotency_key: `hook-${randomBytes(12).toString('base64url')}`, draft: build.draft },
     0,
   )
-  // Record what is now live on the user's devices BEFORE blocking. If we only
-  // learned these ids after the wait, a question that timed out would leave no
-  // trace, and the user returning to the terminal could never retire it — the
-  // notification would stay answerable for an hour with nobody listening.
-  options.onSubmitted?.({
-    requestId: receipt.request_id,
-    collapseKey,
-    devices: answerable,
-  })
-  if (ctx.harness === 'opencode') {
-    return {
-      requestId: receipt.request_id,
-      collapseKey,
-      reply: null,
-      replies: [],
-      devices: answerable,
-      degraded: false,
-      waited: false,
-      userReturned: false,
-    }
-  }
-
-  const result = await waitForReplyWhileAway(ctx, receipt.request_id, timeoutSeconds)
-  if (result.replies.length > 0) await closeQuietly(ctx, receipt.request_id)
-  return {
-    requestId: receipt.request_id,
-    collapseKey,
-    // The latest reply, not the first: an earlier conflicting answer was
-    // corrected by the one that followed it. The cross-device race is still
-    // first-answer-claims — that is what the close above enforces.
-    reply: result.replies.at(-1) ?? null,
-    replies: result.replies,
-    devices: answerable,
-    degraded: result.degraded,
-    waited: true,
-    userReturned: result.userReturned,
-  }
+  return { requestId: receipt.request_id, collapseKey, devices: answerable }
 }
 
-async function waitForReplyWhileAway(
+/**
+ * One blocking wait across every live question. Each round polls all of them
+ * concurrently, so several questions cost the same wall clock as one; the
+ * first round that finds any reply returns everything found in that round, and
+ * whatever was not answered stays registered.
+ */
+async function waitForAnyReplyWhileAway(
   ctx: HookContext,
-  requestId: string,
+  requestIds: string[],
   timeoutSeconds: number,
-): Promise<{ replies: ReplyView[]; degraded: boolean; userReturned: boolean }> {
+): Promise<{ byRequest: Map<string, ReplyView[]>; degraded: boolean; userReturned: boolean }> {
   const deadline = ctx.now() + timeoutSeconds * 1000
   let degraded = false
   let firstPoll = true
@@ -766,24 +734,34 @@ async function waitForReplyWhileAway(
     if (ctx.config.require_idle.value) {
       const idle = ctx.idleSeconds()
       if (idle !== null && idle < ctx.config.away_after_seconds.value) {
-        return { replies: [], degraded, userReturned: true }
+        return { byRequest: new Map(), degraded, userReturned: true }
       }
     }
 
     const remainingMs = Math.max(0, deadline - ctx.now())
     if (!firstPoll && remainingMs === 0) {
-      return { replies: [], degraded, userReturned: false }
+      return { byRequest: new Map(), degraded, userReturned: false }
     }
     firstPoll = false
     const pollSeconds = Math.min(
       REPLY_PRESENCE_POLL_SECONDS,
       Math.max(0, Math.ceil(remainingMs / 1000)),
     )
-    const result = await ctx.waitForFirstReply(requestId, pollSeconds)
-    degraded ||= result.degraded === true
-    if (result.replies.length > 0) {
-      return { replies: result.replies, degraded, userReturned: false }
+    const results = await Promise.all(
+      requestIds.map(async (requestId) => {
+        try {
+          return { requestId, ...(await ctx.waitForFirstReply(requestId, pollSeconds)) }
+        } catch {
+          return { requestId, replies: [] as ReplyView[], degraded: true }
+        }
+      }),
+    )
+    const byRequest = new Map<string, ReplyView[]>()
+    for (const result of results) {
+      degraded ||= result.degraded === true
+      if (result.replies.length > 0) byRequest.set(result.requestId, result.replies)
     }
+    if (byRequest.size > 0) return { byRequest, degraded, userReturned: false }
   }
 }
 
@@ -1133,6 +1111,46 @@ async function pollPendingReply(
   }
 }
 
+/** One answered registered question, with everything the agent needs to read it. */
+interface AnsweredPending {
+  pending: PendingQuestion
+  reply: ReplyView
+  replies: ReplyView[]
+}
+
+/**
+ * One bounded recovery poll across every delivered question, concurrently —
+ * N questions must not multiply the hook's latency budget by N.
+ */
+async function pollPendingReplies(
+  ctx: HookContext,
+  live: PendingQuestion[],
+  timeoutSeconds: number,
+): Promise<{ answered: AnsweredPending[]; troubled: boolean }> {
+  const polls = await Promise.all(
+    live.map((entry) => pollPendingReply(ctx, entry, timeoutSeconds)),
+  )
+  const answered: AnsweredPending[] = []
+  let troubled = false
+  for (const [index, poll] of polls.entries()) {
+    if (poll.reply !== null) {
+      answered.push({ pending: live[index]!, reply: poll.reply, replies: poll.replies })
+    }
+    if (poll.failed || poll.degraded) troubled = true
+  }
+  return { answered, troubled }
+}
+
+/** The registered-question queue. Anything but the current shape reads as empty. */
+function pendingList(state: SessionState): PendingQuestion[] {
+  return Array.isArray(state.pending) ? state.pending : []
+}
+
+/** Registration identity — the convention every racing writer compares by. */
+function isSamePending(a: PendingQuestion, b: PendingQuestion): boolean {
+  return a.question === b.question && a.asked_at === b.asked_at
+}
+
 /** The question set this pending record pushes, however it was registered. */
 function pendingQuestions(pending: PendingQuestion): QuestionT[] {
   return pending.questions ?? [{ id: 'q1', text: pending.question }]
@@ -1164,46 +1182,74 @@ function answerContext(replies: ReplyView[], hadChoices: boolean): string {
   )
 }
 
-function userPromptAnswerOutput(replies: ReplyView[], hadChoices: boolean): string {
+/**
+ * Every answer that has arrived, as one message. Several registered questions
+ * may resolve in one hook pass; the agent reads them together, each answer
+ * tied to the question that asked it, with a truthful note about anything
+ * still waiting.
+ */
+function answersContext(answered: AnsweredPending[], remaining: number): string {
+  const tail =
+    remaining > 0
+      ? ` (${remaining} more registered question${remaining === 1 ? ' is' : 's are'} still waiting for an answer.)`
+      : ''
+  if (answered.length === 1) {
+    const only = answered[0]!
+    return answerContext(only.replies, pendingHasChoices(only.pending)) + tail
+  }
+  const lines = answered.map(({ pending, replies }) => {
+    const latest = replies.at(-1)!
+    const answer =
+      replies.length === 1 || pendingHasChoices(pending)
+        ? `"${latest.text}"`
+        : `${replies.map((reply) => `"${reply.text}"`).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
+    return `- "${pending.question}" → ${answer} (from ${latest.device_name})`
+  })
+  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}\nContinue with these answers.${tail}`
+}
+
+function userPromptAnswerOutput(context: string): string {
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: answerContext(replies, hadChoices),
+      additionalContext: context,
     },
   })
 }
 
-function stopAnswerOutput(replies: ReplyView[], hadChoices: boolean): string {
-  return JSON.stringify({ decision: 'block', reason: answerContext(replies, hadChoices) })
+function stopAnswerOutput(context: string): string {
+  return JSON.stringify({ decision: 'block', reason: context })
 }
 
 /**
- * Close, truthfully retire, and forget one answered pending question without
- * dropping any other retirement debt. Stop answers also open one bounded
- * continuation generation; UserPromptSubmit answers ride the user's new turn.
+ * Close, truthfully retire, and forget every answered pending question in one
+ * state write, without dropping any other retirement debt or any question
+ * still waiting. Stop answers also open one bounded continuation generation;
+ * UserPromptSubmit answers ride the user's new turn.
  */
-async function finishPendingAnswer(
+async function finishAnsweredPendings(
   ctx: HookContext,
   envelope: HookEnvelope,
   sessionId: string,
-  pending: PendingQuestion,
-  reply: ReplyView,
+  answered: AnsweredPending[],
   continuation: boolean,
 ): Promise<void> {
-  const retirement = retiringQuestion(pending, 'answered')
+  const retirements = answered
+    .map(({ pending }) => retiringQuestion(pending, 'answered'))
+    .filter((entry): entry is RetiringQuestion => entry !== null)
   updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
-    if (retirement !== null) {
+    for (const retirement of retirements) {
       const existing = retiring.findIndex((entry) => entry.request_id === retirement.request_id)
       if (existing < 0) retiring.push(retirement)
       else retiring[existing] = retirement
     }
-    const samePending =
-      current.pending?.question === pending.question &&
-      current.pending?.asked_at === pending.asked_at &&
-      current.pending?.request_id === pending.request_id
-    const next = { ...current, retiring }
-    if (samePending) delete next.pending
+    const remaining = pendingList(current).filter(
+      (entry) => !answered.some(({ pending }) => isSamePending(entry, pending)),
+    )
+    const next: SessionState = { ...current, retiring }
+    if (remaining.length > 0) next.pending = remaining
+    else delete next.pending
     if (continuation) {
       next.continuation = {
         answered_at: ctx.now(),
@@ -1237,20 +1283,19 @@ export async function handleUserPromptSubmit(
   if (!sessionId) return { notes }
 
   const state = readSessionState(sessionId, ctx.env)
-  const pending = state.pending
-  if (pending?.request_id !== undefined) {
-    const late = await pollPendingReply(ctx, pending, LATE_PROMPT_POLL_SECONDS)
-    if (late.reply !== null) {
-      await finishPendingAnswer(ctx, envelope, sessionId, pending, late.reply, false)
-      if (envelope.cwd !== undefined && ctx.harness !== undefined) {
-        writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
+  const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
+  let lateAnswers: AnsweredPending[] = []
+  if (live.length > 0) {
+    const { answered, troubled } = await pollPendingReplies(ctx, live, LATE_PROMPT_POLL_SECONDS)
+    lateAnswers = answered
+    if (answered.length > 0) {
+      await finishAnsweredPendings(ctx, envelope, sessionId, answered, false)
+      for (const { reply } of answered) {
+        notes.push(`late answer from ${reply.device_name}: ${reply.text}`)
       }
-      await drainOrphanRetirements(ctx, ctx.env, ctx.now())
-      notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
-      return { stdout: userPromptAnswerOutput(late.replies, pendingHasChoices(pending)), notes }
     }
-    if (late.failed || late.degraded) {
-      notes.push('could not check the pending question for a late answer before the prompt')
+    if (troubled) {
+      notes.push('could not check every pending question for a late answer before the prompt')
     }
   }
   // Park before dropping `pending`. If the process dies between these writes,
@@ -1258,11 +1303,11 @@ export async function handleUserPromptSubmit(
   // the gap after erasing the only request/collapse/device identifiers.
   updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
-    if (current.pending !== undefined) {
-      const retirement = retiringQuestion(current.pending, 'answered_elsewhere')
+    for (const entry of pendingList(current)) {
+      const retirement = retiringQuestion(entry, 'answered_elsewhere')
       if (
         retirement !== null &&
-        !retiring.some((entry) => entry.request_id === retirement.request_id)
+        !retiring.some((parked) => parked.request_id === retirement.request_id)
       ) {
         retiring.push(retirement)
       }
@@ -1281,6 +1326,11 @@ export async function handleUserPromptSubmit(
   const swept = [...retired, ...orphaned]
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
+  }
+  if (lateAnswers.length > 0) {
+    // Whatever the user did not answer was just retired above — they are at
+    // the keyboard now, so nothing is "still waiting" from their side.
+    return { stdout: userPromptAnswerOutput(answersContext(lateAnswers, 0)), notes }
   }
   return { notes }
 }
@@ -1320,23 +1370,38 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
   }
 
   const state = readSessionState(sessionId, ctx.env)
-  const pending = state.pending
-  if (!pending) return { notes }
-  if (pending.request_id !== undefined) {
-    const late = await pollPendingReply(ctx, pending, LATE_STOP_POLL_SECONDS)
-    if (late.reply !== null) {
-      await finishPendingAnswer(ctx, envelope, sessionId, pending, late.reply, true)
-      notes.push(`late answer from ${late.reply.device_name}: ${late.reply.text}`)
-      return { stdout: stopAnswerOutput(late.replies, pendingHasChoices(pending)), notes }
+  const pending = pendingList(state)
+  if (pending.length === 0) return { notes }
+  const live = pending.filter((entry) => entry.request_id !== undefined)
+  const unasked = pending.filter((entry) => entry.request_id === undefined)
+
+  if (live.length > 0) {
+    const { answered, troubled } = await pollPendingReplies(ctx, live, LATE_STOP_POLL_SECONDS)
+    if (answered.length > 0) {
+      await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
+      for (const { reply } of answered) {
+        notes.push(`late answer from ${reply.device_name}: ${reply.text}`)
+      }
+      // Anything still unasked rides the next Stop: the agent is being resumed
+      // with answers right now, and may not even need the rest afterwards.
+      return {
+        stdout: stopAnswerOutput(answersContext(answered, pending.length - answered.length)),
+        notes,
+      }
     }
-    // Already live on the user's devices from an earlier Stop; asking twice for
-    // one question is the nagging failure this feature exists to avoid.
-    notes.push(
-      late.failed || late.degraded
-        ? `already asked (${pending.request_id}); could not check whether its answer arrived`
-        : `already asked (${pending.request_id}); waiting for that answer`,
-    )
-    return { notes }
+    if (unasked.length === 0) {
+      // Already live on the user's devices from an earlier Stop; asking twice
+      // for one question is the nagging failure this feature exists to avoid.
+      const ids = live.map((entry) => entry.request_id).join(', ')
+      notes.push(
+        troubled
+          ? `already asked (${ids}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
+          : `already asked (${ids}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
+      )
+      return { notes }
+    }
+    // Questions registered after the earlier push still owe the user their
+    // notification; fall through and escalate just those.
   }
 
   // A Stop answer may immediately produce a legitimate follow-up question.
@@ -1346,8 +1411,9 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     const continuation = state.continuation
     const isNew =
       continuation !== undefined &&
-      pending.asked_at !== undefined &&
-      pending.asked_at > continuation.answered_at
+      unasked.some(
+        (entry) => entry.asked_at !== undefined && entry.asked_at > continuation.answered_at,
+      )
     if (!isNew) {
       notes.push('already continuing from an answer; not asking again this turn')
       return { notes }
@@ -1375,7 +1441,7 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     return { notes }
   }
   try {
-    return await escalate(ctx, envelope, sessionId, pending, notes)
+    return await escalate(ctx, envelope, sessionId, unasked, live, notes)
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
   }
@@ -1386,102 +1452,138 @@ async function escalate(
   ctx: HookContext,
   envelope: HookEnvelope,
   sessionId: string,
-  pending: PendingQuestion,
+  unasked: PendingQuestion[],
+  alreadyLive: PendingQuestion[],
   notes: string[],
 ): Promise<HookOutcome> {
-  // Away right now, but the question still owes the user its terminal-first
-  // window before anything reaches their devices.
-  const grace = await awaitGrace(ctx, pending.asked_at ?? ctx.now())
+  // Away right now, but the questions still owe the user their terminal-first
+  // window before anything reaches their devices — measured from the oldest
+  // registration, because that is the question that has waited longest.
+  const oldest = Math.min(...unasked.map((entry) => entry.asked_at ?? ctx.now()))
+  const grace = await awaitGrace(ctx, oldest)
   if (grace === 'user-returned') {
-    notes.push('you came back before the wait elapsed; leaving the question in the terminal')
+    notes.push('you came back before the wait elapsed; leaving the questions in the terminal')
     return { notes }
   }
   if (grace === 'no-signal') {
     notes.push('no idle signal on this machine; asking now rather than holding the terminal')
   }
 
-  const questions = pendingQuestions(pending)
-  const asked = await askAndWait(ctx, {
-    title:
-      ctx.config.project.value === null
-        ? 'Question'
-        : `Question · ${ctx.config.project.value}`,
-    // A set is answered on the expanded card; the banner leads with the first
-    // question and says how much more is waiting behind it.
-    body:
-      questions.length > 1
-        ? `${questions[0]!.text} (+${questions.length - 1} more)`
-        : pending.question,
-    questions,
-    ...(pending.detail !== undefined ? { detail: pending.detail } : {}),
-    event: 'agent_question',
-    session: sessionLabel(ctx, envelope),
-    // Outlives the block, and stays open on purpose: the answer is still
-    // useful to the next turn, which collects it with `notifai replies`.
-    windowSeconds: QUESTION_WINDOW_SECONDS,
-    onSubmitted: (live) => {
-      const livePending: PendingQuestion = {
-        ...pending,
-        request_id: live.requestId,
-        collapse_key: live.collapseKey,
-        device_ids: live.devices,
+  // Phase one: every registered question reaches the user's devices, each as
+  // its own notification — one ask never stands in for another.
+  const submitted: PendingQuestion[] = []
+  for (const entry of unasked) {
+    const questions = pendingQuestions(entry)
+    const sent = await submitQuestion(ctx, {
+      title:
+        ctx.config.project.value === null
+          ? 'Question'
+          : `Question · ${ctx.config.project.value}`,
+      // A set is answered on the expanded card; the banner leads with the
+      // first question and says how much more is waiting behind it.
+      body:
+        questions.length > 1
+          ? `${questions[0]!.text} (+${questions.length - 1} more)`
+          : entry.question,
+      questions,
+      ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+      event: 'agent_question',
+      session: sessionLabel(ctx, envelope),
+      // Outlives the block, and stays open on purpose: the answer is still
+      // useful to the next turn, which collects it with `notifai replies`.
+      windowSeconds: QUESTION_WINDOW_SECONDS,
+    })
+    if ('error' in sent) {
+      notes.push(sent.error)
+      continue
+    }
+    const live: PendingQuestion = {
+      ...entry,
+      request_id: sent.requestId,
+      collapse_key: sent.collapseKey,
+      device_ids: sent.devices,
+    }
+    submitted.push(live)
+    // Record what is now live on the user's devices BEFORE any wait. If we
+    // only learned these ids afterwards, a question that timed out would
+    // leave no trace, and the user returning to the terminal could never
+    // retire it — the notification would stay answerable for an hour with
+    // nobody listening.
+    updateSessionState(sessionId, ctx.env, (current) => {
+      const list = pendingList(current)
+      const index = list.findIndex(
+        (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
+      )
+      if (index >= 0) {
+        const next = [...list]
+        next[index] = live
+        return { ...current, pending: next }
       }
-      updateSessionState(sessionId, ctx.env, (current) => {
-        const stillCurrent =
-          current.pending?.question === pending.question &&
-          current.pending?.asked_at === pending.asked_at &&
-          current.pending?.request_id === undefined
-        if (stillCurrent) return { ...current, pending: livePending }
+      // The entry vanished while the submit was in flight (the user's prompt
+      // wiped the queue). The delivered notification must still be retirable,
+      // so park it rather than lose its only identifiers.
+      const retirement = retiringQuestion(live, 'answered_elsewhere')!
+      const retiring = [...(current.retiring ?? [])]
+      if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
+        retiring.push(retirement)
+      }
+      return { ...current, retiring }
+    })
+  }
 
-        // A newer `notifai ask` won while this submit was in flight. Keep it,
-        // but now that request identifiers exist, preserve the old delivered
-        // question as collectable/retirable instead of overwriting either one.
-        const retirement = retiringQuestion(livePending, 'superseded')!
-        const retiring = [...(current.retiring ?? [])]
-        if (!retiring.some((entry) => entry.request_id === retirement.request_id)) {
-          retiring.push(retirement)
-        }
-        return { ...current, retiring }
-      })
-    },
-  })
-  if ('error' in asked) {
-    notes.push(asked.error)
+  const waitingOn = [...alreadyLive, ...submitted]
+  if (waitingOn.length === 0) return { notes }
+
+  if (ctx.harness === 'opencode') {
+    notes.push(
+      `question${submitted.length === 1 ? '' : 's'} sent without blocking OpenCode; retrieve answers on the next prompt or with: notifai replies --pending`,
+    )
     return { notes }
   }
 
-  if (!asked.reply) {
-    // Keep the pending record so a returning user's UserPromptSubmit can retire
-    // the notification that is still live on their devices. `request_id` being
-    // set is also what stops the next Stop pushing the same question again.
-    if (!asked.waited) {
+  // Phase two: one blocking wait across everything live, old and new alike.
+  const timeoutSeconds = ctx.config.hook_reply_timeout_seconds.value
+  const waited = await waitForAnyReplyWhileAway(
+    ctx,
+    waitingOn.map((entry) => entry.request_id!),
+    timeoutSeconds,
+  )
+
+  if (waited.byRequest.size === 0) {
+    // Keep the pending records so a returning user's UserPromptSubmit can
+    // retire the notifications still live on their devices. `request_id`
+    // being set is also what stops the next Stop pushing them again.
+    const ids = waitingOn.map((entry) => entry.request_id).join(', ')
+    if (waited.userReturned) {
       notes.push(
-        `question sent without blocking OpenCode; retrieve the answer on the next prompt or with: notifai replies --pending`,
-      )
-    } else if (asked.userReturned) {
-      notes.push(
-        `you came back after the question was sent; returning the terminal while it stays answerable (${asked.requestId}). ` +
-          'Retrieve it with: notifai replies --pending',
+        `you came back after the question${waitingOn.length === 1 ? ' was' : 's were'} sent; returning the terminal while ${waitingOn.length === 1 ? 'it stays' : 'they stay'} answerable (${ids}). ` +
+          'Retrieve answers with: notifai replies --pending',
       )
     } else {
       notes.push(
-        asked.degraded
-          ? `could not reach the server to find out whether you answered; check with: notifai replies --pending`
-          : `no answer in time; retrieve it later with: notifai replies --pending`,
+        waited.degraded
+          ? 'could not reach the server to find out whether you answered; check with: notifai replies --pending'
+          : 'no answer in time; retrieve it later with: notifai replies --pending',
       )
     }
     return { notes }
   }
 
-  await finishPendingAnswer(ctx, envelope, sessionId, {
-    ...pending,
-    request_id: asked.requestId,
-    collapse_key: asked.collapseKey,
-    device_ids: asked.devices,
-  }, asked.reply, true)
-  notes.push(`answer from ${asked.reply.device_name}: ${asked.reply.text}`)
+  const answered: AnsweredPending[] = []
+  for (const entry of waitingOn) {
+    const replies = waited.byRequest.get(entry.request_id!)
+    if (replies === undefined) continue
+    // First answer claims the question across devices; the close is what
+    // enforces that, and the latest reply within the window is the answer.
+    await closeQuietly(ctx, entry.request_id!)
+    answered.push({ pending: entry, reply: replies.at(-1)!, replies })
+  }
+  await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
+  for (const { reply } of answered) {
+    notes.push(`answer from ${reply.device_name}: ${reply.text}`)
+  }
   return {
-    stdout: stopAnswerOutput(asked.replies, pendingHasChoices(pending)),
+    stdout: stopAnswerOutput(answersContext(answered, waitingOn.length - answered.length)),
     notes,
   }
 }
@@ -1510,10 +1612,9 @@ export function handleSessionEnd(
 
   const state = readSessionState(sessionId, env)
   const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
-  const pending = state.pending
-  if (pending !== undefined) {
+  for (const entry of pendingList(state)) {
     try {
-      const orphan = retiringQuestion(pending, 'expired')
+      const orphan = retiringQuestion(entry, 'expired')
       if (orphan !== null) orphans.push(orphan)
     } catch (err) {
       notes.push(err instanceof Error ? err.message : String(err))
@@ -1538,18 +1639,24 @@ export function handleSessionEnd(
 // ---------------------------------------------------------------------------
 
 /**
- * One session holds one live question, so registering a second one ends the
- * first.
+ * More pending questions than this means an agent is looping, not asking.
+ * Related questions belong in one `ask --form` (the wire carries up to four
+ * questions per notification); four separate pushes is already a lot of lock
+ * screen.
+ */
+export const MAX_PENDING_QUESTIONS = 4
+
+/**
+ * A session may hold several registered questions at once: a new `ask` never
+ * ends an earlier one. Each reaches the user as its own notification and is
+ * answerable independently. Superseding is reply semantics — a later reply
+ * corrects an earlier reply to the same question (that correction model lives
+ * server-side) — never question semantics: the old single-slot model silently
+ * discarded a question the moment a second was registered, and the user was
+ * pointed at a notification that never existed (2026-08-09).
  *
- * This used to replace `pending` wholesale, which silently discarded the
- * `request_id` and `collapse_key` of a question already delivered to the user's
- * devices. Nothing else knows those ids, so the notification became
- * unretirable — it sat on the lock screen for ever asking a question no answer
- * could reach. That is where the stale pile-up came from.
- *
- * Supersession is keyed on the session, not the project: several agents may be
- * running in one project at once, and one agent's new question killing another
- * agent's live one would be worse than the staleness this fixes.
+ * The queue is keyed on the session, not the project: several agents may be
+ * running in one project at once, and their questions must never interfere.
  */
 export function registerQuestion(
   sessionId: string,
@@ -1557,27 +1664,31 @@ export function registerQuestion(
   question: PendingQuestion,
   now: number = Date.now(),
 ): void {
+  let full = false
   updateSessionState(sessionId, env, (state) => {
-    const retiring = [...(state.retiring ?? [])]
-    if (state.pending !== undefined) {
-      const retirement = retiringQuestion(state.pending, 'superseded')
-      if (
-        retirement !== null &&
-        !retiring.some((entry) => entry.request_id === retirement.request_id)
-      ) {
-        retiring.push(retirement)
-      }
+    const pending = pendingList(state)
+    if (pending.length >= MAX_PENDING_QUESTIONS) {
+      full = true
+      return state
     }
     return {
       ...state,
-      ...(retiring.length > 0 ? { retiring } : {}),
-      pending: {
-        asked_at: now,
-        ...question,
-        question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
-      },
+      pending: [
+        ...pending,
+        {
+          asked_at: now,
+          ...question,
+          question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
+        },
+      ],
     }
   })
+  if (full) {
+    throw new Error(
+      `${MAX_PENDING_QUESTIONS} questions are already waiting to be asked. ` +
+        'Combine related questions into one `notifai ask --form` instead of registering more.',
+    )
+  }
 }
 
 /** Parses hook JSON from stdin, tolerating an empty or malformed body. */

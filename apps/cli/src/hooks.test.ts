@@ -510,7 +510,7 @@ describe('nagging guards', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n4', stop_hook_active: true }))
 
     expect(h.recorder.submitted).toEqual([])
-    expect(readSessionState('n4', h.env).pending?.question).toBe('One more?')
+    expect(readSessionState('n4', h.env).pending?.[0]?.question).toBe('One more?')
     expect(h.io.errLines.join('\n')).toContain('continuation limit (3) reached')
   })
 })
@@ -523,7 +523,7 @@ describe('late answer collection', () => {
     registerQuestion('late-stop', h.env, { question: 'Ship it?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-stop' }))
-    expect(readSessionState('late-stop', h.env).pending?.request_id).toBe('req_hook_1')
+    expect(readSessionState('late-stop', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
     answers.push(reply({ text: 'Ship it' }))
     h.io.outLines = []
 
@@ -585,7 +585,7 @@ describe('OpenCode answer preservation', () => {
     expect(
       h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
     ).toEqual([])
-    expect(readSessionState('open1', h.env).pending).toMatchObject({
+    expect(readSessionState('open1', h.env).pending?.[0]).toMatchObject({
       question: 'Deploy?',
       request_id: 'req_hook_1',
       device_ids: ['dev_iphone', 'dev_mac'],
@@ -609,7 +609,7 @@ describe('reply-wait presence monitoring', () => {
 
     expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
     expect(h.recorder.closed).toEqual([])
-    expect(readSessionState('returned', h.env).pending?.request_id).toBe('req_hook_1')
+    expect(readSessionState('returned', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
     expect((h.deps.now?.() ?? NOW) - NOW).toBeLessThan(30_000)
     expect(h.io.errLines.join('\n')).toContain('came back')
     expect(h.io.errLines.join('\n')).toContain('notifai replies --pending')
@@ -643,11 +643,14 @@ describe('Cursor stop output', () => {
 })
 
 /**
- * Stale questions piling up on a phone are worse than no questions at all:
- * they teach the user to ignore the surface. Every one of them was a delivered
- * question whose ids had been thrown away, so nothing could reach it again.
+ * Questions never supersede questions — a second ask joins the first, and
+ * both reach the user (superseding is reply semantics). What remains from the
+ * old supersede model is the retirement debt machinery: a delivered question
+ * that dies (the user came back to the terminal) must be truthfully retired
+ * even when the network fails at the moment we learn it, because stale
+ * questions piling up on a phone teach the user to ignore the surface.
  */
-describe('superseding a live question', () => {
+describe('question queueing and retirement debt', () => {
   /** The lifecycle state of each retirement push the recorder captured. */
   function retirements(h: Harness): { state: unknown; retires: unknown }[] {
     return h.recorder.submitted
@@ -658,7 +661,7 @@ describe('superseding a live question', () => {
       }))
   }
 
-  it('retires the first question instead of orphaning it', async () => {
+  it('keeps the first question live and asks the second alongside it', async () => {
     const h = harness([])
     writeSessionState('sup1', h.env, { last_prompt_at: AWAY })
     registerQuestion('sup1', h.env, { question: 'Ship it?' })
@@ -667,15 +670,19 @@ describe('superseding a live question', () => {
     expect(first).toBeDefined()
 
     // The agent carried on and asked something else. The first question is
-    // dead the moment this returns, whether or not anyone answers the second.
+    // still the user's to answer — a second question never ends the first;
+    // superseding is reply semantics, not question semantics.
     registerQuestion('sup1', h.env, { question: 'Deploy it?' })
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup1' }))
 
-    expect(retirements(h)).toContainEqual({ state: 'superseded', retires: first })
-    // And the replacement was still asked; superseding is not suppressing.
+    expect(retirements(h)).toEqual([])
     expect(
       h.recorder.submitted.filter((s) => s.draft.presentation.body === 'Deploy it?'),
     ).toHaveLength(1)
+    const live = readSessionState('sup1', h.env).pending
+    expect(live).toHaveLength(2)
+    expect(live?.map((entry) => entry.question)).toEqual(['Ship it?', 'Deploy it?'])
+    expect(live?.every((entry) => entry.request_id !== undefined)).toBe(true)
   })
 
   it('keeps the ids when the retirement cannot be sent, and retries later', async () => {
@@ -685,17 +692,15 @@ describe('superseding a live question', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup2' }))
     const first = h.recorder.receipts[0]
 
-    registerQuestion('sup2', h.env, { question: 'Deploy it?' })
-    expect(readSessionState('sup2', h.env).retiring).toHaveLength(1)
-
-    // Offline: the drain runs, fails, and must not forget what it was for.
+    // Offline when the user returns: the wipe parks the retirement, the
+    // drain fails, and it must not forget what it was for.
     h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup2' }))
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup2' }))
     expect(readSessionState('sup2', h.env).retiring).toHaveLength(1)
 
     h.recorder.failSubmits = false
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup2' }))
-    expect(retirements(h)).toContainEqual({ state: 'superseded', retires: first })
+    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
     expect(readSessionState('sup2', h.env).retiring).toEqual([])
   })
 
@@ -705,20 +710,19 @@ describe('superseding a live question', () => {
     registerQuestion('sup-targets', h.env, { question: 'Ship it?' })
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup-targets' }))
 
-    const live = readSessionState('sup-targets', h.env).pending
+    const live = readSessionState('sup-targets', h.env).pending?.[0]
     expect(live).toMatchObject({
       request_id: 'req_hook_1',
       device_ids: ['dev_iphone', 'dev_mac'],
     })
 
-    // The user changes their default routing before the agent supersedes the
-    // question. Retirement belongs to the Deliveries that actually carried the
-    // first question, not to whichever Device Installation is selected now.
+    // The user changes their default routing before the question dies.
+    // Retirement belongs to the Deliveries that actually carried the
+    // question, not to whichever Device Installation is selected now.
     const configDir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
     mkdirSync(configDir, { recursive: true })
     writeFileSync(path.join(configDir, 'config.toml'), 'devices = ["dev_iphone"]\n')
-    registerQuestion('sup-targets', h.env, { question: 'Deploy it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup-targets' }))
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup-targets' }))
 
     const retirement = h.recorder.submitted.find(
       (submission) => submission.draft.event === 'question_retired',
@@ -731,18 +735,24 @@ describe('superseding a live question', () => {
   })
 
   it('sweeps a queued retirement even on a turn continuing from an answer', async () => {
-    // stop_hook_active short-circuits the escalation path, and a superseding
-    // turn is very often exactly this turn.
+    // stop_hook_active short-circuits the escalation path, but the drain runs
+    // before every guard — retirement debt has nothing to do with whether
+    // this turn may ask.
     const h = harness([])
     writeSessionState('sup3', h.env, { last_prompt_at: AWAY })
     registerQuestion('sup3', h.env, { question: 'Ship it?' })
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup3' }))
     const first = h.recorder.receipts[0]
 
-    registerQuestion('sup3', h.env, { question: 'Deploy it?' })
+    h.recorder.failSubmits = true
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup3' }))
+    expect(readSessionState('sup3', h.env).retiring).toHaveLength(1)
+    h.recorder.failSubmits = false
+
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup3', stop_hook_active: true }))
 
-    expect(retirements(h)).toContainEqual({ state: 'superseded', retires: first })
+    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
+    expect(readSessionState('sup3', h.env).retiring).toEqual([])
   })
 
   it('does not lose a queued retirement when the user comes back to the terminal', async () => {
@@ -754,25 +764,123 @@ describe('superseding a live question', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup4' }))
     const first = h.recorder.receipts[0]
 
-    registerQuestion('sup4', h.env, { question: 'Deploy it?' })
+    // The first return is offline: the wipe parks, the drain fails, and the
+    // next prompt must still find the debt.
     h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup4' }))
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup4' }))
     h.recorder.failSubmits = false
 
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup4' }))
 
-    expect(retirements(h)).toContainEqual({ state: 'superseded', retires: first })
+    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
     expect(readSessionState('sup4', h.env).retiring).toEqual([])
   })
 
-  it('parks nothing for a question that never reached a device', async () => {
+  it('parks nothing for questions that never reached a device', async () => {
     // No request_id means there is no notification anywhere to retire, and a
-    // retirement push for one would be pure noise.
+    // retirement push for one would be pure noise. Both questions simply
+    // queue.
     const h = harness([])
     registerQuestion('sup5', h.env, { question: 'Ship it?' })
     registerQuestion('sup5', h.env, { question: 'Deploy it?' })
 
     expect(readSessionState('sup5', h.env).retiring ?? []).toEqual([])
+    expect(readSessionState('sup5', h.env).pending?.map((entry) => entry.question)).toEqual([
+      'Ship it?',
+      'Deploy it?',
+    ])
+  })
+})
+
+describe('several questions in flight', () => {
+  /** Route each live request its own replies; the shared list cannot say who answered what. */
+  function repliesByRequest(h: Harness, byRequest: Map<string, ReplyView[]>): void {
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async (requestId: string) => ({
+          request_id: requestId,
+          reply_expires_at: null,
+          replies: byRequest.get(requestId) ?? [],
+        }),
+      } as ApiClient
+    }
+  }
+
+  it('escalates every registered question in one pass, each as its own notification', async () => {
+    const h = harness([], 900)
+    writeSessionState('multi1', h.env, { last_prompt_at: AWAY })
+    registerQuestion('multi1', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('multi1', h.env, { question: 'Deploy where?' }, NOW + 1)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi1' }))
+
+    const questions = h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')
+    expect(questions.map((s) => s.draft.presentation.body)).toEqual(['Ship it?', 'Deploy where?'])
+    // Each is its own notification with its own collapse key — one ask never
+    // stands in for, or replaces, another.
+    expect(new Set(questions.map((s) => s.draft.delivery.collapse_key)).size).toBe(2)
+    const live = readSessionState('multi1', h.env).pending
+    expect(live?.map((entry) => entry.request_id)).toEqual(['req_hook_1', 'req_hook_2'])
+  })
+
+  it('resumes with every answer that arrived, each tied to its question', async () => {
+    const h = harness([], 900)
+    repliesByRequest(
+      h,
+      new Map([
+        ['req_hook_1', [reply({ text: 'Ship it' })]],
+        ['req_hook_2', [reply({ text: 'Staging' })]],
+      ]),
+    )
+    writeSessionState('multi2', h.env, { last_prompt_at: AWAY })
+    registerQuestion('multi2', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('multi2', h.env, { question: 'Deploy where?' }, NOW + 1)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi2' }))
+
+    // Both reply windows close immediately (first answer claims each
+    // question); the retirement drain closes again, which is idempotent.
+    expect(new Set(h.recorder.closed)).toEqual(new Set(['req_hook_1', 'req_hook_2']))
+    expect(readSessionState('multi2', h.env).pending).toBeUndefined()
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
+    expect(output.decision).toBe('block')
+    expect(output.reason).toContain('answered 2 questions')
+    expect(output.reason).toContain('"Ship it?" → "Ship it"')
+    expect(output.reason).toContain('"Deploy where?" → "Staging"')
+  })
+
+  it('resumes with a partial answer and keeps the rest registered', async () => {
+    const h = harness([], 900)
+    const byRequest = new Map([['req_hook_1', [reply({ text: 'Ship it' })]]])
+    repliesByRequest(h, byRequest)
+    writeSessionState('multi3', h.env, { last_prompt_at: AWAY })
+    registerQuestion('multi3', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('multi3', h.env, { question: 'Deploy where?' }, NOW + 1)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi3' }))
+
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { reason?: string }
+    expect(output.reason).toContain('Ship it')
+    expect(output.reason).toContain('1 more registered question is still waiting')
+    const live = readSessionState('multi3', h.env).pending
+    expect(live?.map((entry) => entry.question)).toEqual(['Deploy where?'])
+    expect(live?.[0]?.request_id).toBe('req_hook_2')
+
+    // The remaining question's answer arrives before the next turn ends; the
+    // late-answer path hands it over without asking anything twice.
+    byRequest.set('req_hook_2', [reply({ text: 'Staging' })])
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi3', stop_hook_active: true }))
+
+    const followup = JSON.parse(h.io.outLines[0] ?? '{}') as { reason?: string }
+    expect(followup.reason).toContain('Staging')
+    expect(readSessionState('multi3', h.env).pending).toBeUndefined()
+    expect(
+      h.recorder.submitted.filter((s) => s.draft.event === 'agent_question'),
+    ).toHaveLength(2)
   })
 })
 
@@ -815,15 +923,15 @@ describe('a question that outlives its session', () => {
     const h = harness([])
     const first = await pushUnanswered(h, 'dead2')
 
-    // Superseded while offline: the retirement is parked, not sent.
-    registerQuestion('dead2', h.env, { question: 'Deploy it?' })
+    // Died while offline: the user came back, the wipe parked the
+    // retirement, and the drain could not send it.
     h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'dead2' }))
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'dead2' }))
     h.recorder.failSubmits = false
 
     await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead2' }))
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next2' }))
-    expect(retirements(h)).toContainEqual({ state: 'superseded', retires: first })
+    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
   })
 
   it('keeps the debt when the drain fails, and drops entries past the TTL', async () => {
@@ -928,7 +1036,7 @@ describe('ask registration', () => {
         session: 'a2',
       }),
     ).toBe(EXIT.ok)
-    expect(readSessionState('a2', h.env).pending?.questions).toEqual([
+    expect(readSessionState('a2', h.env).pending?.[0]?.questions).toEqual([
       {
         id: 'ship-it',
         text: 'Ship it?',
@@ -955,7 +1063,7 @@ describe('ask registration', () => {
         }),
       }),
     ).toBe(EXIT.ok)
-    const pending = readSessionState('form1', h.env).pending
+    const pending = readSessionState('form1', h.env).pending?.[0]
     expect(pending?.questions).toHaveLength(2)
     expect(pending?.detail).toContain('long story')
 
@@ -1040,7 +1148,7 @@ describe('ask registration', () => {
       'claude-code',
     )
     expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('real1', h.env).pending?.question).toBe('Ship it?')
+    expect(readSessionState('real1', h.env).pending?.[0]?.question).toBe('Ship it?')
     expect(readSessionState('my-label', h.env).pending).toBeUndefined()
   })
 
@@ -1048,24 +1156,42 @@ describe('ask registration', () => {
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
     expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('solo-session', h.env).pending?.question).toBe('Ship it?')
+    expect(readSessionState('solo-session', h.env).pending?.[0]?.question).toBe('Ship it?')
   })
 
-  it('fails explicitly instead of rerouting incomplete live state', () => {
+  it('queues alongside incomplete live state without touching it', () => {
+    // Registering never retires, so even a live entry too incomplete to
+    // retire is no obstacle — it stays exactly as found, and the new
+    // question joins the queue behind it.
     const h = harness()
     writeSessionState('incomplete', h.env, {
-      pending: {
-        question: 'Original?',
-        request_id: 'req_original',
-        collapse_key: 'collapse-original',
-      },
+      pending: [
+        {
+          question: 'Original?',
+          request_id: 'req_original',
+          collapse_key: 'collapse-original',
+        },
+      ],
     })
 
-    expect(askCommand(h.deps, 'Replacement?', { session: 'incomplete' })).toBe(EXIT.failed)
-    expect(h.io.errLines.join('\n')).toContain(
-      'refusing to retire it without request, collapse, and device identifiers',
-    )
-    expect(readSessionState('incomplete', h.env).pending?.question).toBe('Original?')
+    expect(askCommand(h.deps, 'Another?', { session: 'incomplete' })).toBe(EXIT.ok)
+    const pending = readSessionState('incomplete', h.env).pending
+    expect(pending?.map((entry) => entry.question)).toEqual(['Original?', 'Another?'])
+    expect(pending?.[0]).toMatchObject({
+      request_id: 'req_original',
+      collapse_key: 'collapse-original',
+    })
+  })
+
+  it('refuses a fifth question and names the form alternative', () => {
+    const h = harness()
+    for (const question of ['One?', 'Two?', 'Three?', 'Four?']) {
+      expect(askCommand(h.deps, question, { session: 'crowded' })).toBe(EXIT.ok)
+    }
+
+    expect(askCommand(h.deps, 'Five?', { session: 'crowded' })).toBe(EXIT.failed)
+    expect(h.io.errLines.join('\n')).toContain('ask --form')
+    expect(readSessionState('crowded', h.env).pending).toHaveLength(4)
   })
 })
 
@@ -1097,7 +1223,7 @@ describe('user-prompt-submit hook', () => {
     expect(h.io.errLines.join('\n')).toMatch(/not paired|credential/i)
   })
 
-  it('preserves a delivered question through ask replacement and prompt transition', async () => {
+  it('preserves a delivered question through a second ask and the prompt transition', async () => {
     const h = harness([], 900)
     await hookRunCommand(
       h.deps,
@@ -1108,7 +1234,7 @@ describe('user-prompt-submit hook', () => {
     expect(askCommand(h.deps, 'Ship it?', { choice: ['Yes', 'No'] })).toBe(EXIT.ok)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
 
-    const live = readSessionState('transition', h.env).pending
+    const live = readSessionState('transition', h.env).pending?.[0]
     expect(live).toMatchObject({
       question: 'Ship it?',
       request_id: 'req_hook_1',
@@ -1116,19 +1242,14 @@ describe('user-prompt-submit hook', () => {
     })
     expect(live?.collapse_key).toMatch(/^notifai-hook-/)
 
-    // A second plain `ask` resolves through the project pointer and supersedes
-    // the live question. The next prompt then resets presence before another
-    // Stop can run — the transition that used to erase the retirement debt.
+    // A second plain `ask` resolves through the project pointer and joins the
+    // queue behind the live question — it must not touch it. The next prompt
+    // then resets presence before another Stop can run — the transition that
+    // used to erase the retirement debt.
     expect(askCommand(h.deps, 'Deploy it?', { choice: ['Staging', 'Production'] })).toBe(EXIT.ok)
-    expect(readSessionState('transition', h.env).retiring).toEqual([
-      {
-        request_id: live?.request_id,
-        collapse_key: live?.collapse_key,
-        device_ids: ['dev_iphone', 'dev_mac'],
-        question: 'Ship it?',
-        state: 'superseded',
-      },
-    ])
+    const queued = readSessionState('transition', h.env)
+    expect(queued.retiring ?? []).toEqual([])
+    expect(queued.pending?.map((entry) => entry.question)).toEqual(['Ship it?', 'Deploy it?'])
 
     await hookRunCommand(
       h.deps,
@@ -1137,19 +1258,24 @@ describe('user-prompt-submit hook', () => {
       'claude-code',
     )
 
+    // The delivered question retires truthfully; the never-delivered second
+    // one has nothing on any device and leaves no trace.
     const retirement = h.recorder.submitted.find(
       (submission) => submission.draft.event === 'question_retired',
     )?.draft
     expect(retirement?.delivery.collapse_key).toBe(live?.collapse_key)
     expect(retirement?.lifecycle).toEqual({
       tier: 'done',
-      state: 'superseded',
+      state: 'answered_elsewhere',
       retires_request_id: live?.request_id,
     })
     expect(retirement?.targets).toEqual({
       mode: 'selected',
       device_ids: ['dev_iphone', 'dev_mac'],
     })
+    expect(
+      h.recorder.submitted.filter((s) => s.draft.event === 'question_retired'),
+    ).toHaveLength(1)
   })
 
   it('retires a question a real timed-out Stop left live on the devices', async () => {
@@ -1161,7 +1287,7 @@ describe('user-prompt-submit hook', () => {
     registerQuestion('s11', h.env, { question: 'Which environment?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's11' }))
-    const live = readSessionState('s11', h.env).pending
+    const live = readSessionState('s11', h.env).pending?.[0]
     expect(live?.request_id).toBe('req_hook_1')
     expect(live?.collapse_key).toBeDefined()
 
@@ -1272,16 +1398,18 @@ describe('session-end hook', () => {
   it('preserves incomplete live state and reports why it cannot retire it', async () => {
     const h = harness()
     writeSessionState('s-incomplete', h.env, {
-      pending: {
-        question: 'Still live?',
-        request_id: 'req_incomplete',
-        collapse_key: 'collapse-incomplete',
-      },
+      pending: [
+        {
+          question: 'Still live?',
+          request_id: 'req_incomplete',
+          collapse_key: 'collapse-incomplete',
+        },
+      ],
     })
 
     await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 's-incomplete' }))
 
-    expect(readSessionState('s-incomplete', h.env).pending?.request_id).toBe('req_incomplete')
+    expect(readSessionState('s-incomplete', h.env).pending?.[0]?.request_id).toBe('req_incomplete')
     expect(h.io.errLines.join('\n')).toContain(
       'refusing to retire it without request, collapse, and device identifiers',
     )
@@ -1431,7 +1559,7 @@ describe('pruning abandoned session state', () => {
   it('bounds what one runaway question can write to disk', () => {
     const h = harness()
     registerQuestion('big', h.env, { question: 'x'.repeat(50_000) })
-    expect(readSessionState('big', h.env).pending?.question.length).toBeLessThanOrEqual(2000)
+    expect(readSessionState('big', h.env).pending?.[0]?.question.length).toBeLessThanOrEqual(2000)
   })
 })
 
@@ -1604,7 +1732,7 @@ describe('two hooks racing one question', () => {
 })
 
 describe('question registration racing a Stop submission', () => {
-  it('preserves a newer question when the older submit publishes its request id', async () => {
+  it('keeps both questions when a new ask races the older submit', async () => {
     const h = harness([], 900)
     writeSessionState('submit-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('submit-race', h.env, { question: 'Old question?' }, NOW)
@@ -1615,11 +1743,16 @@ describe('question registration racing a Stop submission', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'submit-race' }))
 
+    // The racing ask appended; the in-flight submit still finds its own entry
+    // and records the delivery ids on it. Nobody retires anybody.
     const state = readSessionState('submit-race', h.env)
-    expect(state.pending?.question).toBe('New question?')
-    expect(state.retiring).toContainEqual(
-      expect.objectContaining({ request_id: 'req_hook_1', state: 'superseded' }),
-    )
+    expect(state.pending?.map((entry) => entry.question)).toEqual([
+      'Old question?',
+      'New question?',
+    ])
+    expect(state.pending?.[0]?.request_id).toBe('req_hook_1')
+    expect(state.pending?.[1]?.request_id).toBeUndefined()
+    expect(state.retiring ?? []).toEqual([])
   })
 
   it('keeps the newer question when the older in-flight question receives an answer', async () => {
@@ -1634,7 +1767,7 @@ describe('question registration racing a Stop submission', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-race' }))
 
     const state = readSessionState('answer-race', h.env)
-    expect(state.pending?.question).toBe('New question?')
+    expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
     expect(
       h.recorder.submitted.find(
         (entry) =>

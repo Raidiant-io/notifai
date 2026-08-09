@@ -634,7 +634,7 @@ describe('command contracts', () => {
       XDG_STATE_HOME: path.join(root, 'state'),
     }
     writeSessionState('pending-session', deps.env, {
-      pending: { question: 'Deploy?', request_id: receipt.request_id },
+      pending: [{ question: 'Deploy?', request_id: receipt.request_id }],
     })
     writeProjectSession(root, deps.env, 'pending-session', Date.now(), 'codex')
 
@@ -643,6 +643,36 @@ describe('command contracts', () => {
       `pending request ${receipt.request_id}`,
       'reply from iPhone: yes, after the migration',
     ])
+  })
+
+  it('walks every delivered pending question in queue order', async () => {
+    const io = new CapturedIo()
+    const client = {
+      replies: async (requestId: string) =>
+        requestId === 'req_first'
+          ? replyResponse([reply])
+          : replyResponse([]),
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pending-multi-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeSessionState('pending-multi', deps.env, {
+      pending: [
+        { question: 'Deploy?', request_id: 'req_first' },
+        { question: 'Which region?', request_id: 'req_second' },
+        { question: 'Not yet asked?' },
+      ],
+    })
+    writeProjectSession(root, deps.env, 'pending-multi', Date.now(), 'codex')
+
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.ok)
+    expect(io.outLines[0]).toBe('pending request req_first')
+    expect(io.outLines[1]).toContain('yes, after the migration')
+    expect(io.outLines.join('\n')).toContain('req_second')
   })
 })
 
@@ -2237,7 +2267,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('claude-parent-loop', env).pending?.question).toBe('Ship it?')
+    expect(readSessionState('claude-parent-loop', env).pending?.[0]?.question).toBe('Ship it?')
   })
 
   it('uses the OpenCode adapter marker instead of its config-directory variable', () => {
@@ -2275,7 +2305,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('cursor-live', env).pending?.question).toBe('Ship it?')
+    expect(readSessionState('cursor-live', env).pending?.[0]?.question).toBe('Ship it?')
   })
 
   it('fails doctor when another harness looks healthy but the active Claude Code session does not', async () => {

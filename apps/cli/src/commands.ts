@@ -637,20 +637,25 @@ export async function repliesCommand(
     deps.io.err('Pass a request id or --pending, not both.')
     return EXIT.usage
   }
-  let requestId = requestedId
+  let requestIds = requestedId === undefined ? [] : [requestedId]
   if (flags.pending === true) {
     const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
     if (sessionId === null) {
       deps.io.err('No active session pointer is available in this directory.')
       return EXIT.noReply
     }
-    requestId = readSessionState(sessionId, deps.env).pending?.request_id
-    if (requestId === undefined) {
+    // Every delivered question in the session's queue, in registration order —
+    // an agent may have several outstanding at once.
+    const state = readSessionState(sessionId, deps.env)
+    requestIds = (Array.isArray(state.pending) ? state.pending : [])
+      .map((entry) => entry.request_id)
+      .filter((id): id is string => id !== undefined)
+    if (requestIds.length === 0) {
       deps.io.err(`Session ${sessionId} has no pushed question pending.`)
       return EXIT.noReply
     }
   }
-  if (requestId === undefined) {
+  if (requestIds.length === 0) {
     deps.io.err('Pass a request id or --pending.')
     return EXIT.usage
   }
@@ -659,24 +664,40 @@ export async function repliesCommand(
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    const result = await waitForReply(authed.client, requestId, {
-      timeoutSeconds: waitSeconds,
-      afterSeq,
-      now: deps.now,
-      sleep: deps.sleep,
-    })
-    if (flags.json) {
-      deps.io.out(JSON.stringify({ ...result.response, degraded: result.degraded }, null, 2))
-    } else if (result.response.replies.length > 0) {
-      if (flags.pending === true) deps.io.out(`pending request ${requestId}`)
-      printReplies(deps, result.response.replies)
+    let anyReplies = false
+    let anyDegraded = false
+    let allTimedOut = true
+    const jsonBodies: object[] = []
+    for (const requestId of requestIds) {
+      const result = await waitForReply(authed.client, requestId, {
+        timeoutSeconds: waitSeconds,
+        afterSeq,
+        now: deps.now,
+        sleep: deps.sleep,
+      })
+      if (flags.json) {
+        jsonBodies.push({ ...result.response, degraded: result.degraded })
+      } else if (result.response.replies.length > 0) {
+        if (flags.pending === true) deps.io.out(`pending request ${requestId}`)
+        printReplies(deps, result.response.replies)
+      } else {
+        printNoReply(deps, requestId, result.response.reply_expires_at)
+      }
+      anyReplies ||= result.response.replies.length > 0
+      anyDegraded ||= result.degraded
+      allTimedOut &&= result.timedOut
     }
-    else printNoReply(deps, requestId, result.response.reply_expires_at)
-    if (result.degraded) {
+    if (flags.json) {
+      // One request keeps the response shape agents already parse; several
+      // (only possible via --pending) arrive as an array in queue order.
+      deps.io.out(JSON.stringify(jsonBodies.length === 1 ? jsonBodies[0] : jsonBodies, null, 2))
+    }
+    if (anyDegraded) {
       deps.io.err(DEGRADED_WAIT_WARNING)
       return EXIT.network
     }
-    return result.timedOut ? EXIT.noReply : EXIT.ok
+    if (anyReplies) return EXIT.ok
+    return allTimedOut ? EXIT.noReply : EXIT.ok
   } catch (err) {
     return reportError(deps, err)
   }

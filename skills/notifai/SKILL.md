@@ -214,6 +214,12 @@ short form on the device — pass `--form <path>` (or `-` for stdin) with:
 Prefer one question per notification; reach for `--form` only when the
 questions must be decided together (at most 4).
 
+Independent questions may be registered as separate `ask` calls — each
+becomes its own notification, answerable in any order, and registering a new
+question never cancels an earlier one (superseding is what a later *reply*
+does to an earlier reply of the same question). At most four may be waiting
+at once; past that, consolidate with `--form`.
+
 Before the first `ask` in a harness session, require `doctor`'s **Question
 routing** line to name the active harness and **hooks (fired)** to confirm that
 a session in this directory ran them. Follow its exact recovery if either check
