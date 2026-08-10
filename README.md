@@ -22,6 +22,25 @@ repository. Everything the CLI sends and receives crosses the documented
 depends on private code. `docs/BOUNDARY.md` states the policy and
 `pnpm check:boundary` enforces the mechanical part of it.
 
+## Using it
+
+Run `notifai` with no arguments at a terminal to open the interactive app:
+status at a glance, a test notification, your devices, and every setting with
+an explanation of what it does and where its current value came from.
+
+```sh
+notifai                      # the interactive app
+notifai init                 # set this project up, step by step
+notifai config show          # every setting, explained
+notifai config explain <key> # one setting, in full
+notifai doctor               # check every part of the setup
+```
+
+Anywhere that is not a terminal — a script, a CI job, an agent — `notifai`
+prints help instead of prompting, output stays uncoloured, and `--json` is
+available on the commands that report. Nothing in the CLI ever waits on stdin
+unless a human is demonstrably there.
+
 ## Companion App installation
 
 Private Alpha Companion Apps are distributed only through controlled TestFlight

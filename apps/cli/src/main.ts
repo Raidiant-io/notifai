@@ -9,6 +9,7 @@ import {
   authStatusCommand,
   capabilitiesCommand,
   closeCommand,
+  configExplainCommand,
   configSetCommand,
   configShowCommand,
   devicesCommand,
@@ -29,6 +30,7 @@ import { defaultCredentialStore } from './credentials.js'
 import { HARNESSES } from './install-hooks.js'
 import type { Platform } from '@raidiant/notifai-protocol'
 import { nativeSkills, type SkillScope } from './native-skills.js'
+import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 
 const deps: CommandDeps = {
   io: realIo(),
@@ -92,10 +94,51 @@ function version(): string {
 const program = new Command('notifai')
   .description('Send native device notifications from agents and local programs')
   .version(version())
+  .configureHelp(helpConfiguration)
+  // Lazy on purpose. `addHelpText` also takes a string, but that builds the
+  // footer on every invocation — including the hook that runs in front of
+  // every prompt the user types, which never renders help at all.
+  .addHelpText('after', () => rootHelpFooter())
+  // Commander's default is to print the full help and exit 0 for an unknown
+  // `help` topic, so `notifai help nonsense` looked like it had worked. A
+  // reader who mistyped a command deserves to be told, and a script deserves
+  // a nonzero code.
+  .showSuggestionAfterError(true)
+  // Commander drops the implicit `help [command]` as soon as the program
+  // itself has an action handler — which the interactive default below gives
+  // it. Without this, adding that default would silently break
+  // `notifai help send` for everyone who reaches for it before `--help`.
+  .helpCommand(true)
+  // Where the implicit help command lands; every other command names its own.
+  .commandsGroup(GROUP.help)
+
+/**
+ * Bare `notifai`.
+ *
+ * At a human terminal this opens the interactive app; anywhere else it prints
+ * help exactly as before. The check is the same one every other prompt in this
+ * CLI is gated on — stdin and stdout both TTYs, not CI, `NOTIFAI_NO_INPUT`
+ * unset — because an agent that reaches a prompt does not fail, it hangs
+ * for ever waiting on a stdin nobody is typing into.
+ *
+ * The import is dynamic so that the prompt library, the banner and the whole
+ * interactive tree cost nothing to the paths that never draw them — `send`,
+ * `ask`, and the hook that runs in front of every prompt the user types.
+ */
+program.action(async () => {
+  if (deps.io.interactive !== true) {
+    program.outputHelp()
+    return
+  }
+  const { interactiveCommand } = await import('./interactive.js')
+  process.exit(await interactiveCommand(deps, version()))
+})
 
 // Setup leads: `init` is the single entry command for first-run friendliness.
 program
   .command('init')
+  .helpGroup(GROUP.start)
+  .summary('Set this project up, step by step')
   .description(
     'Set up Notifai here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
       'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
@@ -112,6 +155,8 @@ program
 
 program
   .command('doctor')
+  .helpGroup(GROUP.daily)
+  .summary('Check every part of the setup')
   .description('Audit config, credential, server, contract, device, hook, and saved receipt proof; exits nonzero when any line is FAIL (no live send)')
   .option('--json', 'machine-readable output')
   .action(async (opts: { json?: boolean }) => {
@@ -120,6 +165,8 @@ program
 
 program
   .command('login')
+  .helpGroup(GROUP.start)
+  .summary('Sign in and pair this machine')
   .description('Pair this machine with your Notifai account via browser approval')
   .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')
   .option('--base-url <url>', 'Notifai server URL')
@@ -130,12 +177,18 @@ program
 
 program
   .command('logout')
+  .helpGroup(GROUP.advanced)
+  .summary('Remove the stored machine credential')
   .description('Remove the stored machine credential')
   .action(() => {
     process.exit(logoutCommand(deps))
   })
 
-const auth = program.command('auth').description('Authentication helpers')
+const auth = program
+  .command('auth')
+  .description('Authentication helpers')
+  .summary('Machine identity and account plan')
+  .helpGroup(GROUP.advanced)
 auth
   .command('status')
   .description('Show the stored machine identity')
@@ -153,6 +206,8 @@ auth
 
 program
   .command('devices')
+  .helpGroup(GROUP.daily)
+  .summary('List your devices and whether they can receive')
   .description('List registered devices and their delivery readiness')
   .option('--json', 'machine-readable output')
   .action(async (opts: { json?: boolean }) => {
@@ -161,6 +216,8 @@ program
 
 program
   .command('capabilities')
+  .helpGroup(GROUP.advanced)
+  .summary('Show what a platform can render')
   .description('Show a platform capability contract')
   .option('--platform <platform>', 'platform to describe (default: ios)')
   .option('--json', 'machine-readable output')
@@ -170,26 +227,31 @@ program
 
 const send = program
   .command('send')
+  .helpGroup(GROUP.agent)
+  .summary('Send a notification')
   .description('Send a notification')
+  .optionsGroup(SEND_GROUP.content)
   .requiredOption('--title <title>', 'notification title')
   .requiredOption('--body <body>', 'notification body')
-  .option('--subtitle <subtitle>')
+  .option('--subtitle <subtitle>', 'a line between the title and the body')
   .option('--detail <markdown>', 'long-form markdown shown only in the app, never on the banner')
   .option('--detail-file <path>', 'read --detail from a file (use - for stdin)')
-  .option('--event <event>', 'agent event name, e.g. tests_passed')
+  .option('--image <path|url|media_id>', 'upload or attach an image')
+  .optionsGroup(SEND_GROUP.routing)
   .option('--kind <kind>', 'what this is: update (default) | done | question (requires --reply)')
   .option('--project <id>', 'project identifier, e.g. my-app (lazily registered)')
-  .option('--session <id>', 'session identity (env: NOTIFAI_SESSION); presentation varies by surface')
   .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--all', 'target all routable devices (overrides configured devices)')
-  .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
-  .option('--collapse-key <key>', 'replace earlier notifications with the same key')
-  .option('--platform <platform>', 'limit optional fields to ios or macos (default: both)')
+  .option('--session <id>', 'session identity (env: NOTIFAI_SESSION); presentation varies by surface')
+  .option('--event <event>', 'agent event name, e.g. tests_passed')
+  .optionsGroup(SEND_GROUP.presentation)
   .option('--sound <sound>', 'default | done | attention | alert | none')
-  .option('--thread-id <id>', 'group related notifications')
   .option('--level <level>', 'interruption level: passive | active | time_sensitive')
-  .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
-  .option('--image <path|url|media_id>', 'upload or attach an image')
+  .option('--collapse-key <key>', 'replace earlier notifications with the same key')
+  .option('--thread-id <id>', 'group related notifications')
+  .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
+  .option('--platform <platform>', 'limit optional fields to ios or macos (default: both)')
+  .optionsGroup(SEND_GROUP.reply)
   .option('--reply', 'enable the inline reply action and block for the answer')
   .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
   .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 3600)', (v: string) => Number(v))
@@ -202,8 +264,10 @@ const send = program
   // Kept registered, and always a usage error with --reply, so the caller gets
   // a message pointing at `ask` instead of "unknown option".
   .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
+  .optionsGroup(SEND_GROUP.advanced)
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
+  .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--idempotency-key <key>', 'safe-retry key (default: random)')
   .option('--base-url <url>', 'Notifai server URL')
   .option('--json', 'print the full submission receipt as JSON')
@@ -247,6 +311,8 @@ send.addHelpText(
 
 program
   .command('replies [request_id]')
+  .helpGroup(GROUP.agent)
+  .summary('Retrieve replies to a question')
   .description('Retrieve replies for a notification request')
   .option('--pending', 'use the pushed question pending for this project session')
   .option('--wait <seconds>', 'how long to wait for a reply', (v: string) => Number(v))
@@ -258,6 +324,8 @@ program
 
 program
   .command('status <request_id>')
+  .helpGroup(GROUP.agent)
+  .summary('Show the evidence trail for a request')
   .description('Show the evidence trail for a notification request')
   .option('--json', 'machine-readable output')
   .action(async (requestId: string, opts: { json?: boolean }) => {
@@ -266,6 +334,8 @@ program
 
 program
   .command('ask [question]')
+  .helpGroup(GROUP.agent)
+  .summary('Register a question, then end the turn')
   .description('Register a question for the turn-end hook to route under your presence settings')
   .option(
     '--choice <label>',
@@ -320,13 +390,18 @@ program
 
 program
   .command('close <request_id>')
+  .helpGroup(GROUP.agent)
+  .summary('Retire a question so late answers are rejected')
   .description('Retire a question so late answers are rejected rather than lost')
   .action(async (requestId: string) => {
     process.exit(await closeCommand(deps, requestId))
   })
 
+// Hidden, not removed. It is an entry point the hook installer writes into a
+// harness config file, never something a person types — and listing it beside
+// `send` invited exactly one reading, which is that you were supposed to.
 program
-  .command('hook <event>')
+  .command('hook <event>', { hidden: true })
   .description('Internal: run a harness hook (reads hook JSON on stdin)')
   // Inert, and the point of it is that it is inert: the installed command line
   // carries a marker that says "Notifai wrote this" independently of which
@@ -340,7 +415,11 @@ program
     )
   })
 
-const hooks = program.command('hooks').description('Install harness hooks for registered-question routing')
+const hooks = program
+  .command('hooks')
+  .description('Install harness hooks for registered-question routing')
+  .summary('Wire a harness to route questions to your devices')
+  .helpGroup(GROUP.advanced)
 hooks
   .command('install')
   .description('Wire this harness to route registered questions to your devices')
@@ -361,14 +440,26 @@ hooks
     process.exit(hooksUninstallCommand(deps, opts))
   })
 
-const config = program.command('config').description('Show or change configuration')
+const config = program
+  .command('config')
+  .description('Show or change settings')
+  .summary('Show or change settings')
+  .helpGroup(GROUP.daily)
 config
   .command('show')
-  .description('Show the resolved configuration')
-  .option('--explain', 'show where each value comes from')
+  .description('Show every setting, what it does, and where its value came from')
+  .option('--explain', 'include advanced settings and the file each value came from')
+  .option('--plain', 'the flat key = value form, even at a terminal')
   .option('--json', 'machine-readable output')
-  .action((opts: { json?: boolean; explain?: boolean }) => {
+  .action((opts: { json?: boolean; explain?: boolean; plain?: boolean }) => {
     process.exit(configShowCommand(deps, opts))
+  })
+config
+  .command('explain <key>')
+  .description('Explain one setting in full: what it does, what it accepts, what it is now')
+  .option('--json', 'machine-readable output')
+  .action((key: string, opts: { json?: boolean }) => {
+    process.exit(configExplainCommand(deps, key, opts))
   })
 config
   .command('set <key> <value>')

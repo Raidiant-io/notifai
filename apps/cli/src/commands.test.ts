@@ -17,7 +17,9 @@ import {
   buildQuestions,
   assessReadiness,
   capabilitiesCommand,
+  configExplainCommand,
   configSetCommand,
+  configShowCommand,
   contradictingAnswer,
   describeHookFailure,
   doctorCommand,
@@ -38,6 +40,8 @@ import {
 import { applyPlan, buildHookConfig } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
+import { CONFIG_KEYS } from './config.js'
+import type { Tone } from './ui/theme.js'
 
 class CapturedIo implements CommandIo {
   outLines: string[] = []
@@ -72,7 +76,7 @@ class InteractiveIo extends CapturedIo {
   intros: string[] = []
   outros: string[] = []
   spinnerEvents: string[] = []
-  checks: { ok: boolean; message: string }[] = []
+  checks: { ok: boolean; message: string; tone?: Tone }[] = []
 
   override async confirm(question: string) {
     this.prompts.push(question)
@@ -111,8 +115,8 @@ class InteractiveIo extends CapturedIo {
     }
   }
 
-  async check(ok: boolean, message: string) {
-    this.checks.push({ ok, message })
+  async check(ok: boolean, message: string, tone?: Tone) {
+    this.checks.push({ ok, message, ...(tone === undefined ? {} : { tone }) })
   }
 }
 
@@ -919,6 +923,67 @@ describe('projectSlugFrom', () => {
   })
 })
 
+describe('config surfaces', () => {
+  function configDeps(io: CapturedIo): CommandDeps {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-surface-'))
+    return { ...makeDeps(io, {} as ApiClient), cwd, env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg') } }
+  }
+
+  it('gives an agent the same flat key = value output it always had', () => {
+    // The whole point of gating the readable rendering on a human terminal.
+    // Anything parsing this today must keep parsing it tomorrow.
+    const io = new CapturedIo()
+    expect(configShowCommand(configDeps(io), {})).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(CONFIG_KEYS.length)
+    expect(io.outLines[0]).toMatch(/^base_url = "/)
+    for (const line of io.outLines) expect(line).toMatch(/^[a-z_]+ = /)
+  })
+
+  it('explains each setting once a human is at the terminal', () => {
+    const io = new InteractiveIo()
+    expect(configShowCommand(configDeps(io), {})).toBe(EXIT.ok)
+    const text = io.outLines.join('\n')
+    expect(text).toContain('Questions & presence')
+    expect(text).toContain('Whether sitting at this keyboard holds a question back')
+  })
+
+  it('keeps --plain available to a human who wants the parseable form', () => {
+    const io = new InteractiveIo()
+    expect(configShowCommand(configDeps(io), { plain: true })).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(CONFIG_KEYS.length)
+  })
+
+  it('explains one setting, and says so in JSON when asked', () => {
+    const io = new InteractiveIo()
+    expect(configExplainCommand(configDeps(io), 'require_idle', { json: true })).toBe(EXIT.ok)
+    const parsed = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
+    expect(parsed['key']).toBe('require_idle')
+    expect(parsed['accepts']).toBe('true or false')
+    expect(parsed['detail']).toContain('question waits while you are using this machine')
+  })
+
+  it('rejects an unknown setting and points at the nearest real one', () => {
+    const io = new CapturedIo()
+    expect(configExplainCommand(configDeps(io), 'require_idl')).toBe(EXIT.usage)
+    expect(io.errLines[0]).toBe('Unknown setting "require_idl".')
+  })
+
+  it('refuses an enum value the sender would later reject', async () => {
+    // `config set sound whatever` used to be written straight to disk: the
+    // typo only surfaced when a notification failed to carry the sound.
+    const io = new CapturedIo()
+    expect(await configSetCommand(configDeps(io), 'sound', 'whatever', { yes: true })).toBe(
+      EXIT.usage,
+    )
+    expect(io.errLines[0]).toContain('default, done, attention, alert, none')
+  })
+
+  it('still accepts a legal enum value', async () => {
+    const io = new CapturedIo()
+    expect(await configSetCommand(configDeps(io), 'sound', 'none', { yes: true })).toBe(EXIT.ok)
+  })
+})
+
 describe('interactive command UX', () => {
   it('styles login pairing progress for a human terminal', async () => {
     const io = new InteractiveIo()
@@ -1052,7 +1117,9 @@ describe('interactive command UX', () => {
     )
     expect(io.errLines).toEqual([
       'ask_grace_seconds must be between 0 and 540.',
-      '"1.5" is not an integer.',
+      // Names the key and its range: `"1.5" is not an integer` left the reader
+      // to work out which of the two settings they had just mistyped.
+      'ask_grace_seconds takes a whole number from 0s–540s, not "1.5".',
     ])
     expect(existsSync(configFile)).toBe(false)
   })
@@ -1081,6 +1148,18 @@ describe('interactive command UX', () => {
     expect(io.checks.some((check) => !check.ok && check.message.startsWith('This machine:'))).toBe(true)
     expect(io.checks.some((check) => check.ok && check.message.startsWith('Protocol version:'))).toBe(true)
     expect(io.outLines).toEqual([])
+
+    // Four tones, not two. A boolean has to round `optional-gap` and `unknown`
+    // to pass or fail, and rounding them to pass put a tick beside things the
+    // user had declined and beside things nothing had checked.
+    const tone = (prefix: string): Tone | undefined =>
+      io.checks.find((check) => check.message.startsWith(prefix))?.tone
+    expect(tone('This machine:')).toBe('bad')
+    expect(tone('Protocol version:')).toBe('ok')
+    // Never evaluated: the account cannot be checked without a credential.
+    expect(tone('Account:')).toBe('pending')
+    // Legitimately declined rather than broken.
+    expect(tone('Project identity:')).toBe('warn')
   })
 
   it('keeps doctor JSON as one machine-readable stdout document', async () => {

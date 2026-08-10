@@ -130,7 +130,20 @@ try {
   const licenses = JSON.parse(
     execFileSync('pnpm', ['licenses', 'list', '--prod', '--json'], { cwd: root, encoding: 'utf8' }),
   )
-  const allowedLicenses = new Set(['MIT', 'BSD-3-Clause'])
+  /**
+   * Permissive licences cleared for redistribution inside an Apache-2.0
+   * package: each grants use, modification and redistribution with no
+   * copyleft and no obligation beyond preserving the notice.
+   *
+   * ISC is the OSI-approved simplification of BSD-2-Clause and is accepted as
+   * equivalent in substance to MIT. It entered the tree with `picocolors`,
+   * whose only job is to decide whether the terminal wants colour at all.
+   *
+   * This list stays short on purpose. It is a review gate, not a formality:
+   * anything that is not plainly permissive belongs in front of a human
+   * before it ships to npm.
+   */
+  const allowedLicenses = new Set(['MIT', 'BSD-3-Clause', 'ISC'])
   for (const license of Object.keys(licenses)) {
     requireValue(allowedLicenses.has(license), `production dependency license requires review: ${license}`)
   }

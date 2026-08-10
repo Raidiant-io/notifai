@@ -20,6 +20,7 @@
     "@clack/prompts": "^1.7.0",
     "@raidiant/notifai-protocol": "0.2.0",
     "commander": "^14.0.0",
+    "picocolors": "^1.1.1",
     "smol-toml": "^1.4.0"
   },
   "devDependencies": {
