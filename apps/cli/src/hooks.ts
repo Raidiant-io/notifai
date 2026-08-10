@@ -1372,6 +1372,37 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
   const state = readSessionState(sessionId, ctx.env)
   const pending = pendingList(state)
   if (pending.length === 0) return { notes }
+
+  // Claim before any reply poll, not only before the grace window. Two racing
+  // Stops can both observe the same live request and both receive its answer;
+  // an atomic state update prevents corruption but cannot retract the duplicate
+  // block output the loser already built. One session claim therefore owns the
+  // complete Stop decision: late-answer collection, continuation checks, and
+  // any new escalation.
+  //
+  // Real clock, deliberately, not `ctx.now` — the claim answers "is another
+  // process alive right now", which the injectable clock cannot speak to. It
+  // is also the only clock the *other* process shares.
+  if (!claimQuestionPush(sessionId, ctx.env)) {
+    notes.push('another hook is already handling this question')
+    return { notes }
+  }
+  try {
+    return await handleClaimedStop(ctx, envelope, sessionId, state, pending, notes)
+  } finally {
+    releaseQuestionPush(sessionId, ctx.env)
+  }
+}
+
+/** The complete per-session Stop decision, after this process owns the claim. */
+async function handleClaimedStop(
+  ctx: HookContext,
+  envelope: HookEnvelope,
+  sessionId: string,
+  state: SessionState,
+  pending: PendingQuestion[],
+  notes: string[],
+): Promise<HookOutcome> {
   const live = pending.filter((entry) => entry.request_id !== undefined)
   const unasked = pending.filter((entry) => entry.request_id === undefined)
 
@@ -1430,21 +1461,7 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     notes.push('you are at the keyboard; leaving the question in the terminal')
     return { notes }
   }
-
-  // Claim before the grace window, not after: two racing hooks would otherwise
-  // both wait, both find the user still absent, and both push.
-  // Real clock, deliberately, not `ctx.now` — the claim answers "is another
-  // process alive right now", which the injectable clock cannot speak to. It
-  // is also the only clock the *other* process shares.
-  if (!claimQuestionPush(sessionId, ctx.env)) {
-    notes.push('another hook is already handling this question')
-    return { notes }
-  }
-  try {
-    return await escalate(ctx, envelope, sessionId, unasked, live, notes)
-  } finally {
-    releaseQuestionPush(sessionId, ctx.env)
-  }
+  return await escalate(ctx, envelope, sessionId, unasked, live, notes)
 }
 
 /** The escalation itself, split out so the claim is released on every path. */

@@ -60,6 +60,8 @@ interface Recorder {
   failSubmits?: boolean
   /** Runs while an agent_question submit is in flight, before onSubmitted. */
   beforeQuestionSubmit?: () => void
+  /** Lets race tests hold every replies call until all contenders are polling. */
+  beforeReplies?: () => Promise<void>
 }
 
 function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
@@ -107,8 +109,10 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
         warnings: [],
       } satisfies SubmissionReceipt
     },
-    replies: async (requestId) =>
-      ({ request_id: requestId, reply_expires_at: null, replies }) satisfies ListRepliesResponse,
+    replies: async (requestId) => {
+      await recorder.beforeReplies?.()
+      return ({ request_id: requestId, reply_expires_at: null, replies }) satisfies ListRepliesResponse
+    },
     closeReplies: async (requestId) => {
       recorder.closed.push(requestId)
     },
@@ -1728,6 +1732,42 @@ describe('two hooks racing one question', () => {
 
     expect(h.recorder.submitted).toHaveLength(0)
     expect(h.io.errLines.join(" ")).toContain('already handling')
+  })
+
+  it('resumes the agent once when two Stops collect the same late answer', async () => {
+    const answers: ReplyView[] = []
+    const h = harness(answers, 900)
+    writeSessionState('race-late-answer', h.env, { last_prompt_at: AWAY })
+    registerQuestion('race-late-answer', h.env, { question: 'Ship it?' }, NOW)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-late-answer' }))
+    answers.push(reply({ text: 'Ship it' }))
+    h.io.outLines = []
+
+    let polls = 0
+    let markFirstPoll: (() => void) | undefined
+    const firstPoll = new Promise<void>((resolve) => {
+      markFirstPoll = resolve
+    })
+    let releasePolls: (() => void) | undefined
+    const heldPoll = new Promise<void>((resolve) => {
+      releasePolls = resolve
+    })
+    h.recorder.beforeReplies = async () => {
+      polls += 1
+      markFirstPoll?.()
+      await heldPoll
+    }
+
+    const firstStop = hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-late-answer' }))
+    await firstPoll
+    const secondStop = hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-late-answer' }))
+    await Promise.race([secondStop, new Promise<void>((resolve) => setImmediate(resolve))])
+    releasePolls?.()
+    await Promise.all([firstStop, secondStop])
+
+    const resumes = h.io.outLines.map((line) => JSON.parse(line) as { decision?: string })
+    expect(polls).toBe(1)
+    expect(resumes.filter((entry) => entry.decision === 'block')).toHaveLength(1)
   })
 })
 
