@@ -12,6 +12,7 @@ import {
   configExplainCommand,
   configSetCommand,
   configShowCommand,
+  configUnsetCommand,
   devicesCommand,
   doctorCommand,
   hookRunCommand,
@@ -477,6 +478,23 @@ config
       opts: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
     ) => {
       process.exit(await configSetCommand(deps, key, value, opts))
+    },
+  )
+config
+  .command('unset <key>')
+  .description(
+    'Remove a configuration value so the next layer or shipped default applies (choose a layer interactively; unattended defaults machine-global and requires --yes)',
+  )
+  .option('--project', 'remove from the shared .notifai/config.toml instead')
+  .option('--local', 'remove from personal .notifai/config.local.toml')
+  .option('--session <id>', 'remove from one session')
+  .option('--yes', 'skip the confirmation gate')
+  .action(
+    async (
+      key: string,
+      opts: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
+    ) => {
+      process.exit(await configUnsetCommand(deps, key, opts))
     },
   )
 

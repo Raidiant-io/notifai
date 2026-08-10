@@ -32,6 +32,7 @@ import {
   CONFIG_KEYS,
   NUMERIC_CONFIG_KEYS,
   configBounds,
+  configDefaultValue,
   findProjectConfigPath,
   findProjectLocalConfigPath,
   globalConfigPath,
@@ -1790,7 +1791,7 @@ function resolveHarness(deps: CommandDeps, requested: string | undefined): Harne
 }
 
 // ---------------------------------------------------------------------------
-// config show / set
+// config show / set / unset
 // ---------------------------------------------------------------------------
 
 export function configShowCommand(
@@ -1916,15 +1917,8 @@ export async function configSetCommand(
   rawValue: string,
   flags: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
 ): Promise<number> {
-  if (!(CONFIG_KEYS as readonly string[]).includes(key)) {
-    deps.io.err(`Unknown setting "${key}".`)
-    const near = nearestKey(key)
-    if (near !== null) deps.io.err(`Did you mean "${near}"?`)
-    deps.io.err(`Valid settings: ${CONFIG_KEYS.join(', ')}`)
-    deps.io.err('Run `notifai config explain <key>` to see what one of them does.')
-    return EXIT.usage
-  }
-  const configKey = key as ConfigKey
+  const configKey = configMutationKey(deps, key)
+  if (configKey === null) return EXIT.usage
   const info = configInfo(configKey)
   let value: unknown = rawValue
   if (NUMERIC_CONFIG_KEYS.includes(configKey)) {
@@ -1956,6 +1950,53 @@ export async function configSetCommand(
   }
   if (key === 'devices') value = rawValue.split(',').map((s) => s.trim()).filter(Boolean)
 
+  const target = await configMutationTarget(deps, flags)
+  if (target === null) return EXIT.usage
+  if (target.layer === 'global' && Object.is(value, configDefaultValue(configKey))) {
+    deps.io.err(`${key} is already the shipped default (${JSON.stringify(value)}).`)
+    deps.io.err(
+      `Run \`notifai config unset ${key} --yes\` to remove a redundant override instead of creating one.`,
+    )
+    return EXIT.usage
+  }
+
+  if (!flags.yes) {
+    const confirmed = await deps.io.confirm(`Set ${key} = ${JSON.stringify(value)} in ${target.path}?`)
+    if (!confirmed) {
+      deps.io.err('Not confirmed. Pass --yes to skip the confirmation gate.')
+      return EXIT.usage
+    }
+  }
+
+  const existing = existsSync(target.path)
+    ? (parseToml(readFileSync(target.path, 'utf8')) as Record<string, unknown>)
+    : {}
+  existing[key] = value
+  mkdirSync(path.dirname(target.path), { recursive: true })
+  writeFileSync(target.path, `${stringifyToml(existing)}\n`)
+  deps.io.out(`Wrote ${key} to ${target.path}`)
+  return EXIT.ok
+}
+
+function configMutationKey(deps: CommandDeps, key: string): ConfigKey | null {
+  if (!(CONFIG_KEYS as readonly string[]).includes(key)) {
+    deps.io.err(`Unknown setting "${key}".`)
+    const near = nearestKey(key)
+    if (near !== null) deps.io.err(`Did you mean "${near}"?`)
+    deps.io.err(`Valid settings: ${CONFIG_KEYS.join(', ')}`)
+    deps.io.err('Run `notifai config explain <key>` to see what one of them does.')
+    return null
+  }
+  return key as ConfigKey
+}
+
+type ConfigMutationFlags = { project?: boolean; local?: boolean; session?: string; yes?: boolean }
+type ConfigMutationLayer = 'global' | 'project' | 'local' | 'session'
+
+async function configMutationTarget(
+  deps: CommandDeps,
+  flags: ConfigMutationFlags,
+): Promise<{ path: string; layer: ConfigMutationLayer } | null> {
   let layer = flags.local ? 'local' : flags.project ? 'project' : 'global'
   if (
     flags.session === undefined &&
@@ -1972,7 +2013,7 @@ export async function configSetCommand(
     ])
     if (selected === null) {
       deps.io.err('No configuration layer selected.')
-      return EXIT.usage
+      return null
     }
     layer = selected
   }
@@ -1984,22 +2025,43 @@ export async function configSetCommand(
       : layer === 'project'
         ? (findProjectConfigPath(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'config.toml'))
         : globalConfigPath(deps.env)
+  return {
+    path: targetPath,
+    layer: flags.session ? 'session' : (layer as Exclude<ConfigMutationLayer, 'session'>),
+  }
+}
 
+export async function configUnsetCommand(
+  deps: CommandDeps,
+  key: string,
+  flags: ConfigMutationFlags,
+): Promise<number> {
+  const configKey = configMutationKey(deps, key)
+  if (configKey === null) return EXIT.usage
+  const target = await configMutationTarget(deps, flags)
+  if (target === null) return EXIT.usage
+  const existing = existsSync(target.path)
+    ? (parseToml(readFileSync(target.path, 'utf8')) as Record<string, unknown>)
+    : {}
+  if (!Object.prototype.hasOwnProperty.call(existing, configKey)) {
+    deps.io.out(`${configKey} is not set in ${target.path}`)
+    return EXIT.ok
+  }
   if (!flags.yes) {
-    const confirmed = await deps.io.confirm(`Set ${key} = ${JSON.stringify(value)} in ${targetPath}?`)
+    const confirmed = await deps.io.confirm(`Remove ${configKey} from ${target.path}?`)
     if (!confirmed) {
       deps.io.err('Not confirmed. Pass --yes to skip the confirmation gate.')
       return EXIT.usage
     }
   }
 
-  const existing = existsSync(targetPath)
-    ? (parseToml(readFileSync(targetPath, 'utf8')) as Record<string, unknown>)
-    : {}
-  existing[key] = value
-  mkdirSync(path.dirname(targetPath), { recursive: true })
-  writeFileSync(targetPath, `${stringifyToml(existing)}\n`)
-  deps.io.out(`Wrote ${key} to ${targetPath}`)
+  delete existing[configKey]
+  if (Object.keys(existing).length === 0) {
+    rmSync(target.path, { force: true })
+  } else {
+    writeFileSync(target.path, `${stringifyToml(existing)}\n`)
+  }
+  deps.io.out(`Removed ${configKey} from ${target.path}; the inherited value now applies.`)
   return EXIT.ok
 }
 

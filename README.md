@@ -33,6 +33,7 @@ notifai                      # the interactive app
 notifai init                 # set this project up, step by step
 notifai config show          # every setting, explained
 notifai config explain <key> # one setting, in full
+notifai config unset <key>   # return a setting to its inherited/default value
 notifai doctor               # check every part of the setup
 ```
 

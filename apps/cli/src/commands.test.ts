@@ -20,6 +20,7 @@ import {
   configExplainCommand,
   configSetCommand,
   configShowCommand,
+  configUnsetCommand,
   contradictingAnswer,
   describeHookFailure,
   doctorCommand,
@@ -40,7 +41,7 @@ import {
 import { applyPlan, buildHookConfig } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
-import { CONFIG_KEYS } from './config.js'
+import { CONFIG_KEYS, loadConfig } from './config.js'
 import type { Tone } from './ui/theme.js'
 
 class CapturedIo implements CommandIo {
@@ -982,6 +983,49 @@ describe('config surfaces', () => {
     const io = new CapturedIo()
     expect(await configSetCommand(configDeps(io), 'sound', 'none', { yes: true })).toBe(EXIT.ok)
   })
+
+  it('removes one machine setting, preserves its siblings, and restores default provenance', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+    const configFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
+    mkdirSync(path.dirname(configFile), { recursive: true })
+    writeFileSync(configFile, 'wait_seconds = 20\nsound = "done"\n')
+
+    expect(await configUnsetCommand(deps, 'wait_seconds', { yes: true })).toBe(EXIT.ok)
+
+    const remaining = readFileSync(configFile, 'utf8')
+    expect(remaining).toContain('sound = "done"')
+    expect(remaining).not.toContain('wait_seconds')
+    const resolved = loadConfig({ cwd: deps.cwd, env: deps.env })
+    expect(resolved.wait_seconds).toEqual({ value: 10, source: 'default' })
+    expect(resolved.sound.source).toMatch(/^global:/)
+  })
+
+  it('refuses to create a redundant machine override equal to the shipped default', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+
+    expect(await configSetCommand(deps, 'wait_seconds', '10', { yes: true })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('already the shipped default')
+    expect(io.errLines.join('\n')).toContain('notifai config unset wait_seconds')
+    expect(existsSync(path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml'))).toBe(false)
+  })
+
+  it('allows a project to choose the shipped value when it masks a machine override', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+    const globalFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
+    mkdirSync(path.dirname(globalFile), { recursive: true })
+    writeFileSync(globalFile, 'wait_seconds = 20\n')
+
+    expect(await configSetCommand(deps, 'wait_seconds', '10', { project: true, yes: true })).toBe(
+      EXIT.ok,
+    )
+    expect(loadConfig({ cwd: deps.cwd, env: deps.env }).wait_seconds).toMatchObject({
+      value: 10,
+      source: expect.stringMatching(/^project:/),
+    })
+  })
 })
 
 describe('interactive command UX', () => {
@@ -1097,6 +1141,25 @@ describe('interactive command UX', () => {
     expect(readFileSync(path.join(cwd, 'xdg', 'notifai', 'config.toml'), 'utf8')).toContain(
       'sound = "done"',
     )
+  })
+
+  it('asks the same layer question when returning a setting to its inherited value', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-unset-layer-'))
+    const io = new InteractiveIo()
+    io.selectAnswer = 'local'
+    const localFile = path.join(cwd, '.notifai', 'config.local.toml')
+    mkdirSync(path.dirname(localFile), { recursive: true })
+    writeFileSync(localFile, 'sound = "done"\n')
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg') },
+    }
+
+    expect(await configUnsetCommand(deps, 'sound', {})).toBe(EXIT.ok)
+    expect(io.prompts[0]).toBe('Where should this setting live?')
+    expect(io.prompts[1]).toContain(localFile)
+    expect(existsSync(localFile)).toBe(false)
   })
 
   it('rejects numeric config values that resolution would otherwise silently clamp', async () => {

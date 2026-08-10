@@ -116,6 +116,9 @@ export function renderConfigExplain(key: ConfigKey, config: CliConfig): string[]
   lines.push('')
   const example = info.example ?? (info.choices?.[0] ?? 'value')
   lines.push(`  ${style.dim('Change it')} ${style.code(`notifai config set ${key} ${example}`)}`)
+  if (entry.source !== 'default' && entry.source !== 'flag') {
+    lines.push(`  ${style.dim('Inherit it')} ${style.code(`notifai config unset ${key}`)}`)
+  }
   lines.push('')
   return lines
 }

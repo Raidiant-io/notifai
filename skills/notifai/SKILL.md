@@ -37,8 +37,10 @@ notifai config set notify_criteria "Anything that needs me within the hour" --ye
 
 Use `--local` for a personal project preference and keep
 `.notifai/config.local.toml` ignored. Use `--project` only for shared project
-policy. Precedence is flag > session > project-local > project > machine-global
-> default; `notifai config show --explain` shows the winning source.
+policy. Use `notifai config unset <key>` with the same scope flag to remove an
+override and return to the inherited or shipped value. Precedence is flag >
+session > project-local > project > machine-global > default; `notifai config
+show --explain` shows the winning source.
 
 ## Compose and send
 
