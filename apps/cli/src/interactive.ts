@@ -593,9 +593,9 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   const row = (label: string, value: string): string => `${style.dim(label.padEnd(16))}${value}`
   clack.note(
     'When an agent registers a question, it appears in your terminal first.\n' +
-      'If you are still here, it stays here. Once you step away, it goes to\n' +
-      'your phone and Mac as a notification with real answer buttons, and\n' +
-      'your answer comes back to the agent.\n\n' +
+      'After the grace below, it goes to your phone and Mac as a notification\n' +
+      'with real answer buttons, and your answer comes back to the agent. Turn\n' +
+      'on “Only when away” if local activity should keep it here instead.\n\n' +
       [
         row('Wired to', wiringSummary(hooks)),
         row('Send', config.ask_notifications.value ? 'yes' : 'no — questions stay in the terminal'),

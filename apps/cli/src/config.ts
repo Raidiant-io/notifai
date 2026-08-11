@@ -144,10 +144,10 @@ const DEFAULTS = {
   // Installing the hooks is the opt-in; these exist to switch the behaviour
   // back off for a project or a session without uninstalling anything.
   ask_notifications: true,
-  // On by default because it is the less surprising of the two: a question
-  // appearing on your phone while you are typing the answer into the terminal
-  // is worse as a default than one that waits for you to leave.
-  require_idle: true,
+  // The terminal-first grace is the default protection against redundant
+  // pushes. Presence gating is opt-in: being at the machine must not prevent a
+  // question from reaching the user's devices once that grace has elapsed.
+  require_idle: false,
   away_after_seconds: 120,
   // 300 + 180 + the installer's 60s headroom = 540, inside the 600s
   // command-hook ceiling both harnesses enforce.

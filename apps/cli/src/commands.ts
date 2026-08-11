@@ -1273,9 +1273,9 @@ function buildOneQuestion(
 
 /**
  * Registers a question for turn-end routing under the user's presence config.
- * Returns immediately so the agent can ask in prose and end its turn. With the
- * default presence gate, recent keyboard or mouse activity keeps it local;
- * `require_idle = false` intentionally permits a push while the user is active.
+ * Returns immediately so the agent can ask in prose and end its turn. Presence
+ * does not block the shipped default; `require_idle = true` intentionally keeps
+ * the question local while the user is active.
  */
 export function askCommand(deps: CommandDeps, question: string | undefined, flags: AskFlags): number {
   // An agent calling this gets no hook payload. Harness-native environment
@@ -1822,9 +1822,10 @@ export function configShowCommand(
 /**
  * One setting, explained in full.
  *
- * The gap this closes: `config show` prints `require_idle = true` and there was
- * nowhere to go from there. Every key already had a careful explanation — in a
- * TypeScript comment, read by everyone except the person who needed it.
+ * The gap this closes: `config show` prints a value and provenance but that is
+ * not enough to explain the setting's consequences. Every key already had a
+ * careful explanation — in a TypeScript comment, read by everyone except the
+ * person who needed it.
  */
 export function configExplainCommand(
   deps: CommandDeps,

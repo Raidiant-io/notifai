@@ -196,6 +196,18 @@ function stdin(payload: unknown): () => Promise<string> {
   return async () => JSON.stringify(payload)
 }
 
+function writeGlobalConfig(h: Harness, toml: string): void {
+  const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, 'config.toml'), toml)
+}
+
+function presenceGatedConfig(cwd: string, env: NodeJS.ProcessEnv) {
+  const config = loadConfig({ cwd, env })
+  config.require_idle = { value: true, source: 'global:test' }
+  return config
+}
+
 /** Long enough ago to be away under the 120s default. */
 const AWAY = NOW - 600_000
 const PRESENT = NOW - 5_000
@@ -203,13 +215,13 @@ const PRESENT = NOW - 5_000
 describe('presence gate', () => {
   it('treats a never-seen session as present, so a missing hook cannot hijack the terminal', () => {
     const { env, deps } = harness()
-    const config = loadConfig({ cwd: deps.cwd, env })
+    const config = presenceGatedConfig(deps.cwd, env)
     expect(isUserAway({}, config, NOW, null)).toBe(false)
   })
 
   it('is away only once the configured silence has elapsed', () => {
     const { env, deps } = harness()
-    const config = loadConfig({ cwd: deps.cwd, env })
+    const config = presenceGatedConfig(deps.cwd, env)
     expect(isUserAway({ last_prompt_at: PRESENT }, config, NOW, null)).toBe(false)
     expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, null)).toBe(true)
   })
@@ -218,7 +230,7 @@ describe('presence gate', () => {
   // minutes of watching. Elapsed time alone said away; the machine knows better.
   it('keeps a user who is watching a long turn present, however long the turn ran', () => {
     const { env, deps } = harness()
-    const config = loadConfig({ cwd: deps.cwd, env })
+    const config = presenceGatedConfig(deps.cwd, env)
     expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, 3)).toBe(false)
   })
 
@@ -228,13 +240,14 @@ describe('presence gate', () => {
   // away" case the feature is for.
   it('lets a freshly spawned session escalate when the machine says nobody is there', () => {
     const { env, deps } = harness()
-    const config = loadConfig({ cwd: deps.cwd, env })
+    const config = presenceGatedConfig(deps.cwd, env)
     expect(isUserAway({ last_prompt_at: PRESENT }, config, NOW, 900)).toBe(true)
     expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, 900)).toBe(true)
   })
 
   it('pushes a spawned session first question once the machine has gone quiet', async () => {
     const h = harness([reply({ text: 'Yes' })], 900)
+    writeGlobalConfig(h, 'require_idle = true\n')
     // Prompt 20s ago, exactly as a just-spawned agent has.
     writeSessionState('spawn1', h.env, { last_prompt_at: NOW - 20_000 })
     registerQuestion('spawn1', h.env, { question: 'Ship it?' }, NOW)
@@ -272,13 +285,14 @@ describe('presence gate', () => {
 
   it('falls back to elapsed time where no idle source exists', () => {
     const { env, deps } = harness()
-    const config = loadConfig({ cwd: deps.cwd, env })
+    const config = presenceGatedConfig(deps.cwd, env)
     expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, null)).toBe(true)
   })
 
   it('does not push a question to the phone while the user is at the keyboard', async () => {
     // Silent for ten minutes by the session clock, but active by the machine's.
     const h = harness([reply({ text: 'Yes' })], 2)
+    writeGlobalConfig(h, 'require_idle = true\n')
     writeSessionState('idle1', h.env, { last_prompt_at: AWAY })
     registerQuestion('idle1', h.env, { question: 'Ship it?' })
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'idle1' }))
@@ -294,20 +308,14 @@ describe('presence gate', () => {
  * it off must not disturb the grace timer.
  */
 describe('presence gating is optional (require_idle)', () => {
-  function writeGlobalConfig(h: Harness, toml: string): void {
-    const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(path.join(dir, 'config.toml'), toml)
-  }
-
-  it('counts a user actively typing as reachable', () => {
+  it('consults active typing only when presence gating is explicitly enabled', () => {
     // One second of idle: as present as it is possible to be.
-    const config = loadConfig({ cwd: '/nowhere', env: {}, flags: {} })
-    expect(isUserAway({ last_prompt_at: NOW }, config, NOW, 1)).toBe(false)
+    const ungated = loadConfig({ cwd: '/nowhere', env: {}, flags: {} })
+    expect(isUserAway({ last_prompt_at: NOW }, ungated, NOW, 1)).toBe(true)
 
-    const off = loadConfig({ cwd: '/nowhere', env: {}, flags: {} })
-    off.require_idle = { value: false, source: 'default' }
-    expect(isUserAway({ last_prompt_at: NOW }, off, NOW, 1)).toBe(true)
+    const gated = loadConfig({ cwd: '/nowhere', env: {}, flags: {} })
+    gated.require_idle = { value: true, source: 'global:test' }
+    expect(isUserAway({ last_prompt_at: NOW }, gated, NOW, 1)).toBe(false)
   })
 
   it('escalates a question while the user is at the keyboard', async () => {
@@ -396,6 +404,7 @@ describe('terminal-first grace window', () => {
   it('sends nothing if the user comes back to the keyboard during the window', async () => {
     let idle = 900
     const h = harness([reply({ text: 'Yes' })], 900)
+    writeGlobalConfig(h, 'require_idle = true\n')
     // Machine goes active on the second poll: the user sat down.
     h.deps.idleSeconds = () => {
       const current = idle
@@ -412,6 +421,7 @@ describe('terminal-first grace window', () => {
     // No idle source: waiting would block the prompt with no way to notice the
     // user returning, so it asks immediately instead.
     const h = harness([reply({ text: 'Yes' })], null)
+    writeGlobalConfig(h, 'require_idle = true\n')
     pending(h, 'g4', 0)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g4' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
@@ -601,6 +611,7 @@ describe('OpenCode answer preservation', () => {
 describe('reply-wait presence monitoring', () => {
   it('returns the terminal when the user comes back after the push', async () => {
     const h = harness([], 900)
+    writeGlobalConfig(h, 'require_idle = true\n')
     let checks = 0
     h.deps.idleSeconds = () => {
       checks += 1
@@ -1464,7 +1475,7 @@ describe('telling concurrent agents apart', () => {
 })
 
 describe('clock jumps', () => {
-  const config = loadConfig({ cwd: '/nowhere', env: {} })
+  const config = presenceGatedConfig('/nowhere', {})
 
   it('does not hijack a terminal because the clock jumped forward', () => {
     // NTP correction or a VM resume moves `now` without any time passing for

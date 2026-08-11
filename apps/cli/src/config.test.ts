@@ -88,10 +88,11 @@ describe('harness config layers', () => {
     expect(loadConfig({ cwd, env, sessionId: 'a/b' }).away_after_seconds.value).toBe(120)
   })
 
-  it('defaults the hook behaviour to on, gated by the presence check rather than a flag', () => {
+  it('defaults question routing to on without requiring the user to be idle', () => {
     const { env, cwd } = setup({})
     const config = loadConfig({ cwd, env })
     expect(config.ask_notifications.value).toBe(true)
+    expect(config.require_idle).toEqual({ value: false, source: 'default' })
     expect(config.away_after_seconds.value).toBe(120)
     // 300 grace + 180 reply + 60 installer headroom = 540, inside the 600s
     // ceiling both harnesses kill a command hook at.

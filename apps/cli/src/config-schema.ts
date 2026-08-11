@@ -94,8 +94,8 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'boolean',
     summary: 'Whether sitting at this keyboard holds a question back',
     detail:
-      'On (the default), a question waits while you are using this machine, because you are right there and a push would be redundant. Off means notify me anyway — `ask_grace_seconds` still runs, so the terminal is still offered the question first; it just no longer needs you to walk away before it may leave.\n\nThis is separate from `ask_notifications`, which switches routing off altogether: wanting to be reached while working is the opposite of not wanting to be reached.',
-    example: 'true',
+      'Off (the default) means notify me even while I am using this machine. `ask_grace_seconds` still runs, so the terminal is offered the question first; I just do not need to walk away before it may leave. Turn this on when local keyboard or mouse activity should keep questions in the terminal.\n\nThis is separate from `ask_notifications`, which switches routing off altogether: wanting to be reached only while away is different from not wanting to be reached.',
+    example: 'false',
   },
   away_after_seconds: {
     label: 'Away after',

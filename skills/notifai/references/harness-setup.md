@@ -44,14 +44,15 @@ Do not claim support for a harness that is absent from
 
 ## Presence and continuation
 
-With `require_idle = true` (default), local keyboard or mouse activity keeps a
-question in the terminal. Once the user is away, the terminal-first grace
-window runs before any device push. If the OS idle signal is unavailable,
-prompt silence is the conservative fallback.
+With `require_idle = false` (the default), local keyboard or mouse activity
+does not hold a question back. The terminal-first grace still runs before any
+device push.
 
-`require_idle = false` deliberately permits a push while the user is working;
-set it only on the user's request. A remote answer proves reachability, not
-that the user returned to the terminal.
+`require_idle = true` deliberately keeps a question in the terminal while the
+user is working. Once the user is away, the terminal-first grace window may
+complete before the push. If the OS idle signal is unavailable, prompt silence
+is the conservative fallback. A remote answer proves reachability, not that
+the user returned to the terminal.
 
 The important timing settings are separate:
 

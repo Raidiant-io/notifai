@@ -960,7 +960,8 @@ describe('config surfaces', () => {
     const parsed = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
     expect(parsed['key']).toBe('require_idle')
     expect(parsed['accepts']).toBe('true or false')
-    expect(parsed['detail']).toContain('question waits while you are using this machine')
+    expect(parsed['detail']).toContain('Off (the default)')
+    expect(parsed['detail']).toContain('Turn this on')
   })
 
   it('rejects an unknown setting and points at the nearest real one', () => {
