@@ -15,6 +15,7 @@ import {
   configUnsetCommand,
   devicesCommand,
   doctorCommand,
+  hookDefersDiagnosticsUntilAfterCleanup,
   hookRunCommand,
   hooksInstallCommand,
   hooksUninstallCommand,
@@ -132,8 +133,19 @@ const program = new Command('notifai')
   .commandsGroup(GROUP.help)
   .hook('preAction', (_program, actionCommand) => {
     logger.bind({ cmd: commandPath(actionCommand) })
+    // SessionEnd uses the hook policy shared with commands.ts: local cleanup
+    // precedes every diagnostic that can wait on the shared log lock.
+    const deferDiagnostics =
+      actionCommand.name() === 'hook' &&
+      hookDefersDiagnosticsUntilAfterCleanup(actionCommand.processedArgs[0])
     // Values only at `debug`; `cli.end` carries the flag names at every level.
-    logger.debug('cli.start', { version: version(), argv: process.argv.slice(2), cwd: process.cwd() })
+    if (!deferDiagnostics) {
+      logger.debug('cli.start', {
+        version: version(),
+        argv: process.argv.slice(2),
+        cwd: process.cwd(),
+      })
+    }
   })
 
 /**

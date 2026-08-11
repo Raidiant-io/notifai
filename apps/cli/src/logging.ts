@@ -316,7 +316,10 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     }
   }
 
-  /** Rename the active file out of the way and prune the oldest archives. */
+  /**
+   * Keep the inode handoff and retention prune inside the caller's byte-budget
+   * transaction, so every writer agrees which history the fresh file replaces.
+   */
   function rotate(): string | null {
     const target = path.join(dir, archiveName(now()))
     try {

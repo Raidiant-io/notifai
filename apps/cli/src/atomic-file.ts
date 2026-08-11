@@ -2,13 +2,10 @@ import { randomBytes } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
-  constants,
-  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -151,155 +148,5 @@ function assertCurrentUserOwns(file: string, owner: number): void {
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
   if (uid !== undefined && owner !== uid) {
     throw new Error(`${file} is owned by uid ${owner}, not the current user; refusing to replace it.`)
-  }
-}
-
-export interface FileLockOptions {
-  /** How long another live Notifai operation may hold the lock. */
-  timeoutMs?: number
-  /** Locks older than this are abandoned operation residue and may be reclaimed. */
-  staleMs?: number
-}
-
-/**
- * Serialize Notifai read/merge/write operations for one shared settings file.
- *
- * Atomic rename prevents partial files but cannot prevent two installers from
- * both reading the same original and losing one merge. The sibling lock makes
- * that whole transaction one operation. A symlink, non-file, or foreign-owned
- * lock is never followed or removed; only an old regular lock owned by this
- * user is eligible for stale recovery.
- */
-export function withFileLockSync<T>(
-  file: string,
-  action: () => T,
-  options: FileLockOptions = {},
-): T {
-  const lock = path.join(path.dirname(file), `.${path.basename(file)}.notifai.lock`)
-  const timeoutMs = options.timeoutMs ?? 5_000
-  const staleMs = options.staleMs ?? 30_000
-  const deadline = Date.now() + timeoutMs
-  const waitCell = new Int32Array(new SharedArrayBuffer(4))
-  const directory = path.dirname(file)
-  mkdirSync(directory, { recursive: true })
-  const parent = safeDirectory(directory, true)
-
-  let handle: number | undefined
-  let acquired: { dev: number; ino: number } | undefined
-  for (;;) {
-    try {
-      assertSameDirectory(directory, parent)
-      handle = openSync(lock, 'wx', 0o600)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-      let pathStat
-      try {
-        pathStat = lstatSync(lock)
-      } catch (inspectError) {
-        if ((inspectError as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw inspectError
-      }
-      if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
-        throw new Error(`${lock} is not a regular lock file; refusing to follow or remove it.`)
-      }
-      let observed: number
-      try {
-        observed = openSync(lock, constants.O_RDONLY | constants.O_NOFOLLOW)
-      } catch (inspectError) {
-        if ((inspectError as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw inspectError
-      }
-      let stat
-      let lease: string
-      try {
-        stat = fstatSync(observed)
-        lease = readFileSync(observed, 'utf8')
-      } finally {
-        closeSync(observed)
-      }
-      if (!stat.isFile()) {
-        throw new Error(`${lock} is not a regular lock file; refusing to follow or remove it.`)
-      }
-      assertCurrentUserOwns(lock, stat.uid)
-      const ownerPid = Number(/^([0-9]+):/.exec(lease)?.[1] ?? Number.NaN)
-      if (Date.now() - stat.mtimeMs > staleMs && !processIsAlive(ownerPid)) {
-        // Recheck the inode immediately before removal. This prevents a second
-        // stale-lock contender from deleting the fresh lease acquired by the
-        // first one in the ordinary recovery race.
-        const current = lstatSync(lock)
-        if (current.dev !== stat.dev || current.ino !== stat.ino) continue
-        try {
-          unlinkSync(lock)
-        } catch (unlinkError) {
-          if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError
-        }
-        continue
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for another Notifai operation on ${file}.`)
-      }
-      Atomics.wait(waitCell, 0, 0, Math.min(25, Math.max(1, deadline - Date.now())))
-      continue
-    }
-
-    try {
-      const stat = fstatSync(handle)
-      acquired = { dev: stat.dev, ino: stat.ino }
-      writeFileSync(handle, `${process.pid}:${randomBytes(8).toString('hex')}\n`)
-      fsyncSync(handle)
-      break
-    } catch (acquireError) {
-      closeSync(handle)
-      handle = undefined
-      if (acquired !== undefined) removeLeaseIfSame(lock, acquired)
-      acquired = undefined
-      // Preserve the acquisition error even if safe cleanup was impossible.
-      throw acquireError
-    }
-  }
-
-  let actionFailed = false
-  try {
-    return action()
-  } catch (err) {
-    actionFailed = true
-    throw err
-  } finally {
-    if (handle !== undefined) closeSync(handle)
-    if (acquired !== undefined) {
-      const removed = removeLeaseIfSame(lock, acquired)
-      if (!removed && !actionFailed) {
-        throw new Error(`${lock} changed while held; refusing to remove the replacement.`)
-      }
-    }
-  }
-}
-
-/** Remove only the inode this process acquired; never unlink a replacement. */
-function removeLeaseIfSame(lock: string, acquired: { dev: number; ino: number }): boolean {
-  let current
-  try {
-    current = lstatSync(lock)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw err
-  }
-  if (current.dev !== acquired.dev || current.ino !== acquired.ino) return false
-  try {
-    unlinkSync(lock)
-    return true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw err
-  }
-}
-
-function processIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
 }

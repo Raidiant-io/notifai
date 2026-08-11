@@ -1,9 +1,12 @@
+import { spawn, type ChildProcess } from 'node:child_process'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -28,7 +31,13 @@ import {
   type LogRecord,
 } from './logging.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
-import { loadConfig, projectSessionPointerPath, sanitizeSessionId } from './config.js'
+import {
+  loadConfig,
+  projectSessionPointerPath,
+  sanitizeSessionId,
+  sessionConfigPath,
+  stateDir,
+} from './config.js'
 import {
   claimQuestionPush,
   clearSessionState,
@@ -203,6 +212,128 @@ function harness(replies: ReplyView[] = [], idleSeconds: number | null = null): 
 
 function stdin(payload: unknown): () => Promise<string> {
   return async () => JSON.stringify(payload)
+}
+
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+  failure: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(failure)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+interface SessionEndLogLockHolder {
+  child: ChildProcess
+  readyPath: string
+  releasePath: string
+  done: Promise<void>
+}
+
+function runSessionEndLogLockHolder(
+  root: string,
+  env: NodeJS.ProcessEnv,
+  lockPath: string,
+): SessionEndLogLockHolder {
+  const readyPath = path.join(root, 'session-end-log-lock-ready')
+  const releasePath = path.join(root, 'session-end-log-lock-release')
+  const vitest = path.join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs')
+  const child = spawn(
+    process.execPath,
+    [
+      vitest,
+      'run',
+      'src/session-end-log-lock-worker.test.ts',
+      '--reporter=dot',
+      '--maxWorkers=1',
+    ],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ...env,
+        NOTIFAI_SESSION_END_LOG_LOCK_WORKER_MODE: 'hold',
+        NOTIFAI_SESSION_END_LOG_LOCK_PATH: lockPath,
+        NOTIFAI_SESSION_END_LOG_LOCK_READY: readyPath,
+        NOTIFAI_SESSION_END_LOG_LOCK_RELEASE: releasePath,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  const stdout: Buffer[] = []
+  const stderr: Buffer[] = []
+  child.stdout!.on('data', (chunk: Buffer) => stdout.push(chunk))
+  child.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk))
+  const done = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code) => {
+      if (code === 0) resolve()
+      else {
+        reject(
+          new Error(
+            `SessionEnd log lock worker exited ${String(code)}\n${Buffer.concat(stdout).toString()}\n${Buffer.concat(stderr).toString()}`,
+          ),
+        )
+      }
+    })
+  })
+  void done.catch(() => undefined)
+  return { child, readyPath, releasePath, done }
+}
+
+interface CliProcessResult {
+  code: number | null
+  signal: NodeJS.Signals | null
+  stdout: string
+  stderr: string
+  durationMs: number
+}
+
+function runSessionEndCli(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  sessionId: string,
+): { child: ChildProcess; done: Promise<CliProcessResult> } {
+  const startedAt = Date.now()
+  const child = spawn(
+    process.execPath,
+    [
+      path.join(process.cwd(), 'dist', 'main.js'),
+      'hook',
+      'session-end',
+      '--owner',
+      'notifai',
+      '--harness',
+      'codex',
+    ],
+    {
+      cwd,
+      env: { ...process.env, ...env, NOTIFAI_CREDENTIALS: 'file' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  )
+  const stdout: Buffer[] = []
+  const stderr: Buffer[] = []
+  child.stdout!.on('data', (chunk: Buffer) => stdout.push(chunk))
+  child.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk))
+  child.stdin!.end(JSON.stringify({ session_id: sessionId, cwd }))
+  const done = new Promise<CliProcessResult>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => {
+      resolve({
+        code,
+        signal,
+        stdout: Buffer.concat(stdout).toString(),
+        stderr: Buffer.concat(stderr).toString(),
+        durationMs: Date.now() - startedAt,
+      })
+    })
+  })
+  void done.catch(() => undefined)
+  return { child, done }
 }
 
 function writeGlobalConfig(h: Harness, toml: string): void {
@@ -1797,6 +1928,82 @@ describe('session-end hook', () => {
     const records = readLogRecords(h.env, { limit: 10 }).records
     expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
     expect(records.at(-1)?.data).toMatchObject({ outcome: 'cleaned', queued_retirements: 0 })
+  })
+
+  it('runs the real Codex SessionEnd cleanup before contended diagnostics and exits fail-open', async () => {
+    const h = harness()
+    const sessionId = 'session-end-budget'
+    writeSessionState(sessionId, h.env, { last_prompt_at: NOW })
+    writeProjectSession(h.deps.cwd, h.env, sessionId, Date.now(), 'codex')
+    const configFile = sessionConfigPath(sessionId, h.env)
+    mkdirSync(path.dirname(configFile), { recursive: true })
+    writeFileSync(configFile, 'ask_notifications = false\nlog_level = "info"\n')
+    expect(loadConfig({ cwd: h.deps.cwd, env: h.env, sessionId }).ask_notifications).toMatchObject({
+      value: false,
+      source: expect.stringMatching(/^session:/),
+    })
+
+    const stateFile = path.join(
+      stateDir(h.env),
+      'sessions',
+      `${sanitizeSessionId(sessionId)}.json`,
+    )
+    const projectPointer = projectSessionPointerPath(h.deps.cwd, h.env)
+    expect(existsSync(stateFile)).toBe(true)
+    expect(existsSync(configFile)).toBe(true)
+    expect(existsSync(projectPointer)).toBe(true)
+
+    const logLock = `${activeLogPath(h.env)}.lock`
+    const holder = runSessionEndLogLockHolder(h.deps.cwd, h.env, logLock)
+    let cli: ReturnType<typeof runSessionEndCli> | undefined
+    try {
+      await waitUntil(
+        () => existsSync(holder.readyPath),
+        10_000,
+        'SessionEnd log lock worker did not acquire its bakery ticket',
+      )
+      expect(readdirSync(logLock).filter((name) => name.startsWith('ticket-'))).toHaveLength(1)
+
+      cli = runSessionEndCli(h.env, h.deps.cwd, sessionId)
+      await waitUntil(
+        () =>
+          readdirSync(logLock).filter((name) => name.startsWith('ticket-')).length >= 2,
+        700,
+        'the real Codex hook did not reach contended diagnostics before its deadline',
+      )
+
+      // Reaching the second bakery ticket proves main.ts preAction did not write
+      // first. Every durable cleanup must already be visible while diagnostics
+      // are still blocked behind the live holder.
+      expect(existsSync(stateFile)).toBe(false)
+      expect(existsSync(configFile)).toBe(false)
+      expect(existsSync(projectPointer)).toBe(false)
+
+      const result = await cli.done
+      expect(result).toMatchObject({ code: EXIT.ok, signal: null, stdout: '', stderr: '' })
+      expect(result.durationMs).toBeGreaterThanOrEqual(900)
+      expect(result.durationMs).toBeLessThan(2_000)
+      // The diagnostic contender timed out rather than stealing the held lock,
+      // disabled its sink, and still let the real CLI exit successfully.
+      expect(existsSync(activeLogPath(h.env))).toBe(false)
+
+      writeFileSync(holder.releasePath, 'release')
+      await holder.done
+
+      expect(readSessionState(sessionId, h.env)).toEqual({})
+      expect(readProjectSession(h.deps.cwd, h.env, Date.now())).toBeNull()
+      expect(loadConfig({ cwd: h.deps.cwd, env: h.env, sessionId }).ask_notifications).toEqual({
+        value: true,
+        source: 'default',
+      })
+    } finally {
+      if (!existsSync(holder.releasePath)) writeFileSync(holder.releasePath, 'release')
+      if (cli?.child.exitCode === null && cli.child.signalCode === null) cli.child.kill('SIGKILL')
+      if (holder.child.exitCode === null && holder.child.signalCode === null) {
+        holder.child.kill('SIGKILL')
+      }
+      rmSync(h.deps.cwd, { recursive: true, force: true })
+    }
   })
 
   it('clears only the ending session project pointer', async () => {

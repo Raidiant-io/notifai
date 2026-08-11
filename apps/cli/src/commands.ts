@@ -46,7 +46,8 @@ import {
   type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
-import { atomicWriteFileSync, withFileLockSync } from './atomic-file.js'
+import { atomicWriteFileSync } from './atomic-file.js'
+import { withTargetFileLock } from './file-lock.js'
 import {
   renderConfigExplain,
   renderConfigList,
@@ -243,11 +244,16 @@ function authedClient(deps: CommandDeps, config: CliConfig): { client: ApiClient
   }
 }
 
-function reportError(deps: CommandDeps, err: unknown): number {
+function reportError(
+  deps: CommandDeps,
+  err: unknown,
+  context: Record<string, unknown> = {},
+): number {
   // Recorded before it is printed: stderr from an agent's shell call is often
   // the one thing that does not survive into the next turn, and this is exactly
   // the line someone comes back looking for.
   log(deps).error('cli.error', {
+    ...context,
     ...(err instanceof ApiCallError
       ? { kind: 'api', status: err.status, code: err.code, message: err.message, next_action: err.nextAction, details: err.details }
       : err instanceof NetworkError
@@ -834,44 +840,44 @@ export async function repliesCommand(
   if (!authed) return EXIT.auth
   try {
     let anyReplies = false
-    let anyDegraded = false
+    const degradedRequestIds: string[] = []
     let allTimedOut = true
     const jsonBodies: object[] = []
     for (const requestId of requestIds) {
-      const result = await waitForReply(authed.client, requestId, {
-        timeoutSeconds: waitSeconds,
-        afterSeq,
-        now: deps.now,
-        sleep: deps.sleep,
-      })
-      recordReplies(deps, requestId, result.response.replies)
-      if (flags.json) {
-        jsonBodies.push({ ...result.response, degraded: result.degraded })
-      } else if (result.response.replies.length > 0) {
-        if (flags.pending === true) deps.io.out(`pending request ${requestId}`)
-        printReplies(deps, result.response.replies)
-      } else {
-        printNoReply(deps, requestId, result.response.reply_expires_at)
+      try {
+        const result = await waitForReply(authed.client, requestId, {
+          timeoutSeconds: waitSeconds,
+          afterSeq,
+          now: deps.now,
+          sleep: deps.sleep,
+        })
+        recordReplies(deps, requestId, result.response.replies)
+        if (flags.json) {
+          jsonBodies.push({ ...result.response, degraded: result.degraded })
+        } else if (result.response.replies.length > 0) {
+          if (flags.pending === true) deps.io.out(`pending request ${requestId}`)
+          printReplies(deps, result.response.replies)
+        } else {
+          printNoReply(deps, requestId, result.response.reply_expires_at)
+        }
+        anyReplies ||= result.response.replies.length > 0
+        if (result.degraded) degradedRequestIds.push(requestId)
+        allTimedOut &&= result.timedOut
+      } catch (err) {
+        recordDegradedReplyWaits(deps, degradedRequestIds)
+        return reportError(deps, err, { operation: 'reply_wait', request_id: requestId })
       }
-      anyReplies ||= result.response.replies.length > 0
-      anyDegraded ||= result.degraded
-      allTimedOut &&= result.timedOut
     }
     if (flags.json) {
       // One request keeps the response shape agents already parse; several
       // (only possible via --pending) arrive as an array in queue order.
       deps.io.out(JSON.stringify(jsonBodies.length === 1 ? jsonBodies[0] : jsonBodies, null, 2))
     }
-    if (anyDegraded) {
-      log(deps).error('cli.error', {
-        kind: 'network',
-        operation: 'reply_wait',
-        request_ids: requestIds,
-        degraded: true,
-        message: 'the reply wait ended while the server was unreachable or faulting',
-      })
-      // Prefer the first id for the recovery hint; --pending may list several.
-      deps.io.err(degradedWaitWarning(requestIds[0]!))
+    if (degradedRequestIds.length > 0) {
+      recordDegradedReplyWaits(deps, degradedRequestIds)
+      // Name a request whose polls actually degraded, not merely the first item
+      // in a multi-request queue that may have completed cleanly.
+      deps.io.err(degradedWaitWarning(degradedRequestIds[0]!))
       return EXIT.network
     }
     if (anyReplies) return EXIT.ok
@@ -957,6 +963,17 @@ export async function waitForReply(
     // "no reply" would let an agent treat an unseen refusal as consent.
     degraded: lastTransientError !== null,
   }
+}
+
+function recordDegradedReplyWaits(deps: CommandDeps, requestIds: readonly string[]): void {
+  if (requestIds.length === 0) return
+  log(deps).error('cli.error', {
+    kind: 'network',
+    operation: 'reply_wait',
+    request_ids: requestIds,
+    degraded: true,
+    message: 'the reply wait ended while the server was unreachable or faulting',
+  })
 }
 
 /**
@@ -1158,6 +1175,13 @@ async function uploadImage(deps: CommandDeps, client: ApiClient, source: string)
 export const HOOK_EVENTS = ['user-prompt-submit', 'stop', 'session-end'] as const
 export type HookEvent = (typeof HOOK_EVENTS)[number]
 
+/** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
+export function hookDefersDiagnosticsUntilAfterCleanup(
+  event: unknown,
+): event is 'session-end' {
+  return event === 'session-end'
+}
+
 /**
  * Runs one harness hook. Contract with every harness: hook JSON arrives on
  * stdin, the decision (if any) goes to stdout, diagnostics go to stderr, and
@@ -1232,6 +1256,7 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
   logger.bind({ session: envelope.session_id ?? null })
   let config: CliConfig | null = null
   let configFailure: unknown
@@ -1242,12 +1267,14 @@ export async function hookRunCommand(
     // logger lets this more-specific layer turn logging back on.
     logger.adopt(logSettingsFrom(config))
     logger.bind({ project: config.project.value })
-    start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-    logConfigResolved(logger, config)
+    if (!sessionEnd) {
+      start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+      logConfigResolved(logger, config)
+    }
   } catch (err) {
     configFailure = err
-    start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-    if (event !== 'session-end') {
+    if (!sessionEnd) {
+      start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
       logger.error('hook.end', {
         hook: event,
         outcome: 'failed',
@@ -1263,8 +1290,15 @@ export async function hookRunCommand(
   // client construction and hook handling can all throw, and a hook that exits
   // non-zero makes the harness report a failure — strictly worse than skipping.
   try {
-    if (event === 'session-end') {
+    if (sessionEnd) {
+      // Codex gives SessionEnd one second total. Do every durable cleanup write
+      // before lifecycle diagnostics: the log lock is deliberately allowed to
+      // wait that long, and a busy log must never preserve ended-session state
+      // or its inherited configuration. The resolved config above is retained
+      // in memory so logging still uses the ending session's settings afterwards.
       const outcome = handleSessionEnd(deps.env, envelope, (deps.now ?? Date.now)())
+      start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+      if (config !== null) logConfigResolved(logger, config)
       const data = { hook: event, decided: false, ...outcome.log }
       if (configFailure === undefined) logger.info('hook.end', data)
       else {
@@ -1362,6 +1396,9 @@ export async function hookRunCommand(
     }
     return EXIT.ok
   } catch (err) {
+    // SessionEnd defers its start record until after cleanup; if cleanup itself
+    // fails, begin the after-the-fact lifecycle here before recording why.
+    if (sessionEnd) start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
     // The hook still exits 0 — handing the terminal back is always right. What
     // this adds is that the reason survives, including the server's own words.
     logger.error('hook.end', {
@@ -1841,7 +1878,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (harness === 'cursor') {
     let merged: ReturnType<typeof mergeCursorHooks>
     try {
-      merged = withFileLockSync(file, () => {
+      merged = withTargetFileLock(file, () => {
         const document = loadCursorSettings(file)
         const result = mergeCursorHooks(
           document,
@@ -1875,7 +1912,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
 
   let merged: ReturnType<typeof mergeHooks>
   try {
-    merged = withFileLockSync(file, () => {
+    merged = withTargetFileLock(file, () => {
       const document = loadSettings(file)
       const result = mergeHooks(
         document,
@@ -1962,7 +1999,7 @@ function installOpencodePlugin(
   options: { adapterPath: string; timeoutSeconds: number },
 ): number {
   try {
-    withFileLockSync(file, () => {
+    withTargetFileLock(file, () => {
       if (existsSync(file)) {
         assertOwnedRegularFile(file)
         const existing = readFileSync(file, 'utf8')
@@ -2000,7 +2037,7 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
   if (harness === 'opencode') {
     try {
-      return withFileLockSync(file, () => {
+      return withTargetFileLock(file, () => {
         if (!existsSync(file)) {
           deps.io.out(`Nothing to remove: ${file} does not exist.`)
           return EXIT.ok
@@ -2023,7 +2060,7 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   if (harness === 'cursor') {
     let stripped: ReturnType<typeof removeCursorHooks> | null
     try {
-      stripped = withFileLockSync(file, () => {
+      stripped = withTargetFileLock(file, () => {
         if (!existsSync(file)) return null
         const document = loadCursorSettings(file)
         const result = removeCursorHooks(document, scriptPath)
@@ -2047,7 +2084,7 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   }
   let stripped: ReturnType<typeof removeHooks> | null
   try {
-    stripped = withFileLockSync(file, () => {
+    stripped = withTargetFileLock(file, () => {
       if (!existsSync(file)) return null
       const document = loadSettings(file)
       const result = removeHooks(document, scriptPath)

@@ -8,7 +8,8 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { atomicWriteFileSync, withFileLockSync } from './atomic-file.js'
+import { atomicWriteFileSync } from './atomic-file.js'
+import { withTargetFileLock } from './file-lock.js'
 
 const ADAPTER_MARKER = '# notifai managed hook adapter'
 const ADAPTER_VERSION = 1
@@ -47,7 +48,7 @@ export function installHookAdapter(
   const file = hookAdapterPath(homeDir)
   ensureManagedDirectories(homeDir ?? os.userInfo().homedir)
   const source = hookAdapterSource(target)
-  return withFileLockSync(file, () => {
+  return withTargetFileLock(file, () => {
     const existing = existsSync(file) ? readSafeManagedFile(file) : null
     const changed =
       existing === null || existing.contents !== source || (existing.mode & 0o777) !== 0o700

@@ -1,20 +1,17 @@
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
-  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { withFileLockSync } from './atomic-file.js'
 import {
   hookAdapterPath,
   inspectHookAdapter,
@@ -186,87 +183,5 @@ describe('stable hook adapter', () => {
     expect(run.status).toBe(127)
     expect(run.stdout).toBe('')
     expect(run.stderr).toMatch(/target is stale/)
-  })
-})
-
-describe('installer transaction lock', () => {
-  it('does not barge past a live concurrent operation', () => {
-    const { root } = isolated()
-    const file = path.join(root, 'settings.json')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-    writeFileSync(lock, 'live')
-
-    expect(() => withFileLockSync(file, () => {}, { timeoutMs: 20, staleMs: 10_000 })).toThrow(
-      /Timed out waiting/,
-    )
-    expect(readFileSync(lock, 'utf8')).toBe('live')
-  })
-
-  it('reclaims only an old regular lock owned by this user', () => {
-    const { root } = isolated()
-    const file = path.join(root, 'settings.json')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-    writeFileSync(lock, 'abandoned')
-    const old = new Date(Date.now() - 60_000)
-    utimesSync(lock, old, old)
-
-    const result = withFileLockSync(file, () => 'acquired', { staleMs: 1_000 })
-
-    expect(result).toBe('acquired')
-  })
-
-  it('refuses a symlink posing as a lock', () => {
-    const { root } = isolated()
-    const file = path.join(root, 'settings.json')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-    const target = path.join(root, 'foreign')
-    writeFileSync(target, 'leave me')
-    symlinkSync(target, lock)
-
-    expect(() => withFileLockSync(file, () => {})).toThrow(/not a regular lock file/)
-    expect(readFileSync(target, 'utf8')).toBe('leave me')
-  })
-
-  it('refuses a symlinked settings directory before creating a lock', () => {
-    const { root } = isolated()
-    const foreign = path.join(root, 'foreign-dir')
-    const linked = path.join(root, 'linked-dir')
-    mkdirSync(foreign)
-    symlinkSync(foreign, linked)
-
-    expect(() => withFileLockSync(path.join(linked, 'settings.json'), () => {})).toThrow(
-      /not a regular directory/,
-    )
-    expect(existsSync(path.join(foreign, '.settings.json.notifai.lock'))).toBe(false)
-  })
-
-  it('does not remove a replacement that appears at the lock path while held', () => {
-    const { root } = isolated()
-    const file = path.join(root, 'settings.json')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-
-    expect(() =>
-      withFileLockSync(file, () => {
-        rmSync(lock)
-        writeFileSync(lock, 'replacement')
-      }),
-    ).toThrow(/changed while held/)
-    expect(readFileSync(lock, 'utf8')).toBe('replacement')
-  })
-
-  it('preserves the action error when cleanup also finds a replacement', () => {
-    const { root } = isolated()
-    const file = path.join(root, 'settings.json')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-    const actionError = new Error('merge failed')
-
-    expect(() =>
-      withFileLockSync(file, () => {
-        rmSync(lock)
-        writeFileSync(lock, 'replacement')
-        throw actionError
-      }),
-    ).toThrow(actionError)
-    expect(readFileSync(lock, 'utf8')).toBe('replacement')
   })
 })
