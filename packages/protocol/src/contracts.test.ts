@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { Value } from '@sinclair/typebox/value'
 import {
   CAPABILITIES_V1,
   defaultDeliveryPolicy,
@@ -9,8 +10,10 @@ import {
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   summarizeOverall,
+  SubmitNotificationRequest,
   validateDraft,
   type NotificationDraftT,
+  type SubmissionReceipt,
 } from './index.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
 
@@ -29,6 +32,36 @@ function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT 
 function freeTextReply(expiresInSeconds = 86400): NotificationDraftT['reply'] {
   return { expires_in_seconds: expiresInSeconds, questions: [{ id: 'q', text: 'Your call?' }] }
 }
+
+describe('submission wire contract', () => {
+  it('accepts a bounded client request id and exposes the committed reply deadline', () => {
+    const request = {
+      request_id: `req_${'a'.repeat(24)}`,
+      idempotency_key: 'submission-wire-1',
+      draft: draft(),
+    }
+    expect(Value.Check(SubmitNotificationRequest, request)).toBe(true)
+    expect(
+      Value.Check(SubmitNotificationRequest, { ...request, request_id: `req_${'a'.repeat(22)}` }),
+    ).toBe(true)
+    expect(
+      Value.Check(SubmitNotificationRequest, { ...request, request_id: `req_${'a'.repeat(21)}` }),
+    ).toBe(false)
+    expect(
+      Value.Check(SubmitNotificationRequest, { ...request, request_id: `req_${'a'.repeat(25)}` }),
+    ).toBe(false)
+
+    const receipt: SubmissionReceipt = {
+      request_id: request.request_id,
+      reply_expires_at: '2026-08-11T12:00:00.000Z',
+      replayed: false,
+      overall: 'pending',
+      deliveries: [],
+      warnings: [],
+    }
+    expect(receipt.reply_expires_at).toBe('2026-08-11T12:00:00.000Z')
+  })
+})
 
 describe('validateDraft', () => {
   it('accepts a minimal valid draft', () => {

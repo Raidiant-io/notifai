@@ -12,6 +12,9 @@ import { parse as parseToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { hookAdapterPath } from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
+import { HARNESSES, HOOK_TIMING, type Harness } from './harnesses.js'
+
+export { HARNESSES, type Harness } from './harnesses.js'
 
 /**
  * The three joints the OpenCode plugin hooks into, as (harness event, the
@@ -36,9 +39,6 @@ const OPENCODE_EVENTS = [
  * extension point is a JavaScript plugin module. Each therefore has a bounded
  * adapter instead of being forced through this shared document shape.
  */
-
-export const HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode'] as const
-export type Harness = (typeof HARNESSES)[number]
 
 export interface HookHandler {
   type: 'command'
@@ -113,8 +113,8 @@ export interface BuildOptions {
   harness?: Harness
 }
 
-/** Command-hook harnesses kill at 600s; generated adapters use the same safe ceiling. */
-const HOOK_CEILING_SECONDS = 540
+/** Generated blocking adapters grant the owner budget one fixed minute of host headroom. */
+const HOOK_CEILING_SECONDS = HOOK_TIMING.totalSeconds + HOOK_TIMING.hostHeadroomSeconds
 
 /**
  * Stable process budget for a blocking turn-end adapter.
@@ -229,24 +229,32 @@ export function settingsFile(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  // OpenCode has no settings document to merge into — its adapter is a
-  // generated plugin module, so it owns a whole file rather than a handler
-  // inside one. `opencodePluginPath` is its equivalent.
-  if (harness === 'opencode') return opencodePluginPath(global, cwd, env)
-  if (harness === 'cursor') {
-    const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
-    return global
-      ? path.join(home, '.cursor', 'hooks.json')
-      : path.join(cwd, '.cursor', 'hooks.json')
+  switch (harness) {
+    // OpenCode has no settings document to merge into — its adapter is a
+    // generated plugin module, so it owns a whole file instead.
+    case 'opencode':
+      return opencodePluginPath(global, cwd, env)
+    case 'cursor': {
+      const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
+      return global
+        ? path.join(home, '.cursor', 'hooks.json')
+        : path.join(cwd, '.cursor', 'hooks.json')
+    }
+    case 'claude-code':
+      return global
+        ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude'), 'settings.json')
+        : path.join(cwd, '.claude', 'settings.local.json')
+    case 'codex':
+      return global
+        ? path.join(configHome(env, 'CODEX_HOME', '.codex'), 'hooks.json')
+        : path.join(codexProjectRoot(cwd), '.codex', 'hooks.json')
+    default:
+      return assertNeverHarness(harness)
   }
-  if (harness === 'claude-code') {
-    return global
-      ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude'), 'settings.json')
-      : path.join(cwd, '.claude', 'settings.local.json')
-  }
-  return global
-    ? path.join(configHome(env, 'CODEX_HOME', '.codex'), 'hooks.json')
-    : path.join(codexProjectRoot(cwd), '.codex', 'hooks.json')
+}
+
+function assertNeverHarness(harness: never): never {
+  throw new Error(`Unsupported harness: ${String(harness)}`)
 }
 
 /**

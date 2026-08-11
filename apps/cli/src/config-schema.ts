@@ -129,8 +129,8 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'How long the harness hook blocks waiting for your answer',
     detail:
-      'After a question has gone out, the harness hook holds the agent for up to this long waiting for your answer before falling through to the harness\'s own prompt.\n\nThe ceiling exists because both Claude Code and Codex kill a command hook at 600 seconds. Grace plus this value plus the installer\'s headroom has to stay under that, or the hook is killed mid-wait — after you have already answered.',
-    example: '180',
+      'After a question has gone out, the harness continuation owner waits up to this long for your answer. The device reply window uses the same bound, so Notifai never accepts an answer after an agent with no dormant-session wake has already returned.\n\nThe ceiling exists because command-hook harnesses bound their Stop processes. Grace plus this value plus installer headroom stays inside that budget.',
+    example: '480',
   },
 
   sound: {

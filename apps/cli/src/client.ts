@@ -70,8 +70,8 @@ export interface ApiClient {
     requestId: string,
     options: { waitSeconds: number; afterSeq: number },
   ): Promise<ListRepliesResponse>
-  /** Retire a question so a late device answer is rejected rather than lost. */
-  closeReplies(requestId: string): Promise<void>
+  /** Retire a question and return the replies committed before the close fence. */
+  closeReplies(requestId: string): Promise<ListRepliesResponse>
   createMediaUpload(body: CreateMediaUploadRequestT): Promise<CreateMediaUploadResponse>
   uploadMedia(grant: CreateMediaUploadResponse, bytes: Uint8Array): Promise<void>
   health(): Promise<boolean>
@@ -84,6 +84,14 @@ export interface ClientOptions {
    * whole network path stays inside the budget the harness allows them.
    */
   timeoutMs?: number
+  /**
+   * Absolute wall-clock ceiling for the caller's whole operation. This is
+   * intentionally separate from `timeoutMs`: a late long poll must not get a
+   * fresh per-request allowance after its owning harness hook is nearly done.
+   */
+  deadlineAt?: number
+  /** Test seam for `deadlineAt`; production uses the wall clock. */
+  now?: () => number
   /**
    * Records each call locally. Worth having because the two failures that cost
    * the most time — a server older than this CLI, and a network path that only
@@ -103,6 +111,7 @@ export function createClient(
 ): ApiClient {
   const root = baseUrl.replace(/\/$/, '')
   const budgetMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const now = options.now ?? Date.now
   const logger = options.logger
 
   async function call<T>(
@@ -146,7 +155,12 @@ export function createClient(
     // hangs until the harness kills the whole hook — and the reply-poll deadline
     // cannot interrupt an individual fetch. The signal covers the
     // body read too, not just the response headers.
-    const limitMs = budgetMs + serverWaitSeconds * 1000
+    const requestBudgetMs = budgetMs + serverWaitSeconds * 1000
+    const remainingMs =
+      options.deadlineAt === undefined
+        ? requestBudgetMs
+        : Math.max(1, options.deadlineAt - now())
+    const limitMs = Math.max(1, Math.min(requestBudgetMs, remainingMs))
     const signal = AbortSignal.timeout(limitMs)
     let response: Response
     try {
@@ -205,7 +219,10 @@ export function createClient(
         waitSeconds,
       ),
     closeReplies: (requestId) =>
-      call('POST', `/api/v1/notifications/${encodeURIComponent(requestId)}/replies/close`),
+      call<ListRepliesResponse>(
+        'POST',
+        `/api/v1/notifications/${encodeURIComponent(requestId)}/replies/close`,
+      ),
     createMediaUpload: (body) => call('POST', '/api/v1/media', body),
     uploadMedia: async (grant, bytes) => {
       let response: Response

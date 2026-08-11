@@ -30,7 +30,7 @@ import {
   readLogRecords,
   type LogRecord,
 } from './logging.js'
-import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
+import { EXIT, askCommand, buildQuestions, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
 import {
   loadConfig,
   projectSessionPointerPath,
@@ -47,6 +47,7 @@ import {
   orphanRetirements,
   pruneAbandonedSessions,
   releaseQuestionPush,
+  readMatchingProjectSessionPointer,
   readProjectSession,
   readSessionState,
   registerQuestion,
@@ -73,6 +74,8 @@ interface Recorder {
   submitted: SubmitNotificationRequestT[]
   /** `submitted[i]`'s request id, so a test can name what it just sent. */
   receipts: string[]
+  /** Stable test aliases survive the fresh client created for each hook. */
+  aliases: Map<string, number>
   closed: string[]
   /** Simulates an offline machine; retirement has to survive one. */
   failSubmits?: boolean
@@ -80,10 +83,22 @@ interface Recorder {
   beforeQuestionSubmit?: () => void
   /** Lets race tests hold every replies call until all contenders are polling. */
   beforeReplies?: () => Promise<void>
+  /** Per-request answer stream for multi-question ownership tests. */
+  repliesFor?: (requestId: string) => ReplyView[]
 }
 
 function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
   let submissions = 0
+  const recordedReplies = (requestId: string): ReplyView[] => {
+    const direct = recorder.repliesFor?.(requestId)
+    if (direct !== undefined && direct.length > 0) return direct
+    const ordinal = recorder.aliases.get(requestId)
+    if (ordinal !== undefined) {
+      const legacyAlias = recorder.repliesFor?.(`req_hook_${ordinal}`)
+      if (legacyAlias !== undefined) return legacyAlias
+    }
+    return direct ?? replies
+  }
   return {
     beginPairing: notUsed,
     pollPairing: notUsed,
@@ -118,9 +133,12 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       if (body.draft.event === 'agent_question') recorder.beforeQuestionSubmit?.()
       recorder.submitted.push(body)
       submissions += 1
-      recorder.receipts.push(`req_hook_${submissions}`)
+      const requestId = body.request_id ?? `req_hook_${submissions}`
+      recorder.aliases.set(requestId, recorder.receipts.length + 1)
+      recorder.receipts.push(requestId)
       return {
-        request_id: `req_hook_${submissions}`,
+        request_id: requestId,
+        reply_expires_at: new Date(NOW + 480_000).toISOString(),
         replayed: false,
         overall: 'provider_accepted_all',
         deliveries: [],
@@ -129,10 +147,19 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
     },
     replies: async (requestId) => {
       await recorder.beforeReplies?.()
-      return ({ request_id: requestId, reply_expires_at: null, replies }) satisfies ListRepliesResponse
+      return ({
+        request_id: requestId,
+        reply_expires_at: null,
+        replies: recordedReplies(requestId),
+      }) satisfies ListRepliesResponse
     },
     closeReplies: async (requestId) => {
       recorder.closed.push(requestId)
+      return {
+        request_id: requestId,
+        reply_expires_at: new Date(NOW).toISOString(),
+        replies: recordedReplies(requestId),
+      } satisfies ListRepliesResponse
     },
   } as ApiClient
 }
@@ -161,6 +188,7 @@ interface Harness {
   io: CapturedIo
   recorder: Recorder
   env: NodeJS.ProcessEnv
+  advanceClock(milliseconds: number): void
 }
 
 const NOW = 1_800_000_000_000
@@ -177,7 +205,7 @@ function harness(replies: ReplyView[] = [], idleSeconds: number | null = null): 
     XDG_STATE_HOME: path.join(root, 'state'),
   }
   const io = new CapturedIo()
-  const recorder: Recorder = { submitted: [], receipts: [], closed: [] }
+  const recorder: Recorder = { submitted: [], receipts: [], closed: [], aliases: new Map() }
   // Virtual clock: sleeps advance it instead of costing wall time. A frozen
   // clock would make the reply poll's deadline unreachable and spin forever.
   let clock = NOW
@@ -185,6 +213,9 @@ function harness(replies: ReplyView[] = [], idleSeconds: number | null = null): 
     io,
     recorder,
     env,
+    advanceClock(milliseconds: number) {
+      clock += milliseconds
+    },
     deps: {
       io,
       store: {
@@ -570,22 +601,12 @@ describe('what the hook leaves behind', () => {
     )
 
     const unanswered = readLogRecords(h.env, { event: ['hook.answer'] }).records.at(-1)
-    expect(unanswered?.data?.['request_ids']).toEqual(['req_hook_1', 'req_hook_2'])
+    expect(unanswered?.data?.['request_ids']).toEqual(h.recorder.receipts)
+    expect(readSessionState('request-log', h.env).pending).toBeUndefined()
 
-    await hookRunCommand(
-      recording(h),
-      'stop',
-      stdin({ session_id: 'request-log', cwd: h.deps.cwd }),
-    )
-    const alreadyAsked = readLogRecords(h.env, { event: ['hook.gate'] }).records.find(
-      (record) => record.data?.['reason'] === 'already-asked',
-    )
-    expect(alreadyAsked?.data?.['request_ids']).toEqual(['req_hook_1', 'req_hook_2'])
-
-    for (const requestId of ['req_hook_1', 'req_hook_2']) {
+    for (const requestId of h.recorder.receipts) {
       const matching = readLogRecords(h.env, { request: requestId }).records
       expect(matching).toContainEqual(unanswered)
-      expect(matching).toContainEqual(alreadyAsked)
     }
     expect(readLogRecords(h.env, { request: 'req_hook' }).records).not.toContainEqual(unanswered)
   })
@@ -672,7 +693,7 @@ describe('presence gating is optional (require_idle)', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present1' }))
 
-    expect(h.recorder.submitted).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
     expect(submittedAt).toBe(NOW)
     expect(h.io.errLines.join('\n')).not.toContain('at the keyboard')
   })
@@ -687,7 +708,7 @@ describe('presence gating is optional (require_idle)', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present2' }))
 
-    expect(h.recorder.submitted).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
     // The clock only advances when the hook sleeps, so this is proof the wait
     // actually happened rather than being skipped.
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(300_000)
@@ -703,7 +724,7 @@ describe('presence gating is optional (require_idle)', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present3' }))
 
-    expect(h.recorder.submitted).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
     expect(h.io.errLines.join('\n')).not.toContain('no idle signal')
   })
@@ -778,20 +799,73 @@ describe('terminal-first grace window', () => {
   })
 
   it('never lets the window crowd out the reply wait past the hook budget', async () => {
-    // Both dials at maximum would be 540 + 540 — nearly twice the 600s ceiling
-    // the harness kills a hook at, and a killed hook loses an answer already
-    // given. The reply wait wins, so the window yields to nothing at all.
+    // Both preferences can be large, but the shared budget honors maximum
+    // grace while retaining a protocol-valid answer window and scheduling
+    // slack. Real timers do not wake on the exact requested millisecond.
     const h = harness([reply({ text: 'Yes' })], 900)
+    const virtualSleep = h.deps.sleep!
+    h.deps.sleep = async (milliseconds: number) => virtualSleep(milliseconds + 1)
     const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
     mkdirSync(dir, { recursive: true })
     writeFileSync(
       path.join(dir, 'config.toml'),
-      'ask_grace_seconds = 540\nhook_reply_timeout_seconds = 540\n',
+      'ask_grace_seconds = 334\nhook_reply_timeout_seconds = 540\n',
     )
     pending(h, 'g5', 0)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g5' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
-    expect(h.deps.now?.()).toBe(NOW)
+    expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 334_000)
+    expect(h.deps.now?.()).toBeLessThan(NOW + 335_000)
+    expect(
+      h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')?.draft.reply
+        ?.expires_in_seconds,
+    ).toBeGreaterThanOrEqual(60)
+  })
+
+  it('reserves transport overrun and close time inside the whole Stop budget', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        listDevices: async () => {
+          h.advanceClock(20_000)
+          return client.listDevices()
+        },
+        submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => {
+          h.advanceClock(20_000)
+          return client.submit(body, waitSeconds)
+        },
+        replies: async (
+          requestId: string,
+          options: { waitSeconds: number; afterSeq: number },
+        ) => {
+          // Server hold plus the client's 20s AbortSignal allowance.
+          h.advanceClock((options.waitSeconds + 20) * 1000)
+          return {
+            request_id: requestId,
+            reply_expires_at: new Date(NOW + 480_000).toISOString(),
+            replies: [],
+          }
+        },
+        closeReplies: async (requestId: string) => {
+          h.advanceClock(20_000)
+          return client.closeReplies(requestId)
+        },
+      } as ApiClient
+    }
+    writeGlobalConfig(h, 'ask_grace_seconds = 250\nhook_reply_timeout_seconds = 540\n')
+    pending(h, 'transport-budget', 0)
+
+    await hookRunCommand(h.deps, 'stop', async () => {
+      // stdin/config/setup belong to the same invocation budget as polling.
+      h.advanceClock(30_000)
+      return JSON.stringify({ session_id: 'transport-budget' })
+    })
+
+    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
+    expect(readSessionState('transport-budget', h.env).pending).toBeUndefined()
   })
 })
 
@@ -827,7 +901,7 @@ describe('nagging guards', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n1' }))
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n1' }))
 
-    expect(h.recorder.submitted).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
   })
 
   it('respects the harness recursion guard', async () => {
@@ -878,21 +952,24 @@ describe('nagging guards', () => {
 })
 
 describe('late answer collection', () => {
-  it('collects a late answer on Stop and resumes with it instead of asking twice', async () => {
-    const answers: ReplyView[] = []
-    const h = harness(answers, 900)
-    writeSessionState('late-stop', h.env, { last_prompt_at: AWAY })
-    registerQuestion('late-stop', h.env, { question: 'Ship it?' }, NOW)
+  it('collects an answer that arrived during the resumed model turn', async () => {
+    const h = harness([reply({ text: 'Ship it' })], 900)
+    writeSessionState('late-stop', h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Ship it?',
+        asked_at: NOW,
+        request_id: 'req_live',
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 60_000,
+      }],
+    })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-stop' }))
-    expect(readSessionState('late-stop', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
-    answers.push(reply({ text: 'Ship it' }))
-    h.io.outLines = []
 
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-stop' }))
-
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
-    expect(h.recorder.closed).toContain('req_hook_1')
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(0)
+    expect(h.recorder.closed).toContain('req_live')
     expect(readSessionState('late-stop', h.env).pending).toBeUndefined()
     expect(h.io.outLines).toHaveLength(1)
     expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
@@ -902,13 +979,18 @@ describe('late answer collection', () => {
   })
 
   it('collects a late answer on UserPromptSubmit and retires it truthfully', async () => {
-    const answers: ReplyView[] = []
-    const h = harness(answers, 900)
-    writeSessionState('late-prompt', h.env, { last_prompt_at: AWAY })
-    registerQuestion('late-prompt', h.env, { question: 'Ship it?' }, NOW)
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-prompt' }))
-    answers.push(reply({ text: 'Hold' }))
-    h.io.outLines = []
+    const h = harness([reply({ text: 'Hold' })], 900)
+    writeSessionState('late-prompt', h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Ship it?',
+        asked_at: NOW,
+        request_id: 'req_live',
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 60_000,
+      }],
+    })
 
     await hookRunCommand(
       h.deps,
@@ -916,47 +998,226 @@ describe('late answer collection', () => {
       stdin({ session_id: 'late-prompt', cwd: h.deps.cwd }),
     )
 
+    expect(readSessionState('late-prompt', h.env).accepted?.answers[0]?.reply.text).toBe('Hold')
+    expect(h.io.outLines).toEqual([])
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-prompt' }))
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Hold')
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'late-prompt', stop_hook_active: true }),
+    )
+
     const retirement = h.recorder.submitted.find(
       (entry) => entry.draft.event === 'question_retired',
     )?.draft
     expect(retirement?.lifecycle).toMatchObject({
       state: 'answered',
-      retires_request_id: 'req_hook_1',
+      retires_request_id: 'req_live',
     })
     expect(retirement?.lifecycle?.state).not.toBe('answered_elsewhere')
     expect(readSessionState('late-prompt', h.env).pending).toBeUndefined()
-    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: expect.stringContaining('Hold'),
-      },
-    })
+    expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
   })
 })
 
-describe('OpenCode answer preservation', () => {
-  it('pushes without waiting and leaves the answerable request intact', async () => {
+describe('OpenCode answer continuation', () => {
+  it('fails closed instead of accepting an answer the idle event cannot deliver', async () => {
     const h = harness([reply({ text: 'Approve' })], 900)
     writeSessionState('open1', h.env, { last_prompt_at: AWAY })
     registerQuestion('open1', h.env, { question: 'Deploy?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'open1' }), 'opencode')
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(0)
     expect(h.recorder.closed).toEqual([])
     expect(
       h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
-    ).toEqual([])
-    expect(readSessionState('open1', h.env).pending?.[0]).toMatchObject({
-      question: 'Deploy?',
-      request_id: 'req_hook_1',
-      device_ids: ['dev_iphone', 'dev_mac'],
-    })
+    ).toHaveLength(0)
+    expect(readSessionState('open1', h.env).pending).toBeUndefined()
     expect(h.io.outLines).toEqual([])
+    expect(h.io.errLines.join('\n')).toContain('no proven answer continuation')
   })
 })
 
 describe('reply-wait presence monitoring', () => {
+  it('delivers a reply that commits while the server close fence is finalizing silence', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async (requestId: string) => ({
+          request_id: requestId,
+          reply_expires_at: new Date(NOW + 60_000).toISOString(),
+          replies: [],
+        }),
+        closeReplies: async (requestId: string) => {
+          h.recorder.closed.push(requestId)
+          return {
+            request_id: requestId,
+            reply_expires_at: new Date(NOW + 60_000).toISOString(),
+            replies: [reply({ text: 'Committed at the fence' })],
+          }
+        },
+      } as ApiClient
+    }
+    writeGlobalConfig(h, 'hook_reply_timeout_seconds = 60\n')
+    writeSessionState('fenced-reply', h.env, { last_prompt_at: AWAY })
+    registerQuestion('fenced-reply', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'fenced-reply' }))
+
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain(
+      'Committed at the fence',
+    )
+    expect(readSessionState('fenced-reply', h.env).accepted).toBeDefined()
+  })
+
+  it('preserves a silent question when the close fence cannot be proven', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        closeReplies: async () => {
+          throw new Error('partitioned during close')
+        },
+      } as ApiClient
+    }
+    writeGlobalConfig(h, 'hook_reply_timeout_seconds = 60\n')
+    writeSessionState('unproven-close', h.env, { last_prompt_at: AWAY })
+    registerQuestion('unproven-close', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'unproven-close' }))
+
+    const state = readSessionState('unproven-close', h.env)
+    expect(state.pending?.[0]?.request_id).toBe(h.recorder.receipts[0])
+    expect(state.retiring).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('preserving ownership')
+  })
+
+  it('recovers an accepted question after its submit response is lost', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    let acceptedRequestId: string | undefined
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async (body: SubmitNotificationRequestT) => {
+          if (body.draft.event !== 'agent_question') return client.submit(body, 0)
+          acceptedRequestId = body.request_id
+          h.recorder.submitted.push(body)
+          h.recorder.receipts.push(body.request_id!)
+          h.recorder.aliases.set(body.request_id!, 1)
+          throw new Error('response lost after commit')
+        },
+        replies: async (requestId: string) => ({
+          request_id: requestId,
+          reply_expires_at: new Date(NOW + 60_000).toISOString(),
+          replies: requestId === acceptedRequestId ? [reply({ text: 'Yes, recover it' })] : [],
+        }),
+        closeReplies: async (requestId: string) => ({
+          request_id: requestId,
+          reply_expires_at: new Date(NOW).toISOString(),
+          replies: requestId === acceptedRequestId ? [reply({ text: 'Yes, recover it' })] : [],
+        }),
+      } as ApiClient
+    }
+    writeSessionState('ambiguous-submit', h.env, { last_prompt_at: AWAY })
+    registerQuestion('ambiguous-submit', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ambiguous-submit' }))
+
+    expect(acceptedRequestId).toMatch(/^req_[A-Za-z0-9_-]{22,24}$/)
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Yes, recover it')
+    expect(readSessionState('ambiguous-submit', h.env).accepted?.answers[0]?.pending.request_id)
+      .toBe(acceptedRequestId)
+  })
+
+  it('replays the frozen intent when an ambiguous submit never reached the server', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    let firstAttempt: SubmitNotificationRequestT | undefined
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async (body: SubmitNotificationRequestT) => {
+          firstAttempt = body
+          throw new Error('connection failed before commit')
+        },
+        replies: async () => {
+          throw new ApiCallError(404, 'not_found', 'No such request.')
+        },
+        closeReplies: async () => {
+          throw new ApiCallError(404, 'not_found', 'No such request.')
+        },
+      } as ApiClient
+    }
+    writeSessionState('precommit-loss', h.env, { last_prompt_at: AWAY })
+    registerQuestion('precommit-loss', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'precommit-loss' }))
+
+    const stranded = readSessionState('precommit-loss', h.env).pending?.[0]
+    expect(stranded?.request_id).toBeUndefined()
+    expect(stranded?.submission).toBeDefined()
+    expect(h.io.errLines.join('\n')).toContain('response was ambiguous')
+
+    h.advanceClock(600_000)
+    h.deps.clientFactory = factory
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'precommit-loss' }))
+
+    expect(h.recorder.submitted[0]).toEqual(firstAttempt)
+  })
+
+  it('preserves and exactly replays an intent after a definitive submit rejection', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    let polls = 0
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async () => {
+          throw new ApiCallError(422, 'invalid_request', 'The draft was rejected.')
+        },
+        replies: async () => {
+          polls += 1
+          throw new Error('must not poll an unaccepted request')
+        },
+      } as ApiClient
+    }
+    writeSessionState('rejected-submit', h.env, { last_prompt_at: AWAY })
+    registerQuestion('rejected-submit', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-submit' }))
+
+    const pending = readSessionState('rejected-submit', h.env).pending?.[0]
+    expect(pending?.request_id).toBeUndefined()
+    expect(pending?.submission?.request_id).toMatch(/^req_[A-Za-z0-9_-]{22,24}$/)
+    expect(polls).toBe(0)
+    expect(h.io.errLines.join('\n')).toContain('submission was rejected')
+
+    const frozen = pending?.submission
+    if (frozen === undefined) throw new Error('expected a persisted submission intent')
+    writeGlobalConfig(h, 'project = "changed-after-crash"\n')
+    h.advanceClock(600_000)
+    h.deps.clientFactory = factory
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-submit' }))
+
+    expect(h.recorder.submitted[0]).toEqual({
+      request_id: frozen.request_id,
+      idempotency_key: frozen.idempotency_key,
+      draft: frozen.draft,
+    })
+  })
+
   it('returns the terminal when the user comes back after the push', async () => {
     const h = harness([], 900)
     writeGlobalConfig(h, 'require_idle = true\n')
@@ -971,16 +1232,89 @@ describe('reply-wait presence monitoring', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'returned' }))
 
     expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
-    expect(h.recorder.closed).toEqual([])
-    expect(readSessionState('returned', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(readSessionState('returned', h.env).pending).toBeUndefined()
     expect((h.deps.now?.() ?? NOW) - NOW).toBeLessThan(30_000)
     expect(h.io.errLines.join('\n')).toContain('came back')
-    expect(h.io.errLines.join('\n')).toContain('notifai replies --pending')
+    expect(h.io.errLines.join('\n')).toContain('retired before returning the terminal')
+  })
+
+  it('closes and retires silence at the absolute owner deadline', async () => {
+    const h = harness([], 900)
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => ({
+          ...(await client.submit(body, waitSeconds)),
+          // The real server commits the configured reply window, rather than
+          // the generic recorder's deliberately broad 480s fixture.
+          reply_expires_at: new Date(NOW + 60_000).toISOString(),
+        }),
+      } as ApiClient
+    }
+    writeGlobalConfig(h, 'hook_reply_timeout_seconds = 60\n')
+    writeSessionState('deadline', h.env, { last_prompt_at: AWAY })
+    registerQuestion('deadline', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'deadline' }))
+
+    expect(h.deps.now?.()).toBe(NOW + 60_000)
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(readSessionState('deadline', h.env).pending).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('expired with its continuation owner')
+  })
+
+  it('charges sequential submission latency to one deadline', async () => {
+    const h = harness([reply({ text: 'Done' })], 900)
+    writeSessionState('latency', h.env, { last_prompt_at: AWAY })
+    registerQuestion('latency', h.env, { question: 'First?' }, NOW)
+    registerQuestion('latency', h.env, { question: 'Second?' }, NOW)
+    h.recorder.beforeQuestionSubmit = () => h.advanceClock(40_000)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'latency' }))
+
+    const windows = h.recorder.submitted
+      .filter((entry) => entry.draft.event === 'agent_question')
+      .map((entry) => entry.draft.reply?.expires_in_seconds)
+    expect(windows).toEqual([395, 355])
+    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 435_000)
+  })
+
+  it('re-arms the next Stop for an independently pending answer', async () => {
+    const h = harness([], 900)
+    const answers = new Map<string, ReplyView[]>([
+      ['req_hook_1', [reply({ text: 'First answer' })]],
+      ['req_hook_2', []],
+    ])
+    h.recorder.repliesFor = (requestId) => answers.get(requestId) ?? []
+    writeSessionState('successor', h.env, { last_prompt_at: AWAY })
+    registerQuestion('successor', h.env, { question: 'First?' }, NOW)
+    registerQuestion('successor', h.env, { question: 'Second?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'successor' }))
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('First answer')
+    expect(readSessionState('successor', h.env).pending?.map((entry) => entry.question)).toEqual([
+      'Second?',
+    ])
+
+    answers.set('req_hook_2', [reply({ text: 'Second answer' })])
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'successor', stop_hook_active: true }),
+    )
+
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Second answer')
+    expect(readSessionState('successor', h.env).pending).toBeUndefined()
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(2)
   })
 })
 
 describe('Cursor stop output', () => {
-  it('maps the phone answer to one native followup_message', async () => {
+  it('fails closed when the invoking shell cannot name the exact conversation', async () => {
     const h = harness([reply({ text: 'Ship it' })], 900)
     writeSessionState('cursor-conversation', h.env, { last_prompt_at: AWAY })
     registerQuestion('cursor-conversation', h.env, { question: 'Deploy now?' })
@@ -996,12 +1330,9 @@ describe('Cursor stop output', () => {
       'cursor',
     )
 
-    expect(h.io.outLines).toHaveLength(1)
-    const output = JSON.parse(h.io.outLines[0] ?? '{}') as Record<string, unknown>
-    expect(output['followup_message']).toContain(
-      'Notifai — the user answered from Furankuphone: "Ship it". Continue with that answer.',
-    )
-    expect(output).not.toHaveProperty('decision')
+    expect(h.recorder.submitted).toHaveLength(0)
+    expect(h.io.outLines).toHaveLength(0)
+    expect(h.io.errLines.join('\n')).toContain('asynchronous ask is unsupported')
   })
 })
 
@@ -1024,36 +1355,40 @@ describe('question queueing and retirement debt', () => {
       }))
   }
 
-  it('keeps the first question live and asks the second alongside it', async () => {
+  function seedLive(h: Harness, sessionId: string, requestId = 'req_live'): void {
+    writeSessionState(sessionId, h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Ship it?',
+        asked_at: NOW,
+        request_id: requestId,
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone', 'dev_mac'],
+        reply_deadline_at: NOW + 60_000,
+      }],
+    })
+  }
+
+  it('registers a second question without mutating the live first question', () => {
     const h = harness([])
-    writeSessionState('sup1', h.env, { last_prompt_at: AWAY })
-    registerQuestion('sup1', h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup1' }))
-    const first = h.recorder.receipts[0]
-    expect(first).toBeDefined()
+    seedLive(h, 'sup1')
 
     // The agent carried on and asked something else. The first question is
     // still the user's to answer — a second question never ends the first;
     // superseding is reply semantics, not question semantics.
     registerQuestion('sup1', h.env, { question: 'Deploy it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup1' }))
 
     expect(retirements(h)).toEqual([])
-    expect(
-      h.recorder.submitted.filter((s) => s.draft.presentation.body === 'Deploy it?'),
-    ).toHaveLength(1)
     const live = readSessionState('sup1', h.env).pending
     expect(live).toHaveLength(2)
     expect(live?.map((entry) => entry.question)).toEqual(['Ship it?', 'Deploy it?'])
-    expect(live?.every((entry) => entry.request_id !== undefined)).toBe(true)
+    expect(live?.map((entry) => entry.request_id)).toEqual(['req_live', undefined])
   })
 
   it('keeps the ids when the retirement cannot be sent, and retries later', async () => {
     const h = harness([])
-    writeSessionState('sup2', h.env, { last_prompt_at: AWAY })
-    registerQuestion('sup2', h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup2' }))
-    const first = h.recorder.receipts[0]
+    seedLive(h, 'sup2')
+    const first = 'req_live'
 
     // Offline when the user returns: the wipe parks the retirement, the
     // drain fails, and it must not forget what it was for.
@@ -1069,13 +1404,11 @@ describe('question queueing and retirement debt', () => {
 
   it('keeps the original delivery targets when routing changes before retirement', async () => {
     const h = harness([])
-    writeSessionState('sup-targets', h.env, { last_prompt_at: AWAY })
-    registerQuestion('sup-targets', h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup-targets' }))
+    seedLive(h, 'sup-targets')
 
     const live = readSessionState('sup-targets', h.env).pending?.[0]
     expect(live).toMatchObject({
-      request_id: 'req_hook_1',
+      request_id: 'req_live',
       device_ids: ['dev_iphone', 'dev_mac'],
     })
 
@@ -1090,7 +1423,7 @@ describe('question queueing and retirement debt', () => {
     const retirement = h.recorder.submitted.find(
       (submission) => submission.draft.event === 'question_retired',
     )
-    expect(retirement?.draft.lifecycle?.retires_request_id).toBe('req_hook_1')
+    expect(retirement?.draft.lifecycle?.retires_request_id).toBe('req_live')
     expect(retirement?.draft.targets).toEqual({
       mode: 'selected',
       device_ids: ['dev_iphone', 'dev_mac'],
@@ -1102,10 +1435,8 @@ describe('question queueing and retirement debt', () => {
     // before every guard — retirement debt has nothing to do with whether
     // this turn may ask.
     const h = harness([])
-    writeSessionState('sup3', h.env, { last_prompt_at: AWAY })
-    registerQuestion('sup3', h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup3' }))
-    const first = h.recorder.receipts[0]
+    seedLive(h, 'sup3')
+    const first = 'req_live'
 
     h.recorder.failSubmits = true
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup3' }))
@@ -1122,10 +1453,8 @@ describe('question queueing and retirement debt', () => {
     // UserPromptSubmit resets session state to record presence, and that reset
     // used to take the retirement queue with it.
     const h = harness([])
-    writeSessionState('sup4', h.env, { last_prompt_at: AWAY })
-    registerQuestion('sup4', h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup4' }))
-    const first = h.recorder.receipts[0]
+    seedLive(h, 'sup4')
+    const first = 'req_live'
 
     // The first return is offline: the wipe parks, the drain fails, and the
     // next prompt must still find the debt.
@@ -1158,18 +1487,7 @@ describe('question queueing and retirement debt', () => {
 describe('several questions in flight', () => {
   /** Route each live request its own replies; the shared list cannot say who answered what. */
   function repliesByRequest(h: Harness, byRequest: Map<string, ReplyView[]>): void {
-    const factory = h.deps.clientFactory
-    h.deps.clientFactory = () => {
-      const client = factory!()
-      return {
-        ...client,
-        replies: async (requestId: string) => ({
-          request_id: requestId,
-          reply_expires_at: null,
-          replies: byRequest.get(requestId) ?? [],
-        }),
-      } as ApiClient
-    }
+    h.recorder.repliesFor = (requestId) => byRequest.get(requestId) ?? []
   }
 
   it('escalates every registered question in one pass, each as its own notification', async () => {
@@ -1185,8 +1503,8 @@ describe('several questions in flight', () => {
     // Each is its own notification with its own collapse key — one ask never
     // stands in for, or replaces, another.
     expect(new Set(questions.map((s) => s.draft.delivery.collapse_key)).size).toBe(2)
-    const live = readSessionState('multi1', h.env).pending
-    expect(live?.map((entry) => entry.request_id)).toEqual(['req_hook_1', 'req_hook_2'])
+    expect(readSessionState('multi1', h.env).pending).toBeUndefined()
+    expect(new Set(h.recorder.closed)).toEqual(new Set(h.recorder.receipts))
   })
 
   /**
@@ -1197,17 +1515,21 @@ describe('several questions in flight', () => {
   it('settles a registered form into a durable request_id on the Codex Stop path', async () => {
     const h = harness([], 900)
     writeSessionState('codex-form', h.env, { last_prompt_at: AWAY })
-    expect(
-      askCommand(h.deps, undefined, {
-        session: 'codex-form',
-        form: JSON.stringify({
+    const built = buildQuestions(
+      { form: JSON.stringify({
           questions: [
             { text: 'Start personally?', choices: ['Yes', 'No'] },
             { text: 'Which region?', choices: ['US', 'EU'] },
           ],
-        }),
-      }),
-    ).toBe(EXIT.ok)
+        }) },
+      undefined,
+    )
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('codex-form', h.env, {
+      question: built.questions[0]!.text,
+      questions: built.questions,
+    })
 
     // Registration alone must not submit; durability happens at turn-end.
     expect(h.recorder.submitted).toEqual([])
@@ -1221,12 +1543,9 @@ describe('several questions in flight', () => {
     )
 
     expect(h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')).toHaveLength(1)
-    const live = readSessionState('codex-form', h.env).pending
-    expect(live).toHaveLength(1)
-    expect(live?.[0]?.request_id).toBe('req_hook_1')
-    expect(live?.[0]?.questions).toHaveLength(2)
-    // Durable id is recoverable without the agent re-asking.
-    expect(h.io.errLines.join('\n')).toMatch(/req_hook_1|no answer in time|notifai replies/)
+    expect(readSessionState('codex-form', h.env).pending).toBeUndefined()
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(h.io.errLines.join('\n')).toMatch(/expired with its continuation owner/)
   })
 
   it('keeps a settled ask durable and collects the answer after a transient internal_error', async () => {
@@ -1259,9 +1578,9 @@ describe('several questions in flight', () => {
     // mid-flight, and recovery must still surface the late answer.
     const questions = h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')
     expect(questions).toHaveLength(1)
-    expect(h.recorder.receipts[0]).toBe('req_hook_1')
+    expect(h.recorder.receipts[0]).toMatch(/^req_[A-Za-z0-9_-]{22,24}$/)
     expect(polls).toBeGreaterThanOrEqual(3)
-    expect(h.recorder.closed).toContain('req_hook_1')
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(readSessionState('recover-500', h.env).pending).toBeUndefined()
     const output = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
     expect(output.decision).toBe('block')
@@ -1288,9 +1607,9 @@ describe('several questions in flight', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'permanent-wait' }), 'codex')
 
     expect(polls).toBe(1)
-    expect(readSessionState('permanent-wait', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
+    expect(readSessionState('permanent-wait', h.env).pending).toBeUndefined()
     expect(h.io.errLines.join('\n')).toContain(
-      'req_hook_1: not_found (HTTP 404): No such request.',
+      `${h.recorder.receipts[0]}: not_found (HTTP 404): No such request.`,
     )
     expect(h.io.errLines.join('\n')).not.toContain('could not reach the server')
   })
@@ -1318,6 +1637,7 @@ describe('several questions in flight', () => {
           request_id: 'req_existing',
           collapse_key: 'question-existing',
           device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 60_000,
         },
       ],
     })
@@ -1328,7 +1648,9 @@ describe('several questions in flight', () => {
     expect(h.io.errLines.join('\n')).toContain(
       'req_existing: machine_revoked (HTTP 401): This machine was revoked.',
     )
-    expect(h.io.errLines.join('\n')).toContain('reply polling was rejected permanently')
+    expect(h.io.errLines.join('\n')).toContain(
+      'reply polling stopped after a permanent server rejection',
+    )
     expect(h.io.errLines.join('\n')).not.toContain('could not check whether its answer arrived')
   })
 
@@ -1349,13 +1671,56 @@ describe('several questions in flight', () => {
 
     // Both reply windows close immediately (first answer claims each
     // question); the retirement drain closes again, which is idempotent.
-    expect(new Set(h.recorder.closed)).toEqual(new Set(['req_hook_1', 'req_hook_2']))
+    expect(new Set(h.recorder.closed)).toEqual(new Set(h.recorder.receipts))
     expect(readSessionState('multi2', h.env).pending).toBeUndefined()
     const output = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
     expect(output.decision).toBe('block')
     expect(output.reason).toContain('answered 2 questions')
     expect(output.reason).toContain('"Ship it?" → "Ship it"')
     expect(output.reason).toContain('"Deploy where?" → "Staging"')
+  })
+
+  it('journals an accepted answer until a successor Stop proves delivery', async () => {
+    const h = harness([reply({ text: 'Ship it' })], 900)
+    writeSessionState('answer-handoff', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Ship it?',
+          asked_at: NOW,
+          request_id: 'req_existing',
+          collapse_key: 'question-existing',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 60_000,
+        },
+      ],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-handoff' }))
+    const staged = readSessionState('answer-handoff', h.env)
+    expect(staged.accepted?.answers[0]?.reply.text).toBe('Ship it')
+    expect(JSON.parse(h.io.outLines.at(-1)!).decision).toBe('block')
+
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-handoff' }))
+    expect(JSON.parse(h.io.outLines.at(-1)!).reason).toContain('Ship it')
+    expect(readSessionState('answer-handoff', h.env).accepted).toBeDefined()
+
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'answer-handoff', stop_hook_active: true }),
+    )
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('answer-handoff', h.env).accepted).toBeUndefined()
+    expect(
+      h.recorder.submitted.find(
+        (entry) =>
+          entry.draft.event === 'question_retired' &&
+          entry.draft.lifecycle?.retires_request_id === 'req_existing',
+      )?.draft.lifecycle?.state,
+    ).toBe('answered')
   })
 
   it('resumes with a partial answer and keeps the rest registered', async () => {
@@ -1373,7 +1738,7 @@ describe('several questions in flight', () => {
     expect(output.reason).toContain('1 more registered question is still waiting')
     const live = readSessionState('multi3', h.env).pending
     expect(live?.map((entry) => entry.question)).toEqual(['Deploy where?'])
-    expect(live?.[0]?.request_id).toBe('req_hook_2')
+    expect(live?.[0]?.request_id).toBe(h.recorder.receipts[1])
 
     // The remaining question's answer arrives before the next turn ends; the
     // late-answer path hands it over without asking anything twice.
@@ -1400,14 +1765,20 @@ describe('a question that outlives its session', () => {
       }))
   }
 
-  /** Escalate a question that nobody answers, so it is live on the devices. */
+  /** State a still-owned request can have when SessionEnd races its Stop. */
   async function pushUnanswered(h: Harness, sessionId: string): Promise<string> {
-    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
-    registerQuestion(sessionId, h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: sessionId }))
-    const requestId = h.recorder.receipts[0]
-    expect(requestId).toBeDefined()
-    return requestId!
+    writeSessionState(sessionId, h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Ship it?',
+        asked_at: NOW,
+        request_id: 'req_live',
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 60_000,
+      }],
+    })
+    return 'req_live'
   }
 
   it('retires a question the harness exited on, from a later session', async () => {
@@ -1536,12 +1907,10 @@ describe('ask registration', () => {
 
   it('stores the validated question set, comma-bearing labels verbatim', () => {
     const h = harness()
-    expect(
-      askCommand(h.deps, 'Ship it?', {
-        choice: ['Yes, ship it', 'No, hold'],
-        session: 'a2',
-      }),
-    ).toBe(EXIT.ok)
+    const built = buildQuestions({ choice: ['Yes, ship it', 'No, hold'] }, 'Ship it?')
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('a2', h.env, { question: built.questions[0]!.text, questions: built.questions })
     expect(readSessionState('a2', h.env).pending?.[0]?.questions).toEqual([
       {
         id: 'ship-it',
@@ -1557,18 +1926,23 @@ describe('ask registration', () => {
   it('registers a multi-question form and pushes it as one set', async () => {
     const h = harness([reply({ text: 'Yes' })], 900)
     writeSessionState('form1', h.env, { last_prompt_at: AWAY })
-    expect(
-      askCommand(h.deps, undefined, {
-        session: 'form1',
-        form: JSON.stringify({
+    const built = buildQuestions(
+      { form: JSON.stringify({
           questions: [
             { text: 'Deploy where?', choices: ['Staging', 'Production'], multi: true },
             { text: 'Anything to watch?' },
           ],
           detail: '## Context\nThe long story.',
-        }),
-      }),
-    ).toBe(EXIT.ok)
+        }) },
+      undefined,
+    )
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('form1', h.env, {
+      question: built.questions[0]!.text,
+      questions: built.questions,
+      ...(built.detail === undefined ? {} : { detail: built.detail }),
+    })
     const pending = readSessionState('form1', h.env).pending?.[0]
     expect(pending?.questions).toHaveLength(2)
     expect(pending?.detail).toContain('long story')
@@ -1607,9 +1981,10 @@ describe('ask registration', () => {
       900,
     )
     writeSessionState('latest1', h.env, { last_prompt_at: AWAY })
-    expect(
-      askCommand(h.deps, 'Ship it?', { session: 'latest1', choice: ['Yes', 'No'] }),
-    ).toBe(EXIT.ok)
+    const built = buildQuestions({ choice: ['Yes', 'No'] }, 'Ship it?')
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('latest1', h.env, { question: 'Ship it?', questions: built.questions })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'latest1' }))
 
@@ -1633,7 +2008,7 @@ describe('ask registration', () => {
       900,
     )
     writeSessionState('parts1', h.env, { last_prompt_at: AWAY })
-    expect(askCommand(h.deps, 'Which color?', { session: 'parts1' })).toBe(EXIT.ok)
+    registerQuestion('parts1', h.env, { question: 'Which color?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parts1' }))
 
@@ -1642,27 +2017,17 @@ describe('ask registration', () => {
     expect(decision.reason).toContain('"Use blue", then "actually teal"')
   })
 
-  it('resolves the session as flag, then hook pointer, then NOTIFAI_SESSION', async () => {
-    // The exported id is often a chosen label while hook state is keyed by the
-    // harness's own id, so the pointer must outrank the env var.
+  it('does not let an explicit session bypass exact active-harness proof', () => {
     const h = harness()
-    h.deps.env['NOTIFAI_SESSION'] = 'my-label'
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'real1', cwd: h.deps.cwd }),
-      'claude-code',
-    )
-    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('real1', h.env).pending?.[0]?.question).toBe('Ship it?')
-    expect(readSessionState('my-label', h.env).pending).toBeUndefined()
+    expect(askCommand(h.deps, 'Ship it?', { session: 'guessed' })).toBe(EXIT.usage)
+    expect(readSessionState('guessed', h.env).pending).toBeUndefined()
   })
 
-  it('falls back to NOTIFAI_SESSION where no hook has spoken', () => {
+  it('does not route from NOTIFAI_SESSION where no exact harness has spoken', () => {
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
-    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('solo-session', h.env).pending?.[0]?.question).toBe('Ship it?')
+    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(readSessionState('solo-session', h.env).pending).toBeUndefined()
   })
 
   it('queues alongside incomplete live state without touching it', () => {
@@ -1680,7 +2045,7 @@ describe('ask registration', () => {
       ],
     })
 
-    expect(askCommand(h.deps, 'Another?', { session: 'incomplete' })).toBe(EXIT.ok)
+    registerQuestion('incomplete', h.env, { question: 'Another?' })
     const pending = readSessionState('incomplete', h.env).pending
     expect(pending?.map((entry) => entry.question)).toEqual(['Original?', 'Another?'])
     expect(pending?.[0]).toMatchObject({
@@ -1692,11 +2057,10 @@ describe('ask registration', () => {
   it('refuses a fifth question and names the form alternative', () => {
     const h = harness()
     for (const question of ['One?', 'Two?', 'Three?', 'Four?']) {
-      expect(askCommand(h.deps, question, { session: 'crowded' })).toBe(EXIT.ok)
+      registerQuestion('crowded', h.env, { question })
     }
 
-    expect(askCommand(h.deps, 'Five?', { session: 'crowded' })).toBe(EXIT.failed)
-    expect(h.io.errLines.join('\n')).toContain('ask --form')
+    expect(() => registerQuestion('crowded', h.env, { question: 'Five?' })).toThrow(/ask --form/)
     expect(readSessionState('crowded', h.env).pending).toHaveLength(4)
   })
 })
@@ -1769,28 +2133,20 @@ describe('user-prompt-submit hook', () => {
 
   it('preserves a delivered question through a second ask and the prompt transition', async () => {
     const h = harness([], 900)
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'transition', cwd: h.deps.cwd }),
-      'claude-code',
-    )
-    expect(askCommand(h.deps, 'Ship it?', { choice: ['Yes', 'No'] })).toBe(EXIT.ok)
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
-
-    const live = readSessionState('transition', h.env).pending?.[0]
-    expect(live).toMatchObject({
+    const live = {
       question: 'Ship it?',
-      request_id: 'req_hook_1',
+      request_id: 'req_live',
+      collapse_key: 'collapse-live',
       device_ids: ['dev_iphone', 'dev_mac'],
-    })
-    expect(live?.collapse_key).toMatch(/^notifai-hook-/)
+      reply_deadline_at: NOW + 60_000,
+    }
+    writeSessionState('transition', h.env, { last_prompt_at: AWAY, pending: [live] })
 
     // A second plain `ask` resolves through the project pointer and joins the
     // queue behind the live question — it must not touch it. The next prompt
     // then resets presence before another Stop can run — the transition that
     // used to erase the retirement debt.
-    expect(askCommand(h.deps, 'Deploy it?', { choice: ['Staging', 'Production'] })).toBe(EXIT.ok)
+    registerQuestion('transition', h.env, { question: 'Deploy it?' })
     const queued = readSessionState('transition', h.env)
     expect(queued.retiring ?? []).toEqual([])
     expect(queued.pending?.map((entry) => entry.question)).toEqual(['Ship it?', 'Deploy it?'])
@@ -1808,11 +2164,11 @@ describe('user-prompt-submit hook', () => {
     const retirement = h.recorder.submitted.find(
       (submission) => submission.draft.event === 'question_retired',
     )?.draft
-    expect(retirement?.delivery.collapse_key).toBe(live?.collapse_key)
+    expect(retirement?.delivery.collapse_key).toBe(live.collapse_key)
     expect(retirement?.lifecycle).toEqual({
       tier: 'done',
       state: 'answered_elsewhere',
-      retires_request_id: live?.request_id,
+      retires_request_id: live.request_id,
     })
     expect(retirement?.targets).toEqual({
       mode: 'selected',
@@ -1826,29 +2182,24 @@ describe('user-prompt-submit hook', () => {
     ])
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
-    expect(readSessionState('transition', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
+    expect(readSessionState('transition', h.env).pending).toBeUndefined()
   })
 
-  it('retires a question a real timed-out Stop left live on the devices', async () => {
-    // Drives the actual flow rather than hand-writing state: the previous
-    // version of this test fabricated a shape production never wrote, so it
-    // passed while the retirement path was unreachable.
+  it('retires a real timed-out Stop before a later prompt can accept an answer', async () => {
     const h = harness([])
     writeSessionState('s11', h.env, { last_prompt_at: AWAY })
     registerQuestion('s11', h.env, { question: 'Which environment?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's11' }))
-    const live = readSessionState('s11', h.env).pending?.[0]
-    expect(live?.request_id).toBe('req_hook_1')
-    expect(live?.collapse_key).toBeDefined()
+    expect(readSessionState('s11', h.env).pending).toBeUndefined()
+    const retirementCount = h.recorder.submitted.filter(
+      (entry) => entry.draft.event === 'question_retired',
+    ).length
 
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's11', cwd: '/repo' }))
 
-    expect(h.recorder.closed).toEqual(['req_hook_1'])
-    const retirement = h.recorder.submitted.at(-1)?.draft
-    expect(retirement?.presentation.title).toBe('Answered in the terminal')
-    expect(retirement?.delivery.collapse_key).toBe(live?.collapse_key)
-    expect(retirement?.reply).toBeUndefined()
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired')).toHaveLength(retirementCount + 1)
   })
 
   it('marks the retirement done/answered_elsewhere so it ships silently', async () => {
@@ -1856,11 +2207,16 @@ describe('user-prompt-submit hook', () => {
     // lifecycle update, which the server renders as a background push — the
     // old "Answered" tombstone alert told the user what they just did.
     const h = harness([])
-    writeSessionState('s15', h.env, { last_prompt_at: AWAY })
-    registerQuestion('s15', h.env, { question: 'Which environment?' })
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's15' }))
-    expect(h.recorder.submitted[0]?.draft.lifecycle).toEqual({ tier: 'needs_you' })
+    writeSessionState('s15', h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Which environment?',
+        request_id: 'req_live',
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 60_000,
+      }],
+    })
 
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's15', cwd: '/repo' }))
 
@@ -1870,7 +2226,7 @@ describe('user-prompt-submit hook', () => {
       state: 'answered_elsewhere',
       // The history-entry correlation id: companions key entries by request
       // id and never persisted the collapse key.
-      retires_request_id: 'req_hook_1',
+      retires_request_id: 'req_live',
     })
   })
 
@@ -1879,12 +2235,17 @@ describe('user-prompt-submit hook', () => {
     registerQuestion('s16', h.env, { question: 'Ship it?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's16' }))
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 's16', stop_hook_active: true }),
+    )
 
     const retirement = h.recorder.submitted.find((s) => s.draft.event === 'question_retired')
     expect(retirement?.draft.lifecycle).toEqual({
       tier: 'done',
       state: 'answered',
-      retires_request_id: 'req_hook_1',
+      retires_request_id: h.recorder.receipts[0],
     })
   })
 
@@ -2006,8 +2367,10 @@ describe('session-end hook', () => {
     }
   })
 
-  it('clears only the ending session project pointer', async () => {
+  it('clears only the ending session from a concurrent project index', async () => {
     const h = harness()
+    writeSessionState('still-running', h.env, { last_prompt_at: NOW })
+    writeProjectSession(h.deps.cwd, h.env, 'still-running', NOW - 1, 'codex')
     await hookRunCommand(
       h.deps,
       'user-prompt-submit',
@@ -2015,6 +2378,15 @@ describe('session-end hook', () => {
       'claude-code',
     )
     expect(readProjectSession(h.deps.cwd, h.env, NOW)).toBe('ending')
+    expect(
+      readMatchingProjectSessionPointer(
+        h.deps.cwd,
+        h.env,
+        NOW,
+        'still-running',
+        'codex',
+      ),
+    ).toEqual({ sessionId: 'still-running', harness: 'codex' })
 
     await hookRunCommand(
       h.deps,
@@ -2023,7 +2395,16 @@ describe('session-end hook', () => {
       'claude-code',
     )
 
-    expect(readProjectSession(h.deps.cwd, h.env, NOW)).toBeNull()
+    expect(readProjectSession(h.deps.cwd, h.env, NOW)).toBe('still-running')
+    expect(
+      readMatchingProjectSessionPointer(
+        h.deps.cwd,
+        h.env,
+        NOW,
+        'still-running',
+        'codex',
+      ),
+    ).toEqual({ sessionId: 'still-running', harness: 'codex' })
   })
 
   it('preserves incomplete live state and reports why it cannot retire it', async () => {
@@ -2074,6 +2455,11 @@ describe('telling concurrent agents apart', () => {
     registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'sess-abc', stop_hook_active: true }),
+    )
 
     const retirement = h.recorder.submitted.find((s) => s.draft.event === 'question_retired')
     expect(retirement?.draft.session).toBe('sess-abc')
@@ -2325,13 +2711,33 @@ describe('two hooks racing one question', () => {
     // A crashed hook must not suppress every question for this session for
     // ever — that is worse than the duplicate the claim prevents.
     const h = harness()
-    claimQuestionPush('race3', h.env, REAL - 10 * 60_000)
+    const file = path.join(stateDir(h.env), 'sessions', `${sanitizeSessionId('race3')}.claim`)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      `${JSON.stringify({ pid: 999_999_999, at: REAL - 1, token: 'dead' })}\n`,
+    )
     expect(claimQuestionPush('race3', h.env, REAL)).toBe(true)
+  })
+
+  it('never steals an old claim while its process is still alive', () => {
+    const h = harness()
+    expect(claimQuestionPush('race-live', h.env, REAL - 10 * 60_000)).toBe(true)
+    expect(claimQuestionPush('race-live', h.env, REAL)).toBe(false)
   })
 
   it('serializes a contender that arrives while a stale claim is being replaced', () => {
     const h = harness()
-    claimQuestionPush('race-break', h.env, REAL - 10 * 60_000)
+    const file = path.join(
+      stateDir(h.env),
+      'sessions',
+      `${sanitizeSessionId('race-break')}.claim`,
+    )
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      `${JSON.stringify({ pid: 999_999_999, at: REAL - 10 * 60_000, token: 'dead' })}\n`,
+    )
     let contender: ReturnType<typeof claimQuestionPush> | undefined
 
     const recovered = claimQuestionPush('race-break', h.env, REAL, () => {
@@ -2364,9 +2770,19 @@ describe('two hooks racing one question', () => {
   it('resumes the agent once when two Stops collect the same late answer', async () => {
     const answers: ReplyView[] = []
     const h = harness(answers, 900)
-    writeSessionState('race-late-answer', h.env, { last_prompt_at: AWAY })
-    registerQuestion('race-late-answer', h.env, { question: 'Ship it?' }, NOW)
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-late-answer' }))
+    writeSessionState('race-late-answer', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Ship it?',
+          asked_at: NOW,
+          request_id: 'req_existing',
+          collapse_key: 'question-existing',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 60_000,
+        },
+      ],
+    })
     answers.push(reply({ text: 'Ship it' }))
     h.io.outLines = []
 
@@ -2399,7 +2815,7 @@ describe('two hooks racing one question', () => {
 })
 
 describe('question registration racing a Stop submission', () => {
-  it('keeps both questions when a new ask races the older submit', async () => {
+  it('keeps the new question when the older owner expires', async () => {
     const h = harness([], 900)
     writeSessionState('submit-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('submit-race', h.env, { question: 'Old question?' }, NOW)
@@ -2410,16 +2826,16 @@ describe('question registration racing a Stop submission', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'submit-race' }))
 
-    // The racing ask appended; the in-flight submit still finds its own entry
-    // and records the delivery ids on it. Nobody retires anybody.
+    // The racing ask appended and remains unasked. The already-delivered old
+    // question is retired when this Stop owner reaches its deadline, so it
+    // cannot accept a phone answer after the hook has returned.
     const state = readSessionState('submit-race', h.env)
-    expect(state.pending?.map((entry) => entry.question)).toEqual([
-      'Old question?',
-      'New question?',
-    ])
-    expect(state.pending?.[0]?.request_id).toBe('req_hook_1')
-    expect(state.pending?.[1]?.request_id).toBeUndefined()
-    expect(state.retiring ?? []).toEqual([])
+    expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
+    expect(state.pending?.[0]?.request_id).toBeUndefined()
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(state.retiring).toContainEqual(
+      expect.objectContaining({ request_id: h.recorder.receipts[0], state: 'expired' }),
+    )
   })
 
   it('keeps the newer question when the older in-flight question receives an answer', async () => {
@@ -2435,12 +2851,7 @@ describe('question registration racing a Stop submission', () => {
 
     const state = readSessionState('answer-race', h.env)
     expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
-    expect(
-      h.recorder.submitted.find(
-        (entry) =>
-          entry.draft.event === 'question_retired' &&
-          entry.draft.lifecycle?.retires_request_id === 'req_hook_1',
-      )?.draft.lifecycle?.state,
-    ).toBe('answered')
+    expect(state.accepted?.answers[0]?.pending.request_id).toBe(h.recorder.receipts[0])
+    expect(state.accepted?.answers[0]?.reply.text).toBe('Old answer')
   })
 })

@@ -96,7 +96,7 @@ describe('harness config layers', () => {
     expect(config.away_after_seconds.value).toBe(120)
     // Immediate escalation by default leaves the whole hook budget available
     // for the reply wait. Users can still opt into a terminal-first grace.
-    expect(config.hook_reply_timeout_seconds.value).toBe(180)
+    expect(config.hook_reply_timeout_seconds.value).toBe(480)
     expect(config.ask_grace_seconds).toEqual({ value: 0, source: 'default' })
   })
 })

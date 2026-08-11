@@ -225,7 +225,8 @@ at once; past that, consolidate with `--form`.
 Before the first `ask` in a harness session, require `doctor`'s **Question
 routing** line to name the active harness and **hooks (fired)** to confirm that
 a session in this directory ran both UserPromptSubmit and Stop. On Codex,
-**hooks (trust)** must also pass. Follow the exact recovery if any check fails;
+**hooks (trust)** must also pass. **hooks (answer continuation)** must describe
+the active harness's native route. Follow the exact recovery if any check fails;
 do not register the question yet. Then ask the same question in the conversation
 and stop working so the user can decide.
 
@@ -234,8 +235,12 @@ turn ends, whether or not the user is active at the machine. A user may set a
 positive `ask_grace_seconds` for a terminal-only answer window, or turn on
 `require_idle` to keep questions local while they are active. Do not register
 the same question again while the first is live.
-Use `notifai replies --pending` to recover a late hook answer and `notifai close
-<request_id>` to retire a stale request.
+The device reply window and continuation wait share one bound. On a healthy
+route, Notifai's server close fence returns the final accepted replies before
+the hook releases ownership. If the fence is unreachable, the hook preserves
+the request for the next exact-session hook instead of erasing it or claiming
+it was closed. A total network partition cannot guarantee automatic
+continuation beyond the harness's finite hook ceiling.
 
 Harness installation, activation, presence behavior, and bounded recovery are
 in [Harness setup and recovery](references/harness-setup.md).

@@ -461,7 +461,7 @@ hooks
   .description('Wire this harness to route registered questions to your devices')
   .option(
     '--harness <name>',
-    'claude-code | codex | cursor | opencode (default: detected; OpenCode delivers answers on the next prompt)',
+    'claude-code | codex | cursor | opencode (default: detected)',
   )
   .option('--global', 'install for every project instead of just this one')
   .action((opts: { harness?: string; global?: boolean }) => {

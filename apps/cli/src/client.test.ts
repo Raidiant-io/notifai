@@ -51,6 +51,18 @@ describe('a server that never answers', () => {
     await expect(client.listDevices()).rejects.toThrow(/did not respond within/)
   })
 
+  it('clamps a late request to the caller whole-operation deadline', async () => {
+    const baseUrl = await serving(() => {})
+    const started = Date.now()
+    const client = createClient(baseUrl, null, {
+      timeoutMs: 5_000,
+      deadlineAt: started + 200,
+    })
+
+    await expect(client.listDevices()).rejects.toBeInstanceOf(NetworkError)
+    expect(Date.now() - started).toBeLessThan(2_000)
+  })
+
   it('allows for the long poll it asked the server to hold', async () => {
     // The deadline is per request, so a 25s long poll must not be cut off by
     // the ordinary budget — otherwise waiting for a reply could never work.

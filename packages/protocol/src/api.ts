@@ -176,8 +176,13 @@ export interface ListDevicesResponse {
 // Notification submission and evidence
 // ---------------------------------------------------------------------------
 
+/** Canonical URL-safe Notification Request identity accepted from a client. */
+export const REQUEST_ID_PATTERN = '^req_[A-Za-z0-9_-]{22,24}$'
+
 export const SubmitNotificationRequest = Type.Object(
   {
+    /** Stable caller-generated identity for crash-safe submission replay. */
+    request_id: Type.Optional(Type.String({ pattern: REQUEST_ID_PATTERN })),
     idempotency_key: Type.String({ minLength: 8, maxLength: 128 }),
     draft: NotificationDraft,
   },
@@ -199,6 +204,8 @@ export interface DeliveryOutcome {
 
 export interface SubmissionReceipt {
   request_id: string
+  /** Committed reply deadline; null when this request did not ask for a reply. */
+  reply_expires_at: string | null
   /** True when idempotency returned a previously accepted request. */
   replayed: boolean
   overall: OverallState

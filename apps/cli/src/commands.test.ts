@@ -1248,7 +1248,7 @@ describe('harness activation guidance', () => {
     expect(output).not.toMatch(/trust|approve/i)
   })
 
-  it('keeps OpenCode permission prompts local and reports its continuation limit', async () => {
+  it('keeps OpenCode permission prompts local and reports unsupported continuation', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-activation-'))
     const io = new CapturedIo()
     const client = {
@@ -1274,14 +1274,15 @@ describe('harness activation guidance', () => {
     )
 
     expect(io.outLines.join('\n')).toContain('Permission prompts stay in OpenCode.')
-    expect(io.outLines.join('\n')).toContain('next user prompt')
+    expect(io.outLines.join('\n')).toContain('does not expose a proven exactly-once continuation')
     const pluginFile = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
     expect(plugin).toContain('const TIMEOUT_MS = 540000')
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('hooks (opencode continuation)')
+    expect(io.outLines.join('\n')).toContain('hooks (answer continuation)')
+    expect(io.outLines.join('\n')).toContain('no proven answer continuation')
     expect(io.outLines.join('\n')).not.toContain('hooks (adapter)')
 
     writeFileSync(pluginFile, plugin.replace(/^const ADAPTER_VERSION = .*\n/m, ''))
@@ -1808,10 +1809,10 @@ describe('interactive command UX', () => {
       EXIT.usage,
     )
     expect(io.errLines).toEqual([
-      'ask_grace_seconds must be between 0 and 540.',
+      'ask_grace_seconds must be between 0 and 334.',
       // Names the key and its range: `"1.5" is not an integer` left the reader
       // to work out which of the two settings they had just mistyped.
-      'ask_grace_seconds takes a whole number from 0s–540s, not "1.5".',
+      'ask_grace_seconds takes a whole number from 0s–334s, not "1.5".',
     ])
     expect(existsSync(configFile)).toBe(false)
   })
@@ -2945,7 +2946,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/belongs to another Codex session/i)
+    expect(io.errLines.join(' ')).toMatch(/active Codex session:.*has not published/i)
     expect(io.outLines).not.toContain(
       'Question registered. Ask it in the conversation as usual and end your turn.',
     )
@@ -2966,6 +2967,8 @@ describe('asking before the hooks have ever run', () => {
     trustInstalledCodexHooks(cwd, env)
     writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
+    writeSessionState('claude-concurrent', env, { last_prompt_at: 43, last_stop_at: 43 })
+    writeProjectSession(cwd, env, 'claude-concurrent', 43, 'claude-code')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
@@ -3073,7 +3076,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/another Claude Code session/i)
+    expect(io.errLines.join(' ')).toMatch(/active Claude Code session:.*has not published/i)
   })
 
   it('accepts a Claude Code subprocess when its documented session id owns the pointer', () => {
@@ -3097,6 +3100,53 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(readSessionState('claude-parent-loop', env).pending?.[0]?.question).toBe('Ship it?')
+  })
+
+  it('fails closed when Claude Code does not expose an exact session id', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-claude-no-id-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CLAUDECODE: '1',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('claude-last-writer', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-last-writer', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/does not expose an exact session id/i)
+    expect(readSessionState('claude-last-writer', env).pending).toBeUndefined()
+  })
+
+  it('rejects duplicate active Codex definitions before registration', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-duplicate-'))
+    const io = new CapturedIo()
+    const env = {
+      HOME: path.join(cwd, 'home'),
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(
+      hooksInstallCommand(deps, { harness: 'codex', global: true, execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/2 Codex definitions are active/i)
+    expect(readSessionState('codex-current-thread', env).pending).toBeUndefined()
   })
 
   it('does not let UserPromptSubmit alone count as a working turn-end route', async () => {
@@ -3143,10 +3193,31 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/another OpenCode session/i)
+    expect(io.errLines.join(' ')).toMatch(/active OpenCode session:.*has not published/i)
   })
 
-  it('recognizes Cursor only from its active-agent marker', () => {
+  it('rejects OpenCode before registration even with an exact matching pointer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-opencode-unsupported-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode-home'),
+      NOTIFAI_ACTIVE_HARNESS: 'opencode',
+      NOTIFAI_ACTIVE_SESSION_ID: 'opencode-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('opencode-current', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'opencode-current', 42, 'opencode')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
+    expect(readSessionState('opencode-current', env).pending).toBeUndefined()
+  })
+
+  it('refuses Cursor when its active-agent marker has no exact conversation id', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-cursor-'))
     const io = new CapturedIo()
     const env = {
@@ -3160,8 +3231,9 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'cursor-live', 42, 'cursor')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('cursor-live', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/does not expose an exact session id/i)
+    expect(readSessionState('cursor-live', env).pending).toBeUndefined()
   })
 
   it('fails doctor when another harness looks healthy but the active Claude Code session does not', async () => {
@@ -3302,7 +3374,7 @@ describe('asking before the hooks have ever run', () => {
     expect(io.errLines.join(' ')).toMatch(/Cursor: send one prompt, then run `notifai doctor`/)
   })
 
-  it('keeps OpenCode activation separate from answer continuation', () => {
+  it('keeps OpenCode activation separate from unsupported answer continuation', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-first-run-'))
     const io = new CapturedIo()
     const deps = {
@@ -3320,7 +3392,7 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     const said = io.errLines.join(' ')
     expect(said).toMatch(/OpenCode: restart it, then send one prompt/)
-    expect(said).toContain('device answer is delivered on the next prompt')
+    expect(said).toContain('non-blocking question continuation is intentionally unsupported')
   })
 
   it('says to install when nothing is installed at all', () => {

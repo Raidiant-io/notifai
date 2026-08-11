@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
+import { HOOK_TIMING } from './harnesses.js'
 
 /**
  * Layered configuration with provenance. Most specific wins:
@@ -89,8 +90,8 @@ export interface CliConfig {
   away_after_seconds: ResolvedValue<number>
   /**
    * How long a hook blocks waiting for a companion-device answer before falling through
-   * to the harness's own prompt. Must stay under the harness hook timeout
-   * (600s in both Claude Code and Codex) or the harness kills us mid-wait.
+   * to the harness's own prompt. Runtime arbitration keeps the complete Stop
+   * invocation inside its fixed 480s owner budget and 540s adapter ceiling.
    */
   hook_reply_timeout_seconds: ResolvedValue<number>
   /**
@@ -193,7 +194,7 @@ const DEFAULTS = {
   // Runtime waits stay inside a 480s budget. Harnesses that require a declared
   // Stop limit use a preference-stable 540s; Codex uses its host-owned Stop
   // default. Neither definition changes when these preferences do.
-  hook_reply_timeout_seconds: 180,
+  hook_reply_timeout_seconds: 480,
   ask_grace_seconds: 0,
   // On by default: the log is the only account of what a headless hook did, and
   // a diagnostic nobody switched on before the thing went wrong is not one.
@@ -308,8 +309,10 @@ const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> =
   away_after_seconds: { min: 5, max: 24 * 3600 },
   // The runtime clamps grace + reply work below the host process ceiling; this
   // maximum is never copied into the installed definition.
-  hook_reply_timeout_seconds: { min: 10, max: 540 },
-  ask_grace_seconds: { min: 0, max: 540 },
+  // The wire protocol's minimum reply window is 60s; matching it prevents the
+  // server from accepting an answer after a shorter local wait has returned.
+  hook_reply_timeout_seconds: { min: 60, max: 540 },
+  ask_grace_seconds: { min: 0, max: HOOK_TIMING.maxGraceSeconds },
   // The floor keeps rotation from thrashing (a file smaller than a handful of
   // records would rotate on nearly every write); the ceiling is the point past
   // which "local diagnostics" has become "a database on your disk".

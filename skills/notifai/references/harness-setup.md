@@ -46,14 +46,16 @@ writes approvals; `/hooks` is authoritative if the two disagree.
   repository. In a linked worktree, the installer writes the shared file to
   the main checkout and creates the project-layer `.codex` directory in the
   current worktree; run it once in each new worktree.
-- **Cursor:** send one prompt and run `notifai doctor`. If no hook has fired,
-  start a new session and check again. A companion answer becomes one bounded
-  native follow-up message.
+- **Cursor:** its stop hook can return a native follow-up, but the agent shell
+  does not expose the exact conversation id needed to prove which concurrent
+  session invoked `notifai ask`. Asynchronous ask therefore fails closed. Use
+  blocking `notifai send --reply` for questions.
 - **OpenCode:** restart after installation because plugins load at startup.
   Notifai owns its generated plugin file and will not overwrite a foreign one.
-  The idle event can push a question but cannot resume the idle turn; the next
-  user prompt collects the answer. Use blocking `send --reply` when the answer
-  must return before another prompt.
+  OpenCode has no locally proven exactly-once continuation after `session.idle`,
+  so `notifai ask` fails closed instead of accepting an answer into a void.
+  Use a blocking `notifai send --reply` question when its answer must return to
+  the agent without another human prompt.
 
 Do not claim support for a harness that is absent from
 `notifai hooks install --help`.
@@ -77,9 +79,13 @@ The important timing settings are separate:
 - `ask_grace_seconds`: optional terminal-only delay; `0` sends immediately.
 - `hook_reply_timeout_seconds`: how long a pushed hook waits for the answer.
 
-The pushed question can remain answerable after the hook stops waiting. Recover
-with `notifai replies --pending`; do not re-register it as a nag. Retire an
-obsolete question with `notifai close <request_id>`.
+The pushed question's answer window matches the continuation wait. At the owner
+deadline, or whenever the owner returns early, Notifai asks the server to close
+the window; that transaction fence returns every reply that committed first.
+Only a confirmed-silent request is retired. If the fence is unreachable,
+Notifai preserves the exact request for a later hook rather than erasing
+recoverable ownership. No finite harness hook can guarantee automatic delivery
+through a total network partition after its ceiling expires.
 
 ## Bounded recovery
 
