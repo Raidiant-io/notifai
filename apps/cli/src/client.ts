@@ -30,6 +30,18 @@ export class ApiCallError extends Error {
 export class NetworkError extends Error {}
 
 /**
+ * Whether a replies-poll failure is temporary while the durable request stays
+ * live. Transport faults, throttling, request timeouts, and server failures
+ * can recover on a later poll; client errors cannot be repaired by retrying
+ * the same authenticated request.
+ */
+export function isRetryableReplyPollError(err: unknown): boolean {
+  if (err instanceof NetworkError) return true
+  if (!(err instanceof ApiCallError)) return false
+  return err.status >= 500 || err.status === 429 || err.status === 408
+}
+
+/**
  * A deadline that fired reads as an abort, which says nothing useful on its
  * own. Naming the timeout is what lets someone tell a hung server apart from a
  * refused connection.

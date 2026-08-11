@@ -1137,6 +1137,70 @@ describe('several questions in flight', () => {
     expect(output.reason).toContain('Yes — start personally')
   })
 
+  it('stops retrying and names a permanent rejection during the blocking multi-wait', async () => {
+    const h = harness([], 900)
+    let polls = 0
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async () => {
+          polls += 1
+          throw new ApiCallError(404, 'not_found', 'No such request.')
+        },
+      } as ApiClient
+    }
+    writeSessionState('permanent-wait', h.env, { last_prompt_at: AWAY })
+    registerQuestion('permanent-wait', h.env, { question: 'Still there?' }, NOW - 300_000)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'permanent-wait' }), 'codex')
+
+    expect(polls).toBe(1)
+    expect(readSessionState('permanent-wait', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
+    expect(h.io.errLines.join('\n')).toContain(
+      'req_hook_1: not_found (HTTP 404): No such request.',
+    )
+    expect(h.io.errLines.join('\n')).not.toContain('could not reach the server')
+  })
+
+  it('distinguishes a permanent late-poll rejection from transient trouble', async () => {
+    const h = harness([], 900)
+    let polls = 0
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async () => {
+          polls += 1
+          throw new ApiCallError(401, 'machine_revoked', 'This machine was revoked.')
+        },
+      } as ApiClient
+    }
+    writeSessionState('permanent-late', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Deploy?',
+          asked_at: NOW - 300_000,
+          request_id: 'req_existing',
+          collapse_key: 'question-existing',
+          device_ids: ['dev_iphone'],
+        },
+      ],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'permanent-late' }), 'codex')
+
+    expect(polls).toBe(1)
+    expect(h.io.errLines.join('\n')).toContain(
+      'req_existing: machine_revoked (HTTP 401): This machine was revoked.',
+    )
+    expect(h.io.errLines.join('\n')).toContain('reply polling was rejected permanently')
+    expect(h.io.errLines.join('\n')).not.toContain('could not check whether its answer arrived')
+  })
+
   it('resumes with every answer that arrived, each tied to its question', async () => {
     const h = harness([], 900)
     repliesByRequest(

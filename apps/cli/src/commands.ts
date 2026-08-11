@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
@@ -24,6 +24,7 @@ import {
   ApiCallError,
   NetworkError,
   createClient,
+  isRetryableReplyPollError,
   type ApiClient,
   type ClientOptions,
 } from './client.js'
@@ -45,6 +46,7 @@ import {
   type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
+import { atomicWriteFileSync, withFileLockSync } from './atomic-file.js'
 import {
   renderConfigExplain,
   renderConfigList,
@@ -109,6 +111,10 @@ import {
   type Installation,
 } from './install-hooks.js'
 import {
+  inspectHookAdapter,
+  installHookAdapter,
+} from './hook-adapter.js'
+import {
   isOurOpencodePlugin,
   opencodePluginSource,
 } from './opencode-plugin.js'
@@ -162,6 +168,8 @@ export interface CommandDeps {
   store: CredentialStore
   env: NodeJS.ProcessEnv
   cwd: string
+  /** Test seam; production fixes the hook adapter under os.homedir(). */
+  hookAdapterHome?: string
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
@@ -890,25 +898,6 @@ interface ReplyWaitResult {
   degraded: boolean
 }
 
-/**
- * Whether a replies-poll failure is temporary and the durable request is still
- * live. A 500 from a long-poll (or a transport blip) must not end a blocking
- * wait: the request was already accepted, and a later poll can still collect
- * the answer. Permanent client errors (auth, not found, closed window) are
- * not recoverable by retrying.
- *
- * Regression context: a wait aborted on `internal_error` while Provider
- * Acceptance and Companion Receipt were fine and the reply landed ~1 minute
- * later. Only NetworkError was retried; HTTP 5xx was not.
- */
-export function isRetryableReplyPollError(err: unknown): boolean {
-  if (err instanceof NetworkError) return true
-  if (!(err instanceof ApiCallError)) return false
-  if (err.status >= 500) return true
-  if (err.status === 429 || err.status === 408) return true
-  return false
-}
-
 /** Loop over server-capped long polls until a reply arrives or the caller's deadline passes. */
 export async function waitForReply(
   client: ApiClient,
@@ -1559,7 +1548,7 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
   if (flags.session !== undefined) {
     sessionId = flags.session
   } else if (active !== null) {
-    const installations = findInstallations(deps.cwd, deps.env)
+    const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
     const activeInstalled = installations.some(
       (installation) => installation.harness === active.harness,
     )
@@ -1740,7 +1729,7 @@ function diagnoseActiveHarnessSession(
  * checked after a prompt before assuming that a new session is required.
  */
 function diagnoseMissingSession(deps: CommandDeps): string[] {
-  const installations = findInstallations(deps.cwd, deps.env)
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
   if (installations.length === 0) {
     return [
       'Could not tell which harness session this is: no Notifai hooks are installed for this project.',
@@ -1830,6 +1819,13 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (!harness) return EXIT.usage
   const execPath = flags.execPath ?? process.execPath
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
+  let adapterPath: string
+  try {
+    adapterPath = installHookAdapter({ execPath, scriptPath }, deps.hookAdapterHome).path
+  } catch (err) {
+    deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
+    return EXIT.failed
+  }
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
 
@@ -1837,36 +1833,27 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   // merged into a settings document, so it owns the whole file.
   if (harness === 'opencode') {
     return installOpencodePlugin(deps, file, {
-      execPath,
-      scriptPath,
-      timeoutSeconds: blockingHookTimeoutSeconds(
-        config.ask_grace_seconds.value,
-        config.hook_reply_timeout_seconds.value,
-      ),
+      adapterPath,
+      timeoutSeconds: blockingHookTimeoutSeconds(),
     })
   }
 
   if (harness === 'cursor') {
-    let document
+    let merged: ReturnType<typeof mergeCursorHooks>
     try {
-      document = loadCursorSettings(file)
-    } catch (err) {
-      deps.io.err(String(err))
-      return EXIT.failed
-    }
-    const merged = mergeCursorHooks(
-      document,
-      buildCursorHookConfig({
-        execPath,
-        scriptPath,
-        replyTimeoutSeconds: config.hook_reply_timeout_seconds.value,
-        graceSeconds: config.ask_grace_seconds.value,
-        harness: 'cursor',
-      }),
-      scriptPath,
-    )
-    try {
-      applyPlan(file, merged.document)
+      merged = withFileLockSync(file, () => {
+        const document = loadCursorSettings(file)
+        const result = mergeCursorHooks(
+          document,
+          buildCursorHookConfig({
+            adapterPath,
+            harness: 'cursor',
+          }),
+          scriptPath,
+        )
+        applyPlan(file, result.document)
+        return result
+      })
     } catch (err) {
       deps.io.err(String(err))
       return EXIT.failed
@@ -1886,26 +1873,21 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return EXIT.ok
   }
 
-  let document
+  let merged: ReturnType<typeof mergeHooks>
   try {
-    document = loadSettings(file)
-  } catch (err) {
-    deps.io.err(String(err))
-    return EXIT.failed
-  }
-  const merged = mergeHooks(
-    document,
-    buildHookConfig({
-      execPath,
-      scriptPath,
-      replyTimeoutSeconds: config.hook_reply_timeout_seconds.value,
-      graceSeconds: config.ask_grace_seconds.value,
-      harness,
-    }),
-    scriptPath,
-  )
-  try {
-    applyPlan(file, merged.document)
+    merged = withFileLockSync(file, () => {
+      const document = loadSettings(file)
+      const result = mergeHooks(
+        document,
+        buildHookConfig({
+          adapterPath,
+          harness,
+        }),
+        scriptPath,
+      )
+      applyPlan(file, result.document)
+      return result
+    })
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
@@ -1977,18 +1959,23 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
 function installOpencodePlugin(
   deps: CommandDeps,
   file: string,
-  options: { execPath: string; scriptPath: string; timeoutSeconds: number },
+  options: { adapterPath: string; timeoutSeconds: number },
 ): number {
-  if (existsSync(file)) {
-    const existing = readFileSync(file, 'utf8')
-    if (!isOurOpencodePlugin(existing)) {
-      deps.io.err(`${file} exists and was not written by Notifai; move it aside first.`)
-      return EXIT.failed
-    }
-  }
   try {
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, opencodePluginSource(options), { mode: 0o644 })
+    withFileLockSync(file, () => {
+      if (existsSync(file)) {
+        assertOwnedRegularFile(file)
+        const existing = readFileSync(file, 'utf8')
+        if (!isOurOpencodePlugin(existing)) {
+          throw new Error(`${file} exists and was not written by Notifai; move it aside first.`)
+        }
+      }
+      atomicWriteFileSync(file, opencodePluginSource(options), {
+        mode: 0o600,
+        preserveMode: false,
+        requireCurrentUserOwner: true,
+      })
+    })
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
@@ -2011,34 +1998,45 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   if (!harness) return EXIT.usage
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
   const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
-  if (!existsSync(file)) {
-    deps.io.out(`Nothing to remove: ${file} does not exist.`)
-    return EXIT.ok
-  }
   if (harness === 'opencode') {
-    // We own the whole file, but only if we wrote it.
-    if (!isOurOpencodePlugin(readFileSync(file, 'utf8'))) {
-      deps.io.out(`Left ${file} alone: Notifai did not write it.`)
-      return EXIT.ok
+    try {
+      return withFileLockSync(file, () => {
+        if (!existsSync(file)) {
+          deps.io.out(`Nothing to remove: ${file} does not exist.`)
+          return EXIT.ok
+        }
+        assertOwnedRegularFile(file)
+        // We own the whole file, but only if we wrote it.
+        if (!isOurOpencodePlugin(readFileSync(file, 'utf8'))) {
+          deps.io.out(`Left ${file} alone: Notifai did not write it.`)
+          return EXIT.ok
+        }
+        rmSync(file, { force: true })
+        deps.io.out(`Removed the Notifai OpenCode plugin at ${file}`)
+        return EXIT.ok
+      })
+    } catch (err) {
+      deps.io.err(String(err))
+      return EXIT.failed
     }
-    rmSync(file, { force: true })
-    deps.io.out(`Removed the Notifai OpenCode plugin at ${file}`)
-    return EXIT.ok
   }
   if (harness === 'cursor') {
-    let document
+    let stripped: ReturnType<typeof removeCursorHooks> | null
     try {
-      document = loadCursorSettings(file)
+      stripped = withFileLockSync(file, () => {
+        if (!existsSync(file)) return null
+        const document = loadCursorSettings(file)
+        const result = removeCursorHooks(document, scriptPath)
+        applyPlan(file, result.document)
+        return result
+      })
     } catch (err) {
       deps.io.err(String(err))
       return EXIT.failed
     }
-    const stripped = removeCursorHooks(document, scriptPath)
-    try {
-      applyPlan(file, stripped.document)
-    } catch (err) {
-      deps.io.err(String(err))
-      return EXIT.failed
+    if (stripped === null) {
+      deps.io.out(`Nothing to remove: ${file} does not exist.`)
+      return EXIT.ok
     }
     deps.io.out(
       stripped.replaced.length > 0
@@ -2047,19 +2045,22 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     )
     return EXIT.ok
   }
-  let document
+  let stripped: ReturnType<typeof removeHooks> | null
   try {
-    document = loadSettings(file)
+    stripped = withFileLockSync(file, () => {
+      if (!existsSync(file)) return null
+      const document = loadSettings(file)
+      const result = removeHooks(document, scriptPath)
+      applyPlan(file, result.document)
+      return result
+    })
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
   }
-  const stripped = removeHooks(document, scriptPath)
-  try {
-    applyPlan(file, stripped.document)
-  } catch (err) {
-    deps.io.err(String(err))
-    return EXIT.failed
+  if (stripped === null) {
+    deps.io.out(`Nothing to remove: ${file} does not exist.`)
+    return EXIT.ok
   }
   deps.io.out(
     stripped.replaced.length > 0
@@ -2067,6 +2068,17 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
       : `No Notifai hooks found in ${file}`,
   )
   return EXIT.ok
+}
+
+function assertOwnedRegularFile(file: string): void {
+  const stat = lstatSync(file)
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`${file} is not a regular file; refusing to read or replace it.`)
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
+  if (uid !== undefined && stat.uid !== uid) {
+    throw new Error(`${file} is owned by uid ${stat.uid}, not the current user.`)
+  }
 }
 
 function resolveHarness(deps: CommandDeps, requested: string | undefined): Harness | null {
@@ -3832,7 +3844,7 @@ function remedyLine(state: ReadinessState): string {
  * is, is each check's own call (`HookCheck`).
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
-  const installations = findInstallations(deps.cwd, deps.env)
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
   const active = activeHarnessSession(deps.env)
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const settings: ReadinessState = {
@@ -3916,7 +3928,7 @@ interface HookCheck {
 
 function hookChecks(deps: CommandDeps): HookCheck[] {
   const checks: HookCheck[] = []
-  const installations = findInstallations(deps.cwd, deps.env)
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
 
   // Not having hooks is a setup someone chose, not a fault: `send` works
   // without them. A setup that cannot work is what deserves to go red.
@@ -4020,10 +4032,15 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const adapterProblems = installations.flatMap((installation) =>
     (installation.problems ?? []).map((problem) => `${installation.file}: ${problem}`),
   )
+  const sharedAdapter = inspectHookAdapter(deps.hookAdapterHome)
+  adapterProblems.push(...sharedAdapter.problems)
   if (adapterProblems.length > 0) {
     checks.push({
       name: 'hooks (adapter)',
       ok: false,
+      // A machine-global install for a harness that is not active in this
+      // project is useful diagnosis, but it must not block unrelated init.
+      informational: active === null && installations.every((installation) => installation.global),
       detail: adapterProblems.join('; '),
     })
   }
@@ -4034,8 +4051,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok: trustProblems.length === 0,
     detail:
       trustProblems.length === 0
-        ? 'every installed Codex handler matches its approved definition'
-        : trustProblems.join('; '),
+        ? 'best-effort check matches current persisted Codex approvals; Notifai never writes the trust store, and `/hooks` is authoritative'
+        : `best-effort check only; Notifai never writes the trust store and \`/hooks\` is authoritative. ${trustProblems.join('; ')}`,
     ...(trustProblems.length === 0
       ? {}
       : {
@@ -4046,13 +4063,10 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         }),
   })
 
-  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
-  const requiredTimeout = blockingHookTimeoutSeconds(
-    config.ask_grace_seconds.value,
-    config.hook_reply_timeout_seconds.value,
-  )
+  const requiredTimeout = blockingHookTimeoutSeconds()
   const shortTimeouts = installations.flatMap((installation) =>
     installation.handlers
+      .filter(() => installation.harness !== 'codex')
       .filter((handler) => handlerEvent(handler.command) === 'stop')
       .filter((handler) => handler.timeout === undefined || handler.timeout < requiredTimeout)
       .map(
@@ -4065,26 +4079,20 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok: shortTimeouts.length === 0,
     detail:
       shortTimeouts.length === 0
-        ? `installed Stop timeouts cover the current ${requiredTimeout}s grace/reply budget`
+        ? `declared Stop timeouts match the fixed ${requiredTimeout}s process budget where required; Codex uses host defaults`
         : shortTimeouts.join('; '),
   })
 
-  // Two checkouts each installing hooks means both fire for the same event, and
-  // the user gets every question twice.
-  //
-  // Compared *within* a harness, not across. Only one harness runs a given
-  // session, so having Claude Code and OpenCode both set up is the ordinary
-  // case and not a duplicate — comparing them turned a healthy machine red.
+  // Project and global definitions for one harness both fire. Stable adapter
+  // identity deliberately makes their command bytes equal, so comparing
+  // command targets would now hide this duplicate rather than diagnose it.
+  // Different harnesses remain independent: only the active one runs.
   const duplicated = [...new Set(installations.map((i) => i.harness))]
     .map((harness) => ({
       harness,
-      scripts: new Set(
-        installations
-          .filter((i) => i.harness === harness)
-          .flatMap((i) => i.handlers.map((h) => h.command.split(' hook ')[0] ?? '')),
-      ),
+      installations: installations.filter((i) => i.harness === harness),
     }))
-    .filter((entry) => entry.scripts.size > 1)
+    .filter((entry) => entry.installations.length > 1)
   if (duplicated.length > 0) {
     checks.push({
       name: 'hooks (duplicates)',
@@ -4092,7 +4100,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       detail: duplicated
         .map(
           (entry) =>
-            `${entry.harness}: ${entry.scripts.size} different Notifai builds are installed, so each event will fire all of them. Uninstall the ones you do not want: ${[...entry.scripts].join(', ')}`,
+            `${entry.harness}: ${entry.installations.length} hook definitions are active, so each event will fire all of them. Keep either project or global routing and uninstall the other: ${entry.installations.map((installation) => installation.file).join(', ')}`,
         )
         .join('; '),
     })

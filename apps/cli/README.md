@@ -61,6 +61,22 @@ is what lets an agent's question reach your phone without the agent
 having to cooperate — no question detection, no state in a context window
 that compaction will eat.
 
+Every harness definition calls one stable user-level adapter at
+`~/.notifai/bin/hook-adapter`. Node, package manager, CLI version, checkout,
+XDG directories, and notification preferences are resolved behind it, so
+upgrades and configuration changes do not rewrite trusted hook definitions.
+The first migration may require one Codex `/hooks` approval; later repairs keep
+the same identity. Codex definitions omit timeout fields so Codex's host
+defaults remain authoritative.
+
+`notifai doctor` compares Codex trust on a best-effort basis against Codex's
+current persisted representation. Notifai never writes that trust store;
+Codex's `/hooks` review is authoritative if the diagnostic and UI disagree.
+
+Uninstall removes only the selected harness definition. It intentionally keeps
+the shared adapter because definitions for other harnesses or projects may
+still invoke it and cannot all be discovered from one working directory.
+
 ## Checking it works
 
 ```sh

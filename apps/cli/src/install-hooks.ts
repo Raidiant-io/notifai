@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   readFileSync,
   realpathSync,
   statSync,
@@ -9,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { hookAdapterPath } from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
 
 /**
@@ -63,18 +65,17 @@ export interface InstallPlan {
 }
 
 /**
- * The command each hook runs. Uses the absolute interpreter and script path
- * rather than the bare binary name: hooks inherit a login-ish environment, and
- * a `notifai` that is only on an interactive shell's PATH fails silently.
+ * The command each hook runs. Harness definitions know only the stable
+ * user-level adapter. Mutable Node, package-manager, version, and checkout
+ * paths live behind that seam and never enter a trusted hook identity.
  */
 export function hookCommand(
-  execPath: string,
-  scriptPath: string,
+  adapterPath: string,
   event: string,
   harness?: Harness,
 ): string {
   return (
-    `${quote(execPath)} ${quote(scriptPath)} hook ${event} ${OWNER_MARKER}` +
+    `${quote(adapterPath)} hook ${event} ${OWNER_MARKER}` +
     (harness === undefined ? '' : ` --harness ${harness}`)
   )
 }
@@ -106,12 +107,8 @@ function quote(value: string): string {
 }
 
 export interface BuildOptions {
-  execPath: string
-  scriptPath: string
-  /** Seconds a blocking hook may wait for a companion-device answer. */
-  replyTimeoutSeconds: number
-  /** Seconds the question waits in the terminal before it is pushed at all. */
-  graceSeconds: number
+  /** Stable user-level executable installed by the hook adapter module. */
+  adapterPath: string
   /** The installed adapter stamps its exact harness into project pointers. */
   harness?: Harness
 }
@@ -128,32 +125,26 @@ const HOOK_CEILING_SECONDS = 540
  * The runtime already fits grace and reply waiting inside the harness ceiling;
  * the installed identity therefore stays at that ceiling across preferences.
  */
-export function blockingHookTimeoutSeconds(
-  _graceSeconds: number,
-  _replyTimeoutSeconds: number,
-): number {
+export function blockingHookTimeoutSeconds(): number {
   return HOOK_CEILING_SECONDS
 }
 
 export function buildHookConfig(options: BuildOptions): HookConfig {
-  const { execPath, scriptPath } = options
-  // Stop can spend the grace window AND then the reply wait, so the declared
-  // timeout must cover both. Headroom on top so the harness never kills the
-  // hook first; a killed hook loses the answer the user already gave.
-  const blockingTimeout = blockingHookTimeoutSeconds(
-    options.graceSeconds,
-    options.replyTimeoutSeconds,
-  )
+  const { adapterPath } = options
+  const hostOwnsTimeouts = options.harness === 'codex'
+  // Runtime preferences fit inside this fixed process budget without becoming
+  // part of the serialized definition Codex asks the user to trust.
+  const blockingTimeout = blockingHookTimeoutSeconds()
   return {
     UserPromptSubmit: [
       {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(execPath, scriptPath, 'user-prompt-submit', options.harness),
+            command: hookCommand(adapterPath, 'user-prompt-submit', options.harness),
             // Claude Code caps UserPromptSubmit at 30s; stay well inside it so
             // a slow network can never delay the user's own prompt.
-            timeout: 15,
+            ...(hostOwnsTimeouts ? {} : { timeout: 15 }),
           },
         ],
       },
@@ -163,8 +154,8 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(execPath, scriptPath, 'stop', options.harness),
-            timeout: blockingTimeout,
+            command: hookCommand(adapterPath, 'stop', options.harness),
+            ...(hostOwnsTimeouts ? {} : { timeout: blockingTimeout }),
           },
         ],
       },
@@ -174,10 +165,10 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(execPath, scriptPath, 'session-end', options.harness),
+            command: hookCommand(adapterPath, 'session-end', options.harness),
             // Both harnesses give SessionEnd a ~1-3s budget, so this handler
             // only touches local state.
-            timeout: 3,
+            ...(hostOwnsTimeouts ? {} : { timeout: 3 }),
           },
         ],
       },
@@ -201,20 +192,17 @@ interface CursorSettingsDocument {
 
 /** Cursor's native schema is flat and uses lower-camel lifecycle event names. */
 export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
-  const blockingTimeout = blockingHookTimeoutSeconds(
-    options.graceSeconds,
-    options.replyTimeoutSeconds,
-  )
+  const blockingTimeout = blockingHookTimeoutSeconds()
   return {
     beforeSubmitPrompt: [
       {
-        command: hookCommand(options.execPath, options.scriptPath, 'user-prompt-submit', 'cursor'),
+        command: hookCommand(options.adapterPath, 'user-prompt-submit', 'cursor'),
         timeout: 15,
       },
     ],
     stop: [
       {
-        command: hookCommand(options.execPath, options.scriptPath, 'stop', 'cursor'),
+        command: hookCommand(options.adapterPath, 'stop', 'cursor'),
         timeout: blockingTimeout,
         // A continuation may register a real follow-up question. Match the
         // session-state cap so those chains are useful but never unbounded.
@@ -223,7 +211,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
     ],
     sessionEnd: [
       {
-        command: hookCommand(options.execPath, options.scriptPath, 'session-end', 'cursor'),
+        command: hookCommand(options.adapterPath, 'session-end', 'cursor'),
         timeout: 3,
       },
     ],
@@ -419,8 +407,9 @@ interface SettingsDocument {
 
 function readCursorSettings(file: string): CursorSettingsDocument {
   if (!existsSync(file)) return { version: 1 }
+  const source = readOwnedRegularFile(file)
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    const parsed: unknown = JSON.parse(source)
     return typeof parsed === 'object' && parsed !== null
       ? (parsed as CursorSettingsDocument)
       : { version: 1 }
@@ -434,7 +423,14 @@ function isOurCommand(command: string, scriptPath: string): boolean {
   return (
     command.includes(`${scriptPath}' hook `) ||
     command.includes(`${scriptPath}" hook `) ||
-    command.includes(`${scriptPath} hook `)
+    command.includes(`${scriptPath} hook `) ||
+    // Pre-marker releases always invoked either a notifai launcher or the
+    // packaged dist/main.js directly. Remove that obsolete path even when it
+    // came from a checkout that no longer exists; prelaunch has no reason to
+    // preserve a second ambiguous implementation beside the stable adapter.
+    /(?:notifai(?:\.cmd)?|dist\/main\.js)['"]?\s+hook (?:user-prompt-submit|stop|session-end)\b/.test(
+      command,
+    )
   )
 }
 
@@ -479,8 +475,9 @@ export function removeCursorHooks(
 
 function readSettings(file: string): SettingsDocument {
   if (!existsSync(file)) return {}
+  const source = readOwnedRegularFile(file)
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    const parsed: unknown = JSON.parse(source)
     return typeof parsed === 'object' && parsed !== null ? (parsed as SettingsDocument) : {}
   } catch {
     throw new Error(`Could not parse ${file}; fix or move it before installing hooks.`)
@@ -579,7 +576,9 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  * support.
  */
 export function applyPlan(file: string, document: SettingsDocument | CursorSettingsDocument): void {
-  atomicWriteFileSync(file, `${JSON.stringify(document, null, 2)}\n`)
+  atomicWriteFileSync(file, `${JSON.stringify(document, null, 2)}\n`, {
+    requireCurrentUserOwner: true,
+  })
 }
 
 export function loadSettings(file: string): SettingsDocument {
@@ -633,7 +632,12 @@ function canonicalValue(value: unknown): unknown {
   )
 }
 
-/** The exact identity Codex compares with `hooks.state.*.trusted_hash`. */
+/**
+ * Best-effort mirror of the identity current Codex builds compare with
+ * `hooks.state.*.trusted_hash`. This persisted format is diagnostic evidence,
+ * not an API: Codex's `/hooks` UI remains authoritative and Notifai never
+ * writes the trust store.
+ */
 export function codexHookIdentityHash(handler: InstalledHandler): string {
   const command = {
     type: 'command',
@@ -663,7 +667,7 @@ function codexTrustState(env: NodeJS.ProcessEnv): Record<string, unknown> {
   }
 }
 
-/** Codex's canonical persisted key for one installed handler. */
+/** Best-effort mirror of current Codex's persisted key for one handler. */
 export function codexTrustKey(
   installation: Installation,
   handler: InstalledHandler,
@@ -681,7 +685,9 @@ export function codexTrustKey(
 /**
  * Trust defects that make installed Codex handlers look present while Codex
  * skips them. Trust is user-owned; the supported repair is Codex's `/hooks`
- * review UI, never writing the trust store on the user's behalf.
+ * review UI, never writing the trust store on the user's behalf. Because the
+ * persisted shape is not a public Codex contract, this diagnosis can drift;
+ * `/hooks` remains the source of truth.
  */
 export function codexTrustProblems(
   installations: Installation[],
@@ -732,7 +738,11 @@ function isNotifaiHandler(handler: HookHandler): boolean {
 }
 
 /** Every place either harness would read a Notifai handler from. */
-export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.env): Installation[] {
+export function findInstallations(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  adapterHome?: string,
+): Installation[] {
   const found: Installation[] = []
   for (const harness of HARNESSES) {
     for (const global of [false, true]) {
@@ -742,15 +752,29 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
       // is reported as one installation covering all three events rather than
       // parsed for handlers.
       if (harness === 'opencode') {
-        const target = opencodePluginTarget(readFileSync(file, 'utf8'))
+        let source: string
+        try {
+          source = readOwnedRegularFile(file)
+        } catch {
+          continue
+        }
+        const target = opencodePluginTarget(source)
         if (target === null) continue
+        const problems = [
+          ...(!target.current
+            ? ['obsolete OpenCode event wiring; rerun `notifai hooks install --harness opencode`']
+            : []),
+          ...(target.adapter !== hookAdapterPath(adapterHome)
+            ? [
+                'OpenCode still names a mutable CLI or runtime path; rerun `notifai hooks install --harness opencode`',
+              ]
+            : []),
+        ]
         found.push({
           harness,
           file,
           global,
-          ...(!target.current
-            ? { problems: ['obsolete OpenCode event wiring; rerun `notifai hooks install --harness opencode`'] }
-            : {}),
+          ...(problems.length > 0 ? { problems } : {}),
           // Reported as the command line the plugin will actually run, not as
           // the plugin's own path: every check downstream asks which build a
           // handler invokes, and for a module that answer lives inside it.
@@ -758,7 +782,7 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
             event,
             groupIndex: 0,
             handlerIndex: 0,
-            command: hookCommand(target.exec, target.script, hookEvent),
+            command: hookCommand(target.adapter, hookEvent, 'opencode'),
             ...(target.timeoutSeconds === undefined ? {} : { timeout: target.timeoutSeconds }),
           })),
         })
@@ -773,7 +797,7 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
         }
         const handlers = locateCursorHandlers(document)
         if (handlers.length > 0) {
-          const problems = harnessMarkerProblems(harness, handlers)
+          const problems = harnessMarkerProblems(harness, handlers, adapterHome)
           found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
         }
         continue
@@ -786,7 +810,7 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
       }
       const handlers = locateHandlers(document)
       if (handlers.length > 0) {
-        const problems = harnessMarkerProblems(harness, handlers)
+        const problems = harnessMarkerProblems(harness, handlers, adapterHome)
         found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
       }
     }
@@ -794,12 +818,24 @@ export function findInstallations(cwd: string, env: NodeJS.ProcessEnv = process.
   return found
 }
 
-function harnessMarkerProblems(harness: Harness, handlers: InstalledHandler[]): string[] {
-  return handlers.every((handler) => handler.command.includes(`--harness ${harness}`))
-    ? []
-    : [
-        `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
-      ]
+function harnessMarkerProblems(
+  harness: Harness,
+  handlers: InstalledHandler[],
+  adapterHome?: string,
+): string[] {
+  const problems: string[] = []
+  if (!handlers.every((handler) => handler.command.includes(`--harness ${harness}`))) {
+    problems.push(
+      `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
+    )
+  }
+  const expected = `${quote(hookAdapterPath(adapterHome))} hook `
+  if (!handlers.every((handler) => handler.command.startsWith(expected))) {
+    problems.push(
+      'installed commands still name a mutable CLI or runtime path; rerun `notifai hooks install` to migrate to the stable adapter',
+    )
+  }
+  return problems
 }
 
 function locateCursorHandlers(document: CursorSettingsDocument): InstalledHandler[] {
@@ -845,4 +881,16 @@ function locateHandlers(document: SettingsDocument): InstalledHandler[] {
 /** The hook event a handler's command actually invokes, e.g. `stop`. */
 export function handlerEvent(command: string): string | null {
   return / hook ([a-z-]+)/.exec(command)?.[1] ?? null
+}
+
+function readOwnedRegularFile(file: string): string {
+  const stat = lstatSync(file)
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`${file} is not a regular file; refusing to read it.`)
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
+  if (uid !== undefined && stat.uid !== uid) {
+    throw new Error(`${file} is owned by uid ${stat.uid}, not the current user.`)
+  }
+  return readFileSync(file, 'utf8')
 }

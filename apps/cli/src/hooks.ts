@@ -12,7 +12,11 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import type { LifecycleEndState, QuestionT, ReplyView } from '@raidiant/notifai-protocol'
-import type { ApiClient } from './client.js'
+import {
+  ApiCallError,
+  isRetryableReplyPollError,
+  type ApiClient,
+} from './client.js'
 import {
   loadConfig,
   projectSessionPointerPath,
@@ -720,22 +724,28 @@ async function waitForAnyReplyWhileAway(
   ctx: HookContext,
   requestIds: string[],
   timeoutSeconds: number,
-): Promise<{ byRequest: Map<string, ReplyView[]>; degraded: boolean; userReturned: boolean }> {
+): Promise<{
+  byRequest: Map<string, ReplyView[]>
+  degraded: boolean
+  userReturned: boolean
+  permanentFailures: Map<string, string>
+}> {
   const deadline = ctx.now() + timeoutSeconds * 1000
   let degraded = false
   let firstPoll = true
+  const permanentFailures = new Map<string, string>()
 
   for (;;) {
     if (ctx.config.require_idle.value) {
       const idle = ctx.idleSeconds()
       if (idle !== null && idle < ctx.config.away_after_seconds.value) {
-        return { byRequest: new Map(), degraded, userReturned: true }
+        return { byRequest: new Map(), degraded, userReturned: true, permanentFailures }
       }
     }
 
     const remainingMs = Math.max(0, deadline - ctx.now())
     if (!firstPoll && remainingMs === 0) {
-      return { byRequest: new Map(), degraded, userReturned: false }
+      return { byRequest: new Map(), degraded, userReturned: false, permanentFailures }
     }
     firstPoll = false
     const pollSeconds = Math.min(
@@ -743,21 +753,49 @@ async function waitForAnyReplyWhileAway(
       Math.max(0, Math.ceil(remainingMs / 1000)),
     )
     const results = await Promise.all(
-      requestIds.map(async (requestId) => {
+      requestIds
+        .filter((requestId) => !permanentFailures.has(requestId))
+        .map(async (requestId) => {
         try {
           return { requestId, ...(await ctx.waitForFirstReply(requestId, pollSeconds)) }
-        } catch {
-          return { requestId, replies: [] as ReplyView[], degraded: true }
+        } catch (err) {
+          if (isRetryableReplyPollError(err)) {
+            return { requestId, replies: [] as ReplyView[], degraded: true }
+          }
+          return {
+            requestId,
+            replies: [] as ReplyView[],
+            degraded: false,
+            permanentFailure: replyPollFailure(err),
+          }
         }
       }),
     )
     const byRequest = new Map<string, ReplyView[]>()
     for (const result of results) {
       degraded ||= result.degraded === true
+      if (result.permanentFailure !== undefined) {
+        permanentFailures.set(result.requestId, result.permanentFailure)
+      }
       if (result.replies.length > 0) byRequest.set(result.requestId, result.replies)
     }
-    if (byRequest.size > 0) return { byRequest, degraded, userReturned: false }
+    if (byRequest.size > 0 || permanentFailures.size === requestIds.length) {
+      return { byRequest, degraded, userReturned: false, permanentFailures }
+    }
   }
+}
+
+/** A non-retryable replies fault, with enough server identity to act on it. */
+function replyPollFailure(err: unknown): string {
+  return err instanceof ApiCallError
+    ? `${err.code} (HTTP ${err.status}): ${err.message}`
+    : String(err)
+}
+
+function permanentReplyFailureNote(failures: Map<string, string>): string | null {
+  if (failures.size === 0) return null
+  const details = [...failures].map(([requestId, failure]) => `${requestId}: ${failure}`).join('; ')
+  return `reply polling stopped after a permanent server rejection (${details}); the pending record was kept for explicit recovery with: notifai replies --pending`
 }
 
 /**
@@ -1081,7 +1119,7 @@ interface PendingPoll {
   /** Every reply in arrival order, for free-text answers given in parts. */
   replies: ReplyView[]
   degraded: boolean
-  failed: boolean
+  permanentFailure: string | null
 }
 
 /** One bounded recovery poll for a question that outlived its original wait. */
@@ -1091,7 +1129,7 @@ async function pollPendingReply(
   timeoutSeconds: number,
 ): Promise<PendingPoll> {
   if (pending.request_id === undefined) {
-    return { reply: null, replies: [], degraded: false, failed: false }
+    return { reply: null, replies: [], degraded: false, permanentFailure: null }
   }
   try {
     const result = await ctx.waitForFirstReply(pending.request_id, timeoutSeconds)
@@ -1099,10 +1137,12 @@ async function pollPendingReply(
       reply: result.replies.at(-1) ?? null,
       replies: result.replies,
       degraded: result.degraded === true,
-      failed: false,
+      permanentFailure: null,
     }
-  } catch {
-    return { reply: null, replies: [], degraded: true, failed: true }
+  } catch (err) {
+    return isRetryableReplyPollError(err)
+      ? { reply: null, replies: [], degraded: true, permanentFailure: null }
+      : { reply: null, replies: [], degraded: false, permanentFailure: replyPollFailure(err) }
   }
 }
 
@@ -1138,19 +1178,27 @@ async function pollPendingReplies(
   ctx: HookContext,
   live: PendingQuestion[],
   timeoutSeconds: number,
-): Promise<{ answered: AnsweredPending[]; troubled: boolean }> {
+): Promise<{
+  answered: AnsweredPending[]
+  transientTrouble: boolean
+  permanentFailures: Map<string, string>
+}> {
   const polls = await Promise.all(
     live.map((entry) => pollPendingReply(ctx, entry, timeoutSeconds)),
   )
   const answered: AnsweredPending[] = []
-  let troubled = false
+  let transientTrouble = false
+  const permanentFailures = new Map<string, string>()
   for (const [index, poll] of polls.entries()) {
     if (poll.reply !== null) {
       answered.push({ pending: live[index]!, reply: poll.reply, replies: poll.replies })
     }
-    if (poll.failed || poll.degraded) troubled = true
+    if (poll.degraded) transientTrouble = true
+    if (poll.permanentFailure !== null) {
+      permanentFailures.set(live[index]!.request_id!, poll.permanentFailure)
+    }
   }
-  return { answered, troubled }
+  return { answered, transientTrouble, permanentFailures }
 }
 
 /** The registered-question queue. Anything but the current shape reads as empty. */
@@ -1298,15 +1346,21 @@ export async function handleUserPromptSubmit(
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
   let lateAnswers: AnsweredPending[] = []
   if (live.length > 0) {
-    const { answered, troubled } = await pollPendingReplies(ctx, live, LATE_PROMPT_POLL_SECONDS)
+    const { answered, transientTrouble, permanentFailures } = await pollPendingReplies(
+      ctx,
+      live,
+      LATE_PROMPT_POLL_SECONDS,
+    )
     lateAnswers = answered
     if (answered.length > 0) {
       await finishAnsweredPendings(ctx, envelope, sessionId, answered, false)
       for (const answer of answered) reportAnswer(ctx, notes, answer, true)
     }
-    if (troubled) {
+    if (transientTrouble) {
       notes.push('could not check every pending question for a late answer before the prompt')
     }
+    const permanentFailure = permanentReplyFailureNote(permanentFailures)
+    if (permanentFailure !== null) notes.push(permanentFailure)
   }
   // Park before dropping `pending`. If the process dies between these writes,
   // the next hook sees both copies and dedupes them; the old order could die in
@@ -1438,7 +1492,13 @@ async function handleClaimedStop(
   const unasked = pending.filter((entry) => entry.request_id === undefined)
 
   if (live.length > 0) {
-    const { answered, troubled } = await pollPendingReplies(ctx, live, LATE_STOP_POLL_SECONDS)
+    const { answered, transientTrouble, permanentFailures } = await pollPendingReplies(
+      ctx,
+      live,
+      LATE_STOP_POLL_SECONDS,
+    )
+    const permanentFailure = permanentReplyFailureNote(permanentFailures)
+    if (permanentFailure !== null) notes.push(permanentFailure)
     if (answered.length > 0) {
       await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
       gate(ctx, 'proceeding', 'answered', { answers: answered.length })
@@ -1455,11 +1515,17 @@ async function handleClaimedStop(
       // for one question is the nagging failure this feature exists to avoid.
       const requestIds = live.map((entry) => entry.request_id!)
       const ids = requestIds.join(', ')
-      gate(ctx, 'held', 'already-asked', { request_ids: requestIds, poll_troubled: troubled })
+      gate(ctx, 'held', 'already-asked', {
+        request_ids: requestIds,
+        poll_troubled: transientTrouble || permanentFailures.size > 0,
+        permanent_failures: permanentFailures.size,
+      })
       notes.push(
-        troubled
+        transientTrouble
           ? `already asked (${ids}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
-          : `already asked (${ids}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
+          : permanentFailures.size > 0
+            ? `already asked (${ids}); reply polling was rejected permanently`
+            : `already asked (${ids}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
       )
       return { notes }
     }
@@ -1632,6 +1698,8 @@ async function escalate(
     waitingOn.map((entry) => entry.request_id!),
     timeoutSeconds,
   )
+  const permanentFailure = permanentReplyFailureNote(waited.permanentFailures)
+  if (permanentFailure !== null) notes.push(permanentFailure)
 
   if (waited.byRequest.size === 0) {
     // Keep the pending records so a returning user's UserPromptSubmit can
@@ -1644,6 +1712,7 @@ async function escalate(
       request_ids: requestIds,
       user_returned: waited.userReturned,
       degraded: waited.degraded,
+      permanent_failures: waited.permanentFailures.size,
       waited_seconds: timeoutSeconds,
     })
     if (waited.userReturned) {
@@ -1651,7 +1720,7 @@ async function escalate(
         `you came back after the question${waitingOn.length === 1 ? ' was' : 's were'} sent; returning the terminal while ${waitingOn.length === 1 ? 'it stays' : 'they stay'} answerable (${ids}). ` +
           'Retrieve answers with: notifai replies --pending',
       )
-    } else {
+    } else if (waited.permanentFailures.size === 0) {
       notes.push(
         waited.degraded
           ? 'could not reach the server to find out whether you answered; check with: notifai replies --pending'

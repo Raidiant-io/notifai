@@ -15,12 +15,24 @@ notifai doctor
 A machine-global Notifai skill is guidance, not routing evidence. The active
 harness needs its own installed hook and a current session pointer.
 
+Installed definitions call one stable user-level adapter at
+`~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
+to the current CLI while leaving definition bytes unchanged across Node/NVM,
+package-manager, CLI-version, checkout, XDG directory, and Notifai preference
+changes. Codex definitions omit timeout fields and use host defaults. Migrating
+an older Codex definition requires one unavoidable `/hooks` approval; later
+upgrades must not require another.
+
 Before the first `notifai ask` in a new harness session, `doctor` must name the
 active harness under **Question routing** and report under **hooks (fired)**
 that a session in this directory ran both UserPromptSubmit and Stop. For Codex,
 **hooks (trust)** must also pass. The check is fail-closed against the exact
 active session identity where the harness exports one. Do not invent `--session`
 to bypass it.
+
+Codex trust diagnosis is a best-effort comparison with Codex's current
+persisted representation, not a supported trust-store API. Notifai never
+writes approvals; `/hooks` is authoritative if the two disagree.
 
 ## Activation by harness
 

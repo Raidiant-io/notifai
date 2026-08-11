@@ -41,9 +41,10 @@ import {
 
 const SCRIPT = '/opt/notifai/dist/main.js'
 const EXEC = '/usr/local/bin/node'
+const ADAPTER = '/Users/test/.local/state/notifai/hook-adapter'
 
 function ours(): HookConfig {
-  return buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 240, graceSeconds: 0 })
+  return buildHookConfig({ adapterPath: ADAPTER })
 }
 
 describe('choice labels', () => {
@@ -74,34 +75,29 @@ describe('choice labels', () => {
 })
 
 describe('hook config', () => {
-  it('invokes the CLI by absolute path so a hook shell without our PATH still works', () => {
-    expect(hookCommand(EXEC, SCRIPT, 'stop')).toBe(`'${EXEC}' '${SCRIPT}' hook stop --owner notifai`)
+  it('invokes one stable adapter so a sparse hook PATH still works', () => {
+    expect(hookCommand(ADAPTER, 'stop')).toBe(`'${ADAPTER}' hook stop --owner notifai`)
   })
 
   it('single-quotes so a path cannot become a command', () => {
     // Double quotes still expand $() and backticks, so a checkout path with
     // shell syntax was execution on every hook event.
-    const cmd = hookCommand('/usr/bin/node', '/tmp/$(touch /tmp/pwned)/main.js', 'stop')
-    expect(cmd).toBe("'/usr/bin/node' '/tmp/$(touch /tmp/pwned)/main.js' hook stop --owner notifai")
-    expect(hookCommand('/usr/bin/node', "/it's/here.js", 'stop')).toContain(`'/it'\\''s/here.js'`)
+    const cmd = hookCommand('/tmp/$(touch /tmp/pwned)/hook-adapter', 'stop')
+    expect(cmd).toBe("'/tmp/$(touch /tmp/pwned)/hook-adapter' hook stop --owner notifai")
+    expect(hookCommand("/it's/here", 'stop')).toContain(`'/it'\\''s/here'`)
   })
 
-  it('keeps the blocking hook identity stable when question timing preferences change', () => {
-    const immediate = buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 240, graceSeconds: 0 })
-    const delayed = buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 120, graceSeconds: 300 })
-    expect(immediate['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
-    expect(delayed['Stop']).toEqual(immediate['Stop'])
+  it('uses one fixed blocking process budget rather than accepting mutable timing inputs', () => {
+    const config = buildHookConfig({ adapterPath: ADAPTER })
+    expect(config['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
     // Claude Code caps UserPromptSubmit at 30s; Codex gives SessionEnd 1-3s.
-    expect(immediate['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
-    expect(immediate['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
+    expect(config['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
+    expect(config['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
   })
 
   it('stamps the exact harness on every generated command', () => {
     const config = buildHookConfig({
-      execPath: EXEC,
-      scriptPath: SCRIPT,
-      replyTimeoutSeconds: 240,
-      graceSeconds: 0,
+      adapterPath: ADAPTER,
       harness: 'claude-code',
     })
     expect(
@@ -110,6 +106,19 @@ describe('hook config', () => {
         .flatMap((group) => group.hooks)
         .every((handler) => handler.command.includes('--harness claude-code')),
     ).toBe(true)
+  })
+
+  it('lets Codex own handler timeouts while retaining declarations for other harnesses', () => {
+    const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
+    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
+
+    expect(
+      Object.values(codex)
+        .flatMap((groups) => groups)
+        .flatMap((group) => group.hooks)
+        .every((handler) => handler.timeout === undefined),
+    ).toBe(true)
+    expect(claude['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
   })
 })
 
@@ -135,7 +144,7 @@ describe('merging into existing settings', () => {
     const once = mergeHooks({}, ours(), SCRIPT)
     const twice = mergeHooks(
       once.document,
-      buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 60, graceSeconds: 0 }),
+      buildHookConfig({ adapterPath: ADAPTER }),
       SCRIPT,
     )
     expect(twice.document.hooks?.['Stop']).toHaveLength(1)
@@ -297,9 +306,9 @@ describe('upgrading past a dropped event', () => {
     const stale = {
       hooks: {
         PermissionRequest: [
-          { hooks: [{ type: 'command' as const, command: hookCommand(EXEC, SCRIPT, 'permission-request') }] },
+          { hooks: [{ type: 'command' as const, command: hookCommand(ADAPTER, 'permission-request') }] },
         ],
-        Stop: [{ hooks: [{ type: 'command' as const, command: hookCommand(EXEC, SCRIPT, 'stop') }] }],
+        Stop: [{ hooks: [{ type: 'command' as const, command: hookCommand(ADAPTER, 'stop') }] }],
       },
     }
 
@@ -316,7 +325,7 @@ describe('upgrading past a dropped event', () => {
         PermissionRequest: [
           {
             hooks: [
-              { type: 'command' as const, command: hookCommand(EXEC, SCRIPT, 'permission-request') },
+              { type: 'command' as const, command: hookCommand(ADAPTER, 'permission-request') },
               { type: 'command' as const, command: 'their-own-tool --check' },
             ],
           },
@@ -398,7 +407,7 @@ describe('finding what is installed', () => {
   it('reads the event a handler actually invokes, not the key it sits under', () => {
     // These diverge exactly when an upgrade drops an event, which is the case
     // worth detecting.
-    expect(handlerEvent(hookCommand(EXEC, SCRIPT, 'permission-request'))).toBe('permission-request')
+    expect(handlerEvent(hookCommand(ADAPTER, 'permission-request'))).toBe('permission-request')
     expect(handlerEvent('unrelated --tool')).toBeNull()
   })
 
@@ -460,26 +469,26 @@ describe('two checkouts', () => {
   }
 
   it('replaces a handler another checkout installed instead of running beside it', () => {
-    const existing = documentWith(hookCommand(EXEC, OTHER, 'stop'))
+    const existing = documentWith(hookCommand('/other/notifai/hook-adapter', 'stop'))
     const merged = mergeHooks(
       existing,
-      buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 240, graceSeconds: 0 }),
+      buildHookConfig({ adapterPath: ADAPTER }),
       SCRIPT,
     )
     const commands = stopCommands(merged.document)
     expect(commands.filter((c) => c.includes('hook stop'))).toHaveLength(1)
-    expect(commands[0]).toContain(SCRIPT)
-    expect(commands.join(' ')).not.toContain(OTHER)
+    expect(commands[0]).toContain(ADAPTER)
+    expect(commands.join(' ')).not.toContain('/other/notifai/hook-adapter')
   })
 
   it('uninstalls a handler another checkout installed', () => {
-    const removed = removeHooks(documentWith(hookCommand(EXEC, OTHER, 'stop')), SCRIPT)
+    const removed = removeHooks(documentWith(hookCommand('/other/notifai/hook-adapter', 'stop')), SCRIPT)
     expect(stopCommands(removed.document)).toHaveLength(0)
   })
 
   it('still recognises an install that predates the marker', () => {
-    // Same path, no marker: the form written by an older build.
-    const legacy = documentWith(`'${EXEC}' '${SCRIPT}' hook stop`)
+    // Different checkout, no marker: the form written by an older build.
+    const legacy = documentWith(`'${EXEC}' '${OTHER}' hook stop`)
     expect(stopCommands(removeHooks(legacy, SCRIPT).document)).toHaveLength(0)
   })
 
@@ -495,8 +504,7 @@ describe('two checkouts', () => {
  */
 describe('the OpenCode adapter', () => {
   const source = opencodePluginSource({
-    execPath: EXEC,
-    scriptPath: SCRIPT,
+    adapterPath: ADAPTER,
     timeoutSeconds: 240,
   })
 
@@ -504,8 +512,9 @@ describe('the OpenCode adapter', () => {
     // The whole point: presence, escalation and retirement stay in the CLI.
     expect(source).toContain('"hook", event')
     expect(source).toContain('"--harness", "opencode"')
-    expect(source).toContain(JSON.stringify(SCRIPT))
-    expect(source).toContain(JSON.stringify(EXEC))
+    expect(source).toContain(JSON.stringify(ADAPTER))
+    expect(source).not.toContain(JSON.stringify(SCRIPT))
+    expect(source).not.toContain(JSON.stringify(EXEC))
   })
 
   it('wires the three question lifecycle joints and leaves permissions alone', () => {
@@ -548,27 +557,21 @@ describe('the OpenCode adapter', () => {
     expect(settingsFile('opencode', false, '/repo', {})).toContain('notifai.js')
   })
 
-  it('reports the build it will run, not its own path', () => {
-    // `doctor` asks every handler which build it invokes. A plugin is a module
-    // rather than a command line, so answering with the plugin's own path made
-    // an ordinary OpenCode install look like a second checkout and turned the
-    // duplicate check red on a healthy machine.
+  it('reports the same stable adapter identity as command-hook harnesses', () => {
     expect(opencodePluginTarget(source)).toEqual({
-      exec: EXEC,
-      script: SCRIPT,
+      adapter: ADAPTER,
       current: true,
       timeoutSeconds: 240,
     })
     expect(opencodePluginTarget(source.replace(/^const ADAPTER_VERSION = .*\n/m, ''))).toEqual({
-      exec: EXEC,
-      script: SCRIPT,
+      adapter: ADAPTER,
       current: false,
       timeoutSeconds: 240,
     })
     expect(opencodePluginTarget('export const SomeoneElse = () => ({})')).toBeNull()
     // Ours, but with the constants edited beyond recognition: no answer beats
     // a wrong one, since the caller compares these for equality.
-    expect(opencodePluginTarget(`${OPENCODE_PLUGIN_MARKER}\nconst EXEC = whatever\n`)).toBeNull()
+    expect(opencodePluginTarget(`${OPENCODE_PLUGIN_MARKER}\nconst ADAPTER = whatever\n`)).toBeNull()
   })
 })
 

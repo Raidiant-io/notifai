@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type {
   CapabilityDocument,
   EvidenceSnapshot,
@@ -51,6 +52,7 @@ import { readSessionState, writeProjectSession, writeSessionState } from './hook
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig } from './config.js'
 import { createLogger, logsDiskUsage, readLogRecords } from './logging.js'
+import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 
 class CapturedIo implements CommandIo {
@@ -146,6 +148,7 @@ function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
 }
 
 function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
+  const testRoot = path.join(os.tmpdir(), 'notifai-cli-command-tests')
   return {
     io,
     store: {
@@ -159,7 +162,11 @@ function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
       clear: () => {},
       describe: () => 'test credential store',
     },
-    env: { XDG_CONFIG_HOME: path.join(os.tmpdir(), 'notifai-cli-command-tests') },
+    env: {
+      XDG_CONFIG_HOME: testRoot,
+      XDG_STATE_HOME: path.join(os.tmpdir(), 'notifai-cli-command-tests-state'),
+    },
+    hookAdapterHome: path.join(testRoot, 'home'),
     cwd: os.tmpdir(),
     clientFactory: () => client,
   }
@@ -923,8 +930,8 @@ describe('delivery evidence status', () => {
 })
 
 describe('Cursor hook commands', () => {
-  const execPath = '/usr/local/bin/node'
-  const scriptPath = '/opt/notifai/dist/main.js'
+  const execPath = process.execPath
+  const scriptPath = fileURLToPath(import.meta.url)
 
   it('installs native Cursor hooks with bounded chained answer continuations', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-install-'))
@@ -1018,8 +1025,8 @@ describe('Cursor hook commands', () => {
 })
 
 describe('harness activation guidance', () => {
-  const execPath = '/usr/local/bin/node'
-  const scriptPath = '/opt/notifai/dist/main.js'
+  const execPath = process.execPath
+  const scriptPath = fileURLToPath(import.meta.url)
 
   it('does not require a Claude Code restart for project hook files', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-activation-'))
@@ -1057,7 +1064,18 @@ describe('harness activation guidance', () => {
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: [] }),
     } as unknown as ApiClient
-    const deps = { ...makeDeps(io, client), cwd }
+    const base = makeDeps(io, client)
+    const deps = {
+      ...base,
+      cwd,
+      env: {
+        ...base.env,
+        HOME: path.join(cwd, 'home'),
+        CODEX_HOME: path.join(cwd, 'codex-home'),
+        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+        OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode-home'),
+      },
+    }
 
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(
       EXIT.ok,
@@ -1079,6 +1097,107 @@ describe('harness activation guidance', () => {
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     expect(io.outLines.join('\n')).toContain('hooks (adapter)')
     expect(io.outLines.join('\n')).toContain('obsolete OpenCode event wiring')
+  })
+
+  it('refuses a symlinked OpenCode plugin without touching its target', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-symlink-'))
+    const plugin = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
+    const target = path.join(cwd, 'foreign.js')
+    mkdirSync(path.dirname(plugin), { recursive: true })
+    writeFileSync(target, '// notifai managed opencode plugin\nleave me\n')
+    symlinkSync(target, plugin)
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+
+    expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(
+      EXIT.failed,
+    )
+    expect(io.errLines.join('\n')).toMatch(/not a regular file/)
+    expect(readFileSync(target, 'utf8')).toBe('// notifai managed opencode plugin\nleave me\n')
+    // Adapter preparation commits first. A definition failure leaves a valid
+    // shared adapter (useful to any existing harness) and never half-writes the
+    // rejected definition.
+    expect(inspectHookAdapter(deps.hookAdapterHome).problems).toEqual([])
+    expect(inspectHookAdapter(deps.hookAdapterHome).target?.scriptPath).toBe(scriptPath)
+  })
+})
+
+describe('stable hook installation', () => {
+  it('keeps definition bytes stable across config, CLI target, and project/global changes', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-stable-hook-install-'))
+    const firstCli = path.join(cwd, 'first cli.js')
+    const secondCli = path.join(cwd, 'second cli.js')
+    writeFileSync(firstCli, '')
+    writeFileSync(secondCli, '')
+    const io = new CapturedIo()
+    const env = {
+      HOME: path.join(cwd, 'home'),
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+    }
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    const local = path.join(cwd, '.claude', 'settings.local.json')
+
+    expect(
+      hooksInstallCommand(deps, {
+        harness: 'claude-code',
+        execPath: process.execPath,
+        scriptPath: firstCli,
+      }),
+    ).toBe(EXIT.ok)
+    const firstDefinition = readFileSync(local, 'utf8')
+    const firstAdapter = readFileSync(hookAdapterPath(deps.hookAdapterHome), 'utf8')
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 300\n')
+    env.XDG_CONFIG_HOME = path.join(cwd, 'different-config')
+    env.XDG_STATE_HOME = path.join(cwd, 'different-state')
+
+    expect(
+      hooksInstallCommand(deps, {
+        harness: 'claude-code',
+        execPath: process.execPath,
+        scriptPath: secondCli,
+      }),
+    ).toBe(EXIT.ok)
+    expect(readFileSync(local, 'utf8')).toBe(firstDefinition)
+    expect(readFileSync(hookAdapterPath(deps.hookAdapterHome), 'utf8')).not.toBe(firstAdapter)
+    expect(firstDefinition).toContain(hookAdapterPath(deps.hookAdapterHome))
+    expect(firstDefinition).not.toContain(firstCli)
+    expect(firstDefinition).not.toContain(secondCli)
+
+    expect(
+      hooksInstallCommand(deps, {
+        harness: 'claude-code',
+        global: true,
+        execPath: process.execPath,
+        scriptPath: secondCli,
+      }),
+    ).toBe(EXIT.ok)
+    const global = readFileSync(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), 'utf8')
+    expect(global).toBe(firstDefinition)
+
+    io.outLines = []
+    await doctorCommand(deps, {})
+    expect(io.outLines.join('\n')).toMatch(/hooks \(duplicates\).*project or global routing/is)
+
+    expect(hooksUninstallCommand(deps, { harness: 'claude-code' })).toBe(EXIT.ok)
+    expect(existsSync(hookAdapterPath(deps.hookAdapterHome))).toBe(true)
+    expect(
+      findInstallations(cwd, env, deps.hookAdapterHome).filter(
+        (item) => item.harness === 'claude-code',
+      ),
+    ).toHaveLength(1)
   })
 })
 
@@ -2590,8 +2709,8 @@ describe('an outage is not an answer', () => {
 })
 
 describe('asking before the hooks have ever run', () => {
-  const execPath = '/usr/local/bin/node'
-  const scriptPath = '/opt/notifai/dist/main.js'
+  const execPath = process.execPath
+  const scriptPath = fileURLToPath(import.meta.url)
 
   it('names the active Codex harness instead of unrelated installed adapters', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-missing-'))
@@ -2694,6 +2813,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     await doctorCommand(deps, {})
     expect(io.outLines.join('\n')).toMatch(/FAIL\s+hooks \(trust\).*Stop/is)
+    expect(io.outLines.join('\n')).toMatch(/best-effort.*never writes.*\/hooks/is)
   })
 
   it('gives doctor the same active-Codex diagnosis as ask', async () => {
@@ -2941,7 +3061,9 @@ describe('asking before the hooks have ever run', () => {
 
     await doctorCommand(deps, {})
     expect(io.outLines.join('\n')).toMatch(/ok\s+hooks \(timeout\)/)
-    expect(io.outLines.join('\n')).toContain('installed Stop timeouts cover the current 540s')
+    expect(io.outLines.join('\n')).toContain(
+      'declared Stop timeouts match the fixed 540s process budget where required; Codex uses host defaults',
+    )
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {
@@ -2959,10 +3081,7 @@ describe('asking before the hooks have ever run', () => {
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
     applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
       hooks: buildHookConfig({
-        execPath: '/usr/bin/node',
-        scriptPath: '/opt/notifai/main.js',
-        replyTimeoutSeconds: 180,
-        graceSeconds: 300,
+        adapterPath: path.join(cwd, 'notifai', 'hook-adapter'),
       }),
     })
 
