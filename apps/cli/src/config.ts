@@ -39,6 +39,14 @@ export interface ResolvedValue<T> {
 type CliSound = (typeof CLI_SOUNDS)[number]
 type CliInterruptionLevel = (typeof INTERRUPTION_LEVELS)[number]
 
+/**
+ * How much the local log records. Defined here rather than in `logging.ts`
+ * because it is a configuration vocabulary first — `logging.ts` reads config,
+ * so the dependency has to point this way.
+ */
+export const LOG_LEVELS = ['off', 'error', 'info', 'debug'] as const
+export type LogLevel = (typeof LOG_LEVELS)[number]
+
 export interface CliConfig {
   base_url: ResolvedValue<string>
   wait_seconds: ResolvedValue<number>
@@ -96,6 +104,24 @@ export interface CliConfig {
    * questions, and answering one should not answer the other.
    */
   ask_grace_seconds: ResolvedValue<number>
+  /**
+   * How much of what this CLI does is recorded to the local log.
+   *
+   * The log exists for agents: a hook runs headless and its most consequential
+   * act is usually a decision to do nothing, which leaves no other trace. `off`
+   * disables the sink entirely; `debug` adds config resolution and request
+   * detail, which is verbose enough to want a reason.
+   */
+  log_level: ResolvedValue<LogLevel>
+  /**
+   * Bytes the active log file may reach before it is rotated. With
+   * `log_max_files` this is the whole disk budget — nothing here grows without
+   * a ceiling, because a log that fills a disk is a bug that outlives its
+   * usefulness.
+   */
+  log_max_bytes: ResolvedValue<number>
+  /** Log files kept in total, the active one included. */
+  log_max_files: ResolvedValue<number>
 }
 
 export const CONFIG_KEYS = [
@@ -113,6 +139,9 @@ export const CONFIG_KEYS = [
   'away_after_seconds',
   'hook_reply_timeout_seconds',
   'ask_grace_seconds',
+  'log_level',
+  'log_max_bytes',
+  'log_max_files',
 ] as const
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
@@ -129,7 +158,20 @@ export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
   'away_after_seconds',
   'hook_reply_timeout_seconds',
   'ask_grace_seconds',
+  'log_max_bytes',
+  'log_max_files',
 ]
+
+/**
+ * Keys whose value must be one of a fixed set.
+ *
+ * Config is readable from a repository, so an unrecognised value is untrusted
+ * input rather than a typo — `coerce` drops it and the layer below wins, which
+ * is the same discipline the numeric bounds follow.
+ */
+export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> = {
+  log_level: LOG_LEVELS,
+}
 
 const DEFAULTS = {
   base_url: 'https://notifai.fly.dev',
@@ -152,6 +194,13 @@ const DEFAULTS = {
   // command-hook ceiling both harnesses enforce.
   hook_reply_timeout_seconds: 180,
   ask_grace_seconds: 0,
+  // On by default: the log is the only account of what a headless hook did, and
+  // a diagnostic nobody switched on before the thing went wrong is not one.
+  log_level: 'info',
+  // 2 MB × 3 files caps the logs at roughly 6 MB, which is weeks of ordinary
+  // agent traffic and small enough that nobody has to think about it.
+  log_max_bytes: 2_000_000,
+  log_max_files: 3,
 } satisfies Record<ConfigKey, unknown>
 
 /** The shipped value beneath every user-controlled configuration layer. */
@@ -260,6 +309,11 @@ const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> =
   // budget shared by Claude Code and Codex.
   hook_reply_timeout_seconds: { min: 10, max: 540 },
   ask_grace_seconds: { min: 0, max: 540 },
+  // The floor keeps rotation from thrashing (a file smaller than a handful of
+  // records would rotate on nearly every write); the ceiling is the point past
+  // which "local diagnostics" has become "a database on your disk".
+  log_max_bytes: { min: 64_000, max: 100_000_000 },
+  log_max_files: { min: 1, max: 20 },
 }
 
 /** Drops values a layer must not be trusted to supply, rather than throwing. */
@@ -270,6 +324,10 @@ function coerce(key: ConfigKey, value: unknown): unknown | undefined {
     return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
   }
   if (BOOLEAN_CONFIG_KEYS.includes(key)) return typeof value === 'boolean' ? value : undefined
+  const allowed = ENUM_CONFIG_VALUES[key]
+  if (allowed !== undefined) {
+    return typeof value === 'string' && allowed.includes(value) ? value : undefined
+  }
   return value
 }
 
@@ -347,5 +405,8 @@ export function loadConfig(options: {
     away_after_seconds: resolve('away_after_seconds'),
     hook_reply_timeout_seconds: resolve('hook_reply_timeout_seconds'),
     ask_grace_seconds: resolve('ask_grace_seconds'),
+    log_level: resolve('log_level'),
+    log_max_bytes: resolve('log_max_bytes'),
+    log_max_files: resolve('log_max_files'),
   }
 }

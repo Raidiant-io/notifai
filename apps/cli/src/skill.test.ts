@@ -34,6 +34,17 @@ describe('Notifai agent skill', () => {
     }
   })
 
+  it('tells the agent where to look when something did not happen', () => {
+    // The log's whole value is diagnostic, so the skill has to name the case
+    // that produces it — a question that was registered and never travelled.
+    expect(skill).toContain('notifai logs')
+    expect(skill).toContain('--request <id>')
+    expect(skill).toContain('hook.gate')
+    expect(skill).toContain('notifications-off')
+    // And that it is the user's data, on the user's machine.
+    expect(skill).toContain('stays on this machine')
+  })
+
   it('moves per-harness mechanics into progressive disclosure', () => {
     expect(skill).toContain('[Harness setup and recovery](references/harness-setup.md)')
     for (const harness of ['Claude Code', 'Codex', 'Cursor', 'OpenCode']) {

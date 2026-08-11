@@ -30,6 +30,8 @@ import {
   initCommand,
   SKILLS_SOURCE,
   loginCommand,
+  logsCommand,
+  parseSince,
   projectSlugFrom,
   repliesCommand,
   sendCommand,
@@ -42,6 +44,7 @@ import { applyPlan, buildHookConfig } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig } from './config.js'
+import { createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import type { Tone } from './ui/theme.js'
 
 class CapturedIo implements CommandIo {
@@ -551,8 +554,8 @@ describe('command contracts', () => {
   })
 
   /**
-   * NotifAI-fe5r: Provider Acceptance and Companion Receipt succeeded, then a
-   * long-poll returned HTTP 500 internal_error and the blocking wait aborted
+   * Regression context: Provider Acceptance and Companion Receipt succeeded,
+   * then a long-poll returned HTTP 500 internal_error and the blocking wait aborted
    * while the reply window was still open. The answer arrived ~1 minute later
    * and was recovered only on the next turn. Transient server faults must not
    * end the wait; permanent client errors still may.
@@ -603,13 +606,18 @@ describe('command contracts', () => {
         throw new ApiCallError(404, 'not_found', 'No such request.')
       },
     } as unknown as ApiClient
-    const deps = {
+    const deps: CommandDeps = {
       ...makeDeps(io, client),
       now: () => now,
       sleep: async (milliseconds: number) => {
         now += milliseconds
       },
     }
+    deps.env = {
+      ...deps.env,
+      XDG_STATE_HOME: mkdtempSync(path.join(os.tmpdir(), 'notifai-reply-wait-log-')),
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'send' })
 
     expect(
       await sendCommand(deps, {
@@ -625,6 +633,15 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('not_found')
     // Receipt was already printed — the durable send is not the failure.
     expect(io.outLines[0]).toContain(receipt.request_id)
+    const waitError = readLogRecords(deps.env, { event: ['cli.error'], limit: 20 }).records.find(
+      (record) => record.data?.['operation'] === 'reply_wait',
+    )
+    expect(waitError?.data).toMatchObject({
+      kind: 'api',
+      request_id: receipt.request_id,
+      status: 404,
+      code: 'not_found',
+    })
   })
 
   it('prints an NDJSON receipt before waiting and a result record on exit 3', async () => {
@@ -1028,6 +1045,138 @@ describe('projectSlugFrom', () => {
     expect(projectSlugFrom('Notifai')).toBe('notifai')
     expect(projectSlugFrom('--weird__Name.2')).toBe('weird__name.2')
     expect(projectSlugFrom('!!!')).toBe('project')
+  })
+})
+
+describe('logs', () => {
+  function logDeps(io: CapturedIo): CommandDeps {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-logs-cmd-'))
+    return {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg'), XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+  }
+
+  function seed(deps: CommandDeps, project?: string): void {
+    const logger = createLogger({ env: deps.env, runId: 'r_seed', cmd: 'send' })
+    if (project !== undefined) logger.bind({ project })
+    logger.info('send.submitted', { request_id: 'req_seeded' })
+    logger.error('cli.error', { message: 'the server said no' })
+  }
+
+  it('shows the recent records, newest last', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    seed(deps)
+    expect(logsCommand(deps, {})).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(2)
+    expect(io.outLines[0]).toContain('send.submitted')
+    expect(io.outLines[1]).toContain('cli.error')
+  })
+
+  it('keeps stdout pure JSONL under --json so a parser needs no filtering', () => {
+    // Every word of explanation goes to stderr. A machine reading stdout gets
+    // records and nothing else.
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    seed(deps)
+    expect(logsCommand(deps, { json: true })).toBe(EXIT.ok)
+    for (const line of io.outLines) {
+      expect(() => JSON.parse(line) as unknown).not.toThrow()
+    }
+    expect(io.outLines).toHaveLength(2)
+  })
+
+  it('narrows to the failures', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    seed(deps)
+    expect(logsCommand(deps, { level: 'error', json: true })).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(1)
+    expect(io.outLines[0]).toContain('cli.error')
+  })
+
+  it('narrows to one notification request', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    seed(deps)
+    expect(logsCommand(deps, { request: 'req_seeded', json: true })).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(1)
+  })
+
+  it('scopes to this project unless told otherwise', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    mkdirSync(path.join(deps.cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(deps.cwd, '.notifai', 'config.toml'), 'project = "mine"\n')
+    seed(deps, 'mine')
+    seed(deps, 'someone-elses')
+
+    // A machine commonly runs several agents in several worktrees at once, and
+    // an answer interleaved with three other projects answers nothing.
+    expect(logsCommand(deps, { json: true })).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(2)
+    io.outLines.length = 0
+    expect(logsCommand(deps, { json: true, allProjects: true })).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(4)
+  })
+
+  it('rejects an unreadable time and an unknown event, with the valid values', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    expect(logsCommand(deps, { since: 'yesterday-ish' })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('10m')
+    io.errLines.length = 0
+    expect(logsCommand(deps, { event: ['send.exploded'] })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('send.submitted')
+  })
+
+  it('accepts relative and absolute times', () => {
+    const now = Date.parse('2026-08-11T12:00:00Z')
+    expect(parseSince('10m', now)).toBe(now - 600_000)
+    expect(parseSince('2h', now)).toBe(now - 7_200_000)
+    expect(parseSince('1d', now)).toBe(now - 86_400_000)
+    expect(parseSince('2026-08-11T11:00:00Z', now)).toBe(Date.parse('2026-08-11T11:00:00Z'))
+    expect(parseSince('whenever', now)).toBeNull()
+  })
+
+  it('says why it is empty, and what to do about it', () => {
+    // "No records" with no explanation sends the reader looking for a bug that
+    // is actually a setting.
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    mkdirSync(path.join(deps.cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(deps.cwd, '.notifai', 'config.toml'), 'log_level = "off"\n')
+    expect(logsCommand(deps, {})).toBe(EXIT.ok)
+    expect(io.errLines.join('\n')).toContain('log_level is off')
+    expect(io.errLines.join('\n')).toContain('config set log_level info')
+  })
+
+  it('points at the files, and says they stay here', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    seed(deps)
+    expect(logsCommand(deps, { path: true })).toBe(EXIT.ok)
+    expect(io.outLines[0]).toContain('notifai.jsonl')
+    expect(io.errLines.join('\n')).toContain('stay on this machine')
+  })
+
+  it('reports local_only in the machine-readable form', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    expect(logsCommand(deps, { path: true, json: true })).toBe(EXIT.ok)
+    const parsed = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
+    expect(parsed['local_only']).toBe(true)
+    expect(parsed['level']).toBe('info')
+  })
+
+  it('clears the files when asked', () => {
+    const io = new CapturedIo()
+    const deps = logDeps(io)
+    seed(deps)
+    expect(logsCommand(deps, { clear: true })).toBe(EXIT.ok)
+    expect(logsDiskUsage(deps.env).files).toBe(0)
   })
 })
 

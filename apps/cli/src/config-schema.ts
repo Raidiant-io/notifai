@@ -17,7 +17,7 @@
  * a list and not an essay.
  */
 import { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
-import { configBounds, type ConfigKey } from './config.js'
+import { LOG_LEVELS, configBounds, type ConfigKey } from './config.js'
 
 export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'list'
 
@@ -25,7 +25,7 @@ export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'li
  * Which surface a key belongs to. Grouping is the difference between fourteen
  * flat keys and four short lists a reader can hold in their head.
  */
-export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'connection'
+export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'diagnostics' | 'connection'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
@@ -42,6 +42,11 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
     id: 'project',
     title: 'This project',
     blurb: 'How work in this directory identifies itself, and the house rules agents read before notifying.',
+  },
+  {
+    id: 'diagnostics',
+    title: 'Local logs',
+    blurb: 'What this machine records about its own activity, so an agent can find out afterwards what happened.',
   },
   {
     id: 'connection',
@@ -220,6 +225,43 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       'Your own guidance, in your own words, about what is worth a notification in this project — read by agents before they send. Something like "only tell me about failures and finished deploys; never per-file progress".\n\nIt is advice to the agent, not a filter the service enforces.',
     unsetMeans: 'agents fall back to their default judgement',
     example: 'Only failures and completed deploys',
+  },
+
+  log_level: {
+    label: 'Log level',
+    group: 'diagnostics',
+    kind: 'enum',
+    choices: LOG_LEVELS,
+    choiceHints: {
+      off: 'record nothing',
+      error: 'only failures',
+      info: 'commands, notifications, and every question decision',
+      debug: 'adds config resolution and per-request detail',
+    },
+    summary: 'How much this machine records about what it did',
+    detail:
+      'Notifai keeps a local record of what it did — every command, every notification, and in particular every decision a harness hook made about whether a question could leave the terminal. Hooks run headless, so without this there is no account of them at all: `notifai logs` is how an agent finds out afterwards why a question never reached your phone.\n\nThe log never leaves this machine. It is not uploaded, and nothing sends it anywhere.\n\n`debug` also records which config layer won and the detail of each request, which is what to turn on when something is behaving in a way the ordinary log does not explain.',
+    example: 'info',
+  },
+  log_max_bytes: {
+    label: 'Log file size',
+    group: 'diagnostics',
+    kind: 'integer',
+    summary: 'How large the log grows before it is rotated',
+    detail:
+      'When the active log reaches this size it is renamed aside and a fresh one starts. Together with the number of files kept, this is the whole disk budget: nothing here grows without a ceiling.',
+    advanced: true,
+    example: '2000000',
+  },
+  log_max_files: {
+    label: 'Log files kept',
+    group: 'diagnostics',
+    kind: 'integer',
+    summary: 'How many rotated log files are kept before the oldest is deleted',
+    detail:
+      'Counts the active file. At the defaults — three files of two megabytes — the logs occupy about six megabytes, which is weeks of ordinary agent traffic.\n\nRaise it when you need to look further back than the log currently reaches; lower it to one to keep only the file being written.',
+    advanced: true,
+    example: '3',
   },
 
   base_url: {

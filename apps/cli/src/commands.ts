@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
@@ -30,6 +30,7 @@ import {
 import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
+  LOG_LEVELS,
   NUMERIC_CONFIG_KEYS,
   configBounds,
   configDefaultValue,
@@ -41,6 +42,7 @@ import {
   type CliConfig,
   type ConfigKey,
   type FlagOverrides,
+  type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
 import {
@@ -72,6 +74,18 @@ import {
   type HookHarness,
 } from './hooks.js'
 import { readIdleSeconds } from './idle.js'
+import {
+  LOG_EVENTS,
+  activeLogPath,
+  archiveLogPaths,
+  logSettingsFrom,
+  logsDiskUsage,
+  nullLogger,
+  readLogRecords,
+  renderRecord,
+  type LogQuery,
+  type Logger,
+} from './logging.js'
 import {
   HARNESSES,
   applyPlan,
@@ -157,6 +171,16 @@ export interface CommandDeps {
   idleSeconds?: () => number | null
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
+  /**
+   * The local record of what this invocation did. Optional so a test fake need
+   * not carry one; `log(deps)` supplies a logger that records nothing.
+   */
+  logger?: Logger
+}
+
+/** The invocation's logger, or one that discards everything. */
+export function log(deps: CommandDeps): Logger {
+  return deps.logger ?? nullLogger()
 }
 
 export const EXIT = {
@@ -174,7 +198,7 @@ function makeClient(
   bearer: string | null,
   options?: ClientOptions,
 ): ApiClient {
-  return (deps.clientFactory ?? createClient)(baseUrl, bearer, options)
+  return (deps.clientFactory ?? createClient)(baseUrl, bearer, { ...options, logger: log(deps) })
 }
 
 function resolvedBaseUrl(config: CliConfig, credential: MachineCredential | null): string {
@@ -184,6 +208,10 @@ function resolvedBaseUrl(config: CliConfig, credential: MachineCredential | null
 function authedClient(deps: CommandDeps, config: CliConfig): { client: ApiClient; baseUrl: string } | null {
   const credential = deps.store.load()
   if (!credential) {
+    // The commonest reason a command does nothing, and one that leaves no other
+    // trace: it returns before any request is made, so without this the log
+    // shows an exit code and no cause.
+    log(deps).error('cli.error', { kind: 'auth', message: 'not signed in', store: deps.store.describe() })
     deps.io.err('Not signed in. Run `notifai login` first.')
     return null
   }
@@ -195,6 +223,16 @@ function authedClient(deps: CommandDeps, config: CliConfig): { client: ApiClient
 }
 
 function reportError(deps: CommandDeps, err: unknown): number {
+  // Recorded before it is printed: stderr from an agent's shell call is often
+  // the one thing that does not survive into the next turn, and this is exactly
+  // the line someone comes back looking for.
+  log(deps).error('cli.error', {
+    ...(err instanceof ApiCallError
+      ? { kind: 'api', status: err.status, code: err.code, message: err.message, next_action: err.nextAction, details: err.details }
+      : err instanceof NetworkError
+        ? { kind: 'network', message: err.message }
+        : { kind: 'unknown', message: String(err) }),
+  })
   if (err instanceof ApiCallError) {
     deps.io.err(`${err.code}: ${err.message}`)
     if (err.nextAction) deps.io.err(`next: ${err.nextAction}`)
@@ -571,6 +609,33 @@ export async function sendCommand(
     return reportError(deps, err)
   }
   const receiptExit = receiptExitCode(receipt)
+  // The single most useful line in the log: it ties the local invocation to
+  // the server-side request id, which is what every later question about this
+  // notification ("did it arrive?", "which device?") is asked in terms of.
+  log(deps).info('send.submitted', {
+    request_id: receipt.request_id,
+    kind: flags.reply ? 'question' : (flags.kind ?? 'update'),
+    title: flags.title,
+    overall: receipt.overall,
+    replayed: receipt.replayed,
+    deliveries: receipt.deliveries.length,
+    wait_seconds: waitSeconds,
+    exit: receiptExit,
+  })
+  log(deps).info('send.outcome', {
+    request_id: receipt.request_id,
+    overall: receipt.overall,
+    // Per device, because "it said accepted but nothing arrived" is answered
+    // by which device reached which state and why the provider said so.
+    devices: receipt.deliveries.map((delivery) => ({
+      device: delivery.device_name,
+      state: delivery.state,
+      attempts: delivery.attempts,
+      provider_status: delivery.provider_status,
+      provider_reason: delivery.provider_reason,
+    })),
+    ...(receipt.warnings.length > 0 ? { warnings: receipt.warnings } : {}),
+  })
   if (!flags.json) deps.io.out(formatReceipt(receipt))
   else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
 
@@ -610,6 +675,13 @@ export async function sendCommand(
     } else if (result.response.replies.length > 0) printReplies(deps, result.response.replies)
     else printNoReply(deps, receipt.request_id, result.response.reply_expires_at)
     if (result.degraded) {
+      log(deps).error('cli.error', {
+        kind: 'network',
+        operation: 'reply_wait',
+        request_id: receipt.request_id,
+        degraded: true,
+        message: 'the reply wait ended while the server was unreachable or faulting',
+      })
       deps.io.err(degradedWaitWarning(receipt.request_id))
       return EXIT.network
     }
@@ -626,6 +698,13 @@ export async function sendCommand(
     // Permanent poll errors (auth, closed window, not found) still surface, but
     // always name the durable request and point at recovery.
     if (err instanceof ApiCallError || err instanceof NetworkError) {
+      log(deps).error('cli.error', {
+        kind: err instanceof ApiCallError ? 'api' : 'network',
+        operation: 'reply_wait',
+        request_id: receipt.request_id,
+        ...(err instanceof ApiCallError ? { status: err.status, code: err.code } : {}),
+        message: err.message,
+      })
       deps.io.err(
         `notifai: reply wait failed for ${receipt.request_id} (${err instanceof ApiCallError ? err.code : 'network'}: ${err.message}). ` +
           `Delivery and Companion Receipt are independent — check with \`notifai status ${receipt.request_id}\` and retry with \`notifai replies ${receipt.request_id}\`.`,
@@ -761,6 +840,13 @@ export async function repliesCommand(
       deps.io.out(JSON.stringify(jsonBodies.length === 1 ? jsonBodies[0] : jsonBodies, null, 2))
     }
     if (anyDegraded) {
+      log(deps).error('cli.error', {
+        kind: 'network',
+        operation: 'reply_wait',
+        request_ids: requestIds,
+        degraded: true,
+        message: 'the reply wait ended while the server was unreachable or faulting',
+      })
       // Prefer the first id for the recovery hint; --pending may list several.
       deps.io.err(degradedWaitWarning(requestIds[0]!))
       return EXIT.network
@@ -796,7 +882,7 @@ interface ReplyWaitResult {
  * the answer. Permanent client errors (auth, not found, closed window) are
  * not recoverable by retrying.
  *
- * Incident NotifAI-fe5r: wait aborted on `internal_error` while Provider
+ * Regression context: a wait aborted on `internal_error` while Provider
  * Acceptance and Companion Receipt were fine and the reply landed ~1 minute
  * later. Only NetworkError was retried; HTTP 5xx was not.
  */
@@ -1118,8 +1204,25 @@ export async function hookRunCommand(
     // session belongs to is the harness's business, not ours.
     const cwd = envelope.cwd ?? deps.cwd
     const config = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
+    // The hook's project is the session's, not this process's, and the log
+    // settings that apply are that project's too — a repository that turned
+    // logging off should not be logged because the hook happened to start
+    // somewhere else.
+    log(deps).adopt(logSettingsFrom(config))
+    log(deps).bind({
+      cmd: `hook ${event}`,
+      project: config.project.value,
+      session: envelope.session_id ?? null,
+    })
+    log(deps).info('hook.start', {
+      hook: event,
+      harness: harness ?? 'unknown',
+      cwd,
+      stop_hook_active: envelope.stop_hook_active ?? null,
+    })
     const credential = deps.store.load()
     if (!credential) {
+      log(deps).error('hook.end', { hook: event, outcome: 'not-paired' })
       deps.io.err('notifai: hook skipped: this machine is not paired; run `notifai login`')
       return EXIT.ok
     }
@@ -1162,6 +1265,7 @@ export async function hookRunCommand(
           degraded: result.degraded,
         }
       },
+      log: log(deps),
       ...(harness === undefined ? {} : { harness }),
     }
 
@@ -1176,6 +1280,13 @@ export async function hookRunCommand(
       event === 'user-prompt-submit'
         ? await handleUserPromptSubmit(ctx, envelope)
         : await handleStop(ctx, envelope)
+    log(deps).info('hook.end', {
+      hook: event,
+      // A hook that returns stdout has taken over the turn; one that does not
+      // has handed the terminal back. That distinction is the whole contract.
+      decided: outcome.stdout !== undefined,
+      notes: outcome.notes,
+    })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
     if (outcome.stdout !== undefined) {
       let stdout = outcome.stdout
@@ -1189,6 +1300,16 @@ export async function hookRunCommand(
     }
     return EXIT.ok
   } catch (err) {
+    // The hook still exits 0 — handing the terminal back is always right. What
+    // this adds is that the reason survives, which is the difference between
+    // "escalation stopped working" and a 422 naming the rejected field.
+    log(deps).error('hook.end', {
+      hook: event,
+      outcome: 'failed',
+      ...(err instanceof ApiCallError
+        ? { status: err.status, code: err.code, message: err.message, details: err.details }
+        : { message: String(err) }),
+    })
     for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
     return EXIT.ok
   }
@@ -1420,9 +1541,20 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
       (deps.now ?? Date.now)(),
     )
   } catch (err) {
+    log(deps).error('ask.registered', { ok: false, session: sessionId, message: String(err) })
     deps.io.err(`Could not register the question: ${err instanceof Error ? err.message : String(err)}`)
     return EXIT.failed
   }
+  // `ask` returns immediately and the push happens later inside a hook, so this
+  // is the only local evidence that the question was ever registered — the
+  // starting point for "the agent asked, and nothing ever reached my phone".
+  log(deps).info('ask.registered', {
+    ok: true,
+    session: sessionId,
+    questions: built.questions.length,
+    text: built.questions[0]!.text,
+    choices: built.questions[0]!.choices?.length ?? 0,
+  })
   for (const [index, entry] of built.questions.entries()) {
     const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
     if (entry.choices !== undefined) {
@@ -2141,6 +2273,174 @@ export async function configUnsetCommand(
     writeFileSync(target.path, `${stringifyToml(existing)}\n`)
   }
   deps.io.out(`Removed ${configKey} from ${target.path}; the inherited value now applies.`)
+  return EXIT.ok
+}
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+export interface LogsFlags {
+  json?: boolean
+  limit?: number
+  all?: boolean
+  since?: string
+  level?: string
+  event?: string[]
+  run?: string
+  request?: string
+  session?: string
+  project?: string
+  allProjects?: boolean
+  grep?: string
+  path?: boolean
+  clear?: boolean
+}
+
+/**
+ * Deliberately small. The reader is usually a model with a finite context, and
+ * a log command whose default answer is ten thousand lines gets used once.
+ * Everything beyond this is reachable by asking for it.
+ */
+const DEFAULT_LOG_LIMIT = 30
+/** Even `--all` stops somewhere; an unbounded dump is never the useful answer. */
+const MAX_LOG_LIMIT = 2_000
+
+/** `10m`, `2h`, `1d`, or an ISO 8601 instant. */
+export function parseSince(raw: string, now: number): number | null {
+  const relative = /^(\d+)([smhd])$/.exec(raw.trim())
+  if (relative !== null) {
+    const amount = Number(relative[1])
+    const unit = relative[2] as 's' | 'm' | 'h' | 'd'
+    const seconds = { s: 1, m: 60, h: 3600, d: 86400 }[unit]
+    return now - amount * seconds * 1000
+  }
+  const absolute = Date.parse(raw)
+  return Number.isNaN(absolute) ? null : absolute
+}
+
+/**
+ * What this machine recorded about itself.
+ *
+ * The retrieval half of the local log, and the half that decides whether the
+ * log is worth having. Three things make it usable by an agent rather than
+ * merely available to one: the default is bounded and scoped to this project,
+ * the filters match the questions actually asked ("that run", "that
+ * notification", "just the failures"), and `--json` gives the machine the
+ * records untouched on stdout while every word of explanation goes to stderr.
+ */
+export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const now = (deps.now ?? Date.now)()
+
+  if (flags.path === true) {
+    const usage = logsDiskUsage(deps.env)
+    const archives = archiveLogPaths(deps.env)
+    if (flags.json === true) {
+      deps.io.out(
+        JSON.stringify(
+          {
+            active: activeLogPath(deps.env),
+            archives,
+            files: usage.files,
+            bytes: usage.bytes,
+            level: config.log_level.value,
+            max_bytes: config.log_max_bytes.value,
+            max_files: config.log_max_files.value,
+            local_only: true,
+          },
+          null,
+          2,
+        ),
+      )
+      return EXIT.ok
+    }
+    deps.io.out(activeLogPath(deps.env))
+    for (const archive of archives) deps.io.out(archive)
+    deps.io.err(
+      `${usage.files} file(s), ${Math.round(usage.bytes / 1024)} KB, level ${config.log_level.value}. These stay on this machine.`,
+    )
+    return EXIT.ok
+  }
+
+  if (flags.clear === true) {
+    let removed = 0
+    for (const file of [activeLogPath(deps.env), ...archiveLogPaths(deps.env)]) {
+      try {
+        unlinkSync(file)
+        removed += 1
+      } catch {
+        // Absent, or not ours to remove; either way there is nothing to report.
+      }
+    }
+    deps.io.out(`Cleared ${removed} log file${removed === 1 ? '' : 's'}.`)
+    return EXIT.ok
+  }
+
+  const query: LogQuery = { limit: Math.min(flags.limit ?? (flags.all === true ? MAX_LOG_LIMIT : DEFAULT_LOG_LIMIT), MAX_LOG_LIMIT) }
+
+  if (flags.since !== undefined) {
+    const since = parseSince(flags.since, now)
+    if (since === null) {
+      deps.io.err(`Could not read "${flags.since}" as a time. Use 10m, 2h, 1d, or an ISO 8601 instant.`)
+      return EXIT.usage
+    }
+    query.since = since
+  }
+  if (flags.level !== undefined) {
+    if (!(LOG_LEVELS as readonly string[]).includes(flags.level)) {
+      deps.io.err(`--level takes one of: ${LOG_LEVELS.join(', ')} — not "${flags.level}".`)
+      return EXIT.usage
+    }
+    query.level = flags.level as LogLevel
+  }
+  if (flags.event !== undefined && flags.event.length > 0) {
+    const unknown = flags.event.filter((name) => !(LOG_EVENTS as readonly string[]).includes(name))
+    if (unknown.length > 0) {
+      deps.io.err(`Unknown event ${unknown.join(', ')}. Valid: ${LOG_EVENTS.join(', ')}`)
+      return EXIT.usage
+    }
+    query.event = flags.event
+  }
+  if (flags.run !== undefined) query.run = flags.run
+  if (flags.session !== undefined) query.session = flags.session
+  if (flags.request !== undefined) query.request = flags.request
+  if (flags.grep !== undefined) query.contains = flags.grep
+
+  // Scoped to this project by default. A machine commonly runs several agents
+  // in several worktrees at once, and the answer to "what just happened" is
+  // useless if three other projects are interleaved through it.
+  const scope =
+    flags.project ?? (flags.allProjects === true ? undefined : (config.project.value ?? undefined))
+  if (scope !== undefined) query.project = scope
+
+  const result = readLogRecords(deps.env, query)
+
+  if (flags.json === true) {
+    for (const record of result.records) deps.io.out(JSON.stringify(record))
+  } else {
+    for (const record of result.records) deps.io.out(renderRecord(record))
+  }
+
+  if (result.records.length === 0) {
+    if (config.log_level.value === 'off') {
+      deps.io.err('Nothing is being recorded: log_level is off.')
+      deps.io.err('Turn it on with `notifai config set log_level info --yes`.')
+    } else if (logsDiskUsage(deps.env).files === 0) {
+      deps.io.err('No log yet. It is written the next time a notifai command or harness hook runs.')
+    } else {
+      deps.io.err('No records matched. Widen it with --all-projects, --since 1d, or --all.')
+    }
+    return EXIT.ok
+  }
+
+  // Everything explanatory goes to stderr so `--json` leaves stdout as clean
+  // JSONL for whatever is parsing it.
+  const notes: string[] = []
+  if (scope !== undefined) notes.push(`project ${scope} (--all-projects for every project)`)
+  if (result.more) notes.push(`more history behind this (-n ${query.limit! * 4} or --all)`)
+  if (config.log_level.value !== 'debug') notes.push('`log_level = debug` records request detail')
+  if (notes.length > 0) deps.io.err(`— ${result.records.length} records; ${notes.join('; ')}`)
   return EXIT.ok
 }
 

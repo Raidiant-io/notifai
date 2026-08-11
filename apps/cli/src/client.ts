@@ -13,6 +13,7 @@ import type {
   SubmissionReceipt,
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
+import type { Logger } from './logging.js'
 
 export class ApiCallError extends Error {
   constructor(
@@ -71,6 +72,13 @@ export interface ClientOptions {
    * whole network path stays inside the budget the harness allows them.
    */
   timeoutMs?: number
+  /**
+   * Records each call locally. Worth having because the two failures that cost
+   * the most time — a server older than this CLI, and a network path that only
+   * fails inside a hook — both look identical from outside and are told apart
+   * instantly by a status code and a duration.
+   */
+  logger?: Pick<Logger, 'debug' | 'error'>
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
@@ -83,12 +91,43 @@ export function createClient(
 ): ApiClient {
   const root = baseUrl.replace(/\/$/, '')
   const budgetMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const logger = options.logger
 
   async function call<T>(
     method: string,
     apiPath: string,
     body?: unknown,
     /** Seconds the server was asked to hold the connection open. */
+    serverWaitSeconds = 0,
+  ): Promise<T> {
+    const startedAt = Date.now()
+    try {
+      const result = await callOnce<T>(method, apiPath, body, serverWaitSeconds)
+      logger?.debug('http.call', {
+        method,
+        path: apiPath,
+        ok: true,
+        duration_ms: Date.now() - startedAt,
+      })
+      return result
+    } catch (err) {
+      logger?.error('http.call', {
+        method,
+        path: apiPath,
+        ok: false,
+        duration_ms: Date.now() - startedAt,
+        ...(err instanceof ApiCallError
+          ? { status: err.status, code: err.code, message: err.message, details: err.details }
+          : { message: String(err) }),
+      })
+      throw err
+    }
+  }
+
+  async function callOnce<T>(
+    method: string,
+    apiPath: string,
+    body?: unknown,
     serverWaitSeconds = 0,
   ): Promise<T> {
     // Without this, a server that accepts the connection and then never answers

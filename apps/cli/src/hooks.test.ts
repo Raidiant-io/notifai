@@ -18,6 +18,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
+import { activeLogPath, createLogger, readLogRecords, type LogRecord } from './logging.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
 import { loadConfig, projectSessionPointerPath, sanitizeSessionId } from './config.js'
 import {
@@ -298,6 +299,118 @@ describe('presence gate', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'idle1' }))
     expect(h.recorder.submitted).toHaveLength(0)
     expect(h.io.errLines.join('\n')).toContain('at the keyboard')
+  })
+})
+
+/**
+ * A hook's decisions are invisible from everywhere else: its stderr belongs to
+ * the harness, and its usual outcome is to do nothing at all. These are the
+ * tests that the local log closes that gap — that "my question never reached my
+ * phone" has an answer rather than a silence.
+ */
+describe('what the hook leaves behind', () => {
+  function recording(h: Harness): CommandDeps {
+    return { ...h.deps, logger: createLogger({ env: h.env, cmd: 'hook stop' }) }
+  }
+
+  function gates(h: Harness): LogRecord[] {
+    return readLogRecords(h.env, { event: ['hook.gate'], limit: 50 }).records
+  }
+
+  it('records why a question was held, in a name a filter can match', async () => {
+    const h = harness([], 2)
+    writeGlobalConfig(h, 'require_idle = true\n')
+    writeSessionState('held', h.env, { last_prompt_at: AWAY })
+    registerQuestion('held', h.env, { question: 'Ship it?' })
+
+    await hookRunCommand(recording(h), 'stop', stdin({ session_id: 'held', cwd: h.deps.cwd }))
+
+    const held = gates(h).find((record) => record.data?.['reason'] === 'user-present')
+    expect(held).toBeDefined()
+    expect(held!.data).toMatchObject({ verdict: 'held', idle_seconds: 2, away_after_seconds: 120 })
+  })
+
+  it('records the switch being off, which the user is deliberately never told', async () => {
+    // Silent to the user by design, so from outside "you turned it off" and "a
+    // bug ate my question" look identical. This is what tells them apart.
+    const h = harness([], 600)
+    const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'config.toml'), 'ask_notifications = false\n')
+    writeSessionState('off', h.env, { last_prompt_at: AWAY })
+    registerQuestion('off', h.env, { question: 'Ship it?' })
+
+    await hookRunCommand(recording(h), 'stop', stdin({ session_id: 'off', cwd: h.deps.cwd }))
+
+    expect(h.recorder.submitted).toHaveLength(0)
+    // Nothing was printed, and the log is the only account of it.
+    expect(h.io.errLines.join('\n')).not.toContain('notifications')
+    expect(gates(h).map((record) => record.data?.['reason'])).toContain('notifications-off')
+  })
+
+  it('records a turn with no question at all, so "did the hook run" is answerable', async () => {
+    const h = harness()
+    await hookRunCommand(recording(h), 'stop', stdin({ session_id: 'quiet', cwd: h.deps.cwd }))
+    const events = readLogRecords(h.env, { limit: 50 }).records.map((record) => record.event)
+    expect(events).toContain('hook.start')
+    expect(events).toContain('hook.end')
+    expect(gates(h).map((record) => record.data?.['reason'])).toContain('no-question')
+  })
+
+  it('records the push and ties it to the request id the server knows', async () => {
+    const h = harness([], 600)
+    const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'config.toml'), 'ask_grace_seconds = 0\n')
+    writeSessionState('pushed', h.env, { last_prompt_at: AWAY })
+    registerQuestion('pushed', h.env, { question: 'Ship it?' })
+
+    await hookRunCommand(recording(h), 'stop', stdin({ session_id: 'pushed', cwd: h.deps.cwd }))
+
+    const pushed = readLogRecords(h.env, { event: ['hook.pushed'] }).records
+    expect(pushed).toHaveLength(1)
+    expect(pushed[0]!.data).toMatchObject({ ok: true })
+    // The local record and the server's evidence trail share one id, which is
+    // what makes `notifai logs --request <id>` and `notifai status <id>` two
+    // views of one thing.
+    expect(pushed[0]!.data!['request_id']).toBe(h.recorder.receipts[0])
+  })
+
+  it('records a hook failure with the server own words, not just that it failed', async () => {
+    const h = harness()
+    const deps: CommandDeps = {
+      ...recording(h),
+      clientFactory: () => {
+        throw new ApiCallError(422, 'validation_failed', 'draft rejected', null, [
+          { path: '/draft/lifecycle' },
+        ])
+      },
+    }
+    registerQuestion('broken', h.env, { question: 'Ship it?' })
+    writeSessionState('broken', h.env, { last_prompt_at: AWAY })
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: 'broken', cwd: h.deps.cwd }))
+
+    const failures = readLogRecords(h.env, { level: 'error' }).records
+    expect(failures.length).toBeGreaterThan(0)
+    expect(JSON.stringify(failures)).toContain('/draft/lifecycle')
+    expect(JSON.stringify(failures)).toContain('validation_failed')
+  })
+
+  it('never writes the machine credential, whatever the hook did', async () => {
+    const h = harness([], 600)
+    const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'config.toml'), 'ask_grace_seconds = 0\n')
+    writeSessionState('secret', h.env, { last_prompt_at: AWAY })
+    registerQuestion('secret', h.env, { question: 'Ship it?' })
+
+    await hookRunCommand(recording(h), 'stop', stdin({ session_id: 'secret', cwd: h.deps.cwd }))
+
+    // The log is the artefact most likely to be pasted into a conversation.
+    const raw = readFileSync(activeLogPath(h.env), 'utf8')
+    expect(raw).not.toContain('test-secret')
+    expect(raw).not.toContain('nfm_mac_test')
   })
 })
 
@@ -847,8 +960,8 @@ describe('several questions in flight', () => {
   })
 
   /**
-   * NotifAI-fe5r AC2: a registered form/ask must become a durable server
-   * request at turn-end. Codex and Claude both enter through the same Stop
+   * A registered form/ask must become a durable server request at turn-end.
+   * Codex and Claude both enter through the same Stop
    * handler; the harness flag only changes answer injection, not settlement.
    */
   it('settles a registered form into a durable request_id on the Codex Stop path', async () => {

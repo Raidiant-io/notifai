@@ -262,3 +262,39 @@ any displayed check is `FAIL`; JSON output reports the same value as
 `exit_code`. Informational `--` lines do not fail the command. Treat a
 nonzero result as a readiness failure to resolve, not as permission to bypass
 routing or fabricate evidence.
+
+## Find out what already happened
+
+`notifai logs` is the local record of what this machine did: every command,
+every notification, and every decision a harness hook made about whether a
+registered question could leave the terminal.
+
+Reach for it whenever something did not happen and you cannot see why — most of
+all after `ask`. `ask` returns immediately and the push happens later inside a
+hook, whose output the harness swallows, so the log is the only account of
+whether the question travelled and what stopped it.
+
+```bash
+notifai logs                       # the recent record for this project
+notifai logs --level error         # only what failed
+notifai logs --request <id>        # everything about one notification
+notifai logs --run <id>            # everything one invocation did
+notifai logs --since 10m --json    # JSONL on stdout, for parsing
+```
+
+It is bounded and scoped to this project by default, because an unbounded dump
+is not an answer. Widen it deliberately with `-n`, `--all`, `--since`, and
+`--all-projects`.
+
+`hook.gate` records carry a `reason` from a fixed set — `user-present`,
+`notifications-off`, `already-asked`, `claimed-elsewhere`, `user-returned`,
+`no-question` — so filter on that rather than on the wording of a message.
+`notifications-off` and `user-present` are the two the user is deliberately
+never told about, which is exactly why they are worth checking before
+concluding something is broken.
+
+The log stays on this machine. Nothing uploads it. Machine credentials are
+redacted before anything is written, but notification titles and the user's own
+answers are recorded, so treat it as you would any of their private files.
+Control it with `log_level` (`off`, `error`, `info`, `debug`), and see
+`notifai logs --path` for where it lives and how much room it is using.

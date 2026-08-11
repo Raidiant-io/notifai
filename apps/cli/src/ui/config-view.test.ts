@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import os from 'node:os'
 import path from 'node:path'
 import { CONFIG_KEYS, loadConfig } from '../config.js'
+import { configInfo } from '../config-schema.js'
 import { renderConfigExplain, renderConfigList, renderConfigPlain } from './config-view.js'
 import { width } from './theme.js'
 
@@ -39,8 +40,9 @@ describe('renderConfigList', () => {
   it('names every non-advanced key and explains it', () => {
     const text = renderConfigList(config).join('\n')
     for (const key of CONFIG_KEYS) {
-      const advanced = key === 'base_url' || key === 'collapse_key'
-      if (advanced) continue
+      // Derived, not listed: a hardcoded set of advanced keys silently becomes
+      // an assertion about yesterday's key list the moment a key is added.
+      if (configInfo(key).advanced === true) continue
       expect(text, key).toContain(key)
     }
     expect(text).toContain('Questions & presence')

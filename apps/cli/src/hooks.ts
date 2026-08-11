@@ -23,6 +23,7 @@ import {
 } from './config.js'
 import { buildDraft } from './send.js'
 import { atomicWriteFileSync } from './atomic-file.js'
+import type { Logger } from './logging.js'
 
 /**
  * Harness hook handlers.
@@ -643,6 +644,44 @@ export interface HookContext {
   ) => Promise<{ replies: ReplyView[]; timedOut: boolean; degraded?: boolean }>
   /** OpenCode cannot consume Stop stdout, so its adapter must never wait there. */
   harness?: HookHarness
+  /**
+   * The local record. A hook's decisions are invisible from everywhere else —
+   * its stderr belongs to the harness and its usual outcome is to do nothing —
+   * so this is the only account of why a question did or did not travel.
+   */
+  log?: Logger
+}
+
+/**
+ * Record one gate decision.
+ *
+ * `verdict` is what happened to the question and `reason` is the closed-set
+ * name of the rule that decided it, so an agent can ask "why was it held" with
+ * a filter rather than by matching on prose. The prose still exists — it is what
+ * the user sees in the terminal — but it is free to be rewritten, and a log a
+ * filter cannot rely on is a log nobody filters.
+ */
+export type GateReason =
+  | 'no-session'
+  | 'no-question'
+  | 'answered'
+  | 'already-asked'
+  | 'continuation-repeat'
+  | 'continuation-limit'
+  | 'notifications-off'
+  | 'user-present'
+  | 'claimed-elsewhere'
+  | 'user-returned'
+  | 'no-devices'
+  | 'proceeding'
+
+function gate(
+  ctx: HookContext,
+  verdict: 'held' | 'proceeding',
+  reason: GateReason,
+  data: Record<string, unknown> = {},
+): void {
+  ctx.log?.info('hook.gate', { verdict, reason, ...data })
 }
 
 export type HookHarness = 'claude-code' | 'codex' | 'cursor' | 'opencode'
@@ -1354,7 +1393,10 @@ const QUESTION_WINDOW_SECONDS = 3600
 export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Promise<HookOutcome> {
   const notes: string[] = []
   const sessionId = envelope.session_id
-  if (!sessionId) return { notes }
+  if (!sessionId) {
+    gate(ctx, 'held', 'no-session')
+    return { notes }
+  }
 
   // Anything retired since the last hook is still live on the devices. This
   // runs before every early return below, including the nagging guard: a queued
@@ -1371,7 +1413,10 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
 
   const state = readSessionState(sessionId, ctx.env)
   const pending = pendingList(state)
-  if (pending.length === 0) return { notes }
+  if (pending.length === 0) {
+    gate(ctx, 'held', 'no-question')
+    return { notes }
+  }
 
   // Claim before any reply poll, not only before the grace window. Two racing
   // Stops can both observe the same live request and both receive its answer;
@@ -1384,6 +1429,7 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
   // process alive right now", which the injectable clock cannot speak to. It
   // is also the only clock the *other* process shares.
   if (!claimQuestionPush(sessionId, ctx.env)) {
+    gate(ctx, 'held', 'claimed-elsewhere')
     notes.push('another hook is already handling this question')
     return { notes }
   }
@@ -1410,7 +1456,15 @@ async function handleClaimedStop(
     const { answered, troubled } = await pollPendingReplies(ctx, live, LATE_STOP_POLL_SECONDS)
     if (answered.length > 0) {
       await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
-      for (const { reply } of answered) {
+      gate(ctx, 'proceeding', 'answered', { answers: answered.length })
+      for (const { pending: entry, reply } of answered) {
+        ctx.log?.info('hook.answer', {
+          answered: true,
+          late: true,
+          request_id: entry.request_id,
+          device: reply.device_name,
+          text: reply.text,
+        })
         notes.push(`late answer from ${reply.device_name}: ${reply.text}`)
       }
       // Anything still unasked rides the next Stop: the agent is being resumed
@@ -1424,6 +1478,7 @@ async function handleClaimedStop(
       // Already live on the user's devices from an earlier Stop; asking twice
       // for one question is the nagging failure this feature exists to avoid.
       const ids = live.map((entry) => entry.request_id).join(', ')
+      gate(ctx, 'held', 'already-asked', { request_ids: ids, poll_troubled: troubled })
       notes.push(
         troubled
           ? `already asked (${ids}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
@@ -1446,21 +1501,46 @@ async function handleClaimedStop(
         (entry) => entry.asked_at !== undefined && entry.asked_at > continuation.answered_at,
       )
     if (!isNew) {
+      gate(ctx, 'held', 'continuation-repeat')
       notes.push('already continuing from an answer; not asking again this turn')
       return { notes }
     }
     if (continuation.count >= MAX_CONTINUATION_COUNT) {
+      gate(ctx, 'held', 'continuation-limit', {
+        count: continuation.count,
+        limit: MAX_CONTINUATION_COUNT,
+      })
       notes.push(
         `answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`,
       )
       return { notes }
     }
   }
-  if (!ctx.config.ask_notifications.value) return { notes }
-  if (!isUserAway(state, ctx.config, ctx.now(), ctx.idleSeconds())) {
+  // Silent to the user by design — they switched routing off, so saying so on
+  // every turn would be nagging about their own setting. That silence is also
+  // why it belongs in the log: from outside, "ask_notifications = false" and "a
+  // bug ate my question" look exactly the same.
+  if (!ctx.config.ask_notifications.value) {
+    gate(ctx, 'held', 'notifications-off', { source: ctx.config.ask_notifications.source })
+    return { notes }
+  }
+  const idle = ctx.idleSeconds()
+  if (!isUserAway(state, ctx.config, ctx.now(), idle)) {
+    gate(ctx, 'held', 'user-present', {
+      idle_seconds: idle,
+      away_after_seconds: ctx.config.away_after_seconds.value,
+      require_idle: ctx.config.require_idle.value,
+      last_prompt_at: state.last_prompt_at ?? null,
+    })
     notes.push('you are at the keyboard; leaving the question in the terminal')
     return { notes }
   }
+  gate(ctx, 'proceeding', 'proceeding', {
+    unasked: unasked.length,
+    already_live: live.length,
+    idle_seconds: idle,
+    grace_seconds: ctx.config.ask_grace_seconds.value,
+  })
   return await escalate(ctx, envelope, sessionId, unasked, live, notes)
 }
 
@@ -1478,7 +1558,9 @@ async function escalate(
   // registration, because that is the question that has waited longest.
   const oldest = Math.min(...unasked.map((entry) => entry.asked_at ?? ctx.now()))
   const grace = await awaitGrace(ctx, oldest)
+  ctx.log?.debug('hook.gate', { verdict: 'grace', reason: grace, waited_from: oldest })
   if (grace === 'user-returned') {
+    gate(ctx, 'held', 'user-returned', { grace_seconds: ctx.config.ask_grace_seconds.value })
     notes.push('you came back before the wait elapsed; leaving the questions in the terminal')
     return { notes }
   }
@@ -1511,9 +1593,17 @@ async function escalate(
       windowSeconds: QUESTION_WINDOW_SECONDS,
     })
     if ('error' in sent) {
+      ctx.log?.error('hook.pushed', { ok: false, message: sent.error })
       notes.push(sent.error)
       continue
     }
+    ctx.log?.info('hook.pushed', {
+      ok: true,
+      request_id: sent.requestId,
+      devices: sent.devices.length,
+      questions: questions.length,
+      text: questions[0]!.text,
+    })
     const live: PendingQuestion = {
       ...entry,
       request_id: sent.requestId,
@@ -1571,6 +1661,13 @@ async function escalate(
     // retire the notifications still live on their devices. `request_id`
     // being set is also what stops the next Stop pushing them again.
     const ids = waitingOn.map((entry) => entry.request_id).join(', ')
+    ctx.log?.info('hook.answer', {
+      answered: false,
+      request_ids: ids,
+      user_returned: waited.userReturned,
+      degraded: waited.degraded,
+      waited_seconds: timeoutSeconds,
+    })
     if (waited.userReturned) {
       notes.push(
         `you came back after the question${waitingOn.length === 1 ? ' was' : 's were'} sent; returning the terminal while ${waitingOn.length === 1 ? 'it stays' : 'they stay'} answerable (${ids}). ` +
@@ -1596,7 +1693,13 @@ async function escalate(
     answered.push({ pending: entry, reply: replies.at(-1)!, replies })
   }
   await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
-  for (const { reply } of answered) {
+  for (const { pending: entry, reply } of answered) {
+    ctx.log?.info('hook.answer', {
+      answered: true,
+      request_id: entry.request_id,
+      device: reply.device_name,
+      text: reply.text,
+    })
     notes.push(`answer from ${reply.device_name}: ${reply.text}`)
   }
   return {

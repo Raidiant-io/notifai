@@ -21,6 +21,7 @@ import {
   initCommand,
   loginCommand,
   logoutCommand,
+  logsCommand,
   realIo,
   repliesCommand,
   sendCommand,
@@ -33,12 +34,25 @@ import type { Platform } from '@raidiant/notifai-protocol'
 import { nativeSkills, type SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 
+import { bootstrapLogger } from './logging.js'
+
+/**
+ * The local record for this invocation.
+ *
+ * Built before the command tree so that the very first thing recorded is the
+ * command starting — including for a command that goes on to fail before it has
+ * resolved anything. It configures itself from disk and disables itself if it
+ * cannot write, so nothing below has to handle it failing.
+ */
+const logger = bootstrapLogger()
+
 const deps: CommandDeps = {
   io: realIo(),
   store: defaultCredentialStore(),
   env: process.env,
   cwd: process.cwd(),
   nativeSkills,
+  logger,
 }
 
 /**
@@ -92,6 +106,39 @@ function version(): string {
   return 'unknown'
 }
 
+/**
+ * The full command path, e.g. `config set`, so a filter on `cmd` distinguishes
+ * subcommands that share a leaf name.
+ */
+function commandPath(command: Command): string {
+  const parts: string[] = []
+  for (let node: Command | null = command; node?.parent != null; node = node.parent) {
+    parts.unshift(node.name())
+  }
+  return parts.join(' ') || 'notifai'
+}
+
+/**
+ * Which flags were passed, without their values.
+ *
+ * The flag names answer nearly every question worth asking of an invocation —
+ * was `--reply` set, was `--all` — while the values are notification content
+ * and user text that has no business being recorded merely because a command
+ * ran. Values are available under `log_level = debug`, which is a deliberate act.
+ */
+function flagNames(argv: readonly string[]): string[] {
+  return argv.filter((token) => token.startsWith('--'))
+}
+
+const startedAt = Date.now()
+process.on('exit', (code) => {
+  logger.info('cli.end', {
+    exit: code,
+    duration_ms: Date.now() - startedAt,
+    flags: flagNames(process.argv.slice(2)),
+  })
+})
+
 const program = new Command('notifai')
   .description('Send native device notifications from agents and local programs')
   .version(version())
@@ -112,6 +159,11 @@ const program = new Command('notifai')
   .helpCommand(true)
   // Where the implicit help command lands; every other command names its own.
   .commandsGroup(GROUP.help)
+  .hook('preAction', (_program, actionCommand) => {
+    logger.bind({ cmd: commandPath(actionCommand) })
+    // Values only at `debug`; `cli.end` carries the flag names at every level.
+    logger.debug('cli.start', { version: version(), argv: process.argv.slice(2), cwd: process.cwd() })
+  })
 
 /**
  * Bare `notifai`.
@@ -439,6 +491,34 @@ hooks
   .option('--global', 'remove the machine-wide install')
   .action((opts: { harness?: string; global?: boolean }) => {
     process.exit(hooksUninstallCommand(deps, opts))
+  })
+
+program
+  .command('logs')
+  .helpGroup(GROUP.daily)
+  .summary('Show what this machine recorded about what it did')
+  .description(
+    'Read the local record of commands, notifications, and the question decisions harness hooks made. ' +
+      'Bounded and scoped to this project by default; never leaves this machine',
+  )
+  .option('-n, --limit <count>', 'how many records to show (default: 30)', (v: string) => Number(v))
+  .option('--all', 'lift the default limit, up to a hard cap')
+  .option('--since <when>', 'only records newer than this: 10m, 2h, 1d, or an ISO 8601 instant')
+  .option('--level <level>', 'minimum severity: error | info | debug (error shows only failures)')
+  .option('--event <name>', 'only this event; repeatable', (v: string, all: string[]) => [...all, v], [])
+  .option('--run <id>', 'everything one command invocation did')
+  .option('--request <id>', 'everything about one notification request')
+  .option('--session <id>', 'only this harness session')
+  .option('--project <id>', 'only this project')
+  .option('--all-projects', 'do not scope to the project in this directory')
+  .option('--grep <text>', 'only records containing this text')
+  .option('--json', 'one JSON record per line on stdout')
+  .option('--path', 'print the log file paths instead of the records')
+  .option('--clear', 'delete the log files')
+  .action((opts: Record<string, unknown>) => {
+    const flags = { ...opts } as Parameters<typeof logsCommand>[1]
+    if (Array.isArray(flags.event) && flags.event.length === 0) delete flags.event
+    process.exit(logsCommand(deps, flags))
   })
 
 const config = program
