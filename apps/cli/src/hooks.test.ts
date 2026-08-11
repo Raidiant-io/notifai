@@ -1,9 +1,12 @@
+import { spawn, type ChildProcess } from 'node:child_process'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -28,7 +31,13 @@ import {
   type LogRecord,
 } from './logging.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
-import { loadConfig, projectSessionPointerPath, sanitizeSessionId } from './config.js'
+import {
+  loadConfig,
+  projectSessionPointerPath,
+  sanitizeSessionId,
+  sessionConfigPath,
+  stateDir,
+} from './config.js'
 import {
   claimQuestionPush,
   clearSessionState,
@@ -203,6 +212,69 @@ function harness(replies: ReplyView[] = [], idleSeconds: number | null = null): 
 
 function stdin(payload: unknown): () => Promise<string> {
   return async () => JSON.stringify(payload)
+}
+
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+  failure: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(failure)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+interface SessionEndWorker {
+  child: ChildProcess
+  readyPath: string
+  done: Promise<void>
+}
+
+function runSessionEndWorker(
+  root: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  sessionId: string,
+): SessionEndWorker {
+  const readyPath = path.join(root, 'session-end-ready')
+  const vitest = path.join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs')
+  const child = spawn(
+    process.execPath,
+    [vitest, 'run', 'src/session-end-process-worker.test.ts', '--reporter=dot', '--maxWorkers=1'],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ...env,
+        NOTIFAI_SESSION_END_WORKER: '1',
+        NOTIFAI_SESSION_END_READY: readyPath,
+        NOTIFAI_SESSION_END_CWD: cwd,
+        NOTIFAI_SESSION_END_SESSION: sessionId,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  const stdout: Buffer[] = []
+  const stderr: Buffer[] = []
+  child.stdout!.on('data', (chunk: Buffer) => stdout.push(chunk))
+  child.stderr!.on('data', (chunk: Buffer) => stderr.push(chunk))
+  const done = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code) => {
+      if (code === 0) resolve()
+      else {
+        reject(
+          new Error(
+            `SessionEnd worker exited ${String(code)}\n${Buffer.concat(stdout).toString()}\n${Buffer.concat(stderr).toString()}`,
+          ),
+        )
+      }
+    })
+  })
+  void done.catch(() => undefined)
+  return { child, readyPath, done }
 }
 
 function writeGlobalConfig(h: Harness, toml: string): void {
@@ -1733,6 +1805,63 @@ describe('session-end hook', () => {
     const records = readLogRecords(h.env, { limit: 10 }).records
     expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
     expect(records.at(-1)?.data).toMatchObject({ outcome: 'cleaned', queued_retirements: 0 })
+  })
+
+  it('cleans state and inherited config before a contended log can consume the hook budget', async () => {
+    const h = harness()
+    const sessionId = 'session-end-budget'
+    writeSessionState(sessionId, h.env, { last_prompt_at: NOW })
+    const configFile = sessionConfigPath(sessionId, h.env)
+    mkdirSync(path.dirname(configFile), { recursive: true })
+    writeFileSync(configFile, 'ask_notifications = false\nlog_level = "info"\n')
+    expect(loadConfig({ cwd: h.deps.cwd, env: h.env, sessionId }).ask_notifications).toMatchObject({
+      value: false,
+      source: expect.stringMatching(/^session:/),
+    })
+
+    const stateFile = path.join(
+      stateDir(h.env),
+      'sessions',
+      `${sanitizeSessionId(sessionId)}.json`,
+    )
+    const logLock = `${activeLogPath(h.env)}.lock`
+    mkdirSync(logLock, { recursive: true })
+    // A live lower bakery ticket makes the child logger spend its full one-second
+    // acquisition budget. Cleanup must already be durable before that wait.
+    writeFileSync(path.join(logLock, `ticket-1-${process.pid}-${'a'.repeat(24)}`), '')
+
+    const worker = runSessionEndWorker(h.deps.cwd, h.env, h.deps.cwd, sessionId)
+    let cleanedWithinBudget = false
+    try {
+      await waitUntil(
+        () => existsSync(worker.readyPath),
+        10_000,
+        'SessionEnd worker did not reach the hook boundary',
+      )
+      try {
+        await waitUntil(
+          () => !existsSync(stateFile) && !existsSync(configFile),
+          700,
+          'SessionEnd cleanup missed the Codex hook budget',
+        )
+        cleanedWithinBudget = true
+      } catch {
+        // Await the worker below so a red regression cannot leak a child process.
+      }
+      await worker.done
+
+      expect(cleanedWithinBudget).toBe(true)
+      expect(readSessionState(sessionId, h.env)).toEqual({})
+      expect(loadConfig({ cwd: h.deps.cwd, env: h.env, sessionId }).ask_notifications).toEqual({
+        value: true,
+        source: 'default',
+      })
+    } finally {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) {
+        worker.child.kill('SIGKILL')
+      }
+      rmSync(h.deps.cwd, { recursive: true, force: true })
+    }
   })
 
   it('clears only the ending session project pointer', async () => {

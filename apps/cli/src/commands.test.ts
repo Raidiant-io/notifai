@@ -816,6 +816,122 @@ describe('command contracts', () => {
     expect(io.outLines[1]).toContain('yes, after the migration')
     expect(io.outLines.join('\n')).toContain('req_second')
   })
+
+  it('keeps the failing request identity when one pending reply wait throws', async () => {
+    const io = new CapturedIo()
+    const client = {
+      replies: async (requestId: string) => {
+        if (requestId === 'req_failed') {
+          throw new ApiCallError(404, 'not_found', 'That notification request does not exist.')
+        }
+        return replyResponse([reply])
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pending-error-log-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'replies' })
+    writeSessionState('pending-error-log', deps.env, {
+      pending: [
+        { question: 'First?', request_id: 'req_healthy' },
+        { question: 'Second?', request_id: 'req_failed' },
+        { question: 'Third?', request_id: 'req_unreached' },
+      ],
+    })
+    writeProjectSession(root, deps.env, 'pending-error-log', Date.now(), 'codex')
+
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.failed)
+
+    io.outLines = []
+    io.errLines = []
+    expect(logsCommand(deps, { request: 'req_failed', json: true, allProjects: true })).toBe(
+      EXIT.ok,
+    )
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({
+      event: 'cli.error',
+      data: { request_id: 'req_failed', operation: 'reply_wait' },
+    })
+
+    io.outLines = []
+    expect(logsCommand(deps, { request: 'req_healthy', json: true, allProjects: true })).toBe(
+      EXIT.ok,
+    )
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({
+      event: 'reply.received',
+      data: { request_id: 'req_healthy' },
+    })
+
+    io.outLines = []
+    expect(logsCommand(deps, { request: 'req_unreached', json: true, allProjects: true })).toBe(
+      EXIT.ok,
+    )
+    expect(io.outLines).toEqual([])
+  })
+
+  it('attributes a degraded multi-request wait only to the request whose polls failed', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let failedPolls = 0
+    const client = {
+      replies: async (requestId: string) => {
+        if (requestId !== 'req_degraded') return replyResponse([reply])
+        failedPolls += 1
+        if (failedPolls === 1) return replyResponse([])
+        throw new NetworkError('temporary disconnect')
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pending-degraded-log-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    deps.now = () => now
+    deps.sleep = async (milliseconds: number) => {
+      now += milliseconds
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'replies' })
+    writeSessionState('pending-degraded-log', deps.env, {
+      pending: [
+        { question: 'First?', request_id: 'req_healthy_before' },
+        { question: 'Second?', request_id: 'req_degraded' },
+        { question: 'Third?', request_id: 'req_healthy_after' },
+      ],
+    })
+    writeProjectSession(root, deps.env, 'pending-degraded-log', Date.now(), 'codex')
+
+    expect(await repliesCommand(deps, undefined, { pending: true, wait: 1 })).toBe(EXIT.network)
+
+    io.outLines = []
+    io.errLines = []
+    expect(logsCommand(deps, { request: 'req_degraded', json: true, allProjects: true })).toBe(
+      EXIT.ok,
+    )
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({
+      event: 'cli.error',
+      data: { request_ids: ['req_degraded'], operation: 'reply_wait' },
+    })
+
+    for (const requestId of ['req_healthy_before', 'req_healthy_after']) {
+      io.outLines = []
+      expect(logsCommand(deps, { request: requestId, json: true, allProjects: true })).toBe(
+        EXIT.ok,
+      )
+      expect(io.outLines).toHaveLength(1)
+      expect(JSON.parse(io.outLines[0]!)).toMatchObject({
+        event: 'reply.received',
+        data: { request_id: requestId },
+      })
+    }
+  })
 })
 
 describe('delivery evidence status', () => {

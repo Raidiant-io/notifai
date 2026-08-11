@@ -132,8 +132,19 @@ const program = new Command('notifai')
   .commandsGroup(GROUP.help)
   .hook('preAction', (_program, actionCommand) => {
     logger.bind({ cmd: commandPath(actionCommand) })
+    // SessionEnd must remove its local state before any diagnostic write can
+    // wait on the shared log lock. Its hook.start record is emitted after that
+    // cleanup; cli.end still records the invocation on process exit.
+    const endingSession =
+      actionCommand.name() === 'hook' && actionCommand.processedArgs[0] === 'session-end'
     // Values only at `debug`; `cli.end` carries the flag names at every level.
-    logger.debug('cli.start', { version: version(), argv: process.argv.slice(2), cwd: process.cwd() })
+    if (!endingSession) {
+      logger.debug('cli.start', {
+        version: version(),
+        argv: process.argv.slice(2),
+        cwd: process.cwd(),
+      })
+    }
   })
 
 /**
