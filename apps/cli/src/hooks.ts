@@ -1534,7 +1534,7 @@ async function handleClaimedStop(
           ? `already asked (${requestIdSummary.display}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
           : permanentFailures.size > 0
             ? `already asked (${requestIdSummary.display}); reply polling was rejected permanently`
-          : `already asked (${requestIdSummary.display}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
+            : `already asked (${requestIdSummary.display}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
       )
       return { notes }
     }
