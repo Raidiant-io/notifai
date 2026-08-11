@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import type {
   ListRepliesResponse,
   ReplyView,
@@ -18,6 +19,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
+import { readStdinWithTimeout } from './hook-input.js'
 import {
   activeLogPath,
   bootstrapLogger,
@@ -422,6 +424,39 @@ describe('what the hook leaves behind', () => {
     // what makes `notifai logs --request <id>` and `notifai status <id>` two
     // views of one thing.
     expect(pushed[0]!.data!['request_id']).toBe(h.recorder.receipts[0])
+  })
+
+  it('stores every request in a multi-question wait as a structured identity', async () => {
+    const h = harness([], 900)
+    writeSessionState('request-log', h.env, { last_prompt_at: AWAY })
+    registerQuestion('request-log', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('request-log', h.env, { question: 'Deploy it?' }, NOW + 1)
+
+    await hookRunCommand(
+      recording(h),
+      'stop',
+      stdin({ session_id: 'request-log', cwd: h.deps.cwd }),
+    )
+
+    const unanswered = readLogRecords(h.env, { event: ['hook.answer'] }).records.at(-1)
+    expect(unanswered?.data?.['request_ids']).toEqual(['req_hook_1', 'req_hook_2'])
+
+    await hookRunCommand(
+      recording(h),
+      'stop',
+      stdin({ session_id: 'request-log', cwd: h.deps.cwd }),
+    )
+    const alreadyAsked = readLogRecords(h.env, { event: ['hook.gate'] }).records.find(
+      (record) => record.data?.['reason'] === 'already-asked',
+    )
+    expect(alreadyAsked?.data?.['request_ids']).toEqual(['req_hook_1', 'req_hook_2'])
+
+    for (const requestId of ['req_hook_1', 'req_hook_2']) {
+      const matching = readLogRecords(h.env, { request: requestId }).records
+      expect(matching).toContainEqual(unanswered)
+      expect(matching).toContainEqual(alreadyAsked)
+    }
+    expect(readLogRecords(h.env, { request: 'req_hook' }).records).not.toContainEqual(unanswered)
   })
 
   it('records a config parse failure as a complete fail-open lifecycle', async () => {
@@ -1478,13 +1513,19 @@ describe('user-prompt-submit hook', () => {
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
   })
 
-  it('diagnoses and records malformed or truncated hook input', async () => {
+  it('diagnoses partial production input as malformed or truncated', async () => {
     const h = harness()
     const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
+    const input = new PassThrough()
+    input.write('{"session_id":')
 
-    expect(await hookRunCommand(deps, 'user-prompt-submit', async () => '{"session_id":')).toBe(
-      EXIT.ok,
-    )
+    expect(
+      await hookRunCommand(
+        deps,
+        'user-prompt-submit',
+        () => readStdinWithTimeout(input, 5),
+      ),
+    ).toBe(EXIT.ok)
 
     expect(h.io.errLines.join('\n')).toMatch(/malformed|truncated/i)
     const records = readLogRecords(h.env, { limit: 10 }).records
@@ -1492,19 +1533,23 @@ describe('user-prompt-submit hook', () => {
     expect(records.at(-1)?.data).toMatchObject({ reason: 'malformed-input' })
   })
 
-  it('records a hook input read failure before failing open', async () => {
+  it('records an empty production input timeout before failing open', async () => {
     const h = harness()
     const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
+    const input = new PassThrough()
 
     expect(
-      await hookRunCommand(deps, 'user-prompt-submit', async () => {
-        throw new Error('stdin disappeared')
-      }),
+      await hookRunCommand(
+        deps,
+        'user-prompt-submit',
+        () => readStdinWithTimeout(input, 5),
+      ),
     ).toBe(EXIT.ok)
 
     const records = readLogRecords(h.env, { limit: 10 }).records
     expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
     expect(records.at(-1)?.data).toMatchObject({ reason: 'input-read-failed' })
+    expect(records.at(-1)?.data?.['message']).toMatch(/timed out waiting/)
   })
 
   it('explains when a missing machine credential makes a hook skip routing', async () => {

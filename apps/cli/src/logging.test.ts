@@ -216,14 +216,17 @@ describe('rotation', () => {
     const usage = logsDiskUsage(env)
     expect(usage.files).toBe(3)
     expect(archiveLogPaths(env)).toHaveLength(2)
-    // The whole point: bounded. Three files of 700 bytes cannot fill a disk
+    // The whole point: bounded. Every retained file obeys the configured cap,
     // however long the agent runs.
-    expect(usage.bytes).toBeLessThan(3 * 700 + 500)
+    expect(usage.bytes).toBeLessThanOrEqual(3 * 700)
+    for (const file of [activeLogPath(env), ...archiveLogPaths(env)]) {
+      expect(statSync(file).size).toBeLessThanOrEqual(700)
+    }
   })
 
   it('leaves a marker in the fresh file so a gap is explained, not inferred', () => {
     const env = sandbox()
-    const logger = createLogger({ env, settings: { maxBytes: 400, maxFiles: 3 } })
+    const logger = createLogger({ env, settings: { maxBytes: 700, maxFiles: 3 } })
     for (let i = 0; i < 20; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
     expect(lines(env).some((record) => record.event === 'log.rotated')).toBe(true)
   })
@@ -234,9 +237,26 @@ describe('rotation', () => {
     for (let i = 0; i < 30; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
     expect(archiveLogPaths(env)).toHaveLength(0)
     expect(logsDiskUsage(env).files).toBe(1)
+    expect(statSync(activeLogPath(env)).size).toBeLessThanOrEqual(300)
   })
 
-  it('stays near the byte cap and preserves records across overlapping processes', async () => {
+  it('keeps an indivisible record whole when an internal test injects an impossible cap', () => {
+    const env = sandbox()
+    const logger = createLogger({ env, settings: { maxBytes: 64, maxFiles: 3 } })
+    logger.info('cli.end', { sequence: 1 })
+    logger.info('cli.end', { sequence: 2 })
+
+    const files = [activeLogPath(env), ...archiveLogPaths(env)]
+    expect(files).toHaveLength(2)
+    for (const file of files) {
+      const records = readFileSync(file, 'utf8').split('\n').filter((line) => line !== '')
+      expect(records).toHaveLength(1)
+      expect(() => JSON.parse(records[0]!) as unknown).not.toThrow()
+      expect(statSync(file).size).toBeGreaterThan(64)
+    }
+  })
+
+  it('enforces the byte cap and preserves each record across overlapping processes', async () => {
     const env = sandbox()
     const workers = 4
     const recordsPerWorker = 50
@@ -253,22 +273,27 @@ describe('rotation', () => {
 
     const files = [activeLogPath(env), ...archiveLogPaths(env)]
     expect(files.length).toBeGreaterThan(1)
-    // Concurrent writers may overshoot by the records already in flight, never
-    // by each process independently filling another whole cap.
-    for (const file of files) expect(statSync(file).size).toBeLessThan(maxBytes * 2)
+    // The stat/rotate/append transaction is cross-process: no writer gets to
+    // consume budget another writer already claimed.
+    for (const file of files) expect(statSync(file).size).toBeLessThanOrEqual(maxBytes)
 
-    const seen = new Set<string>()
+    const seen = new Map<string, number>()
+    let retainedRecords = 0
     for (const file of files) {
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (line.trim() === '') continue
         const record = JSON.parse(line) as LogRecord
         if (record.event !== 'cli.end') continue
-        seen.add(`${String(record.data?.['worker'])}:${String(record.data?.['sequence'])}`)
+        retainedRecords += 1
+        const key = `${String(record.data?.['worker'])}:${String(record.data?.['sequence'])}`
+        seen.set(key, (seen.get(key) ?? 0) + 1)
       }
     }
-    // A rotation race may choose which unique archive owns a record, but may not
-    // clobber an archive or lose any record while retention has room for all of it.
+    // Retention has room for every record, so neither a rotation nor an archive
+    // name race may lose or duplicate one.
+    expect(retainedRecords).toBe(workers * recordsPerWorker)
     expect(seen.size).toBe(workers * recordsPerWorker)
+    expect([...seen.values()].every((count) => count === 1)).toBe(true)
   })
 })
 
@@ -343,16 +368,17 @@ describe('reading', () => {
     expect(records[0]!.event).toBe('send.submitted')
   })
 
-  it('matches a request identifier exactly instead of matching longer ids by prefix', () => {
+  it('matches every structured request identity without prefix false positives', () => {
     const env = sandbox()
     const logger = createLogger({ env })
     logger.info('send.submitted', { request_id: 'req_1' })
     logger.info('send.submitted', { request_id: 'req_10' })
-    logger.error('cli.error', { request_ids: ['req_10'], message: 'req_1 was only prose here' })
+    logger.info('hook.answer', { request_ids: ['req_1', 'req_10'], answered: false })
+    logger.error('cli.error', { request_ids: ['req_10'], message: 'req_1' })
 
     const { records } = readLogRecords(env, { request: 'req_1' })
-    expect(records).toHaveLength(1)
-    expect(records[0]?.data?.['request_id']).toBe('req_1')
+    expect(records).toHaveLength(2)
+    expect(records.map((record) => record.event)).toEqual(['send.submitted', 'hook.answer'])
   })
 
   it('honours a time floor', () => {

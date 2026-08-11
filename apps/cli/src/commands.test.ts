@@ -1144,7 +1144,7 @@ describe('logs', () => {
     expect(io.outLines).toHaveLength(4)
   })
 
-  it('rejects an unreadable time, unknown event, and non-numeric limit', () => {
+  it('rejects an unreadable time, unknown event, and invalid limits', () => {
     const io = new CapturedIo()
     const deps = logDeps(io)
     expect(logsCommand(deps, { since: 'yesterday-ish' })).toBe(EXIT.usage)
@@ -1155,6 +1155,9 @@ describe('logs', () => {
     io.errLines.length = 0
     expect(logsCommand(deps, { limit: Number.NaN })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toContain('--limit')
+    io.errLines.length = 0
+    expect(logsCommand(deps, { limit: 2_001 })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('cannot exceed 2000')
   })
 
   it.each([

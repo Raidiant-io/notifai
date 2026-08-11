@@ -34,6 +34,7 @@ import type { Platform } from '@raidiant/notifai-protocol'
 import { nativeSkills, type SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 
+import { readStdinWithTimeout } from './hook-input.js'
 import { bootstrapLogger } from './logging.js'
 
 /**
@@ -53,36 +54,6 @@ const deps: CommandDeps = {
   cwd: process.cwd(),
   nativeSkills,
   logger,
-}
-
-/**
- * Harness hooks deliver their event payload on stdin. Bounded on both time and
- * size: a wrapper that opens the pipe without writing would otherwise hold the
- * read until the harness killed the hook, delaying the user's own prompt.
- */
-async function readStdin(timeoutMs = 2000, maxBytes = 1_000_000): Promise<string> {
-  if (process.stdin.isTTY) return ''
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = []
-    let total = 0
-    let settled = false
-    const finish = (): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      process.stdin.destroy()
-      resolve(Buffer.concat(chunks).toString('utf8'))
-    }
-    const timer = setTimeout(finish, timeoutMs)
-    timer.unref?.()
-    process.stdin.on('data', (chunk: Buffer) => {
-      total += chunk.length
-      if (total > maxBytes) return finish()
-      chunks.push(chunk)
-    })
-    process.stdin.on('end', finish)
-    process.stdin.on('error', finish)
-  })
 }
 
 /**
@@ -464,7 +435,7 @@ program
   .action(async (event: string, opts: { harness?: string }) => {
     const harness = HARNESSES.find((candidate) => candidate === opts.harness)
     process.exit(
-      await hookRunCommand(deps, event, readStdin, harness),
+      await hookRunCommand(deps, event, () => readStdinWithTimeout(), harness),
     )
   })
 

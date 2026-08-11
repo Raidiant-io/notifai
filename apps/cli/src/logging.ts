@@ -26,14 +26,14 @@
  * ## Concurrency
  *
  * Several processes share one file: the hook fires per turn, `send` and `ask`
- * fire whenever an agent calls them, and worktrees run in parallel. Appends are
- * safe without coordination — `O_APPEND` makes seek-to-end and write one
- * operation on local filesystems — provided a record is small enough to land in
- * a single write, which is why records are hard-capped.
+ * fire whenever an agent calls them, and worktrees run in parallel. Every write
+ * takes one short cross-process lock around the shared size check, any rotation,
+ * and the append. Without that transaction, several writers can all observe the
+ * same remaining budget and independently push the file past its configured cap.
  *
- * Rotation is the part that genuinely races, so it is done with a rename to a
- * unique name rather than a lock: `renameSync` is atomic, a loser sees ENOENT
- * and moves on, and no archive is ever clobbered by a rotation it did not win.
+ * The record itself still lands in one `O_APPEND` write. That keeps a line whole
+ * if an uncooperating process touches the file, while the lock makes cooperating
+ * Notifai processes agree which inode owns the record and when it must rotate.
  *
  * ## Failure
  *
@@ -53,6 +53,7 @@ import {
   type CliConfig,
   type LogLevel,
 } from './config.js'
+import { withFileLock } from './file-lock.js'
 
 /** Bumped when the record shape changes in a way a reader must notice. */
 export const LOG_SCHEMA_VERSION = 1
@@ -304,25 +305,18 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
   const dir = logsDir(env)
   const active = activeLogPath(env)
+  const lock = `${active}.lock`
   let broken = false
 
   function currentSize(): number {
     try {
-      // Other CLI and hook processes append to this path too. A process-local
-      // cache lets each writer independently consume the whole byte budget, so
-      // observe the shared file before every append instead.
       return statSync(active).size
     } catch {
       return 0
     }
   }
 
-  /**
-   * Rename the active file out of the way and prune the oldest archives. The
-   * rename is the whole synchronisation: whichever process wins moves the
-   * inode, and every loser sees ENOENT and does nothing, so no archive is lost
-   * and no lock is held on the path a hook runs down.
-   */
+  /** Rename the active file out of the way and prune the oldest archives. */
   function rotate(): string | null {
     const target = path.join(dir, archiveName(now()))
     try {
@@ -330,7 +324,6 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') throw err
-      // Another process rotated between our size check and this rename.
       return null
     }
     const keep = Math.max(0, settings.maxFiles - 1)
@@ -339,7 +332,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       try {
         unlinkSync(stale)
       } catch {
-        // Someone else pruned it, or it is not ours to remove.
+        // An external cleaner removed it; the retained-file bound still holds.
       }
     }
     return path.basename(target)
@@ -360,18 +353,32 @@ export function createLogger(options: LoggerOptions = {}): Logger {
         ...(bindings.session ? { session: bindings.session } : {}),
         ...(data === undefined ? {} : { data: shape(data) as Record<string, unknown> }),
       }
-      let line = serialize(record)
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const line = serialize(record)
       const bytes = Buffer.byteLength(line)
-      if (currentSize() + bytes > settings.maxBytes) {
-        const rotated = rotate()
-        if (rotated !== null) {
-          // Written into the fresh file, so a reader walking backwards can see
-          // where the history continues instead of inferring a gap.
-          line = serialize({ ...record, event: 'log.rotated', data: { archived_to: rotated } }) + line
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      withFileLock(lock, () => {
+        let payload = line
+        if (currentSize() + bytes > settings.maxBytes) {
+          const rotated = rotate()
+          if (rotated !== null) {
+            const marker = serialize({
+              ...record,
+              event: 'log.rotated',
+              data: { archived_to: rotated },
+            })
+            // A marker is diagnostic, not permission to violate the cap. The
+            // product configuration cannot make this branch drop it — maxBytes
+            // is at least 64 KB and each line is at most 8 KB — but tiny injected
+            // test settings may not have room for both atomic records.
+            if (Buffer.byteLength(marker) + bytes <= settings.maxBytes) payload = marker + line
+          }
         }
-      }
-      appendFileSync(active, line, { mode: 0o600, flag: 'a' })
+        // One record cannot be split without corrupting JSONL. If an internal
+        // caller injects maxBytes below that record's size, this one-record file
+        // is the only unavoidable overshoot. Valid CLI configuration makes the
+        // invariant unreachable (64 KB minimum versus an 8 KB record cap).
+        appendFileSync(active, payload, { mode: 0o600, flag: 'a' })
+      })
     } catch {
       // One failure is enough: a sink that cannot write will not start working
       // mid-command, and retrying it on every event would cost the hook path
@@ -479,10 +486,17 @@ export interface LogReadResult {
 function containsExactString(value: unknown, expected: string): boolean {
   if (typeof value === 'string') return value === expected
   if (Array.isArray(value)) return value.some((item) => containsExactString(item, expected))
-  if (typeof value === 'object' && value !== null) {
-    return Object.values(value as Record<string, unknown>).some((item) =>
-      containsExactString(item, expected),
-    )
+  return false
+}
+
+const REQUEST_ID_KEYS = new Set(['request_id', 'request_ids', 'retires_request_id'])
+
+/** Match identity fields, never prose that happens to mention the same token. */
+function containsRequestIdentity(value: unknown, expected: string): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (REQUEST_ID_KEYS.has(key) && containsExactString(nested, expected)) return true
+    if (containsRequestIdentity(nested, expected)) return true
   }
   return false
 }
@@ -493,7 +507,7 @@ function matches(record: LogRecord, raw: string, query: LogQuery): boolean {
   if (query.run !== undefined && record.run !== query.run) return false
   if (query.session !== undefined && record.session !== query.session) return false
   if (query.project !== undefined && record.project !== query.project) return false
-  if (query.request !== undefined && !containsExactString(record.data, query.request)) return false
+  if (query.request !== undefined && !containsRequestIdentity(record.data, query.request)) return false
   if (query.contains !== undefined && !raw.toLowerCase().includes(query.contains.toLowerCase())) return false
   return true
 }

@@ -23,6 +23,7 @@ import {
 } from './config.js'
 import { buildDraft } from './send.js'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { withFileLock } from './file-lock.js'
 import type { Logger } from './logging.js'
 
 /**
@@ -273,55 +274,6 @@ function updateSessionState(
     writeSessionStateUnlocked(file, next)
     return next
   })
-}
-
-/**
- * Serialize a short read-modify-write without ever exposing partial JSON.
- * A crashed holder is recoverable after 30 seconds; releases compare their
- * random token under the same cooperating lock discipline before unlinking.
- */
-const FILE_LOCK_STALE_MS = 30_000
-const FILE_LOCK_WAIT_MS = 1_000
-const FILE_LOCK_POLL_MS = 5
-const lockSleep = new Int32Array(new SharedArrayBuffer(4))
-
-function withFileLock<T>(file: string, action: () => T): T {
-  mkdirSync(path.dirname(file), { recursive: true })
-  const token = randomBytes(12).toString('base64url')
-  const deadline = Date.now() + FILE_LOCK_WAIT_MS
-  for (;;) {
-    try {
-      const handle = openSync(file, 'wx', 0o600)
-      try {
-        writeFileSync(handle, `${JSON.stringify({ token, at: Date.now() })}\n`)
-      } finally {
-        closeSync(handle)
-      }
-      break
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-      let stale = false
-      try {
-        const held = JSON.parse(readFileSync(file, 'utf8')) as { at?: unknown }
-        stale = typeof held.at !== 'number' || Date.now() - held.at >= FILE_LOCK_STALE_MS
-      } catch {
-        stale = true
-      }
-      if (stale) rmSync(file, { force: true })
-      else if (Date.now() >= deadline) throw new Error(`timed out waiting for state lock ${file}`)
-      else Atomics.wait(lockSleep, 0, 0, FILE_LOCK_POLL_MS)
-    }
-  }
-  try {
-    return action()
-  } finally {
-    try {
-      const held = JSON.parse(readFileSync(file, 'utf8')) as { token?: unknown }
-      if (held.token === token) rmSync(file, { force: true })
-    } catch {
-      // A replaced or externally removed lock is no longer ours to release.
-    }
-  }
 }
 
 /**
@@ -1159,6 +1111,23 @@ interface AnsweredPending {
   replies: ReplyView[]
 }
 
+/** Persist and surface one answer without letting the two representations drift. */
+function reportAnswer(
+  ctx: HookContext,
+  notes: string[],
+  answered: AnsweredPending,
+  late: boolean,
+): void {
+  ctx.log?.info('hook.answer', {
+    answered: true,
+    ...(late ? { late: true } : {}),
+    request_id: answered.pending.request_id,
+    device: answered.reply.device_name,
+    text: answered.reply.text,
+  })
+  notes.push(`${late ? 'late ' : ''}answer from ${answered.reply.device_name}: ${answered.reply.text}`)
+}
+
 /**
  * One bounded recovery poll across every delivered question, concurrently —
  * N questions must not multiply the hook's latency budget by N.
@@ -1331,16 +1300,7 @@ export async function handleUserPromptSubmit(
     lateAnswers = answered
     if (answered.length > 0) {
       await finishAnsweredPendings(ctx, envelope, sessionId, answered, false)
-      for (const { pending, reply } of answered) {
-        ctx.log?.info('hook.answer', {
-          answered: true,
-          late: true,
-          request_id: pending.request_id,
-          device: reply.device_name,
-          text: reply.text,
-        })
-        notes.push(`late answer from ${reply.device_name}: ${reply.text}`)
-      }
+      for (const answer of answered) reportAnswer(ctx, notes, answer, true)
     }
     if (troubled) {
       notes.push('could not check every pending question for a late answer before the prompt')
@@ -1466,16 +1426,7 @@ async function handleClaimedStop(
     if (answered.length > 0) {
       await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
       gate(ctx, 'proceeding', 'answered', { answers: answered.length })
-      for (const { pending: entry, reply } of answered) {
-        ctx.log?.info('hook.answer', {
-          answered: true,
-          late: true,
-          request_id: entry.request_id,
-          device: reply.device_name,
-          text: reply.text,
-        })
-        notes.push(`late answer from ${reply.device_name}: ${reply.text}`)
-      }
+      for (const answer of answered) reportAnswer(ctx, notes, answer, true)
       // Anything still unasked rides the next Stop: the agent is being resumed
       // with answers right now, and may not even need the rest afterwards.
       return {
@@ -1486,8 +1437,9 @@ async function handleClaimedStop(
     if (unasked.length === 0) {
       // Already live on the user's devices from an earlier Stop; asking twice
       // for one question is the nagging failure this feature exists to avoid.
-      const ids = live.map((entry) => entry.request_id).join(', ')
-      gate(ctx, 'held', 'already-asked', { request_ids: ids, poll_troubled: troubled })
+      const requestIds = live.map((entry) => entry.request_id!)
+      const ids = requestIds.join(', ')
+      gate(ctx, 'held', 'already-asked', { request_ids: requestIds, poll_troubled: troubled })
       notes.push(
         troubled
           ? `already asked (${ids}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
@@ -1669,10 +1621,11 @@ async function escalate(
     // Keep the pending records so a returning user's UserPromptSubmit can
     // retire the notifications still live on their devices. `request_id`
     // being set is also what stops the next Stop pushing them again.
-    const ids = waitingOn.map((entry) => entry.request_id).join(', ')
+    const requestIds = waitingOn.map((entry) => entry.request_id!)
+    const ids = requestIds.join(', ')
     ctx.log?.info('hook.answer', {
       answered: false,
-      request_ids: ids,
+      request_ids: requestIds,
       user_returned: waited.userReturned,
       degraded: waited.degraded,
       waited_seconds: timeoutSeconds,
@@ -1702,15 +1655,7 @@ async function escalate(
     answered.push({ pending: entry, reply: replies.at(-1)!, replies })
   }
   await finishAnsweredPendings(ctx, envelope, sessionId, answered, true)
-  for (const { pending: entry, reply } of answered) {
-    ctx.log?.info('hook.answer', {
-      answered: true,
-      request_id: entry.request_id,
-      device: reply.device_name,
-      text: reply.text,
-    })
-    notes.push(`answer from ${reply.device_name}: ${reply.text}`)
-  }
+  for (const answer of answered) reportAnswer(ctx, notes, answer, false)
   return {
     stdout: stopAnswerOutput(answersContext(answered, waitingOn.length - answered.length)),
     notes,

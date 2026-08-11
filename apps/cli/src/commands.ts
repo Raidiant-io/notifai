@@ -2445,6 +2445,10 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
     deps.io.err('--limit must be a positive integer.')
     return EXIT.usage
   }
+  if (flags.limit !== undefined && flags.limit > MAX_LOG_LIMIT) {
+    deps.io.err(`--limit cannot exceed ${MAX_LOG_LIMIT}; narrow the result with --since or filters.`)
+    return EXIT.usage
+  }
 
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const now = (deps.now ?? Date.now)()
@@ -2497,7 +2501,9 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
     return EXIT.ok
   }
 
-  const query: LogQuery = { limit: Math.min(flags.limit ?? (flags.all === true ? MAX_LOG_LIMIT : DEFAULT_LOG_LIMIT), MAX_LOG_LIMIT) }
+  const query: LogQuery = {
+    limit: flags.limit ?? (flags.all === true ? MAX_LOG_LIMIT : DEFAULT_LOG_LIMIT),
+  }
 
   if (flags.since !== undefined) {
     const since = parseSince(flags.since, now)
@@ -2558,7 +2564,13 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
   // JSONL for whatever is parsing it.
   const notes: string[] = []
   if (scope !== undefined) notes.push(`project ${scope} (--all-projects for every project)`)
-  if (result.more) notes.push(`more history behind this (-n ${query.limit! * 4} or --all)`)
+  if (result.more) {
+    notes.push(
+      query.limit! < MAX_LOG_LIMIT
+        ? `more history behind this (-n ${Math.min(query.limit! * 4, MAX_LOG_LIMIT)} or --all)`
+        : `more history exists beyond the ${MAX_LOG_LIMIT}-record safety cap; narrow with --since or filters`,
+    )
+  }
   if (config.log_level.value !== 'debug') notes.push('`log_level = debug` records request detail')
   if (notes.length > 0) deps.io.err(`— ${result.records.length} records; ${notes.join('; ')}`)
   return EXIT.ok
