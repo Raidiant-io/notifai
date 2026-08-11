@@ -153,6 +153,16 @@ export interface PendingQuestion {
   device_ids?: string[]
 }
 
+function summarizeRequestIds(entries: readonly PendingQuestion[]): {
+  ids: string[]
+  display: string
+} {
+  const ids = entries.flatMap((entry) =>
+    entry.request_id === undefined ? [] : [entry.request_id],
+  )
+  return { ids, display: ids.join(', ') }
+}
+
 /** How often the grace window rechecks whether the user has come back. */
 const GRACE_POLL_MS = 5_000
 
@@ -1453,13 +1463,15 @@ async function handleClaimedStop(
     if (unasked.length === 0) {
       // Already live on the user's devices from an earlier Stop; asking twice
       // for one question is the nagging failure this feature exists to avoid.
-      const requestIds = live.map((entry) => entry.request_id!)
-      const ids = requestIds.join(', ')
-      gate(ctx, 'held', 'already-asked', { request_ids: requestIds, poll_troubled: troubled })
+      const requestIdSummary = summarizeRequestIds(live)
+      gate(ctx, 'held', 'already-asked', {
+        request_ids: requestIdSummary.ids,
+        poll_troubled: troubled,
+      })
       notes.push(
         troubled
-          ? `already asked (${ids}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
-          : `already asked (${ids}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
+          ? `already asked (${requestIdSummary.display}); could not check whether ${live.length === 1 ? 'its answer' : 'their answers'} arrived`
+          : `already asked (${requestIdSummary.display}); waiting for ${live.length === 1 ? 'that answer' : 'those answers'}`,
       )
       return { notes }
     }
@@ -1637,18 +1649,17 @@ async function escalate(
     // Keep the pending records so a returning user's UserPromptSubmit can
     // retire the notifications still live on their devices. `request_id`
     // being set is also what stops the next Stop pushing them again.
-    const requestIds = waitingOn.map((entry) => entry.request_id!)
-    const ids = requestIds.join(', ')
+    const requestIdSummary = summarizeRequestIds(waitingOn)
     ctx.log?.info('hook.answer', {
       answered: false,
-      request_ids: requestIds,
+      request_ids: requestIdSummary.ids,
       user_returned: waited.userReturned,
       degraded: waited.degraded,
       waited_seconds: timeoutSeconds,
     })
     if (waited.userReturned) {
       notes.push(
-        `you came back after the question${waitingOn.length === 1 ? ' was' : 's were'} sent; returning the terminal while ${waitingOn.length === 1 ? 'it stays' : 'they stay'} answerable (${ids}). ` +
+        `you came back after the question${waitingOn.length === 1 ? ' was' : 's were'} sent; returning the terminal while ${waitingOn.length === 1 ? 'it stays' : 'they stay'} answerable (${requestIdSummary.display}). ` +
           'Retrieve answers with: notifai replies --pending',
       )
     } else {
