@@ -18,7 +18,13 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
-import { activeLogPath, createLogger, readLogRecords, type LogRecord } from './logging.js'
+import {
+  activeLogPath,
+  bootstrapLogger,
+  createLogger,
+  readLogRecords,
+  type LogRecord,
+} from './logging.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
 import { loadConfig, projectSessionPointerPath, sanitizeSessionId } from './config.js'
 import {
@@ -357,6 +363,48 @@ describe('what the hook leaves behind', () => {
     expect(gates(h).map((record) => record.data?.['reason'])).toContain('no-question')
   })
 
+  it('lets the hook project re-enable a bootstrap logger and records resolved config', async () => {
+    const h = harness()
+    writeGlobalConfig(h, 'log_level = "off"\n')
+    const startup = path.join(h.deps.cwd, 'startup')
+    const project = path.join(h.deps.cwd, 'project')
+    mkdirSync(startup, { recursive: true })
+    mkdirSync(path.join(project, '.notifai'), { recursive: true })
+    writeFileSync(
+      path.join(project, '.notifai', 'config.toml'),
+      'project = "hook-project"\nlog_level = "debug"\n',
+    )
+    const deps = { ...h.deps, cwd: startup, logger: bootstrapLogger({ env: h.env, cwd: startup }) }
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: 'reenabled', cwd: project }))
+
+    const records = readLogRecords(h.env, { limit: 50 }).records
+    expect(records.map((record) => record.event)).toEqual(
+      expect.arrayContaining(['config.resolved', 'hook.start', 'hook.end']),
+    )
+    expect(records.find((record) => record.event === 'config.resolved')).toMatchObject({
+      project: 'hook-project',
+      session: 'reenabled',
+    })
+  })
+
+  it('persists an answer once while still reporting it to the harness', async () => {
+    const h = harness([reply({ text: 'Allow exactly once' })], 900)
+    writeSessionState('answer-log', h.env, { last_prompt_at: AWAY })
+    registerQuestion('answer-log', h.env, { question: 'Ship it?' })
+
+    await hookRunCommand(
+      recording(h),
+      'stop',
+      stdin({ session_id: 'answer-log', cwd: h.deps.cwd }),
+    )
+
+    const raw = readFileSync(activeLogPath(h.env), 'utf8')
+    expect(raw.match(/Allow exactly once/g)).toHaveLength(1)
+    expect(readLogRecords(h.env, { event: ['hook.answer'] }).records).toHaveLength(1)
+    expect(h.io.errLines.join('\n')).toContain('Allow exactly once')
+  })
+
   it('records the push and ties it to the request id the server knows', async () => {
     const h = harness([], 600)
     const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
@@ -374,6 +422,22 @@ describe('what the hook leaves behind', () => {
     // what makes `notifai logs --request <id>` and `notifai status <id>` two
     // views of one thing.
     expect(pushed[0]!.data!['request_id']).toBe(h.recorder.receipts[0])
+  })
+
+  it('records a config parse failure as a complete fail-open lifecycle', async () => {
+    const h = harness()
+    mkdirSync(path.join(h.deps.cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(h.deps.cwd, '.notifai', 'config.toml'), 'not valid = [toml')
+
+    await hookRunCommand(
+      { ...h.deps, logger: createLogger({ env: h.env }) },
+      'stop',
+      stdin({ session_id: 'bad-config', cwd: h.deps.cwd }),
+    )
+
+    const records = readLogRecords(h.env, { limit: 10 }).records
+    expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
+    expect(records.at(-1)?.data).toMatchObject({ outcome: 'failed', reason: 'config-failed' })
   })
 
   it('records a hook failure with the server own words, not just that it failed', async () => {
@@ -1414,14 +1478,33 @@ describe('user-prompt-submit hook', () => {
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
   })
 
-  it('diagnoses malformed or truncated hook input instead of silently doing nothing', async () => {
+  it('diagnoses and records malformed or truncated hook input', async () => {
     const h = harness()
+    const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
 
-    expect(await hookRunCommand(h.deps, 'user-prompt-submit', async () => '{"session_id":')).toBe(
+    expect(await hookRunCommand(deps, 'user-prompt-submit', async () => '{"session_id":')).toBe(
       EXIT.ok,
     )
 
     expect(h.io.errLines.join('\n')).toMatch(/malformed|truncated/i)
+    const records = readLogRecords(h.env, { limit: 10 }).records
+    expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
+    expect(records.at(-1)?.data).toMatchObject({ reason: 'malformed-input' })
+  })
+
+  it('records a hook input read failure before failing open', async () => {
+    const h = harness()
+    const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
+
+    expect(
+      await hookRunCommand(deps, 'user-prompt-submit', async () => {
+        throw new Error('stdin disappeared')
+      }),
+    ).toBe(EXIT.ok)
+
+    const records = readLogRecords(h.env, { limit: 10 }).records
+    expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
+    expect(records.at(-1)?.data).toMatchObject({ reason: 'input-read-failed' })
   })
 
   it('explains when a missing machine credential makes a hook skip routing', async () => {
@@ -1576,15 +1659,19 @@ describe('user-prompt-submit hook', () => {
 })
 
 describe('session-end hook', () => {
-  it('drops local state without touching the network, inside its ~1s budget', async () => {
+  it('drops local state without touching the network and records the lifecycle', async () => {
     const h = harness()
     writeSessionState('s12', h.env, { last_prompt_at: NOW })
+    const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
 
-    const code = await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 's12' }))
+    const code = await hookRunCommand(deps, 'session-end', stdin({ session_id: 's12' }))
 
     expect(code).toBe(EXIT.ok)
     expect(readSessionState('s12', h.env)).toEqual({})
     expect(h.recorder.closed).toEqual([])
+    const records = readLogRecords(h.env, { limit: 10 }).records
+    expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
+    expect(records.at(-1)?.data).toMatchObject({ outcome: 'cleaned', queued_retirements: 0 })
   })
 
   it('clears only the ending session project pointer', async () => {

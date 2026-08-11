@@ -498,13 +498,19 @@ describe('command contracts', () => {
         return replyResponse(polls.length === 3 ? [reply] : [])
       },
     } as unknown as ApiClient
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-direct-reply-log-'))
     const deps = {
       ...makeDeps(io, client),
+      env: {
+        XDG_CONFIG_HOME: path.join(root, 'config'),
+        XDG_STATE_HOME: path.join(root, 'state'),
+      },
       now: () => now,
       sleep: async (milliseconds: number) => {
         now += milliseconds
       },
     }
+    deps.logger = createLogger({ env: deps.env, cmd: 'send' })
 
     expect(
       await sendCommand(deps, {
@@ -517,6 +523,14 @@ describe('command contracts', () => {
     expect(polls).toHaveLength(3)
     expect(polls.every((poll) => poll.waitSeconds <= 25)).toBe(true)
     expect(io.outLines.at(-1)).toBe('reply from iPhone: yes, after the migration')
+    const received = readLogRecords(deps.env, { event: ['reply.received'] }).records
+    expect(received).toHaveLength(1)
+    expect(received[0]?.data).toMatchObject({
+      request_id: receipt.request_id,
+      sequence: reply.seq,
+      device: reply.device_name,
+      text: reply.text,
+    })
   })
 
   it('backs off and retries a transient network error while waiting', async () => {
@@ -714,10 +728,18 @@ describe('command contracts', () => {
         return replyResponse([reply])
       },
     } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-replies-log-'))
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'replies' })
 
-    expect(await repliesCommand(makeDeps(io, client), receipt.request_id, { after: 7 })).toBe(EXIT.ok)
+    expect(await repliesCommand(deps, receipt.request_id, { after: 7 })).toBe(EXIT.ok)
     expect(requested).toEqual({ waitSeconds: 0, afterSeq: 7 })
     expect(io.outLines).toEqual(['reply from iPhone: yes, after the migration'])
+    expect(readLogRecords(deps.env, { event: ['reply.received'] }).records).toHaveLength(1)
   })
 
   it('resolves replies --pending through the project session pointer and prints its id', async () => {
@@ -1122,7 +1144,7 @@ describe('logs', () => {
     expect(io.outLines).toHaveLength(4)
   })
 
-  it('rejects an unreadable time and an unknown event, with the valid values', () => {
+  it('rejects an unreadable time, unknown event, and non-numeric limit', () => {
     const io = new CapturedIo()
     const deps = logDeps(io)
     expect(logsCommand(deps, { since: 'yesterday-ish' })).toBe(EXIT.usage)
@@ -1130,6 +1152,21 @@ describe('logs', () => {
     io.errLines.length = 0
     expect(logsCommand(deps, { event: ['send.exploded'] })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toContain('send.submitted')
+    io.errLines.length = 0
+    expect(logsCommand(deps, { limit: Number.NaN })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('--limit')
+  })
+
+  it.each([
+    [{ path: true, clear: true }, '--path'],
+    [{ path: true, request: 'req_seeded' }, '--path'],
+    [{ clear: true, since: '1d' }, '--clear'],
+    [{ project: 'mine', allProjects: true }, '--project'],
+    [{ limit: 10, all: true }, '--limit'],
+  ] as const)('rejects incompatible log options %j', (flags, namedFlag) => {
+    const io = new CapturedIo()
+    expect(logsCommand(logDeps(io), flags)).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain(namedFlag)
   })
 
   it('accepts relative and absolute times', () => {

@@ -45,7 +45,14 @@
 import { randomBytes } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
-import { LOG_LEVELS, loadConfig, stateDir, type CliConfig, type LogLevel } from './config.js'
+import {
+  CONFIG_KEYS,
+  LOG_LEVELS,
+  loadConfig,
+  stateDir,
+  type CliConfig,
+  type LogLevel,
+} from './config.js'
 
 /** Bumped when the record shape changes in a way a reader must notice. */
 export const LOG_SCHEMA_VERSION = 1
@@ -298,16 +305,16 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const dir = logsDir(env)
   const active = activeLogPath(env)
   let broken = false
-  let size: number | null = null
 
   function currentSize(): number {
-    if (size !== null) return size
     try {
-      size = statSync(active).size
+      // Other CLI and hook processes append to this path too. A process-local
+      // cache lets each writer independently consume the whole byte budget, so
+      // observe the shared file before every append instead.
+      return statSync(active).size
     } catch {
-      size = 0
+      return 0
     }
-    return size
   }
 
   /**
@@ -324,10 +331,8 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       const code = (err as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') throw err
       // Another process rotated between our size check and this rename.
-      size = 0
       return null
     }
-    size = 0
     const keep = Math.max(0, settings.maxFiles - 1)
     const archives = archiveLogPaths(env)
     for (const stale of archives.slice(0, Math.max(0, archives.length - keep))) {
@@ -367,7 +372,6 @@ export function createLogger(options: LoggerOptions = {}): Logger {
         }
       }
       appendFileSync(active, line, { mode: 0o600, flag: 'a' })
-      size = currentSize() + Buffer.byteLength(line)
     } catch {
       // One failure is enough: a sink that cannot write will not start working
       // mid-command, and retrying it on every event would cost the hook path
@@ -398,6 +402,22 @@ export function logSettingsFrom(config: CliConfig): LogSettings {
   }
 }
 
+const lastResolvedConfig = new WeakMap<Logger, string>()
+
+/** Record each distinct resolution once per invocation when debug logging is on. */
+export function logConfigResolved(logger: Logger, config: CliConfig): void {
+  const values = Object.fromEntries(
+    CONFIG_KEYS.map((key) => [
+      key,
+      { value: config[key].value, source: config[key].source },
+    ]),
+  )
+  const fingerprint = JSON.stringify(values)
+  if (lastResolvedConfig.get(logger) === fingerprint) return
+  lastResolvedConfig.set(logger, fingerprint)
+  logger.debug('config.resolved', { values })
+}
+
 /**
  * The logger for a CLI invocation, configured from disk.
  *
@@ -418,7 +438,9 @@ export function bootstrapLogger(options: { env?: NodeJS.ProcessEnv; cwd?: string
   } catch {
     // Defaults, and the command reports the parse failure in its own words.
   }
-  if (settings.level === 'off') return nullLogger()
+  // Keep a real, mutable logger even when this bootstrap directory says off.
+  // Harness payloads can resolve a more-specific project or session later and
+  // adopt settings that legitimately re-enable the same invocation.
   const logger = createLogger({ env, settings })
   if (project !== null) logger.bind({ project })
   return logger
@@ -439,7 +461,7 @@ export interface LogQuery {
   run?: string
   session?: string
   project?: string
-  /** Matches a notification request id anywhere in the record. */
+  /** Matches a notification request id exactly in structured event data. */
   request?: string
   /** Free-text match over the serialized record. */
   contains?: string
@@ -454,13 +476,24 @@ export interface LogReadResult {
   more: boolean
 }
 
+function containsExactString(value: unknown, expected: string): boolean {
+  if (typeof value === 'string') return value === expected
+  if (Array.isArray(value)) return value.some((item) => containsExactString(item, expected))
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value as Record<string, unknown>).some((item) =>
+      containsExactString(item, expected),
+    )
+  }
+  return false
+}
+
 function matches(record: LogRecord, raw: string, query: LogQuery): boolean {
   if (query.level !== undefined && LEVEL_RANK[record.level] > LEVEL_RANK[query.level]) return false
   if (query.event !== undefined && query.event.length > 0 && !query.event.includes(record.event)) return false
   if (query.run !== undefined && record.run !== query.run) return false
   if (query.session !== undefined && record.session !== query.session) return false
   if (query.project !== undefined && record.project !== query.project) return false
-  if (query.request !== undefined && !raw.includes(query.request)) return false
+  if (query.request !== undefined && !containsExactString(record.data, query.request)) return false
   if (query.contains !== undefined && !raw.toLowerCase().includes(query.contains.toLowerCase())) return false
   return true
 }

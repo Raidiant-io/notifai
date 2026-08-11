@@ -218,6 +218,8 @@ export interface HookOutcome {
   stdout?: string
   /** Diagnostics; harnesses surface hook stderr in the transcript. */
   notes: string[]
+  /** Structured lifecycle detail that belongs on hook.end without user text. */
+  log?: Record<string, unknown>
 }
 
 function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -1329,7 +1331,14 @@ export async function handleUserPromptSubmit(
     lateAnswers = answered
     if (answered.length > 0) {
       await finishAnsweredPendings(ctx, envelope, sessionId, answered, false)
-      for (const { reply } of answered) {
+      for (const { pending, reply } of answered) {
+        ctx.log?.info('hook.answer', {
+          answered: true,
+          late: true,
+          request_id: pending.request_id,
+          device: reply.device_name,
+          text: reply.text,
+        })
         notes.push(`late answer from ${reply.device_name}: ${reply.text}`)
       }
     }
@@ -1727,7 +1736,7 @@ export function handleSessionEnd(
 ): HookOutcome {
   const notes: string[] = []
   const sessionId = envelope.session_id
-  if (!sessionId) return { notes }
+  if (!sessionId) return { notes, log: { outcome: 'ignored', reason: 'missing-session-id' } }
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
 
   const state = readSessionState(sessionId, env)
@@ -1740,7 +1749,10 @@ export function handleSessionEnd(
       notes.push(err instanceof Error ? err.message : String(err))
       // Preserve the only identifiers instead of turning an explicit corrupt
       // state into an unretirable question during SessionEnd cleanup.
-      return { notes }
+      return {
+        notes,
+        log: { outcome: 'preserved', reason: 'incomplete-question-identifiers' },
+      }
     }
   }
   if (orphans.length > 0) {
@@ -1751,7 +1763,7 @@ export function handleSessionEnd(
     )
   }
   clearSessionState(sessionId, env)
-  return { notes }
+  return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
 }
 
 // ---------------------------------------------------------------------------

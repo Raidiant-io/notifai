@@ -1,4 +1,12 @@
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -25,6 +33,62 @@ function lines(env: NodeJS.ProcessEnv): LogRecord[] {
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line) as LogRecord)
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('timed out waiting for rotation workers')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+function rotationWorker(
+  env: NodeJS.ProcessEnv,
+  worker: number,
+  records: number,
+  maxBytes: number,
+  maxFiles: number,
+  startPath: string,
+): { readyPath: string; done: Promise<void> } {
+  const readyPath = path.join(env['XDG_STATE_HOME']!, `rotation-ready-${worker}`)
+  const vitest = path.join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs')
+  const child = spawn(
+    process.execPath,
+    [vitest, 'run', 'src/logging-process-worker.test.ts', '--reporter=dot', '--maxWorkers=1'],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ...env,
+        NOTIFAI_ROTATION_WORKER: String(worker),
+        NOTIFAI_ROTATION_RECORDS: String(records),
+        NOTIFAI_ROTATION_MAX_BYTES: String(maxBytes),
+        NOTIFAI_ROTATION_MAX_FILES: String(maxFiles),
+        NOTIFAI_ROTATION_READY: readyPath,
+        NOTIFAI_ROTATION_START: startPath,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  const stdout: Buffer[] = []
+  const stderr: Buffer[] = []
+  child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+  const done = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code) => {
+      if (code === 0) resolve()
+      else {
+        reject(
+          new Error(
+            `rotation worker ${worker} exited ${String(code)}\n${Buffer.concat(stdout).toString()}\n${Buffer.concat(stderr).toString()}`,
+          ),
+        )
+      }
+    })
+  })
+  return { readyPath, done }
 }
 
 describe('the record', () => {
@@ -172,30 +236,39 @@ describe('rotation', () => {
     expect(logsDiskUsage(env).files).toBe(1)
   })
 
-  it('does not lose an archive when two processes rotate at once', () => {
-    // Two loggers over one directory is exactly the real case: a hook and a
-    // send, or two worktrees, racing on the same file.
+  it('stays near the byte cap and preserves records across overlapping processes', async () => {
     const env = sandbox()
-    const first = createLogger({ env, settings: { maxBytes: 500, maxFiles: 10 }, runId: 'r_a' })
-    const second = createLogger({ env, settings: { maxBytes: 500, maxFiles: 10 }, runId: 'r_b' })
-    for (let i = 0; i < 40; i += 1) {
-      first.info('cli.end', { i, pad: 'a'.repeat(40) })
-      second.info('cli.end', { i, pad: 'b'.repeat(40) })
-    }
+    const workers = 4
+    const recordsPerWorker = 50
+    const maxBytes = 4_000
+    const maxFiles = 100
+    const startPath = path.join(env['XDG_STATE_HOME']!, 'rotation-start')
+    const children = Array.from({ length: workers }, (_, worker) =>
+      rotationWorker(env, worker, recordsPerWorker, maxBytes, maxFiles, startPath),
+    )
 
-    // Whatever order the two rotations landed in, every line in every file is
-    // still a complete record — no interleaved halves, no truncation.
+    await waitUntil(() => children.every(({ readyPath }) => existsSync(readyPath)))
+    writeFileSync(startPath, 'go')
+    await Promise.all(children.map(({ done }) => done))
+
     const files = [activeLogPath(env), ...archiveLogPaths(env)]
-    let total = 0
+    expect(files.length).toBeGreaterThan(1)
+    // Concurrent writers may overshoot by the records already in flight, never
+    // by each process independently filling another whole cap.
+    for (const file of files) expect(statSync(file).size).toBeLessThan(maxBytes * 2)
+
+    const seen = new Set<string>()
     for (const file of files) {
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (line.trim() === '') continue
-        expect(() => JSON.parse(line)).not.toThrow()
-        total += 1
+        const record = JSON.parse(line) as LogRecord
+        if (record.event !== 'cli.end') continue
+        seen.add(`${String(record.data?.['worker'])}:${String(record.data?.['sequence'])}`)
       }
     }
-    expect(total).toBeGreaterThan(0)
-    expect(readdirSync(path.dirname(activeLogPath(env))).length).toBeGreaterThan(1)
+    // A rotation race may choose which unique archive owns a record, but may not
+    // clobber an archive or lose any record while retention has room for all of it.
+    expect(seen.size).toBe(workers * recordsPerWorker)
   })
 })
 
@@ -268,6 +341,18 @@ describe('reading', () => {
     const { records } = readLogRecords(env, { request: 'req_alpha' })
     expect(records).toHaveLength(1)
     expect(records[0]!.event).toBe('send.submitted')
+  })
+
+  it('matches a request identifier exactly instead of matching longer ids by prefix', () => {
+    const env = sandbox()
+    const logger = createLogger({ env })
+    logger.info('send.submitted', { request_id: 'req_1' })
+    logger.info('send.submitted', { request_id: 'req_10' })
+    logger.error('cli.error', { request_ids: ['req_10'], message: 'req_1 was only prose here' })
+
+    const { records } = readLogRecords(env, { request: 'req_1' })
+    expect(records).toHaveLength(1)
+    expect(records[0]?.data?.['request_id']).toBe('req_1')
   })
 
   it('honours a time floor', () => {

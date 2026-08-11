@@ -70,7 +70,6 @@ import {
   readSessionState,
   registerQuestion,
   type HookContext,
-  type HookEnvelope,
   type HookHarness,
 } from './hooks.js'
 import { readIdleSeconds } from './idle.js'
@@ -78,6 +77,7 @@ import {
   LOG_EVENTS,
   activeLogPath,
   archiveLogPaths,
+  logConfigResolved,
   logSettingsFrom,
   logsDiskUsage,
   nullLogger,
@@ -183,6 +183,18 @@ export function log(deps: CommandDeps): Logger {
   return deps.logger ?? nullLogger()
 }
 
+function loadLoggedConfig(
+  deps: CommandDeps,
+  options: Parameters<typeof loadConfig>[0],
+): CliConfig {
+  const config = loadConfig(options)
+  const logger = log(deps)
+  logger.adopt(logSettingsFrom(config))
+  logger.bind({ project: config.project.value })
+  logConfigResolved(logger, config)
+  return config
+}
+
 export const EXIT = {
   ok: 0,
   failed: 1,
@@ -255,7 +267,7 @@ export async function loginCommand(
   deps: CommandDeps,
   flags: { name?: string; baseUrl?: string; open?: boolean },
 ): Promise<number> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env, flags: { base_url: flags.baseUrl } as FlagOverrides })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, flags: { base_url: flags.baseUrl } as FlagOverrides })
   const baseUrl = config.base_url.value
   const machineName = flags.name ?? os.hostname()
   const secret = randomBytes(32).toString('base64url')
@@ -384,7 +396,7 @@ export async function accessStatusCommand(
   deps: CommandDeps,
   flags: { json?: boolean },
 ): Promise<number> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -412,7 +424,7 @@ export async function accessStatusCommand(
 // ---------------------------------------------------------------------------
 
 export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -456,7 +468,7 @@ export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean 
  */
 export async function deviceInventory(deps: CommandDeps): Promise<RoutableDevice[] | null> {
   if (!deps.store.load()) return null
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return null
   try {
@@ -475,7 +487,7 @@ export async function capabilitiesCommand(
   deps: CommandDeps,
   flags: { json?: boolean; platform?: Platform },
 ): Promise<number> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const credential = deps.store.load()
   const baseUrl = resolvedBaseUrl(config, credential)
   const client = makeClient(deps, baseUrl, null)
@@ -558,7 +570,7 @@ export async function sendCommand(
     deps.io.err(`--reply-window must be an integer from 60 to ${REPLY_MAX_WINDOW_SECONDS} seconds.`)
     return EXIT.usage
   }
-  const config = loadConfig({
+  const config = loadLoggedConfig(deps, {
     cwd: deps.cwd,
     env: deps.env,
     flags: { base_url: flags.baseUrl, wait_seconds: flags.wait } as FlagOverrides,
@@ -663,6 +675,7 @@ export async function sendCommand(
       now: deps.now,
       sleep: deps.sleep,
     })
+    recordReplies(deps, receipt.request_id, result.response.replies)
     if (flags.json) {
       deps.io.out(
         JSON.stringify({
@@ -807,7 +820,7 @@ export async function repliesCommand(
     return EXIT.usage
   }
 
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -822,6 +835,7 @@ export async function repliesCommand(
         now: deps.now,
         sleep: deps.sleep,
       })
+      recordReplies(deps, requestId, result.response.replies)
       if (flags.json) {
         jsonBodies.push({ ...result.response, degraded: result.degraded })
       } else if (result.response.replies.length > 0) {
@@ -975,6 +989,20 @@ function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0
 }
 
+function recordReplies(deps: CommandDeps, requestId: string, replies: readonly ReplyView[]): void {
+  const logger = log(deps)
+  for (const reply of replies) {
+    logger.info('reply.received', {
+      request_id: requestId,
+      sequence: reply.seq,
+      device: reply.device_name,
+      text: reply.text,
+      answers: reply.answers,
+      source: reply.source,
+    })
+  }
+}
+
 function printReplies(deps: CommandDeps, replies: ReplyView[]): void {
   for (const reply of replies) deps.io.out(`reply from ${reply.device_name}: ${reply.text}`)
   const contradiction = contradictingAnswer(replies)
@@ -1023,7 +1051,7 @@ export async function statusCommand(
   requestId: string,
   flags: { json?: boolean },
 ): Promise<number> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -1159,70 +1187,112 @@ export async function hookRunCommand(
     deps.io.err(`Unknown hook event "${event}". Valid: ${HOOK_EVENTS.join(', ')}`)
     return EXIT.usage
   }
-  let envelope: HookEnvelope
+
+  const logger = log(deps)
+  logger.bind({ cmd: `hook ${event}` })
+  let started = false
+  const start = (data: Record<string, unknown> = {}): void => {
+    if (started) return
+    started = true
+    logger.info('hook.start', { hook: event, harness: harness ?? 'unknown', ...data })
+  }
+  const failureData = (err: unknown): Record<string, unknown> =>
+    err instanceof ApiCallError
+      ? { status: err.status, code: err.code, message: err.message, details: err.details }
+      : { message: err instanceof Error ? err.message : String(err) }
+
+  let raw: string
   try {
-    const raw = await readStdin()
-    if (raw.trim() !== '') {
-      try {
-        const parsed: unknown = JSON.parse(raw)
-        if (typeof parsed !== 'object' || parsed === null) throw new Error('not an object')
-      } catch {
-        deps.io.err('notifai: ignored malformed or truncated hook input; no routing action was taken')
-        return EXIT.ok
-      }
-    }
-    envelope = parseHookInput(raw)
-    if (harness === 'cursor') {
-      const sessionId = envelope.session_id ?? envelope.conversation_id
-      const cwd = envelope.cwd ?? envelope.workspace_roots?.[0]
-      envelope = {
-        ...envelope,
-        ...(sessionId === undefined ? {} : { session_id: sessionId }),
-        ...(cwd === undefined ? {} : { cwd }),
-        stop_hook_active:
-          envelope.stop_hook_active ??
-          (typeof envelope.loop_count === 'number' && envelope.loop_count > 0),
-      }
-    }
-  } catch {
+    raw = await readStdin()
+  } catch (err) {
+    start({ input: 'unavailable' })
+    logger.error('hook.end', {
+      hook: event,
+      outcome: 'ignored',
+      reason: 'input-read-failed',
+      ...failureData(err),
+    })
     return EXIT.ok
   }
 
-  // Everything below is inside one fail-open boundary. Config parsing,
-  // credential loading and client construction can all throw, and a hook that
-  // exits non-zero makes the harness report a failure — strictly worse for the
-  // user than not having installed the hook at all.
+  if (raw.trim() !== '') {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (typeof parsed !== 'object' || parsed === null) throw new Error('not an object')
+    } catch {
+      start({ input: 'malformed' })
+      logger.error('hook.end', { hook: event, outcome: 'ignored', reason: 'malformed-input' })
+      deps.io.err('notifai: ignored malformed or truncated hook input; no routing action was taken')
+      return EXIT.ok
+    }
+  }
+
+  let envelope = parseHookInput(raw)
+  if (harness === 'cursor') {
+    const sessionId = envelope.session_id ?? envelope.conversation_id
+    const cwd = envelope.cwd ?? envelope.workspace_roots?.[0]
+    envelope = {
+      ...envelope,
+      ...(sessionId === undefined ? {} : { session_id: sessionId }),
+      ...(cwd === undefined ? {} : { cwd }),
+      stop_hook_active:
+        envelope.stop_hook_active ??
+        (typeof envelope.loop_count === 'number' && envelope.loop_count > 0),
+    }
+  }
+
+  const cwd = envelope.cwd ?? deps.cwd
+  logger.bind({ session: envelope.session_id ?? null })
+  let config: CliConfig | null = null
+  let configFailure: unknown
+  try {
+    config = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
+    // The hook's project is the session's, not this process's, and the log
+    // settings that apply are that project's too. Keeping a mutable bootstrap
+    // logger lets this more-specific layer turn logging back on.
+    logger.adopt(logSettingsFrom(config))
+    logger.bind({ project: config.project.value })
+    start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+    logConfigResolved(logger, config)
+  } catch (err) {
+    configFailure = err
+    start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+    if (event !== 'session-end') {
+      logger.error('hook.end', {
+        hook: event,
+        outcome: 'failed',
+        reason: 'config-failed',
+        ...failureData(err),
+      })
+      for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
+      return EXIT.ok
+    }
+  }
+
+  // Everything below is inside one fail-open boundary. Credential loading,
+  // client construction and hook handling can all throw, and a hook that exits
+  // non-zero makes the harness report a failure — strictly worse than skipping.
   try {
     if (event === 'session-end') {
       const outcome = handleSessionEnd(deps.env, envelope, (deps.now ?? Date.now)())
+      const data = { hook: event, decided: false, ...outcome.log }
+      if (configFailure === undefined) logger.info('hook.end', data)
+      else {
+        logger.error('hook.end', {
+          ...data,
+          reason: 'config-failed',
+          config_error: failureData(configFailure),
+        })
+      }
       for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
       return EXIT.ok
     }
 
-    // Resolve config against the session's project rather than our own working
-    // directory. `cwd` is in the payload precisely because which project a
-    // session belongs to is the harness's business, not ours.
-    const cwd = envelope.cwd ?? deps.cwd
-    const config = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
-    // The hook's project is the session's, not this process's, and the log
-    // settings that apply are that project's too — a repository that turned
-    // logging off should not be logged because the hook happened to start
-    // somewhere else.
-    log(deps).adopt(logSettingsFrom(config))
-    log(deps).bind({
-      cmd: `hook ${event}`,
-      project: config.project.value,
-      session: envelope.session_id ?? null,
-    })
-    log(deps).info('hook.start', {
-      hook: event,
-      harness: harness ?? 'unknown',
-      cwd,
-      stop_hook_active: envelope.stop_hook_active ?? null,
-    })
+    // Non-SessionEnd hooks cannot reach here without resolved configuration.
+    const resolved = config!
     const credential = deps.store.load()
     if (!credential) {
-      log(deps).error('hook.end', { hook: event, outcome: 'not-paired' })
+      logger.error('hook.end', { hook: event, outcome: 'not-paired' })
       deps.io.err('notifai: hook skipped: this machine is not paired; run `notifai login`')
       return EXIT.ok
     }
@@ -1230,9 +1300,9 @@ export async function hookRunCommand(
     // repository can commit `.notifai/config.toml`, and honouring a base_url
     // from it would hand this machine's bearer token to whatever host it names.
     const baseUrl = credential.baseUrl
-    if (config.base_url.source !== 'default' && config.base_url.value !== baseUrl) {
+    if (resolved.base_url.source !== 'default' && resolved.base_url.value !== baseUrl) {
       deps.io.err(
-        `notifai: ignoring base_url from ${config.base_url.source}; hooks only talk to ${baseUrl}`,
+        `notifai: ignoring base_url from ${resolved.base_url.source}; hooks only talk to ${baseUrl}`,
       )
     }
     // UserPromptSubmit runs in front of the user's own prompt under a 15s
@@ -1247,7 +1317,7 @@ export async function hookRunCommand(
     const now = deps.now ?? Date.now
     const ctx: HookContext = {
       client,
-      config,
+      config: resolved,
       env: deps.env,
       now,
       idleSeconds: deps.idleSeconds ?? (() => readIdleSeconds()),
@@ -1265,27 +1335,29 @@ export async function hookRunCommand(
           degraded: result.degraded,
         }
       },
-      log: log(deps),
+      log: logger,
       ...(harness === undefined ? {} : { harness }),
     }
 
     // Real clock, deliberately, not `deps.now`. This compares against file
     // mtimes, which are wall-clock facts — handing it a virtual or skewed clock
     // would have it delete live session state as "abandoned".
-    // Rate-limited to once a day by its own stamp file, so the common cost is
-    // one stat on a hook that sits on the critical path of every turn.
     pruneAbandonedSessions(deps.env)
 
     const outcome =
       event === 'user-prompt-submit'
         ? await handleUserPromptSubmit(ctx, envelope)
         : await handleStop(ctx, envelope)
-    log(deps).info('hook.end', {
+    // Answer diagnostics are already persisted once as hook.answer. Keep every
+    // other note in the lifecycle record without duplicating the user's text.
+    const notes = outcome.notes.filter((note) => !/^(?:late )?answer from /.test(note))
+    logger.info('hook.end', {
       hook: event,
       // A hook that returns stdout has taken over the turn; one that does not
       // has handed the terminal back. That distinction is the whole contract.
       decided: outcome.stdout !== undefined,
-      notes: outcome.notes,
+      ...(notes.length === 0 ? {} : { notes }),
+      ...outcome.log,
     })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
     if (outcome.stdout !== undefined) {
@@ -1301,14 +1373,12 @@ export async function hookRunCommand(
     return EXIT.ok
   } catch (err) {
     // The hook still exits 0 — handing the terminal back is always right. What
-    // this adds is that the reason survives, which is the difference between
-    // "escalation stopped working" and a 422 naming the rejected field.
-    log(deps).error('hook.end', {
+    // this adds is that the reason survives, including the server's own words.
+    logger.error('hook.end', {
       hook: event,
       outcome: 'failed',
-      ...(err instanceof ApiCallError
-        ? { status: err.status, code: err.code, message: err.message, details: err.details }
-        : { message: String(err) }),
+      reason: 'execution-failed',
+      ...failureData(err),
     })
     for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
     return EXIT.ok
@@ -1720,7 +1790,7 @@ function hookActivationAdvice(installations: Installation[]): string {
 
 /** Retire a question so a late answer is rejected rather than silently lost. */
 export async function closeCommand(deps: CommandDeps, requestId: string): Promise<number> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -1745,7 +1815,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (!harness) return EXIT.usage
   const execPath = flags.execPath ?? process.execPath
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
@@ -2008,7 +2078,7 @@ export function configShowCommand(
   deps: CommandDeps,
   flags: { json?: boolean; explain?: boolean; plain?: boolean },
 ): number {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   if (flags.json) {
     const output = Object.fromEntries(
       CONFIG_KEYS.map((key) => [key, { value: config[key].value, source: config[key].source }]),
@@ -2048,7 +2118,7 @@ export function configExplainCommand(
     return EXIT.usage
   }
   const configKey = key as ConfigKey
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const info = configInfo(configKey)
   const entry = config[configKey]
 
@@ -2297,6 +2367,20 @@ export interface LogsFlags {
   clear?: boolean
 }
 
+const LOG_RECORD_OPTIONS: readonly (readonly [keyof LogsFlags, string])[] = [
+  ['limit', '--limit'],
+  ['all', '--all'],
+  ['since', '--since'],
+  ['level', '--level'],
+  ['event', '--event'],
+  ['run', '--run'],
+  ['request', '--request'],
+  ['session', '--session'],
+  ['project', '--project'],
+  ['allProjects', '--all-projects'],
+  ['grep', '--grep'],
+]
+
 /**
  * Deliberately small. The reader is usually a model with a finite context, and
  * a log command whose default answer is ten thousand lines gets used once.
@@ -2330,7 +2414,39 @@ export function parseSince(raw: string, now: number): number | null {
  * records untouched on stdout while every word of explanation goes to stderr.
  */
 export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const selectedRetrievalOptions = LOG_RECORD_OPTIONS
+    .filter(([key]) => {
+      const value = flags[key]
+      return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== false
+    })
+    .map(([, name]) => name)
+
+  if (flags.path === true && flags.clear === true) {
+    deps.io.err('Pass --path or --clear, not both.')
+    return EXIT.usage
+  }
+  if (flags.path === true && selectedRetrievalOptions.length > 0) {
+    deps.io.err(`--path cannot be combined with record options: ${selectedRetrievalOptions.join(', ')}.`)
+    return EXIT.usage
+  }
+  if (flags.clear === true && selectedRetrievalOptions.length > 0) {
+    deps.io.err(`--clear cannot be combined with record options: ${selectedRetrievalOptions.join(', ')}.`)
+    return EXIT.usage
+  }
+  if (flags.project !== undefined && flags.allProjects === true) {
+    deps.io.err('Pass --project or --all-projects, not both.')
+    return EXIT.usage
+  }
+  if (flags.limit !== undefined && flags.all === true) {
+    deps.io.err('Pass --limit or --all, not both.')
+    return EXIT.usage
+  }
+  if (flags.limit !== undefined && (!Number.isInteger(flags.limit) || flags.limit <= 0)) {
+    deps.io.err('--limit must be a positive integer.')
+    return EXIT.usage
+  }
+
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const now = (deps.now ?? Date.now)()
 
   if (flags.path === true) {
@@ -2373,7 +2489,11 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
         // Absent, or not ours to remove; either way there is nothing to report.
       }
     }
-    deps.io.out(`Cleared ${removed} log file${removed === 1 ? '' : 's'}.`)
+    deps.io.out(
+      flags.json === true
+        ? JSON.stringify({ cleared_files: removed })
+        : `Cleared ${removed} log file${removed === 1 ? '' : 's'}.`,
+    )
     return EXIT.ok
   }
 
@@ -2771,7 +2891,7 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   const remedy = state.remedy
   if (deps.io.interactive !== true || remedy?.by !== 'user-elsewhere') return 'pending'
 
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) {
     deps.io.err('Could not start the companion-device wait: this machine is not signed in.')
@@ -2922,7 +3042,7 @@ async function submitSetupProof(
  * the push, not that a companion process received it.
  */
 async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return 'failed'
 
@@ -3290,7 +3410,7 @@ export async function assessReadiness(
   deps: CommandDeps,
   options: { skillScope?: SkillScope } = {},
 ): Promise<Readiness> {
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const states: ReadinessState[] = []
   let accountClient: ApiClient | null = null
   let accountDevices: RoutableDevice[] | null = null
@@ -3687,7 +3807,7 @@ function remedyLine(state: ReadinessState): string {
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.cwd, deps.env)
   const active = activeHarnessSession(deps.env)
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const settings: ReadinessState = {
     id: 'question-routing-settings',
     title: 'Question routing settings',
@@ -3881,7 +4001,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
-  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const requiredTimeout = blockingHookTimeoutSeconds(
     config.ask_grace_seconds.value,
     config.hook_reply_timeout_seconds.value,
