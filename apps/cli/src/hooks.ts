@@ -756,20 +756,20 @@ async function waitForAnyReplyWhileAway(
       requestIds
         .filter((requestId) => !permanentFailures.has(requestId))
         .map(async (requestId) => {
-        try {
-          return { requestId, ...(await ctx.waitForFirstReply(requestId, pollSeconds)) }
-        } catch (err) {
-          if (isRetryableReplyPollError(err)) {
-            return { requestId, replies: [] as ReplyView[], degraded: true }
+          try {
+            return { requestId, ...(await ctx.waitForFirstReply(requestId, pollSeconds)) }
+          } catch (err) {
+            if (isRetryableReplyPollError(err)) {
+              return { requestId, replies: [] as ReplyView[], degraded: true }
+            }
+            return {
+              requestId,
+              replies: [] as ReplyView[],
+              degraded: false,
+              permanentFailure: replyPollFailure(err),
+            }
           }
-          return {
-            requestId,
-            replies: [] as ReplyView[],
-            degraded: false,
-            permanentFailure: replyPollFailure(err),
-          }
-        }
-      }),
+        }),
     )
     const byRequest = new Map<string, ReplyView[]>()
     for (const result of results) {

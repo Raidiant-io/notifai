@@ -19,9 +19,10 @@ Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
 package-manager, CLI-version, checkout, XDG directory, and Notifai preference
-changes. Codex definitions omit timeout fields and use host defaults. Migrating
-an older Codex definition requires one unavoidable `/hooks` approval; later
-upgrades must not require another.
+changes. Codex's Stop definition uses the host timeout default; prompt-submit
+and session-end retain fixed short limits. Migrating an older Codex definition
+requires one unavoidable `/hooks` approval; later upgrades must not require
+another.
 
 Before the first `notifai ask` in a new harness session, `doctor` must name the
 active harness under **Question routing** and report under **hooks (fired)**

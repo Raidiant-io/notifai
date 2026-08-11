@@ -190,9 +190,9 @@ const DEFAULTS = {
   // grace and presence gating remain independent opt-in controls.
   require_idle: false,
   away_after_seconds: 120,
-  // Runtime waits stay inside a 480s budget. The installed Stop timeout is a
-  // preference-stable 540s, leaving 60s teardown headroom without invalidating
-  // Codex trust whenever one of these values changes.
+  // Runtime waits stay inside a 480s budget. Harnesses that require a declared
+  // Stop limit use a preference-stable 540s; Codex uses its host-owned Stop
+  // default. Neither definition changes when these preferences do.
   hook_reply_timeout_seconds: 180,
   ask_grace_seconds: 0,
   // On by default: the log is the only account of what a headless hook did, and
@@ -299,15 +299,15 @@ export function findProjectLocalConfigPath(startDir: string): string | null {
  * Ranges every layer is clamped to. Config is readable from a repository, so an
  * out-of-range value is attacker input, not a typo: `away_after_seconds = -1`
  * would make a user who just typed count as absent, and an oversized reply
- * timeout would push the generated hook past the harness's 600s ceiling so the
- * hook is killed after the user has already answered.
+ * timeout would exhaust the hook process budget and kill it after the user has
+ * already answered.
  */
 const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> = {
   wait_seconds: { min: 0, max: 300 },
   ttl_seconds: { min: 0, max: 7 * 24 * 3600 },
   away_after_seconds: { min: 5, max: 24 * 3600 },
-  // 540 + the installer's 60s headroom stays inside the 600s command-hook
-  // budget shared by Claude Code and Codex.
+  // The runtime clamps grace + reply work below the host process ceiling; this
+  // maximum is never copied into the installed definition.
   hook_reply_timeout_seconds: { min: 10, max: 540 },
   ask_grace_seconds: { min: 0, max: 540 },
   // The floor keeps rotation from thrashing (a file smaller than a handful of

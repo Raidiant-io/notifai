@@ -41,7 +41,7 @@ import {
 
 const SCRIPT = '/opt/notifai/dist/main.js'
 const EXEC = '/usr/local/bin/node'
-const ADAPTER = '/Users/test/.local/state/notifai/hook-adapter'
+const ADAPTER = '/Users/test/.notifai/bin/hook-adapter'
 
 function ours(): HookConfig {
   return buildHookConfig({ adapterPath: ADAPTER })
@@ -108,16 +108,13 @@ describe('hook config', () => {
     ).toBe(true)
   })
 
-  it('lets Codex own handler timeouts while retaining declarations for other harnesses', () => {
+  it('lets Codex own Stop timeout while keeping short fixed lifecycle budgets', () => {
     const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
     const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
 
-    expect(
-      Object.values(codex)
-        .flatMap((groups) => groups)
-        .flatMap((group) => group.hooks)
-        .every((handler) => handler.timeout === undefined),
-    ).toBe(true)
+    expect(codex['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
+    expect(codex['Stop']?.[0]?.hooks[0]?.timeout).toBeUndefined()
+    expect(codex['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
     expect(claude['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
   })
 })
@@ -458,7 +455,7 @@ describe('finding what is installed', () => {
  * the harness ran both, and one question produced two notifications.
  */
 describe('two checkouts', () => {
-  const OTHER = '/Users/rafael/other-checkout/apps/cli/dist/main.js'
+  const OTHER = '/Users/rafael/notifai-public/apps/cli/dist/main.js'
 
   function documentWith(command: string): SettingsDocument {
     return { hooks: { Stop: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: 300 }] }] } }
@@ -494,6 +491,11 @@ describe('two checkouts', () => {
 
   it("leaves someone else's hook alone", () => {
     const foreign = documentWith('/usr/local/bin/my-own-thing --stop')
+    expect(stopCommands(removeHooks(foreign, SCRIPT).document)).toHaveLength(1)
+  })
+
+  it("preserves a foreign project's generic dist/main.js hook", () => {
+    const foreign = documentWith("'/usr/local/bin/node' '/opt/foreign/dist/main.js' hook stop")
     expect(stopCommands(removeHooks(foreign, SCRIPT).document)).toHaveLength(1)
   })
 })

@@ -34,7 +34,7 @@ export interface HookAdapterInspection {
  * it; CLI, Node, package-manager, checkout, and preference paths stay behind
  * it and may change without changing hook identity.
  */
-export function hookAdapterPath(homeDir: string = os.homedir()): string {
+export function hookAdapterPath(homeDir: string = os.userInfo().homedir): string {
   return path.join(homeDir, '.notifai', 'bin', 'hook-adapter')
 }
 
@@ -45,7 +45,7 @@ export function installHookAdapter(
 ): { path: string; changed: boolean } {
   assertUsableTarget(target)
   const file = hookAdapterPath(homeDir)
-  ensureManagedDirectories(homeDir ?? os.homedir())
+  ensureManagedDirectories(homeDir ?? os.userInfo().homedir)
   const source = hookAdapterSource(target)
   return withFileLockSync(file, () => {
     const existing = existsSync(file) ? readSafeManagedFile(file) : null

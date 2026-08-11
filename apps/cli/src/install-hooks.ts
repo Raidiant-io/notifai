@@ -131,7 +131,7 @@ export function blockingHookTimeoutSeconds(): number {
 
 export function buildHookConfig(options: BuildOptions): HookConfig {
   const { adapterPath } = options
-  const hostOwnsTimeouts = options.harness === 'codex'
+  const hostOwnsStopTimeout = options.harness === 'codex'
   // Runtime preferences fit inside this fixed process budget without becoming
   // part of the serialized definition Codex asks the user to trust.
   const blockingTimeout = blockingHookTimeoutSeconds()
@@ -144,7 +144,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
             command: hookCommand(adapterPath, 'user-prompt-submit', options.harness),
             // Claude Code caps UserPromptSubmit at 30s; stay well inside it so
             // a slow network can never delay the user's own prompt.
-            ...(hostOwnsTimeouts ? {} : { timeout: 15 }),
+            timeout: 15,
           },
         ],
       },
@@ -155,7 +155,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
           {
             type: 'command',
             command: hookCommand(adapterPath, 'stop', options.harness),
-            ...(hostOwnsTimeouts ? {} : { timeout: blockingTimeout }),
+            ...(hostOwnsStopTimeout ? {} : { timeout: blockingTimeout }),
           },
         ],
       },
@@ -168,7 +168,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
             command: hookCommand(adapterPath, 'session-end', options.harness),
             // Both harnesses give SessionEnd a ~1-3s budget, so this handler
             // only touches local state.
-            ...(hostOwnsTimeouts ? {} : { timeout: 3 }),
+            timeout: 3,
           },
         ],
       },
@@ -424,13 +424,23 @@ function isOurCommand(command: string, scriptPath: string): boolean {
     command.includes(`${scriptPath}' hook `) ||
     command.includes(`${scriptPath}" hook `) ||
     command.includes(`${scriptPath} hook `) ||
-    // Pre-marker releases always invoked either a notifai launcher or the
-    // packaged dist/main.js directly. Remove that obsolete path even when it
-    // came from a checkout that no longer exists; prelaunch has no reason to
-    // preserve a second ambiguous implementation beside the stable adapter.
-    /(?:notifai(?:\.cmd)?|dist\/main\.js)['"]?\s+hook (?:user-prompt-submit|stop|session-end)\b/.test(
-      command,
-    )
+    isLegacyNotifaiCommand(command)
+  )
+}
+
+/** Cleanup-only recognition for unmistakable pre-marker Notifai commands. */
+function isLegacyNotifaiCommand(command: string): boolean {
+  const hook = `['"]?\\s+hook (?:user-prompt-submit|stop|session-end)\\b`
+  return (
+    new RegExp(`(?:^|[\\s'"])notifai(?:\\.cmd)?${hook}`).test(command) ||
+    new RegExp(
+      `(?:^|[/\\\\])(?:notifai-public|notifai)[/\\\\]apps[/\\\\]cli[/\\\\]dist[/\\\\]main\\.js${hook}`,
+      'i',
+    ).test(command) ||
+    new RegExp(
+      `[/\\\\]node_modules[/\\\\]@raidiant[/\\\\]notifai[/\\\\]dist[/\\\\]main\\.js${hook}`,
+      'i',
+    ).test(command)
   )
 }
 

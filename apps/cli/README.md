@@ -66,8 +66,8 @@ Every harness definition calls one stable user-level adapter at
 XDG directories, and notification preferences are resolved behind it, so
 upgrades and configuration changes do not rewrite trusted hook definitions.
 The first migration may require one Codex `/hooks` approval; later repairs keep
-the same identity. Codex definitions omit timeout fields so Codex's host
-defaults remain authoritative.
+the same identity. Codex's Stop definition omits its timeout so the host default
+remains authoritative; prompt-submit and session-end retain fixed short limits.
 
 `notifai doctor` compares Codex trust on a best-effort basis against Codex's
 current persisted representation. Notifai never writes that trust store;

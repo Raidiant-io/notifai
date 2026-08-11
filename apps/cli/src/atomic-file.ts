@@ -190,21 +190,33 @@ export function withFileLockSync<T>(
     try {
       assertSameDirectory(directory, parent)
       handle = openSync(lock, 'wx', 0o600)
-      const stat = fstatSync(handle)
-      acquired = { dev: stat.dev, ino: stat.ino }
-      writeFileSync(handle, `${process.pid}:${randomBytes(8).toString('hex')}\n`)
-      fsyncSync(handle)
-      break
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-      const pathStat = lstatSync(lock)
+      let pathStat
+      try {
+        pathStat = lstatSync(lock)
+      } catch (inspectError) {
+        if ((inspectError as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw inspectError
+      }
       if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
         throw new Error(`${lock} is not a regular lock file; refusing to follow or remove it.`)
       }
-      const observed = openSync(lock, constants.O_RDONLY | constants.O_NOFOLLOW)
-      const stat = fstatSync(observed)
-      const lease = readFileSync(observed, 'utf8')
-      closeSync(observed)
+      let observed: number
+      try {
+        observed = openSync(lock, constants.O_RDONLY | constants.O_NOFOLLOW)
+      } catch (inspectError) {
+        if ((inspectError as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw inspectError
+      }
+      let stat
+      let lease: string
+      try {
+        stat = fstatSync(observed)
+        lease = readFileSync(observed, 'utf8')
+      } finally {
+        closeSync(observed)
+      }
       if (!stat.isFile()) {
         throw new Error(`${lock} is not a regular lock file; refusing to follow or remove it.`)
       }
@@ -227,20 +239,58 @@ export function withFileLockSync<T>(
         throw new Error(`Timed out waiting for another Notifai operation on ${file}.`)
       }
       Atomics.wait(waitCell, 0, 0, Math.min(25, Math.max(1, deadline - Date.now())))
+      continue
+    }
+
+    try {
+      const stat = fstatSync(handle)
+      acquired = { dev: stat.dev, ino: stat.ino }
+      writeFileSync(handle, `${process.pid}:${randomBytes(8).toString('hex')}\n`)
+      fsyncSync(handle)
+      break
+    } catch (acquireError) {
+      closeSync(handle)
+      handle = undefined
+      if (acquired !== undefined) removeLeaseIfSame(lock, acquired)
+      acquired = undefined
+      // Preserve the acquisition error even if safe cleanup was impossible.
+      throw acquireError
     }
   }
 
+  let actionFailed = false
   try {
     return action()
+  } catch (err) {
+    actionFailed = true
+    throw err
   } finally {
     if (handle !== undefined) closeSync(handle)
     if (acquired !== undefined) {
-      const current = lstatSync(lock)
-      if (current.dev !== acquired.dev || current.ino !== acquired.ino) {
+      const removed = removeLeaseIfSame(lock, acquired)
+      if (!removed && !actionFailed) {
         throw new Error(`${lock} changed while held; refusing to remove the replacement.`)
       }
-      unlinkSync(lock)
     }
+  }
+}
+
+/** Remove only the inode this process acquired; never unlink a replacement. */
+function removeLeaseIfSame(lock: string, acquired: { dev: number; ino: number }): boolean {
+  let current
+  try {
+    current = lstatSync(lock)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
+  if (current.dev !== acquired.dev || current.ino !== acquired.ino) return false
+  try {
+    unlinkSync(lock)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
   }
 }
 

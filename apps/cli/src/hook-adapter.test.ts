@@ -89,6 +89,20 @@ describe('stable hook adapter', () => {
     )
   })
 
+  it('uses the OS account home even when HOME is overridden', () => {
+    const original = process.env['HOME']
+    process.env['HOME'] = '/tmp/attacker-selected-home'
+    try {
+      expect(hookAdapterPath()).toBe(
+        path.join(os.userInfo().homedir, '.notifai', 'bin', 'hook-adapter'),
+      )
+      expect(hookAdapterPath()).not.toContain('attacker-selected-home')
+    } finally {
+      if (original === undefined) delete process.env['HOME']
+      else process.env['HOME'] = original
+    }
+  })
+
   it('repairs permissive adapter permissions without changing its path', () => {
     const { root, homeDir } = isolated()
     const script = path.join(root, 'target.js')
@@ -237,6 +251,22 @@ describe('installer transaction lock', () => {
         writeFileSync(lock, 'replacement')
       }),
     ).toThrow(/changed while held/)
+    expect(readFileSync(lock, 'utf8')).toBe('replacement')
+  })
+
+  it('preserves the action error when cleanup also finds a replacement', () => {
+    const { root } = isolated()
+    const file = path.join(root, 'settings.json')
+    const lock = path.join(root, '.settings.json.notifai.lock')
+    const actionError = new Error('merge failed')
+
+    expect(() =>
+      withFileLockSync(file, () => {
+        rmSync(lock)
+        writeFileSync(lock, 'replacement')
+        throw actionError
+      }),
+    ).toThrow(actionError)
     expect(readFileSync(lock, 'utf8')).toBe('replacement')
   })
 })
