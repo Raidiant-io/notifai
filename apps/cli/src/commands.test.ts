@@ -900,7 +900,7 @@ describe('harness activation guidance', () => {
     expect(io.outLines.join('\n')).toContain('next user prompt')
     const pluginFile = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
-    expect(plugin).toContain('const TIMEOUT_MS = 540000')
+    expect(plugin).toContain('const TIMEOUT_MS = 240000')
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)

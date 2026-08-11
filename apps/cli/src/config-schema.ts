@@ -112,10 +112,10 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     group: 'questions',
     kind: 'integer',
     unit: 's',
-    summary: 'How long a question stays terminal-only before it may reach your devices',
+    summary: 'Optional delay before a question may reach your devices',
     detail:
-      'Measured from the moment the agent asked. The question appears in the terminal and a timer starts; only once it elapses may the question go to your devices.\n\nA timer and nothing more. It is honoured whether or not presence is consulted at all, because how long to wait and whether anyone is watching are separate questions, and answering one should not answer the other.',
-    example: '300',
+      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nA timer and nothing more. It is honoured whether or not presence is consulted at all, because how long to wait and whether anyone is watching are separate questions, and answering one should not answer the other.',
+    example: '0',
   },
   hook_reply_timeout_seconds: {
     label: 'Hook wait for an answer',

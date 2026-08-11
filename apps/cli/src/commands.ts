@@ -1627,18 +1627,22 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     deps.io.out(`  removed: ${merged.removed.join(', ')} (this build no longer serves them)`)
   }
   deps.io.out('')
-  deps.io.out(
-    config.require_idle.value
-      ? `While keyboard or mouse idle time stays below ${config.away_after_seconds.value}s, ` +
-          `nothing is pushed. A question registered with \`notifai ask\` stays in the terminal ` +
-          `until its ${config.ask_grace_seconds.value}s grace window, counted from registration, ` +
-          `has elapsed; it goes to your devices only while the machine also meets the idle threshold. ` +
-          `Run \`notifai config set require_idle false\` to be notified even while you are working.`
-      : `A question registered with \`notifai ask\` stays in the terminal for ` +
-          `${config.ask_grace_seconds.value}s from registration and then goes to your devices ` +
-          `whether or not you are at this machine ` +
-          `(\`notifai config set require_idle false\` is already in effect).`,
-  )
+  if (config.require_idle.value) {
+    deps.io.out(
+      `While keyboard or mouse idle time stays below ${config.away_after_seconds.value}s, ` +
+        `nothing is pushed. A question registered with \`notifai ask\` goes to your devices ` +
+        (config.ask_grace_seconds.value === 0
+          ? 'as soon as the machine meets that idle threshold. '
+          : `once its ${config.ask_grace_seconds.value}s grace window, counted from registration, has elapsed and the machine meets that idle threshold. `) +
+        `Run \`notifai config set require_idle false\` to be notified even while you are working.`,
+    )
+  } else {
+    deps.io.out(
+      config.ask_grace_seconds.value === 0
+        ? 'A question registered with `notifai ask` goes to your devices immediately when the agent turn ends, whether or not you are at this machine.'
+        : `A question registered with \`notifai ask\` stays in the terminal for ${config.ask_grace_seconds.value}s from registration and then goes to your devices whether or not you are at this machine.`,
+    )
+  }
   if (config.require_idle.value) {
     deps.io.out(
       'If this OS exposes no keyboard/mouse idle signal, the hook falls back to prompt silence and skips the blocking grace once it decides you are away.',

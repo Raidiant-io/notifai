@@ -318,15 +318,19 @@ describe('presence gating is optional (require_idle)', () => {
     expect(isUserAway({ last_prompt_at: NOW }, gated, NOW, 1)).toBe(false)
   })
 
-  it('escalates a question while the user is at the keyboard', async () => {
+  it('escalates immediately by default while the user is at the keyboard', async () => {
     const h = harness([], 1)
-    writeGlobalConfig(h, 'require_idle = false\nask_grace_seconds = 0\n')
+    let submittedAt: number | undefined
+    h.recorder.beforeQuestionSubmit = () => {
+      submittedAt = h.deps.now?.()
+    }
     writeSessionState('present1', h.env, { last_prompt_at: NOW })
     registerQuestion('present1', h.env, { question: 'Ship it?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present1' }))
 
     expect(h.recorder.submitted).toHaveLength(1)
+    expect(submittedAt).toBe(NOW)
     expect(h.io.errLines.join('\n')).not.toContain('at the keyboard')
   })
 
@@ -385,10 +389,11 @@ describe('terminal-first grace window', () => {
     // Idle 900s: the user is gone, so the wait runs to completion rather than
     // being abandoned. Sleeps advance the virtual clock.
     const h = harness([reply({ text: 'Yes' })], 900)
+    writeGlobalConfig(h, 'ask_grace_seconds = 300\n')
     pending(h, 'g1', 0)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g1' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
-    // Nothing was pushed before the 300s default had passed.
+    // Nothing was pushed before the explicitly configured 300s had passed.
     expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 300_000)
   })
 

@@ -228,10 +228,11 @@ a session in this directory ran them. Follow its exact recovery if either check
 fails; do not register the question yet. Then ask the same question in the
 conversation and stop working so the user can decide.
 
-By default, a question stays terminal-first for the configured grace window,
-then reaches answerable devices whether or not the user is active at the
-machine. A user may turn on `require_idle` to keep questions local while they
-are active. Do not register the same question again while the first is live.
+By default, a question reaches answerable devices immediately when the agent
+turn ends, whether or not the user is active at the machine. A user may set a
+positive `ask_grace_seconds` for a terminal-only answer window, or turn on
+`require_idle` to keep questions local while they are active. Do not register
+the same question again while the first is live.
 Use `notifai replies --pending` to recover a late hook answer and `notifai close
 <request_id>` to retire a stale request.
 

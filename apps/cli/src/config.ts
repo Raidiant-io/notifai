@@ -144,15 +144,14 @@ const DEFAULTS = {
   // Installing the hooks is the opt-in; these exist to switch the behaviour
   // back off for a project or a session without uninstalling anything.
   ask_notifications: true,
-  // The terminal-first grace is the default protection against redundant
-  // pushes. Presence gating is opt-in: being at the machine must not prevent a
-  // question from reaching the user's devices once that grace has elapsed.
+  // Questions reach devices immediately by default. Both a terminal-first
+  // grace and presence gating remain independent opt-in controls.
   require_idle: false,
   away_after_seconds: 120,
-  // 300 + 180 + the installer's 60s headroom = 540, inside the 600s
+  // 0 grace + 180 reply + the installer's 60s headroom = 240, inside the 600s
   // command-hook ceiling both harnesses enforce.
   hook_reply_timeout_seconds: 180,
-  ask_grace_seconds: 300,
+  ask_grace_seconds: 0,
 } satisfies Record<ConfigKey, unknown>
 
 /** The shipped value beneath every user-controlled configuration layer. */

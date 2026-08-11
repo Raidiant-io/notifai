@@ -45,8 +45,9 @@ Do not claim support for a harness that is absent from
 ## Presence and continuation
 
 With `require_idle = false` (the default), local keyboard or mouse activity
-does not hold a question back. The terminal-first grace still runs before any
-device push.
+does not hold a question back. With `ask_grace_seconds = 0` (also the default),
+the question reaches devices immediately when the agent turn ends. A positive
+grace adds an optional terminal-only answer window.
 
 `require_idle = true` deliberately keeps a question in the terminal while the
 user is working. Once the user is away, the terminal-first grace window may
@@ -57,7 +58,7 @@ the user returned to the terminal.
 The important timing settings are separate:
 
 - `away_after_seconds`: how much local silence counts as absence.
-- `ask_grace_seconds`: how long the question remains terminal-first.
+- `ask_grace_seconds`: optional terminal-only delay; `0` sends immediately.
 - `hook_reply_timeout_seconds`: how long a pushed hook waits for the answer.
 
 The pushed question can remain answerable after the hook stops waiting. Recover

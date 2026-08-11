@@ -94,10 +94,10 @@ describe('harness config layers', () => {
     expect(config.ask_notifications.value).toBe(true)
     expect(config.require_idle).toEqual({ value: false, source: 'default' })
     expect(config.away_after_seconds.value).toBe(120)
-    // 300 grace + 180 reply + 60 installer headroom = 540, inside the 600s
-    // ceiling both harnesses kill a command hook at.
+    // Immediate escalation by default leaves the whole hook budget available
+    // for the reply wait. Users can still opt into a terminal-first grace.
     expect(config.hook_reply_timeout_seconds.value).toBe(180)
-    expect(config.ask_grace_seconds.value).toBe(300)
+    expect(config.ask_grace_seconds).toEqual({ value: 0, source: 'default' })
   })
 })
 
