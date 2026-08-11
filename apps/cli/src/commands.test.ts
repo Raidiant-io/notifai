@@ -550,6 +550,83 @@ describe('command contracts', () => {
     expect(sleeps).toEqual([250])
   })
 
+  /**
+   * NotifAI-fe5r: Provider Acceptance and Companion Receipt succeeded, then a
+   * long-poll returned HTTP 500 internal_error and the blocking wait aborted
+   * while the reply window was still open. The answer arrived ~1 minute later
+   * and was recovered only on the next turn. Transient server faults must not
+   * end the wait; permanent client errors still may.
+   */
+  it('keeps blocking through a transient internal_error on the replies poll', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let replyCalls = 0
+    const client = {
+      submit: async () => receipt,
+      replies: async () => {
+        replyCalls += 1
+        if (replyCalls <= 2) {
+          throw new ApiCallError(500, 'internal_error', 'An unexpected server error occurred.')
+        }
+        return replyResponse([reply])
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Question',
+        body: 'Deploy?',
+        reply: true,
+        replyTimeout: 30,
+      }),
+    ).toBe(EXIT.ok)
+    expect(replyCalls).toBe(3)
+    expect(io.outLines.at(-1)).toBe('reply from iPhone: yes, after the migration')
+    expect(io.errLines.join('\n')).not.toContain('internal_error')
+  })
+
+  it('does not treat a permanent replies error as a transient wait fault', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let replyCalls = 0
+    const client = {
+      submit: async () => receipt,
+      replies: async () => {
+        replyCalls += 1
+        throw new ApiCallError(404, 'not_found', 'No such request.')
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Question',
+        body: 'Deploy?',
+        reply: true,
+        replyTimeout: 30,
+      }),
+    ).toBe(EXIT.failed)
+    expect(replyCalls).toBe(1)
+    expect(io.errLines.join('\n')).toContain('reply wait failed')
+    expect(io.errLines.join('\n')).toContain(receipt.request_id)
+    expect(io.errLines.join('\n')).toContain('not_found')
+    // Receipt was already printed — the durable send is not the failure.
+    expect(io.outLines[0]).toContain(receipt.request_id)
+  })
+
   it('prints an NDJSON receipt before waiting and a result record on exit 3', async () => {
     const io = new CapturedIo()
     let now = 0
@@ -735,6 +812,8 @@ describe('delivery evidence status', () => {
     expect(said).toContain("Companion Receipt (the app's delivery confirmation): unknown")
     expect(said).toContain('not a failure')
     expect(said).toContain('attempt_started')
+    expect(said).toContain('OS presentation: not observed by Notifai')
+    expect(said).toContain('Reply wait:')
   })
 
   it('reports the observed device receipt and measured provider-to-companion latency', async () => {
@@ -752,6 +831,34 @@ describe('delivery evidence status', () => {
     const said = io.outLines.join('\n')
     expect(said).toContain("Companion Receipt (the app's delivery confirmation): observed")
     expect(said).toContain('11m 27s after Provider Acceptance')
+    expect(said).toContain('OS presentation: not observed by Notifai')
+    expect(said).toContain('Reply received: not yet recorded')
+    expect(said).toContain('Reply wait: no answer stored yet')
+  })
+
+  it('separates a stored reply from Delivery so a wait fault is not misread as non-delivery', async () => {
+    const io = new CapturedIo()
+    const base = snapshot({
+      state: 'observed',
+      observed_at: '2026-08-05T13:17:17.000Z',
+      latency_ms: 1_000,
+    })
+    base.deliveries[0]!.events.push({
+      stage: 'reply_received',
+      source: 'companion',
+      reason: null,
+      attempt: null,
+      occurred_at: '2026-08-05T13:18:00.000Z',
+    })
+    const client = { evidence: async () => base } as unknown as ApiClient
+
+    expect(await statusCommand(makeDeps(io, client), 'req_status_test', {})).toBe(EXIT.ok)
+    const said = io.outLines.join('\n')
+    expect(said).toContain('Provider Acceptance: accepted')
+    expect(said).toContain('Companion Receipt')
+    expect(said).toContain('OS presentation: not observed by Notifai')
+    expect(said).toContain('Reply received: yes')
+    expect(said).toContain('answers are on the server')
   })
 })
 
@@ -2178,7 +2285,9 @@ describe('an outage is not an answer', () => {
    * agent scripted to read exit 3 as "nobody objected" would proceed against a
    * refusal it never saw.
    */
-  function outageAfterFirstPoll(io: CapturedIo): CommandDeps {
+  function outageAfterFirstPoll(io: CapturedIo, fault: () => never = () => {
+    throw new NetworkError('link went down')
+  }): CommandDeps {
     let now = 0
     let polls = 0
     const client = {
@@ -2186,7 +2295,7 @@ describe('an outage is not an answer', () => {
       replies: async () => {
         polls += 1
         if (polls === 1) return replyResponse([])
-        throw new NetworkError('link went down')
+        fault()
       },
     } as unknown as ApiClient
     return {
@@ -2212,6 +2321,27 @@ describe('an outage is not an answer', () => {
     expect(exit).not.toBe(EXIT.noReply)
     expect(exit).toBe(EXIT.network)
     expect(io.errLines.join('\n')).toContain('could not find out')
+    expect(io.errLines.join('\n')).toContain(receipt.request_id)
+  })
+
+  it('treats a late internal_error outage the same as a network outage', async () => {
+    const io = new CapturedIo()
+    const exit = await sendCommand(
+      outageAfterFirstPoll(io, () => {
+        throw new ApiCallError(500, 'internal_error', 'An unexpected server error occurred.')
+      }),
+      {
+        title: 'Question',
+        body: 'Deploy to production?',
+        reply: true,
+        replyTimeout: 10,
+      },
+    )
+
+    expect(exit).not.toBe(EXIT.noReply)
+    expect(exit).toBe(EXIT.network)
+    expect(io.errLines.join('\n')).toContain('could not find out')
+    expect(io.errLines.join('\n')).toContain('Provider Acceptance')
   })
 
   it('marks the JSON so an agent reading it programmatically can tell', async () => {

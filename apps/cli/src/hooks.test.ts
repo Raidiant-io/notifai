@@ -17,7 +17,7 @@ import type {
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
-import type { ApiClient } from './client.js'
+import { ApiCallError, type ApiClient } from './client.js'
 import { EXIT, askCommand, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
 import { loadConfig, projectSessionPointerPath, sanitizeSessionId } from './config.js'
 import {
@@ -844,6 +844,85 @@ describe('several questions in flight', () => {
     expect(new Set(questions.map((s) => s.draft.delivery.collapse_key)).size).toBe(2)
     const live = readSessionState('multi1', h.env).pending
     expect(live?.map((entry) => entry.request_id)).toEqual(['req_hook_1', 'req_hook_2'])
+  })
+
+  /**
+   * NotifAI-fe5r AC2: a registered form/ask must become a durable server
+   * request at turn-end. Codex and Claude both enter through the same Stop
+   * handler; the harness flag only changes answer injection, not settlement.
+   */
+  it('settles a registered form into a durable request_id on the Codex Stop path', async () => {
+    const h = harness([], 900)
+    writeSessionState('codex-form', h.env, { last_prompt_at: AWAY })
+    expect(
+      askCommand(h.deps, undefined, {
+        session: 'codex-form',
+        form: JSON.stringify({
+          questions: [
+            { text: 'Start personally?', choices: ['Yes', 'No'] },
+            { text: 'Which region?', choices: ['US', 'EU'] },
+          ],
+        }),
+      }),
+    ).toBe(EXIT.ok)
+
+    // Registration alone must not submit; durability happens at turn-end.
+    expect(h.recorder.submitted).toEqual([])
+    expect(readSessionState('codex-form', h.env).pending?.[0]?.request_id).toBeUndefined()
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'codex-form' }),
+      'codex',
+    )
+
+    expect(h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')).toHaveLength(1)
+    const live = readSessionState('codex-form', h.env).pending
+    expect(live).toHaveLength(1)
+    expect(live?.[0]?.request_id).toBe('req_hook_1')
+    expect(live?.[0]?.questions).toHaveLength(2)
+    // Durable id is recoverable without the agent re-asking.
+    expect(h.io.errLines.join('\n')).toMatch(/req_hook_1|no answer in time|notifai replies/)
+  })
+
+  it('keeps a settled ask durable and collects the answer after a transient internal_error', async () => {
+    const h = harness([], 900)
+    let polls = 0
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async (requestId: string) => {
+          polls += 1
+          if (polls <= 2) {
+            throw new ApiCallError(500, 'internal_error', 'An unexpected server error occurred.')
+          }
+          return {
+            request_id: requestId,
+            reply_expires_at: null,
+            replies: [reply({ text: 'Yes — start personally' })],
+          } satisfies ListRepliesResponse
+        },
+      } as ApiClient
+    }
+    writeSessionState('recover-500', h.env, { last_prompt_at: AWAY })
+    registerQuestion('recover-500', h.env, { question: 'Start personally?' }, NOW - 300_000)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'recover-500' }), 'codex')
+
+    // Submit recorded the durable id before any wait; a 500 must not erase it
+    // mid-flight, and recovery must still surface the late answer.
+    const questions = h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')
+    expect(questions).toHaveLength(1)
+    expect(h.recorder.receipts[0]).toBe('req_hook_1')
+    expect(polls).toBeGreaterThanOrEqual(3)
+    expect(h.recorder.closed).toContain('req_hook_1')
+    expect(readSessionState('recover-500', h.env).pending).toBeUndefined()
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
+    expect(output.decision).toBe('block')
+    expect(output.reason).toContain('Yes — start personally')
   })
 
   it('resumes with every answer that arrived, each tied to its question', async () => {

@@ -561,32 +561,37 @@ export async function sendCommand(
   }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
   const idempotencyKey = flags.idempotencyKey ?? `cli-${randomBytes(12).toString('base64url')}`
+  let receipt: SubmissionReceipt
   try {
-    const receipt = await authed.client.submit(
+    receipt = await authed.client.submit(
       { idempotency_key: idempotencyKey, draft: build.draft },
       waitSeconds,
     )
-    const receiptExit = receiptExitCode(receipt)
-    if (!flags.json) deps.io.out(formatReceipt(receipt))
-    else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
+  } catch (err) {
+    return reportError(deps, err)
+  }
+  const receiptExit = receiptExitCode(receipt)
+  if (!flags.json) deps.io.out(formatReceipt(receipt))
+  else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
 
-    // A zero wait can no longer reach here: --reply guarantees a positive one.
-    if (!flags.reply || receiptExit !== EXIT.ok) {
-      if (flags.json) {
-        deps.io.out(
-          flags.reply
-            ? JSON.stringify({
-                type: 'reply_result',
-                request_id: receipt.request_id,
-                replies: [],
-                degraded: false,
-              })
-            : JSON.stringify(receipt, null, 2),
-        )
-      }
-      return receiptExit
+  // A zero wait can no longer reach here: --reply guarantees a positive one.
+  if (!flags.reply || receiptExit !== EXIT.ok) {
+    if (flags.json) {
+      deps.io.out(
+        flags.reply
+          ? JSON.stringify({
+              type: 'reply_result',
+              request_id: receipt.request_id,
+              replies: [],
+              degraded: false,
+            })
+          : JSON.stringify(receipt, null, 2),
+      )
     }
+    return receiptExit
+  }
 
+  try {
     const result = await waitForReply(authed.client, receipt.request_id, {
       timeoutSeconds: replyTimeout,
       afterSeq: 0,
@@ -605,17 +610,34 @@ export async function sendCommand(
     } else if (result.response.replies.length > 0) printReplies(deps, result.response.replies)
     else printNoReply(deps, receipt.request_id, result.response.reply_expires_at)
     if (result.degraded) {
-      deps.io.err(DEGRADED_WAIT_WARNING)
+      deps.io.err(degradedWaitWarning(receipt.request_id))
       return EXIT.network
     }
     if (result.timedOut) {
       deps.io.err(
         `No reply yet. Retrieve it with \`notifai replies ${receipt.request_id}\` or retire the question with ` +
-          `\`notifai close ${receipt.request_id}\`.`,
+          `\`notifai close ${receipt.request_id}\`. ` +
+          `This is a reply-wait timeout, not a Delivery or Companion Receipt failure — check with \`notifai status ${receipt.request_id}\`.`,
       )
     }
     return result.timedOut ? EXIT.noReply : EXIT.ok
   } catch (err) {
+    // Receipt already printed; a wait fault must not read as "send failed".
+    // Permanent poll errors (auth, closed window, not found) still surface, but
+    // always name the durable request and point at recovery.
+    if (err instanceof ApiCallError || err instanceof NetworkError) {
+      deps.io.err(
+        `notifai: reply wait failed for ${receipt.request_id} (${err instanceof ApiCallError ? err.code : 'network'}: ${err.message}). ` +
+          `Delivery and Companion Receipt are independent — check with \`notifai status ${receipt.request_id}\` and retry with \`notifai replies ${receipt.request_id}\`.`,
+      )
+      if (err instanceof ApiCallError) {
+        if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth
+        return err.status >= 500 || err.status === 429 || err.status === 408
+          ? EXIT.network
+          : EXIT.failed
+      }
+      return EXIT.network
+    }
     return reportError(deps, err)
   }
 }
@@ -739,7 +761,8 @@ export async function repliesCommand(
       deps.io.out(JSON.stringify(jsonBodies.length === 1 ? jsonBodies[0] : jsonBodies, null, 2))
     }
     if (anyDegraded) {
-      deps.io.err(DEGRADED_WAIT_WARNING)
+      // Prefer the first id for the recovery hint; --pending may list several.
+      deps.io.err(degradedWaitWarning(requestIds[0]!))
       return EXIT.network
     }
     if (anyReplies) return EXIT.ok
@@ -766,6 +789,25 @@ interface ReplyWaitResult {
   degraded: boolean
 }
 
+/**
+ * Whether a replies-poll failure is temporary and the durable request is still
+ * live. A 500 from a long-poll (or a transport blip) must not end a blocking
+ * wait: the request was already accepted, and a later poll can still collect
+ * the answer. Permanent client errors (auth, not found, closed window) are
+ * not recoverable by retrying.
+ *
+ * Incident NotifAI-fe5r: wait aborted on `internal_error` while Provider
+ * Acceptance and Companion Receipt were fine and the reply landed ~1 minute
+ * later. Only NetworkError was retried; HTTP 5xx was not.
+ */
+export function isRetryableReplyPollError(err: unknown): boolean {
+  if (err instanceof NetworkError) return true
+  if (!(err instanceof ApiCallError)) return false
+  if (err.status >= 500) return true
+  if (err.status === 429 || err.status === 408) return true
+  return false
+}
+
 /** Loop over server-capped long polls until a reply arrives or the caller's deadline passes. */
 export async function waitForReply(
   client: ApiClient,
@@ -776,8 +818,8 @@ export async function waitForReply(
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   const deadline = now() + options.timeoutSeconds * 1000
   let lastResponse: ListRepliesResponse | null = null
-  let lastNetworkError: NetworkError | null = null
-  let consecutiveNetworkErrors = 0
+  let lastTransientError: Error | null = null
+  let consecutiveTransientErrors = 0
   let firstPoll = true
 
   while (firstPoll || now() < deadline) {
@@ -790,24 +832,31 @@ export async function waitForReply(
         afterSeq: options.afterSeq,
       })
       lastResponse = response
-      lastNetworkError = null
-      consecutiveNetworkErrors = 0
+      lastTransientError = null
+      consecutiveTransientErrors = 0
       if (response.replies.length > 0) return { response, timedOut: false, degraded: false }
 
       const pauseMs = Math.min(250, Math.max(0, deadline - now()))
       if (pauseMs > 0) await sleep(pauseMs)
     } catch (err) {
-      if (!(err instanceof NetworkError)) throw err
-      lastNetworkError = err
-      consecutiveNetworkErrors += 1
+      if (!isRetryableReplyPollError(err)) throw err
+      lastTransientError = err instanceof Error ? err : new Error(String(err))
+      consecutiveTransientErrors += 1
       const remainingAfterError = Math.max(0, deadline - now())
       if (remainingAfterError === 0) break
-      const backoffMs = Math.min(250 * 2 ** (consecutiveNetworkErrors - 1), 2_000, remainingAfterError)
+      const backoffMs = Math.min(
+        250 * 2 ** (consecutiveTransientErrors - 1),
+        2_000,
+        remainingAfterError,
+      )
       await sleep(backoffMs)
     }
   }
 
-  if (!lastResponse && lastNetworkError) throw lastNetworkError
+  // Never saw a successful poll: surface the fault so callers get EXIT.network
+  // rather than a fake empty silence. The durable request is still on the
+  // server; the typed recovery is `notifai replies <id>`.
+  if (!lastResponse && lastTransientError) throw lastTransientError
   return {
     response:
       lastResponse ??
@@ -816,7 +865,7 @@ export async function waitForReply(
     // A poll succeeded at some point, so we do not throw — but the last thing
     // we know is that we could not reach the server. Reporting that as a plain
     // "no reply" would let an agent treat an unseen refusal as consent.
-    degraded: lastNetworkError !== null,
+    degraded: lastTransientError !== null,
   }
 }
 
@@ -824,11 +873,18 @@ export async function waitForReply(
  * Shared by every surface that waits: "the user did not answer" and "I could
  * not find out" must not look the same, because agents branch on the exit code
  * and one of those two branches is safe to proceed from.
+ *
+ * Delivery / Companion Receipt / OS presentation are separate facts — a wait
+ * fault is not evidence that the push failed.
  */
-const DEGRADED_WAIT_WARNING =
-  'notifai: the wait ended during a network outage, so this is "could not find out", ' +
-  'not "no answer" — the reply may already be waiting. Retry with `notifai replies <id>`.'
-
+function degradedWaitWarning(requestId: string): string {
+  return (
+    `notifai: the wait for ${requestId} ended while the server was unreachable or faulting, ` +
+    `so this is "could not find out", not "no answer" — the request is still durable and the ` +
+    `reply may already be waiting (Provider Acceptance and Companion Receipt are independent). ` +
+    `Retry with \`notifai replies ${requestId}\`.`
+  )
+}
 function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0
 }
@@ -891,6 +947,7 @@ export async function statusCommand(
       return EXIT.ok
     }
     deps.io.out(`request ${snapshot.request_id} (${snapshot.event ?? 'no event'}) — ${snapshot.overall}`)
+    let anyReplyReceived = false
     for (const d of snapshot.deliveries) {
       deps.io.out(`  ${d.device_name}:`)
       deps.io.out(`    Delivery: ${d.state} after ${d.attempts} attempt(s)`)
@@ -908,10 +965,27 @@ export async function statusCommand(
           "    Companion Receipt (the app's delivery confirmation): unknown — not observed; this is not a failure or proof of non-receipt",
         )
       }
+      // Notifai never learns whether the OS painted a banner; saying so stops
+      // a reply-wait fault from being misread as "the phone never showed it".
+      deps.io.out(
+        '    OS presentation: not observed by Notifai — Provider Acceptance and Companion Receipt do not prove a banner was shown',
+      )
+      const replyEvent = d.events.find((e) => e.stage === 'reply_received')
+      if (replyEvent) {
+        anyReplyReceived = true
+        deps.io.out(`    Reply received: yes (first at ${replyEvent.occurred_at})`)
+      } else {
+        deps.io.out('    Reply received: not yet recorded on this delivery')
+      }
       for (const e of d.events) {
         deps.io.out(`      ${e.occurred_at}  ${e.stage}${e.reason ? ` (${e.reason})` : ''}`)
       }
     }
+    deps.io.out(
+      anyReplyReceived
+        ? `  Reply wait: answers are on the server — collect with \`notifai replies ${snapshot.request_id}\` (a local wait fault does not erase them)`
+        : `  Reply wait: no answer stored yet — a blocking wait failure is independent of Delivery above; retry with \`notifai replies ${snapshot.request_id}\``,
+    )
     return EXIT.ok
   } catch (err) {
     return reportError(deps, err)
