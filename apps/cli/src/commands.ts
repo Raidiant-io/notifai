@@ -93,6 +93,7 @@ import {
   buildCursorHookConfig,
   buildHookConfig,
   codexLayerDir,
+  codexTrustProblems,
   codexProjectRoot,
   detectHarness,
   findInstallations,
@@ -1581,6 +1582,20 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
       for (const line of diagnoseActiveHarnessSession(active, 'different-session', installations)) {
         deps.io.err(line)
       }
+      return EXIT.usage
+    }
+    const activeInstallations = installations.filter(
+      (installation) => installation.harness === active.harness,
+    )
+    const trustProblems = codexTrustProblems(activeInstallations, deps.env)
+    if (trustProblems.length > 0) {
+      for (const problem of trustProblems) deps.io.err(`Question routing is not ready: ${problem}`)
+      return EXIT.usage
+    }
+    if (readSessionState(projectPointer.sessionId, deps.env).last_stop_at === undefined) {
+      deps.io.err(
+        `Question routing is not ready: this ${active.label} session has fired UserPromptSubmit, but its Stop hook has not been observed. End one harmless turn, send a new prompt, then run \`notifai doctor\`.`,
+      )
       return EXIT.usage
     }
     sessionId = projectPointer.sessionId
@@ -4013,6 +4028,24 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
+  const trustProblems = codexTrustProblems(installations, deps.env)
+  checks.push({
+    name: 'hooks (trust)',
+    ok: trustProblems.length === 0,
+    detail:
+      trustProblems.length === 0
+        ? 'every installed Codex handler matches its approved definition'
+        : trustProblems.join('; '),
+    ...(trustProblems.length === 0
+      ? {}
+      : {
+          remedy: {
+            summary: 'open `/hooks` in Codex and approve the changed Notifai handlers',
+            command: '/hooks',
+          },
+        }),
+  })
+
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const requiredTimeout = blockingHookTimeoutSeconds(
     config.ask_grace_seconds.value,
@@ -4066,23 +4099,31 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   const firedPointer = readProjectSessionPointer(deps.cwd, deps.env, (deps.now ?? Date.now)())
-  const fired = firedPointer !== null
+  const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
+  const promptFired = firedState?.last_prompt_at !== undefined
+  const stopFired = firedState?.last_stop_at !== undefined
+  const fired = firedPointer !== null && promptFired && stopFired
   const activationInstallations =
     active !== null && activeInstallations.length > 0 ? activeInstallations : installations
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
-    // Never-fired is evidence about the past, not a fault in the setup, and
-    // the cure is a prompt no command can send.
-    informational: true,
+    // A wholly fresh install is informational. Once UserPromptSubmit has fired,
+    // a missing Stop is a broken route, not missing historical evidence.
+    informational: firedPointer === null,
     detail: fired
-      ? 'a session in this directory has run them'
-      : `no session pointer from the last 24 hours — ${hookActivationAdvice(activationInstallations)}`,
+      ? 'a session in this directory has run UserPromptSubmit and Stop'
+      : firedPointer === null
+        ? `no session pointer from the last 24 hours — ${hookActivationAdvice(activationInstallations)}`
+        : `the routed session has fired ${promptFired ? 'UserPromptSubmit' : 'neither required event'}, but Stop has not been observed — end one harmless turn, send a new prompt, then check again`,
     ...(fired
       ? {}
       : {
           remedy: {
-            summary: 'send one prompt in a session here, then re-check',
+            summary:
+              firedPointer === null
+                ? 'send one prompt in a session here, then re-check'
+                : 'end one harmless turn, send a new prompt, then re-check',
             command: 'notifai doctor',
           },
         }),

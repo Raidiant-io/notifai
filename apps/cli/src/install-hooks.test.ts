@@ -27,6 +27,9 @@ import {
   codexLayerDir,
   codexProjectRoot,
   findInstallations,
+  codexHookIdentityHash,
+  codexTrustKey,
+  codexTrustProblems,
   handlerEvent,
   hookCommand,
   mergeHooks,
@@ -83,12 +86,14 @@ describe('hook config', () => {
     expect(hookCommand('/usr/bin/node', "/it's/here.js", 'stop')).toContain(`'/it'\\''s/here.js'`)
   })
 
-  it('gives blocking hooks headroom over our own wait, and SessionEnd almost none', () => {
-    const config = buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 240, graceSeconds: 0 })
-    expect(config['Stop']?.[0]?.hooks[0]?.timeout).toBe(300)
+  it('keeps the blocking hook identity stable when question timing preferences change', () => {
+    const immediate = buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 240, graceSeconds: 0 })
+    const delayed = buildHookConfig({ execPath: EXEC, scriptPath: SCRIPT, replyTimeoutSeconds: 120, graceSeconds: 300 })
+    expect(immediate['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
+    expect(delayed['Stop']).toEqual(immediate['Stop'])
     // Claude Code caps UserPromptSubmit at 30s; Codex gives SessionEnd 1-3s.
-    expect(config['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
-    expect(config['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
+    expect(immediate['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
+    expect(immediate['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
   })
 
   it('stamps the exact harness on every generated command', () => {
@@ -134,7 +139,7 @@ describe('merging into existing settings', () => {
       SCRIPT,
     )
     expect(twice.document.hooks?.['Stop']).toHaveLength(1)
-    expect(twice.document.hooks?.['Stop']?.[0]?.hooks[0]?.timeout).toBe(120)
+    expect(twice.document.hooks?.['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
     expect(twice.replaced).toContain('Stop')
   })
 
@@ -395,6 +400,45 @@ describe('finding what is installed', () => {
     // worth detecting.
     expect(handlerEvent(hookCommand(EXEC, SCRIPT, 'permission-request'))).toBe('permission-request')
     expect(handlerEvent('unrelated --tool')).toBeNull()
+  })
+
+  it('detects when Codex still trusts an older definition of an installed hook', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-trust-'))
+    const codexHome = path.join(cwd, 'codex-home')
+    const hookFile = path.join(cwd, '.codex', 'hooks.json')
+    mkdirSync(path.dirname(hookFile), { recursive: true })
+    applyPlan(hookFile, { hooks: ours() })
+    const installations = findInstallations(cwd, { CODEX_HOME: codexHome })
+    const codex = installations.find((installation) => installation.harness === 'codex')
+    const stop = codex?.handlers.find((handler) => handler.event === 'Stop')
+    expect(stop).toBeDefined()
+
+    mkdirSync(codexHome, { recursive: true })
+    writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "sha256:obsolete"\n`,
+    )
+
+    const stale = codexTrustProblems(installations, { CODEX_HOME: codexHome })
+    expect(stale).toHaveLength(3)
+    expect(stale).toEqual(expect.arrayContaining([expect.stringMatching(/Stop.*changed.*\/hooks/i)]))
+
+    writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\n`,
+    )
+    expect(codexTrustProblems(installations, { CODEX_HOME: codexHome })).toEqual([
+      expect.stringMatching(/UserPromptSubmit.*not trusted.*\/hooks/i),
+      expect.stringMatching(/SessionEnd.*not trusted.*\/hooks/i),
+    ])
+
+    writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\nenabled = false\n`,
+    )
+    expect(codexTrustProblems(installations, { CODEX_HOME: codexHome })).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Stop.*disabled.*\/hooks/i)]),
+    )
   })
 
 })

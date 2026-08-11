@@ -40,7 +40,13 @@ import {
   type CommandIo,
   type CommandSpinner,
 } from './commands.js'
-import { applyPlan, buildHookConfig } from './install-hooks.js'
+import {
+  applyPlan,
+  buildHookConfig,
+  codexHookIdentityHash,
+  codexTrustKey,
+  findInstallations,
+} from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig } from './config.js'
@@ -122,6 +128,21 @@ class InteractiveIo extends CapturedIo {
   async check(ok: boolean, message: string, tone?: Tone) {
     this.checks.push({ ok, message, ...(tone === undefined ? {} : { tone }) })
   }
+}
+
+function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
+  const installations = findInstallations(cwd, env).filter(
+    (installation) => installation.harness === 'codex',
+  )
+  const sections = installations.flatMap((installation) =>
+    installation.handlers.map((handler) => {
+      const key = codexTrustKey(installation, handler)
+      return `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`
+    }),
+  )
+  const codexHome = env['CODEX_HOME'] as string
+  mkdirSync(codexHome, { recursive: true })
+  writeFileSync(path.join(codexHome, 'config.toml'), sections.join('\n'))
 }
 
 function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
@@ -1046,7 +1067,7 @@ describe('harness activation guidance', () => {
     expect(io.outLines.join('\n')).toContain('next user prompt')
     const pluginFile = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
-    expect(plugin).toContain('const TIMEOUT_MS = 240000')
+    expect(plugin).toContain('const TIMEOUT_MS = 540000')
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
@@ -2631,7 +2652,8 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('codex-current-thread', env, { last_prompt_at: 42 })
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
@@ -2639,6 +2661,39 @@ describe('asking before the hooks have ever run', () => {
     expect(io.outLines).toContain(
       'Question registered. Ask it in the conversation as usual and end your turn.',
     )
+  })
+
+  it('refuses a Codex question when the installed Stop definition is no longer trusted', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-stale-trust-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    const stop = findInstallations(cwd, env)
+      .find((installation) => installation.harness === 'codex')
+      ?.handlers.find((handler) => handler.event === 'Stop')
+    expect(stop).toBeDefined()
+    const configFile = path.join(env.CODEX_HOME, 'config.toml')
+    writeFileSync(
+      configFile,
+      readFileSync(configFile, 'utf8').replace(codexHookIdentityHash(stop!), 'sha256:obsolete'),
+    )
+    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/Stop.*changed since it was trusted.*\/hooks/is)
+
+    io.outLines = []
+    await doctorCommand(deps, {})
+    expect(io.outLines.join('\n')).toMatch(/FAIL\s+hooks \(trust\).*Stop/is)
   })
 
   it('gives doctor the same active-Codex diagnosis as ask', async () => {
@@ -2724,12 +2779,39 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    writeSessionState('claude-parent-loop', env, { last_prompt_at: 42 })
+    writeSessionState('claude-parent-loop', env, { last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-parent-loop', 42, 'claude-code')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(readSessionState('claude-parent-loop', env).pending?.[0]?.question).toBe('Ship it?')
+  })
+
+  it('does not let UserPromptSubmit alone count as a working turn-end route', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-prompt-only-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('claude-current', env, { last_prompt_at: 42 })
+    writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/Stop hook has not been observed/)
+
+    const readiness = await assessReadiness(deps)
+    const fired = readiness.states.find((state) => state.id === 'hooks-fired')
+    expect(fired?.status).toBe('gap')
+    expect(fired?.detail).toMatch(/UserPromptSubmit.*Stop has not been observed/)
   })
 
   it('uses the OpenCode adapter marker instead of its config-directory variable', () => {
@@ -2762,7 +2844,7 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('cursor-live', env, { last_prompt_at: 42 })
+    writeSessionState('cursor-live', env, { last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'cursor-live', 42, 'cursor')
     io.outLines = []
 
@@ -2845,7 +2927,7 @@ describe('asking before the hooks have ever run', () => {
     expect(said).toContain('hook_reply_timeout_seconds=120 (project-local:')
   })
 
-  it('fails doctor when runtime waits outgrow an installed Stop timeout', async () => {
+  it('keeps an installed Stop timeout valid when runtime timing preferences change', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-timeout-drift-'))
     const io = new CapturedIo()
     const env = { XDG_STATE_HOME: path.join(cwd, 'state'), CLAUDE_CONFIG_DIR: path.join(cwd, 'claude') }
@@ -2857,9 +2939,9 @@ describe('asking before the hooks have ever run', () => {
     writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 400\n')
     io.outLines = []
 
-    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toMatch(/FAIL\s+hooks \(timeout\)/)
-    expect(io.outLines.join('\n')).toContain('notifai hooks install --harness claude-code')
+    await doctorCommand(deps, {})
+    expect(io.outLines.join('\n')).toMatch(/ok\s+hooks \(timeout\)/)
+    expect(io.outLines.join('\n')).toContain('installed Stop timeouts cover the current 540s')
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {

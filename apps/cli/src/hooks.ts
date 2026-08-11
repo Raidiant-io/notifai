@@ -59,6 +59,8 @@ export interface HookEnvelope {
 export interface SessionState {
   /** Epoch ms of the user's last prompt in this session — our presence signal. */
   last_prompt_at?: number
+  /** Epoch ms of the last observed Stop hook, distinct from prompt routing. */
+  last_stop_at?: number
   /**
    * Questions registered by `notifai ask`, in registration order, each
    * awaiting escalation or its answer. A list, deliberately: registering a
@@ -1311,7 +1313,8 @@ export async function handleUserPromptSubmit(
   // the gap after erasing the only request/collapse/device identifiers.
   updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
-    for (const entry of pendingList(current)) {
+    const unasked = pendingList(current).filter((entry) => entry.request_id === undefined)
+    for (const entry of pendingList(current).filter((entry) => entry.request_id !== undefined)) {
       const retirement = retiringQuestion(entry, 'answered_elsewhere')
       if (
         retirement !== null &&
@@ -1320,7 +1323,12 @@ export async function handleUserPromptSubmit(
         retiring.push(retirement)
       }
     }
-    return { last_prompt_at: ctx.now(), ...(retiring.length > 0 ? { retiring } : {}) }
+    return {
+      last_prompt_at: ctx.now(),
+      ...(current.last_stop_at === undefined ? {} : { last_stop_at: current.last_stop_at }),
+      ...(unasked.length > 0 ? { pending: unasked } : {}),
+      ...(retiring.length > 0 ? { retiring } : {}),
+    }
   })
   // The bridge that lets a plain `notifai ask` find the hook's canonical
   // session: an agent shell command gets no hook payload, and not every
@@ -1366,6 +1374,14 @@ export async function handleStop(ctx: HookContext, envelope: HookEnvelope): Prom
     gate(ctx, 'held', 'no-session')
     return { notes }
   }
+
+  // This event marker is diagnostic evidence in its own right. Record it
+  // before every early return so doctor can distinguish a working Stop route
+  // from the prompt-only state that previously looked healthy.
+  updateSessionState(sessionId, ctx.env, (current) => ({
+    ...current,
+    last_stop_at: ctx.now(),
+  }))
 
   // Anything retired since the last hook is still live on the devices. This
   // runs before every early return below, including the nagging guard: a queued

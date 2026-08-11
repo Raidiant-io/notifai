@@ -1513,6 +1513,15 @@ describe('user-prompt-submit hook', () => {
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
   })
 
+  it('records Stop separately so a prompt hook cannot impersonate turn-end routing', async () => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'events' }))
+    expect(readSessionState('events', h.env).last_stop_at).toBeUndefined()
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'events' }))
+    expect(readSessionState('events', h.env).last_stop_at).toBe(NOW)
+  })
+
   it('diagnoses partial production input as malformed or truncated', async () => {
     const h = harness()
     const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
@@ -1598,8 +1607,9 @@ describe('user-prompt-submit hook', () => {
       'claude-code',
     )
 
-    // The delivered question retires truthfully; the never-delivered second
-    // one has nothing on any device and leaves no trace.
+    // The delivered question retires truthfully. The never-delivered second
+    // one must remain queued: if Codex skipped Stop, erasing it here loses the
+    // only copy before it ever reached a device.
     const retirement = h.recorder.submitted.find(
       (submission) => submission.draft.event === 'question_retired',
     )?.draft
@@ -1616,6 +1626,12 @@ describe('user-prompt-submit hook', () => {
     expect(
       h.recorder.submitted.filter((s) => s.draft.event === 'question_retired'),
     ).toHaveLength(1)
+    expect(readSessionState('transition', h.env).pending?.map((entry) => entry.question)).toEqual([
+      'Deploy it?',
+    ])
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
+    expect(readSessionState('transition', h.env).pending?.[0]?.request_id).toBe('req_hook_1')
   })
 
   it('retires a question a real timed-out Stop left live on the devices', async () => {

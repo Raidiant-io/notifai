@@ -190,8 +190,9 @@ const DEFAULTS = {
   // grace and presence gating remain independent opt-in controls.
   require_idle: false,
   away_after_seconds: 120,
-  // 0 grace + 180 reply + the installer's 60s headroom = 240, inside the 600s
-  // command-hook ceiling both harnesses enforce.
+  // Runtime waits stay inside a 480s budget. The installed Stop timeout is a
+  // preference-stable 540s, leaving 60s teardown headroom without invalidating
+  // Codex trust whenever one of these values changes.
   hook_reply_timeout_seconds: 180,
   ask_grace_seconds: 0,
   // On by default: the log is the only account of what a headless hook did, and

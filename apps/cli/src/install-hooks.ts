@@ -1,10 +1,13 @@
 import {
   existsSync,
   readFileSync,
+  realpathSync,
   statSync,
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
 
@@ -39,6 +42,8 @@ export interface HookHandler {
   type: 'command'
   command: string
   timeout?: number
+  async?: boolean
+  statusMessage?: string
 }
 
 export interface HookGroup {
@@ -112,11 +117,22 @@ export interface BuildOptions {
 }
 
 /** Command-hook harnesses kill at 600s; generated adapters use the same safe ceiling. */
-const HOOK_CEILING_SECONDS = 590
+const HOOK_CEILING_SECONDS = 540
 
-/** Grace, reply wait, and teardown headroom for any blocking turn-end adapter. */
-export function blockingHookTimeoutSeconds(graceSeconds: number, replyTimeoutSeconds: number): number {
-  return Math.min(HOOK_CEILING_SECONDS, graceSeconds + replyTimeoutSeconds + 60)
+/**
+ * Stable process budget for a blocking turn-end adapter.
+ *
+ * Codex trusts the exact serialized hook definition. Deriving this timeout
+ * from mutable question preferences meant changing `ask_grace_seconds`
+ * silently invalidated Stop trust while the other two handlers kept running.
+ * The runtime already fits grace and reply waiting inside the harness ceiling;
+ * the installed identity therefore stays at that ceiling across preferences.
+ */
+export function blockingHookTimeoutSeconds(
+  _graceSeconds: number,
+  _replyTimeoutSeconds: number,
+): number {
+  return HOOK_CEILING_SECONDS
 }
 
 export function buildHookConfig(options: BuildOptions): HookConfig {
@@ -588,6 +604,8 @@ export interface InstalledHandler {
   command: string
   /** Declared process lifetime, used to detect config/install drift. */
   timeout?: number
+  async?: boolean
+  statusMessage?: string
 }
 
 export interface Installation {
@@ -597,6 +615,105 @@ export interface Installation {
   handlers: InstalledHandler[]
   /** Structural defects that require reinstalling this generated adapter. */
   problems?: string[]
+}
+
+/** Codex's canonical event spelling inside its persisted trust keys. */
+function codexEventName(event: string): string {
+  return event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+}
+
+/** Recursively sort object keys before hashing, matching Codex's canonical JSON. */
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue)
+  if (typeof value !== 'object' || value === null) return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalValue(child)]),
+  )
+}
+
+/** The exact identity Codex compares with `hooks.state.*.trusted_hash`. */
+export function codexHookIdentityHash(handler: InstalledHandler): string {
+  const command = {
+    type: 'command',
+    command: handler.command,
+    timeout: Math.max(1, handler.timeout ?? 600),
+    async: handler.async ?? false,
+    ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
+  }
+  const normalized = canonicalValue({
+    event_name: codexEventName(handler.event),
+    hooks: [command],
+  })
+  return `sha256:${createHash('sha256').update(JSON.stringify(normalized)).digest('hex')}`
+}
+
+function codexTrustState(env: NodeJS.ProcessEnv): Record<string, unknown> {
+  const file = path.join(configHome(env, 'CODEX_HOME', '.codex'), 'config.toml')
+  if (!existsSync(file)) return {}
+  try {
+    const parsed = parseToml(readFileSync(file, 'utf8')) as Record<string, unknown>
+    const hooks = parsed['hooks']
+    if (typeof hooks !== 'object' || hooks === null) return {}
+    const state = (hooks as Record<string, unknown>)['state']
+    return typeof state === 'object' && state !== null ? state as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Codex's canonical persisted key for one installed handler. */
+export function codexTrustKey(
+  installation: Installation,
+  handler: InstalledHandler,
+): string {
+  let source = installation.file
+  try {
+    source = path.join(realpathSync(path.dirname(source)), path.basename(source))
+  } catch {
+    // Codex falls back to the logical source path when canonicalization fails,
+    // so the diagnostic must do the same.
+  }
+  return `${source}:${codexEventName(handler.event)}:${handler.groupIndex}:${handler.handlerIndex}`
+}
+
+/**
+ * Trust defects that make installed Codex handlers look present while Codex
+ * skips them. Trust is user-owned; the supported repair is Codex's `/hooks`
+ * review UI, never writing the trust store on the user's behalf.
+ */
+export function codexTrustProblems(
+  installations: Installation[],
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const state = codexTrustState(env)
+  return installations
+    .filter((installation) => installation.harness === 'codex')
+    .flatMap((installation) =>
+      installation.handlers.flatMap((handler) => {
+        const key = codexTrustKey(installation, handler)
+        const entry = state[key]
+        const trustedHash =
+          typeof entry === 'object' && entry !== null
+            ? (entry as Record<string, unknown>)['trusted_hash']
+            : undefined
+        const currentHash = codexHookIdentityHash(handler)
+        if (
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as Record<string, unknown>)['enabled'] === false
+        ) {
+          return [
+            `${handler.event} in ${installation.file} is disabled in Codex; open \`/hooks\` and enable the Notifai handler`,
+          ]
+        }
+        if (trustedHash === currentHash) return []
+        return [
+          `${handler.event} in ${installation.file} is ${typeof trustedHash === 'string' ? 'changed since it was trusted' : 'not trusted'}; open \`/hooks\` in Codex and approve the Notifai handler`,
+        ]
+      }),
+    )
 }
 
 /**
@@ -715,6 +832,8 @@ function locateHandlers(document: SettingsDocument): InstalledHandler[] {
             handlerIndex,
             command: handler.command,
             ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
+            ...(handler.async === undefined ? {} : { async: handler.async }),
+            ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
           })
         }
       })

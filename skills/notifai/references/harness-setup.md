@@ -17,16 +17,19 @@ harness needs its own installed hook and a current session pointer.
 
 Before the first `notifai ask` in a new harness session, `doctor` must name the
 active harness under **Question routing** and report under **hooks (fired)**
-that a session in this directory ran the hooks. The check is fail-closed against
-the exact active session identity where the harness exports one. Do not invent
-`--session` to bypass it.
+that a session in this directory ran both UserPromptSubmit and Stop. For Codex,
+**hooks (trust)** must also pass. The check is fail-closed against the exact
+active session identity where the harness exports one. Do not invent `--session`
+to bypass it.
 
 ## Activation by harness
 
 - **Claude Code:** project hook files reload without a restart. Send one new
   prompt so the hook publishes the session pointer, then run `notifai doctor`.
-- **Codex:** run `notifai hooks install --harness codex`, send one new prompt,
-  then run `notifai doctor`. Codex resolves project hooks from the main
+- **Codex:** run `notifai hooks install --harness codex`, end one harmless turn,
+  send one new prompt, then run `notifai doctor`. If **hooks (trust)** fails,
+  open `/hooks` in Codex and approve or enable the Notifai handlers. Codex
+  resolves project hooks from the main
   repository. In a linked worktree, the installer writes the shared file to
   the main checkout and creates the project-layer `.codex` directory in the
   current worktree; run it once in each new worktree.

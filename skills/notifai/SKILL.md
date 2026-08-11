@@ -224,9 +224,10 @@ at once; past that, consolidate with `--form`.
 
 Before the first `ask` in a harness session, require `doctor`'s **Question
 routing** line to name the active harness and **hooks (fired)** to confirm that
-a session in this directory ran them. Follow its exact recovery if either check
-fails; do not register the question yet. Then ask the same question in the
-conversation and stop working so the user can decide.
+a session in this directory ran both UserPromptSubmit and Stop. On Codex,
+**hooks (trust)** must also pass. Follow the exact recovery if any check fails;
+do not register the question yet. Then ask the same question in the conversation
+and stop working so the user can decide.
 
 By default, a question reaches answerable devices immediately when the agent
 turn ends, whether or not the user is active at the machine. A user may set a
