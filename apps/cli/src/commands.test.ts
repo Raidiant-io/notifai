@@ -932,6 +932,82 @@ describe('command contracts', () => {
       })
     }
   })
+
+  it('records earlier degraded requests before a later pending wait throws', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let degradedPolls = 0
+    const client = {
+      replies: async (requestId: string) => {
+        if (requestId === 'req_success') return replyResponse([reply])
+        if (requestId === 'req_degraded') {
+          degradedPolls += 1
+          if (degradedPolls === 1) return replyResponse([])
+          throw new NetworkError('temporary disconnect')
+        }
+        if (requestId === 'req_failed') {
+          throw new ApiCallError(404, 'not_found', 'That notification request does not exist.')
+        }
+        return replyResponse([reply])
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pending-mixed-log-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    deps.now = () => now
+    deps.sleep = async (milliseconds: number) => {
+      now += milliseconds
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'replies' })
+    writeSessionState('pending-mixed-log', deps.env, {
+      pending: [
+        { question: 'Healthy?', request_id: 'req_success' },
+        { question: 'Degraded?', request_id: 'req_degraded' },
+        { question: 'Gone?', request_id: 'req_failed' },
+        { question: 'Unreached?', request_id: 'req_unreached' },
+      ],
+    })
+    writeProjectSession(root, deps.env, 'pending-mixed-log', Date.now(), 'codex')
+
+    expect(await repliesCommand(deps, undefined, { pending: true, wait: 1 })).toBe(EXIT.failed)
+
+    const recordsFor = (requestId: string): Array<Record<string, unknown>> => {
+      io.outLines = []
+      io.errLines = []
+      expect(logsCommand(deps, { request: requestId, json: true, allProjects: true })).toBe(
+        EXIT.ok,
+      )
+      return io.outLines.map((line) => JSON.parse(line) as Record<string, unknown>)
+    }
+
+    expect(recordsFor('req_success')).toEqual([
+      expect.objectContaining({
+        event: 'reply.received',
+        data: expect.objectContaining({ request_id: 'req_success' }),
+      }),
+    ])
+    expect(recordsFor('req_degraded')).toEqual([
+      expect.objectContaining({
+        event: 'cli.error',
+        data: expect.objectContaining({
+          request_ids: ['req_degraded'],
+          operation: 'reply_wait',
+          degraded: true,
+        }),
+      }),
+    ])
+    expect(recordsFor('req_failed')).toEqual([
+      expect.objectContaining({
+        event: 'cli.error',
+        data: expect.objectContaining({ request_id: 'req_failed', operation: 'reply_wait' }),
+      }),
+    ])
+    expect(recordsFor('req_unreached')).toEqual([])
+  })
 })
 
 describe('delivery evidence status', () => {

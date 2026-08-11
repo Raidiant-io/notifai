@@ -855,6 +855,7 @@ export async function repliesCommand(
         if (result.degraded) degradedRequestIds.push(requestId)
         allTimedOut &&= result.timedOut
       } catch (err) {
+        recordDegradedReplyWaits(deps, degradedRequestIds)
         return reportError(deps, err, { operation: 'reply_wait', request_id: requestId })
       }
     }
@@ -864,13 +865,7 @@ export async function repliesCommand(
       deps.io.out(JSON.stringify(jsonBodies.length === 1 ? jsonBodies[0] : jsonBodies, null, 2))
     }
     if (degradedRequestIds.length > 0) {
-      log(deps).error('cli.error', {
-        kind: 'network',
-        operation: 'reply_wait',
-        request_ids: degradedRequestIds,
-        degraded: true,
-        message: 'the reply wait ended while the server was unreachable or faulting',
-      })
+      recordDegradedReplyWaits(deps, degradedRequestIds)
       // Name a request whose polls actually degraded, not merely the first item
       // in a multi-request queue that may have completed cleanly.
       deps.io.err(degradedWaitWarning(degradedRequestIds[0]!))
@@ -978,6 +973,17 @@ export async function waitForReply(
     // "no reply" would let an agent treat an unseen refusal as consent.
     degraded: lastTransientError !== null,
   }
+}
+
+function recordDegradedReplyWaits(deps: CommandDeps, requestIds: readonly string[]): void {
+  if (requestIds.length === 0) return
+  log(deps).error('cli.error', {
+    kind: 'network',
+    operation: 'reply_wait',
+    request_ids: requestIds,
+    degraded: true,
+    message: 'the reply wait ended while the server was unreachable or faulting',
+  })
 }
 
 /**
@@ -1179,6 +1185,13 @@ async function uploadImage(deps: CommandDeps, client: ApiClient, source: string)
 export const HOOK_EVENTS = ['user-prompt-submit', 'stop', 'session-end'] as const
 export type HookEvent = (typeof HOOK_EVENTS)[number]
 
+/** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
+export function hookDefersDiagnosticsUntilAfterCleanup(
+  event: unknown,
+): event is 'session-end' {
+  return event === 'session-end'
+}
+
 /**
  * Runs one harness hook. Contract with every harness: hook JSON arrives on
  * stdin, the decision (if any) goes to stdout, diagnostics go to stderr, and
@@ -1253,7 +1266,7 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
-  const sessionEnd = event === 'session-end'
+  const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
   logger.bind({ session: envelope.session_id ?? null })
   let config: CliConfig | null = null
   let configFailure: unknown
