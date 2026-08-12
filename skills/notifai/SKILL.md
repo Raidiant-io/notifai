@@ -333,7 +333,7 @@ is not an answer. Widen it deliberately with `-n`, `--all`, `--since`, and
 
 `hook.gate` records carry a `reason` from a fixed set — `notifications-off`,
 `already-asked`, `claimed-elsewhere`, `no-question`, `no-session`,
-`continuation-repeat`, `continuation-limit` — so filter on that rather than on
+`continuation-repeat`, `continuation-limit`, `delivery-limit` — so filter on that rather than on
 the wording of a message. `notifications-off` is the one the user is
 deliberately never told about, which is exactly why it is worth checking before
 concluding something is broken.

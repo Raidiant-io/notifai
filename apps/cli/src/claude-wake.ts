@@ -5,8 +5,8 @@ import path from 'node:path'
 import { createConnection } from 'node:net'
 import type {
   ContinuationEvent,
+  DeliveryOutcome,
   EscalationDeliveryRoute,
-  HookOutcome,
 } from './hooks.js'
 
 /** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
@@ -292,9 +292,16 @@ function socketLine(context: string): string {
  * Claude's own-child delivery route.
  *
  * A successful socket write proves delivery to Claude Code, not model
- * consumption. The accepted journal remains until a successor Stop proves the
- * continued turn ran. Unknown state deliberately returns without throwing so
- * the journal becomes `hold-for-next-turn` instead of failing the hook.
+ * consumption — and this route reports exactly that, no more. It reports
+ * `delivered` all the same, because the write is the strongest acknowledgement
+ * this route can ever obtain: the message it posts starts a brand-new turn
+ * rather than continuing this one, so no later hook will confirm anything about
+ * it. An answer delivered once and settled is strictly better than an answer
+ * redelivered on every turn-end for ever.
+ *
+ * Every path that hands nothing over reports `held`, so the accepted journal
+ * replays it. Unknown state deliberately returns without throwing, so the
+ * journal becomes `hold-for-next-turn` instead of failing the hook.
  */
 export function claudeWakeRoute(options: {
   sessionId: string
@@ -318,12 +325,13 @@ export function claudeWakeRoute(options: {
   }
   return {
     kind: 'inbox-socket',
-    async deliver(event: ContinuationEvent): Promise<HookOutcome> {
+    async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
       const observation = await observeClaudeSession(options.sessionId, adapters)
       if (observation.state === 'unknown') {
         return {
           notes: [`holding the accepted answer for the next turn: ${observation.reason}`],
           log: { route: 'hold-for-next-turn', stage: 'queued', reason: observation.reason },
+          acknowledgement: 'held',
         }
       }
       if (sourceDescriptor === null) {
@@ -331,6 +339,7 @@ export function claudeWakeRoute(options: {
         return {
           notes: [`holding the accepted answer for the next turn: ${reason}`],
           log: { route: 'hold-for-next-turn', stage: 'queued', reason },
+          acknowledgement: 'held',
         }
       }
       if (observation.state === 'stopped') {
@@ -345,12 +354,14 @@ export function claudeWakeRoute(options: {
           return {
             notes: [`holding the accepted answer for the next turn: ${reason}`],
             log: { route: 'hold-for-next-turn', stage: 'queued', reason },
+            acknowledgement: 'held',
           }
         }
         await adapters.resume(options.sessionId, sourceDescriptor.cwd, event.context)
         return {
           notes: ['cold-resumed the stopped Claude session with its accepted answer'],
           log: { route: 'cold-resume', stage: 'delivered' },
+          acknowledgement: 'delivered',
         }
       }
 
@@ -362,6 +373,7 @@ export function claudeWakeRoute(options: {
         return {
           notes: [`holding the accepted answer for the next turn: ${reason}`],
           log: { route: 'hold-for-next-turn', stage: 'queued', reason },
+          acknowledgement: 'held',
         }
       }
       await adapters.sendSocket(
@@ -380,6 +392,9 @@ export function claudeWakeRoute(options: {
           stage: 'delivered',
           session_state: observation.state,
         },
+        // The write completed: Claude Code holds the message. Nothing later
+        // reports on it, so this is where the journal settles.
+        acknowledgement: 'delivered',
       }
     },
   }

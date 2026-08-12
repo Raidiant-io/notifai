@@ -46,6 +46,7 @@ import {
   drainRetirements,
   drainOrphanRetirements,
   runEscalationWaiter,
+  MAX_CONTINUATION_COUNT,
   orphanRetirements,
   pruneAbandonedSessions,
   releaseQuestionPush,
@@ -843,6 +844,22 @@ describe('nagging guards', () => {
     expect(h.recorder.submitted).toEqual([])
     expect(readSessionState('n4', h.env).pending?.[0]?.question).toBe('One more?')
     expect(h.io.errLines.join('\n')).toContain('continuation limit (3) reached')
+  })
+
+  it('starts the consecutive continuation count over when the user takes a turn', async () => {
+    // The cap bounds an agent running on its own. A human at the keyboard is
+    // the end of that chain, not another link in it.
+    const h = harness([])
+    writeSessionState('n5', h.env, {
+      continuation: { answered_at: NOW - 1, count: MAX_CONTINUATION_COUNT },
+    })
+
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'n5' }))
+
+    expect(readSessionState('n5', h.env).continuation).toEqual({
+      answered_at: NOW - 1,
+      count: 0,
+    })
   })
 })
 
@@ -2816,6 +2833,117 @@ describe('Claude Code Stop wake route', () => {
     expect(readSessionState('claude-route', h.env).accepted).toBeDefined()
   })
 
+  /** One answer already accepted and journaled, ready for the next Stop. */
+  function journaledAnswer(
+    h: Harness,
+    options: { recordedAt?: number; deliveredAt?: number } = {},
+  ): void {
+    const recordedAt = options.recordedAt ?? NOW
+    writeSessionState('claude-route', h.env, {
+      ...readSessionState('claude-route', h.env),
+      accepted: {
+        ...(options.deliveredAt === undefined
+          ? {}
+          : { delivered_at: options.deliveredAt, delivered_route: 'inbox-socket' }),
+        answers: [
+          {
+            pending: {
+              question: 'Which rollout option?',
+              request_id: 'req_existing',
+              collapse_key: 'question-existing',
+              device_ids: ['dev_iphone'],
+            },
+            reply: reply({ text: 'BETA' }),
+            replies: [reply({ text: 'BETA' })],
+          },
+        ],
+        remaining: 0,
+        recorded_at: recordedAt,
+      },
+    })
+  }
+
+  it('settles a socket delivery so the woken turn cannot redeliver the answer', async () => {
+    // The exact device-proof failure. A socket delivery starts a brand-new turn
+    // rather than continuing this one, so the Stop that ends the woken turn
+    // reports stop_hook_active=false — for ever. While that flag was the only
+    // acknowledgement, the journal never settled and every turn-end delivered
+    // the same answer again: 250 times, in the transcript that found this.
+    const h = harness([])
+    journaledAnswer(h)
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+    const stop = (stopHookActive: boolean) =>
+      hookRunCommand(
+        deps,
+        'stop',
+        stdin({
+          session_id: 'claude-route',
+          cwd: '/tmp/claude-route',
+          stop_hook_active: stopHookActive,
+        }),
+        'claude-code',
+      )
+
+    await stop(false)
+
+    expect(wake.sent).toHaveLength(1)
+    const delivered = readSessionState('claude-route', h.env).accepted
+    expect(delivered?.delivered_route).toBe('inbox-socket')
+    expect(typeof delivered?.delivered_at).toBe('number')
+
+    // Three more turn-ends of the woken session, none of them a continuation.
+    await stop(false)
+    await stop(false)
+    await stop(false)
+
+    expect(wake.sent).toHaveLength(1)
+    expect(wake.resumed).toEqual([])
+    expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
+    // Settled, not merely dropped: the answered question is retired truthfully.
+    expect(
+      h.recorder.submitted.find(
+        (entry) =>
+          entry.draft.event === 'question_retired' &&
+          entry.draft.lifecycle?.retires_request_id === 'req_existing',
+      )?.draft.lifecycle?.state,
+    ).toBe('answered')
+  })
+
+  it('applies the continuation cap to a woken turn that never sets stop_hook_active', async () => {
+    // The chained loop the cap exists for, on a route that starts new turns.
+    // Keyed to stop_hook_active the cap could never fire here at all.
+    const h = harness([])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, {
+      last_prompt_at: AWAY,
+      continuation: { answered_at: NOW - 2000, count: MAX_CONTINUATION_COUNT - 1 },
+    })
+    journaledAnswer(h, { recordedAt: NOW - 1000, deliveredAt: NOW - 900 })
+    // The woken turn asked a genuinely new question before it ended.
+    registerQuestion('claude-route', h.env, { question: 'And after that?' }, NOW)
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({
+        session_id: 'claude-route',
+        cwd: '/tmp/claude-route',
+        stop_hook_active: false,
+      }),
+      'claude-code',
+    )
+
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toEqual(
+      [],
+    )
+    expect(readSessionState('claude-route', h.env).pending?.[0]?.question).toBe('And after that?')
+    expect(h.io.errLines.join('\n')).toContain(
+      `continuation limit (${MAX_CONTINUATION_COUNT}) reached`,
+    )
+  })
+
   it('uses the accepted journal as the loop guard after a socket wake fires Stop again', async () => {
     const h = harness([])
     writeSessionState('claude-route', h.env, {
@@ -3097,6 +3225,96 @@ describe('escalation waiter delivery seam', () => {
     ])
     expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(true)
     releaseQuestionPush('waiter-race-lifetime', h.env)
+  })
+
+  /** One accepted answer on the journal, whatever route is about to own it. */
+  function journaled(h: Harness, sessionId: string): void {
+    writeSessionState(sessionId, h.env, {
+      accepted: {
+        answers: [
+          {
+            pending: {
+              question: 'Ship it?',
+              request_id: 'req_existing',
+              collapse_key: 'question-existing',
+              device_ids: ['dev_iphone'],
+            },
+            reply: reply({ text: 'Ship it' }),
+            replies: [reply({ text: 'Ship it' })],
+          },
+        ],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+    })
+  }
+
+  it('delivers an accepted answer once on a route that acknowledges its own write', async () => {
+    const h = harness([])
+    journaled(h, 'waiter-once')
+    const context = waiterContext(h)
+    const deliveries: string[] = []
+    const route = {
+      kind: 'inbox-socket' as const,
+      deliver: async (event: { context: string }) => {
+        deliveries.push(event.context)
+        return {
+          notes: ['posted the accepted answer'],
+          log: { route: 'inbox-socket', stage: 'delivered' },
+          acknowledgement: 'delivered' as const,
+        }
+      },
+    }
+
+    // Five turn-ends, none of them a harness continuation — the shape of every
+    // route that wakes a new turn instead of continuing this one.
+    for (let pass = 0; pass < 5; pass += 1) {
+      await runEscalationWaiter(context, {
+        sessionId: 'waiter-once',
+        envelope: { session_id: 'waiter-once', stop_hook_active: false },
+        route,
+        processDeadlineAt: NOW + 480_000,
+      })
+    }
+
+    expect(deliveries).toHaveLength(1)
+    expect(deliveries[0]).toContain('Ship it')
+    expect(readSessionState('waiter-once', h.env).accepted).toBeUndefined()
+  })
+
+  it('bounds deliveries by the continuation cap on every route', async () => {
+    // A route that never acknowledges must still stop. The cap lives where all
+    // routes pass, so no future route can be the one it does not cover.
+    for (const kind of ['inbox-socket', 'hook-continuation'] as const) {
+      const h = harness([])
+      const sessionId = `waiter-cap-${kind}`
+      journaled(h, sessionId)
+      const context = waiterContext(h)
+      let deliveries = 0
+      const notes: string[] = []
+
+      for (let pass = 0; pass < MAX_CONTINUATION_COUNT + 3; pass += 1) {
+        const outcome = await runEscalationWaiter(context, {
+          sessionId,
+          envelope: { session_id: sessionId, stop_hook_active: false },
+          route: {
+            kind,
+            deliver: async () => {
+              deliveries += 1
+              return { notes: [], acknowledgement: 'held' as const }
+            },
+          },
+          processDeadlineAt: NOW + 480_000,
+        })
+        notes.push(...outcome.notes)
+      }
+
+      expect(deliveries).toBe(MAX_CONTINUATION_COUNT)
+      expect(notes.join('\n')).toContain(
+        `${MAX_CONTINUATION_COUNT} times without being acknowledged`,
+      )
+      expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
+    }
   })
 
   it('keeps the accepted journal when an out-of-band route rejects delivery', async () => {

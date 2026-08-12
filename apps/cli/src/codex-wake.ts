@@ -5,8 +5,8 @@ import { configHome } from './install-hooks.js'
 import {
   hookContinuationRoute,
   type ContinuationEvent,
+  type DeliveryOutcome,
   type EscalationDeliveryRoute,
-  type HookOutcome,
 } from './hooks.js'
 
 /** Codex's per-thread writer lock directory, relative to `$CODEX_HOME`. */
@@ -143,7 +143,7 @@ export function codexWakeRoute(options: {
   const continuation = hookContinuationRoute()
   return {
     kind: 'hook-continuation',
-    async deliver(event: ContinuationEvent): Promise<HookOutcome> {
+    async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
       if (adapters.sourceAlive(options.sourcePid)) return continuation.deliver(event)
 
       // Probe immediately before the spawn, twice, and never trust the earlier
@@ -160,13 +160,16 @@ export function codexWakeRoute(options: {
       return {
         notes: ['cold-resumed the stopped Codex thread with its accepted answer'],
         log: { route: 'cold-resume', stage: 'delivered' },
+        // The resume ran: the thread holds the answer, and no later hook of this
+        // session will report on a turn that started elsewhere.
+        acknowledgement: 'delivered',
       }
     },
   }
 }
 
 /** The journal, with the exact reason the thread could not be resumed. */
-function holdForNextTurn(observation: CodexWakeObservation): HookOutcome | null {
+function holdForNextTurn(observation: CodexWakeObservation): DeliveryOutcome | null {
   if (observation.state === 'stopped') return null
   const reason =
     observation.state === 'live'
@@ -175,6 +178,7 @@ function holdForNextTurn(observation: CodexWakeObservation): HookOutcome | null 
   return {
     notes: [`holding the accepted answer for the next turn: ${reason}`],
     log: { route: 'hold-for-next-turn', stage: 'queued', reason },
+    acknowledgement: 'held',
   }
 }
 

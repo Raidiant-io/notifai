@@ -102,16 +102,20 @@ export interface SessionState {
    * costs nothing and a missed one costs a stale notification for ever.
    */
   retiring?: RetiringQuestion[]
-  /** Tracks bounded Stop continuations so a follow-up ask is delivered once. */
+  /**
+   * Tracks bounded Stop continuations so a follow-up ask is delivered once.
+   * `count` is how many answer generations have run consecutively without the
+   * user taking a turn themselves; their next prompt starts it over.
+   */
   continuation?: {
     answered_at: number
     count: number
   }
   /**
-   * A phone answer durably captured but not yet acknowledged by a successor
-   * hook. It stays here until the next Stop proves the harness processed the
-   * continuation; a crash before stdout therefore replays instead of erasing
-   * the user's answer.
+   * A phone answer durably captured but not yet acknowledged. It stays here
+   * until a delivery is acknowledged — by the route's own write, or by the
+   * successor Stop of a blocking continuation — so a crash before the answer
+   * reaches the harness replays it instead of erasing it.
    */
   accepted?: AcceptedAnswerDelivery
 }
@@ -120,7 +124,20 @@ interface AcceptedAnswerDelivery {
   answers: AnsweredPending[]
   remaining: number
   recorded_at: number
-  continuation_count?: number
+  /**
+   * Epoch ms when a route's own write handed this answer to the harness, with
+   * the route that performed it. Recorded so that "this answer was delivered"
+   * is a fact on the journal rather than something inferred from a harness flag
+   * that only one route ever sets.
+   */
+  delivered_at?: number
+  delivered_route?: string
+  /**
+   * How many times this answer has been handed to any route. The route-agnostic
+   * loop backstop: bounded by `MAX_CONTINUATION_COUNT` in one place every route
+   * passes through.
+   */
+  delivery_attempts?: number
 }
 
 /** A delivered question awaiting its retirement push. */
@@ -275,10 +292,41 @@ export interface ContinuationEvent {
   journal_recorded_at: number
 }
 
+/**
+ * How much a route's own return proves about where the answer ended up.
+ *
+ * Acknowledgement belongs to the delivery, not to the harness envelope: routes
+ * end in different places, so no single field on a hook payload can speak for
+ * all of them. `stop_hook_active` is the harness confirming that a *blocking
+ * continuation* was admitted; it stays false for ever on a route that starts a
+ * brand-new turn instead of continuing this one, so a journal keyed to it alone
+ * never settles and every later turn-end redelivers the same answer.
+ *
+ * - `delivered` — the route completed a write to the harness itself (an inbox
+ *   socket, a cold resume). Delivery is not consumption: the write proves the
+ *   harness accepted the message, never that the model acted on it. But nothing
+ *   later will ever prove more, and redelivering an answer without end is
+ *   strictly worse than settling on the write, so the journal settles here.
+ * - `stdout` — the answer is this process's stdout, which the harness reads only
+ *   after this process exits. Nothing this process can write is proof, so the
+ *   journal waits for the successor Stop's `stop_hook_active`, and a crash
+ *   before stdout replays the answer instead of losing it.
+ * - `held` — the route handed nothing over; the journal replays the answer.
+ */
+export type DeliveryAcknowledgement = 'delivered' | 'stdout' | 'held'
+
+/** What a route returns: the hook's outcome plus what the attempt proved. */
+export interface DeliveryOutcome {
+  stdout?: string
+  notes?: string[]
+  log?: Record<string, unknown>
+  acknowledgement: DeliveryAcknowledgement
+}
+
 /** Host adapter injected into the waiter; no route is implemented by the waiter. */
 export interface EscalationDeliveryRoute {
   kind: Exclude<DeliveryRoute, 'unsupported'>
-  deliver(event: ContinuationEvent): Promise<HookOutcome>
+  deliver(event: ContinuationEvent): Promise<DeliveryOutcome>
 }
 
 export interface EscalationWaiterOptions {
@@ -726,6 +774,7 @@ export type GateReason =
   | 'already-asked'
   | 'continuation-repeat'
   | 'continuation-limit'
+  | 'delivery-limit'
   | 'notifications-off'
   | 'claimed-elsewhere'
   | 'no-devices'
@@ -1233,7 +1282,15 @@ export async function drainOrphanRetirements(
 
 const LATE_STOP_POLL_SECONDS = 4
 const LATE_PROMPT_POLL_SECONDS = 3
-const MAX_CONTINUATION_COUNT = 3
+/**
+ * The one bound on answer deliveries, for every route.
+ *
+ * It caps two things that both used to be able to run away: how many times a
+ * single accepted answer may be handed to a route before the journal gives up
+ * on it, and how many answer-driven continuation generations one chain may
+ * produce.
+ */
+export const MAX_CONTINUATION_COUNT = 3
 
 interface PendingPoll {
   /** The answer to act on: the latest reply, because a later one corrects. */
@@ -1469,7 +1526,25 @@ function stageAcceptedAnswers(
   return accepted
 }
 
-/** Settle only after a successor hook proves the harness received the answer. */
+/** Amend the live accepted record in place, without resurrecting a settled one. */
+function amendAcceptedAnswers(
+  ctx: HookContext,
+  sessionId: string,
+  amend: (accepted: AcceptedAnswerDelivery) => AcceptedAnswerDelivery,
+): void {
+  updateSessionState(sessionId, ctx.env, (current) =>
+    current.accepted === undefined ? current : { ...current, accepted: amend(current.accepted) },
+  )
+}
+
+/**
+ * Retire the answered questions and close the journal.
+ *
+ * Called once an answer's delivery is acknowledged — by the route's own write,
+ * or by the successor Stop of a blocking continuation. The continuation counter
+ * grows with each settled generation, so the cap that bounds chained
+ * answer-to-question loops is a real count rather than a constant 1.
+ */
 function settleAcceptedAnswers(
   ctx: HookContext,
   sessionId: string,
@@ -1489,7 +1564,7 @@ function settleAcceptedAnswers(
     delete next.accepted
     next.continuation = {
       answered_at: accepted.recorded_at,
-      count: accepted.continuation_count ?? 1,
+      count: (current.continuation?.count ?? 0) + 1,
     }
     return next
   })
@@ -1552,7 +1627,11 @@ export async function handleUserPromptSubmit(
     if (envelope.cwd !== undefined && ctx.harness !== undefined) {
       writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
     }
-    notes.push('a device answer is safely journaled; the next Stop will deliver it')
+    notes.push(
+      state.accepted.delivered_at === undefined
+        ? 'a device answer is safely journaled; the next Stop will deliver it'
+        : 'a device answer has already been delivered; the next Stop will close it out',
+    )
     return { notes }
   }
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
@@ -1615,7 +1694,14 @@ export async function handleUserPromptSubmit(
       ...(unasked.length > 0 ? { pending: unasked } : {}),
       ...(retiring.length > 0 ? { retiring } : {}),
       ...(current.accepted === undefined ? {} : { accepted: current.accepted }),
-      ...(current.continuation === undefined ? {} : { continuation: current.continuation }),
+      // The user typed, so whatever chain of answer-driven continuations was
+      // running, a human has taken the turn and the consecutive count starts
+      // over. Only a real prompt reaches here: the journal branch above returns
+      // first, and a wake route's injected message always arrives while its own
+      // answer is still journaled, so it can never pass for the user's presence.
+      ...(current.continuation === undefined
+        ? {}
+        : { continuation: { ...current.continuation, count: 0 } }),
     }
   })
   // The bridge that lets a plain `notifai ask` find the hook's canonical
@@ -1699,30 +1785,30 @@ export async function runEscalationWaiter(
     notes.push('another hook is already handling this question')
     return { notes }
   }
+  let settledAnswerThisPass = false
   try {
     let state = readSessionState(sessionId, ctx.env)
     if (state.accepted !== undefined) {
       const accepted = state.accepted
-      // A recursive Stop is emitted only after the previous Stop's blocking
-      // output was admitted and the continued model turn ran. That event is
-      // the acknowledgment: persisting a separate "offered" bit before stdout
-      // would recreate the crash gap this journal exists to close.
-      const deliveryProven = envelope.stop_hook_active === true
+      // Acknowledgement is per route, because routes end in different places.
+      //
+      // A blocking continuation ends at this process's stdout, which the
+      // harness reads only after the process exits: the recursive Stop's
+      // `stop_hook_active` is the acknowledgement, and persisting a separate
+      // "offered" bit before stdout would recreate the crash gap this journal
+      // exists to close. An out-of-band route ends at a write this process made
+      // itself and recorded here. A socket write is not proof the model acted
+      // on the answer — delivery is not consumption — but nothing later can
+      // prove more, and an answer redelivered without end is strictly worse
+      // than one settled on delivery. So a recorded delivery settles.
+      const deliveryProven =
+        accepted.delivered_at !== undefined || envelope.stop_hook_active === true
       if (!deliveryProven) {
-        updateSessionState(sessionId, ctx.env, (current) => {
-          if (current.accepted === undefined) return current
-          return {
-            ...current,
-            accepted: {
-              ...current.accepted,
-              continuation_count: (current.continuation?.count ?? 0) + 1,
-            },
-          }
-        })
         for (const answer of accepted.answers) reportAnswer(ctx, notes, answer, true)
-        return deliverAcceptedAnswers(ctx, options.route, accepted, notes)
+        return await deliverAcceptedAnswers(ctx, sessionId, options.route, accepted, notes)
       }
       settleAcceptedAnswers(ctx, sessionId, accepted)
+      settledAnswerThisPass = true
       state = readSessionState(sessionId, ctx.env)
     }
 
@@ -1748,6 +1834,10 @@ export async function runEscalationWaiter(
       notes,
       hardDeadlineAt,
       options.route,
+      // Every route's successor turn-end, named the same way: the harness flag
+      // for a blocking continuation, and the settle above for a route that woke
+      // a brand-new turn out of band.
+      envelope.stop_hook_active === true || settledAnswerThisPass,
     )
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
@@ -1762,18 +1852,56 @@ export async function runEscalationWaiter(
 export function hookContinuationRoute(): EscalationDeliveryRoute {
   return {
     kind: 'hook-continuation',
-    deliver: async (event) => ({ stdout: stopAnswerOutput(event.context), notes: [] }),
+    deliver: async (event) => ({
+      stdout: stopAnswerOutput(event.context),
+      notes: [],
+      // The harness reads this stdout after the process exits, so only the
+      // successor Stop can acknowledge it.
+      acknowledgement: 'stdout',
+    }),
   }
 }
 
+/**
+ * Hand one accepted answer to a route and record what the attempt proved.
+ *
+ * Every delivery on every route passes through here, which is what makes the
+ * cap below a backstop rather than a suggestion. A guard only one route
+ * consults is not a backstop: that is how a single answer once reached a
+ * session 250 times.
+ */
 async function deliverAcceptedAnswers(
   ctx: HookContext,
+  sessionId: string,
   route: EscalationDeliveryRoute,
   accepted: AcceptedAnswerDelivery,
   notes: string[],
 ): Promise<HookOutcome> {
   const { answers: answered, remaining } = accepted
   const requestIds = summarizeRequestIds(answered.map((entry) => entry.pending)).ids
+  const attempt = (accepted.delivery_attempts ?? 0) + 1
+  if (attempt > MAX_CONTINUATION_COUNT) {
+    gate(ctx, 'held', 'delivery-limit', {
+      route: route.kind,
+      attempts: accepted.delivery_attempts ?? 0,
+      limit: MAX_CONTINUATION_COUNT,
+      request_ids: requestIds,
+    })
+    // Settle rather than journal for ever. The answer has been offered as often
+    // as any working route could need, it is already in the notes of each of
+    // those turns, and the questions it answered still deserve retirement.
+    settleAcceptedAnswers(ctx, sessionId, accepted)
+    notes.push(
+      `the user's answer reached the ${route.kind} route ${MAX_CONTINUATION_COUNT} times without being acknowledged; not delivering it again`,
+    )
+    return { notes }
+  }
+  // Count the attempt before making it: an attempt that dies mid-delivery still
+  // happened, and a counter written afterwards could be evaded by crashing.
+  amendAcceptedAnswers(ctx, sessionId, (current) => ({
+    ...current,
+    delivery_attempts: attempt,
+  }))
   ctx.log?.info('hook.gate', {
     verdict: 'proceeding',
     reason: 'answered',
@@ -1782,6 +1910,7 @@ async function deliverAcceptedAnswers(
     answers: answered.length,
     request_ids: requestIds,
     journal_recorded_at: accepted.recorded_at,
+    delivery_attempt: attempt,
   })
   const delivered = await route.deliver({
     context: answersContext(answered, remaining),
@@ -1794,19 +1923,28 @@ async function deliverAcceptedAnswers(
     typeof delivered.log?.['route'] === 'string' ? delivered.log['route'] : route.kind
   const deliveredStage =
     typeof delivered.log?.['stage'] === 'string' ? delivered.log['stage'] : 'delivered'
+  if (delivered.acknowledgement === 'delivered') {
+    amendAcceptedAnswers(ctx, sessionId, (current) => ({
+      ...current,
+      delivered_at: ctx.now(),
+      delivered_route: deliveredRoute,
+    }))
+  }
   ctx.log?.info('hook.answer', {
     answered: true,
     stage: deliveredStage,
     route: deliveredRoute,
+    acknowledgement: delivered.acknowledgement,
+    delivery_attempt: attempt,
     request_ids: requestIds,
     answers: answered.length,
     journal_recorded_at: accepted.recorded_at,
     ...(delivered.log?.['reason'] === undefined ? {} : { reason: delivered.log['reason'] }),
   })
-  return {
-    ...delivered,
-    notes: [...notes, ...(delivered.notes ?? [])],
-  }
+  const outcome: HookOutcome = { notes: [...notes, ...(delivered.notes ?? [])] }
+  if (delivered.stdout !== undefined) outcome.stdout = delivered.stdout
+  if (delivered.log !== undefined) outcome.log = delivered.log
+  return outcome
 }
 
 /** The complete per-session Stop decision, after this process owns the claim. */
@@ -1819,6 +1957,7 @@ async function handleClaimedStop(
   notes: string[],
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
+  continuingFromAnswer: boolean,
 ): Promise<HookOutcome> {
   const live = pending.filter((entry) => entry.request_id !== undefined)
   const unasked = pending.filter((entry) => entry.request_id === undefined)
@@ -1876,7 +2015,7 @@ async function handleClaimedStop(
       for (const answer of authoritative) reportAnswer(ctx, notes, answer, true)
       // Anything still unasked rides the next Stop: the agent is being resumed
       // with answers right now, and may not even need the rest afterwards.
-      return deliverAcceptedAnswers(ctx, route, accepted, notes)
+      return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
     }
     const recoverableLive = live.filter(
       (entry) => !permanentFailures.has(entry.request_id!),
@@ -1918,16 +2057,26 @@ async function handleClaimedStop(
       notes.push('already continuing from an answer; not asking again this turn')
       return { notes }
     }
-    if (continuation.count >= MAX_CONTINUATION_COUNT) {
-      gate(ctx, 'held', 'continuation-limit', {
-        count: continuation.count,
-        limit: MAX_CONTINUATION_COUNT,
-      })
-      notes.push(
-        `answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`,
-      )
-      return { notes }
-    }
+  }
+  // The cap is deliberately not keyed to `stop_hook_active`. That flag names one
+  // route's continuation; a route that wakes a brand-new turn never sets it, and
+  // a limit only one route consults bounds only that route. `continuingFromAnswer`
+  // is the same event named for every route, so the chain of answer → follow-up
+  // question → answer is bounded whatever delivered it.
+  if (
+    continuingFromAnswer &&
+    state.continuation !== undefined &&
+    state.continuation.count >= MAX_CONTINUATION_COUNT
+  ) {
+    gate(ctx, 'held', 'continuation-limit', {
+      count: state.continuation.count,
+      limit: MAX_CONTINUATION_COUNT,
+      route: route.kind,
+    })
+    notes.push(
+      `answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`,
+    )
+    return { notes }
   }
   // Silent to the user by design — they switched routing off, so saying so on
   // every turn would be nagging about their own setting. That silence is also
@@ -2186,7 +2335,7 @@ async function escalate(
     )
     const accepted = stageAcceptedAnswers(ctx, sessionId, staleAnswers, remaining)
     for (const answer of staleAnswers) reportAnswer(ctx, notes, answer, true)
-    return deliverAcceptedAnswers(ctx, route, accepted, notes)
+    return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
   }
   const waitingOn = [
     ...alreadyLive.filter(
@@ -2237,7 +2386,7 @@ async function escalate(
       )
       const accepted = stageAcceptedAnswers(ctx, sessionId, finalAnswers, remaining)
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
-      return deliverAcceptedAnswers(ctx, route, accepted, notes)
+      return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
     }
     const requestIdSummary = summarizeRequestIds(waitingOn)
     ctx.log?.info('hook.answer', {
@@ -2284,7 +2433,7 @@ async function escalate(
     waitingOn.length - answered.length,
   )
   for (const answer of answered) reportAnswer(ctx, notes, answer, false)
-  return deliverAcceptedAnswers(ctx, route, accepted, notes)
+  return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
 }
 
 // ---------------------------------------------------------------------------
