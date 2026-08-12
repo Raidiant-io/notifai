@@ -1734,6 +1734,7 @@ export async function handleStop(
   ctx: HookContext,
   envelope: HookEnvelope,
   processDeadlineAt = ctx.now() + STOP_BUDGET_SECONDS * 1000,
+  route: EscalationDeliveryRoute = hookContinuationRoute(),
 ): Promise<HookOutcome> {
   const sessionId = envelope.session_id
   if (!sessionId) {
@@ -1743,7 +1744,7 @@ export async function handleStop(
   return runEscalationWaiter(ctx, {
     sessionId,
     envelope,
-    route: hookContinuationRoute(),
+    route,
     processDeadlineAt,
   })
 }
@@ -1864,13 +1865,18 @@ async function deliverAcceptedAnswers(
     request_ids: requestIds,
     journal_recorded_at: accepted.recorded_at,
   })
+  const deliveredRoute =
+    typeof delivered.log?.['route'] === 'string' ? delivered.log['route'] : route.kind
+  const deliveredStage =
+    typeof delivered.log?.['stage'] === 'string' ? delivered.log['stage'] : 'delivered'
   ctx.log?.info('hook.answer', {
     answered: true,
-    stage: 'delivered',
-    route: route.kind,
+    stage: deliveredStage,
+    route: deliveredRoute,
     request_ids: requestIds,
     answers: answered.length,
     journal_recorded_at: accepted.recorded_at,
+    ...(delivered.log?.['reason'] === undefined ? {} : { reason: delivered.log['reason'] }),
   })
   return {
     ...delivered,

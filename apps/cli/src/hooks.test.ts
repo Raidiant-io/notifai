@@ -22,6 +22,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
+import { CLAUDE_POST_SEND_LIVENESS_MS, type ClaudeWakeAdapters } from './claude-wake.js'
 import { readStdinWithTimeout } from './hook-input.js'
 import {
   activeLogPath,
@@ -2891,6 +2892,129 @@ describe('question registration racing a Stop submission', () => {
     expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
     expect(state.accepted?.answers[0]?.pending.request_id).toBe(h.recorder.receipts[0])
     expect(state.accepted?.answers[0]?.reply.text).toBe('Old answer')
+  })
+})
+
+describe('Claude Code Stop wake route', () => {
+  function claudeWake(status: 'idle' | 'busy' = 'idle'): ClaudeWakeAdapters & {
+    sent: string[]
+    resumed: string[]
+    sleeps: number[]
+  } {
+    const sent: string[] = []
+    const resumed: string[] = []
+    const sleeps: number[] = []
+    return {
+      sent,
+      resumed,
+      sleeps,
+      async listAgents() {
+        return [
+          {
+            pid: 12345,
+            sessionId: 'claude-route',
+            startedAt: NOW,
+            status,
+          },
+        ]
+      },
+      readDescriptor() {
+        return {
+          pid: 12345,
+          sessionId: 'claude-route',
+          cwd: '/tmp/claude-route',
+          startedAt: NOW,
+          procStart: 'Wed Aug 12 08:17:53 2026',
+          version: '2.1.228',
+          peerProtocol: 1,
+          messagingSocketPath: '/tmp/cc-socks/12345.sock',
+          status,
+        }
+      },
+      async sendSocket(_socketPath, line) {
+        sent.push(line)
+      },
+      async resume(_sessionId, _cwd, context) {
+        resumed.push(context)
+      },
+      async sleep(milliseconds) {
+        sleeps.push(milliseconds)
+      },
+    }
+  }
+
+  it('routes an accepted answer through the Claude inbox instead of hook stdout', async () => {
+    const h = harness([reply({ text: 'BETA' })], 900)
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('claude-route', h.env, {
+      question: 'Which rollout option?',
+      questions: built.questions,
+    })
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+
+    expect(h.io.outLines).toEqual([])
+    expect(wake.sent).toHaveLength(1)
+    const message = JSON.parse(wake.sent[0]!) as {
+      type: string
+      message: { role: string; content: string }
+    }
+    expect(message).toMatchObject({ type: 'user', message: { role: 'user' } })
+    expect(message.message.content).toContain('question_id')
+    expect(message.message.content).toContain('"Which rollout option?"')
+    expect(message.message.content).toContain('"BETA"')
+    expect(message.message.content).not.toMatch(/trusted|urgent|permission|approval/i)
+    expect(wake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
+    expect(readSessionState('claude-route', h.env).accepted).toBeDefined()
+  })
+
+  it('uses the accepted journal as the loop guard after a socket wake fires Stop again', async () => {
+    const h = harness([], 900)
+    writeSessionState('claude-route', h.env, {
+      accepted: {
+        answers: [
+          {
+            pending: {
+              question: 'Which rollout option?',
+              request_id: 'req_existing',
+              collapse_key: 'question-existing',
+              device_ids: ['dev_iphone'],
+            },
+            reply: reply({ text: 'BETA' }),
+            replies: [reply({ text: 'BETA' })],
+          },
+        ],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+    })
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({
+        session_id: 'claude-route',
+        cwd: '/tmp/claude-route',
+        stop_hook_active: true,
+      }),
+      'claude-code',
+    )
+
+    expect(wake.sent).toEqual([])
+    expect(wake.resumed).toEqual([])
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
   })
 })
 

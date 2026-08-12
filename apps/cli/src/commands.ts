@@ -114,6 +114,10 @@ import {
 } from './install-hooks.js'
 import { HARNESS_CAPABILITIES, HOOK_TIMING } from './harnesses.js'
 import {
+  claudeWakeRoute,
+  type ClaudeWakeAdapters,
+} from './claude-wake.js'
+import {
   inspectHookAdapter,
   installHookAdapter,
 } from './hook-adapter.js'
@@ -179,6 +183,9 @@ export interface CommandDeps {
   now?: () => number
   /** Test seam for retry/backoff timing. */
   sleep?: (milliseconds: number) => Promise<void>
+  /** Test seams for Claude liveness, socket delivery, and cold resume. */
+  claudeWake?: ClaudeWakeAdapters
+  claudeSourcePid?: number
   /** Test seam for the OS idle probe; production shells out to the platform. */
   idleSeconds?: () => number | null
   /** Test seam and production adapter for the external native skills installer. */
@@ -1391,7 +1398,19 @@ export async function hookRunCommand(
     const outcome =
       event === 'user-prompt-submit'
         ? await handleUserPromptSubmit(ctx, envelope)
-        : await handleStop(ctx, envelope, processDeadlineAt)
+        : await handleStop(
+            ctx,
+            envelope,
+            processDeadlineAt,
+            harness === 'claude-code' && envelope.session_id !== undefined
+              ? claudeWakeRoute({
+                  sessionId: envelope.session_id,
+                  cwd,
+                  sourcePid: deps.claudeSourcePid ?? process.ppid,
+                  ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
+                })
+              : undefined,
+          )
     // Answer diagnostics are already persisted once as hook.answer. Keep every
     // other note in the lifecycle record without duplicating the user's text.
     const notes = outcome.notes.filter((note) => !/^(?:late )?answer from /.test(note))
