@@ -1429,18 +1429,24 @@ function pendingHasChoices(pending: PendingQuestion): boolean {
  * it. Free-text answers can arrive in parts, and every part reaches the
  * agent in the order it was written, so it can tell expansion from
  * correction itself.
+ *
+ * The continuation repeats only the real question identity and text plus the
+ * answer the server accepted. It never invents trust, urgency, permission, or
+ * approval claims for the transport to assert.
  */
-function answerContext(replies: ReplyView[], hadChoices: boolean): string {
+function answerContext(answered: AnsweredPending): string {
+  const { pending, replies } = answered
   const latest = replies.at(-1)
   if (latest === undefined) return 'Notifai — no answer was recorded.'
-  if (replies.length === 1 || hadChoices) {
-    return `Notifai — the user answered from ${latest.device_name}: "${latest.text}". Continue with that answer.`
+  const identity = pending.question_id === undefined ? '' : `question_id ${pending.question_id}, `
+  const question = `question ${JSON.stringify(pending.question)}`
+  if (replies.length === 1 || pendingHasChoices(pending)) {
+    return `Notifai — ${identity}${question}; the user answered ${JSON.stringify(latest.text)}.`
   }
-  const parts = replies.map((reply) => `"${reply.text}"`).join(', then ')
+  const parts = replies.map((reply) => JSON.stringify(reply.text)).join(', then ')
   return (
-    `Notifai — the user answered from ${latest.device_name} in ${replies.length} parts, ` +
-    `in the order written: ${parts}. Later parts extend or correct earlier ones. ` +
-    'Continue with that answer.'
+    `Notifai — ${identity}${question}; the user answered in ${replies.length} parts, ` +
+    `in the order written: ${parts}. Later parts extend or correct earlier ones.`
   )
 }
 
@@ -1456,18 +1462,19 @@ function answersContext(answered: AnsweredPending[], remaining: number): string 
       ? ` (${remaining} more registered question${remaining === 1 ? ' is' : 's are'} still waiting for an answer.)`
       : ''
   if (answered.length === 1) {
-    const only = answered[0]!
-    return answerContext(only.replies, pendingHasChoices(only.pending)) + tail
+    return answerContext(answered[0]!) + tail
   }
   const lines = answered.map(({ pending, replies }) => {
     const latest = replies.at(-1)!
     const answer =
       replies.length === 1 || pendingHasChoices(pending)
-        ? `"${latest.text}"`
-        : `${replies.map((reply) => `"${reply.text}"`).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
-    return `- "${pending.question}" → ${answer} (from ${latest.device_name})`
+        ? JSON.stringify(latest.text)
+        : `${replies.map((reply) => JSON.stringify(reply.text)).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
+    const identity = pending.question_id === undefined ? '' : `question_id ${pending.question_id}: `
+    return `- ${identity}${JSON.stringify(pending.question)} → ${answer}`
   })
-  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}\nContinue with these answers.${tail}`
+  return `Notifai — the user answered ${answered.length} questions:
+${lines.join('\n')}${tail}`
 }
 
 function stopAnswerOutput(context: string): string {

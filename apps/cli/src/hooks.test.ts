@@ -1967,6 +1967,37 @@ describe('ask registration', () => {
     ])
   })
 
+  it('relays the real registered identity, question text, and answer without trust or approval claims', async () => {
+    const h = harness(
+      [
+        reply({
+          text: 'BETA',
+          answers: [{ question_id: 'rollout-option', choice_ids: ['beta'], text: null }],
+        }),
+      ],
+      900,
+    )
+    writeSessionState('framing1', h.env, { last_prompt_at: AWAY })
+    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('framing1', h.env, {
+      question: 'Which rollout option?',
+      questions: built.questions,
+    })
+    const registeredId = readSessionState('framing1', h.env).pending?.[0]?.question_id
+    expect(registeredId).toMatch(/^q_/)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'framing1' }))
+
+    const decision = JSON.parse(h.io.outLines.at(-1)!) as { decision: string; reason: string }
+    expect(decision.decision).toBe('block')
+    expect(decision.reason).toContain(`question_id ${registeredId}`)
+    expect(decision.reason).toContain('"Which rollout option?"')
+    expect(decision.reason).toContain('"BETA"')
+    expect(decision.reason).not.toMatch(/trusted|urgent|permission|approval/i)
+  })
+
   it('acts on the latest reply when answers conflict, because it is a correction', async () => {
     const h = harness(
       [
