@@ -256,12 +256,18 @@ does to an earlier reply of the same question). At most four may be waiting
 at once; past that, consolidate with `--form`.
 
 Before the first `ask` in a harness session, require `doctor`'s **Question
-routing** line to name the active harness and **hooks (fired)** to confirm that
-a session in this directory ran both UserPromptSubmit and Stop. On Codex,
-**hooks (trust)** must also pass. **hooks (answer continuation)** must describe
-the active harness's native route. Follow the exact recovery if any check fails;
-do not register the question yet. After registration, follow the pre-commitment
-contract above and end the turn.
+routing** line to name the active harness, **hooks (fired)** to confirm that a
+session in this directory ran both UserPromptSubmit and Stop, and **hooks (stop
+shape)** to confirm the installed turn-end handler has the shape its harness
+needs. On Codex, **hooks (trust)** must also pass. **hooks (answer
+continuation)** must describe the active harness's native route. Follow the
+exact recovery if any check fails; do not register the question yet. After
+registration, follow the pre-commitment contract above and end the turn.
+
+**hooks (wake route)** is informational and never blocks: it says whether an
+answer can start a turn in this exact session on its own, or whether it will
+instead be held and replayed at the session's next turn. Either way the answer
+reaches the agent, so report what it says and register the question anyway.
 
 By default, a question reaches answerable devices as soon as the asking turn
 ends, whether or not the user is at the machine. A user may set a positive

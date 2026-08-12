@@ -12,6 +12,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
+import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
   askCommand,
   accessStatusCommand,
@@ -3433,6 +3434,117 @@ describe('asking before the hooks have ever run', () => {
     expect(out).toMatch(/FAIL\s+hooks \(stop shape\)/)
     expect(out).toContain('needs `async: true`')
     expect(out).toContain('kills the backgrounded waiter at its 600s default')
+  })
+
+  /** A configured Claude Code project with one live session claiming `pid`. */
+  function claudeWakeDeps(
+    io: CapturedIo,
+    descriptor: (pid: number) => unknown,
+  ): { deps: CommandDeps; cwd: string } {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-wake-'))
+    const base = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'sess-live' },
+      claudeSourcePid: 4242,
+      claudeWake: { readDescriptor: descriptor } as unknown as ClaudeWakeAdapters,
+    }
+    expect(hooksInstallCommand(base, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    io.outLines = []
+    return { deps: base, cwd }
+  }
+
+  it('reports a live Claude session as reachable without connecting to its socket', async () => {
+    const io = new CapturedIo()
+    const socket = path.join(mkdtempSync(path.join(os.tmpdir(), 'cc-socks-')), '4242.sock')
+    writeFileSync(socket, '')
+    const { deps } = claudeWakeDeps(io, (pid) => ({
+      pid,
+      sessionId: 'sess-live',
+      cwd: '/tmp',
+      startedAt: 1,
+      procStart: 'x',
+      version: '2.1.228',
+      peerProtocol: 1,
+      messagingSocketPath: socket,
+      status: 'idle',
+    }))
+
+    await doctorCommand(deps, {})
+    const out = io.outLines.join('\n')
+    expect(out).toMatch(/ok\s+hooks \(wake route\)/)
+    expect(out).toContain(socket)
+    expect(out).toContain('an answer can start a turn here without you')
+    // Doctor never widens the user's inbound policy to make Notifai work: the
+    // poster is the session's own hook child and needs no such permission.
+    expect(out).not.toContain('crossSessionInbound')
+  })
+
+  it('names a --bare session as the reason an answer would wait for the next turn', async () => {
+    const io = new CapturedIo()
+    const { deps } = claudeWakeDeps(io, () => {
+      throw new Error('ENOENT: no such file or directory')
+    })
+
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed) // unreachable test server
+    const out = io.outLines.join('\n')
+    // Honest, and not a blocker: nothing is lost, it simply arrives later.
+    expect(out).toMatch(/--\s+hooks \(wake route\)/)
+    expect(out).toContain('`--bare` binds no inbox socket')
+    expect(out).toContain("at this session's next turn")
+    expect(out).not.toMatch(/FAIL\s+hooks \(wake route\)/)
+  })
+
+  it('fails closed on an inbox protocol it does not recognise', async () => {
+    const io = new CapturedIo()
+    const socket = path.join(mkdtempSync(path.join(os.tmpdir(), 'cc-socks-')), '4242.sock')
+    writeFileSync(socket, '')
+    const { deps } = claudeWakeDeps(io, (pid) => ({
+      pid,
+      sessionId: 'sess-live',
+      cwd: '/tmp',
+      startedAt: 1,
+      procStart: 'x',
+      version: '2.1.228',
+      peerProtocol: 7,
+      messagingSocketPath: socket,
+      status: 'idle',
+    }))
+
+    await doctorCommand(deps, {})
+    const out = io.outLines.join('\n')
+    expect(out).toContain('speaks inbox protocol 7')
+    expect(out).toContain('refusing to guess at an undocumented wire format')
+  })
+
+  it('reports Codex resume readiness from its writer-lock directory alone', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-codex-wake-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CODEX_THREAD_ID: '9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    io.outLines = []
+    await doctorCommand(deps, {})
+    expect(io.outLines.join('\n')).toContain('nothing can be resumed: no thread-writer-lock')
+
+    mkdirSync(path.join(env['CODEX_HOME']!, 'thread-writer-locks'), { recursive: true })
+    io.outLines = []
+    await doctorCommand(deps, {})
+    const out = io.outLines.join('\n')
+    if (process.platform === 'darwin') {
+      expect(out).toMatch(/ok\s+hooks \(wake route\)/)
+      expect(out).toContain('can prove a stopped thread unowned before resuming it')
+    } else {
+      // Linux has no non-blocking `flock` through Node's `open(2)` flags, so
+      // the gate stays shut and doctor says so rather than implying a wake.
+      expect(out).toContain('nothing can be resumed')
+    }
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {

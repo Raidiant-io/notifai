@@ -12,6 +12,12 @@ import type {
 /** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
 export const CLAUDE_PEER_PROTOCOL = 1
 
+/** The first Claude Code release that publishes a session inbox socket. */
+export const CLAUDE_MIN_INBOX_VERSION = '2.1.224'
+
+/** The inbox socket is a Unix domain socket; no Windows implementation exists. */
+const INBOX_PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'linux'])
+
 /** macOS verifies own-child ancestry only while the posting process is alive. */
 export const CLAUDE_POST_SEND_LIVENESS_MS = 8_000
 
@@ -186,6 +192,92 @@ export async function observeClaudeSession(
   return {
     state: agent.status === 'idle' ? 'live-idle' : 'live-busy',
     descriptor,
+  }
+}
+
+export type ClaudeInboxReadiness =
+  | { state: 'ready'; socketPath: string; version: string }
+  | { state: 'unavailable'; reason: string }
+
+/** Ordered comparison of dotted release numbers, ignoring any suffix. */
+function versionAtLeast(version: string, minimum: string): boolean {
+  const parse = (value: string): number[] =>
+    value.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const left = parse(version)
+  const right = parse(minimum)
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const a = left[index] ?? 0
+    const b = right[index] ?? 0
+    if (a !== b) return a > b
+  }
+  return true
+}
+
+/**
+ * Whether an answer could reach this exact Claude session over its inbox
+ * socket, decided from evidence already on disk.
+ *
+ * Read-only by construction: it reads the session descriptor and asks whether
+ * the socket file exists, and never connects to it. A diagnostic that delivers
+ * a message is not a diagnostic.
+ *
+ * Every negative answer here is a degradation, not a failure — the accepted
+ * journal still replays the answer at the session's next turn. What it buys is
+ * that the reason is nameable in advance instead of being discovered as
+ * silence. The common one is `--bare`, which binds no socket at all (and runs
+ * no hooks either, so nothing would have registered a question in the first
+ * place).
+ */
+export function inspectClaudeInbox(options: {
+  pid: number
+  platform: NodeJS.Platform
+  readDescriptor: (pid: number) => unknown
+  socketExists: (socketPath: string) => boolean
+}): ClaudeInboxReadiness {
+  if (!INBOX_PLATFORMS.has(options.platform)) {
+    return {
+      state: 'unavailable',
+      reason: `Claude Code publishes no inbox socket on ${options.platform}; it exists on macOS and Linux only`,
+    }
+  }
+  let raw: unknown
+  try {
+    raw = options.readDescriptor(options.pid)
+  } catch (err) {
+    return {
+      state: 'unavailable',
+      reason: `no session descriptor for pid ${options.pid} (${err instanceof Error ? err.message : String(err)}); a session started with \`--bare\` binds no inbox socket`,
+    }
+  }
+  const descriptor = parseDescriptor(raw)
+  if (descriptor === null) {
+    return {
+      state: 'unavailable',
+      reason: `the session descriptor for pid ${options.pid} has an unknown shape`,
+    }
+  }
+  if (descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL) {
+    return {
+      state: 'unavailable',
+      reason: `this session speaks inbox protocol ${descriptor.peerProtocol}, and only ${CLAUDE_PEER_PROTOCOL} is known; refusing to guess at an undocumented wire format`,
+    }
+  }
+  if (!versionAtLeast(descriptor.version, CLAUDE_MIN_INBOX_VERSION)) {
+    return {
+      state: 'unavailable',
+      reason: `Claude Code ${descriptor.version} is older than ${CLAUDE_MIN_INBOX_VERSION}, which is where the inbox socket starts`,
+    }
+  }
+  if (!options.socketExists(descriptor.messagingSocketPath)) {
+    return {
+      state: 'unavailable',
+      reason: `the descriptor names ${descriptor.messagingSocketPath}, but no socket exists there`,
+    }
+  }
+  return {
+    state: 'ready',
+    socketPath: descriptor.messagingSocketPath,
+    version: descriptor.version,
   }
 }
 

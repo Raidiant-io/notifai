@@ -26,11 +26,16 @@ Migrating an older Codex definition requires one unavoidable `/hooks` approval;
 later upgrades must not require another.
 
 Before the first `notifai ask` in a new harness session, `doctor` must name the
-active harness under **Question routing** and report under **hooks (fired)**
-that a session in this directory ran both UserPromptSubmit and Stop. For Codex,
-**hooks (trust)** must also pass. The check is fail-closed against the exact
-active session identity where the harness exports one. Do not invent `--session`
-to bypass it.
+active harness under **Question routing**, report under **hooks (fired)** that a
+session in this directory ran both UserPromptSubmit and Stop, and pass **hooks
+(stop shape)** — which is where an older, blocking Claude Code definition or a
+missing explicit timeout is caught. For Codex, **hooks (trust)** must also pass.
+The check is fail-closed against the exact active session identity where the
+harness exports one. Do not invent `--session` to bypass it.
+
+**hooks (wake route)** reports, without probing anything, whether an answer
+could start a turn in this exact session on its own. It never blocks: when it
+cannot, the answer is held and replayed at the session's next turn instead.
 
 Codex trust diagnosis is a best-effort comparison with Codex's current
 persisted representation, not a supported trust-store API. Notifai never

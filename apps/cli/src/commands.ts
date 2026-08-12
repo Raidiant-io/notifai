@@ -117,10 +117,13 @@ import {
 import { HARNESS_CAPABILITIES } from './harnesses.js'
 import {
   claudeWakeRoute,
+  inspectClaudeInbox,
+  systemClaudeWakeAdapters,
   type ClaudeWakeAdapters,
 } from './claude-wake.js'
 import {
   codexWakeRoute,
+  inspectCodexResume,
   type CodexWakeAdapters,
 } from './codex-wake.js'
 import {
@@ -4430,10 +4433,75 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
             .join('; '),
   })
 
+  const wakeRoute = wakeRouteCheck(deps, active, activeInstallations)
+  if (wakeRoute !== null) checks.push(wakeRoute)
+
   const stray = codexStrayWorktreeCheck(deps)
   if (stray !== null) checks.push(stray)
 
   return checks
+}
+
+/**
+ * Whether an answer arriving after this turn ends could actually reach this
+ * exact session — the question `notifai ask` really turns on, and the one no
+ * other check answers.
+ *
+ * Read-only, and deliberately so: nothing here connects to a socket, takes a
+ * lock, or sends a message. A diagnostic that wakes the agent it is diagnosing
+ * would be its own bug report.
+ *
+ * Everything it can report negatively is a degradation rather than a failure —
+ * the accepted journal still replays the answer at the session's next turn —
+ * so this is never a blocker. What it buys is that the reason has a name
+ * before the user notices the silence.
+ *
+ * It never asks for `crossSessionInbound`. The poster is the session's own
+ * hook child and takes the privileged own-child path, verified to be delivered
+ * even against a `bypassPermissions` receiver while an unrelated process was
+ * held. Widening a user's general inbound policy to suit Notifai would be a
+ * real change to their machine's posture in exchange for nothing.
+ */
+function wakeRouteCheck(
+  deps: CommandDeps,
+  active: ActiveHarnessSession | null,
+  activeInstallations: Installation[],
+): HookCheck | null {
+  if (active === null || activeInstallations.length === 0) return null
+  if (active.harness === 'claude-code') {
+    const readiness = inspectClaudeInbox({
+      pid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
+      platform: process.platform,
+      readDescriptor:
+        deps.claudeWake?.readDescriptor ?? systemClaudeWakeAdapters(deps.env).readDescriptor,
+      socketExists: (socketPath) => existsSync(socketPath),
+    })
+    return {
+      name: 'hooks (wake route)',
+      ok: readiness.state === 'ready',
+      informational: true,
+      detail:
+        readiness.state === 'ready'
+          ? `this Claude Code ${readiness.version} session is listening on ${readiness.socketPath}, so an answer can start a turn here without you`
+          : `${readiness.reason}. Answers are still delivered, at this session's next turn rather than on their own`,
+    }
+  }
+  if (active.harness === 'codex') {
+    const readiness = inspectCodexResume(deps.env, {
+      platform: process.platform,
+      directoryExists: (directory) => existsSync(directory),
+    })
+    return {
+      name: 'hooks (wake route)',
+      ok: readiness.state === 'ready',
+      informational: true,
+      detail:
+        readiness.state === 'ready'
+          ? `the held Codex turn continues from its own hook, and after it returns ${readiness.lockDirectory} can prove a stopped thread unowned before resuming it`
+          : `the held Codex turn still continues from its own hook, but after it returns nothing can be resumed: ${readiness.reason}. Answers wait for the next turn`,
+    }
+  }
+  return null
 }
 
 /**

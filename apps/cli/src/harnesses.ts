@@ -33,12 +33,14 @@ export const HARNESS_CAPABILITIES: Record<Harness, HarnessCapability> = {
   'claude-code': {
     stopContinuation: 'decision-block',
     deliveryRoutes: ['hook-continuation', 'inbox-socket', 'cold-resume', 'hold-for-next-turn'],
-    deliveryContract: 'live Stop continuation; no automatic wake after its bounded wait returns',
+    deliveryContract:
+      'the Stop hook returns at once and waits out of band, then posts the answer into this same session over its own inbox socket; a session that has stopped is resumed only once a liveness probe proves it stopped',
   },
   codex: {
     stopContinuation: 'decision-block',
     deliveryRoutes: ['hook-continuation', 'cold-resume', 'hold-for-next-turn'],
-    deliveryContract: 'live Stop continuation; no automatic wake after its bounded wait returns',
+    deliveryContract:
+      'live Stop continuation while the turn is held; once it returns, a stopped thread is resumed behind its writer lock and anything else waits for the next turn',
   },
   cursor: {
     stopContinuation: 'unsupported',

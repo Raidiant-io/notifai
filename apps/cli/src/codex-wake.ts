@@ -71,11 +71,46 @@ export function observeCodexThread(
 }
 
 export function codexThreadLockPath(threadId: string, env: NodeJS.ProcessEnv): string {
-  return path.join(
-    configHome(env, 'CODEX_HOME', '.codex'),
-    CODEX_THREAD_LOCK_DIR,
-    `${threadId}.lock`,
-  )
+  return path.join(codexThreadLockDirectory(env), `${threadId}.lock`)
+}
+
+export function codexThreadLockDirectory(env: NodeJS.ProcessEnv): string {
+  return path.join(configHome(env, 'CODEX_HOME', '.codex'), CODEX_THREAD_LOCK_DIR)
+}
+
+export type CodexResumeReadiness =
+  | { state: 'ready'; lockDirectory: string }
+  | { state: 'unavailable'; reason: string }
+
+/**
+ * Whether a Codex thread whose Stop hook has already returned could still be
+ * cold-resumed, decided without taking any lock or spawning anything.
+ *
+ * Two things have to hold: this platform must implement the non-blocking
+ * `flock` the probe is built on, and `$CODEX_HOME` must actually have a
+ * thread-writer-lock directory — its absence is not evidence that a thread is
+ * unowned, so the gate fails closed and the answer waits for the next turn.
+ * Neither affects the ordinary path, where the hook's own stdout continues the
+ * held turn.
+ */
+export function inspectCodexResume(
+  env: NodeJS.ProcessEnv,
+  options: { platform: NodeJS.Platform; directoryExists: (directory: string) => boolean },
+): CodexResumeReadiness {
+  const lockDirectory = codexThreadLockDirectory(env)
+  if (!LOCK_PROBE_PLATFORMS.has(options.platform)) {
+    return {
+      state: 'unavailable',
+      reason: `no non-blocking thread-writer lock probe exists on ${options.platform}`,
+    }
+  }
+  if (!options.directoryExists(lockDirectory)) {
+    return {
+      state: 'unavailable',
+      reason: `no thread-writer-lock directory at ${lockDirectory}, so no thread can be proven unowned`,
+    }
+  }
+  return { state: 'ready', lockDirectory }
 }
 
 /**
