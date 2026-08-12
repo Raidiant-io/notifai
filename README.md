@@ -53,7 +53,7 @@ or public TestFlight link for the Private Alpha.
 ## Status
 
 Notifai is pre-1.0 and published under Apache-2.0. The current packages are
-`@raidiant/notifai` 0.3.0 and `@raidiant/notifai-protocol` 0.2.0; their
+`@raidiant/notifai` 0.4.0 and `@raidiant/notifai-protocol` 0.3.0; their
 versions advance independently. Only the latest published version is
 supported.
 
@@ -80,7 +80,7 @@ installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
 delegates to the native `npx skills` flow, which lets a human choose project or
 global scope and owns placement, links, provenance, and updates. The skill is
-from the immutable public tag `v0.3.0`; the underlying installer source is
-`Raidiant-io/notifai#v0.3.0` (`#` selects a Git ref). For unattended use,
+from the immutable public tag `v0.4.0`; the underlying installer source is
+`Raidiant-io/notifai#v0.4.0` (`#` selects a Git ref). For unattended use,
 choose the scope explicitly: `notifai init --skills --skills-scope project` or
 `notifai init --skills --skills-scope global`.
