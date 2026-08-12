@@ -172,6 +172,26 @@ function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
   }
 }
 
+/**
+ * An environment that cannot see the machine running the suite.
+ *
+ * Harness discovery walks the real home directory whenever the environment
+ * names no override, so a developer with Notifai's own global hooks installed
+ * was silently running these cases against their own settings file — and a
+ * check that failed on that file failed only for them. Every setup case that
+ * asserts on readiness therefore gets its own home.
+ */
+function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
+  const home = path.join(cwd, 'home')
+  return {
+    HOME: home,
+    CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+    CODEX_HOME: path.join(home, '.codex'),
+    XDG_CONFIG_HOME: path.join(cwd, 'config'),
+    XDG_STATE_HOME: path.join(cwd, 'state'),
+  }
+}
+
 const receipt: SubmissionReceipt = {
   request_id: 'req_reply_test',
   replayed: false,
@@ -1981,7 +2001,7 @@ describe('init', () => {
     return {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
       nativeSkills,
     }
   }
@@ -2311,7 +2331,7 @@ describe('init', () => {
     const deps: CommandDeps = {
       ...makeDeps(io, { health: async () => true } as unknown as ApiClient),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
@@ -2336,7 +2356,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
     }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
@@ -2409,7 +2429,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
     }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
@@ -2451,7 +2471,7 @@ describe('init', () => {
     const deps: CommandDeps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
       now: () => now,
       sleep: async (milliseconds) => {
         now += milliseconds
@@ -2517,7 +2537,7 @@ describe('init', () => {
     const deps: CommandDeps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
       now: () => now,
       sleep: async (milliseconds) => {
         now += milliseconds
@@ -2557,7 +2577,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
     }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
@@ -2601,7 +2621,7 @@ describe('init', () => {
     const deps: CommandDeps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
       now: () => now,
       sleep: async (milliseconds) => {
         now += milliseconds
@@ -2647,7 +2667,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: '/dev/null' },
+      env: { ...isolatedEnv(cwd), XDG_STATE_HOME: '/dev/null' },
     }
 
     await expect(initCommand(deps, { hooks: false, skills: false })).resolves.toBe(EXIT.failed)
@@ -2674,7 +2694,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
     }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
@@ -2692,7 +2712,7 @@ describe('init', () => {
         {
           ...makeDeps(doctorIo, client),
           cwd,
-          env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+          env: isolatedEnv(cwd),
         },
         {},
       ),
@@ -2752,7 +2772,7 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
     }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
@@ -2788,7 +2808,7 @@ describe('init', () => {
       const deps = {
         ...makeDeps(io, client),
         cwd,
-        env: { XDG_CONFIG_HOME: stateRoot, XDG_STATE_HOME: stateRoot },
+        env: { ...isolatedEnv(cwd), XDG_CONFIG_HOME: stateRoot, XDG_STATE_HOME: stateRoot },
       }
       expect(
         await initCommand(deps, { projectId: 'shared-project', hooks: false, skills: false }),
@@ -3369,23 +3389,50 @@ describe('asking before the hooks have ever run', () => {
     expect(said).toContain('hook_reply_timeout_seconds=120 (project-local:')
   })
 
-  it('keeps an installed Stop timeout valid when runtime timing preferences change', async () => {
+  it('keeps a freshly installed Stop definition valid when timing preferences change', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-timeout-drift-'))
     const io = new CapturedIo()
-    const env = { XDG_STATE_HOME: path.join(cwd, 'state'), CLAUDE_CONFIG_DIR: path.join(cwd, 'claude') }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 400\n')
+    writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 300\n')
     io.outLines = []
 
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).toMatch(/ok\s+hooks \(timeout\)/)
-    expect(io.outLines.join('\n')).toContain(
-      'declared Stop timeouts match the fixed 540s process budget where required; Codex uses host defaults',
-    )
+    expect(io.outLines.join('\n')).toMatch(/ok\s+hooks \(stop shape\)/)
+  })
+
+  it('names an old blocking Claude Stop handler as the reason no wake can happen', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-stale-shape-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    // Exactly what every build before the asynchronous waiter wrote: a blocking
+    // handler with the old ceiling. It looks installed and it fires, but the
+    // waiter would hold the turn and then be killed at Claude's silent default.
+    mkdirSync(path.join(cwd, '.claude'), { recursive: true })
+    applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: `'${path.join(cwd, 'home', '.notifai', 'bin', 'hook-adapter')}' hook stop --owner notifai --harness claude-code`,
+                timeout: 540,
+              },
+            ],
+          },
+        ],
+      },
+    })
+
+    await doctorCommand(deps, {})
+    const out = io.outLines.join('\n')
+    expect(out).toMatch(/FAIL\s+hooks \(stop shape\)/)
+    expect(out).toContain('needs `async: true`')
+    expect(out).toContain('kills the backgrounded waiter at its 600s default')
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {

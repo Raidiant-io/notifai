@@ -92,9 +92,10 @@ import {
   type Logger,
 } from './logging.js'
 import {
+  BLOCKING_STOP_TIMEOUT_SECONDS,
+  CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
   HARNESSES,
   applyPlan,
-  blockingHookTimeoutSeconds,
   buildCursorHookConfig,
   buildHookConfig,
   codexLayerDir,
@@ -1476,7 +1477,7 @@ function stopWakeRoute(
     return claudeWakeRoute({
       sessionId,
       cwd,
-      sourcePid: deps.claudeSourcePid ?? process.ppid,
+      sourcePid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
     })
   }
@@ -1490,6 +1491,25 @@ function stopWakeRoute(
     })
   }
   return undefined
+}
+
+/**
+ * The pid of the Claude Code session this hook belongs to.
+ *
+ * Claude exports `CLAUDE_PID` to its hooks, and that is the authoritative
+ * answer. `process.ppid` agrees with it today — the hook command runs through
+ * a shell, but the shell `exec`s, so this process's parent *is* the session
+ * (probed against a live 2.1.228 session) — and it remains the fallback for a
+ * harness build that stops exporting the variable.
+ *
+ * Preferring the explicit value costs a line and removes a silent failure: if
+ * this ever resolved to a shell instead, no session descriptor would match, the
+ * route could not prove own-child ownership, and every answer would degrade to
+ * hold-for-next-turn with nothing reported as wrong.
+ */
+function claudeSessionPid(env: NodeJS.ProcessEnv): number {
+  const declared = Number(env['CLAUDE_PID'])
+  return Number.isInteger(declared) && declared > 0 ? declared : process.ppid
 }
 
 /**
@@ -1887,20 +1907,7 @@ function activeQuestionRouteProblems(
   for (const problem of inspectHookAdapter(deps.hookAdapterHome).problems) {
     problems.push(problem)
   }
-  if (active.harness !== 'codex') {
-    const required = blockingHookTimeoutSeconds()
-    for (const installation of matching) {
-      for (const handler of installation.handlers.filter(
-        (entry) => handlerEvent(entry.command) === 'stop',
-      )) {
-        if (handler.timeout === undefined || handler.timeout < required) {
-          problems.push(
-            `${installation.file} gives Stop ${handler.timeout ?? 'no'}s, but the live answer owner requires ${required}s`,
-          )
-        }
-      }
-    }
-  }
+  for (const installation of matching) problems.push(...stopShapeProblems(installation))
   problems.push(...codexTrustProblems(matching, deps.env))
   return [...new Set(problems)]
 }
@@ -2054,7 +2061,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (harness === 'opencode') {
     return installOpencodePlugin(deps, file, {
       adapterPath,
-      timeoutSeconds: blockingHookTimeoutSeconds(),
+      timeoutSeconds: BLOCKING_STOP_TIMEOUT_SECONDS,
     })
   }
 
@@ -2159,6 +2166,15 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     }
   }
   deps.io.out('')
+  if (harness === 'claude-code') {
+    // Codex deliberately gets no counterpart line: its Stop definition is
+    // byte-identical to the one earlier builds wrote, so nothing about its
+    // trust state changed and saying so would invent a gate that is not there.
+    deps.io.out(
+      `The Stop handler is asynchronous: it returns at once, so your turn ends normally, and it waits for your answer out of band for up to ${CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS}s before delivering it back into this session. That timeout is written explicitly because Claude Code kills a background hook at its own 600s default and reports nothing when it does.`,
+    )
+    deps.io.out('')
+  }
   if (harness === 'claude-code' && flags.global !== true) {
     deps.io.out('Claude Code reloads project hook files without a restart. Send one new prompt,')
     deps.io.out('then check `notifai doctor` to confirm that the hook fired.')
@@ -4144,6 +4160,49 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
   ]
 }
 
+/**
+ * Whether an installed Stop handler declares the shape its harness needs.
+ *
+ * The three answers differ, and getting one wrong fails silently in a
+ * different way each time:
+ *
+ *   - Claude Code's handler must be `async: true`, or the waiter holds the
+ *     user's turn for its whole wait instead of returning at once. It must
+ *     also declare a `timeout`, because the harness default is 600 s and the
+ *     kill is silent — the backgrounded waiter vanishes and the answer the
+ *     user already gave is never delivered.
+ *   - Codex owns its Stop timeout. Declaring one changes the definition it
+ *     hashes into `trusted_hash`, and an untrusted handler is simply not run.
+ *   - Everything else blocks its turn and needs a ceiling above the wait.
+ */
+function stopShapeProblems(installation: Installation): string[] {
+  if (installation.harness === 'codex') return []
+  const problems: string[] = []
+  for (const handler of installation.handlers.filter(
+    (entry) => handlerEvent(entry.command) === 'stop',
+  )) {
+    if (installation.harness === 'claude-code') {
+      if (handler.async !== true) {
+        problems.push(
+          `${installation.file} declares a blocking Stop handler; the Claude Code wake route needs \`async: true\` so the turn ends while the waiter runs`,
+        )
+      }
+      if (handler.timeout === undefined || handler.timeout < CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS) {
+        problems.push(
+          `${installation.file} gives Stop ${handler.timeout ?? 'no'} declared seconds; Claude Code then kills the backgrounded waiter at its 600s default without reporting anything, so it needs an explicit ${CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS}s`,
+        )
+      }
+      continue
+    }
+    if (handler.timeout === undefined || handler.timeout < BLOCKING_STOP_TIMEOUT_SECONDS) {
+      problems.push(
+        `${installation.file} gives Stop ${handler.timeout ?? 'no'}s, but the blocking answer owner requires ${BLOCKING_STOP_TIMEOUT_SECONDS}s`,
+      )
+    }
+  }
+  return problems
+}
+
 interface HookCheck {
   name: string
   ok: boolean
@@ -4287,24 +4346,19 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         }),
   })
 
-  const requiredTimeout = blockingHookTimeoutSeconds()
-  const shortTimeouts = installations.flatMap((installation) =>
-    installation.handlers
-      .filter(() => installation.harness !== 'codex')
-      .filter((handler) => handlerEvent(handler.command) === 'stop')
-      .filter((handler) => handler.timeout === undefined || handler.timeout < requiredTimeout)
-      .map(
-        (handler) =>
-          `${installation.harness} declares ${handler.timeout ?? 'no'}s, needs ${requiredTimeout}s — run \`notifai hooks install --harness ${installation.harness}${installation.global ? ' --global' : ''}\``,
-      ),
+  const shapeProblems = installations.flatMap((installation) =>
+    stopShapeProblems(installation).map(
+      (problem) =>
+        `${problem} — run \`notifai hooks install --harness ${installation.harness}${installation.global ? ' --global' : ''}\``,
+    ),
   )
   checks.push({
-    name: 'hooks (timeout)',
-    ok: shortTimeouts.length === 0,
+    name: 'hooks (stop shape)',
+    ok: shapeProblems.length === 0,
     detail:
-      shortTimeouts.length === 0
-        ? `declared Stop timeouts match the fixed ${requiredTimeout}s process budget where required; Codex uses host defaults`
-        : shortTimeouts.join('; '),
+      shapeProblems.length === 0
+        ? `every installed Stop handler declares the shape its harness needs: Claude Code async with an explicit ${CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS}s waiter budget, blocking hosts ${BLOCKING_STOP_TIMEOUT_SECONDS}s, Codex host-owned`
+        : shapeProblems.join('; '),
   })
 
   // Project and global definitions for one harness both fire. Stable adapter

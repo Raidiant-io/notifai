@@ -12,7 +12,7 @@ import { parse as parseToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { hookAdapterPath } from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
-import { HARNESSES, HOOK_TIMING, type Harness } from './harnesses.js'
+import { HARNESSES, type Harness } from './harnesses.js'
 
 export { HARNESSES, type Harness } from './harnesses.js'
 
@@ -113,28 +113,54 @@ export interface BuildOptions {
   harness?: Harness
 }
 
-/** Generated blocking adapters grant the owner budget one fixed minute of host headroom. */
-const HOOK_CEILING_SECONDS = HOOK_TIMING.totalSeconds + HOOK_TIMING.hostHeadroomSeconds
+/**
+ * Claude Code's Stop handler returns instantly and the same process lives on
+ * out of band as the escalation waiter, so this `timeout` bounds a background
+ * process rather than the user's turn.
+ *
+ * It is always declared, and declared far above the longest wait a waiter can
+ * take. Claude's default is 600 s and the kill is **silent** — the backgrounded
+ * process simply vanishes, no error is reported anywhere, and the answer the
+ * user already gave is never delivered. Sitting anywhere near that boundary
+ * turns a slow reply into a lost one, so this does not: an explicit value
+ * raises the ceiling (verified against a 660 s wait under an hour-long
+ * declaration), and an hour is several times the waiter's own ceiling.
+ */
+export const CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS = 3600
 
 /**
- * Stable process budget for a blocking turn-end adapter.
+ * The declared process budget for a host that holds its turn while the waiter
+ * runs: the waiter's own ceiling plus a minute of host headroom, as one plain
+ * number rather than a budget carved into reserves.
  *
- * Codex trusts the exact serialized hook definition. Deriving this timeout
- * from mutable question preferences meant changing `ask_grace_seconds`
- * silently invalidated Stop trust while the other two handlers kept running.
- * The runtime already fits grace and reply waiting inside the harness ceiling;
- * the installed identity therefore stays at that ceiling across preferences.
+ * Codex is deliberately absent from this. It owns its Stop timeout today, and
+ * declaring one would change the serialized definition Codex hashes into
+ * `trusted_hash` — which silently stops every Notifai handler from running
+ * until the user re-approves them in `/hooks`.
  */
-export function blockingHookTimeoutSeconds(): number {
-  return HOOK_CEILING_SECONDS
+export const BLOCKING_STOP_TIMEOUT_SECONDS = 540
+
+/**
+ * The turn-end handler, whose shape is the whole per-harness difference.
+ *
+ * Claude Code takes the answer over its own inbox socket, so its Stop hook is
+ * `async: true`: it returns immediately, the terminal is never held, and the
+ * waiter finishes out of band. Every other host still delivers by printing a
+ * continuation to this process's stdout, so its Stop hook blocks and needs a
+ * declared ceiling above the wait — except Codex, which owns that number
+ * itself and whose definition must stay byte-stable for its trust store.
+ */
+function stopHandler(adapterPath: string, harness: Harness | undefined): HookHandler {
+  const command = hookCommand(adapterPath, 'stop', harness)
+  if (harness === 'claude-code') {
+    return { type: 'command', command, timeout: CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS, async: true }
+  }
+  if (harness === 'codex') return { type: 'command', command }
+  return { type: 'command', command, timeout: BLOCKING_STOP_TIMEOUT_SECONDS }
 }
 
 export function buildHookConfig(options: BuildOptions): HookConfig {
   const { adapterPath } = options
-  const hostOwnsStopTimeout = options.harness === 'codex'
-  // Runtime preferences fit inside this fixed process budget without becoming
-  // part of the serialized definition Codex asks the user to trust.
-  const blockingTimeout = blockingHookTimeoutSeconds()
   return {
     UserPromptSubmit: [
       {
@@ -149,17 +175,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         ],
       },
     ],
-    Stop: [
-      {
-        hooks: [
-          {
-            type: 'command',
-            command: hookCommand(adapterPath, 'stop', options.harness),
-            ...(hostOwnsStopTimeout ? {} : { timeout: blockingTimeout }),
-          },
-        ],
-      },
-    ],
+    Stop: [{ hooks: [stopHandler(adapterPath, options.harness)] }],
     SessionEnd: [
       {
         hooks: [
@@ -192,7 +208,6 @@ interface CursorSettingsDocument {
 
 /** Cursor's native schema is flat and uses lower-camel lifecycle event names. */
 export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
-  const blockingTimeout = blockingHookTimeoutSeconds()
   return {
     beforeSubmitPrompt: [
       {
@@ -203,7 +218,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
     stop: [
       {
         command: hookCommand(options.adapterPath, 'stop', 'cursor'),
-        timeout: blockingTimeout,
+        timeout: BLOCKING_STOP_TIMEOUT_SECONDS,
         // A continuation may register a real follow-up question. Match the
         // session-state cap so those chains are useful but never unbounded.
         loop_limit: 3,

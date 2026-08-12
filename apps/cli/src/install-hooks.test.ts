@@ -90,6 +90,7 @@ describe('hook config', () => {
   it('uses one fixed blocking process budget rather than accepting mutable timing inputs', () => {
     const config = buildHookConfig({ adapterPath: ADAPTER })
     expect(config['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
+    expect(config['Stop']?.[0]?.hooks[0]?.async).toBeUndefined()
     // Claude Code caps UserPromptSubmit at 30s; Codex gives SessionEnd 1-3s.
     expect(config['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
     expect(config['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
@@ -110,12 +111,52 @@ describe('hook config', () => {
 
   it('lets Codex own Stop timeout while keeping short fixed lifecycle budgets', () => {
     const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
-    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
 
     expect(codex['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
-    expect(codex['Stop']?.[0]?.hooks[0]?.timeout).toBeUndefined()
     expect(codex['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
-    expect(claude['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
+    // Codex hashes the exact serialized definition into `trusted_hash`, so its
+    // Stop handler stays a bare blocking command: declaring a timeout would
+    // invalidate the user's approval and the handler would silently stop.
+    expect(codex['Stop']?.[0]?.hooks[0]).toEqual({
+      type: 'command',
+      command: hookCommand(ADAPTER, 'stop', 'codex'),
+    })
+  })
+
+  it('gives Claude Code an asynchronous Stop with an explicit waiter budget', () => {
+    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
+
+    // `async: true` is what frees the turn: the handler returns at once and the
+    // same process lives on as the waiter. The explicit timeout is what keeps
+    // that process alive — Claude kills a background hook at its own 600s
+    // default and reports nothing, so a wait near that boundary loses answers.
+    expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
+      type: 'command',
+      command: hookCommand(ADAPTER, 'stop', 'claude-code'),
+      timeout: 3600,
+      async: true,
+    })
+    expect(claude['UserPromptSubmit']?.[0]?.hooks[0]?.async).toBeUndefined()
+    expect(claude['SessionEnd']?.[0]?.hooks[0]?.async).toBeUndefined()
+  })
+
+  it('leaves exactly one handler per event when an old blocking shape is reinstalled over', () => {
+    const old = mergeHooks({}, buildHookConfig({ adapterPath: ADAPTER }), SCRIPT)
+    const migrated = mergeHooks(
+      old.document,
+      buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' }),
+      SCRIPT,
+    )
+
+    for (const event of ['UserPromptSubmit', 'Stop', 'SessionEnd']) {
+      const groups = migrated.document.hooks?.[event] ?? []
+      expect(groups.flatMap((group) => group.hooks)).toHaveLength(1)
+    }
+    expect(migrated.document.hooks?.['Stop']?.[0]?.hooks[0]).toMatchObject({
+      timeout: 3600,
+      async: true,
+    })
+    expect(migrated.replaced.sort()).toEqual(['SessionEnd', 'Stop', 'UserPromptSubmit'])
   })
 })
 
