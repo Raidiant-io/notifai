@@ -36,7 +36,13 @@ import { buildDraft } from './send.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withFileLock } from './file-lock.js'
 import type { Logger } from './logging.js'
-import { HARNESS_CAPABILITIES, HARNESSES, HOOK_TIMING, type Harness } from './harnesses.js'
+import {
+  HARNESS_CAPABILITIES,
+  HARNESSES,
+  HOOK_TIMING,
+  type DeliveryRoute,
+  type Harness,
+} from './harnesses.js'
 
 /**
  * Harness hook handlers.
@@ -275,6 +281,28 @@ export interface HookOutcome {
   notes: string[]
   /** Structured lifecycle detail that belongs on hook.end without user text. */
   log?: Record<string, unknown>
+}
+
+/** An accepted continuation ready for whichever host owns the last meter. */
+export interface ContinuationEvent {
+  context: string
+  answers: number
+  remaining: number
+  request_ids: string[]
+  journal_recorded_at: number
+}
+
+/** Host adapter injected into the waiter; no route is implemented by the waiter. */
+export interface EscalationDeliveryRoute {
+  kind: Exclude<DeliveryRoute, 'unsupported'>
+  deliver(event: ContinuationEvent): Promise<HookOutcome>
+}
+
+export interface EscalationWaiterOptions {
+  sessionId: string
+  envelope: HookEnvelope
+  route: EscalationDeliveryRoute
+  processDeadlineAt?: number
 }
 
 function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -783,7 +811,7 @@ function gate(
   reason: GateReason,
   data: Record<string, unknown> = {},
 ): void {
-  ctx.log?.info('hook.gate', { verdict, reason, ...data })
+  ctx.log?.info('hook.gate', { verdict, reason, stage: 'queued', ...data })
 }
 
 export type HookHarness = Harness
@@ -1361,6 +1389,7 @@ function reportAnswer(
 ): void {
   ctx.log?.info('hook.answer', {
     answered: true,
+    stage: 'queued',
     ...(late ? { late: true } : {}),
     request_id: answered.pending.request_id,
     device: answered.reply.device_name,
@@ -1430,15 +1459,19 @@ function pendingHasChoices(pending: PendingQuestion): boolean {
  * agent in the order it was written, so it can tell expansion from
  * correction itself.
  *
- * The continuation repeats only the real question identity and text plus the
- * answer the server accepted. It never invents trust, urgency, permission, or
- * approval claims for the transport to assert.
+ * The continuation repeats only identity the agent actually registered and
+ * the answer the server accepted. It never invents trust, urgency, permission,
+ * or approval claims for the transport to assert.
  */
 function answerContext(answered: AnsweredPending): string {
   const { pending, replies } = answered
   const latest = replies.at(-1)
   if (latest === undefined) return 'Notifai — no answer was recorded.'
-  const identity = pending.question_id === undefined ? '' : `question_id ${pending.question_id}, `
+  const answeredQuestionIds = [...new Set(latest.answers.map((answer) => answer.question_id))]
+  const identity =
+    answeredQuestionIds.length === 0
+      ? ''
+      : `question_id${answeredQuestionIds.length === 1 ? '' : 's'} ${answeredQuestionIds.join(', ')}, `
   const question = `question ${JSON.stringify(pending.question)}`
   if (replies.length === 1 || pendingHasChoices(pending)) {
     return `Notifai — ${identity}${question}; the user answered ${JSON.stringify(latest.text)}.`
@@ -1470,11 +1503,11 @@ function answersContext(answered: AnsweredPending[], remaining: number): string 
       replies.length === 1 || pendingHasChoices(pending)
         ? JSON.stringify(latest.text)
         : `${replies.map((reply) => JSON.stringify(reply.text)).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
-    const identity = pending.question_id === undefined ? '' : `question_id ${pending.question_id}: `
+    const ids = [...new Set(latest.answers.map((entry) => entry.question_id))]
+    const identity = ids.length === 0 ? '' : `question_id${ids.length === 1 ? '' : 's'} ${ids.join(', ')}: `
     return `- ${identity}${JSON.stringify(pending.question)} → ${answer}`
   })
-  return `Notifai — the user answered ${answered.length} questions:
-${lines.join('\n')}${tail}`
+  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}${tail}`
 }
 
 function stopAnswerOutput(context: string): string {
@@ -1495,23 +1528,25 @@ function stageAcceptedAnswers(
   sessionId: string,
   answered: AnsweredPending[],
   remaining: number,
-): void {
+): AcceptedAnswerDelivery {
+  const accepted: AcceptedAnswerDelivery = {
+    answers: answered,
+    remaining,
+    recorded_at: ctx.now(),
+  }
   updateSessionState(sessionId, ctx.env, (current) => {
     const pendingRemaining = pendingList(current).filter(
       (entry) => !answered.some(({ pending }) => isSamePending(entry, pending)),
     )
     const next: SessionState = {
       ...current,
-      accepted: {
-        answers: answered,
-        remaining,
-        recorded_at: ctx.now(),
-      },
+      accepted,
     }
     if (pendingRemaining.length > 0) next.pending = pendingRemaining
     else delete next.pending
     return next
   })
+  return accepted
 }
 
 /** Settle only after a successor hook proves the harness received the answer. */
@@ -1700,13 +1735,31 @@ export async function handleStop(
   envelope: HookEnvelope,
   processDeadlineAt = ctx.now() + STOP_BUDGET_SECONDS * 1000,
 ): Promise<HookOutcome> {
-  const notes: string[] = []
-  const hardDeadlineAt = processDeadlineAt
   const sessionId = envelope.session_id
   if (!sessionId) {
-    gate(ctx, 'held', 'no-session')
-    return { notes }
+    gate(ctx, 'held', 'no-session', { stage: 'queued' })
+    return { notes: [] }
   }
+  return runEscalationWaiter(ctx, {
+    sessionId,
+    envelope,
+    route: hookContinuationRoute(),
+    processDeadlineAt,
+  })
+}
+
+/**
+ * Own one registered question pipeline from its terminal-first timer through
+ * its final delivery or retirement. Hosts differ only in the injected route.
+ */
+export async function runEscalationWaiter(
+  ctx: HookContext,
+  options: EscalationWaiterOptions,
+): Promise<HookOutcome> {
+  const notes: string[] = []
+  const { sessionId, envelope } = options
+  const hardDeadlineAt =
+    options.processDeadlineAt ?? ctx.now() + STOP_BUDGET_SECONDS * 1000
 
   // This event marker is diagnostic evidence in its own right. Record it
   // before every early return so doctor can distinguish a working Stop route
@@ -1716,17 +1769,12 @@ export async function handleStop(
     last_stop_at: ctx.now(),
   }))
 
-  // Claim before any reply poll, not only before the grace window. Two racing
-  // Stops can both observe the same accepted journal or live request. An
-  // atomic state update cannot retract duplicate block output a loser already
-  // built, so one session claim owns the complete Stop decision: accepted
-  // replay/ack, late-answer collection, cleanup, and any new escalation.
-  //
-  // Real clock, deliberately, not `ctx.now` — the claim answers "is another
-  // process alive right now", which the injectable clock cannot speak to. It
-  // is also the only clock the *other* process shares.
+  // The waiter, not its host, owns this lease. It spans grace, submission,
+  // polling, close fencing, route delivery, and every retirement path.
+  // Real clock, deliberately, not `ctx.now` — the claim answers whether
+  // another process is alive right now, which an injected clock cannot know.
   if (!claimQuestionPush(sessionId, ctx.env)) {
-    gate(ctx, 'held', 'claimed-elsewhere')
+    gate(ctx, 'held', 'claimed-elsewhere', { stage: 'queued' })
     notes.push('another hook is already handling this question')
     return { notes }
   }
@@ -1751,10 +1799,7 @@ export async function handleStop(
           }
         })
         for (const answer of accepted.answers) reportAnswer(ctx, notes, answer, true)
-        return {
-          stdout: stopAnswerOutput(answersContext(accepted.answers, accepted.remaining)),
-          notes,
-        }
+        return deliverAcceptedAnswers(ctx, options.route, accepted, notes)
       }
       settleAcceptedAnswers(ctx, sessionId, accepted)
       state = readSessionState(sessionId, ctx.env)
@@ -1769,7 +1814,7 @@ export async function handleStop(
       if (swept.length > 0) {
         notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
       }
-      gate(ctx, 'held', 'no-question')
+      gate(ctx, 'held', 'no-question', { stage: 'queued' })
       return { notes }
     }
 
@@ -1781,9 +1826,55 @@ export async function handleStop(
       pending,
       notes,
       hardDeadlineAt,
+      options.route,
     )
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
+  }
+}
+
+function hookContinuationRoute(): EscalationDeliveryRoute {
+  return {
+    kind: 'hook-continuation',
+    deliver: async (event) => ({ stdout: stopAnswerOutput(event.context), notes: [] }),
+  }
+}
+
+async function deliverAcceptedAnswers(
+  ctx: HookContext,
+  route: EscalationDeliveryRoute,
+  accepted: AcceptedAnswerDelivery,
+  notes: string[],
+): Promise<HookOutcome> {
+  const { answers: answered, remaining } = accepted
+  const requestIds = summarizeRequestIds(answered.map((entry) => entry.pending)).ids
+  ctx.log?.info('hook.gate', {
+    verdict: 'proceeding',
+    reason: 'answered',
+    stage: 'routed',
+    route: route.kind,
+    answers: answered.length,
+    request_ids: requestIds,
+    journal_recorded_at: accepted.recorded_at,
+  })
+  const delivered = await route.deliver({
+    context: answersContext(answered, remaining),
+    answers: answered.length,
+    remaining,
+    request_ids: requestIds,
+    journal_recorded_at: accepted.recorded_at,
+  })
+  ctx.log?.info('hook.answer', {
+    answered: true,
+    stage: 'delivered',
+    route: route.kind,
+    request_ids: requestIds,
+    answers: answered.length,
+    journal_recorded_at: accepted.recorded_at,
+  })
+  return {
+    ...delivered,
+    notes: [...notes, ...(delivered.notes ?? [])],
   }
 }
 
@@ -1796,6 +1887,7 @@ async function handleClaimedStop(
   pending: PendingQuestion[],
   notes: string[],
   hardDeadlineAt: number,
+  route: EscalationDeliveryRoute,
 ): Promise<HookOutcome> {
   const live = pending.filter((entry) => entry.request_id !== undefined)
   const unasked = pending.filter((entry) => entry.request_id === undefined)
@@ -1844,25 +1936,16 @@ async function handleClaimedStop(
         }
         return { ...entry, replies, reply: replies.at(-1)! }
       })
-      stageAcceptedAnswers(
+      const accepted = stageAcceptedAnswers(
         ctx,
         sessionId,
         authoritative,
         pending.length - authoritative.length - permanentlyRejected.length,
       )
-      gate(ctx, 'proceeding', 'answered', { answers: authoritative.length })
       for (const answer of authoritative) reportAnswer(ctx, notes, answer, true)
       // Anything still unasked rides the next Stop: the agent is being resumed
       // with answers right now, and may not even need the rest afterwards.
-      return {
-        stdout: stopAnswerOutput(
-          answersContext(
-            authoritative,
-            pending.length - authoritative.length - permanentlyRejected.length,
-          ),
-        ),
-        notes,
-      }
+      return deliverAcceptedAnswers(ctx, route, accepted, notes)
     }
     const recoverableLive = live.filter(
       (entry) => !permanentFailures.has(entry.request_id!),
@@ -1882,6 +1965,7 @@ async function handleClaimedStop(
         recoverableLive,
         notes,
         hardDeadlineAt,
+        route,
       )
     }
     // Questions registered after the earlier push still owe the user their
@@ -1947,6 +2031,7 @@ async function handleClaimedStop(
     liveToEscalate,
     notes,
     hardDeadlineAt,
+    route,
   )
 }
 
@@ -1959,6 +2044,7 @@ async function escalate(
   alreadyLive: PendingQuestion[],
   notes: string[],
   hardDeadlineAt: number,
+  route: EscalationDeliveryRoute,
 ): Promise<HookOutcome> {
   // Away right now, but the questions still owe the user their terminal-first
   // window before anything reaches their devices — measured from the oldest
@@ -2202,12 +2288,9 @@ async function escalate(
       0,
       pendingList(readSessionState(sessionId, ctx.env)).length - staleAnswers.length,
     )
-    stageAcceptedAnswers(ctx, sessionId, staleAnswers, remaining)
+    const accepted = stageAcceptedAnswers(ctx, sessionId, staleAnswers, remaining)
     for (const answer of staleAnswers) reportAnswer(ctx, notes, answer, true)
-    return {
-      stdout: stopAnswerOutput(answersContext(staleAnswers, remaining)),
-      notes,
-    }
+    return deliverAcceptedAnswers(ctx, route, accepted, notes)
   }
   const waitingOn = [
     ...alreadyLive.filter(
@@ -2263,16 +2346,14 @@ async function escalate(
         0,
         pendingList(readSessionState(sessionId, ctx.env)).length - finalAnswers.length,
       )
-      stageAcceptedAnswers(ctx, sessionId, finalAnswers, remaining)
+      const accepted = stageAcceptedAnswers(ctx, sessionId, finalAnswers, remaining)
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
-      return {
-        stdout: stopAnswerOutput(answersContext(finalAnswers, remaining)),
-        notes,
-      }
+      return deliverAcceptedAnswers(ctx, route, accepted, notes)
     }
     const requestIdSummary = summarizeRequestIds(waitingOn)
     ctx.log?.info('hook.answer', {
       answered: false,
+      stage: 'queued',
       request_ids: requestIdSummary.ids,
       user_returned: waited.userReturned,
       degraded: waited.degraded,
@@ -2312,17 +2393,14 @@ async function escalate(
       )
     }
   }
-  stageAcceptedAnswers(
+  const accepted = stageAcceptedAnswers(
     ctx,
     sessionId,
     answered,
     waitingOn.length - answered.length,
   )
   for (const answer of answered) reportAnswer(ctx, notes, answer, false)
-  return {
-    stdout: stopAnswerOutput(answersContext(answered, waitingOn.length - answered.length)),
-    notes,
-  }
+  return deliverAcceptedAnswers(ctx, route, accepted, notes)
 }
 
 // ---------------------------------------------------------------------------

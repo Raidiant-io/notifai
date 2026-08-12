@@ -7,25 +7,25 @@ describe('harness continuation contract', () => {
     expect(HARNESS_CAPABILITIES).toEqual({
       'claude-code': {
         stopContinuation: 'decision-block',
-        dormantWake: 'unsupported',
+        deliveryRoutes: ['hook-continuation', 'inbox-socket', 'cold-resume', 'hold-for-next-turn'],
         deliveryContract:
           'live Stop continuation; no automatic wake after its bounded wait returns',
       },
       codex: {
         stopContinuation: 'decision-block',
-        dormantWake: 'unsupported',
+        deliveryRoutes: ['hook-continuation', 'cold-resume', 'hold-for-next-turn'],
         deliveryContract:
           'live Stop continuation; no automatic wake after its bounded wait returns',
       },
       cursor: {
         stopContinuation: 'unsupported',
-        dormantWake: 'unsupported',
+        deliveryRoutes: ['unsupported'],
         deliveryContract:
           'the hook can return a live follow-up, but the invoking shell exposes no exact conversation id; asynchronous ask is unsupported',
       },
       opencode: {
         stopContinuation: 'unsupported',
-        dormantWake: 'unsupported',
+        deliveryRoutes: ['unsupported'],
         deliveryContract:
           'no proven answer continuation after session.idle; use a blocking reply command',
       },

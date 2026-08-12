@@ -20,7 +20,7 @@ import type {
   SubmissionReceipt,
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
 import { readStdinWithTimeout } from './hook-input.js'
 import {
@@ -44,6 +44,7 @@ import {
   drainRetirements,
   drainOrphanRetirements,
   isUserAway,
+  runEscalationWaiter,
   orphanRetirements,
   pruneAbandonedSessions,
   releaseQuestionPush,
@@ -497,7 +498,12 @@ describe('what the hook leaves behind', () => {
 
     const held = gates(h).find((record) => record.data?.['reason'] === 'user-present')
     expect(held).toBeDefined()
-    expect(held!.data).toMatchObject({ verdict: 'held', idle_seconds: 2, away_after_seconds: 120 })
+    expect(held!.data).toMatchObject({
+      verdict: 'held',
+      stage: 'queued',
+      idle_seconds: 2,
+      away_after_seconds: 120,
+    })
   })
 
   it('records the switch being off, which the user is deliberately never told', async () => {
@@ -565,7 +571,11 @@ describe('what the hook leaves behind', () => {
 
     const raw = readFileSync(activeLogPath(h.env), 'utf8')
     expect(raw.match(/Allow exactly once/g)).toHaveLength(1)
-    expect(readLogRecords(h.env, { event: ['hook.answer'] }).records).toHaveLength(1)
+    const answerRecords = readLogRecords(h.env, { event: ['hook.answer'] }).records
+    expect(answerRecords.map((record) => record.data?.['stage'])).toEqual([
+      'queued',
+      'delivered',
+    ])
     expect(h.io.errLines.join('\n')).toContain('Allow exactly once')
   })
 
@@ -1985,14 +1995,11 @@ describe('ask registration', () => {
       question: 'Which rollout option?',
       questions: built.questions,
     })
-    const registeredId = readSessionState('framing1', h.env).pending?.[0]?.question_id
-    expect(registeredId).toMatch(/^q_/)
-
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'framing1' }))
 
     const decision = JSON.parse(h.io.outLines.at(-1)!) as { decision: string; reason: string }
     expect(decision.decision).toBe('block')
-    expect(decision.reason).toContain(`question_id ${registeredId}`)
+    expect(decision.reason).toContain('question_id rollout-option')
     expect(decision.reason).toContain('"Which rollout option?"')
     expect(decision.reason).toContain('"BETA"')
     expect(decision.reason).not.toMatch(/trusted|urgent|permission|approval/i)
@@ -2884,5 +2891,147 @@ describe('question registration racing a Stop submission', () => {
     expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
     expect(state.accepted?.answers[0]?.pending.request_id).toBe(h.recorder.receipts[0])
     expect(state.accepted?.answers[0]?.reply.text).toBe('Old answer')
+  })
+})
+
+describe('escalation waiter delivery seam', () => {
+  function waiterContext(h: Harness) {
+    const client = h.deps.clientFactory!('https://test.notifai.invalid', 'Bearer test')
+    return {
+      client,
+      config: loadConfig({ cwd: h.deps.cwd, env: h.env }),
+      env: h.env,
+      now: h.deps.now!,
+      idleSeconds: h.deps.idleSeconds!,
+      sleep: h.deps.sleep!,
+      waitForFirstReply: async (requestId: string, timeoutSeconds: number) => {
+        const response = await client.replies(requestId, {
+          waitSeconds: timeoutSeconds,
+          afterSeq: 0,
+        })
+        return { replies: response.replies, timedOut: response.replies.length === 0 }
+      },
+      harness: 'codex' as const,
+    }
+  }
+
+  it('waits through grace, routes the fenced answer, and holds the claim until delivery settles', async () => {
+    const h = harness([reply({ text: 'Ship it' })], 900)
+    writeGlobalConfig(h, 'ask_grace_seconds = 120\n')
+    writeSessionState('waiter-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('waiter-route', h.env, { question: 'Ship it?' }, NOW)
+
+    const context = waiterContext(h)
+    const deliveries: Array<{ route: string; context: string }> = []
+    let claimHeldDuringDelivery = false
+    const deliver = vi.fn(async (event: { context: string }) => {
+      deliveries.push({ route: 'hook-continuation', context: event.context })
+      claimHeldDuringDelivery = !claimQuestionPush('waiter-route', h.env)
+      return { stdout: JSON.stringify({ decision: 'block', reason: event.context }) }
+    })
+
+    const outcome = await runEscalationWaiter(context, {
+      sessionId: 'waiter-route',
+      envelope: { session_id: 'waiter-route' },
+      route: { kind: 'hook-continuation', deliver },
+      processDeadlineAt: NOW + 480_000,
+    })
+
+    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
+    expect(deliver).toHaveBeenCalledTimes(1)
+    expect(deliver).toHaveBeenCalledWith(
+      expect.objectContaining({ journal_recorded_at: expect.any(Number) }),
+    )
+    expect(deliveries).toEqual([
+      { route: 'hook-continuation', context: expect.stringContaining('Ship it') },
+    ])
+    expect(claimHeldDuringDelivery).toBe(true)
+    expect(JSON.parse(outcome.stdout ?? '{}')).toMatchObject({
+      decision: 'block',
+      reason: expect.stringContaining('Ship it'),
+    })
+    expect(claimQuestionPush('waiter-route', h.env)).toBe(true)
+    releaseQuestionPush('waiter-route', h.env)
+  })
+
+  it('races a second Stop while grace, polling, fencing, and route delivery are still owned', async () => {
+    const h = harness([], 900)
+    writeGlobalConfig(h, 'ask_grace_seconds = 10\n')
+    writeSessionState('waiter-race-lifetime', h.env, { last_prompt_at: AWAY })
+    registerQuestion('waiter-race-lifetime', h.env, { question: 'Ship it?' }, NOW)
+    const context = waiterContext(h)
+    const phases: string[] = []
+
+    let waitingForReply = false
+    context.sleep = async (milliseconds: number) => {
+      if (!waitingForReply) {
+        phases.push('grace')
+        expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(false)
+      }
+      h.advanceClock(milliseconds)
+    }
+    context.waitForFirstReply = async () => {
+      waitingForReply = true
+      phases.push('reply-wait')
+      expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(false)
+      return { replies: [reply({ text: 'Ship it' })], timedOut: false }
+    }
+    const closeReplies = context.client.closeReplies.bind(context.client)
+    context.client.closeReplies = async (requestId) => {
+      phases.push('close-fence')
+      expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(false)
+      return closeReplies(requestId)
+    }
+
+    await runEscalationWaiter(context, {
+      sessionId: 'waiter-race-lifetime',
+      envelope: { session_id: 'waiter-race-lifetime' },
+      route: {
+        kind: 'hook-continuation',
+        deliver: async (event) => {
+          phases.push('delivery')
+          expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(false)
+          return { stdout: JSON.stringify({ decision: 'block', reason: event.context }), notes: [] }
+        },
+      },
+      processDeadlineAt: NOW + 480_000,
+    })
+
+    expect(phases.filter((phase) => phase === 'grace').length).toBeGreaterThan(0)
+    expect(phases.filter((phase) => phase !== 'grace')).toEqual([
+      'reply-wait',
+      'close-fence',
+      'delivery',
+    ])
+    expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(true)
+    releaseQuestionPush('waiter-race-lifetime', h.env)
+  })
+
+  it('keeps the accepted journal when an out-of-band route rejects delivery', async () => {
+    const h = harness([reply({ text: 'Hold it' })], 900)
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('waiter-failed-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('waiter-failed-route', h.env, { question: 'Ship it?' }, NOW)
+    const context = waiterContext(h)
+
+    await expect(
+      runEscalationWaiter(context, {
+        sessionId: 'waiter-failed-route',
+        envelope: { session_id: 'waiter-failed-route' },
+        route: {
+          kind: 'inbox-socket',
+          deliver: async () => {
+            throw new Error('socket unavailable')
+          },
+        },
+        processDeadlineAt: NOW + 480_000,
+      }),
+    ).rejects.toThrow('socket unavailable')
+
+    expect(readSessionState('waiter-failed-route', h.env).accepted?.answers[0]?.reply.text).toBe(
+      'Hold it',
+    )
+    expect(claimQuestionPush('waiter-failed-route', h.env)).toBe(true)
+    releaseQuestionPush('waiter-failed-route', h.env)
   })
 })
