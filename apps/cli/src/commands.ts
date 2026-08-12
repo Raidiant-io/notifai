@@ -73,6 +73,7 @@ import {
   readProjectSessionPointer,
   readSessionState,
   registerQuestion,
+  type EscalationDeliveryRoute,
   type HookContext,
   type HookHarness,
 } from './hooks.js'
@@ -117,6 +118,10 @@ import {
   claudeWakeRoute,
   type ClaudeWakeAdapters,
 } from './claude-wake.js'
+import {
+  codexWakeRoute,
+  type CodexWakeAdapters,
+} from './codex-wake.js'
 import {
   inspectHookAdapter,
   installHookAdapter,
@@ -186,6 +191,9 @@ export interface CommandDeps {
   /** Test seams for Claude liveness, socket delivery, and cold resume. */
   claudeWake?: ClaudeWakeAdapters
   claudeSourcePid?: number
+  /** Test seams for the Codex thread-writer probe and cold resume. */
+  codexWake?: CodexWakeAdapters
+  codexSourcePid?: number
   /** Test seam for the OS idle probe; production shells out to the platform. */
   idleSeconds?: () => number | null
   /** Test seam and production adapter for the external native skills installer. */
@@ -1402,14 +1410,7 @@ export async function hookRunCommand(
             ctx,
             envelope,
             processDeadlineAt,
-            harness === 'claude-code' && envelope.session_id !== undefined
-              ? claudeWakeRoute({
-                  sessionId: envelope.session_id,
-                  cwd,
-                  sourcePid: deps.claudeSourcePid ?? process.ppid,
-                  ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
-                })
-              : undefined,
+            stopWakeRoute(deps, harness, envelope.session_id, cwd),
           )
     // Answer diagnostics are already persisted once as hook.answer. Keep every
     // other note in the lifecycle record without duplicating the user's text.
@@ -1453,6 +1454,42 @@ export async function hookRunCommand(
     for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
     return EXIT.ok
   }
+}
+
+/**
+ * The last meter for an answer this Stop hook accepted, chosen by harness.
+ *
+ * Both wake adapters need the harness process that invoked this hook: Claude's
+ * to prove exact own-child session ownership before it posts to the inbox
+ * socket, Codex's to know whether its own stdout is still a live continuation
+ * channel. Without an exact session id neither can prove anything, so the
+ * waiter falls back to the plain blocking Stop continuation.
+ */
+function stopWakeRoute(
+  deps: CommandDeps,
+  harness: Harness | undefined,
+  sessionId: string | undefined,
+  cwd: string,
+): EscalationDeliveryRoute | undefined {
+  if (sessionId === undefined) return undefined
+  if (harness === 'claude-code') {
+    return claudeWakeRoute({
+      sessionId,
+      cwd,
+      sourcePid: deps.claudeSourcePid ?? process.ppid,
+      ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
+    })
+  }
+  if (harness === 'codex') {
+    return codexWakeRoute({
+      threadId: sessionId,
+      cwd,
+      sourcePid: deps.codexSourcePid ?? process.ppid,
+      env: deps.env,
+      ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
+    })
+  }
+  return undefined
 }
 
 /**

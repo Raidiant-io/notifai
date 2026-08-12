@@ -1834,7 +1834,12 @@ export async function runEscalationWaiter(
   }
 }
 
-function hookContinuationRoute(): EscalationDeliveryRoute {
+/**
+ * The blocking Stop hook's own last meter: the answer becomes this process's
+ * stdout, and the harness admits it as a new user turn. Exported because a
+ * host adapter that has other routes still falls back to this one.
+ */
+export function hookContinuationRoute(): EscalationDeliveryRoute {
   return {
     kind: 'hook-continuation',
     deliver: async (event) => ({ stdout: stopAnswerOutput(event.context), notes: [] }),

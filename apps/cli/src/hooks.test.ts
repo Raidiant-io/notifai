@@ -23,6 +23,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
 import { CLAUDE_POST_SEND_LIVENESS_MS, type ClaudeWakeAdapters } from './claude-wake.js'
+import type { CodexWakeAdapters, CodexWakeObservation } from './codex-wake.js'
 import { readStdinWithTimeout } from './hook-input.js'
 import {
   activeLogPath,
@@ -3015,6 +3016,137 @@ describe('Claude Code Stop wake route', () => {
     expect(wake.resumed).toEqual([])
     expect(h.io.outLines).toEqual([])
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
+  })
+})
+
+describe('Codex Stop wake route', () => {
+  const CODEX_THREAD = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
+
+  function codexWake(
+    options: { sourceAlive?: boolean; probe?: CodexWakeObservation } = {},
+  ): CodexWakeAdapters & { resumed: string[]; probed: string[] } {
+    const resumed: string[] = []
+    const probed: string[] = []
+    return {
+      resumed,
+      probed,
+      probeThreadWriter(lockPath) {
+        probed.push(lockPath)
+        return options.probe ?? { state: 'stopped' }
+      },
+      sourceAlive() {
+        return options.sourceAlive ?? true
+      },
+      async resume(_threadId, _cwd, context) {
+        resumed.push(context)
+      },
+    }
+  }
+
+  function journaledAnswer(h: Harness): void {
+    writeSessionState(CODEX_THREAD, h.env, {
+      accepted: {
+        answers: [
+          {
+            pending: {
+              question: 'Which rollout option?',
+              request_id: 'req_existing',
+              collapse_key: 'question-existing',
+              device_ids: ['dev_iphone'],
+            },
+            reply: reply({ text: 'BETA' }),
+            replies: [reply({ text: 'BETA' })],
+          },
+        ],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+    })
+  }
+
+  it('continues the held turn with decision:block when the answer arrives during the hold', async () => {
+    const h = harness([reply({ text: 'BETA' })], 900)
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
+    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion(CODEX_THREAD, h.env, {
+      question: 'Which rollout option?',
+      questions: built.questions,
+    })
+    const wake = codexWake()
+
+    await hookRunCommand(
+      { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toHaveLength(1)
+    const decision = JSON.parse(h.io.outLines[0]!) as { decision: string; reason: string }
+    expect(decision.decision).toBe('block')
+    expect(decision.reason).toContain('"BETA"')
+    // The default route owes the thread-writer lock nothing: a live Codex is
+    // reading this stdout, and a probe could only take the answer away.
+    expect(wake.probed).toEqual([])
+    expect(wake.resumed).toEqual([])
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+  })
+
+  it('replays an answer journaled after the hold on the next Stop', async () => {
+    const h = harness([], 900)
+    journaledAnswer(h)
+    const wake = codexWake()
+
+    await hookRunCommand(
+      { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toHaveLength(1)
+    expect(JSON.parse(h.io.outLines[0]!)).toMatchObject({ decision: 'block' })
+    // Still journaled: only a successor Stop proves the continued turn ran.
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+  })
+
+  it('cold-resumes the journaled answer when the Codex process is gone and no writer holds the thread', async () => {
+    const h = harness([], 900)
+    journaledAnswer(h)
+    const wake = codexWake({ sourceAlive: false, probe: { state: 'stopped' } })
+
+    await hookRunCommand(
+      { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toEqual([])
+    expect(wake.resumed).toHaveLength(1)
+    expect(wake.resumed[0]).toContain('"BETA"')
+    expect(wake.probed).toHaveLength(2)
+  })
+
+  it('holds the answer rather than resuming a thread a live writer owns', async () => {
+    const h = harness([], 900)
+    journaledAnswer(h)
+    const wake = codexWake({ sourceAlive: false, probe: { state: 'live' } })
+
+    await hookRunCommand(
+      { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toEqual([])
+    expect(wake.resumed).toEqual([])
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+    expect(h.io.errLines.join('\n')).toContain('holding the accepted answer for the next turn')
   })
 })
 
