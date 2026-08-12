@@ -69,6 +69,7 @@ import {
   handleUserPromptSubmit,
   parseHookInput,
   pruneAbandonedSessions,
+  readLiveProjectSessionPointers,
   readMatchingProjectSessionPointer,
   readProjectSession,
   readProjectSessionPointer,
@@ -1688,7 +1689,7 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
   // markers identify the active owner, while UserPromptSubmit adds the hook's
   // canonical id to the directory's concurrent-session index.
   const now = (deps.now ?? Date.now)()
-  const active = activeHarnessSession(deps.env)
+  const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, now)
   let sessionId: string | undefined
   if (active !== null) {
     const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
@@ -1696,7 +1697,12 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
       (installation) => installation.harness === active.harness,
     )
     if (!activeInstalled) {
-      for (const line of diagnoseActiveHarnessSession(active, 'not-installed', installations)) {
+      for (const line of diagnoseActiveHarnessSession(
+        active,
+        'not-installed',
+        installations,
+        contested,
+      )) {
         deps.io.err(line)
       }
       return EXIT.usage
@@ -1715,7 +1721,12 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
       active.harness,
     )
     if (projectPointer === null) {
-      for (const line of diagnoseActiveHarnessSession(active, 'not-fired', installations)) {
+      for (const line of diagnoseActiveHarnessSession(
+        active,
+        'not-fired',
+        installations,
+        contested,
+      )) {
         deps.io.err(line)
       }
       return EXIT.usage
@@ -1829,30 +1840,96 @@ interface ActiveHarnessSession {
   sessionId?: string
 }
 
-function activeHarnessSession(env: NodeJS.ProcessEnv): ActiveHarnessSession | null {
-  const explicit = env['NOTIFAI_ACTIVE_HARNESS']
-  if (explicit === 'opencode') {
+/**
+ * Every harness marker present in this environment, in declared order.
+ *
+ * Order here is a last resort, not an answer. A harness exports its markers
+ * into every process it starts, so a nested harness inherits its parent's
+ * markers alongside its own and the environment alone cannot say which of them
+ * owns this shell; `resolveActiveHarness` settles that with live evidence.
+ */
+function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
+  const candidates: ActiveHarnessSession[] = []
+  if (env['NOTIFAI_ACTIVE_HARNESS'] === 'opencode') {
     const sessionId = env['NOTIFAI_ACTIVE_SESSION_ID']
-    return {
+    candidates.push({
       harness: 'opencode',
       label: 'OpenCode',
       ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
-    }
+    })
   }
   if (env['CLAUDECODE'] === '1') {
     const sessionId = env['CLAUDE_CODE_SESSION_ID']
-    return {
+    candidates.push({
       harness: 'claude-code',
       label: 'Claude Code',
       ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
-    }
+    })
   }
   const codexSession = env['CODEX_THREAD_ID']
   if (codexSession !== undefined && codexSession !== '') {
-    return { harness: 'codex', label: 'Codex', sessionId: codexSession }
+    candidates.push({ harness: 'codex', label: 'Codex', sessionId: codexSession })
   }
-  if ((env['CURSOR_AGENT'] ?? '') !== '') return { harness: 'cursor', label: 'Cursor' }
-  return null
+  if ((env['CURSOR_AGENT'] ?? '') !== '') candidates.push({ harness: 'cursor', label: 'Cursor' })
+  return candidates
+}
+
+interface ActiveHarnessResolution {
+  active: ActiveHarnessSession | null
+  /**
+   * Markers of harnesses that could equally own this shell, present only when
+   * nothing here has fired yet and declared order had to pick. Whatever is
+   * reported then has to hold for every one of them.
+   */
+  contested: ActiveHarnessSession[]
+}
+
+/**
+ * Which harness session owns this shell, when several claim to.
+ *
+ * Nesting is ordinary: an orchestrator running inside Claude Code starts a
+ * Codex session, and that Codex process inherits `CLAUDECODE` and
+ * `CLAUDE_CODE_SESSION_ID` on top of its own `CODEX_THREAD_ID`. The mirror is
+ * just as ordinary, so no fixed precedence between two markers can be right —
+ * whichever one it favours is wrong in the opposite nesting, and the cost is
+ * silent: `ask` looks up a session that is not this one, and every remedy the
+ * agent is told to try addresses a harness that is not running here.
+ *
+ * The general rule is to prefer the most specific *live* signal over inherited
+ * environment. An inherited marker is a claim about some ancestor process; a
+ * session id that names an entry in this directory's live pointer index is
+ * evidence that that exact session fired a hook here and its state still
+ * exists. Live evidence therefore wins over declared order, and the most
+ * recently active pointer wins between two live candidates: the harness whose
+ * turn is running is the one that fired last, while its parent sits blocked on
+ * the child it started. Declared order decides only when nothing here has
+ * fired yet, and it says so — every route fails closed there anyway.
+ */
+function resolveActiveHarness(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  now: number,
+): ActiveHarnessResolution {
+  const candidates = harnessEnvCandidates(env)
+  const first = candidates[0]
+  if (first === undefined) return { active: null, contested: [] }
+  if (candidates.length === 1) return { active: first, contested: [] }
+  for (const pointer of readLiveProjectSessionPointers(cwd, env, now)) {
+    const owner = candidates.find(
+      (candidate) =>
+        candidate.harness === pointer.harness && candidate.sessionId === pointer.sessionId,
+    )
+    if (owner !== undefined) return { active: owner, contested: [] }
+  }
+  return { active: first, contested: candidates }
+}
+
+function activeHarnessSession(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  now: number,
+): ActiveHarnessSession | null {
+  return resolveActiveHarness(env, cwd, now).active
 }
 
 /**
@@ -1911,11 +1988,22 @@ function diagnoseActiveHarnessSession(
   active: ActiveHarnessSession,
   problem: ActiveHarnessProblem,
   installations: Installation[],
+  contested: ActiveHarnessSession[] = [],
 ): string[] {
+  // Naming one harness confidently is wrong when the environment carries the
+  // markers of several and none of them has fired here: whichever one the
+  // agent is told to prompt may not be the one it is running in.
+  const ambiguity =
+    contested.length > 1
+      ? [
+          `Several harness markers are present here (${contested.map((candidate) => candidate.label).join(', ')}) and none names a session that has fired in this directory, so ${active.label} is a guess from the environment. Send the prompt in the harness you are actually running.`,
+        ]
+      : []
   if (problem === 'not-installed') {
     const others = installations.map((installation) => installation.harness)
     return [
       `Could not register the question for the active ${active.label} session: Notifai ${active.label} hooks are not installed for this project.`,
+      ...ambiguity,
       ...(others.length === 0
         ? []
         : [
@@ -1928,12 +2016,14 @@ function diagnoseActiveHarnessSession(
   if (problem === 'different-session') {
     return [
       `Could not register the question for the active ${active.label} session: the project pointer belongs to another ${active.label} session or harness.`,
+      ...ambiguity,
       `Refusing to guess or cross-wire the question. Send one prompt in this ${active.label} session, then run \`notifai doctor\`.`,
       `Retry \`notifai ask\` only after doctor reports that this active ${active.label} session fired the hooks.`,
     ]
   }
   return [
     `Could not register the question for the active ${active.label} session: Notifai hooks are installed, but this session has not published its pointer.`,
+    ...ambiguity,
     `Send one ${active.label} prompt, then run \`notifai doctor\`.`,
     `Retry \`notifai ask\` only after doctor reports that the active ${active.label} session fired the hooks.`,
   ]
@@ -4057,7 +4147,7 @@ function remedyLine(state: ReadinessState): string {
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
-  const active = activeHarnessSession(deps.env)
+  const active = activeHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const settings: ReadinessState = {
     id: 'question-routing-settings',
@@ -4209,7 +4299,11 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       .join(', '),
   })
 
-  const active = activeHarnessSession(deps.env)
+  const { active, contested } = resolveActiveHarness(
+    deps.env,
+    deps.cwd,
+    (deps.now ?? Date.now)(),
+  )
   const activeInstallations =
     active === null
       ? []
@@ -4370,22 +4464,51 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
+  // Which route this judges, and which remedy it prints, must both belong to
+  // the harness that is actually running here. A machine-global installation
+  // matches every directory, so picking whichever installation matched — or
+  // whichever session last wrote a pointer — reports on a harness the agent
+  // cannot influence: it is told to send a prompt in a harness that is not
+  // running, follows the fail-closed rule, and can never clear the check.
   const firedPointer =
-    active?.sessionId === undefined
+    active === null
       ? readProjectSessionPointer(deps.cwd, deps.env, (deps.now ?? Date.now)())
-      : readMatchingProjectSessionPointer(
-          deps.cwd,
-          deps.env,
-          (deps.now ?? Date.now)(),
-          active.sessionId,
-          active.harness,
-        )
+      : active.sessionId === undefined
+        ? (readLiveProjectSessionPointers(deps.cwd, deps.env, (deps.now ?? Date.now)()).find(
+            (pointer) => pointer.harness === active.harness,
+          ) ?? null)
+        : readMatchingProjectSessionPointer(
+            deps.cwd,
+            deps.env,
+            (deps.now ?? Date.now)(),
+            active.sessionId,
+            active.harness,
+          )
   const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
   const promptFired = firedState?.last_prompt_at !== undefined
   const stopFired = firedState?.last_stop_at !== undefined
   const fired = firedPointer !== null && promptFired && stopFired
-  const activationInstallations =
-    active !== null && activeInstallations.length > 0 ? activeInstallations : installations
+  // Installations for other harnesses are irrelevant to the active one, and an
+  // active harness with none of its own has nothing to activate: say that
+  // instead of advising a prompt in some other harness. When the environment
+  // is contested and nothing has fired, every candidate is still possible, so
+  // the advice covers all of them rather than betting on one.
+  const activationHarnesses = new Set(
+    contested.length > 1
+      ? contested.map((candidate) => candidate.harness)
+      : active === null
+        ? installations.map((installation) => installation.harness)
+        : [active.harness],
+  )
+  const activationInstallations = installations.filter((installation) =>
+    activationHarnesses.has(installation.harness),
+  )
+  const activationAdvice =
+    activationInstallations.length > 0
+      ? hookActivationAdvice(activationInstallations)
+      : active === null
+        ? hookActivationAdvice(installations)
+        : `${active.label}: no ${active.label} hook installation matches this project — run \`notifai hooks install --harness ${active.harness}\`.`
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
@@ -4393,9 +4516,19 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     // a missing Stop is a broken route, not missing historical evidence.
     informational: firedPointer === null,
     detail: fired
-      ? 'a session in this directory has run UserPromptSubmit and Stop'
+      ? active === null
+        ? 'a session in this directory has run UserPromptSubmit and Stop'
+        : `the active ${active.label} session has run UserPromptSubmit and Stop`
       : firedPointer === null
-        ? `no session pointer from the last 24 hours — ${hookActivationAdvice(activationInstallations)}`
+        ? `no ${
+            contested.length > 1
+              ? `session pointer for any harness whose markers are present here (${contested
+                  .map((candidate) => candidate.label)
+                  .join(', ')})`
+              : active === null
+                ? 'session pointer'
+                : `${active.label} session pointer`
+          } from the last 24 hours — ${activationAdvice}`
         : `the routed session has fired ${promptFired ? 'UserPromptSubmit' : 'neither required event'}, but Stop has not been observed — end one harmless turn, send a new prompt, then check again`,
     ...(fired
       ? {}
@@ -4403,7 +4536,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           remedy: {
             summary:
               firedPointer === null
-                ? 'send one prompt in a session here, then re-check'
+                ? `send one ${active === null || contested.length > 1 ? '' : `${active.label} `}prompt in a session here, then re-check`
                 : 'end one harmless turn, send a new prompt, then re-check',
             command: 'notifai doctor',
           },

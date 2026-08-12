@@ -652,14 +652,26 @@ export function readProjectSession(
   return readProjectSessionPointer(cwd, env, now, maxAgeMs)?.sessionId ?? null
 }
 
-export function readProjectSessionPointer(
+/** A live pointer keeps when it was last written, so callers can rank by it. */
+export interface LiveProjectSessionPointer extends ProjectSessionPointer {
+  updatedAt: number
+}
+
+/**
+ * Every session that has fired a hook in this directory recently, newest first.
+ *
+ * This is the only local record of which harness sessions are actually alive
+ * here, which makes it the tiebreaker when the environment alone cannot say
+ * which harness owns the current shell.
+ */
+export function readLiveProjectSessionPointers(
   cwd: string,
   env: NodeJS.ProcessEnv,
   now: number,
   maxAgeMs = 24 * 3600 * 1000,
-): ProjectSessionPointer | null {
+): LiveProjectSessionPointer[] {
   const file = projectSessionPointerPath(cwd, env)
-  const live = readStoredProjectSessionPointers(file)
+  return readStoredProjectSessionPointers(file)
     .filter((entry) => now - entry.updatedAt <= maxAgeMs)
     .filter((entry) => {
       try {
@@ -675,7 +687,20 @@ export function readProjectSessionPointer(
       }
     })
     .sort((left, right) => right.updatedAt - left.updatedAt)
-  const latest = live[0]
+    .map((entry) => ({
+      sessionId: entry.sessionId,
+      harness: entry.harness,
+      updatedAt: entry.updatedAt,
+    }))
+}
+
+export function readProjectSessionPointer(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+  maxAgeMs = 24 * 3600 * 1000,
+): ProjectSessionPointer | null {
+  const latest = readLiveProjectSessionPointers(cwd, env, now, maxAgeMs)[0]
   return latest === undefined ? null : { sessionId: latest.sessionId, harness: latest.harness }
 }
 
@@ -687,26 +712,10 @@ export function readMatchingProjectSessionPointer(
   harness: HookHarness,
   maxAgeMs = 24 * 3600 * 1000,
 ): ProjectSessionPointer | null {
-  const file = projectSessionPointerPath(cwd, env)
-  const match = readStoredProjectSessionPointers(file).find(
-    (entry) =>
-      entry.sessionId === sessionId &&
-      entry.harness === harness &&
-      now - entry.updatedAt <= maxAgeMs,
+  const match = readLiveProjectSessionPointers(cwd, env, now, maxAgeMs).find(
+    (entry) => entry.sessionId === sessionId && entry.harness === harness,
   )
-  if (match === undefined) return null
-  try {
-    // A pointer is routing evidence only while its session state still exists
-    // and parses. SessionEnd and explicit cleanup therefore invalidate it even
-    // when a crash prevented the pointer file itself from being removed.
-    const sessionFile = sessionStatePath(match.sessionId, env)
-    if (!existsSync(sessionFile)) return null
-    const state: unknown = JSON.parse(readFileSync(sessionFile, 'utf8'))
-    if (typeof state !== 'object' || state === null || Array.isArray(state)) return null
-    return { sessionId: match.sessionId, harness: match.harness }
-  } catch {
-    return null
-  }
+  return match === undefined ? null : { sessionId: match.sessionId, harness: match.harness }
 }
 
 function clearMatchingProjectSession(

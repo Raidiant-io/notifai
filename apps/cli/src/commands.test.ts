@@ -2998,6 +2998,125 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
+  // A harness exports its markers into everything it starts, so a nested
+  // harness sees its parent's markers alongside its own. Neither order between
+  // two markers can be right, and both nestings are ordinary: an orchestrator
+  // running inside Claude Code starts Codex, and the reverse happens just as
+  // often. The environment cannot settle it; the pointer index can.
+  it('routes to the live Codex thread when a Claude Code orchestrator started it', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-under-claude-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      // Inherited from the parent Claude Code process, and unstrippable.
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    // The configuration that made this unrecoverable: Claude Code hooks
+    // installed machine-wide match every directory, including this one.
+    expect(
+      hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('codex-current-thread', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(readSessionState('claude-orchestrator', env).pending).toBeUndefined()
+  })
+
+  it('routes to the live Claude Code session when a Codex orchestrator started it', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-under-codex-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CODEX_THREAD_ID: 'codex-orchestrator',
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    // Both sessions are live here. The parent fired when its own turn began;
+    // the child fired for the turn that is running this command.
+    writeSessionState('codex-orchestrator', env, { last_prompt_at: 40, last_stop_at: 39 })
+    writeProjectSession(cwd, env, 'codex-orchestrator', 40, 'codex')
+    writeSessionState('claude-current', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('claude-current', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
+  })
+
+  it('judges the fired check against the active harness, not a global installation of another', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-fired-active-harness-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(
+      hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
+
+    const readiness = await assessReadiness(deps)
+    const fired = readiness.states.find((state) => state.id === 'hooks-fired')
+    // The Codex hooks fired. A missing Claude Code pointer says nothing about
+    // that, and telling this agent to send a Claude Code prompt is advice it
+    // cannot act on: it would refuse to ask, forever.
+    expect(fired?.status).toBe('ready')
+    expect(fired?.detail).toMatch(/active Codex session/i)
+    expect(fired?.detail).not.toMatch(/Claude Code/i)
+  })
+
+  it('advises every harness whose markers are present when none of them has fired here', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-fired-contested-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+      CODEX_THREAD_ID: 'codex-current-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(
+      hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+
+    const readiness = await assessReadiness(deps)
+    const fired = readiness.states.find((state) => state.id === 'hooks-fired')
+    expect(fired?.status).toBe('optional-gap')
+    expect(fired?.detail).toMatch(/Claude Code/)
+    expect(fired?.detail).toMatch(/Codex: send one prompt/)
+
+    io.errLines = []
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join(' ')).toMatch(/Several harness markers are present/i)
+  })
+
   it('makes one work-resumption commitment per offered answer part of the asking turn', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-commitment-'))
     const io = new CapturedIo()
