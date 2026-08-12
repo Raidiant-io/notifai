@@ -1717,8 +1717,32 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
   }
   deps.io.out(
     built.questions.length > 1
-      ? `${built.questions.length} questions registered as one form. Ask them in the conversation as usual and end your turn.`
-      : 'Question registered. Ask it in the conversation as usual and end your turn.',
+      ? `${built.questions.length} questions registered as one form. Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
+      : 'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
+  )
+  deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
+  for (const [index, entry] of built.questions.entries()) {
+    const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
+    if (entry.choices !== undefined) {
+      for (const choice of entry.choices) {
+        deps.io.out(
+          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the concrete work you will resume.`,
+        )
+      }
+      deps.io.out(
+        `- ${questionPrefix}For an unexpected typed answer: state how it will determine the concrete work you resume.`,
+      )
+    } else {
+      deps.io.out(
+        `- ${questionPrefix}For the free-text answer: state how its content will determine the concrete work you resume.`,
+      )
+    }
+  }
+  deps.io.out(
+    'When the answer arrives, resume the matching work without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
+  )
+  deps.io.out(
+    'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
   )
   return EXIT.ok
 }

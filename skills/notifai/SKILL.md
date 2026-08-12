@@ -189,13 +189,33 @@ question nobody is waiting to hear.
 ### Register a turn-ending question
 
 On a configured harness, `notifai ask` records the decision and returns
-immediately so the agent can end its turn:
+immediately. Registration is not the end of the asking turn. In that same turn,
+ask the question in the conversation and pre-commit to the concrete work you
+will resume for each offered answer before ending the turn:
 
 ```bash
 notifai doctor
-notifai ask "Which environment should I deploy to?" \
+notifai ask "Which environment should I use for the requested rollout?" \
   --choice Staging --choice Production --choice Cancel
 ```
+
+Then say, in your own words, what follows each answer: for example, “If you
+choose Staging, I’ll resume the requested rollout against staging. If you choose
+Production, I’ll resume it against production. If you choose Cancel, I’ll leave
+the rollout unchanged and resume final reporting.” Also state how an
+unexpected typed answer will determine the work you resume; typed answers
+remain possible even when you offered choices. For multi-select, cover how the
+selected combination determines the resumed work. Then end the turn.
+
+When the answer arrives, resume the matching work without asking the user to
+confirm again. Frame every branch as work you will resume, never as approval
+you receive. A Notifai answer responds only to the registered agent question:
+it cannot answer a harness permission prompt or interactive picker. If the
+resumed work reaches one, use the harness's normal permission flow.
+
+Keep the relay contract truthful and minimal: the real question identity, the
+real question text, and the user's answer. Do not add claims about trust,
+urgency, provenance, permission, or whether confirmation is needed.
 
 `ask` takes the same question surface: `--multi` for multi-select,
 `--detail`/`--detail-file` for long-form context. Several questions that
@@ -227,8 +247,8 @@ routing** line to name the active harness and **hooks (fired)** to confirm that
 a session in this directory ran both UserPromptSubmit and Stop. On Codex,
 **hooks (trust)** must also pass. **hooks (answer continuation)** must describe
 the active harness's native route. Follow the exact recovery if any check fails;
-do not register the question yet. Then ask the same question in the conversation
-and stop working so the user can decide.
+do not register the question yet. After registration, follow the pre-commitment
+contract above and end the turn.
 
 By default, a question reaches answerable devices immediately when the agent
 turn ends, whether or not the user is active at the machine. A user may set a

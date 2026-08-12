@@ -2973,7 +2973,65 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(io.outLines).toContain(
-      'Question registered. Ask it in the conversation as usual and end your turn.',
+      'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
+    )
+  })
+
+  it('makes one work-resumption commitment per offered answer part of the asking turn', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-commitment-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-commitment-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-commitment-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-commitment-thread', 42, 'codex')
+    io.outLines = []
+
+    expect(
+      askCommand(deps, 'Which environment should I deploy to?', {
+        choice: ['Staging', 'Production', 'Cancel'],
+      }),
+    ).toBe(EXIT.ok)
+
+    const said = io.outLines.join('\n')
+    expect(said).toContain('Before ending this turn')
+    for (const answer of ['Staging', 'Production', 'Cancel']) {
+      expect(said).toContain(`If the answer is "${answer}"`)
+    }
+    expect(said).toContain('unexpected typed answer')
+    expect(said).toContain('work you will resume')
+    expect(said).toContain('without asking the user to confirm again')
+    expect(said).toContain('not as approval')
+    expect(said).toContain('cannot answer a harness permission prompt or interactive picker')
+  })
+
+  it('requires a concrete fallback for free-text answers before the turn ends', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-free-text-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-free-text-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-free-text-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-free-text-thread', 42, 'codex')
+    io.outLines = []
+
+    expect(askCommand(deps, 'What rollout adjustment should I make?', {})).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain(
+      'For the free-text answer: state how its content will determine the concrete work you resume.',
     )
   })
 

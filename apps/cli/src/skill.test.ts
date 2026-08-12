@@ -34,6 +34,29 @@ describe('Notifai agent skill', () => {
     }
   })
 
+  it('turns a registered question into a same-turn work-resumption commitment', () => {
+    const askGuidance = skill.slice(
+      skill.indexOf('### Register a turn-ending question'),
+      skill.indexOf('## Verify delivery and readiness'),
+    )
+
+    for (const required of [
+      'same turn',
+      'each offered answer',
+      'unexpected typed answer',
+      'work you will resume',
+      'never as approval',
+      'permission prompt',
+      'interactive picker',
+      'question identity',
+      'question text',
+      "user's answer",
+    ]) {
+      expect(askGuidance).toContain(required)
+    }
+    expect(askGuidance).toMatch(/without asking the user to\s+confirm again/)
+  })
+
   it('tells the agent where to look when something did not happen', () => {
     // The log's whole value is diagnostic, so the skill has to name the case
     // that produces it — a question that was registered and never travelled.
