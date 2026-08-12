@@ -45,7 +45,6 @@ import {
   clearSessionState,
   drainRetirements,
   drainOrphanRetirements,
-  isUserAway,
   runEscalationWaiter,
   orphanRetirements,
   pruneAbandonedSessions,
@@ -196,12 +195,7 @@ interface Harness {
 
 const NOW = 1_800_000_000_000
 
-/**
- * `idleSeconds` defaults to null — "this machine has no idle source" — so these
- * cases exercise the degraded path and stay independent of whether the person
- * running the suite is touching their own keyboard.
- */
-function harness(replies: ReplyView[] = [], idleSeconds: number | null = null): Harness {
+function harness(replies: ReplyView[] = []): Harness {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-'))
   const env: NodeJS.ProcessEnv = {
     XDG_CONFIG_HOME: path.join(root, 'config'),
@@ -236,7 +230,6 @@ function harness(replies: ReplyView[] = [], idleSeconds: number | null = null): 
       cwd: root,
       clientFactory: () => fakeClient(recorder, replies),
       now: () => clock,
-      idleSeconds: () => idleSeconds,
       sleep: async (milliseconds: number) => {
         clock += milliseconds
       },
@@ -376,52 +369,16 @@ function writeGlobalConfig(h: Harness, toml: string): void {
   writeFileSync(path.join(dir, 'config.toml'), toml)
 }
 
-function presenceGatedConfig(cwd: string, env: NodeJS.ProcessEnv) {
-  const config = loadConfig({ cwd, env })
-  config.require_idle = { value: true, source: 'global:test' }
-  return config
-}
-
-/** Long enough ago to be away under the 120s default. */
+/** Long enough ago that no test is accidentally sensitive to the stamp. */
 const AWAY = NOW - 600_000
-const PRESENT = NOW - 5_000
 
-describe('presence gate', () => {
-  it('treats a never-seen session as present, so a missing hook cannot hijack the terminal', () => {
-    const { env, deps } = harness()
-    const config = presenceGatedConfig(deps.cwd, env)
-    expect(isUserAway({}, config, NOW, null)).toBe(false)
-  })
-
-  it('is away only once the configured silence has elapsed', () => {
-    const { env, deps } = harness()
-    const config = presenceGatedConfig(deps.cwd, env)
-    expect(isUserAway({ last_prompt_at: PRESENT }, config, NOW, null)).toBe(false)
-    expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, null)).toBe(true)
-  })
-
-  // The case that motivated this: "run the full test suite", then three
-  // minutes of watching. Elapsed time alone said away; the machine knows better.
-  it('keeps a user who is watching a long turn present, however long the turn ran', () => {
-    const { env, deps } = harness()
-    const config = presenceGatedConfig(deps.cwd, env)
-    expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, 3)).toBe(false)
-  })
-
-  // Found by a live Claude Code session: a spawned agent's session
-  // always has a just-set last_prompt_at, so requiring session silence too meant
-  // its FIRST question could never escalate — the "kick off agents and walk
-  // away" case the feature is for.
-  it('lets a freshly spawned session escalate when the machine says nobody is there', () => {
-    const { env, deps } = harness()
-    const config = presenceGatedConfig(deps.cwd, env)
-    expect(isUserAway({ last_prompt_at: PRESENT }, config, NOW, 900)).toBe(true)
-    expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, 900)).toBe(true)
-  })
-
-  it('pushes a spawned session first question once the machine has gone quiet', async () => {
-    const h = harness([reply({ text: 'Yes' })], 900)
-    writeGlobalConfig(h, 'require_idle = true\n')
+describe('pushing a registered question', () => {
+  // Found by a live Claude Code session: a spawned agent always has a
+  // just-set last_prompt_at, and the routing gate once read that as the user
+  // being present — so its FIRST question could never escalate, which is the
+  // "kick off agents and walk away" case the feature exists for.
+  it('pushes a freshly spawned session first question', async () => {
+    const h = harness([reply({ text: 'Yes' })])
     // Prompt 20s ago, exactly as a just-spawned agent has.
     writeSessionState('spawn1', h.env, { last_prompt_at: NOW - 20_000 })
     registerQuestion('spawn1', h.env, { question: 'Ship it?' }, NOW)
@@ -442,7 +399,7 @@ describe('presence gate', () => {
   })
 
   it('names the resolved project in the pushed question title', async () => {
-    const h = harness([reply({ text: 'Yes' })], 900)
+    const h = harness([reply({ text: 'Yes' })])
     const projectDir = path.join(h.deps.cwd, '.notifai')
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(
@@ -455,23 +412,6 @@ describe('presence gate', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'project-title', cwd: h.deps.cwd }))
 
     expect(h.recorder.submitted[0]?.draft.presentation.title).toBe('Question · notifai-cli')
-  })
-
-  it('falls back to elapsed time where no idle source exists', () => {
-    const { env, deps } = harness()
-    const config = presenceGatedConfig(deps.cwd, env)
-    expect(isUserAway({ last_prompt_at: AWAY }, config, NOW, null)).toBe(true)
-  })
-
-  it('does not push a question to the phone while the user is at the keyboard', async () => {
-    // Silent for ten minutes by the session clock, but active by the machine's.
-    const h = harness([reply({ text: 'Yes' })], 2)
-    writeGlobalConfig(h, 'require_idle = true\n')
-    writeSessionState('idle1', h.env, { last_prompt_at: AWAY })
-    registerQuestion('idle1', h.env, { question: 'Ship it?' })
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'idle1' }))
-    expect(h.recorder.submitted).toHaveLength(0)
-    expect(h.io.errLines.join('\n')).toContain('at the keyboard')
   })
 })
 
@@ -491,27 +431,31 @@ describe('what the hook leaves behind', () => {
   }
 
   it('records why a question was held, in a name a filter can match', async () => {
-    const h = harness([], 2)
-    writeGlobalConfig(h, 'require_idle = true\n')
-    writeSessionState('held', h.env, { last_prompt_at: AWAY })
-    registerQuestion('held', h.env, { question: 'Ship it?' })
-
-    await hookRunCommand(recording(h), 'stop', stdin({ session_id: 'held', cwd: h.deps.cwd }))
-
-    const held = gates(h).find((record) => record.data?.['reason'] === 'user-present')
-    expect(held).toBeDefined()
-    expect(held!.data).toMatchObject({
-      verdict: 'held',
-      stage: 'queued',
-      idle_seconds: 2,
-      away_after_seconds: 120,
+    const h = harness([])
+    writeSessionState('held', h.env, { accepted: undefined })
+    registerQuestion('held', h.env, { question: 'Ship it?' }, NOW)
+    // A continuation turn must not re-ask the question it is continuing from.
+    writeSessionState('held', h.env, {
+      ...readSessionState('held', h.env),
+      continuation: { answered_at: NOW + 1000, count: 1 },
     })
+
+    await hookRunCommand(
+      recording(h),
+      'stop',
+      stdin({ session_id: 'held', cwd: h.deps.cwd, stop_hook_active: true }),
+    )
+
+    const held = gates(h).find((record) => record.data?.['reason'] === 'continuation-repeat')
+    expect(held).toBeDefined()
+    expect(held!.data).toMatchObject({ verdict: 'held' })
+    expect(h.recorder.submitted).toHaveLength(0)
   })
 
   it('records the switch being off, which the user is deliberately never told', async () => {
     // Silent to the user by design, so from outside "you turned it off" and "a
     // bug ate my question" look identical. This is what tells them apart.
-    const h = harness([], 600)
+    const h = harness([])
     const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, 'config.toml'), 'ask_notifications = false\n')
@@ -561,7 +505,7 @@ describe('what the hook leaves behind', () => {
   })
 
   it('persists an answer once while still reporting it to the harness', async () => {
-    const h = harness([reply({ text: 'Allow exactly once' })], 900)
+    const h = harness([reply({ text: 'Allow exactly once' })])
     writeSessionState('answer-log', h.env, { last_prompt_at: AWAY })
     registerQuestion('answer-log', h.env, { question: 'Ship it?' })
 
@@ -582,7 +526,7 @@ describe('what the hook leaves behind', () => {
   })
 
   it('records the push and ties it to the request id the server knows', async () => {
-    const h = harness([], 600)
+    const h = harness([])
     const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, 'config.toml'), 'ask_grace_seconds = 0\n')
@@ -601,7 +545,7 @@ describe('what the hook leaves behind', () => {
   })
 
   it('stores every request in a multi-question wait as a structured identity', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('request-log', h.env, { last_prompt_at: AWAY })
     registerQuestion('request-log', h.env, { question: 'Ship it?' }, NOW)
     registerQuestion('request-log', h.env, { question: 'Deploy it?' }, NOW + 1)
@@ -661,7 +605,7 @@ describe('what the hook leaves behind', () => {
   })
 
   it('never writes the machine credential, whatever the hook did', async () => {
-    const h = harness([], 600)
+    const h = harness([])
     const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, 'config.toml'), 'ask_grace_seconds = 0\n')
@@ -683,23 +627,21 @@ describe('what the hook leaves behind', () => {
  * Presence is a precondition only while the user wants it to be, and switching
  * it off must not disturb the grace timer.
  */
-describe('presence gating is optional (require_idle)', () => {
-  it('consults active typing only when presence gating is explicitly enabled', () => {
-    // One second of idle: as present as it is possible to be.
-    const ungated = loadConfig({ cwd: '/nowhere', env: {}, flags: {} })
-    expect(isUserAway({ last_prompt_at: NOW }, ungated, NOW, 1)).toBe(true)
+describe('terminal-first grace window', () => {
+  /** Registers a question asked `agoMs` ago. */
+  function pending(h: Harness, session: string, agoMs: number): void {
+    writeSessionState(session, h.env, { last_prompt_at: AWAY })
+    registerQuestion(session, h.env, { question: 'Ship it?' }, NOW - agoMs)
+  }
 
-    const gated = loadConfig({ cwd: '/nowhere', env: {}, flags: {} })
-    gated.require_idle = { value: true, source: 'global:test' }
-    expect(isUserAway({ last_prompt_at: NOW }, gated, NOW, 1)).toBe(false)
-  })
-
-  it('escalates immediately by default while the user is at the keyboard', async () => {
-    const h = harness([], 1)
+  it('pushes as soon as the turn ends when no window is configured', async () => {
+    const h = harness([])
     let submittedAt: number | undefined
     h.recorder.beforeQuestionSubmit = () => {
       submittedAt = h.deps.now?.()
     }
+    // The user typed this very instant. It changes nothing: the waiter does
+    // not hold their terminal, so their being here is not a reason to wait.
     writeSessionState('present1', h.env, { last_prompt_at: NOW })
     registerQuestion('present1', h.env, { question: 'Ship it?' })
 
@@ -707,135 +649,73 @@ describe('presence gating is optional (require_idle)', () => {
 
     expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
     expect(submittedAt).toBe(NOW)
-    expect(h.io.errLines.join('\n')).not.toContain('at the keyboard')
   })
-
-  it('still gives the terminal its grace window first', async () => {
-    // The two knobs are independent: not needing the user to leave does not
-    // mean skipping the wait that offers the question to the terminal.
-    const h = harness([], 1)
-    writeGlobalConfig(h, 'require_idle = false\nask_grace_seconds = 300\n')
-    writeSessionState('present2', h.env, { last_prompt_at: NOW })
-    registerQuestion('present2', h.env, { question: 'Ship it?' }, NOW)
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present2' }))
-
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
-    // The clock only advances when the hook sleeps, so this is proof the wait
-    // actually happened rather than being skipped.
-    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(300_000)
-  })
-
-  it('honours the grace window on a machine with no idle source at all', async () => {
-    // With presence gating on, no idle source means refusing to wait
-    // ('no-signal'). With it off there is nothing to watch for, so the timer
-    // is just a timer and works everywhere.
-    const h = harness([], null)
-    writeGlobalConfig(h, 'require_idle = false\nask_grace_seconds = 120\n')
-    registerQuestion('present3', h.env, { question: 'Ship it?' }, NOW)
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present3' }))
-
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
-    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
-    expect(h.io.errLines.join('\n')).not.toContain('no idle signal')
-  })
-
-  it('is not a way to switch escalation on when the user has switched it off', async () => {
-    // ask_notifications is the "do not reach me" switch and outranks this one;
-    // wanting to be reachable while working is a different question entirely.
-    const h = harness([], 1)
-    writeGlobalConfig(h, 'require_idle = false\nask_notifications = false\n')
-    registerQuestion('present4', h.env, { question: 'Ship it?' })
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present4' }))
-
-    expect(h.recorder.submitted).toHaveLength(0)
-  })
-})
-
-describe('terminal-first grace window', () => {
-  /** Registers a question asked `agoMs` ago, with the user long since silent. */
-  function pending(h: Harness, session: string, agoMs: number): void {
-    writeSessionState(session, h.env, { last_prompt_at: AWAY })
-    registerQuestion(session, h.env, { question: 'Ship it?' }, NOW - agoMs)
-  }
 
   it('holds the question in the terminal until the window elapses', async () => {
-    // Idle 900s: the user is gone, so the wait runs to completion rather than
-    // being abandoned. Sleeps advance the virtual clock.
-    const h = harness([reply({ text: 'Yes' })], 900)
+    const h = harness([reply({ text: 'Yes' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 300\n')
     pending(h, 'g1', 0)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g1' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
-    // Nothing was pushed before the explicitly configured 300s had passed.
+    // Sleeps advance the virtual clock, so this is proof the wait happened.
     expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 300_000)
   })
 
   it('counts the window from when the question was sent, not from the turn end', async () => {
     // Asked 290s ago while the agent kept working: only 10s of wait remains.
-    const h = harness([reply({ text: 'Yes' })], 900)
+    const h = harness([reply({ text: 'Yes' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 300\n')
     pending(h, 'g2', 290_000)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g2' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
     expect(h.deps.now?.()).toBeLessThan(NOW + 60_000)
   })
 
-  it('sends nothing if the user comes back to the keyboard during the window', async () => {
-    let idle = 900
-    const h = harness([reply({ text: 'Yes' })], 900)
-    writeGlobalConfig(h, 'require_idle = true\n')
-    // Machine goes active on the second poll: the user sat down.
-    h.deps.idleSeconds = () => {
-      const current = idle
-      idle = 1
-      return current
-    }
-    pending(h, 'g3', 0)
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g3' }))
+  it('waits the window out on a machine with no idle signal at all', async () => {
+    // The timer once refused to run without an idle source to watch, because
+    // it was holding a terminal it could not monitor. It holds nothing now.
+    const h = harness([])
+    writeGlobalConfig(h, 'ask_grace_seconds = 120\n')
+    registerQuestion('present3', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present3' }))
+
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
+  })
+
+  it('is not a way to switch escalation on when the user has switched it off', async () => {
+    // ask_notifications is the "do not reach me" switch and outranks the timer.
+    const h = harness([])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\nask_notifications = false\n')
+    registerQuestion('present4', h.env, { question: 'Ship it?' })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present4' }))
+
     expect(h.recorder.submitted).toHaveLength(0)
-    expect(h.io.errLines.join('\n')).toContain('came back')
   })
 
-  it('refuses to hold a terminal it cannot monitor', async () => {
-    // No idle source: waiting would block the prompt with no way to notice the
-    // user returning, so it asks immediately instead.
-    const h = harness([reply({ text: 'Yes' })], null)
-    writeGlobalConfig(h, 'require_idle = true\n')
-    pending(h, 'g4', 0)
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g4' }))
-    expect(h.recorder.submitted.length).toBeGreaterThan(0)
-    expect(h.deps.now?.()).toBe(NOW)
-    expect(h.io.errLines.join('\n')).toContain('no idle signal')
-  })
-
-  it('never lets the window crowd out the reply wait past the hook budget', async () => {
-    // Both preferences can be large, but the shared budget honors maximum
-    // grace while retaining a protocol-valid answer window and scheduling
-    // slack. Real timers do not wake on the exact requested millisecond.
-    const h = harness([reply({ text: 'Yes' })], 900)
+  it('never lets the longest window crowd out a reply window the server accepts', async () => {
+    // The maximum grace a user can configure still has to leave the protocol's
+    // 60s minimum inside the waiter ceiling. Real timers do not wake on the
+    // exact requested millisecond, so the sleep deliberately overshoots.
+    const h = harness([reply({ text: 'Yes' })])
     const virtualSleep = h.deps.sleep!
     h.deps.sleep = async (milliseconds: number) => virtualSleep(milliseconds + 1)
-    const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(
-      path.join(dir, 'config.toml'),
-      'ask_grace_seconds = 334\nhook_reply_timeout_seconds = 540\n',
-    )
+    writeGlobalConfig(h, 'ask_grace_seconds = 360\n')
     pending(h, 'g5', 0)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'g5' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
-    expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 334_000)
-    expect(h.deps.now?.()).toBeLessThan(NOW + 335_000)
+    expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 360_000)
+    expect(h.deps.now?.()).toBeLessThan(NOW + 361_000)
     expect(
       h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')?.draft.reply
         ?.expires_in_seconds,
     ).toBeGreaterThanOrEqual(60)
   })
 
-  it('reserves transport overrun and close time inside the whole Stop budget', async () => {
-    const h = harness([], 900)
+  it('charges transport overrun and close time to the one waiter ceiling', async () => {
+    const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
       const client = factory!()
@@ -867,7 +747,7 @@ describe('terminal-first grace window', () => {
         },
       } as ApiClient
     }
-    writeGlobalConfig(h, 'ask_grace_seconds = 250\nhook_reply_timeout_seconds = 540\n')
+    writeGlobalConfig(h, 'ask_grace_seconds = 250\n')
     pending(h, 'transport-budget', 0)
 
     await hookRunCommand(h.deps, 'stop', async () => {
@@ -876,7 +756,10 @@ describe('terminal-first grace window', () => {
       return JSON.stringify({ session_id: 'transport-budget' })
     })
 
-    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
+    // The waiter's 480s ceiling is the last moment it will accept an answer;
+    // closing the window and retiring the card happens after it, which is what
+    // the blocking hosts' extra minute of declared headroom is there for.
+    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 540_000)
     expect(readSessionState('transport-budget', h.env).pending).toBeUndefined()
   })
 })
@@ -928,7 +811,7 @@ describe('nagging guards', () => {
   })
 
   it('delivers a new question registered during an answer continuation', async () => {
-    const h = harness([reply({ text: 'First answer' })], 900)
+    const h = harness([reply({ text: 'First answer' })])
     writeSessionState('n3', h.env, { last_prompt_at: AWAY })
     registerQuestion('n3', h.env, { question: 'First question?' }, NOW)
 
@@ -948,7 +831,7 @@ describe('nagging guards', () => {
   })
 
   it('stops chained questions at the consecutive continuation cap', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('n4', h.env, {
       last_prompt_at: AWAY,
       continuation: { answered_at: NOW - 1, count: 3 },
@@ -965,7 +848,7 @@ describe('nagging guards', () => {
 
 describe('late answer collection', () => {
   it('collects an answer that arrived during the resumed model turn', async () => {
-    const h = harness([reply({ text: 'Ship it' })], 900)
+    const h = harness([reply({ text: 'Ship it' })])
     writeSessionState('late-stop', h.env, {
       last_prompt_at: AWAY,
       pending: [{
@@ -991,7 +874,7 @@ describe('late answer collection', () => {
   })
 
   it('collects a late answer on UserPromptSubmit and retires it truthfully', async () => {
-    const h = harness([reply({ text: 'Hold' })], 900)
+    const h = harness([reply({ text: 'Hold' })])
     writeSessionState('late-prompt', h.env, {
       last_prompt_at: AWAY,
       pending: [{
@@ -1036,7 +919,7 @@ describe('late answer collection', () => {
 
 describe('OpenCode answer continuation', () => {
   it('fails closed instead of accepting an answer the idle event cannot deliver', async () => {
-    const h = harness([reply({ text: 'Approve' })], 900)
+    const h = harness([reply({ text: 'Approve' })])
     writeSessionState('open1', h.env, { last_prompt_at: AWAY })
     registerQuestion('open1', h.env, { question: 'Deploy?' }, NOW)
 
@@ -1053,9 +936,9 @@ describe('OpenCode answer continuation', () => {
   })
 })
 
-describe('reply-wait presence monitoring', () => {
+describe('the waiter owning one question to the end', () => {
   it('delivers a reply that commits while the server close fence is finalizing silence', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
       const client = factory!()
@@ -1076,7 +959,6 @@ describe('reply-wait presence monitoring', () => {
         },
       } as ApiClient
     }
-    writeGlobalConfig(h, 'hook_reply_timeout_seconds = 60\n')
     writeSessionState('fenced-reply', h.env, { last_prompt_at: AWAY })
     registerQuestion('fenced-reply', h.env, { question: 'Deploy?' }, NOW)
 
@@ -1089,7 +971,7 @@ describe('reply-wait presence monitoring', () => {
   })
 
   it('preserves a silent question when the close fence cannot be proven', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
       const client = factory!()
@@ -1100,7 +982,6 @@ describe('reply-wait presence monitoring', () => {
         },
       } as ApiClient
     }
-    writeGlobalConfig(h, 'hook_reply_timeout_seconds = 60\n')
     writeSessionState('unproven-close', h.env, { last_prompt_at: AWAY })
     registerQuestion('unproven-close', h.env, { question: 'Deploy?' }, NOW)
 
@@ -1113,7 +994,7 @@ describe('reply-wait presence monitoring', () => {
   })
 
   it('recovers an accepted question after its submit response is lost', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const factory = h.deps.clientFactory
     let acceptedRequestId: string | undefined
     h.deps.clientFactory = () => {
@@ -1152,7 +1033,7 @@ describe('reply-wait presence monitoring', () => {
   })
 
   it('replays the frozen intent when an ambiguous submit never reached the server', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const factory = h.deps.clientFactory
     let firstAttempt: SubmitNotificationRequestT | undefined
     h.deps.clientFactory = () => {
@@ -1189,7 +1070,7 @@ describe('reply-wait presence monitoring', () => {
   })
 
   it('preserves and exactly replays an intent after a definitive submit rejection', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const factory = h.deps.clientFactory
     let polls = 0
     h.deps.clientFactory = () => {
@@ -1230,29 +1111,8 @@ describe('reply-wait presence monitoring', () => {
     })
   })
 
-  it('returns the terminal when the user comes back after the push', async () => {
-    const h = harness([], 900)
-    writeGlobalConfig(h, 'require_idle = true\n')
-    let checks = 0
-    h.deps.idleSeconds = () => {
-      checks += 1
-      return checks >= 4 ? 1 : 900
-    }
-    writeSessionState('returned', h.env, { last_prompt_at: AWAY })
-    registerQuestion('returned', h.env, { question: 'Deploy?' }, NOW - 300_000)
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'returned' }))
-
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
-    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
-    expect(readSessionState('returned', h.env).pending).toBeUndefined()
-    expect((h.deps.now?.() ?? NOW) - NOW).toBeLessThan(30_000)
-    expect(h.io.errLines.join('\n')).toContain('came back')
-    expect(h.io.errLines.join('\n')).toContain('retired before returning the terminal')
-  })
-
   it('closes and retires silence at the absolute owner deadline', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
       const client = factory!()
@@ -1266,7 +1126,6 @@ describe('reply-wait presence monitoring', () => {
         }),
       } as ApiClient
     }
-    writeGlobalConfig(h, 'hook_reply_timeout_seconds = 60\n')
     writeSessionState('deadline', h.env, { last_prompt_at: AWAY })
     registerQuestion('deadline', h.env, { question: 'Deploy?' }, NOW)
 
@@ -1279,7 +1138,7 @@ describe('reply-wait presence monitoring', () => {
   })
 
   it('charges sequential submission latency to one deadline', async () => {
-    const h = harness([reply({ text: 'Done' })], 900)
+    const h = harness([reply({ text: 'Done' })])
     writeSessionState('latency', h.env, { last_prompt_at: AWAY })
     registerQuestion('latency', h.env, { question: 'First?' }, NOW)
     registerQuestion('latency', h.env, { question: 'Second?' }, NOW)
@@ -1290,12 +1149,14 @@ describe('reply-wait presence monitoring', () => {
     const windows = h.recorder.submitted
       .filter((entry) => entry.draft.event === 'agent_question')
       .map((entry) => entry.draft.reply?.expires_in_seconds)
-    expect(windows).toEqual([395, 355])
-    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 435_000)
+    // Both windows end at the same absolute moment: the second question's is
+    // shorter by exactly the 40s the first submission spent.
+    expect(windows).toEqual([480, 440])
+    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
   })
 
   it('re-arms the next Stop for an independently pending answer', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const answers = new Map<string, ReplyView[]>([
       ['req_hook_1', [reply({ text: 'First answer' })]],
       ['req_hook_2', []],
@@ -1327,7 +1188,7 @@ describe('reply-wait presence monitoring', () => {
 
 describe('Cursor stop output', () => {
   it('fails closed when the invoking shell cannot name the exact conversation', async () => {
-    const h = harness([reply({ text: 'Ship it' })], 900)
+    const h = harness([reply({ text: 'Ship it' })])
     writeSessionState('cursor-conversation', h.env, { last_prompt_at: AWAY })
     registerQuestion('cursor-conversation', h.env, { question: 'Deploy now?' })
 
@@ -1503,7 +1364,7 @@ describe('several questions in flight', () => {
   }
 
   it('escalates every registered question in one pass, each as its own notification', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('multi1', h.env, { last_prompt_at: AWAY })
     registerQuestion('multi1', h.env, { question: 'Ship it?' }, NOW)
     registerQuestion('multi1', h.env, { question: 'Deploy where?' }, NOW + 1)
@@ -1525,7 +1386,7 @@ describe('several questions in flight', () => {
    * handler; the harness flag only changes answer injection, not settlement.
    */
   it('settles a registered form into a durable request_id on the Codex Stop path', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('codex-form', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions(
       { form: JSON.stringify({
@@ -1561,7 +1422,7 @@ describe('several questions in flight', () => {
   })
 
   it('keeps a settled ask durable and collects the answer after a transient internal_error', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     let polls = 0
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
@@ -1600,7 +1461,7 @@ describe('several questions in flight', () => {
   })
 
   it('stops retrying and names a permanent rejection during the blocking multi-wait', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     let polls = 0
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
@@ -1627,7 +1488,7 @@ describe('several questions in flight', () => {
   })
 
   it('distinguishes a permanent late-poll rejection from transient trouble', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     let polls = 0
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
@@ -1667,7 +1528,7 @@ describe('several questions in flight', () => {
   })
 
   it('resumes with every answer that arrived, each tied to its question', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     repliesByRequest(
       h,
       new Map([
@@ -1693,7 +1554,7 @@ describe('several questions in flight', () => {
   })
 
   it('journals an accepted answer until a successor Stop proves delivery', async () => {
-    const h = harness([reply({ text: 'Ship it' })], 900)
+    const h = harness([reply({ text: 'Ship it' })])
     writeSessionState('answer-handoff', h.env, {
       last_prompt_at: AWAY,
       pending: [
@@ -1736,7 +1597,7 @@ describe('several questions in flight', () => {
   })
 
   it('resumes with a partial answer and keeps the rest registered', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const byRequest = new Map([['req_hook_1', [reply({ text: 'Ship it' })]]])
     repliesByRequest(h, byRequest)
     writeSessionState('multi3', h.env, { last_prompt_at: AWAY })
@@ -1897,14 +1758,15 @@ describe('hostile input', () => {
     expect(seen).toBe('https://test.notifai.invalid')
   })
 
-  it('clamps an out-of-range away threshold instead of trusting it', () => {
+  it('clamps an out-of-range grace window instead of trusting it', () => {
     const h = harness()
     const project = mkdtempSync(path.join(os.tmpdir(), 'notifai-bounds-'))
     mkdirSync(path.join(project, '.notifai'), { recursive: true })
-    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'away_after_seconds = -1\n')
+    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'ask_grace_seconds = 99999\n')
     const config = loadConfig({ cwd: project, env: h.env })
-    // -1 would make someone who just typed count as absent.
-    expect(config.away_after_seconds.value).toBeGreaterThanOrEqual(5)
+    // A committed repository file must not be able to consume the waiter's
+    // whole ceiling and leave no window in which an answer is still accepted.
+    expect(config.ask_grace_seconds.value).toBeLessThanOrEqual(360)
   })
 })
 
@@ -1936,7 +1798,7 @@ describe('ask registration', () => {
   })
 
   it('registers a multi-question form and pushes it as one set', async () => {
-    const h = harness([reply({ text: 'Yes' })], 900)
+    const h = harness([reply({ text: 'Yes' })])
     writeSessionState('form1', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions(
       { form: JSON.stringify({
@@ -2172,7 +2034,7 @@ describe('user-prompt-submit hook', () => {
   })
 
   it('preserves a delivered question through a second ask and the prompt transition', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     const live = {
       question: 'Ship it?',
       request_id: 'req_live',
@@ -2271,7 +2133,7 @@ describe('user-prompt-submit hook', () => {
   })
 
   it('retires as done/answered when the answer came from a device', async () => {
-    const h = harness([reply({ text: 'Yes' })], 900)
+    const h = harness([reply({ text: 'Yes' })])
     registerQuestion('s16', h.env, { question: 'Ship it?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's16' }))
@@ -2482,7 +2344,7 @@ describe('telling concurrent agents apart', () => {
     // The hook has always known session_id and never passed it on, so two
     // agents in separate worktrees produced identical notifications and the
     // user could answer the wrong one's question.
-    const h = harness([], 900)
+    const h = harness([])
     registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
@@ -2491,7 +2353,7 @@ describe('telling concurrent agents apart', () => {
   })
 
   it('stamps the retirement too, so it lands on the right agent’s notification', async () => {
-    const h = harness([reply({ text: 'Yes' })], 900)
+    const h = harness([reply({ text: 'Yes' })])
     registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
@@ -2506,7 +2368,7 @@ describe('telling concurrent agents apart', () => {
   })
 
   it('prefers a name the user chose over the harness UUID', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     h.env['NOTIFAI_SESSION'] = 'migration-worktree'
     registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
 
@@ -2517,44 +2379,19 @@ describe('telling concurrent agents apart', () => {
 })
 
 describe('clock jumps', () => {
-  const config = presenceGatedConfig('/nowhere', {})
-
-  it('does not hijack a terminal because the clock jumped forward', () => {
-    // NTP correction or a VM resume moves `now` without any time passing for
-    // the person sitting at the keyboard. Without an idle source there is
-    // nothing to check the delta against, so a huge one is not evidence.
-    const state = { last_prompt_at: NOW - 400 * 24 * 3600 * 1000 }
-    expect(isUserAway(state, config, NOW, null)).toBe(false)
-  })
-
-  it('does not read a backward jump as the user being present either', () => {
-    // A negative delta is nonsense, not freshness. It resolves the same way:
-    // no evidence, so leave the terminal alone.
-    expect(isUserAway({ last_prompt_at: NOW + 60_000 }, config, NOW, null)).toBe(false)
-  })
-
-  it('still escalates on an ordinary long silence', () => {
-    expect(isUserAway({ last_prompt_at: NOW - 3600_000 }, config, NOW, null)).toBe(true)
-  })
-
-  it('lets the OS idle signal decide regardless of the wall clock', () => {
-    // The idle probe measures elapsed time directly, so it is unaffected — and
-    // it outranks the proxy anyway.
-    const nonsense = { last_prompt_at: NOW + 999_999_999 }
-    expect(isUserAway(nonsense, config, NOW, 900)).toBe(true)
-    expect(isUserAway(nonsense, config, NOW, 1)).toBe(false)
-  })
-
-  it('does not let a stamp from the future hold the terminal past the budget', async () => {
-    // asked_at is wall-clock too. A future stamp used to make the grace window
-    // unreachable, blocking Stop until the harness killed it.
-    const h = harness([], 900)
+  it('does not let a stamp from the future consume the whole waiter ceiling', async () => {
+    // `asked_at` is wall-clock, and an NTP correction or VM resume can move it.
+    // A stamp thirty days out would otherwise make the grace window unreachable
+    // and leave nothing of the ceiling for an answer to arrive in.
+    const h = harness([])
+    writeGlobalConfig(h, 'ask_grace_seconds = 300\n')
     registerQuestion('sess-jump', h.env, { question: 'Ship it?' }, NOW + 30 * 24 * 3600 * 1000)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-jump' }))
 
-    // It escalated rather than spinning: the window restarted from now.
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
+    // The window ran from now, not from the impossible stamp.
+    expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 300_000)
   })
 })
 
@@ -2795,7 +2632,7 @@ describe('two hooks racing one question', () => {
   })
 
   it('sends one notification when a second Stop arrives mid-flight', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('race5', h.env, { last_prompt_at: AWAY })
     registerQuestion('race5', h.env, { question: 'Ship it?' })
     // Standing in for the other process: the claim is already held.
@@ -2809,7 +2646,7 @@ describe('two hooks racing one question', () => {
 
   it('resumes the agent once when two Stops collect the same late answer', async () => {
     const answers: ReplyView[] = []
-    const h = harness(answers, 900)
+    const h = harness(answers)
     writeSessionState('race-late-answer', h.env, {
       last_prompt_at: AWAY,
       pending: [
@@ -2856,7 +2693,7 @@ describe('two hooks racing one question', () => {
 
 describe('question registration racing a Stop submission', () => {
   it('keeps the new question when the older owner expires', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('submit-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('submit-race', h.env, { question: 'Old question?' }, NOW)
     h.recorder.beforeQuestionSubmit = () => {
@@ -2879,7 +2716,7 @@ describe('question registration racing a Stop submission', () => {
   })
 
   it('keeps the newer question when the older in-flight question receives an answer', async () => {
-    const h = harness([reply({ text: 'Old answer' })], 900)
+    const h = harness([reply({ text: 'Old answer' })])
     writeSessionState('answer-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('answer-race', h.env, { question: 'Old question?' }, NOW)
     h.recorder.beforeQuestionSubmit = () => {
@@ -2945,7 +2782,7 @@ describe('Claude Code Stop wake route', () => {
   }
 
   it('routes an accepted answer through the Claude inbox instead of hook stdout', async () => {
-    const h = harness([reply({ text: 'BETA' })], 900)
+    const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
@@ -2980,7 +2817,7 @@ describe('Claude Code Stop wake route', () => {
   })
 
   it('uses the accepted journal as the loop guard after a socket wake fires Stop again', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeSessionState('claude-route', h.env, {
       accepted: {
         answers: [
@@ -3065,7 +2902,7 @@ describe('Codex Stop wake route', () => {
   }
 
   it('continues the held turn with decision:block when the answer arrives during the hold', async () => {
-    const h = harness([reply({ text: 'BETA' })], 900)
+    const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
     const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
@@ -3096,7 +2933,7 @@ describe('Codex Stop wake route', () => {
   })
 
   it('replays an answer journaled after the hold on the next Stop', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     journaledAnswer(h)
     const wake = codexWake()
 
@@ -3114,7 +2951,7 @@ describe('Codex Stop wake route', () => {
   })
 
   it('cold-resumes the journaled answer when the Codex process is gone and no writer holds the thread', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     journaledAnswer(h)
     const wake = codexWake({ sourceAlive: false, probe: { state: 'stopped' } })
 
@@ -3132,7 +2969,7 @@ describe('Codex Stop wake route', () => {
   })
 
   it('holds the answer rather than resuming a thread a live writer owns', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     journaledAnswer(h)
     const wake = codexWake({ sourceAlive: false, probe: { state: 'live' } })
 
@@ -3158,7 +2995,6 @@ describe('escalation waiter delivery seam', () => {
       config: loadConfig({ cwd: h.deps.cwd, env: h.env }),
       env: h.env,
       now: h.deps.now!,
-      idleSeconds: h.deps.idleSeconds!,
       sleep: h.deps.sleep!,
       waitForFirstReply: async (requestId: string, timeoutSeconds: number) => {
         const response = await client.replies(requestId, {
@@ -3172,7 +3008,7 @@ describe('escalation waiter delivery seam', () => {
   }
 
   it('waits through grace, routes the fenced answer, and holds the claim until delivery settles', async () => {
-    const h = harness([reply({ text: 'Ship it' })], 900)
+    const h = harness([reply({ text: 'Ship it' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 120\n')
     writeSessionState('waiter-route', h.env, { last_prompt_at: AWAY })
     registerQuestion('waiter-route', h.env, { question: 'Ship it?' }, NOW)
@@ -3211,7 +3047,7 @@ describe('escalation waiter delivery seam', () => {
   })
 
   it('races a second Stop while grace, polling, fencing, and route delivery are still owned', async () => {
-    const h = harness([], 900)
+    const h = harness([])
     writeGlobalConfig(h, 'ask_grace_seconds = 10\n')
     writeSessionState('waiter-race-lifetime', h.env, { last_prompt_at: AWAY })
     registerQuestion('waiter-race-lifetime', h.env, { question: 'Ship it?' }, NOW)
@@ -3264,7 +3100,7 @@ describe('escalation waiter delivery seam', () => {
   })
 
   it('keeps the accepted journal when an out-of-band route rejects delivery', async () => {
-    const h = harness([reply({ text: 'Hold it' })], 900)
+    const h = harness([reply({ text: 'Hold it' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState('waiter-failed-route', h.env, { last_prompt_at: AWAY })
     registerQuestion('waiter-failed-route', h.env, { question: 'Ship it?' }, NOW)

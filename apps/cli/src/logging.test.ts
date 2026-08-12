@@ -428,12 +428,12 @@ describe('rendering', () => {
       run: 'r_1',
       cmd: 'hook stop',
       pid: 1,
-      data: { verdict: 'held', reason: 'user-present', idle_seconds: 4 },
+      data: { verdict: 'held', reason: 'notifications-off', source: 'default' },
     })
     expect(line).toContain('2026-08-11 12:04:31')
     expect(line).toContain('hook.gate')
-    expect(line).toContain('reason=user-present')
-    expect(line).toContain('idle_seconds=4')
+    expect(line).toContain('reason=notifications-off')
+    expect(line).toContain('source=default')
   })
 
   it('stays on one line whatever the payload', () => {

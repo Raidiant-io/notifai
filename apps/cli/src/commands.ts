@@ -63,6 +63,7 @@ import {
 } from './readiness.js'
 import type { Tone } from './ui/theme.js'
 import {
+  WAITER_CEILING_SECONDS,
   handleSessionEnd,
   handleStop,
   handleUserPromptSubmit,
@@ -77,7 +78,6 @@ import {
   type HookContext,
   type HookHarness,
 } from './hooks.js'
-import { readIdleSeconds } from './idle.js'
 import {
   LOG_EVENTS,
   activeLogPath,
@@ -114,7 +114,7 @@ import {
   type Harness,
   type Installation,
 } from './install-hooks.js'
-import { HARNESS_CAPABILITIES, HOOK_TIMING } from './harnesses.js'
+import { HARNESS_CAPABILITIES } from './harnesses.js'
 import {
   claudeWakeRoute,
   type ClaudeWakeAdapters,
@@ -195,8 +195,6 @@ export interface CommandDeps {
   /** Test seams for the Codex thread-writer probe and cold resume. */
   codexWake?: CodexWakeAdapters
   codexSourcePid?: number
-  /** Test seam for the OS idle probe; production shells out to the platform. */
-  idleSeconds?: () => number | null
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
   /**
@@ -1225,7 +1223,7 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
-  const processDeadlineAt = now() + HOOK_TIMING.totalSeconds * 1000
+  const processDeadlineAt = now() + WAITER_CEILING_SECONDS * 1000
 
   const logger = log(deps)
   logger.bind({ cmd: `hook ${event}` })
@@ -1363,13 +1361,7 @@ export async function hookRunCommand(
       `Bearer nfm_${credential.machineId}.${credential.secret}`,
       {
         timeoutMs: event === 'user-prompt-submit' ? 4_000 : 20_000,
-        ...(event === 'stop'
-          ? {
-              deadlineAt:
-                processDeadlineAt - HOOK_TIMING.stdoutReserveSeconds * 1000,
-              now,
-            }
-          : {}),
+        ...(event === 'stop' ? { deadlineAt: processDeadlineAt, now } : {}),
       },
     )
     const ctx: HookContext = {
@@ -1377,7 +1369,6 @@ export async function hookRunCommand(
       config: resolved,
       env: deps.env,
       now,
-      idleSeconds: deps.idleSeconds ?? (() => readIdleSeconds()),
       sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       waitForFirstReply: async (requestId, timeoutSeconds) => {
         const result = await waitForReply(client, requestId, {
@@ -1664,10 +1655,9 @@ function buildOneQuestion(
 }
 
 /**
- * Registers a question for turn-end routing under the user's presence config.
- * Returns immediately so the agent can ask in prose and end its turn. Presence
- * does not block the shipped default; `require_idle = true` intentionally keeps
- * the question local while the user is active.
+ * Registers a question for turn-end routing. Returns immediately so the agent
+ * can ask in prose and end its turn; the terminal keeps the question to itself
+ * for `ask_grace_seconds` before it reaches any device.
  */
 export function askCommand(deps: CommandDeps, question: string | undefined, flags: AskFlags): number {
   // Validate before route discovery. A malformed question belongs to the
@@ -2128,27 +2118,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     deps.io.out(`  removed: ${merged.removed.join(', ')} (this build no longer serves them)`)
   }
   deps.io.out('')
-  if (config.require_idle.value) {
-    deps.io.out(
-      `While keyboard or mouse idle time stays below ${config.away_after_seconds.value}s, ` +
-        `nothing is pushed. A question registered with \`notifai ask\` goes to your devices ` +
-        (config.ask_grace_seconds.value === 0
-          ? 'as soon as the machine meets that idle threshold. '
-          : `once its ${config.ask_grace_seconds.value}s grace window, counted from registration, has elapsed and the machine meets that idle threshold. `) +
-        `Run \`notifai config set require_idle false\` to be notified even while you are working.`,
-    )
-  } else {
-    deps.io.out(
-      config.ask_grace_seconds.value === 0
-        ? 'A question registered with `notifai ask` goes to your devices immediately when the agent turn ends, whether or not you are at this machine.'
-        : `A question registered with \`notifai ask\` stays in the terminal for ${config.ask_grace_seconds.value}s from registration and then goes to your devices whether or not you are at this machine.`,
-    )
-  }
-  if (config.require_idle.value) {
-    deps.io.out(
-      'If this OS exposes no keyboard/mouse idle signal, the hook falls back to prompt silence and skips the blocking grace once it decides you are away.',
-    )
-  }
+  deps.io.out(
+    config.ask_grace_seconds.value === 0
+      ? 'A question registered with `notifai ask` goes to your devices immediately when the agent turn ends, whether or not you are at this machine.'
+      : `A question registered with \`notifai ask\` stays in the terminal for ${config.ask_grace_seconds.value}s from registration and then goes to your devices whether or not you are at this machine.`,
+  )
   if (harness === 'codex') {
     const layer = flags.global ? null : codexLayerDir(deps.cwd)
     if (layer !== null) {
@@ -4088,10 +4062,7 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
     status: config.ask_notifications.value ? 'ready' : 'gap',
     detail: [
       `ask_notifications=${config.ask_notifications.value} (${config.ask_notifications.source})`,
-      `require_idle=${config.require_idle.value} (${config.require_idle.source})`,
-      `away_after_seconds=${config.away_after_seconds.value} (${config.away_after_seconds.source})`,
       `ask_grace_seconds=${config.ask_grace_seconds.value} (${config.ask_grace_seconds.source})`,
-      `hook_reply_timeout_seconds=${config.hook_reply_timeout_seconds.value} (${config.hook_reply_timeout_seconds.source})`,
     ].join(', '),
     ...(config.ask_notifications.value
       ? {}

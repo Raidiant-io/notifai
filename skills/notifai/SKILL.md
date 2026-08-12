@@ -325,11 +325,11 @@ It is bounded and scoped to this project by default, because an unbounded dump
 is not an answer. Widen it deliberately with `-n`, `--all`, `--since`, and
 `--all-projects`.
 
-`hook.gate` records carry a `reason` from a fixed set — `user-present`,
-`notifications-off`, `already-asked`, `claimed-elsewhere`, `user-returned`,
-`no-question` — so filter on that rather than on the wording of a message.
-`notifications-off` and `user-present` are the two the user is deliberately
-never told about, which is exactly why they are worth checking before
+`hook.gate` records carry a `reason` from a fixed set — `notifications-off`,
+`already-asked`, `claimed-elsewhere`, `no-question`, `no-session`,
+`continuation-repeat`, `continuation-limit` — so filter on that rather than on
+the wording of a message. `notifications-off` is the one the user is
+deliberately never told about, which is exactly why it is worth checking before
 concluding something is broken.
 
 The log stays on this machine. Nothing uploads it. Machine credentials are

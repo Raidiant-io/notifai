@@ -39,7 +39,6 @@ import type { Logger } from './logging.js'
 import {
   HARNESS_CAPABILITIES,
   HARNESSES,
-  HOOK_TIMING,
   type DeliveryRoute,
   type Harness,
 } from './harnesses.js'
@@ -52,10 +51,13 @@ import {
  * and Codex can continue directly from a turn-end answer. Harnesses without a
  * proven exact-session continuation fail closed at question admission.
  *
- * The load-bearing constraint is that these hooks are synchronous: while one
- * blocks, the harness cannot show its own prompt either. So a hook may only
- * take over when the user is demonstrably absent. Present user, or no evidence
- * either way, means exit immediately and let the terminal do its job.
+ * Where the user is standing no longer decides anything here. It used to: the
+ * turn-end hook held the terminal for as long as it waited, so waiting was
+ * only defensible while the person was demonstrably not at the keyboard. On
+ * Claude Code the handler now returns instantly and the waiter runs out of
+ * band, and nothing is monopolised in the first place — so the question is
+ * simply whether the user wants to be reached, which they answer once in
+ * configuration rather than implicitly with every keystroke.
  */
 
 /** Fields we read from harness hook JSON. Everything else is passed through. */
@@ -209,69 +211,50 @@ function summarizeRequestIds(entries: readonly PendingQuestion[]): {
   return { ids, display: ids.join(', ') }
 }
 
-/** How often the grace window rechecks whether the user has come back. */
-const GRACE_POLL_MS = 5_000
+/**
+ * The waiter's whole wall clock: the terminal-first timer, submission, and the
+ * wait for an answer, from the moment the turn-end hook starts.
+ *
+ * One plain ceiling, deliberately not a budget carved into reserves. The
+ * reserves existed to fit every phase inside a *held* turn; on Claude Code the
+ * turn is not held any more, and on a host that still holds one the useful
+ * question is only how long that host is willing to wait in total.
+ */
+export const WAITER_CEILING_SECONDS = 480
 
 /**
- * Total seconds the complete Stop invocation may own. Generated adapters grant
- * another minute of host headroom, because a killed hook can lose an answer
- * the user has already given. Grace and reply waiting share this budget while
- * the reply retains a small actionable window and finalization reserve.
+ * The wire contract's shortest reply window. A question submitted with less
+ * than this is rejected outright, and accepting one would in any case let the
+ * server go on taking an answer after the waiter that owns it has returned.
  */
-const STOP_BUDGET_SECONDS = HOOK_TIMING.totalSeconds
-const MIN_REPLY_WAIT_SECONDS = HOOK_TIMING.minimumReplySeconds
-
-export type GraceOutcome =
-  /** The window elapsed with the user still gone; escalate. */
-  | 'absent'
-  /** The user touched the machine; the terminal is theirs. */
-  | 'user-returned'
-  /** No idle source, so waiting would hold a terminal we cannot monitor. */
-  | 'no-signal'
+const MIN_REPLY_WINDOW_SECONDS = 60
 
 /**
  * The terminal-first wait: the question sits in the terminal for
  * `ask_grace_seconds` from when it was sent, and only then reaches companion
  * devices.
  *
- * Holding a blocking Stop hook open is normally hostile — while it blocks, the
- * harness cannot show its prompt either, so a user wanting to answer locally is
- * locked out. What makes it safe is that the wait is abandoned the moment the
- * user touches the keyboard or mouse. The block therefore only ever persists
- * while they are demonstrably not using the machine, which costs them nothing.
+ * A plain timer, and nothing else. It once polled an idle signal so it could
+ * abandon the wait the moment the user touched the keyboard — necessary while
+ * the wait blocked the terminal, because a user wanting to answer locally was
+ * otherwise locked out of their own prompt. Nothing is monopolised now, so
+ * there is nothing to watch for and no machine this cannot run on.
  *
- * That safety depends entirely on the idle signal, so with no idle source this
- * refuses to wait at all rather than holding a terminal it cannot monitor.
- *
- * With `require_idle` off the whole calculus changes: the user has said they
- * want the question to reach them whether or not they are at the keyboard, so
- * there is nothing to watch for and this becomes what its name always claimed —
- * a plain timer. It then works on machines with no idle source too.
+ * The window is measured from registration, not from the turn's end: a
+ * question the agent asked five minutes ago while it kept working has already
+ * served its wait. A stamp from the future would otherwise consume the whole
+ * ceiling and leave no room to answer, so it starts no later than now.
  */
-export async function awaitGrace(ctx: HookContext, askedAt: number): Promise<GraceOutcome> {
-  const threshold = ctx.config.away_after_seconds.value
-  // Keep a real device-answer window even when a user selects maximum grace.
-  const graceSeconds = Math.min(
-    ctx.config.ask_grace_seconds.value,
-    HOOK_TIMING.maxGraceSeconds,
-  )
-  // `asked_at` is wall-clock too, and the same jumps apply: a stamp from the
-  // future would wait far past the hook's budget, one from the distant past
-  // would skip the terminal-first window the user asked for entirely. Anything
-  // outside a plausible range restarts the window from now.
-  const elapsed = ctx.now() - askedAt
-  const start = elapsed >= 0 && elapsed <= MAX_PLAUSIBLE_SILENCE_MS ? askedAt : ctx.now()
-  const deadline = start + graceSeconds * 1000
-
-  for (;;) {
-    if (ctx.config.require_idle.value) {
-      const idle = ctx.idleSeconds()
-      if (idle === null) return 'no-signal'
-      if (idle < threshold) return 'user-returned'
-    }
-    if (ctx.now() >= deadline) return 'absent'
-    await ctx.sleep(Math.min(GRACE_POLL_MS, Math.max(0, deadline - ctx.now())))
-  }
+async function awaitTerminalFirstWindow(
+  ctx: HookContext,
+  askedAt: number,
+  ceilingAt: number,
+): Promise<void> {
+  const graceSeconds = ctx.config.ask_grace_seconds.value
+  if (graceSeconds <= 0) return
+  const until = Math.min(Math.min(askedAt, ctx.now()) + graceSeconds * 1000, ceilingAt)
+  const remaining = until - ctx.now()
+  if (remaining > 0) await ctx.sleep(remaining)
 }
 
 export interface HookOutcome {
@@ -425,7 +408,7 @@ export function pruneAbandonedSessions(
  * known-dead PID is recoverable immediately. Only legacy/corrupt claims with
  * no trustworthy PID fall back to an age limit.
  */
-const CLAIM_TTL_MS = STOP_BUDGET_SECONDS * 1000
+const CLAIM_TTL_MS = WAITER_CEILING_SECONDS * 1000
 const heldClaims = new Map<string, string>()
 
 export function claimQuestionPush(
@@ -705,66 +688,11 @@ function clearMatchingProjectSession(
   })
 }
 
-/**
- * Absent means the user is not at this machine's keyboard.
- *
- * OS idle time answers that directly, so where it exists it decides alone.
- * Silence since the user's last prompt is only ever a proxy for it, and a poor
- * one — it is wrong in both directions:
- *
- *   - Too long: it counts the agent's own turn, so a user watching a build was
- *     read as absent and had the question pushed at them.
- *   - Too short: a session that has just been spawned always has a fresh
- *     prompt, so its FIRST question could never escalate however long its
- *     owner had been gone. That is the "kick off some agents and
- *     walk away" case this feature mainly exists for, and requiring both
- *     signals to agree is what broke it.
- *
- * The proxy therefore survives only as the fallback for machines with no idle
- * source. There, never having seen a prompt is not evidence of absence — it is
- * a missing `UserPromptSubmit` hook — so it resolves to "present".
- *
- * Answering from a companion device does not make the user present; only touching this
- * machine does. Answering on a device is evidence of being away from it.
- *
- * All of which only matters if presence is being consulted at all. With
- * `require_idle` off the user has said their whereabouts are not a
- * precondition, so this stops guessing and answers yes.
- */
-export function isUserAway(
-  state: SessionState,
-  config: CliConfig,
-  now: number,
-  idleSeconds: number | null,
-): boolean {
-  if (!config.require_idle.value) return true
-  const threshold = config.away_after_seconds.value
-  if (idleSeconds !== null) return idleSeconds >= threshold
-  if (state.last_prompt_at === undefined) return false
-  const silence = now - state.last_prompt_at
-  // Both signs of a clock jump produce a wrong answer here, and the fallback
-  // path has no monotonic reference to check against: a forward jump (NTP
-  // correction, VM resume) hijacks a terminal whose user is sitting right
-  // there, and a backward one suppresses escalation for someone genuinely
-  // gone. Neither delta is evidence of anything, so it resolves the way every
-  // other absence of evidence does — present.
-  if (silence < 0 || silence > MAX_PLAUSIBLE_SILENCE_MS) return false
-  return silence >= threshold * 1000
-}
-
-/**
- * Beyond this, silence says more about the clock or an abandoned session file
- * than about the user. Matches the project pointer's staleness horizon.
- */
-const MAX_PLAUSIBLE_SILENCE_MS = 24 * 3600 * 1000
-
 export interface HookContext {
   client: ApiClient
   config: CliConfig
   env: NodeJS.ProcessEnv
   now: () => number
-  /** Seconds since the last keyboard/mouse event, or null if unknowable. */
-  idleSeconds: () => number | null
   /** Injected so tests advance a virtual clock instead of sleeping. */
   sleep: (milliseconds: number) => Promise<void>
   /** Bounded wait for the first reply; injected so tests do not sleep. */
@@ -799,9 +727,7 @@ export type GateReason =
   | 'continuation-repeat'
   | 'continuation-limit'
   | 'notifications-off'
-  | 'user-present'
   | 'claimed-elsewhere'
-  | 'user-returned'
   | 'no-devices'
   | 'proceeding'
 
@@ -816,8 +742,11 @@ function gate(
 
 export type HookHarness = Harness
 
-/** Re-check local presence at this cadence while a pushed question is waiting. */
-const REPLY_PRESENCE_POLL_SECONDS = 5
+/**
+ * One round of the waiter's reply poll. Short enough that several questions
+ * still share one wall clock, long enough not to hammer the server.
+ */
+const REPLY_POLL_SECONDS = 5
 
 /**
  * Push a question and block for the answer.
@@ -903,20 +832,21 @@ async function submitQuestion(
 }
 
 /**
- * One blocking wait across every live question. Each round polls all of them
- * concurrently, so several questions cost the same wall clock as one; the
- * first round that finds any reply returns everything found in that round, and
- * whatever was not answered stays registered.
+ * The waiter's wait: one bounded poll across every live question at once.
+ *
+ * Each round polls all of them concurrently, so several questions cost the
+ * same wall clock as one; the first round that finds any reply returns
+ * everything found in that round, and whatever was not answered stays
+ * registered. A question whose polling is permanently rejected drops out of
+ * the round rather than failing the whole wait.
  */
-async function waitForAnyReplyWhileAway(
+async function waitForAnyReply(
   ctx: HookContext,
   requestIds: string[],
   timeoutSeconds: number,
-  monitorPresence = true,
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
-  userReturned: boolean
   permanentFailures: Map<string, string>
 }> {
   const deadline = ctx.now() + timeoutSeconds * 1000
@@ -925,22 +855,12 @@ async function waitForAnyReplyWhileAway(
   const permanentFailures = new Map<string, string>()
 
   for (;;) {
-    if (monitorPresence && ctx.config.require_idle.value) {
-      const idle = ctx.idleSeconds()
-      if (idle !== null && idle < ctx.config.away_after_seconds.value) {
-        return { byRequest: new Map(), degraded, userReturned: true, permanentFailures }
-      }
-    }
-
     const remainingMs = Math.max(0, deadline - ctx.now())
     if (!firstPoll && remainingMs === 0) {
-      return { byRequest: new Map(), degraded, userReturned: false, permanentFailures }
+      return { byRequest: new Map(), degraded, permanentFailures }
     }
     firstPoll = false
-    const pollSeconds = Math.min(
-      REPLY_PRESENCE_POLL_SECONDS,
-      Math.max(0, Math.ceil(remainingMs / 1000)),
-    )
+    const pollSeconds = Math.min(REPLY_POLL_SECONDS, Math.max(0, Math.ceil(remainingMs / 1000)))
     const results = await Promise.all(
       requestIds
         .filter((requestId) => !permanentFailures.has(requestId))
@@ -969,7 +889,7 @@ async function waitForAnyReplyWhileAway(
       if (result.replies.length > 0) byRequest.set(result.requestId, result.replies)
     }
     if (byRequest.size > 0 || permanentFailures.size === requestIds.length) {
-      return { byRequest, degraded, userReturned: false, permanentFailures }
+      return { byRequest, degraded, permanentFailures }
     }
   }
 }
@@ -1733,7 +1653,7 @@ export async function handleUserPromptSubmit(
 export async function handleStop(
   ctx: HookContext,
   envelope: HookEnvelope,
-  processDeadlineAt = ctx.now() + STOP_BUDGET_SECONDS * 1000,
+  processDeadlineAt = ctx.now() + WAITER_CEILING_SECONDS * 1000,
   route: EscalationDeliveryRoute = hookContinuationRoute(),
 ): Promise<HookOutcome> {
   const sessionId = envelope.session_id
@@ -1760,7 +1680,7 @@ export async function runEscalationWaiter(
   const notes: string[] = []
   const { sessionId, envelope } = options
   const hardDeadlineAt =
-    options.processDeadlineAt ?? ctx.now() + STOP_BUDGET_SECONDS * 1000
+    options.processDeadlineAt ?? ctx.now() + WAITER_CEILING_SECONDS * 1000
 
   // This event marker is diagnostic evidence in its own right. Record it
   // before every early return so doctor can distinguish a working Stop route
@@ -2017,21 +1937,9 @@ async function handleClaimedStop(
     gate(ctx, 'held', 'notifications-off', { source: ctx.config.ask_notifications.source })
     return { notes }
   }
-  const idle = ctx.idleSeconds()
-  if (!isUserAway(state, ctx.config, ctx.now(), idle)) {
-    gate(ctx, 'held', 'user-present', {
-      idle_seconds: idle,
-      away_after_seconds: ctx.config.away_after_seconds.value,
-      require_idle: ctx.config.require_idle.value,
-      last_prompt_at: state.last_prompt_at ?? null,
-    })
-    notes.push('you are at the keyboard; leaving the question in the terminal')
-    return { notes }
-  }
   gate(ctx, 'proceeding', 'proceeding', {
     unasked: unasked.length,
     already_live: liveToEscalate.length,
-    idle_seconds: idle,
     grace_seconds: ctx.config.ask_grace_seconds.value,
   })
   return await escalate(
@@ -2057,55 +1965,44 @@ async function escalate(
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
 ): Promise<HookOutcome> {
-  // Away right now, but the questions still owe the user their terminal-first
-  // window before anything reaches their devices — measured from the oldest
-  // registration, because that is the question that has waited longest.
-  const budgetStartedAt = ctx.now()
+  // The questions still owe the user their terminal-first window before
+  // anything reaches their devices — measured from the oldest registration,
+  // because that is the question that has waited longest.
+  const startedAt = ctx.now()
   const existingDeadlines = alreadyLive.flatMap((entry) =>
-    entry.reply_deadline_at === undefined || entry.reply_deadline_at <= budgetStartedAt
+    entry.reply_deadline_at === undefined || entry.reply_deadline_at <= startedAt
       ? []
       : [entry.reply_deadline_at],
   )
-  const budgetDeadlineAt = Math.min(
-    hardDeadlineAt - HOOK_TIMING.finalizationReserveSeconds * 1000,
+  const ceilingAt = Math.min(
+    hardDeadlineAt,
     ...(existingDeadlines.length === 0 ? [] : existingDeadlines),
   )
   if (unasked.length > 0 && alreadyLive.length === 0) {
     const oldest = Math.min(...unasked.map((entry) => entry.asked_at ?? ctx.now()))
-    const grace = await awaitGrace(ctx, oldest)
-    ctx.log?.debug('hook.gate', { verdict: 'grace', reason: grace, waited_from: oldest })
-    if (grace === 'user-returned') {
-      gate(ctx, 'held', 'user-returned', { grace_seconds: ctx.config.ask_grace_seconds.value })
-      notes.push('you came back before the wait elapsed; leaving the questions in the terminal')
-      return { notes }
-    }
-    if (grace === 'no-signal') {
-      notes.push('no idle signal on this machine; asking now rather than holding the terminal')
-    }
+    await awaitTerminalFirstWindow(ctx, oldest, ceilingAt)
+    ctx.log?.debug('hook.gate', {
+      verdict: 'grace',
+      reason: 'elapsed',
+      waited_from: oldest,
+      grace_seconds: ctx.config.ask_grace_seconds.value,
+    })
   }
   // Phase one: every registered question reaches the user's devices, each as
   // its own notification — one ask never stands in for another.
   const submitted: PendingQuestion[] = []
   for (const entry of unasked) {
-    const remainingSeconds = Math.floor((budgetDeadlineAt - ctx.now()) / 1000)
-    if (
-      remainingSeconds <
-      MIN_REPLY_WAIT_SECONDS + HOOK_TIMING.submissionReserveSeconds
-    ) {
+    // The reply window is the question's own: whatever is left of the waiter's
+    // ceiling, granted to the server so it stops accepting answers at the same
+    // moment this owner stops listening for them.
+    const replyWindowSeconds = Math.floor((ceilingAt - ctx.now()) / 1000)
+    if (replyWindowSeconds < MIN_REPLY_WINDOW_SECONDS) {
       notes.push(
-        'the Stop budget cannot fit device resolution, submission, and a full reply window; leaving this question in the terminal',
+        'too little of the waiter ceiling is left for a reply window the server would accept; leaving this question in the terminal',
       )
       continue
     }
-    const replyWindowSeconds = Math.min(
-      ctx.config.hook_reply_timeout_seconds.value,
-      remainingSeconds - HOOK_TIMING.submissionReserveSeconds,
-    )
-    const ownerDeadlineAt = Math.min(
-      budgetDeadlineAt,
-      ctx.now() +
-        (replyWindowSeconds + HOOK_TIMING.submissionReserveSeconds) * 1000,
-    )
+    const ownerDeadlineAt = ceilingAt
     const questions = pendingQuestions(entry)
     let intent = entry.submission
     if (intent === undefined) {
@@ -2148,16 +2045,7 @@ async function escalate(
       // The frozen wire identity survives a crashed owner, but its local owner
       // lease does not. Re-arm only the local deadline; request id, key,
       // targets, and draft remain byte-identical for idempotent replay.
-      const frozenReplyWindow =
-        intent.draft.reply?.expires_in_seconds ?? replyWindowSeconds
-      intent = {
-        ...intent,
-        owner_deadline_at: Math.min(
-          budgetDeadlineAt,
-          ctx.now() +
-            (frozenReplyWindow + HOOK_TIMING.submissionReserveSeconds) * 1000,
-        ),
-      }
+      intent = { ...intent, owner_deadline_at: ceilingAt }
       const rearmed = intent
       updateSessionState(sessionId, ctx.env, (current) => {
         const list = pendingList(current)
@@ -2169,16 +2057,13 @@ async function escalate(
       })
     }
     if (ctx.now() >= intent.owner_deadline_at) {
-      notes.push('the Stop budget ended before submission; preserving the frozen intent')
+      notes.push('the waiter ceiling ended before submission; preserving the frozen intent')
       continue
     }
     const beforeSubmitSeconds = Math.floor((intent.owner_deadline_at - ctx.now()) / 1000)
-    if (
-      beforeSubmitSeconds <
-      MIN_REPLY_WAIT_SECONDS + HOOK_TIMING.submissionReserveSeconds / 2
-    ) {
+    if (beforeSubmitSeconds < MIN_REPLY_WINDOW_SECONDS) {
       notes.push(
-        'device resolution consumed the submission reserve; preserving the frozen intent instead of shrinking its reply window',
+        'device resolution consumed the reply window; preserving the frozen intent instead of shrinking it below what the server accepts',
       )
       continue
     }
@@ -2311,17 +2196,16 @@ async function escalate(
   ]
   if (waitingOn.length === 0) return { notes }
 
-  // Phase two: one blocking wait across everything live, old and new alike.
+  // Phase two: one wait across everything live, old and new alike.
   const ownerDeadline = Math.min(
-    budgetDeadlineAt,
+    ceilingAt,
     Math.max(...waitingOn.map((entry) => entry.reply_deadline_at!)),
   )
   const timeoutSeconds = Math.max(0, Math.ceil((ownerDeadline - ctx.now()) / 1000))
-  const waited = await waitForAnyReplyWhileAway(
+  const waited = await waitForAnyReply(
     ctx,
     waitingOn.map((entry) => entry.request_id!),
     timeoutSeconds,
-    ctx.harness !== 'opencode',
   )
   const permanentFailure = permanentReplyFailureNote(waited.permanentFailures)
   if (permanentFailure !== null) notes.push(permanentFailure)
@@ -2339,13 +2223,7 @@ async function escalate(
       .map((entry) => entry.pending)
     const unproven = finalized.filter((entry) => entry.response === null)
     if (confirmedSilent.length > 0) {
-      await retirePendings(
-        ctx,
-        envelope,
-        sessionId,
-        confirmedSilent,
-        waited.userReturned ? 'answered_elsewhere' : 'expired',
-      )
+      await retirePendings(ctx, envelope, sessionId, confirmedSilent, 'expired')
     }
     if (unproven.length > 0) {
       notes.push(
@@ -2366,16 +2244,11 @@ async function escalate(
       answered: false,
       stage: 'queued',
       request_ids: requestIdSummary.ids,
-      user_returned: waited.userReturned,
       degraded: waited.degraded,
       permanent_failures: waited.permanentFailures.size,
       waited_seconds: timeoutSeconds,
     })
-    if (waited.userReturned) {
-      notes.push(
-        `you came back after the question${waitingOn.length === 1 ? ' was' : 's were'} sent; ${waitingOn.length === 1 ? 'it was' : 'they were'} retired before returning the terminal (${requestIdSummary.display})`,
-      )
-    } else if (waited.permanentFailures.size === 0) {
+    if (waited.permanentFailures.size === 0) {
       notes.push(
         waited.degraded
           ? 'could not reach the server before the owner deadline; the question was retired so no answer can be lost later'

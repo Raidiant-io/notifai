@@ -45,22 +45,22 @@ function setup(options: {
 describe('harness config layers', () => {
   it('orders session over project-local over project over global', () => {
     const { env, cwd } = setup({
-      globalToml: 'away_after_seconds = 10\n',
-      projectToml: 'away_after_seconds = 20\n',
-      projectLocalToml: 'away_after_seconds = 30\n',
-      sessionToml: 'away_after_seconds = 40\n',
+      globalToml: 'ask_grace_seconds = 10\n',
+      projectToml: 'ask_grace_seconds = 20\n',
+      projectLocalToml: 'ask_grace_seconds = 30\n',
+      sessionToml: 'ask_grace_seconds = 40\n',
       sessionId: 'abc',
     })
-    expect(loadConfig({ cwd, env, sessionId: 'abc' }).away_after_seconds).toMatchObject({
+    expect(loadConfig({ cwd, env, sessionId: 'abc' }).ask_grace_seconds).toMatchObject({
       value: 40,
       source: expect.stringMatching(/^session:/),
     })
     // Same files, different session: the session layer simply does not apply.
-    expect(loadConfig({ cwd, env, sessionId: 'other' }).away_after_seconds).toMatchObject({
+    expect(loadConfig({ cwd, env, sessionId: 'other' }).ask_grace_seconds).toMatchObject({
       value: 30,
       source: expect.stringMatching(/^project-local:/),
     })
-    expect(loadConfig({ cwd, env }).away_after_seconds.value).toBe(30)
+    expect(loadConfig({ cwd, env }).ask_grace_seconds.value).toBe(30)
   })
 
   it('keeps a personal toggle out of the committed project file', () => {
@@ -75,29 +75,34 @@ describe('harness config layers', () => {
 
   it('keeps hostile or colliding session ids inside their own file', () => {
     const { env, cwd } = setup({
-      sessionToml: 'away_after_seconds = 99\n',
+      sessionToml: 'ask_grace_seconds = 99\n',
       sessionId: '../../etc/passwd',
     })
     // The id round-trips to its own state, and nothing escapes the directory.
-    expect(loadConfig({ cwd, env, sessionId: '../../etc/passwd' }).away_after_seconds.value).toBe(99)
+    expect(loadConfig({ cwd, env, sessionId: '../../etc/passwd' }).ask_grace_seconds.value).toBe(99)
     expect(sessionConfigPath('../../etc/passwd', env)).toContain('/notifai/sessions/')
     expect(sessionConfigPath('../../etc/passwd', env)).not.toContain('..')
     // Ids that a sanitiser would have collapsed together must stay distinct:
     // sharing a file meant sharing presence and pending questions.
     expect(sessionConfigPath('a/b', env)).not.toBe(sessionConfigPath('a?b', env))
-    expect(loadConfig({ cwd, env, sessionId: 'a/b' }).away_after_seconds.value).toBe(120)
+    expect(loadConfig({ cwd, env, sessionId: 'a/b' }).ask_grace_seconds.value).toBe(0)
   })
 
-  it('defaults question routing to on without requiring the user to be idle', () => {
+  it('defaults question routing to on and reaching the user straight away', () => {
     const { env, cwd } = setup({})
     const config = loadConfig({ cwd, env })
     expect(config.ask_notifications.value).toBe(true)
-    expect(config.require_idle).toEqual({ value: false, source: 'default' })
-    expect(config.away_after_seconds.value).toBe(120)
-    // Immediate escalation by default leaves the whole hook budget available
-    // for the reply wait. Users can still opt into a terminal-first grace.
-    expect(config.hook_reply_timeout_seconds.value).toBe(480)
+    // Nothing here asks where the user is standing. A question goes out when
+    // the turn ends unless they choose a terminal-first window.
     expect(config.ask_grace_seconds).toEqual({ value: 0, source: 'default' })
+  })
+
+  it('bounds the terminal-first window so a reply window always survives it', () => {
+    // Config is readable from a repository, so an unbounded grace is hostile
+    // input: it would eat the waiter's whole ceiling and leave no window the
+    // server would accept an answer into.
+    const { env, cwd } = setup({ globalToml: 'ask_grace_seconds = 100000\n' })
+    expect(loadConfig({ cwd, env }).ask_grace_seconds.value).toBe(360)
   })
 })
 

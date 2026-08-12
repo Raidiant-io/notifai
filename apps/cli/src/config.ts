@@ -4,7 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
-import { HOOK_TIMING } from './harnesses.js'
 
 /**
  * Layered configuration with provenance. Most specific wins:
@@ -60,49 +59,16 @@ export interface CliConfig {
   project: ResolvedValue<string | null>
   /** Free-text notification criteria agents consult before sending. */
   notify_criteria: ResolvedValue<string | null>
-  /** Route a registered agent question to companion devices after the presence gate. */
+  /** Whether a registered agent question may reach companion devices at all. */
   ask_notifications: ResolvedValue<boolean>
-  /**
-   * Whether being at this machine suppresses a question. Sitting at the
-   * keyboard is not the same as not wanting to be reached — needing to stop
-   * using the machine in order to be notified is its own kind of interruption.
-   *
-   * On, the default, is the original behaviour: a question stays in the
-   * terminal while the keyboard is in use, because the person is right there
-   * and a push would be redundant. Off says notify me anyway — the grace window
-   * still runs, so the question is still offered to the terminal first, it just
-   * no longer needs the user to walk away before it may leave.
-   *
-   * This is deliberately separate from `ask_notifications`, which switches
-   * escalation off altogether. Wanting to be reached while working is the
-   * opposite of not wanting to be reached.
-   */
-  require_idle: ResolvedValue<boolean>
-  /**
-   * Keyboard/mouse idle time after which this machine counts as unattended.
-   * When the OS idle signal is unavailable, silence since the user's last prompt
-   * is the conservative fallback. Below the threshold the hooks stay out of the
-   * way entirely, because a blocking hook also blocks the terminal prompt the
-   * present user would use.
-   *
-   * Only consulted while `require_idle` is on.
-   */
-  away_after_seconds: ResolvedValue<number>
-  /**
-   * How long a hook blocks waiting for a companion-device answer before falling through
-   * to the harness's own prompt. Runtime arbitration keeps the complete Stop
-   * invocation inside its fixed 480s owner budget and 540s adapter ceiling.
-   */
-  hook_reply_timeout_seconds: ResolvedValue<number>
   /**
    * Terminal-first grace window, measured from the moment the question was
    * sent: the agent asks in the terminal and starts a timer, and only once it
    * elapses does the question reach companion devices.
    *
-   * A timer, and only a timer. It is configured independently of
-   * `away_after_seconds` and honoured whether or not presence is consulted at
-   * all — how long to wait and whether anyone is watching are separate
-   * questions, and answering one should not answer the other.
+   * A timer, and only a timer. Whether the user happens to be at this keyboard
+   * decides nothing — the waiter no longer holds their terminal, so there is
+   * nothing for their presence to protect them from.
    */
   ask_grace_seconds: ResolvedValue<number>
   /**
@@ -136,9 +102,6 @@ export const CONFIG_KEYS = [
   'project',
   'notify_criteria',
   'ask_notifications',
-  'require_idle',
-  'away_after_seconds',
-  'hook_reply_timeout_seconds',
   'ask_grace_seconds',
   'log_level',
   'log_max_bytes',
@@ -147,17 +110,12 @@ export const CONFIG_KEYS = [
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
-export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = [
-  'ask_notifications',
-  'require_idle',
-]
+export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications']
 
 /** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
   'wait_seconds',
   'ttl_seconds',
-  'away_after_seconds',
-  'hook_reply_timeout_seconds',
   'ask_grace_seconds',
   'log_max_bytes',
   'log_max_files',
@@ -187,14 +145,8 @@ const DEFAULTS = {
   // Installing the hooks is the opt-in; these exist to switch the behaviour
   // back off for a project or a session without uninstalling anything.
   ask_notifications: true,
-  // Questions reach devices immediately by default. Both a terminal-first
-  // grace and presence gating remain independent opt-in controls.
-  require_idle: false,
-  away_after_seconds: 120,
-  // Runtime waits stay inside a 480s budget. Harnesses that require a declared
-  // Stop limit use a preference-stable 540s; Codex uses its host-owned Stop
-  // default. Neither definition changes when these preferences do.
-  hook_reply_timeout_seconds: 480,
+  // Questions reach devices as soon as the turn ends. A terminal-first grace
+  // window is an opt-in delay on top of that.
   ask_grace_seconds: 0,
   // On by default: the log is the only account of what a headless hook did, and
   // a diagnostic nobody switched on before the thing went wrong is not one.
@@ -298,21 +250,18 @@ export function findProjectLocalConfigPath(startDir: string): string | null {
 
 /**
  * Ranges every layer is clamped to. Config is readable from a repository, so an
- * out-of-range value is attacker input, not a typo: `away_after_seconds = -1`
- * would make a user who just typed count as absent, and an oversized reply
- * timeout would exhaust the hook process budget and kill it after the user has
- * already answered.
+ * out-of-range value is attacker input, not a typo: an unbounded grace window
+ * would consume the waiter's whole ceiling and silently leave no time at all in
+ * which the user's answer could still be accepted.
  */
 const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> = {
   wait_seconds: { min: 0, max: 300 },
   ttl_seconds: { min: 0, max: 7 * 24 * 3600 },
-  away_after_seconds: { min: 5, max: 24 * 3600 },
-  // The runtime clamps grace + reply work below the host process ceiling; this
-  // maximum is never copied into the installed definition.
-  // The wire protocol's minimum reply window is 60s; matching it prevents the
-  // server from accepting an answer after a shorter local wait has returned.
-  hook_reply_timeout_seconds: { min: 60, max: 540 },
-  ask_grace_seconds: { min: 0, max: HOOK_TIMING.maxGraceSeconds },
+  // A plain number, no longer derived from a hook budget's leftovers. Six
+  // minutes leaves two clear minutes of the waiter's 480s ceiling, so the
+  // longest window a user can choose still leaves an answer window the server
+  // will accept — with room to spare for a timer that wakes late.
+  ask_grace_seconds: { min: 0, max: 360 },
   // The floor keeps rotation from thrashing (a file smaller than a handful of
   // records would rotate on nearly every write); the ceiling is the point past
   // which "local diagnostics" has become "a database on your disk".
@@ -405,9 +354,6 @@ export function loadConfig(options: {
     project: resolve('project'),
     notify_criteria: resolve('notify_criteria'),
     ask_notifications: resolve('ask_notifications'),
-    require_idle: resolve('require_idle'),
-    away_after_seconds: resolve('away_after_seconds'),
-    hook_reply_timeout_seconds: resolve('hook_reply_timeout_seconds'),
     ask_grace_seconds: resolve('ask_grace_seconds'),
     log_level: resolve('log_level'),
     log_max_bytes: resolve('log_max_bytes'),

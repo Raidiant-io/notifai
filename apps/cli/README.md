@@ -42,10 +42,9 @@ The agent registers the question, ends its turn, and your answer comes
 back on its next turn. On iPhone the choices are buttons on the banner
 itself.
 
-By default a question reaches your devices when the agent turn ends, even if
-you are at the keyboard (`require_idle = false`, `ask_grace_seconds = 0`). Turn
-on `require_idle` if you want active keyboard or mouse use to keep questions in
-the terminal, or set a positive grace period for a terminal-only answer window.
+By default a question reaches your devices when the agent turn ends, whether or
+not you are at the keyboard (`ask_grace_seconds = 0`). Set a positive grace
+period for a terminal-only answer window first.
 
 For a harness that cannot resume an idle agent turn, `notifai send
 --reply` blocks and waits for the answer instead.

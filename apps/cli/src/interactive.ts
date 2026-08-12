@@ -594,16 +594,11 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   clack.note(
     'When an agent registers a question, it appears in your terminal first.\n' +
       'After the grace below, it goes to your phone and Mac as a notification\n' +
-      'with real answer buttons, and your answer comes back to the agent. Turn\n' +
-      'on “Only when away” if local activity should keep it here instead.\n\n' +
+      'with real answer buttons, and your answer comes back to the agent —\n' +
+      'whether or not you are still at this machine.\n\n' +
       [
         row('Wired to', wiringSummary(hooks)),
         row('Send', config.ask_notifications.value ? 'yes' : 'no — questions stay in the terminal'),
-        row(
-          'Only when away',
-          config.require_idle.value ? 'yes' : 'no — reach me even while I am working',
-        ),
-        row('Away after', formatValue('away_after_seconds', config.away_after_seconds.value)),
         row('Grace', formatValue('ask_grace_seconds', config.ask_grace_seconds.value)),
       ].join('\n'),
     'Question routing',

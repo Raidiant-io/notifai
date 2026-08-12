@@ -3,18 +3,6 @@ export const HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode'] as const
 
 export type Harness = (typeof HARNESSES)[number]
 
-/** One canonical wall-clock budget shared by config, hooks, and installers. */
-export const HOOK_TIMING = Object.freeze({
-  totalSeconds: 480,
-  finalizationReserveSeconds: 45,
-  submissionReserveSeconds: 40,
-  minimumReplySeconds: 60,
-  schedulingSlackSeconds: 1,
-  stdoutReserveSeconds: 5,
-  hostHeadroomSeconds: 60,
-  maxGraceSeconds: 334,
-})
-
 export type DeliveryRoute =
   | 'hook-continuation'
   | 'inbox-socket'

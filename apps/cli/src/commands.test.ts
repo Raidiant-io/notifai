@@ -1593,8 +1593,8 @@ describe('config surfaces', () => {
     const io = new InteractiveIo()
     expect(configShowCommand(configDeps(io), {})).toBe(EXIT.ok)
     const text = io.outLines.join('\n')
-    expect(text).toContain('Questions & presence')
-    expect(text).toContain('Whether sitting at this keyboard holds a question back')
+    expect(text).toContain('Questions')
+    expect(text).toContain('Optional delay before a question may reach your devices')
   })
 
   it('keeps --plain available to a human who wants the parseable form', () => {
@@ -1605,18 +1605,18 @@ describe('config surfaces', () => {
 
   it('explains one setting, and says so in JSON when asked', () => {
     const io = new InteractiveIo()
-    expect(configExplainCommand(configDeps(io), 'require_idle', { json: true })).toBe(EXIT.ok)
+    expect(configExplainCommand(configDeps(io), 'ask_notifications', { json: true })).toBe(EXIT.ok)
     const parsed = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
-    expect(parsed['key']).toBe('require_idle')
+    expect(parsed['key']).toBe('ask_notifications')
     expect(parsed['accepts']).toBe('true or false')
-    expect(parsed['detail']).toContain('Off (the default)')
-    expect(parsed['detail']).toContain('Turn this on')
+    expect(parsed['detail']).toContain('The master switch')
+    expect(parsed['detail']).toContain('Turn it off')
   })
 
   it('rejects an unknown setting and points at the nearest real one', () => {
     const io = new CapturedIo()
-    expect(configExplainCommand(configDeps(io), 'require_idl')).toBe(EXIT.usage)
-    expect(io.errLines[0]).toBe('Unknown setting "require_idl".')
+    expect(configExplainCommand(configDeps(io), 'ask_notification')).toBe(EXIT.usage)
+    expect(io.errLines[0]).toBe('Unknown setting "ask_notification".')
   })
 
   it('refuses an enum value the sender would later reject', async () => {
@@ -1829,10 +1829,10 @@ describe('interactive command UX', () => {
       EXIT.usage,
     )
     expect(io.errLines).toEqual([
-      'ask_grace_seconds must be between 0 and 334.',
+      'ask_grace_seconds must be between 0 and 360.',
       // Names the key and its range: `"1.5" is not an integer` left the reader
       // to work out which of the two settings they had just mistyped.
-      'ask_grace_seconds takes a whole number from 0s–334s, not "1.5".',
+      'ask_grace_seconds takes a whole number from 0s–360s, not "1.5".',
     ])
     expect(existsSync(configFile)).toBe(false)
   })
@@ -3373,7 +3373,7 @@ describe('asking before the hooks have ever run', () => {
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
     writeFileSync(
       path.join(cwd, '.notifai', 'config.local.toml'),
-      'ask_notifications = false\nrequire_idle = false\naway_after_seconds = 45\nask_grace_seconds = 90\nhook_reply_timeout_seconds = 120\n',
+      'ask_notifications = false\nask_grace_seconds = 90\n',
     )
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: {} }
@@ -3383,10 +3383,10 @@ describe('asking before the hooks have ever run', () => {
     const said = io.outLines.join('\n')
     expect(said).toContain('Question routing settings:')
     expect(said).toContain('ask_notifications=false (project-local:')
-    expect(said).toContain('require_idle=false (project-local:')
-    expect(said).toContain('away_after_seconds=45 (project-local:')
     expect(said).toContain('ask_grace_seconds=90 (project-local:')
-    expect(said).toContain('hook_reply_timeout_seconds=120 (project-local:')
+    // Nothing about where the user is standing is listed, because nothing
+    // about where they are standing decides anything any more.
+    expect(said).not.toMatch(/require_idle|away_after_seconds|hook_reply_timeout_seconds/)
   })
 
   it('keeps a freshly installed Stop definition valid when timing preferences change', async () => {

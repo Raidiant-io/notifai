@@ -1,11 +1,11 @@
 /**
  * What every configuration key means, in the reader's words.
  *
- * `config.ts` already documented all fourteen keys carefully — but in TypeScript
+ * `config.ts` already documented every key carefully — but in TypeScript
  * comments, which is the one audience that never needed them. Someone running
- * `notifai config show` saw `require_idle = true` and had no way to learn what
- * it did short of reading the source, so this module is that knowledge moved to
- * where it can be printed.
+ * `notifai config show` saw `ask_grace_seconds = 0` and had no way to learn
+ * what it did short of reading the source, so this module is that knowledge
+ * moved to where it can be printed.
  *
  * It is the single source for `config show`, `config set`'s errors, `config
  * explain`, the help footer, and the interactive settings screen. One
@@ -13,8 +13,8 @@
  *
  * `summary` is the one-line form that fits beside a value in a list.
  * `detail` is the paragraph shown once the reader has asked for this key
- * specifically — progressive disclosure, so a list of fourteen settings stays
- * a list and not an essay.
+ * specifically — progressive disclosure, so the list of settings stays a list
+ * and not an essay.
  */
 import { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
 import { LOG_LEVELS, configBounds, type ConfigKey } from './config.js'
@@ -22,16 +22,16 @@ import { LOG_LEVELS, configBounds, type ConfigKey } from './config.js'
 export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'list'
 
 /**
- * Which surface a key belongs to. Grouping is the difference between fourteen
- * flat keys and four short lists a reader can hold in their head.
+ * Which surface a key belongs to. Grouping is the difference between a flat
+ * list of keys and a few short ones a reader can hold in their head.
  */
 export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'diagnostics' | 'connection'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
     id: 'questions',
-    title: 'Questions & presence',
-    blurb: 'When a question an agent registered is allowed to leave this terminal and reach your devices.',
+    title: 'Questions',
+    blurb: 'Whether a question an agent registered may leave this terminal and reach your devices, and how soon.',
   },
   {
     id: 'delivery',
@@ -93,25 +93,6 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       'The master switch for question routing. When this is off, a question an agent registers with `notifai ask` stays in the terminal and never leaves this machine, whatever the presence settings say. Turn it off to stop being reached for a while without uninstalling the harness hooks.',
     example: 'true',
   },
-  require_idle: {
-    label: 'Only when I have stepped away',
-    group: 'questions',
-    kind: 'boolean',
-    summary: 'Whether sitting at this keyboard holds a question back',
-    detail:
-      'Off (the default) means notify me even while I am using this machine. `ask_grace_seconds` still runs, so the terminal is offered the question first; I just do not need to walk away before it may leave. Turn this on when local keyboard or mouse activity should keep questions in the terminal.\n\nThis is separate from `ask_notifications`, which switches routing off altogether: wanting to be reached only while away is different from not wanting to be reached.',
-    example: 'false',
-  },
-  away_after_seconds: {
-    label: 'Away after',
-    group: 'questions',
-    kind: 'integer',
-    unit: 's',
-    summary: 'Keyboard and mouse idle time before this machine counts as unattended',
-    detail:
-      'How long the keyboard and mouse must be quiet before you count as away. Only consulted while `require_idle` is on.\n\nWhere the operating system exposes no idle signal, silence since your last prompt is used instead, which is the conservative reading.',
-    example: '120',
-  },
   ask_grace_seconds: {
     label: 'Terminal-first grace',
     group: 'questions',
@@ -119,18 +100,8 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'Optional delay before a question may reach your devices',
     detail:
-      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nA timer and nothing more. It is honoured whether or not presence is consulted at all, because how long to wait and whether anyone is watching are separate questions, and answering one should not answer the other.',
+      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nA timer and nothing more. Whether you happen to be at this keyboard does not change it: waiting no longer holds your terminal, so there is nothing your being here would protect you from.',
     example: '0',
-  },
-  hook_reply_timeout_seconds: {
-    label: 'Hook wait for an answer',
-    group: 'questions',
-    kind: 'integer',
-    unit: 's',
-    summary: 'How long the harness hook blocks waiting for your answer',
-    detail:
-      'After a question has gone out, the harness continuation owner waits up to this long for your answer. The device reply window uses the same bound, so Notifai never accepts an answer after an agent with no dormant-session wake has already returned.\n\nThe ceiling exists because command-hook harnesses bound their Stop processes. Grace plus this value plus installer headroom stays inside that budget.',
-    example: '480',
   },
 
   sound: {

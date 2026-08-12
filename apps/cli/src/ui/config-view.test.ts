@@ -45,7 +45,7 @@ describe('renderConfigList', () => {
       if (configInfo(key).advanced === true) continue
       expect(text, key).toContain(key)
     }
-    expect(text).toContain('Questions & presence')
+    expect(text).toContain('Questions')
     expect(text).toContain('notifai config explain')
   })
 
@@ -69,13 +69,13 @@ describe('renderConfigList', () => {
 
 describe('renderConfigExplain', () => {
   it('answers what it is, what it is now, and what it accepts', () => {
-    const text = renderConfigExplain('require_idle', config).join('\n')
-    expect(text).toContain('require_idle')
-    expect(text).toContain('Only when I have stepped away')
+    const text = renderConfigExplain('ask_notifications', config).join('\n')
+    expect(text).toContain('ask_notifications')
+    expect(text).toContain('Send questions to my devices')
     expect(text).toContain('Accepts')
     expect(text).toContain('true or false')
     // The copyable next step; the old output stopped at the value.
-    expect(text).toContain('notifai config set require_idle')
+    expect(text).toContain('notifai config set ask_notifications')
   })
 
   it('lists what each choice of an enum means', () => {

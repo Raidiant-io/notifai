@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HARNESS_CAPABILITIES, HARNESSES, HOOK_TIMING } from './harnesses.js'
+import { HARNESS_CAPABILITIES, HARNESSES } from './harnesses.js'
 
 describe('harness continuation contract', () => {
   it('requires one explicit native delivery contract for every shipped harness', () => {
@@ -30,19 +30,5 @@ describe('harness continuation contract', () => {
           'no proven answer continuation after session.idle; use a blocking reply command',
       },
     })
-  })
-
-  it('derives the maximum grace from the reserves every Stop must retain', () => {
-    expect(HOOK_TIMING.maxGraceSeconds).toBe(
-      HOOK_TIMING.totalSeconds -
-        HOOK_TIMING.finalizationReserveSeconds -
-        HOOK_TIMING.submissionReserveSeconds -
-        HOOK_TIMING.minimumReplySeconds -
-        HOOK_TIMING.schedulingSlackSeconds,
-    )
-    expect(HOOK_TIMING.finalizationReserveSeconds).toBeGreaterThan(
-      HOOK_TIMING.stdoutReserveSeconds,
-    )
-    expect(HOOK_TIMING.totalSeconds + HOOK_TIMING.hostHeadroomSeconds).toBe(540)
   })
 })

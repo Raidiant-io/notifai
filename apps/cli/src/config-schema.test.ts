@@ -73,14 +73,14 @@ describe('acceptedValues', () => {
   })
 
   it('names both values for a toggle', () => {
-    expect(acceptedValues('require_idle')).toBe('true or false')
+    expect(acceptedValues('ask_notifications')).toBe('true or false')
   })
 })
 
 describe('formatValue', () => {
   it('renders toggles as words rather than JSON', () => {
-    expect(formatValue('require_idle', true)).toBe('yes')
-    expect(formatValue('require_idle', false)).toBe('no')
+    expect(formatValue('ask_notifications', true)).toBe('yes')
+    expect(formatValue('ask_notifications', false)).toBe('no')
   })
 
   it('explains what an unset value means instead of printing null', () => {
