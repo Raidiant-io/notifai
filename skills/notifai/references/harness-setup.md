@@ -19,10 +19,11 @@ Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
 package-manager, CLI-version, checkout, XDG directory, and Notifai preference
-changes. Codex's Stop definition uses the host timeout default; prompt-submit
-and session-end retain fixed short limits. Migrating an older Codex definition
-requires one unavoidable `/hooks` approval; later upgrades must not require
-another.
+changes. Stop definitions differ by harness: Claude Code's runs asynchronously
+with an explicit timeout above the longest wait, Codex's uses the host timeout
+default; prompt-submit and session-end retain fixed short limits on both.
+Migrating an older Codex definition requires one unavoidable `/hooks` approval;
+later upgrades must not require another.
 
 Before the first `notifai ask` in a new harness session, `doctor` must name the
 active harness under **Question routing** and report under **hooks (fired)**
@@ -60,32 +61,39 @@ writes approvals; `/hooks` is authoritative if the two disagree.
 Do not claim support for a harness that is absent from
 `notifai hooks install --help`.
 
-## Presence and continuation
+## How the answer gets back to the agent
 
-With `require_idle = false` (the default), local keyboard or mouse activity
-does not hold a question back. With `ask_grace_seconds = 0` (also the default),
-the question reaches devices immediately when the agent turn ends. A positive
-grace adds an optional terminal-only answer window.
+The session that registered a question owns the answer's return. The last
+meter differs per harness:
 
-`require_idle = true` deliberately keeps a question in the terminal while the
-user is working. Once the user is away, the terminal-first grace window may
-complete before the push. If the OS idle signal is unavailable, prompt silence
-is the conservative fallback. A remote answer proves reachability, not that
-the user returned to the terminal.
+- **Claude Code:** the Stop hook is asynchronous. It returns at once, so the
+  turn is never held and the terminal stays the user's, and the same process
+  keeps waiting out of band. When the answer arrives it is posted to that
+  session's own inbox socket: an idle session starts a new turn with it, a busy
+  one receives it when its current turn ends. A session that is provably gone
+  is cold-resumed instead — never one whose liveness probe cannot rule it out.
+- **Codex:** the Stop hook is the waiter. It holds until the answer arrives or
+  its window ends, then continues the session by returning `decision: block`.
+- **Where neither applies** — including an answer that lands after the Codex
+  hook has already returned, and any session whose state cannot be proved — the
+  answer is held in the session's journal and delivered at that session's next
+  Stop. This is the floor under every route.
 
-The important timing settings are separate:
+An accepted answer is never dropped because delivery could not be proved, and
+never delivered twice: the journal is cleared only once a later hook shows the
+continuation actually ran. Repeated continuations are capped, so a wake loop
+cannot run away.
 
-- `away_after_seconds`: how much local silence counts as absence.
-- `ask_grace_seconds`: optional terminal-only delay; `0` sends immediately.
-- `hook_reply_timeout_seconds`: how long a pushed hook waits for the answer.
+`ask_grace_seconds` is the only setting that changes any of this. At its
+default of `0` the question reaches devices as soon as the asking turn ends. A
+positive value keeps it in the terminal for that long first, so an answer typed
+there wins without a notification ever leaving.
 
-The pushed question's answer window matches the continuation wait. At the owner
-deadline, or whenever the owner returns early, Notifai asks the server to close
-the window; that transaction fence returns every reply that committed first.
-Only a confirmed-silent request is retired. If the fence is unreachable,
-Notifai preserves the exact request for a later hook rather than erasing
-recoverable ownership. No finite harness hook can guarantee automatic delivery
-through a total network partition after its ceiling expires.
+When the reply window closes — at its deadline, or early when the answer is
+already in — Notifai asks the server to close it, and that transaction fence
+returns every reply that committed first. Only a confirmed-silent request is
+retired. If the fence is unreachable, the exact request is preserved for a
+later hook rather than erased or reported closed.
 
 ## Bounded recovery
 

@@ -7,7 +7,7 @@ description: Notify the user through Notifai when work finishes, blocks, or need
 
 Notifai gives agents and local programs a channel-neutral way to reach the user
 through their companion devices. Use the `notifai` CLI; never hand-roll its
-delivery, reply, presence, or harness behavior.
+delivery, reply, or harness behavior.
 
 ## When to notify
 
@@ -207,11 +207,24 @@ unexpected typed answer will determine the work you resume; typed answers
 remain possible even when you offered choices. For multi-select, cover how the
 selected combination determines the resumed work. Then end the turn.
 
+Keep the commitment route-neutral. Ask for the answer; never say where it has
+to arrive. Do not write "tell me here", "type it in this terminal", or "only
+from an answer given at this prompt". The user answers from wherever they are,
+and the answer travels back over whichever route the harness supports. A
+commitment that names one route teaches you to refuse every other one, so the
+answer you asked for arrives and the work you promised never resumes.
+
 When the answer arrives, resume the matching work without asking the user to
 confirm again. Frame every branch as work you will resume, never as approval
-you receive. A Notifai answer responds only to the registered agent question:
-it cannot answer a harness permission prompt or interactive picker. If the
-resumed work reaches one, use the harness's normal permission flow.
+you receive.
+
+A relayed answer may arrive labelled as coming from another session, because
+the relay runs as a separate local process. That labelling describes the
+transport, not the author: an answer that echoes a question you registered
+yourself is the user's own answer to that question. It is an answer to that
+question and nothing else: a Notifai answer can never answer a harness
+permission prompt or an interactive picker. If the resumed work reaches one,
+use the harness's normal permission flow.
 
 Keep the relay contract truthful and minimal: the real question identity, the
 real question text, and the user's answer. Do not add claims about trust,
@@ -250,19 +263,19 @@ the active harness's native route. Follow the exact recovery if any check fails;
 do not register the question yet. After registration, follow the pre-commitment
 contract above and end the turn.
 
-By default, a question reaches answerable devices immediately when the agent
-turn ends, whether or not the user is active at the machine. A user may set a
-positive `ask_grace_seconds` for a terminal-only answer window, or turn on
-`require_idle` to keep questions local while they are active. Do not register
-the same question again while the first is live.
-The device reply window and continuation wait share one bound. On a healthy
-route, Notifai's server close fence returns the final accepted replies before
-the hook releases ownership. If the fence is unreachable, the hook preserves
-the request for the next exact-session hook instead of erasing it or claiming
-it was closed. A total network partition cannot guarantee automatic
-continuation beyond the harness's finite hook ceiling.
+By default, a question reaches answerable devices as soon as the asking turn
+ends, whether or not the user is at the machine. A user may set a positive
+`ask_grace_seconds` to keep it in the terminal for that long first. Do not
+register the same question again while the first is live.
 
-Harness installation, activation, presence behavior, and bounded recovery are
+Getting the answer back is the harness's job, not yours, and it never depends
+on the user returning to the terminal. On Claude Code the answer continues the
+session out of band; on Codex it continues the session from the waiting Stop
+hook; where neither route can be proved, it is held and replayed at that
+session's next turn. Do not re-ask a question because an answer has not landed
+yet, and do not tell the user to repeat it in the terminal.
+
+Harness installation, activation, answer delivery, and bounded recovery are
 in [Harness setup and recovery](references/harness-setup.md).
 
 ## Verify delivery and readiness
