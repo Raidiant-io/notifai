@@ -36,7 +36,27 @@ jobs:
       # Protocol before CLI: the CLI resolves its built exports.
       - run: pnpm build
 
-      - run: pnpm -r test
+      # Platform-agnostic suites run once on Ubuntu. Each host also runs the
+      # focused tests that exercise its real process, path, credential, and hook
+      # adapter behavior; the CLI's simulated-platform tests still cover every
+      # branch from the common suite.
+      - name: Run platform tests
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            pnpm -r test
+          else
+            pnpm --filter @raidiant/notifai-protocol test
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              pnpm --filter @raidiant/notifai exec vitest run \
+                src/platform.test.ts src/credentials.test.ts
+              pnpm --filter @raidiant/notifai exec vitest run \
+                src/hook-adapter.test.ts src/install-hooks.test.ts \
+                --testNamePattern="Windows"
+            else
+              pnpm --filter @raidiant/notifai exec vitest run src/codex-wake.test.ts
+            fi
+          fi
 
       - run: pnpm -r typecheck
 

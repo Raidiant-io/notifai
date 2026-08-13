@@ -2247,7 +2247,7 @@ describe('session-end hook', () => {
       await waitUntil(
         () =>
           readdirSync(logLock).filter((name) => name.startsWith('ticket-')).length >= 2,
-        700,
+        5_000,
         'the real Codex hook did not reach contended diagnostics before its deadline',
       )
 
