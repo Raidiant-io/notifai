@@ -125,6 +125,8 @@ export const RegisterInstallationRequest = Type.Object(
     platform: PlatformSchema,
     display_name: Type.String({ minLength: 1, maxLength: 128 }),
     app_version: Type.String({ minLength: 1, maxLength: 32 }),
+    /** Reply wire shape this Companion can submit; absent means notification-only. */
+    reply_protocol_version: Type.Optional(Type.Integer({ minimum: 1, maximum: 1 })),
   },
   { additionalProperties: false },
 )
@@ -165,6 +167,8 @@ export interface RoutableDevice {
   platform: Platform
   permission_status: string
   registration_healthy: boolean
+  /** Null when this Companion must not be offered an answerable question. */
+  reply_protocol_version: number | null
   last_seen_at: string | null
 }
 

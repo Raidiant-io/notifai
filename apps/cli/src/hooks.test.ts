@@ -115,6 +115,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'ios' as const,
           permission_status: 'authorized',
           registration_healthy: true,
+          reply_protocol_version: 1,
           last_seen_at: null,
         },
         {
@@ -123,6 +124,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'macos' as const,
           permission_status: 'authorized',
           registration_healthy: true,
+          reply_protocol_version: 1,
           last_seen_at: null,
         },
       ],
@@ -714,6 +716,30 @@ describe('terminal-first grace window', () => {
       h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')?.draft.reply
         ?.expires_in_seconds,
     ).toBeGreaterThanOrEqual(60)
+  })
+
+  it('never pushes a question to a Companion without the current reply protocol', async () => {
+    const h = harness([])
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        listDevices: async () => ({
+          devices: (await client.listDevices()).devices.map((device) => ({
+            ...device,
+            reply_protocol_version: null,
+          })),
+        }),
+      } as ApiClient
+    }
+    writeSessionState('old-companion', h.env, { last_prompt_at: AWAY })
+    registerQuestion('old-companion', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'old-companion' }))
+
+    expect(h.recorder.submitted).toHaveLength(0)
+    expect(h.io.errLines.join('\n')).toContain('no device can answer a question yet')
   })
 
   it('charges transport overrun and close time to the one waiter ceiling', async () => {

@@ -2156,6 +2156,7 @@ describe('init', () => {
     platform: 'ios' as const,
     permission_status: 'authorized',
     registration_healthy: true,
+    reply_protocol_version: 1,
     last_seen_at: '2026-08-05T18:00:00.000Z',
   }
 
