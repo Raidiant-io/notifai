@@ -104,6 +104,7 @@ import {
   codexTrustProblems,
   codexProjectRoot,
   detectHarness,
+  detectedHarnesses,
   findInstallations,
   handlerEvent,
   loadCursorSettings,
@@ -162,6 +163,12 @@ export interface CommandIo {
    */
   interactive?: boolean
   select?(message: string, options: { value: string; label: string; hint?: string }[]): Promise<string | null>
+  /** Interactive multi-select. `initial` are pre-selected values. */
+  multiselect?(
+    message: string,
+    options: { value: string; label: string; hint?: string }[],
+    initial?: string[],
+  ): Promise<string[] | null>
   intro?(title: string): Promise<void>
   outro?(message: string): Promise<void>
   note?(message: string, title?: string): Promise<void>
@@ -188,6 +195,8 @@ export interface CommandDeps {
   cwd: string
   /** Test seam; production fixes the hook adapter under os.homedir(). */
   hookAdapterHome?: string
+  /** Test seam; production uses this process's Node and CLI paths. */
+  hookInstallTarget?: { execPath: string; scriptPath: string }
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
@@ -2126,10 +2135,22 @@ export interface HooksInstallFlags {
 }
 
 export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
+  if (flags.harness === undefined) {
+    const detected = detectedHarnesses(deps.cwd, deps.env)
+    if (detected.length === 0) {
+      deps.io.err(`Could not tell which harness to install for — pass --harness <${HARNESSES.join('|')}>.`)
+      return EXIT.usage
+    }
+    let ok = true
+    for (const harness of detected) {
+      if (hooksInstallCommand(deps, { ...flags, harness }) !== EXIT.ok) ok = false
+    }
+    return ok ? EXIT.ok : EXIT.failed
+  }
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
-  const execPath = flags.execPath ?? process.execPath
-  const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
+  const execPath = flags.execPath ?? deps.hookInstallTarget?.execPath ?? process.execPath
+  const scriptPath = flags.scriptPath ?? deps.hookInstallTarget?.scriptPath ?? process.argv[1] ?? 'notifai'
   let adapterPath: string
   try {
     adapterPath = installHookAdapter({ execPath, scriptPath }, deps.hookAdapterHome).path
@@ -2386,6 +2407,13 @@ function assertOwnedRegularFile(file: string): void {
   }
 }
 
+const HARNESS_LABEL: Record<Harness, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+}
+
 function resolveHarness(deps: CommandDeps, requested: string | undefined): Harness | null {
   if (requested !== undefined) {
     if ((HARNESSES as readonly string[]).includes(requested)) return requested as Harness
@@ -2394,9 +2422,51 @@ function resolveHarness(deps: CommandDeps, requested: string | undefined): Harne
     )
     return null
   }
-  const detected = detectHarness(deps.cwd)
+  const detected = detectHarness(deps.cwd, deps.env)
   if (!detected) {
     deps.io.err(`Could not tell which harness to install for — pass --harness <${HARNESSES.join('|')}>.`)
+    return null
+  }
+  return detected
+}
+
+/**
+ * Which harnesses to wire. An explicit `--harness` still wins as a singleton.
+ * Otherwise: every detected harness, or a human picker when detection is empty
+ * or names more than one.
+ */
+async function pickHarnessesToInstall(
+  deps: CommandDeps,
+  requested?: string,
+): Promise<Harness[] | null> {
+  if (requested !== undefined) {
+    const harness = resolveHarness(deps, requested)
+    return harness === null ? null : [harness]
+  }
+  const detected = detectedHarnesses(deps.cwd, deps.env)
+  if (detected.length === 1) return detected
+  if (deps.io.interactive === true && deps.io.multiselect) {
+    const picked = await deps.io.multiselect(
+      'Which agent harnesses should Notifai wire here?',
+      HARNESSES.map((name) => ({
+        value: name,
+        label: HARNESS_LABEL[name],
+        ...(detected.includes(name) ? { hint: 'detected on this machine' } : {}),
+      })),
+      detected,
+    )
+    if (picked === null) return null
+    const unknown = picked.filter((name) => !(HARNESSES as readonly string[]).includes(name))
+    if (unknown.length > 0) {
+      deps.io.err(`Unknown harness "${unknown[0]}". Supported: ${HARNESSES.join(', ')}.`)
+      return null
+    }
+    return picked as Harness[]
+  }
+  if (detected.length === 0) {
+    deps.io.err(
+      `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
+    )
     return null
   }
   return detected
@@ -3159,21 +3229,13 @@ async function closeGap(
   }
 
   if (state.id === 'hooks') {
-    let harness = detectHarness(deps.cwd)
-    if (harness === null && deps.io.interactive === true && deps.io.select) {
-      const picked = await deps.io.select(
-        'Which agent harness do you use here?',
-        HARNESSES.map((name) => ({ value: name, label: name })),
-      )
-      if (picked !== null) harness = picked as Harness
+    const harnesses = await pickHarnessesToInstall(deps)
+    if (harnesses === null || harnesses.length === 0) return 'failed'
+    let ok = true
+    for (const harness of harnesses) {
+      if (hooksInstallCommand(deps, { harness }) !== EXIT.ok) ok = false
     }
-    if (harness === null) {
-      deps.io.err(
-        `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
-      )
-      return 'failed'
-    }
-    return hooksInstallCommand(deps, { harness }) === EXIT.ok ? 'closed' : 'failed'
+    return ok ? 'closed' : 'failed'
   }
 
   if (state.id === 'skill') {
@@ -4317,6 +4379,21 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       .join(', '),
   })
 
+  const wired = new Set(installations.map((installation) => installation.harness))
+  const unwired = detectedHarnesses(deps.cwd, deps.env).filter((harness) => !wired.has(harness))
+  if (unwired.length > 0) {
+    checks.push({
+      name: 'hooks (detected)',
+      ok: false,
+      informational: true,
+      detail: `${unwired.map((harness) => HARNESS_LABEL[harness]).join(', ')} detected on this machine but not wired`,
+      remedy: {
+        summary: 'install hooks for every detected harness',
+        command: 'notifai hooks install',
+      },
+    })
+  }
+
   const { active, contested } = resolveActiveHarness(
     deps.env,
     deps.cwd,
@@ -4740,6 +4817,17 @@ export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
       const p = await clack()
       const answer = await p.select({ message, options })
       return p.isCancel(answer) ? null : (answer as string)
+    },
+    multiselect: async (message, options, initial) => {
+      if (!interactive()) return null
+      const p = await clack()
+      const answer = await p.multiselect({
+        message,
+        options,
+        required: true,
+        ...(initial !== undefined && initial.length > 0 ? { initialValues: initial } : {}),
+      })
+      return p.isCancel(answer) ? null : (answer as string[])
     },
     intro: async (title) => {
       if (!interactive()) return

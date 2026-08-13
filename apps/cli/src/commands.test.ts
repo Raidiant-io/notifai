@@ -123,6 +123,17 @@ class InteractiveIo extends CapturedIo {
     return this.selectAnswer
   }
 
+  multiselectAnswer: string[] | null = null
+
+  async multiselect(
+    message: string,
+    _options: { value: string; label: string; hint?: string }[],
+    _initial?: string[],
+  ): Promise<string[] | null> {
+    this.prompts.push(message)
+    return this.multiselectAnswer
+  }
+
   async intro(title: string) {
     this.intros.push(title)
   }
@@ -2020,6 +2031,10 @@ describe('init', () => {
       cwd,
       env: isolatedEnv(cwd),
       nativeSkills,
+      hookInstallTarget: {
+        execPath: process.execPath,
+        scriptPath: fileURLToPath(import.meta.url),
+      },
     }
   }
 
@@ -2270,6 +2285,48 @@ describe('init', () => {
     expect(receivedScope).toBeUndefined()
     expect(calls.submit).toBe(1)
     expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('installs every detected project harness when --hooks is set', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-hooks-all-detected-'))
+    mkdirSync(path.join(cwd, '.claude'))
+    mkdirSync(path.join(cwd, '.codex'))
+    const io = new CapturedIo()
+    const calls = { submit: 0 }
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      list: async () => ({ skills: [] }),
+    }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
+    await initCommand(deps, { hooks: true, skills: false })
+    const wired = findInstallations(cwd, deps.env, deps.hookAdapterHome).map(
+      (installation) => installation.harness,
+    )
+    expect(wired).toEqual(['claude-code', 'codex'])
+    expect(existsSync(path.join(cwd, '.claude', 'settings.local.json'))).toBe(true)
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(true)
+    expect(io.outLines.join('\n')).toContain('Installed claude-code hooks')
+    expect(io.outLines.join('\n')).toContain('Installed codex hooks')
+  })
+
+  it('lets a human keep a subset of the detected harnesses', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-hooks-pick-'))
+    mkdirSync(path.join(cwd, '.claude'))
+    mkdirSync(path.join(cwd, '.codex'))
+    const io = new InteractiveIo()
+    io.multiselectAnswer = ['claude-code']
+    const calls = { submit: 0 }
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      list: async () => ({ skills: [] }),
+    }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
+    expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
+    expect(io.prompts.some((prompt) => prompt.includes('Which agent harnesses'))).toBe(true)
+    const wired = findInstallations(cwd, deps.env, deps.hookAdapterHome).map(
+      (installation) => installation.harness,
+    )
+    expect(wired).toEqual(['claude-code'])
   })
 
   it('reports an optional native installer failure without blocking remaining setup', async () => {

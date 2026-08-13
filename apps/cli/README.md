@@ -55,10 +55,12 @@ For a harness that cannot resume an idle agent turn, `notifai send
 notifai hooks install
 ```
 
-Wires question routing into Claude Code, Codex, Cursor or OpenCode. This
-is what lets an agent's question reach your phone without the agent
-having to cooperate — no question detection, no state in a context window
-that compaction will eat.
+Wires question routing into every supported harness detected on this
+machine (Claude Code, Codex, Cursor, OpenCode). `notifai init` does the
+same and, at a terminal, lets you keep the detected set, pick a subset,
+or add one it did not see. This is what lets an agent's question reach
+your phone without the agent having to cooperate — no question detection,
+no state in a context window that compaction will eat.
 
 Every harness definition calls one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. Node, package manager, CLI version, checkout,

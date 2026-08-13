@@ -389,8 +389,8 @@ function localHarnessEvidence(cwd: string): Harness[] {
 }
 
 /** Harnesses installed anywhere on this machine — a much weaker signal. */
-function globalHarnessEvidence(): Harness[] {
-  const home = os.homedir()
+function globalHarnessEvidence(env: NodeJS.ProcessEnv = process.env): Harness[] {
+  const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
   const found: Harness[] = []
   if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
   if (existsSync(path.join(home, '.codex'))) found.push('codex')
@@ -400,26 +400,30 @@ function globalHarnessEvidence(): Harness[] {
 }
 
 /**
- * Which harness to wire in this directory, or null when it is genuinely
- * unclear.
+ * Every supported harness this project or machine shows evidence of, in
+ * declared order. Project markers come first, then machine installs that the
+ * project did not already name.
+ *
+ * `AGENTS.md` still counts for nothing — see `localHarnessEvidence`.
+ */
+export function detectedHarnesses(cwd: string, env: NodeJS.ProcessEnv = process.env): Harness[] {
+  const seen = new Set<Harness>([...localHarnessEvidence(cwd), ...globalHarnessEvidence(env)])
+  return HARNESSES.filter((harness) => seen.has(harness))
+}
+
+/**
+ * Which *single* harness to wire when a caller still needs exactly one, or
+ * null when it is genuinely unclear.
  *
  * Project evidence decides, and machine evidence is consulted only when the
- * project offers none. The two were previously OR-ed together per harness,
- * which meant a developer with several agent tools installed could never get
- * a detection at all: every `~/.<tool>` directory contributed a candidate, the
- * "exactly one" test never passed, and the answer was null in every repository
- * on the machine. Verified on a machine carrying all four — `notifai init
- * --hooks` failed in five separate projects, each of which plainly used Claude
- * Code.
- *
- * Having a tool installed says nothing about which one *this* project is
- * worked in. Ambiguity within the project is still ambiguity, and returns
- * null so the caller can ask rather than guess.
+ * project offers none. Several markers are not a failure of detection — they
+ * are several harnesses. `detectedHarnesses` is the default for install;
+ * this helper stays for uninstall and any caller that cannot take a list.
  */
-export function detectHarness(cwd: string): Harness | null {
+export function detectHarness(cwd: string, env: NodeJS.ProcessEnv = process.env): Harness | null {
   const local = localHarnessEvidence(cwd)
   if (local.length > 0) return local.length === 1 ? local[0]! : null
-  const global = globalHarnessEvidence()
+  const global = globalHarnessEvidence(env)
   return global.length === 1 ? global[0]! : null
 }
 

@@ -23,6 +23,7 @@ import {
   HARNESSES,
   applyPlan,
   detectHarness,
+  detectedHarnesses,
   buildHookConfig,
   codexLayerDir,
   codexProjectRoot,
@@ -666,9 +667,17 @@ describe('detectHarness', () => {
   })
 
   it('returns null when the project itself names two harnesses', () => {
-    // Genuine ambiguity, and the caller must ask rather than pick. Not the
-    // same as having no evidence.
+    // Genuine ambiguity for a single-harness caller. detectedHarnesses lists
+    // both so install can wire them together.
     expect(detectHarness(project('.claude', '.codex'))).toBeNull()
+  })
+
+  it('lists every project-named harness in declared order', () => {
+    const isolated = { HOME: mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-home-')) }
+    expect(detectedHarnesses(project('.codex', '.claude'), isolated)).toEqual([
+      'claude-code',
+      'codex',
+    ])
   })
 
   it('prefers project evidence over anything installed on the machine', () => {
