@@ -15,16 +15,16 @@ import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol
  * than in the agent's context, because context is lost to compaction and a
  * preference that evaporates mid-session is worse than none.
  *
- * `project-local` is `.notifai/config.local.toml`, intended to be gitignored.
- * `.notifai/config.toml` is intended for committed, shared configuration, so it
- * must not be where a personal "route my questions to my devices" preference
- * lands. The CLI does not edit a repository's ignore rules or create commits.
+ * `project-local` is a personal file under the user's config directory, keyed
+ * by the project root so a checkout does not have to gitignore anything. Shared
+ * `.notifai/config.toml` stays in the tree for committed project identity.
  *
  * `config show --explain` surfaces the winning layer per key.
  */
 
 export type ConfigSource =
   | 'flag'
+  | 'env'
   | `session:${string}`
   | `project-local:${string}`
   | `project:${string}`
@@ -92,7 +92,6 @@ export interface CliConfig {
 }
 
 export const CONFIG_KEYS = [
-  'base_url',
   'wait_seconds',
   'ttl_seconds',
   'collapse_key',
@@ -132,8 +131,10 @@ export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> =
   log_level: LOG_LEVELS,
 }
 
+/** Compiled service origin. Not a user-facing setting; override with `--base-url` or `NOTIFAI_BASE_URL`. */
+export const DEFAULT_BASE_URL = 'https://notifai.fly.dev'
+
 const DEFAULTS = {
-  base_url: 'https://notifai.fly.dev',
   wait_seconds: 10,
   ttl_seconds: 86400,
   collapse_key: null,
@@ -243,9 +244,46 @@ export function findProjectConfigPath(startDir: string): string | null {
   return findProjectFile(startDir, 'config.toml')
 }
 
-/** Personal sibling of the shared project config; callers should keep it gitignored. */
-export function findProjectLocalConfigPath(startDir: string): string | null {
-  return findProjectFile(startDir, 'config.local.toml')
+/** Walk up from cwd looking for a `.git` file or directory (worktree or checkout). */
+function findGitRoot(startDir: string): string | null {
+  let dir = path.resolve(startDir)
+  for (;;) {
+    if (existsSync(path.join(dir, '.git'))) return canonicalDir(dir)
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+/**
+ * Stable identity for personal project preferences.
+ *
+ * Prefer the directory that owns the shared `.notifai/config.toml`, then the
+ * git checkout root, then cwd. Subdirectories of one project therefore share
+ * one personal file, and nothing is written inside the repository.
+ */
+export function personalProjectIdentity(cwd: string): string {
+  const projectConfig = findProjectConfigPath(cwd)
+  const root =
+    projectConfig !== null ? path.dirname(path.dirname(projectConfig)) : (findGitRoot(cwd) ?? cwd)
+  return createHash('sha256').update(canonicalDir(root)).digest('hex').slice(0, 32)
+}
+
+/** Personal project layer: `$XDG_CONFIG_HOME/notifai/projects/<identity>.toml`. */
+export function personalProjectConfigPath(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(globalConfigDir(env), 'projects', `${personalProjectIdentity(cwd)}.toml`)
+}
+
+/** Existing personal project file, or null when this checkout has none. */
+export function findProjectLocalConfigPath(
+  startDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const file = personalProjectConfigPath(startDir, env)
+  return existsSync(file) ? file : null
 }
 
 /**
@@ -306,6 +344,24 @@ export interface FlagOverrides {
   interruption_level?: CliInterruptionLevel
 }
 
+/**
+ * Service origin is not a user setting. Flag and env are developer/self-host
+ * overrides; signed-in traffic still pins to the credential origin elsewhere.
+ */
+function resolveServiceUrl(
+  flags: FlagOverrides,
+  env: NodeJS.ProcessEnv,
+): ResolvedValue<string> {
+  if (typeof flags.base_url === 'string' && flags.base_url !== '') {
+    return { value: flags.base_url, source: 'flag' }
+  }
+  const fromEnv = env['NOTIFAI_BASE_URL']
+  if (typeof fromEnv === 'string' && fromEnv !== '') {
+    return { value: fromEnv, source: 'env' }
+  }
+  return { value: DEFAULT_BASE_URL, source: 'default' }
+}
+
 export function loadConfig(options: {
   cwd?: string
   env?: NodeJS.ProcessEnv
@@ -320,7 +376,7 @@ export function loadConfig(options: {
   const cwd = options.cwd ?? process.cwd()
   const projectPath = findProjectConfigPath(cwd)
   const projectRaw = projectPath ? readTomlFile(projectPath) : {}
-  const projectLocalPath = findProjectLocalConfigPath(cwd)
+  const projectLocalPath = findProjectLocalConfigPath(cwd, env)
   const projectLocalRaw = projectLocalPath ? readTomlFile(projectLocalPath) : {}
   const sessionId = options.sessionId ?? env['NOTIFAI_SESSION']
   const sessionPath = sessionId ? sessionConfigPath(sessionId, env) : null
@@ -344,7 +400,7 @@ export function loadConfig(options: {
   }
 
   return {
-    base_url: resolve('base_url'),
+    base_url: resolveServiceUrl(flags, env),
     wait_seconds: resolve('wait_seconds'),
     ttl_seconds: resolve('ttl_seconds'),
     collapse_key: resolve('collapse_key'),

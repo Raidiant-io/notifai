@@ -12,6 +12,11 @@ npm install -g @raidiant/notifai
 notifai init
 ```
 
+If you do not want a global bin, `npx --yes @raidiant/notifai@<version>` is
+supported. Pin the version. `hooks install` then writes that same pinned npx
+invocation into the harness adapter. This is slower than a real install and
+is not the default path.
+
 `init` walks the setup one step at a time and tells you the single next
 thing to do. Run it again after each step; it works out what remains.
 

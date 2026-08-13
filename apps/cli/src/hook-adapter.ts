@@ -14,9 +14,23 @@ import { withTargetFileLock } from './file-lock.js'
 const ADAPTER_MARKER = '# notifai managed hook adapter'
 const ADAPTER_VERSION = 1
 
-export interface HookAdapterTarget {
+export interface HookAdapterFileTarget {
+  kind?: 'file'
   execPath: string
   scriptPath: string
+}
+
+export interface HookAdapterNpxTarget {
+  kind: 'npx'
+  execPath: string
+  npmCli: string
+  spec: string
+}
+
+export type HookAdapterTarget = HookAdapterFileTarget | HookAdapterNpxTarget
+
+export function isNpxAdapterTarget(target: HookAdapterTarget): target is HookAdapterNpxTarget {
+  return target.kind === 'npx'
 }
 
 export interface HookAdapterInspection {
@@ -72,6 +86,20 @@ function assertUsableTarget(target: HookAdapterTarget): void {
   }
   if (!exec.isFile() || (exec.mode & 0o111) === 0) {
     throw new Error(`Hook adapter runtime ${target.execPath} is not executable.`)
+  }
+  if (isNpxAdapterTarget(target)) {
+    if (target.spec.trim() === '') {
+      throw new Error('Hook adapter npx spec is empty.')
+    }
+    try {
+      if (!statSync(target.npmCli).isFile()) {
+        throw new Error(`Hook adapter npm CLI ${target.npmCli} is not a regular file.`)
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Hook adapter npm CLI ')) throw err
+      throw new Error(`Hook adapter npm CLI ${target.npmCli} does not exist.`)
+    }
+    return
   }
   try {
     if (!statSync(target.scriptPath).isFile()) {
@@ -133,18 +161,51 @@ export function inspectHookAdapter(
     } catch {
       problems.push(`registered runtime ${target.execPath} is missing`)
     }
-    try {
-      if (!statSync(target.scriptPath).isFile()) {
-        problems.push(`registered CLI ${target.scriptPath} is not a regular file`)
+    if (isNpxAdapterTarget(target)) {
+      if (target.spec.trim() === '') problems.push('registered npx spec is empty')
+      try {
+        if (!statSync(target.npmCli).isFile()) {
+          problems.push(`registered npm CLI ${target.npmCli} is not a regular file`)
+        }
+      } catch {
+        problems.push(`registered npm CLI ${target.npmCli} is missing`)
       }
-    } catch {
-      problems.push(`registered CLI ${target.scriptPath} is missing`)
+    } else {
+      try {
+        if (!statSync(target.scriptPath).isFile()) {
+          problems.push(`registered CLI ${target.scriptPath} is not a regular file`)
+        }
+      } catch {
+        problems.push(`registered CLI ${target.scriptPath} is missing`)
+      }
     }
   }
   return { path: file, target, problems }
 }
 
 function hookAdapterSource(target: HookAdapterTarget): string {
+  if (isNpxAdapterTarget(target)) {
+    return `#!/bin/sh
+${ADAPTER_MARKER}
+# adapter-version: ${ADAPTER_VERSION}
+# target-kind: npx
+# target-exec-json: ${JSON.stringify(target.execPath)}
+# target-npm-cli-json: ${JSON.stringify(target.npmCli)}
+# target-spec-json: ${JSON.stringify(target.spec)}
+set -eu
+
+registered_exec=${quote(target.execPath)}
+registered_npm_cli=${quote(target.npmCli)}
+registered_spec=${quote(target.spec)}
+
+if [ -x "$registered_exec" ] && [ -f "$registered_npm_cli" ]; then
+  exec "$registered_exec" "$registered_npm_cli" exec --yes --package "$registered_spec" -- notifai "$@"
+fi
+
+printf '%s\n' 'Notifai hook adapter target is stale; run notifai hooks install.' >&2
+exit 127
+`
+  }
   return `#!/bin/sh
 ${ADAPTER_MARKER}
 # adapter-version: ${ADAPTER_VERSION}
@@ -165,15 +226,26 @@ exit 127
 }
 
 function parseTarget(contents: string): HookAdapterTarget | null {
+  const kind = /^# target-kind: (.+)$/m.exec(contents)?.[1]
   const exec = /^# target-exec-json: (.+)$/m.exec(contents)?.[1]
-  const script = /^# target-script-json: (.+)$/m.exec(contents)?.[1]
-  if (exec === undefined || script === undefined) return null
+  if (exec === undefined) return null
   try {
     const execPath: unknown = JSON.parse(exec)
+    if (typeof execPath !== 'string') return null
+    if (kind === 'npx') {
+      const npmCliRaw = /^# target-npm-cli-json: (.+)$/m.exec(contents)?.[1]
+      const specRaw = /^# target-spec-json: (.+)$/m.exec(contents)?.[1]
+      if (npmCliRaw === undefined || specRaw === undefined) return null
+      const npmCli: unknown = JSON.parse(npmCliRaw)
+      const spec: unknown = JSON.parse(specRaw)
+      return typeof npmCli === 'string' && typeof spec === 'string'
+        ? { kind: 'npx', execPath, npmCli, spec }
+        : null
+    }
+    const script = /^# target-script-json: (.+)$/m.exec(contents)?.[1]
+    if (script === undefined) return null
     const scriptPath: unknown = JSON.parse(script)
-    return typeof execPath === 'string' && typeof scriptPath === 'string'
-      ? { execPath, scriptPath }
-      : null
+    return typeof scriptPath === 'string' ? { execPath, scriptPath } : null
   } catch {
     return null
   }

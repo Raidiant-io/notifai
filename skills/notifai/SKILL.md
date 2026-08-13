@@ -7,7 +7,12 @@ description: Notify the user through Notifai when work finishes, blocks, or need
 
 Notifai gives agents and local programs a channel-neutral way to reach the user
 through their companion devices. Use the `notifai` CLI; never hand-roll its
-delivery, reply, or harness behavior.
+delivery, reply, or harness behavior. The usual install is a real `notifai` on
+PATH (`npm install -g @raidiant/notifai`). If the user refuses a global bin,
+`npx --yes @raidiant/notifai@<version>` is a supported alternative — pin the
+version they accepted, and do not present npx as the default. Hooks installed
+from that invocation write the same pinned npx form. npx is slower than a
+real install; do not recommend it as the happy path.
 
 ## When to notify
 
@@ -17,7 +22,9 @@ Read the user's criteria before deciding:
 notifai config show --json
 ```
 
-Follow `notify_criteria` literally when it is set. Otherwise:
+Each key is `{ value, source, summary }`. Report those fields. Do not paraphrase a
+default into "shipped defaults apply" — print the value (`ask_grace_seconds` is
+`0`, `ttl_seconds` is `86400`). Follow `notify_criteria` literally when it is set. Otherwise:
 
 - Notify when a long-running task finishes, succeeds, or fails.
 - Notify when work is blocked on input only the user can provide.
@@ -35,12 +42,12 @@ notifai config set notify_criteria "Only when blocked or CI-length work finishes
 notifai config set notify_criteria "Anything that needs me within the hour" --yes
 ```
 
-Use `--local` for a personal project preference and keep
-`.notifai/config.local.toml` ignored. Use `--project` only for shared project
-policy. Use `notifai config unset <key>` with the same scope flag to remove an
-override and return to the inherited or shipped value. Precedence is flag >
-session > project-local > project > machine-global > default; `notifai config
-show --explain` shows the winning source.
+Use `--local` for a personal project preference. Notifai stores that layer
+outside the repository, so do not create or edit a gitignore for it. Use
+`--project` only for shared project policy. Use `notifai config unset <key>`
+with the same scope flag to remove an override and return to the inherited or
+shipped value. Precedence is flag > session > project-local > project >
+machine-global > default; `notifai config show --json` shows the winning source.
 
 ## Set Notifai up
 

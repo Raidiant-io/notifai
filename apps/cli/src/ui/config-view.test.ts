@@ -18,14 +18,14 @@ describe('renderConfigPlain', () => {
     // an audience that cannot see the styling.
     const lines = renderConfigPlain(config, false)
     expect(lines).toHaveLength(CONFIG_KEYS.length)
-    expect(lines[0]).toBe(`base_url = ${JSON.stringify(config.base_url.value)}`)
+    expect(lines[0]).toBe(`wait_seconds = ${JSON.stringify(config.wait_seconds.value)}`)
     for (const line of lines) expect(line).toMatch(/^[a-z_]+ = /)
   })
 
   it('appends the raw source tag under --explain', () => {
     const lines = renderConfigPlain(config, true)
     expect(lines[0]).toBe(
-      `base_url = ${JSON.stringify(config.base_url.value)}  [${config.base_url.source}]`,
+      `wait_seconds = ${JSON.stringify(config.wait_seconds.value)}  [${config.wait_seconds.source}]`,
     )
   })
 
@@ -50,8 +50,9 @@ describe('renderConfigList', () => {
   })
 
   it('reveals advanced keys only when asked', () => {
-    expect(renderConfigList(config).join('\n')).not.toContain('base_url')
-    expect(renderConfigList(config, { showAdvanced: true }).join('\n')).toContain('base_url')
+    expect(renderConfigList(config).join('\n')).not.toContain('collapse_key')
+    expect(renderConfigList(config, { showAdvanced: true }).join('\n')).toContain('collapse_key')
+    expect(renderConfigList(config, { showAdvanced: true }).join('\n')).not.toContain('base_url')
   })
 
   it('fits the terminal, so no row wraps into the next', () => {

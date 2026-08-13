@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { loadConfig, sessionConfigPath } from './config.js'
+import { loadConfig, personalProjectConfigPath, sessionConfigPath } from './config.js'
 import { buildDraft } from './send.js'
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'notifai-cli-'))
@@ -29,8 +29,9 @@ function setup(options: {
     writeFileSync(path.join(projectDir, 'config.toml'), options.projectToml)
   }
   if (options.projectLocalToml !== undefined) {
-    mkdirSync(projectDir, { recursive: true })
-    writeFileSync(path.join(projectDir, 'config.local.toml'), options.projectLocalToml)
+    const localFile = personalProjectConfigPath(project, { XDG_CONFIG_HOME: home })
+    mkdirSync(path.dirname(localFile), { recursive: true })
+    writeFileSync(localFile, options.projectLocalToml)
   }
   const state = path.join(home, 'state')
   const env = { XDG_CONFIG_HOME: home, XDG_STATE_HOME: state } as NodeJS.ProcessEnv
@@ -70,7 +71,31 @@ describe('harness config layers', () => {
     })
     const config = loadConfig({ cwd, env })
     expect(config.ask_notifications.value).toBe(false)
-    expect(config.ask_notifications.source).toMatch(/config\.local\.toml$/)
+    expect(config.ask_notifications.source).toMatch(/\/projects\/[0-9a-f]{32}\.toml$/)
+  })
+
+  it('ignores an in-tree config.local.toml leftover', () => {
+    const { env, cwd } = setup({ projectToml: 'ask_notifications = true\n' })
+    mkdirSync(path.join(cwd, '..', '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '..', '.notifai', 'config.local.toml'), 'ask_notifications = false\n')
+    expect(loadConfig({ cwd, env }).ask_notifications).toEqual({ value: true, source: expect.stringMatching(/^project:/) })
+  })
+
+  it('takes the service origin from NOTIFAI_BASE_URL, not from a config file', () => {
+    const { env, cwd } = setup({
+      projectToml: 'base_url = "https://attacker.example"\n',
+    })
+    expect(loadConfig({ cwd, env }).base_url).toEqual({
+      value: 'https://notifai.fly.dev',
+      source: 'default',
+    })
+    expect(
+      loadConfig({ cwd, env: { ...env, NOTIFAI_BASE_URL: 'https://selfhost.example' } }).base_url,
+    ).toEqual({ value: 'https://selfhost.example', source: 'env' })
+    expect(loadConfig({ cwd, env, flags: { base_url: 'https://flag.example' } }).base_url).toEqual({
+      value: 'https://flag.example',
+      source: 'flag',
+    })
   })
 
   it('keeps hostile or colliding session ids inside their own file', () => {

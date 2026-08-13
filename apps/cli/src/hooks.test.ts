@@ -35,6 +35,7 @@ import {
 import { EXIT, askCommand, buildQuestions, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
 import {
   loadConfig,
+  personalProjectConfigPath,
   projectSessionPointerPath,
   sanitizeSessionId,
   sessionConfigPath,
@@ -770,11 +771,9 @@ describe('config resolution inside a hook', () => {
     const h = harness([reply({ choice_id: 'allow' })])
     // A project that has turned the feature off.
     const project = mkdtempSync(path.join(os.tmpdir(), 'notifai-proj-'))
-    mkdirSync(path.join(project, '.notifai'), { recursive: true })
-    writeFileSync(
-      path.join(project, '.notifai', 'config.local.toml'),
-      'ask_notifications = false\n',
-    )
+    const localFile = personalProjectConfigPath(project, h.env)
+    mkdirSync(path.dirname(localFile), { recursive: true })
+    writeFileSync(localFile, 'ask_notifications = false\n')
     writeSessionState('c1', h.env, { last_prompt_at: AWAY })
     registerQuestion('c1', h.env, { question: 'Ship it?' })
 

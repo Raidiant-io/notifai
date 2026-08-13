@@ -25,7 +25,7 @@ export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'li
  * Which surface a key belongs to. Grouping is the difference between a flat
  * list of keys and a few short ones a reader can hold in their head.
  */
-export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'diagnostics' | 'connection'
+export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'diagnostics'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
@@ -47,11 +47,6 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
     id: 'diagnostics',
     title: 'Local logs',
     blurb: 'What this machine records about its own activity, so an agent can find out afterwards what happened.',
-  },
-  {
-    id: 'connection',
-    title: 'Connection',
-    blurb: 'Which Notifai service this machine talks to. Most people never change this.',
   },
 ]
 
@@ -234,17 +229,6 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     advanced: true,
     example: '3',
   },
-
-  base_url: {
-    label: 'Service URL',
-    group: 'connection',
-    kind: 'url',
-    summary: 'Which Notifai service this machine talks to',
-    detail:
-      'Points the CLI at a Notifai service. The default is the hosted service, and signing in stores the URL the credential belongs to, so this rarely needs setting by hand.\n\nChanging it does not move your credential: a URL that does not match the one you paired against will not authenticate.',
-    advanced: true,
-    example: 'https://notifai.fly.dev',
-  },
 }
 
 export function configInfo(key: ConfigKey): ConfigKeyInfo {
@@ -309,6 +293,7 @@ export function formatValue(key: ConfigKey, value: unknown): string {
 export function describeSource(source: string): { label: string; path: string | null } {
   if (source === 'default') return { label: 'default', path: null }
   if (source === 'flag') return { label: 'this command', path: null }
+  if (source === 'env') return { label: 'environment', path: null }
   const separator = source.indexOf(':')
   if (separator === -1) return { label: source, path: null }
   const layer = source.slice(0, separator)

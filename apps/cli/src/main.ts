@@ -199,7 +199,7 @@ program
   .summary('Sign in and pair this machine')
   .description('Pair this machine with your Notifai account via browser approval')
   .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')
-  .option('--base-url <url>', 'Notifai server URL')
+  .option('--base-url <url>', 'developer override for the service origin (also NOTIFAI_BASE_URL)')
   .option('--no-open', 'do not open the approval page in a browser')
   .action(async (opts: { name?: string; baseUrl?: string; open?: boolean }) => {
     process.exit(await loginCommand(deps, opts))
@@ -299,7 +299,7 @@ const send = program
   .option('--no-wait', 'return immediately after acceptance')
   .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--idempotency-key <key>', 'safe-retry key (default: random)')
-  .option('--base-url <url>', 'Notifai server URL')
+  .option('--base-url <url>', 'developer override for the service origin (also NOTIFAI_BASE_URL)')
   .option('--json', 'print the full submission receipt as JSON')
   .action(async (opts: Record<string, unknown>) => {
     // commander maps --no-wait onto the same "wait" flag; disentangle.
@@ -525,7 +525,7 @@ config
     'Set a configuration value (choose a layer interactively; unattended defaults machine-global and requires --yes)',
   )
   .option('--project', 'write to the shared .notifai/config.toml instead')
-  .option('--local', 'write to personal .notifai/config.local.toml (keep it gitignored)')
+  .option('--local', 'write a personal project preference on this machine (not in the repo)')
   .option('--session <id>', 'apply only to one session')
   .option('--yes', 'skip the confirmation gate')
   .action(
@@ -543,7 +543,7 @@ config
     'Remove a configuration value so the next layer or shipped default applies (choose a layer interactively; unattended defaults machine-global and requires --yes)',
   )
   .option('--project', 'remove from the shared .notifai/config.toml instead')
-  .option('--local', 'remove from personal .notifai/config.local.toml')
+  .option('--local', 'remove a personal project preference stored on this machine')
   .option('--session <id>', 'remove from one session')
   .option('--yes', 'skip the confirmation gate')
   .action(

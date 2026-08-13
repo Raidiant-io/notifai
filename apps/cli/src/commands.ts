@@ -57,7 +57,6 @@ import {
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import {
   firstBlocker,
-  openItems,
   type Readiness,
   type ReadinessRefresh,
   type ReadinessState,
@@ -3744,7 +3743,6 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     if (stop || !advanced) break
   }
 
-  readiness = await reassess()
   await printInitClose(deps, readiness, flags)
   const blocker = firstBlocker(readiness)
   if (blocker === null) return failed ? EXIT.failed : EXIT.ok
@@ -3766,7 +3764,7 @@ function leftoverOptionals(readiness: Readiness, flags: InitFlags): ReadinessSta
 
 function printOptionalLeftovers(deps: CommandDeps, leftovers: readonly ReadinessState[]): void {
   for (const state of leftovers) {
-    deps.io.out(`Optional, not set up — ${state.detail}`)
+    deps.io.out(`Optional, not set up — ${remedyLine(state)}`)
   }
 }
 

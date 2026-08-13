@@ -84,6 +84,22 @@ describe('Notifai agent skill', () => {
     expect(askGuidance).toMatch(/without asking the user to\s+confirm again/)
   })
 
+  it('teaches agents to report config JSON fields instead of paraphrasing defaults', () => {
+    expect(skill).toContain('notifai config show --json')
+    expect(skill).toContain('{ value, source, summary }')
+    expect(skill).toContain('Do not paraphrase')
+    expect(skill).not.toContain('config.local.toml')
+    expect(skill).toContain('outside the repository')
+  })
+
+  it('mentions npx only as a pinned alternative to a real install', () => {
+    expect(skill).toContain('npm install -g @raidiant/notifai')
+    expect(skill.indexOf('npm install -g @raidiant/notifai')).toBeLessThan(
+      skill.indexOf('npx --yes @raidiant/notifai@'),
+    )
+    expect(skill).toContain('do not present npx as the default')
+  })
+
   it('tells the agent where to look when something did not happen', () => {
     // The log's whole value is diagnostic, so the skill has to name the case
     // that produces it — a question that was registered and never travelled.

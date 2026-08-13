@@ -16,6 +16,7 @@ import {
   hookAdapterPath,
   inspectHookAdapter,
   installHookAdapter,
+  isNpxAdapterTarget,
 } from './hook-adapter.js'
 import { buildHookConfig, codexHookIdentityHash, type InstalledHandler } from './install-hooks.js'
 
@@ -76,7 +77,48 @@ describe('stable hook adapter', () => {
     expect(after).toEqual(before)
     expect(afterSource).not.toBe(beforeSource)
     expect(codexHookIdentityHash(stop(after))).toBe(codexHookIdentityHash(stop(before)))
-    expect(inspectHookAdapter(homeDir).target?.scriptPath).toBe(second)
+    const inspected = inspectHookAdapter(homeDir).target
+    expect(inspected && !isNpxAdapterTarget(inspected) ? inspected.scriptPath : null).toBe(second)
+  })
+
+  it('executes a pinned npx spec through npm-cli.js without evaluating it', () => {
+    const { root, homeDir } = isolated()
+    const npmCli = path.join(root, 'npm-cli.js')
+    writeFileSync(
+      npmCli,
+      'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n',
+    )
+    const installed = installHookAdapter(
+      {
+        kind: 'npx',
+        execPath: process.execPath,
+        npmCli,
+        spec: '@raidiant/notifai@0.5.1',
+      },
+      homeDir,
+    )
+    const run = spawnSync(installed.path, ['hook', 'stop', '--owner', 'notifai'], {
+      encoding: 'utf8',
+    })
+
+    expect(run.status).toBe(0)
+    expect(JSON.parse(run.stdout)).toEqual([
+      'exec',
+      '--yes',
+      '--package',
+      '@raidiant/notifai@0.5.1',
+      '--',
+      'notifai',
+      'hook',
+      'stop',
+      '--owner',
+      'notifai',
+    ])
+    const inspected = inspectHookAdapter(homeDir)
+    expect(inspected.problems).toEqual([])
+    expect(inspected.target && isNpxAdapterTarget(inspected.target) ? inspected.target.spec : null).toBe(
+      '@raidiant/notifai@0.5.1',
+    )
   })
 
   it('uses a fixed home-relative pathname with no XDG input surface', () => {

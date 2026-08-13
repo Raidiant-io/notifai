@@ -3,6 +3,13 @@ export const HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode'] as const
 
 export type Harness = (typeof HARNESSES)[number]
 
+export const HARNESS_LABELS: Record<Harness, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+}
+
 export type DeliveryRoute =
   | 'hook-continuation'
   | 'inbox-socket'
