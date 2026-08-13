@@ -46,6 +46,7 @@ import {
   type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
+import { skillsSource } from './release.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import {
@@ -2912,13 +2913,22 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Where `npx skills add` fetches the optional agent skill from. In skills CLI
- * 1.5.x, `owner/repo@name` selects a skill; a Git ref belongs after `#`.
- * Keep this immutable and public because the command is printed to users.
+ * Where `npx skills add` fetches the optional agent skill from, derived from
+ * this build's own version so the pin cannot drift from the release it names.
+ * Null when the build cannot establish its version; see `./release.js`.
  */
-export const SKILLS_SOURCE = 'Raidiant-io/notifai#v0.5.0'
+export const SKILLS_SOURCE: string | null = skillsSource()
+
+/**
+ * How to refer to the pin in user-facing text.
+ *
+ * Only reached in a corrupted install, where naming the tag is impossible but
+ * saying nothing would be worse — the sentence still has to read as English.
+ */
+const SKILLS_SOURCE_LABEL = SKILLS_SOURCE ?? 'the public release tag matching this CLI'
 
 function skillSourceParts(): { source: string; ref: string } | null {
+  if (SKILLS_SOURCE === null) return null
   const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)
   return match === null ? null : { source: match[1]!, ref: match[2]! }
 }
@@ -2955,7 +2965,7 @@ async function skillReadiness(
       id: 'skill',
       title: 'Agent guidance skill',
       status: 'ready',
-      detail: `installed from ${SKILLS_SOURCE} in the ${installed.scope} scope`,
+      detail: `installed from ${SKILLS_SOURCE_LABEL} in the ${installed.scope} scope`,
     }
   }
 
@@ -2970,7 +2980,7 @@ async function skillReadiness(
     detail:
       errors.length > 0
         ? `could not verify installer-managed state in ${scopeText} (${errors.join('; ')})`
-        : `not installed from ${SKILLS_SOURCE} in ${scopeText}`,
+        : `not installed from ${SKILLS_SOURCE_LABEL} in ${scopeText}`,
     remedy: {
       by: 'cli',
       summary: 'install the skill agents follow when deciding to notify',
@@ -3169,6 +3179,14 @@ async function closeGap(
   if (state.id === 'skill') {
     if (deps.nativeSkills === undefined) {
       deps.io.err('Skill installation failed — the native `npx skills` flow is unavailable.')
+      return 'failed'
+    }
+    // Refuse rather than reach for a mutable ref: installing the skill from a
+    // moving branch is the one outcome the pin exists to prevent.
+    if (SKILLS_SOURCE === null) {
+      deps.io.err(
+        'Skill installation failed — this build cannot determine its own version, so there is no release tag to install from.',
+      )
       return 'failed'
     }
     const scopeText = flags.skillsScope === undefined ? 'the scope you choose' : `${flags.skillsScope} scope`

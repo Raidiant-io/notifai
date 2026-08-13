@@ -14,7 +14,8 @@
     "check:boundary": "node scripts/check-boundary.mjs",
     "check:boundary:self-test": "node scripts/check-boundary.mjs --self-test",
     "check:release": "node scripts/check-release.mjs",
-    "check:secrets": "node scripts/check-secrets.mjs"
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:published": "node scripts/verify-published.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -64,13 +64,15 @@ for (const entry of packages) {
 
   let packed
   try {
-    packed = JSON.parse(
-      execFileSync(
-        'pnpm',
-        ['--filter', manifest.name, 'pack', '--dry-run', '--json'],
-        { cwd: root, encoding: 'utf8' },
-      ),
+    const output = execFileSync(
+      'pnpm',
+      ['--filter', manifest.name, 'pack', '--dry-run', '--json'],
+      { cwd: root, encoding: 'utf8' },
     )
+    // `prepack` builds before packing, so anything the build prints lands on
+    // stdout ahead of the JSON. Parse from the first brace rather than
+    // assuming the whole stream is the document.
+    packed = JSON.parse(output.slice(output.indexOf('{')))
   } catch (error) {
     failures.push(`${manifest.name}: could not inspect pnpm pack output (${String(error)})`)
     continue
@@ -85,23 +87,68 @@ for (const entry of packages) {
       entry.requiredFiles.includes(file) || file.startsWith('dist/') || file.startsWith('src/')
     requireValue(allowed, `${manifest.name}: unexpected packed file ${file}`)
   }
+
+  /**
+   * The compiled tree must correspond, module for module, to the sources
+   * packed beside it.
+   *
+   * This is the check that catches a stale build, and it catches it in both
+   * directions: a source with no compiled output means the build never saw it,
+   * and a compiled file with no source means the build output outlived the
+   * module it came from. Version strings and file counts both looked correct
+   * while exactly this correspondence was broken, which is how a release
+   * shipped the previous version's code under a new number.
+   */
+  const modules = (prefix, extension) =>
+    new Set(
+      paths
+        .filter((file) => file.startsWith(`${prefix}/`) && file.endsWith(extension))
+        .filter((file) => !file.endsWith(`.test${extension}`) && !file.endsWith(`.d${extension}`))
+        .map((file) => file.slice(prefix.length + 1, -extension.length)),
+    )
+  const sources = modules('src', '.ts')
+  const compiled = modules('dist', '.js')
+  for (const name of sources) {
+    requireValue(
+      compiled.has(name),
+      `${manifest.name}: packed src/${name}.ts has no dist/${name}.js — the build is stale or incomplete`,
+    )
+  }
+  for (const name of compiled) {
+    requireValue(
+      sources.has(name),
+      `${manifest.name}: packed dist/${name}.js has no src/${name}.ts — leftover output from a deleted module`,
+    )
+  }
 }
 
 const cli = packages[0].manifest
 const cliSource = readFileSync(path.join(root, 'apps/cli/src/main.ts'), 'utf8')
 requireValue(!/\.version\(\s*['"]\d/.test(cliSource), 'CLI version must not be hardcoded in src/main.ts')
 
-const cliCommandsSource = readFileSync(path.join(root, 'apps/cli/src/commands.ts'), 'utf8')
-const cliCommandsDist = readFileSync(path.join(root, 'apps/cli/dist/commands.js'), 'utf8')
-const extractSkillsSource = (contents) => contents.match(/SKILLS_SOURCE\s*=\s*['"]([^'"]+)['"]/)?.[1]
-const sourceSkillsSource = extractSkillsSource(cliCommandsSource)
-const distSkillsSource = extractSkillsSource(cliCommandsDist)
+/**
+ * Ask the built artifact what it thinks it is, rather than grepping for a
+ * constant. The pin is derived from the manifest at runtime, so the only
+ * meaningful question is what the shipped code actually resolves — which is
+ * also the one thing a stale build cannot fake.
+ */
 const expectedSkillsSource = `Raidiant-io/notifai#v${cli.version}`
-requireValue(sourceSkillsSource === expectedSkillsSource, `CLI source SKILLS_SOURCE must be ${expectedSkillsSource}`)
-requireValue(distSkillsSource === expectedSkillsSource, `CLI dist SKILLS_SOURCE must be ${expectedSkillsSource}`)
+try {
+  const derived = execFileSync(
+    'node',
+    ['-e', "import('./apps/cli/dist/release.js').then((m) => process.stdout.write(String(m.skillsSource())))"],
+    { cwd: root, encoding: 'utf8' },
+  ).trim()
+  requireValue(
+    derived === expectedSkillsSource,
+    `built CLI resolves skill source ${derived || '<empty>'}, expected ${expectedSkillsSource}`,
+  )
+} catch (error) {
+  failures.push(`could not resolve the built CLI skill source (${String(error)})`)
+}
 requireValue(
-  sourceSkillsSource === distSkillsSource,
-  `CLI source/dist SKILLS_SOURCE mismatch (${sourceSkillsSource || '<missing>'} vs ${distSkillsSource || '<missing>'})`,
+  !/SKILLS_SOURCE\s*=\s*['"]/.test(readFileSync(path.join(root, 'apps/cli/src/commands.ts'), 'utf8')),
+  'skill source must stay derived from the package version, not reintroduced as a literal',
 )
 
 try {

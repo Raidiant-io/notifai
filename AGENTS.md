@@ -49,10 +49,26 @@ Do not run `npm publish`, do not create releases or tags, and do not push
 this repository anywhere new, without the maintainer asking for it in that
 instance. A version, once published, cannot be taken back.
 
-The skill installer source (`SKILLS_SOURCE`) is pinned to the immutable public
-tag `v0.4.0`. In the skills CLI grammar, `owner/repo#ref` selects a Git ref;
+The skill installer source (`SKILLS_SOURCE`) is an immutable public tag,
+derived at runtime from the package version in `apps/cli/src/release.ts` — so
+it always names the release it ships in, and there is no second copy to fall
+out of step. Do not reintroduce it as a literal; `check:release` fails if you
+do. In the skills CLI grammar, `owner/repo#ref` selects a Git ref;
 `owner/repo@name` selects a skill. Never point it at an unpublished, mutable,
 or private location.
+
+## Publishing must verify what actually shipped
+
+`dist/` is generated and ignored, so nothing in Git records what a publish
+sent. `prepack` rebuilds before packing and every build starts by clearing
+`dist/`, which together make the packed tree a pure function of the source in
+whatever directory publishing runs from. `check:release` then proves the packed
+`src/` and `dist/` correspond module for module.
+
+After publishing, run `pnpm check:published`. It downloads the tarball npm is
+serving and compares it byte for byte against the local build. Pre-publish
+gates can only ever vouch for the tree they ran in; this is the only check that
+vouches for the artifact users install. A release is not done until it passes.
 
 ## npm credentials
 

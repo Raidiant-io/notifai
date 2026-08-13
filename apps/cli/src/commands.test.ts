@@ -56,6 +56,22 @@ import { createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 
+/**
+ * The release tag this build pins the agent skill to.
+ *
+ * Read from the manifest for the same reason the CLI itself does: a fixture
+ * carrying a literal tag stops matching the moment the version is bumped, and
+ * a test that has to be hand-edited on every release is a copy of the constant
+ * it is supposed to be checking.
+ */
+const RELEASE_REF = `v${
+  (
+    JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    ) as { version: string }
+  ).version
+}`
+
 class CapturedIo implements CommandIo {
   outLines: string[] = []
   errLines: string[] = []
@@ -1974,7 +1990,7 @@ describe('init', () => {
       source: 'Raidiant-io/notifai',
       sourceType: 'github',
       sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-      ref: 'v0.5.0',
+      ref: RELEASE_REF,
     }
   }
 
@@ -2076,8 +2092,9 @@ describe('init', () => {
     expect(io.errLines).toEqual([])
   })
 
-  it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('Raidiant-io/notifai#v0.5.0')
+  it('pins the skill installer to the tagged release this build actually is', () => {
+    expect(SKILLS_SOURCE).toBe(`Raidiant-io/notifai#${RELEASE_REF}`)
+    // `#` selects a Git ref; `@` would select a skill name instead.
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
@@ -2100,7 +2117,7 @@ describe('init', () => {
             source: 'Raidiant-io/notifai',
             sourceType: 'github',
             sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-            ref: 'v0.5.0',
+            ref: RELEASE_REF,
           },
         ],
       }),
@@ -3237,7 +3254,7 @@ describe('asking before the hooks have ever run', () => {
                   source: 'Raidiant-io/notifai',
                   sourceType: 'github',
                   sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-                  ref: 'v0.5.0',
+                  ref: RELEASE_REF,
                 },
               ]
             : [],

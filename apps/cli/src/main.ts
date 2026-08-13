@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import {
   askCommand,
@@ -30,6 +28,7 @@ import {
   type CommandDeps,
 } from './commands.js'
 import { defaultCredentialStore } from './credentials.js'
+import { packageVersion } from './release.js'
 import { HARNESSES } from './install-hooks.js'
 import type { Platform } from '@raidiant/notifai-protocol'
 import { nativeSkills, type SkillScope } from './native-skills.js'
@@ -64,18 +63,13 @@ const deps: CommandDeps = {
  * does not hold — `package.json` moved and `notifai --version` kept reporting
  * the old number, which is exactly the string someone pastes into a bug report
  * to say what they are running.
+ *
+ * `unknown` is the display form of "this build cannot tell"; the skill pin
+ * derived from the same source refuses instead, because a wrong ref installs
+ * the wrong thing while a wrong version string only misinforms.
  */
 function version(): string {
-  try {
-    const manifest = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
-    const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'))
-    if (typeof parsed === 'object' && parsed !== null && typeof (parsed as { version?: unknown }).version === 'string') {
-      return (parsed as { version: string }).version
-    }
-  } catch {
-    // Fall through: an unreadable manifest must not stop the CLI running.
-  }
-  return 'unknown'
+  return packageVersion() ?? 'unknown'
 }
 
 /**
