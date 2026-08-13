@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*', 'protocol-v*']
   pull_request:
 
 permissions:
@@ -39,6 +40,8 @@ jobs:
       - run: pnpm -r build
 
       - run: pnpm -r test
+
+      - run: pnpm test:release
 
       - run: pnpm lint
 
@@ -95,6 +98,34 @@ jobs:
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
       - run: node scripts/check-secrets.mjs
+
+  commits:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint commit messages
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            node scripts/check-commit.mjs --range "${{ github.event.pull_request.base.sha }}..HEAD"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            node scripts/check-commit.mjs
+          else
+            node scripts/check-commit.mjs --range "${{ github.event.before }}..HEAD"
+          fi
 
   dependency-review:
     if: github.event_name == 'pull_request'

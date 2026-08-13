@@ -9,13 +9,16 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:release": "vitest run --config scripts/vitest.config.ts",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "check:boundary": "node scripts/check-boundary.mjs",
     "check:boundary:self-test": "node scripts/check-boundary.mjs --self-test",
+    "check:commit": "node scripts/check-commit.mjs",
     "check:release": "node scripts/check-release.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
-    "check:published": "node scripts/verify-published.mjs"
+    "check:published": "node scripts/verify-published.mjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

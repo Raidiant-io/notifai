@@ -31,7 +31,9 @@ pnpm check:boundary:self-test
 pnpm check:boundary   # structural allowlist + forbidden-content scan
 pnpm -r build
 pnpm -r test          # no Docker, no network
+pnpm test:release     # commit / SemVer / changelog machine
 pnpm lint && pnpm -r typecheck
+pnpm check:commit     # last commit is conventional
 pnpm check:release    # package allowlist, metadata, docs, and licenses
 ```
 
@@ -39,6 +41,26 @@ All gates must pass. The test suite needs neither a network nor a container
 runtime, so a failure is a real failure. CI additionally runs a pinned gitleaks
 binary across the working tree and full history; its job first proves both
 scanner paths against ephemeral canaries.
+
+## Commit messages
+
+Conventional Commits, public audience. The first line is:
+
+```
+<type>(<scope>)!: <description>
+```
+
+`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `revert`. Optional
+scope `cli`, `protocol`, `skill`, or `repo`. Description is an imperative
+sentence with no trailing period and no tracker IDs.
+
+```
+feat(cli): wake Claude sessions through the inbox socket
+fix(protocol): reject an empty question set
+```
+
+`pnpm check:commit` lints the last commit. Point `core.hooksPath` at
+`scripts/githooks` so the `commit-msg` hook runs it for you.
 
 ## What makes a change easy to accept
 

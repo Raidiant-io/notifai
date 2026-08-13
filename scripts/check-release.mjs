@@ -21,12 +21,12 @@ const packages = [
   {
     directory: 'apps/cli',
     manifest: readJson('apps/cli/package.json'),
-    requiredFiles: ['LICENSE', 'README.md', 'package.json', 'tsconfig.json'],
+    requiredFiles: ['LICENSE', 'README.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json'],
   },
   {
     directory: 'packages/protocol',
     manifest: readJson('packages/protocol/package.json'),
-    requiredFiles: ['LICENSE', 'README.md', 'package.json', 'tsconfig.json'],
+    requiredFiles: ['LICENSE', 'README.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json'],
   },
 ]
 
@@ -49,8 +49,8 @@ for (const entry of packages) {
     `${manifest.name}: package LICENSE must exactly match the repository LICENSE`,
   )
   requireValue(
-    JSON.stringify(manifest.files) === JSON.stringify(['dist', 'src', 'tsconfig.json']),
-    `${manifest.name}: files allowlist must be dist, src, tsconfig.json`,
+    JSON.stringify(manifest.files) === JSON.stringify(['dist', 'src', 'tsconfig.json', 'CHANGELOG.md']),
+    `${manifest.name}: files allowlist must be dist, src, tsconfig.json, CHANGELOG.md`,
   )
 
   for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
@@ -162,13 +162,22 @@ try {
 }
 
 const readme = readFileSync(path.join(root, 'README.md'), 'utf8')
-for (const { manifest } of packages) {
+for (const { manifest, directory } of packages) {
   requireValue(
     readme.includes(`\`${manifest.name}\` ${manifest.version}`),
     `README must name the current ${manifest.name} version (${manifest.version})`,
   )
+  const changelog = readFileSync(path.join(root, directory, 'CHANGELOG.md'), 'utf8')
+  requireValue(
+    changelog.includes(`## [${manifest.version}]`),
+    `${manifest.name}: CHANGELOG.md must have a section for ${manifest.version}`,
+  )
 }
-for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md']) {
+requireValue(
+  readme.includes(`#v${cli.version}`) && readme.includes(`\`v${cli.version}\``),
+  `README skill pin must name the current CLI tag v${cli.version}`,
+)
+for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md', 'docs/RELEASING.md']) {
   requireValue(readFileSync(path.join(root, relative), 'utf8').trim().length > 0, `${relative} must not be empty`)
 }
 requireValue(rootLicense.includes('Apache License'), 'LICENSE must contain Apache-2.0')
@@ -199,7 +208,12 @@ try {
 }
 
 if (process.env.GITHUB_REF_TYPE === 'tag') {
-  requireValue(process.env.GITHUB_REF_NAME === `v${cli.version}`, `tag must be v${cli.version}`)
+  const protocol = packages[1].manifest
+  const name = process.env.GITHUB_REF_NAME
+  requireValue(
+    name === `v${cli.version}` || name === `protocol-v${protocol.version}`,
+    `tag must be v${cli.version} or protocol-v${protocol.version}`,
+  )
 }
 
 if (failures.length > 0) {

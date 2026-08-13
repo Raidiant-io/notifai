@@ -1,0 +1,5 @@
+#!/bin/sh
+# Lint a proposed commit message. Wired by `git config core.hooksPath scripts/githooks`.
+set -e
+root=$(git rev-parse --show-toplevel)
+exec node "$root/scripts/check-commit.mjs" --file "$1"

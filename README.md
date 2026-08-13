@@ -68,7 +68,9 @@ pnpm test           # unit tests (no Docker, no network)
 pnpm typecheck
 pnpm lint
 pnpm check:boundary # verify no private imports or disallowed files
+pnpm check:commit   # last commit is a conventional commit
 pnpm check:release  # verify package contents, metadata, docs, and licenses
+pnpm release        # dry-run the next version and changelog
 ```
 
 The CLI binary builds to `apps/cli/dist/main.js`.
@@ -80,7 +82,7 @@ installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
 delegates to the native `npx skills` flow, which lets a human choose project or
 global scope and owns placement, links, provenance, and updates. The skill is
-from the immutable public tag `v0.5.0`; the underlying installer source is
-`Raidiant-io/notifai#v0.5.0` (`#` selects a Git ref). For unattended use,
+from the immutable public tag `v0.5.1`; the underlying installer source is
+`Raidiant-io/notifai#v0.5.1` (`#` selects a Git ref). For unattended use,
 choose the scope explicitly: `notifai init --skills --skills-scope project` or
 `notifai init --skills --skills-scope global`.
