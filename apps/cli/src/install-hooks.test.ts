@@ -890,8 +890,10 @@ describe('Windows hook commands and discovery', () => {
   const winOpts = { platform: 'win32' as const, nodePath: winNode }
 
   it('keeps POSIX command bytes unchanged', () => {
-    expect(hookCommand(ADAPTER, 'stop')).toBe(`'${ADAPTER}' hook stop --owner notifai`)
-    expect(hookCommand(ADAPTER, 'stop', 'codex')).toBe(
+    expect(hookCommand(ADAPTER, 'stop', undefined, { platform: 'posix' })).toBe(
+      `'${ADAPTER}' hook stop --owner notifai`,
+    )
+    expect(hookCommand(ADAPTER, 'stop', 'codex', { platform: 'posix' })).toBe(
       `'${ADAPTER}' hook stop --owner notifai --harness codex`,
     )
   })
