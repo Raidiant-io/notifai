@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [1.1.0](https://github.com/Raidiant-io/notifai/compare/v1.0.1...v1.1.0) (2026-08-13)
+
+
+### Features
+
+* **cli:** support Windows and Linux harness workflows ([779ab6b](https://github.com/Raidiant-io/notifai/commit/779ab6b075900a7a431b809ddcb715fd80836688))
+
+
+### Bug Fixes
+
+* **cli:** cover Windows terminal behavior ([cda7abd](https://github.com/Raidiant-io/notifai/commit/cda7abd134744b2cac44204dd3eb1b20b9038edc))
+* **cli:** isolate Codex hooks and reply routing ([#1](https://github.com/Raidiant-io/notifai/issues/1)) ([d060b6a](https://github.com/Raidiant-io/notifai/commit/d060b6a18b5937d82f74619a6c1bc711243be26c))
+* **cli:** keep Codex hook install on ~/.codex, ignore CODEX_HOME ([3f75f13](https://github.com/Raidiant-io/notifai/commit/3f75f131c24534d3813a336bb72422f78e24a972))
+* **cli:** preserve Codex hook trust on reinstall ([#3](https://github.com/Raidiant-io/notifai/issues/3)) ([5e2c2f4](https://github.com/Raidiant-io/notifai/commit/5e2c2f4d618276573f810a989f41a89ab1053564))
+* **cli:** report observed setup receipts ([99d04bb](https://github.com/Raidiant-io/notifai/commit/99d04bbd487681db3023468fbd88b77a1ba13ceb))
+* **cli:** stabilize Linux portability checks ([1462693](https://github.com/Raidiant-io/notifai/commit/146269306ae3dfc91f3559cce802460d3e058925))
+
 ## [Unreleased]
 
 ## [1.0.1] - 2026-08-13

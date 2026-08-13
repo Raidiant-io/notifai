@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [0.4.1](https://github.com/Raidiant-io/notifai/compare/protocol-v0.4.0...protocol-v0.4.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **cli:** isolate Codex hooks and reply routing ([#1](https://github.com/Raidiant-io/notifai/issues/1)) ([d060b6a](https://github.com/Raidiant-io/notifai/commit/d060b6a18b5937d82f74619a6c1bc711243be26c))
+
 ## [Unreleased]
 
 ## [0.4.0] - 2026-08-13
