@@ -2760,6 +2760,9 @@ describe('init', () => {
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
     expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
     expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from iPhone.",
+    )
     expect(io.outLines.join('\n')).toContain('All set.')
     expect(submitCalls).toBe(1)
     expect(submittedDraft?.draft.event).toBe('setup_verified')

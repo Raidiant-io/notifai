@@ -3600,6 +3600,9 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
       const observed = observedCompanionReceipt(snapshot, proof.device_id)
       if (observed) {
         spinner?.stop(`Receipt observed from ${observed.delivery.device_name}`)
+        deps.io.out(
+          `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name}.`,
+        )
         return 'closed'
       }
       lastError = null
