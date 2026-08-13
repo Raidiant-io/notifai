@@ -64,11 +64,11 @@ export function renderConfigList(
   }
 
   lines.push('')
-  lines.push(
-    style.dim(
-      `${glyph.arrow} ${style.code('notifai config explain <key>')} for what one of these means and how to change it.`,
-    ),
-  )
+  const command = 'notifai config explain <key>'
+  const help = `${glyph.arrow} ${command} for what one of these means and how to change it.`
+  for (const line of wrap(help, columns)) {
+    lines.push(style.dim(line.replace(command, style.code(command))))
+  }
   return lines
 }
 

@@ -4923,7 +4923,7 @@ function wakeRouteCheck(
   if (active.harness === 'claude-code') {
     const readiness = inspectClaudeInbox({
       pid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
-      platform: process.platform,
+      platform: deps.hookPlatform ?? process.platform,
       readDescriptor:
         deps.claudeWake?.readDescriptor ?? systemClaudeWakeAdapters(deps.env).readDescriptor,
       socketExists: (socketPath) => existsSync(socketPath),
