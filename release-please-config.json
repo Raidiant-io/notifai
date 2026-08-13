@@ -8,8 +8,7 @@
       "component": "notifai",
       "include-component-in-tag": false,
       "include-v-in-tag": true,
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": ["../../README.md"]
+      "changelog-path": "CHANGELOG.md"
     },
     "packages/protocol": {
       "release-type": "node",
@@ -17,8 +16,7 @@
       "component": "protocol",
       "include-component-in-tag": true,
       "include-v-in-tag": true,
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": ["../../README.md"]
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }

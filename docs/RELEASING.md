@@ -13,10 +13,10 @@ under [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and
 | `BREAKING CHANGE:` or `type!:` | major |
 
 That is the Conventional Commits spec. It is not special-cased for 0.x: a
-breaking change on `0.5.1` is `1.0.0`. `0.y.z` is valid SemVer (initial
-development). Pre-release labels (`1.0.0-rc.1`) exist if we need them later.
+breaking change on `0.5.1` was `1.0.0`. A breaking change on `1.0.0` is
+`2.0.0`. Pre-release labels (`1.0.0-rc.1`) exist if we need them later.
 
-The packages on npm today are `0.5.1` and `0.3.0`. Those numbers stay until
+The packages on npm today are `1.0.0` and `0.4.0`. Those numbers stay until
 the next cut.
 
 ## Commits
@@ -47,11 +47,15 @@ updates a Release PR on every push to `main`. Merging that PR is the cut:
 it bumps `package.json`, writes `CHANGELOG.md`, and creates the annotated
 tags.
 
-- CLI tag: `v0.5.2` (the skill pin is `Raidiant-io/notifai#v${version}`)
-- Protocol tag: `protocol-v0.3.1`
+- CLI tag: `v1.0.1` (the skill pin is `Raidiant-io/notifai#v${version}`)
+- Protocol tag: `protocol-v0.4.1`
 
 **Do not merge a Release PR unless the maintainer asked for a release.**
 The PR existing is not a release.
+
+The root `README.md` version markers are updated in the release commit.
+release-please cannot climb out of a package directory to edit them
+(`extra-files` rejects `../`).
 
 release-please does not publish to npm. After the tags exist, and only when
 the maintainer asked: publish the packages that changed, then

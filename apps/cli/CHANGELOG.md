@@ -10,6 +10,28 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-13
+
+### Removed
+
+- **BREAKING** Service origin is no longer a user setting. The compiled default and the origin stored on the credential stay; override only with `--base-url` or `NOTIFAI_BASE_URL`.
+- **BREAKING** Personal project preferences leave the project tree and live under the user config directory, keyed by project root.
+
+### Added
+
+- A bounded, consented slice of the local log can be packed for feedback.
+- Test notifications are sent by kind rather than by inventing a sound.
+- The agent skill walks setup itself and treats `--sound` / `--level` as overrides.
+- Every detected harness is installed instead of picking one.
+- The interactive app offers labeled hooks install and uninstall.
+
+### Fixed
+
+- Codex hooks are written in the layer's existing representation.
+- Readiness work that cannot change the next action is skipped.
+- Unfinished import changes from the skill rewrite are dropped.
+- Setup closes are short.
+
 ## [0.5.1] - 2026-08-13
 
 ### Fixed
@@ -124,7 +146,8 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 - First public release of the `notifai` CLI under Apache-2.0.
 
-[unreleased]: https://github.com/Raidiant-io/notifai/compare/v0.5.1...HEAD
+[unreleased]: https://github.com/Raidiant-io/notifai/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Raidiant-io/notifai/compare/v0.5.1...v1.0.0
 [0.5.1]: https://github.com/Raidiant-io/notifai/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Raidiant-io/notifai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Raidiant-io/notifai/compare/v0.3.0...v0.4.0

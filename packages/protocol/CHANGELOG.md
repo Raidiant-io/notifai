@@ -10,6 +10,8 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-13
+
 ### Added
 
 - SubmitFeedbackRequest and SubmitFeedbackResponse for consented feedback, including an optional gzip+base64 log slice.
@@ -46,7 +48,8 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 - First public release of the client-visible wire contract.
 
-[unreleased]: https://github.com/Raidiant-io/notifai/compare/protocol-v0.3.0...HEAD
+[unreleased]: https://github.com/Raidiant-io/notifai/compare/protocol-v0.4.0...HEAD
+[0.4.0]: https://github.com/Raidiant-io/notifai/compare/protocol-v0.3.0...protocol-v0.4.0
 [0.3.0]: https://github.com/Raidiant-io/notifai/compare/protocol-v0.2.0...protocol-v0.3.0
 [0.2.0]: https://github.com/Raidiant-io/notifai/compare/protocol-v0.1.2...protocol-v0.2.0
 [0.1.2]: https://github.com/Raidiant-io/notifai/compare/protocol-v0.1.1...protocol-v0.1.2
