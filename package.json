@@ -14,7 +14,7 @@
     "check:boundary": "node scripts/check-boundary.mjs",
     "check:boundary:self-test": "node scripts/check-boundary.mjs --self-test",
     "check:commit": "commitlint --last --verbose",
-    "check:release": "node scripts/check-release.mjs",
+    "check:release": "node --test scripts/cross-platform.test.mjs && node scripts/check-release.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:published": "node scripts/verify-published.mjs"
   },

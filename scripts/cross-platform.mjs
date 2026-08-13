@@ -8,14 +8,11 @@ import { fileURLToPath } from 'node:url'
 export const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url))
 export const repositoryRoot = path.resolve(scriptsDirectory, '..')
 
-function quoteCmdArgument(value) {
-  return `"${value.replaceAll('%', '%%').replaceAll('"', '""')}"`
-}
-
 /**
  * Resolve a package-manager command without asking Node to execute a `.cmd`
- * shim directly. Windows CreateProcess cannot launch those shims, so cmd.exe
- * receives one fully quoted command string; POSIX keeps direct argv execution.
+ * shim directly. Windows package-manager shims are JavaScript files beside the
+ * `.cmd` wrappers, so invoke the current Node runtime on that stable companion
+ * instead of reparsing a command line through cmd.exe.
  */
 export function commandInvocation(
   command,
@@ -24,12 +21,16 @@ export function commandInvocation(
   env = process.env,
 ) {
   if (platform !== 'win32') return { file: command, args: [...args], options: {} }
-  const script = `"${[`${command}.cmd`, ...args].map(quoteCmdArgument).join(' ')}"`
-  return {
-    file: env.ComSpec || 'cmd.exe',
-    args: ['/d', '/s', '/v:off', '/c', script],
-    options: { windowsHide: true, windowsVerbatimArguments: true },
+  const home = env.PNPM_HOME
+  if (command === 'pnpm' && typeof home === 'string' && home !== '') {
+    const installRoot = path.dirname(home)
+    return {
+      file: process.execPath,
+      args: [path.join(installRoot, 'pnpm', 'bin', 'pnpm.cjs'), ...args],
+      options: { windowsHide: true },
+    }
   }
+  return { file: `${command}.cmd`, args: [...args], options: { windowsHide: true } }
 }
 
 export function execCommand(command, args, options = {}) {
