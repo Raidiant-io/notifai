@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +19,7 @@ import type {
   SubmissionReceipt,
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
@@ -161,6 +170,21 @@ class InteractiveIo extends CapturedIo {
 }
 
 function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
+  const home = env['HOME']
+  if (home === undefined || home === '') {
+    throw new Error(
+      'trustInstalledCodexHooks requires env.HOME; refusing to use the real home directory',
+    )
+  }
+  const resolvedHome = path.resolve(home)
+  const tmpRoot = path.resolve(os.tmpdir())
+  const underTmp = resolvedHome === tmpRoot || resolvedHome.startsWith(`${tmpRoot}${path.sep}`)
+  if (!underTmp) {
+    throw new Error(
+      `trustInstalledCodexHooks will only write under ${tmpRoot}, not ${resolvedHome}`,
+    )
+  }
+  const file = path.join(resolvedHome, '.codex', 'config.toml')
   const installations = findInstallations(cwd, env).filter(
     (installation) => installation.harness === 'codex',
   )
@@ -170,8 +194,6 @@ function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
       return `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`
     }),
   )
-  const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
-  const file = path.join(home, '.codex', 'config.toml')
   mkdirSync(path.dirname(file), { recursive: true })
   // Trust lives in the same config.toml as inline [hooks]. Overwriting the
   // file would delete the global handlers this helper is trying to trust.
@@ -3316,6 +3338,26 @@ describe('an outage is not an answer', () => {
 describe('asking before the hooks have ever run', () => {
   const execPath = process.execPath
   const scriptPath = fileURLToPath(import.meta.url)
+  const scratch: string[] = []
+
+  function scratchDir(prefix: string): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), prefix))
+    scratch.push(dir)
+    return dir
+  }
+
+  afterEach(() => {
+    while (scratch.length > 0) {
+      rmSync(scratch.pop()!, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to write Codex trust into the real user config', () => {
+    expect(() => trustInstalledCodexHooks(os.tmpdir(), {})).toThrow(/requires env.HOME/)
+    expect(() => trustInstalledCodexHooks(os.tmpdir(), { HOME: os.homedir() })).toThrow(
+      /will only write under/,
+    )
+  })
 
   it('names the active Codex harness instead of unrelated installed adapters', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-missing-'))
@@ -3367,7 +3409,7 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it('registers only when the active Codex thread owns the project pointer', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-matching-'))
+    const cwd = scratchDir('notifai-active-codex-matching-')
     const io = new CapturedIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
@@ -3512,7 +3554,7 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it('makes one work-resumption commitment per offered answer part of the asking turn', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-commitment-'))
+    const cwd = scratchDir('notifai-ask-commitment-')
     const io = new CapturedIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
@@ -3548,7 +3590,7 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it('requires a concrete fallback for free-text answers before the turn ends', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-free-text-'))
+    const cwd = scratchDir('notifai-ask-free-text-')
     const io = new CapturedIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
@@ -3572,7 +3614,7 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it('refuses a Codex question when the installed Stop definition is no longer trusted', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-stale-trust-'))
+    const cwd = scratchDir('notifai-codex-stale-trust-')
     const io = new CapturedIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
@@ -3721,7 +3763,7 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it('rejects duplicate active Codex definitions before registration', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-codex-duplicate-'))
+    const cwd = scratchDir('notifai-active-codex-duplicate-')
     const io = new CapturedIo()
     const env = {
       HOME: path.join(cwd, 'home'),
