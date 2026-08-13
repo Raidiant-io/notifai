@@ -172,7 +172,11 @@ function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
   )
   const codexHome = env['CODEX_HOME'] as string
   mkdirSync(codexHome, { recursive: true })
-  writeFileSync(path.join(codexHome, 'config.toml'), sections.join('\n'))
+  const file = path.join(codexHome, 'config.toml')
+  // Trust lives in the same config.toml as inline [hooks]. Overwriting the
+  // file would delete the global handlers this helper is trying to trust.
+  const existing = existsSync(file) ? readFileSync(file, 'utf8').trimEnd() : ''
+  writeFileSync(file, [existing, ...sections].filter((block) => block.length > 0).join('\n') + '\n')
 }
 
 function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
@@ -2466,7 +2470,8 @@ describe('init', () => {
     )
     expect(wired).toEqual(['claude-code', 'codex'])
     expect(existsSync(path.join(cwd, '.claude', 'settings.local.json'))).toBe(true)
-    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(true)
+    expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(true)
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
     expect(io.outLines.join('\n')).toContain('Installed claude-code hooks')
     expect(io.outLines.join('\n')).toContain('Installed codex hooks')
   })
@@ -2632,6 +2637,7 @@ describe('init', () => {
       ...makeDeps(io, client),
       cwd,
       env: {
+        HOME: path.join(cwd, 'home'),
         XDG_CONFIG_HOME: path.join(cwd, 'config'),
         XDG_STATE_HOME: path.join(cwd, 'state'),
         CODEX_HOME: path.join(cwd, 'codex'),
@@ -4087,7 +4093,12 @@ describe('asking before the hooks have ever run', () => {
     const deps = {
       ...makeDeps(io, {} as ApiClient),
       cwd,
-      env: { XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'none'), CLAUDE_CONFIG_DIR: path.join(cwd, 'none') },
+      env: {
+        HOME: path.join(cwd, 'home'),
+        XDG_STATE_HOME: cwd,
+        CODEX_HOME: path.join(cwd, 'none'),
+        CLAUDE_CONFIG_DIR: path.join(cwd, 'none'),
+      },
     }
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)

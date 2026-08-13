@@ -226,11 +226,31 @@ describe('settings locations', () => {
     )
   })
 
-  it('uses hooks.json for Codex', () => {
-    expect(settingsFile('codex', false, '/repo', {})).toBe('/repo/.codex/hooks.json')
+  it('uses config.toml for Codex, not the legacy hooks.json', () => {
+    expect(settingsFile('codex', false, '/repo', {})).toBe('/repo/.codex/config.toml')
     expect(settingsFile('codex', true, '/repo', {})).toBe(
-      path.join(os.homedir(), '.codex', 'hooks.json'),
+      path.join(os.homedir(), '.codex', 'config.toml'),
     )
+  })
+
+  it('migrates a leftover Notifai-only hooks.json onto config.toml', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-migrate-json-'))
+    mkdirSync(path.join(repo, '.codex'), { recursive: true })
+    applyPlan(path.join(repo, '.codex', 'hooks.json'), { hooks: ours() })
+
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'config.toml'))
+  })
+
+  it('stays on hooks.json when that file already holds someone else\'s hooks', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
+    mkdirSync(path.join(repo, '.codex'), { recursive: true })
+    applyPlan(path.join(repo, '.codex', 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'gdh-stop' }] }],
+      },
+    })
+
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
   })
 
   it('writes Codex hooks into an existing inline [hooks] instead of inventing hooks.json', () => {
@@ -268,7 +288,7 @@ describe('settings locations', () => {
     )
 
     expect(settingsFile('codex', true, '/repo', { CODEX_HOME: home })).toBe(
-      path.join(home, 'hooks.json'),
+      path.join(home, 'config.toml'),
     )
   })
 
@@ -310,7 +330,7 @@ describe('a Codex install run inside a git worktree', () => {
   it('targets the main repository, which is the file Codex actually reads', () => {
     const { main, worktree } = repoWithWorktree()
 
-    expect(settingsFile('codex', false, worktree, {})).toBe(path.join(main, '.codex', 'hooks.json'))
+    expect(settingsFile('codex', false, worktree, {})).toBe(path.join(main, '.codex', 'config.toml'))
     expect(codexProjectRoot(worktree)).toBe(main)
   })
 
@@ -379,14 +399,14 @@ describe('a Codex install run inside a git worktree', () => {
     // Orca points CODEX_HOME at a per-account home; writing to ~/.codex there
     // produced hooks Codex never loaded, and nothing reported a problem.
     expect(settingsFile('codex', true, '/repo', { CODEX_HOME: '/managed/codex' })).toBe(
-      '/managed/codex/hooks.json',
+      '/managed/codex/config.toml',
     )
     expect(settingsFile('claude-code', true, '/repo', { CLAUDE_CONFIG_DIR: '/managed/claude' })).toBe(
       '/managed/claude/settings.json',
     )
     // An empty value is not a relocation.
     expect(settingsFile('codex', true, '/repo', { CODEX_HOME: '' })).toBe(
-      path.join(os.homedir(), '.codex', 'hooks.json'),
+      path.join(os.homedir(), '.codex', 'config.toml'),
     )
   })
 })

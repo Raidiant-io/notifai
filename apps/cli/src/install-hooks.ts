@@ -34,9 +34,10 @@ const OPENCODE_EVENTS = [
  * Claude Code's `settings.json` and Codex's hook files use the same shape —
  * `hooks` maps an event name to matcher groups, each holding command handlers
  * with an optional timeout — so one generator serves both. Only the file
- * location and the event set differ. Codex accepts that shape as `hooks.json`
- * or as inline `[hooks]` tables in the same layer's `config.toml`; one
- * representation per layer, never both.
+ * location and the event set differ. Codex still loads a leftover
+ * `hooks.json`, but that file is the legacy representation. We write inline
+ * `[hooks]` tables in the same layer's `config.toml`. One representation per
+ * layer, never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -277,8 +278,8 @@ function assertNeverHarness(harness: never): never {
  * Where Codex looks for a project's hooks — the **main** repository, not the
  * working directory.
  *
- * Run from a linked git worktree, Codex reads `<main repo>/.codex/hooks.json`
- * and never looks at the worktree's own. Proven 2026-08-03 in an isolated
+ * Run from a linked git worktree, Codex reads `<main repo>/.codex/config.toml`
+ * (or a leftover `hooks.json`) and never looks at the worktree's own. Proven 2026-08-03 in an isolated
  * `CODEX_HOME`: with cwd set to a worktree, a handler at the main repo root
  * fired and an identical one at the worktree root did not; removing the main
  * one left nothing firing at all. Writing to cwd therefore produces a silent
@@ -308,7 +309,7 @@ export function codexProjectRoot(cwd: string): string {
  *
  * Codex splits the two halves of "which project am I in": it discovers the
  * project layer by walking up from cwd for a `.codex` directory, but resolves
- * `hooks.json` inside that layer against the main repository. In an ordinary
+ * the hook file inside that layer against the main repository. In an ordinary
  * checkout both land on the same directory and the split is invisible. In a
  * worktree they diverge, and writing only the main repository's file leaves it
  * unread — Codex never looks, because nothing at or above cwd told it there was
@@ -399,9 +400,11 @@ export interface CodexLayerInspection {
 /**
  * Which representation this Codex layer already uses.
  *
- * Codex loads `hooks.json` and inline `[hooks]` side by side, runs every
- * matching handler, and warns when both exist. `[hooks.state]` is the trust
- * store, not a hook definition, so it does not count as a representation.
+ * `hooks.json` is the legacy file. We write inline `[hooks]` in
+ * `config.toml` unless this layer already has someone else's hooks only in
+ * `hooks.json` — writing a second file would make Codex load both and run
+ * every matching handler. `[hooks.state]` is the trust store, not a hook
+ * definition, so it does not count as a representation.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
   const jsonDocument = tryLoadSettings(paths.hooksJson)
@@ -410,19 +413,14 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
   const tomlEvents = hookEventNames(tomlDocument?.hooks)
   const jsonForeign = documentHasForeignHandlers(jsonDocument)
   const tomlForeign = documentHasForeignHandlers(tomlDocument)
-  const jsonOurs = documentHasOurHandlers(jsonDocument)
-  const tomlOurs = documentHasOurHandlers(tomlDocument)
   const dual = jsonEvents.length > 0 && tomlEvents.length > 0
-  let writeTarget = paths.hooksJson
-  if (tomlEvents.length > 0 && jsonEvents.length === 0) writeTarget = paths.configToml
-  else if (jsonEvents.length > 0 && tomlEvents.length === 0) writeTarget = paths.hooksJson
-  else if (dual) {
-    if (tomlForeign && !jsonForeign) writeTarget = paths.configToml
-    else if (jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
-    else if (!jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
-    else if (tomlOurs && !jsonOurs) writeTarget = paths.configToml
-    else if (jsonOurs && !tomlOurs) writeTarget = paths.hooksJson
-    else writeTarget = paths.hooksJson
+  // Current representation. Stay on the legacy file only when that is
+  // already where someone else's hooks live and toml has none.
+  let writeTarget = paths.configToml
+  if (jsonEvents.length > 0 && tomlEvents.length === 0 && jsonForeign) {
+    writeTarget = paths.hooksJson
+  } else if (dual && jsonForeign && !tomlForeign) {
+    writeTarget = paths.hooksJson
   }
   return {
     paths,
@@ -510,11 +508,6 @@ function hookEventNames(hooks: SettingsDocument['hooks']): string[] {
 function documentHasForeignHandlers(document: SettingsDocument | null): boolean {
   if (document === null) return false
   return locateAllHandlers(document).some((handler) => !isNotifaiCommand(handler.command))
-}
-
-function documentHasOurHandlers(document: SettingsDocument | null): boolean {
-  if (document === null) return false
-  return locateHandlers(document).length > 0
 }
 
 /** Best-effort detection so `hooks install` usually needs no flags. */
