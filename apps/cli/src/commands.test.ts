@@ -1974,7 +1974,7 @@ describe('init', () => {
       source: 'Raidiant-io/notifai',
       sourceType: 'github',
       sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-      ref: 'v0.4.0',
+      ref: 'v0.5.0',
     }
   }
 
@@ -2077,7 +2077,7 @@ describe('init', () => {
   })
 
   it('pins the skill installer to the tagged public release syntax', () => {
-    expect(SKILLS_SOURCE).toBe('Raidiant-io/notifai#v0.4.0')
+    expect(SKILLS_SOURCE).toBe('Raidiant-io/notifai#v0.5.0')
     expect(SKILLS_SOURCE).not.toContain('@v')
   })
 
@@ -2100,7 +2100,7 @@ describe('init', () => {
             source: 'Raidiant-io/notifai',
             sourceType: 'github',
             sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-            ref: 'v0.4.0',
+            ref: 'v0.5.0',
           },
         ],
       }),
@@ -3237,7 +3237,7 @@ describe('asking before the hooks have ever run', () => {
                   source: 'Raidiant-io/notifai',
                   sourceType: 'github',
                   sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-                  ref: 'v0.4.0',
+                  ref: 'v0.5.0',
                 },
               ]
             : [],
