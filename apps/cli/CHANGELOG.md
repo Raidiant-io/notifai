@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [2.0.0](https://github.com/Raidiant-io/notifai/compare/v1.1.0...v2.0.0) (2026-08-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** hide the service URL, move personal prefs, and shorten setup closes
+
+### Features
+
+* **cli:** pack a bounded consented slice of the local log ([6fb3d68](https://github.com/Raidiant-io/notifai/commit/6fb3d68cd0057ab901c031c6012318fe464949a9))
+* **cli:** send a test notification by kind, not by inventing a sound ([b90c8ed](https://github.com/Raidiant-io/notifai/commit/b90c8edcbf2ba98db09414701a309cef88aa1cc4))
+* **cli:** support Windows and Linux harness workflows ([779ab6b](https://github.com/Raidiant-io/notifai/commit/779ab6b075900a7a431b809ddcb715fd80836688))
+* compose native skills setup into init ([de6318a](https://github.com/Raidiant-io/notifai/commit/de6318a71166ef75774a217176f1e020116e177b))
+* **skill:** make agents set Notifai up and skip sound/level unless overriding ([9ffd87c](https://github.com/Raidiant-io/notifai/commit/9ffd87c0c79e539f8b92e94ac453407d58bca30f))
+
+
+### Bug Fixes
+
+* **cli:** cover Windows terminal behavior ([cda7abd](https://github.com/Raidiant-io/notifai/commit/cda7abd134744b2cac44204dd3eb1b20b9038edc))
+* **cli:** drop unfinished import changes from the skill rewrite ([2fd49b2](https://github.com/Raidiant-io/notifai/commit/2fd49b2ba4d4f218138da5dbc3455f1ac07adaf6))
+* **cli:** hide the service URL, move personal prefs, and shorten setup closes ([5b9fe52](https://github.com/Raidiant-io/notifai/commit/5b9fe52d9dc5296e5c3b328a82682a36719d891b))
+* **cli:** install hooks at one scope, not project and global ([f4cd237](https://github.com/Raidiant-io/notifai/commit/f4cd2376b57d9104fbcdcca83990ad9dfe09b296))
+* **cli:** isolate Codex hooks and reply routing ([#1](https://github.com/Raidiant-io/notifai/issues/1)) ([d060b6a](https://github.com/Raidiant-io/notifai/commit/d060b6a18b5937d82f74619a6c1bc711243be26c))
+* **cli:** keep Codex hook install on ~/.codex, ignore CODEX_HOME ([3f75f13](https://github.com/Raidiant-io/notifai/commit/3f75f131c24534d3813a336bb72422f78e24a972))
+* **cli:** offer labeled hooks install and uninstall in the interactive app ([f93d0ae](https://github.com/Raidiant-io/notifai/commit/f93d0ae1c981694de6abb317f93f1647dd1d64fa))
+* **cli:** preserve Codex hook trust on reinstall ([#3](https://github.com/Raidiant-io/notifai/issues/3)) ([5e2c2f4](https://github.com/Raidiant-io/notifai/commit/5e2c2f4d618276573f810a989f41a89ab1053564))
+* **cli:** report observed setup receipts ([99d04bb](https://github.com/Raidiant-io/notifai/commit/99d04bbd487681db3023468fbd88b77a1ba13ceb))
+* **cli:** skip readiness work that cannot change the next action ([7fc2295](https://github.com/Raidiant-io/notifai/commit/7fc2295e4a98b07f0116bad17ea93b8f98b265d1))
+* **cli:** stabilize Linux portability checks ([1462693](https://github.com/Raidiant-io/notifai/commit/146269306ae3dfc91f3559cce802460d3e058925))
+* **cli:** write Codex hooks in the layer's existing representation ([7589862](https://github.com/Raidiant-io/notifai/commit/758986296009c1d50bed66a79a5863ea977aa87e))
+* **cli:** write Codex hooks to config.toml, not hooks.json ([3cc6bb8](https://github.com/Raidiant-io/notifai/commit/3cc6bb8bc9bb592ee4abce3f1421d7c0c6f56d32))
+* make CLI package installable from npm ([67bd6be](https://github.com/Raidiant-io/notifai/commit/67bd6be77d648a12ff0d3036a5853b6a4391bebb))
+
 ## [1.1.0](https://github.com/Raidiant-io/notifai/compare/v1.0.1...v1.1.0) (2026-08-13)
 
 
