@@ -273,6 +273,14 @@ describe('settings locations', () => {
     expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
   })
 
+  it('keeps a Notifai-only inline representation so existing trust remains valid', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-ours-toml-'))
+    mkdirSync(path.join(repo, '.codex'), { recursive: true })
+    applyPlan(path.join(repo, '.codex', 'config.toml'), { hooks: ours() })
+
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'config.toml'))
+  })
+
   it('stays on hooks.json when that file already holds someone else\'s hooks', () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
     mkdirSync(path.join(repo, '.codex'), { recursive: true })
@@ -870,6 +878,14 @@ describe('detectHarness', () => {
       'claude-code',
       'codex',
     ])
+  })
+
+  it('detects Codex from the active custom CODEX_HOME', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-home-'))
+    const codexHome = path.join(home, 'managed', 'codex')
+    mkdirSync(codexHome, { recursive: true })
+
+    expect(detectedHarnesses(project(), { HOME: home, CODEX_HOME: codexHome })).toEqual(['codex'])
   })
 
   it('prefers project evidence over anything installed on the machine', () => {
