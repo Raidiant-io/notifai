@@ -48,8 +48,8 @@ describe('planRelease', () => {
     expect(protocol).toMatchObject({ from: '0.3.0', to: '0.3.1', bump: 'patch', tag: 'protocol-v0.3.1' })
   })
 
-  it('fails closed on a prose commit in the range', () => {
-    const plan = planRelease({
+  it('ignores pre-convention prose and fails a malformed conventional attempt', () => {
+    const skipped = planRelease({
       packages: current,
       baselines: { cli: 'v0.5.1', protocol: 'v0.5.1' },
       commits: [
@@ -61,9 +61,24 @@ describe('planRelease', () => {
         },
       ],
     })
-    expect(plan.ok).toBe(false)
-    expect(plan.errors.join('\n')).toMatch(/ccc3333/)
-    expect(plan.errors.join('\n')).toMatch(/not a conventional commit/)
+    expect(skipped.ok).toBe(true)
+    expect(skipped.warnings.join('\n')).toMatch(/pre-convention prose/)
+    expect(skipped.packages.every((pkg) => pkg.bump === null)).toBe(true)
+
+    const bad = planRelease({
+      packages: current,
+      baselines: { cli: 'v0.5.1', protocol: 'v0.5.1' },
+      commits: [
+        {
+          sha: 'eee5555deadbeef',
+          subject: 'feat(cli): add a trailing period.',
+          body: '',
+          files: ['apps/cli/src/main.ts'],
+        },
+      ],
+    })
+    expect(bad.ok).toBe(false)
+    expect(bad.errors.join('\n')).toMatch(/period/)
   })
 
   it('does not bump for chore-only work', () => {

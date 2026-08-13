@@ -119,6 +119,17 @@ export function lintCommit(message) {
   return parsed.ok ? [] : parsed.errors
 }
 
+/**
+ * True when the first line is trying to be a conventional commit.
+ * Prose history (everything before this machine) is not an attempt.
+ *
+ * @param {string} message
+ */
+export function looksConventional(message) {
+  const header = message.replace(/^﻿/, '').replace(/\r\n/g, '\n').split('\n')[0] ?? ''
+  return HEADER.test(header)
+}
+
 function splitFooters(lines) {
   const errors = []
   const start = lines[0] === '' ? 1 : 0

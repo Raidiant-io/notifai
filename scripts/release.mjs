@@ -49,6 +49,11 @@ try {
   })
 
   if (!plan.ok) fail(1, plan.errors.join('\n'))
+  if (!json && plan.warnings.length > 0) {
+    console.log('Ignored pre-convention commits:')
+    for (const warning of plan.warnings) console.log(`  ${warning}`)
+    console.log('')
+  }
 
   const changing = plan.packages.filter((pkg) => pkg.bump !== null)
   if (!json) printPlan(plan, apply)

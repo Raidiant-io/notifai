@@ -1,5 +1,5 @@
 import { groupChanges } from './changelog.mjs'
-import { parseCommit } from './conventional-commit.mjs'
+import { looksConventional, parseCommit } from './conventional-commit.mjs'
 import { PACKAGES, packagesFor } from './packages.mjs'
 import { bumpFromCommits, bumpVersion } from './semver-policy.mjs'
 
@@ -30,10 +30,15 @@ import { bumpFromCommits, bumpVersion } from './semver-policy.mjs'
 export function planRelease(input) {
   const wanted = input.only ? new Set(input.only) : null
   const errors = []
+  const warnings = []
   const parsed = []
 
   for (const raw of input.commits) {
     const message = raw.body === '' ? raw.subject : `${raw.subject}\n\n${raw.body}`
+    if (!looksConventional(message)) {
+      warnings.push(`${raw.sha.slice(0, 7)} ${raw.subject}  (pre-convention prose; ignored)`)
+      continue
+    }
     const result = parseCommit(message)
     if (!result.ok) {
       errors.push(`${raw.sha.slice(0, 7)} ${raw.subject}\n    ${result.errors[0]}`)
@@ -52,6 +57,7 @@ export function planRelease(input) {
         ...errors,
       ],
       packages: [],
+      warnings,
     }
   }
 
@@ -86,5 +92,5 @@ export function planRelease(input) {
     })
   }
 
-  return { ok: true, errors: [], packages }
+  return { ok: true, errors: [], warnings, packages }
 }
