@@ -36,6 +36,7 @@ import {
   deviceInventory,
   doctorCommand,
   hooksInstallCommand,
+  hooksUninstallCommand,
   initCommand,
   loginCommand,
   logoutCommand,
@@ -43,6 +44,11 @@ import {
   type CommandDeps,
 } from './commands.js'
 import { CONFIG_KEYS, loadConfig, type CliConfig, type ConfigKey } from './config.js'
+import {
+  detectedHarnesses,
+  findInstallations,
+  type Installation,
+} from './install-hooks.js'
 import {
   CONFIG_GROUPS,
   acceptedValues,
@@ -53,13 +59,110 @@ import {
   formatValue,
   type ConfigGroup,
 } from './config-schema.js'
-import { firstBlocker, type Readiness, type ReadinessState } from './readiness.js'
+import {
+  firstBlocker,
+  refreshAfterMenuAction,
+  type Readiness,
+  type ReadinessRefresh,
+  type ReadinessState,
+} from './readiness.js'
 import { printBanner, tagline } from './ui/banner.js'
 import { card, glyph, mark, style, type Tone } from './ui/theme.js'
 
 /** Clack returns a symbol when the user pressed Ctrl-C or Escape. */
-function cancelled(value: unknown): boolean {
+function cancelled(value: unknown): value is symbol {
   return clack.isCancel(value)
+}
+
+export type HookScope = 'project' | 'machine'
+
+export type RoutingAction = 'install' | 'uninstall' | 'settings' | 'back'
+
+export interface MenuOption<Value extends string> {
+  value: Value
+  label: string
+  hint?: string
+}
+
+/**
+ * Which hook actions this directory and setup can actually perform.
+ *
+ * Install is offered only when a harness is detectable here. Uninstall is
+ * offered only for a scope that already has Notifai hooks, and the label names
+ * that scope so a machine-wide install is never stripped from a random folder
+ * under a generic "uninstall".
+ */
+export function routingHookActions(input: {
+  canInstall: boolean
+  projectInstallations: readonly { harness: string }[]
+  machineInstallations: readonly { harness: string }[]
+  hooksReady: boolean
+}): MenuOption<RoutingAction>[] {
+  const options: MenuOption<RoutingAction>[] = []
+  const hasProject = input.projectInstallations.length > 0
+  const hasMachine = input.machineInstallations.length > 0
+  const hasAny = hasProject || hasMachine
+
+  if (input.canInstall) {
+    options.push({
+      value: 'install',
+      label: input.hooksReady || hasAny ? 'Re-install hooks' : 'Install hooks',
+      hint: 'this project or this machine',
+    })
+  }
+
+  if (hasProject && hasMachine) {
+    options.push({
+      value: 'uninstall',
+      label: 'Uninstall hooks',
+      hint: 'this project or this machine',
+    })
+  } else if (hasProject) {
+    options.push({
+      value: 'uninstall',
+      label: 'Uninstall hooks for this project',
+      hint: harnessHint(input.projectInstallations),
+    })
+  } else if (hasMachine) {
+    options.push({
+      value: 'uninstall',
+      label: 'Uninstall hooks on this machine',
+      hint: harnessHint(input.machineInstallations),
+    })
+  }
+
+  options.push(
+    { value: 'settings', label: 'Change presence settings', hint: 'when a question may leave this terminal' },
+    { value: 'back', label: '← Back' },
+  )
+  return options
+}
+
+/** Scope choices that would actually remove something. Project first. */
+export function uninstallScopeOptions(
+  projectInstallations: readonly { harness: string }[],
+  machineInstallations: readonly { harness: string }[],
+): MenuOption<HookScope>[] {
+  const options: MenuOption<HookScope>[] = []
+  if (projectInstallations.length > 0) {
+    options.push({
+      value: 'project',
+      label: 'This project',
+      hint: 'remove hooks from this directory',
+    })
+  }
+  if (machineInstallations.length > 0) {
+    options.push({
+      value: 'machine',
+      label: 'This machine',
+      hint: 'remove hooks for every project here',
+    })
+  }
+  return options
+}
+
+function harnessHint(installations: readonly { harness: string }[]): string {
+  return [...new Set(installations.map((installation) => installation.harness))].join(', ')
 }
 
 type Screen =
@@ -87,6 +190,7 @@ export async function interactiveCommand(deps: CommandDeps, version: string): Pr
       message: 'What would you like to do?',
       options: menuFor(readiness),
     })
+    // Root is the only place Escape/Ctrl-C quits. Every nested prompt returns.
     if (cancelled(choice)) return farewell()
 
     switch (choice) {
@@ -94,28 +198,38 @@ export async function interactiveCommand(deps: CommandDeps, version: string): Pr
         return farewell()
       case 'setup':
         await initCommand(deps, {})
-        readiness = await assess(deps)
+        readiness = await refresh(deps, readiness, refreshAfterMenuAction('setup', true))
         break
-      case 'account':
-        if (await accountScreen(deps, readiness)) readiness = await assess(deps)
+      case 'account': {
+        const changed = await accountScreen(deps, readiness)
+        readiness = await refresh(deps, readiness, refreshAfterMenuAction('account', changed))
         break
+      }
       case 'test':
         await testNotificationScreen(deps)
-        readiness = await assess(deps)
         break
       case 'devices':
         await devicesScreen(deps)
         break
-      case 'settings':
-        await settingsScreen(deps)
-        readiness = await assess(deps)
+      case 'settings': {
+        const result = await settingsScreen(deps)
+        readiness = await refresh(
+          deps,
+          readiness,
+          refreshAfterMenuAction('settings', result !== 'unchanged', { remote: result === 'remote' }),
+        )
         break
-      case 'routing':
-        if (await routingScreen(deps, readiness)) readiness = await assess(deps)
+      }
+      case 'routing': {
+        const changed = await routingScreen(deps, readiness)
+        readiness = await refresh(deps, readiness, refreshAfterMenuAction('routing', changed))
         break
+      }
       case 'doctor':
-        await doctorCommand(deps, {})
+        // One assessment serves the report and the redraw. Doctor does not
+        // change setup, so running the graph again would only wait.
         readiness = await assess(deps)
+        await doctorCommand(deps, {}, { readiness })
         break
     }
   }
@@ -126,14 +240,25 @@ function farewell(): number {
   return EXIT.ok
 }
 
-async function assess(deps: CommandDeps): Promise<Readiness> {
+async function assess(
+  deps: CommandDeps,
+  options: { previous?: Readiness; refresh?: readonly ReadinessRefresh[] } = {},
+): Promise<Readiness> {
   const spinner = clack.spinner()
   spinner.start('Checking your setup')
   try {
-    return await assessReadiness(deps)
+    return await assessReadiness(deps, options)
   } finally {
     spinner.stop(style.dim('Setup checked'))
   }
+}
+
+async function refresh(
+  deps: CommandDeps,
+  previous: Readiness,
+  next: readonly ReadinessRefresh[] | null,
+): Promise<Readiness> {
+  return next === null ? previous : assess(deps, { previous, refresh: next })
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +482,8 @@ async function devicesScreen(deps: CommandDeps): Promise<void> {
 // Settings
 // ---------------------------------------------------------------------------
 
-async function settingsScreen(deps: CommandDeps): Promise<void> {
+async function settingsScreen(deps: CommandDeps): Promise<'unchanged' | 'local' | 'remote'> {
+  let result: 'unchanged' | 'local' | 'remote' = 'unchanged'
   for (;;) {
     const config = loadConfig({ cwd: deps.cwd, env: deps.env })
     const group = await clack.select<ConfigGroup | 'back'>({
@@ -371,8 +497,10 @@ async function settingsScreen(deps: CommandDeps): Promise<void> {
         { value: 'back' as const, label: '← Back' },
       ],
     })
-    if (cancelled(group) || group === 'back') return
-    await settingsGroupScreen(deps, group as ConfigGroup)
+    if (cancelled(group) || group === 'back') return result
+    const next = await settingsGroupScreen(deps, group as ConfigGroup)
+    if (next === 'remote') result = 'remote'
+    else if (next === 'local' && result === 'unchanged') result = 'local'
   }
 }
 
@@ -383,7 +511,11 @@ function changedCount(config: CliConfig, group: ConfigGroup): string {
   return changed === 0 ? style.dim('all default') : style.dim(`${changed} changed`)
 }
 
-async function settingsGroupScreen(deps: CommandDeps, group: ConfigGroup): Promise<void> {
+async function settingsGroupScreen(
+  deps: CommandDeps,
+  group: ConfigGroup,
+): Promise<'unchanged' | 'local' | 'remote'> {
+  let result: 'unchanged' | 'local' | 'remote' = 'unchanged'
   for (;;) {
     const config = loadConfig({ cwd: deps.cwd, env: deps.env })
     const info = CONFIG_GROUPS.find((entry) => entry.id === group)!
@@ -405,8 +537,10 @@ async function settingsGroupScreen(deps: CommandDeps, group: ConfigGroup): Promi
         { value: 'back' as const, label: '← Back' },
       ],
     })
-    if (cancelled(key) || key === 'back') return
-    await settingDetailScreen(deps, key as ConfigKey)
+    if (cancelled(key) || key === 'back') return result
+    const next = await settingDetailScreen(deps, key as ConfigKey)
+    if (next === 'remote') result = 'remote'
+    else if (next === 'local' && result === 'unchanged') result = 'local'
   }
 }
 
@@ -417,7 +551,10 @@ async function settingsGroupScreen(deps: CommandDeps, group: ConfigGroup): Promi
  * so that arriving here means the reader has already said which key they care
  * about.
  */
-async function settingDetailScreen(deps: CommandDeps, key: ConfigKey): Promise<void> {
+async function settingDetailScreen(
+  deps: CommandDeps,
+  key: ConfigKey,
+): Promise<'unchanged' | 'local' | 'remote'> {
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
   const info = configInfo(key)
   const resolved = config[key]
@@ -442,20 +579,22 @@ async function settingDetailScreen(deps: CommandDeps, key: ConfigKey): Promise<v
     ],
     initialValue: 'back',
   })
-  if (cancelled(action) || action === 'back') return
+  if (cancelled(action) || action === 'back') return 'unchanged'
 
   const value = await promptForValue(deps, key)
-  if (value === null) return
+  if (value === null) return 'unchanged'
 
   const layer = await chooseLayer()
-  if (layer === null) return
+  if (layer === null) return 'unchanged'
 
   const code = await configSetCommand(deps, key, value, {
     yes: true,
     ...(layer === 'project' ? { project: true } : {}),
     ...(layer === 'local' ? { local: true } : {}),
   })
-  if (code === EXIT.ok) clack.log.success(`${info.label} is now ${formatValueRaw(key, value)}`)
+  if (code !== EXIT.ok) return 'unchanged'
+  clack.log.success(`${info.label} is now ${formatValueRaw(key, value)}`)
+  return 'local'
 }
 
 function formatValueRaw(key: ConfigKey, raw: string): string {
@@ -587,6 +726,9 @@ function wiringSummary(hooks: ReadinessState | undefined): string {
 async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<boolean> {
   const hooks = stateById(readiness, 'hooks')
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
+  const projectInstallations = installations.filter((installation) => !installation.global)
+  const machineInstallations = installations.filter((installation) => installation.global)
 
   const row = (label: string, value: string): string => `${style.dim(label.padEnd(16))}${value}`
   clack.note(
@@ -602,17 +744,14 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
     'Question routing',
   )
 
-  const action = await clack.select<'install' | 'settings' | 'back'>({
+  const action = await clack.select<RoutingAction>({
     message: 'Question routing',
-    options: [
-      {
-        value: 'install',
-        label: hooks?.status === 'ready' ? 'Re-install hooks for this harness' : 'Wire up my harness',
-        hint: 'Claude Code, Codex, Cursor, OpenCode',
-      },
-      { value: 'settings', label: 'Change presence settings', hint: 'when a question may leave this terminal' },
-      { value: 'back', label: '← Back' },
-    ],
+    options: routingHookActions({
+      canInstall: detectedHarnesses(deps.cwd, deps.env).length > 0,
+      projectInstallations,
+      machineInstallations,
+      hooksReady: hooks?.status === 'ready',
+    }),
   })
   if (cancelled(action) || action === 'back') return false
 
@@ -621,16 +760,51 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
     return true
   }
 
-  const scope = await clack.select<'project' | 'global'>({
-    message: 'Install for',
+  if (action === 'install') return await installHooksInteractively(deps)
+  return await uninstallHooksInteractively(deps, projectInstallations, machineInstallations)
+}
+
+async function installHooksInteractively(deps: CommandDeps): Promise<boolean> {
+  const scope = await clack.select<HookScope>({
+    message: 'Install hooks for',
     options: [
-      { value: 'project', label: 'This project only' },
-      { value: 'global', label: 'Every project on this machine' },
+      { value: 'project', label: 'This project', hint: 'hooks only in this directory' },
+      { value: 'machine', label: 'This machine', hint: 'hooks for every project here' },
     ],
     initialValue: 'project',
   })
   if (cancelled(scope)) return false
-  hooksInstallCommand(deps, scope === 'global' ? { global: true } : {})
+  hooksInstallCommand(deps, scope === 'machine' ? { global: true } : {})
+  return true
+}
+
+async function uninstallHooksInteractively(
+  deps: CommandDeps,
+  projectInstallations: Installation[],
+  machineInstallations: Installation[],
+): Promise<boolean> {
+  const scopes = uninstallScopeOptions(projectInstallations, machineInstallations)
+  if (scopes.length === 0) return false
+
+  let scope: HookScope
+  if (scopes.length === 1) {
+    scope = scopes[0]!.value
+  } else {
+    const picked = await clack.select<HookScope | 'back'>({
+      message: 'Uninstall hooks from',
+      options: [...scopes, { value: 'back', label: '← Back' }],
+    })
+    if (cancelled(picked) || picked === 'back') return false
+    scope = picked
+  }
+
+  const targets = scope === 'machine' ? machineInstallations : projectInstallations
+  for (const installation of targets) {
+    hooksUninstallCommand(deps, {
+      harness: installation.harness,
+      global: installation.global,
+    })
+  }
   return true
 }
 
