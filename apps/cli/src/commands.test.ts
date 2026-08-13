@@ -1182,7 +1182,7 @@ describe('Cursor hook commands', () => {
   it('installs native Cursor hooks with bounded chained answer continuations', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-install-'))
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
 
     expect(
       hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath }),
@@ -1244,7 +1244,7 @@ describe('Cursor hook commands', () => {
   it('uninstalls only Notifai Cursor hooks and preserves foreign hooks', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-uninstall-'))
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
     expect(
       hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath }),
     ).toBe(EXIT.ok)
@@ -1357,7 +1357,7 @@ describe('harness activation guidance', () => {
   it('does not require a Claude Code restart for project hook files', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-activation-'))
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
 
     expect(
       hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath }),
@@ -1372,7 +1372,7 @@ describe('harness activation guidance', () => {
   it('does not invent a Codex hook trust gate', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-activation-'))
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(
       EXIT.ok,
@@ -1386,7 +1386,7 @@ describe('harness activation guidance', () => {
   it('names the installed harness in the close, never a different one', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-close-'))
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
 
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
 
@@ -1561,10 +1561,11 @@ describe('stable hook installation', () => {
     ).toBe(EXIT.ok)
     const global = readFileSync(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), 'utf8')
     expect(global).toBe(firstDefinition)
+    expect(readFileSync(local, 'utf8')).not.toContain('--owner notifai')
 
     io.outLines = []
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).toMatch(/hooks \(duplicates\).*project or global routing/is)
+    expect(io.outLines.join('\n')).not.toMatch(/hooks \(duplicates\)/)
 
     expect(hooksUninstallCommand(deps, { harness: 'claude-code' })).toBe(EXIT.ok)
     expect(existsSync(hookAdapterPath(deps.hookAdapterHome))).toBe(true)
@@ -1573,6 +1574,27 @@ describe('stable hook installation', () => {
         (item) => item.harness === 'claude-code',
       ),
     ).toHaveLength(1)
+  })
+
+  it('does not add a project copy when global hooks already cover the machine', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-global-enough-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const execPath = process.execPath
+    const scriptPath = fileURLToPath(import.meta.url)
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', global: true, execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    io.outLines = []
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(false)
+    expect(io.outLines.join('\n')).toMatch(/already cover this machine/)
+    expect(io.outLines.join('\n')).toMatch(/uninstall --harness codex --global/)
+    expect(
+      findInstallations(cwd, env, deps.hookAdapterHome).filter((item) => item.harness === 'codex'),
+    ).toEqual([expect.objectContaining({ global: true })])
   })
 })
 
@@ -3691,9 +3713,12 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    expect(
-      hooksInstallCommand(deps, { harness: 'codex', global: true, execPath, scriptPath }),
-    ).toBe(EXIT.ok)
+    applyPlan(path.join(env.CODEX_HOME, 'config.toml'), {
+      hooks: buildHookConfig({
+        adapterPath: hookAdapterPath(deps.hookAdapterHome),
+        harness: 'codex',
+      }),
+    })
     trustInstalledCodexHooks(cwd, env)
     writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
@@ -4056,7 +4081,7 @@ describe('asking before the hooks have ever run', () => {
     const deps = {
       ...makeDeps(io, {} as ApiClient),
       cwd,
-      env: { XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: isolatedEnv(cwd),
     }
 
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)

@@ -2214,7 +2214,24 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
     return EXIT.failed
   }
-  const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
+  const wantGlobal = flags.global === true
+  const existing = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome).filter(
+    (installation) => installation.harness === harness,
+  )
+  const otherScope = existing.filter((installation) => installation.global !== wantGlobal)
+  if (!wantGlobal && otherScope.some((installation) => installation.global)) {
+    const globalFile = otherScope.find((installation) => installation.global)?.file
+    deps.io.out(
+      `${HARNESS_LABELS[harness]} hooks already cover this machine (${globalFile}). This project does not need its own copy. To wire only this project: notifai hooks uninstall --harness ${harness} --global && notifai hooks install --harness ${harness}`,
+    )
+    return EXIT.ok
+  }
+  if (wantGlobal && otherScope.some((installation) => !installation.global)) {
+    if (hooksUninstallCommand(deps, { ...flags, global: false, harness }) !== EXIT.ok) {
+      return EXIT.failed
+    }
+  }
+  const file = settingsFile(harness, wantGlobal, deps.cwd, deps.env)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
   // merged into a settings document, so it owns the whole file.
