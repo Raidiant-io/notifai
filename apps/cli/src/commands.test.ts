@@ -170,9 +170,9 @@ function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
       return `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`
     }),
   )
-  const codexHome = env['CODEX_HOME'] as string
-  mkdirSync(codexHome, { recursive: true })
-  const file = path.join(codexHome, 'config.toml')
+  const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
+  const file = path.join(home, '.codex', 'config.toml')
+  mkdirSync(path.dirname(file), { recursive: true })
   // Trust lives in the same config.toml as inline [hooks]. Overwriting the
   // file would delete the global handlers this helper is trying to trust.
   const existing = existsSync(file) ? readFileSync(file, 'utf8').trimEnd() : ''
@@ -1485,7 +1485,7 @@ describe('harness activation guidance', () => {
     const deps = {
       ...makeDeps(io, {} as ApiClient),
       cwd,
-      env: { XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: { HOME: path.join(cwd, 'home'), XDG_STATE_HOME: path.join(cwd, 'state') },
     }
 
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(
@@ -3311,6 +3311,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-current-thread',
       CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
@@ -3335,6 +3336,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-current-thread',
     }
@@ -3358,6 +3360,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-current-thread',
     }
@@ -3502,6 +3505,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-commitment-thread',
     }
@@ -3537,6 +3541,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-free-text-thread',
     }
@@ -3560,6 +3565,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-current-thread',
     }
@@ -3570,7 +3576,7 @@ describe('asking before the hooks have ever run', () => {
       .find((installation) => installation.harness === 'codex')
       ?.handlers.find((handler) => handler.event === 'Stop')
     expect(stop).toBeDefined()
-    const configFile = path.join(env.CODEX_HOME, 'config.toml')
+    const configFile = path.join(env.HOME!, '.codex', 'config.toml')
     writeFileSync(
       configFile,
       readFileSync(configFile, 'utf8').replace(codexHookIdentityHash(stop!), 'sha256:obsolete'),
@@ -3594,6 +3600,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-current-thread',
       CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
@@ -3713,7 +3720,8 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    applyPlan(path.join(env.CODEX_HOME, 'config.toml'), {
+    mkdirSync(path.join(env.HOME!, '.codex'), { recursive: true })
+    applyPlan(path.join(env.HOME!, '.codex', 'config.toml'), {
       hooks: buildHookConfig({
         adapterPath: hookAdapterPath(deps.hookAdapterHome),
         harness: 'codex',
@@ -3822,6 +3830,7 @@ describe('asking before the hooks have ever run', () => {
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
       CLAUDECODE: '1',
@@ -3844,6 +3853,7 @@ describe('asking before the hooks have ever run', () => {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
       CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-home'),
+      HOME: path.join(cwd, 'home'),
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CLAUDECODE: '1',
       CLAUDE_CODE_SESSION_ID: 'claude-current',

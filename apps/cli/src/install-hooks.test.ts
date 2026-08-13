@@ -282,13 +282,14 @@ describe('settings locations', () => {
 
   it('does not treat the Codex trust store as an inline hook representation', () => {
     const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-trust-only-'))
+    mkdirSync(path.join(home, '.codex'), { recursive: true })
     writeFileSync(
-      path.join(home, 'config.toml'),
-      `[hooks.state."${home}/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+      path.join(home, '.codex', 'config.toml'),
+      `[hooks.state."${home}/.codex/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
     )
 
-    expect(settingsFile('codex', true, '/repo', { CODEX_HOME: home })).toBe(
-      path.join(home, 'config.toml'),
+    expect(settingsFile('codex', true, '/repo', { HOME: home, CODEX_HOME: '/elsewhere' })).toBe(
+      path.join(home, '.codex', 'config.toml'),
     )
   })
 
@@ -395,18 +396,12 @@ describe('a Codex install run inside a git worktree', () => {
     )
   })
 
-  it('follows a relocated config home rather than installing where nothing reads', () => {
-    // Orca points CODEX_HOME at a per-account home; writing to ~/.codex there
-    // produced hooks Codex never loaded, and nothing reported a problem.
-    expect(settingsFile('codex', true, '/repo', { CODEX_HOME: '/managed/codex' })).toBe(
-      '/managed/codex/config.toml',
+  it('does not follow CODEX_HOME for hook install; Claude still honors CLAUDE_CONFIG_DIR', () => {
+    expect(settingsFile('codex', true, '/repo', { HOME: '/user', CODEX_HOME: '/managed/codex' })).toBe(
+      '/user/.codex/config.toml',
     )
     expect(settingsFile('claude-code', true, '/repo', { CLAUDE_CONFIG_DIR: '/managed/claude' })).toBe(
       '/managed/claude/settings.json',
-    )
-    // An empty value is not a relocation.
-    expect(settingsFile('codex', true, '/repo', { CODEX_HOME: '' })).toBe(
-      path.join(os.homedir(), '.codex', 'config.toml'),
     )
   })
 })
@@ -560,7 +555,7 @@ describe('finding what is installed', () => {
       ].join('\n'),
     )
 
-    const found = findInstallations(cwd, { CODEX_HOME: path.join(cwd, 'no-codex-here') })
+    const found = findInstallations(cwd, { HOME: path.join(cwd, 'isolated-home') })
     const codex = found.find((installation) => installation.harness === 'codex' && !installation.global)
     expect(codex?.file).toBe(file)
     expect(codex?.handlers.map((handler) => handler.event)).toEqual(['Stop'])
@@ -580,7 +575,7 @@ describe('finding what is installed', () => {
       ),
     )
 
-    const problems = codexRepresentationProblems(cwd, { CODEX_HOME: path.join(cwd, 'no-codex-here') })
+    const problems = codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })
     expect(problems).toHaveLength(1)
     expect(problems[0]).toContain('loading hooks from both')
     expect(problems[0]).toContain(path.join(layer, 'hooks.json'))
@@ -594,7 +589,7 @@ describe('finding what is installed', () => {
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
     applyPlan(path.join(cwd, '.claude', 'settings.local.json'), { hooks: ours() })
 
-    const found = findInstallations(cwd, { CODEX_HOME: path.join(cwd, 'no-codex-here') })
+    const found = findInstallations(cwd, { HOME: path.join(cwd, 'isolated-home') })
     const claude = found.find((i) => i.harness === 'claude-code' && !i.global)
 
     expect(claude).toBeDefined()
@@ -615,39 +610,41 @@ describe('finding what is installed', () => {
 
   it('detects when Codex still trusts an older definition of an installed hook', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-trust-'))
-    const codexHome = path.join(cwd, 'codex-home')
+    const home = path.join(cwd, 'home')
+    const env = { HOME: home }
     const hookFile = path.join(cwd, '.codex', 'hooks.json')
     mkdirSync(path.dirname(hookFile), { recursive: true })
     applyPlan(hookFile, { hooks: ours() })
-    const installations = findInstallations(cwd, { CODEX_HOME: codexHome })
+    const installations = findInstallations(cwd, env)
     const codex = installations.find((installation) => installation.harness === 'codex')
     const stop = codex?.handlers.find((handler) => handler.event === 'Stop')
     expect(stop).toBeDefined()
 
-    mkdirSync(codexHome, { recursive: true })
+    const trustFile = path.join(home, '.codex', 'config.toml')
+    mkdirSync(path.dirname(trustFile), { recursive: true })
     writeFileSync(
-      path.join(codexHome, 'config.toml'),
+      trustFile,
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "sha256:obsolete"\n`,
     )
 
-    const stale = codexTrustProblems(installations, { CODEX_HOME: codexHome })
+    const stale = codexTrustProblems(installations, env)
     expect(stale).toHaveLength(3)
     expect(stale).toEqual(expect.arrayContaining([expect.stringMatching(/Stop.*changed.*\/hooks/i)]))
 
     writeFileSync(
-      path.join(codexHome, 'config.toml'),
+      trustFile,
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\n`,
     )
-    expect(codexTrustProblems(installations, { CODEX_HOME: codexHome })).toEqual([
+    expect(codexTrustProblems(installations, env)).toEqual([
       expect.stringMatching(/UserPromptSubmit.*not trusted.*\/hooks/i),
       expect.stringMatching(/SessionEnd.*not trusted.*\/hooks/i),
     ])
 
     writeFileSync(
-      path.join(codexHome, 'config.toml'),
+      trustFile,
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\nenabled = false\n`,
     )
-    expect(codexTrustProblems(installations, { CODEX_HOME: codexHome })).toEqual(
+    expect(codexTrustProblems(installations, env)).toEqual(
       expect.arrayContaining([expect.stringMatching(/Stop.*disabled.*\/hooks/i)]),
     )
   })

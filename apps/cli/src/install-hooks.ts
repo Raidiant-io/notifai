@@ -355,14 +355,24 @@ function commonGitDir(gitDir: string): string {
 }
 
 /**
- * Both harnesses let an environment variable relocate their whole config
- * directory, and tooling that manages sessions does exactly that — Orca points
- * `CODEX_HOME` at a per-account home, so writing to `~/.codex` installs hooks
- * into a file Codex never reads and the failure is silent. Observed 2026-08-02.
+ * Claude Code honors `CLAUDE_CONFIG_DIR`. Codex hook files do not follow
+ * `CODEX_HOME`: that variable is the live process home (locks, session
+ * state), not the user-global hook file. Global Codex hooks are always
+ * `~/.codex`.
  */
 export function configHome(env: NodeJS.ProcessEnv, variable: string, fallback: string): string {
   const override = env[variable]
-  return override !== undefined && override !== '' ? override : path.join(os.homedir(), fallback)
+  return override !== undefined && override !== '' ? override : path.join(userHome(env), fallback)
+}
+
+function userHome(env: NodeJS.ProcessEnv): string {
+  const home = env['HOME']
+  return home !== undefined && home !== '' ? home : os.homedir()
+}
+
+/** User-global Codex config directory. Ignores `CODEX_HOME`. */
+export function codexGlobalDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(userHome(env), '.codex')
 }
 
 export interface CodexLayerPaths {
@@ -377,9 +387,7 @@ export function codexLayerPaths(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): CodexLayerPaths {
-  const dir = global
-    ? configHome(env, 'CODEX_HOME', '.codex')
-    : path.join(codexProjectRoot(cwd), '.codex')
+  const dir = global ? codexGlobalDir(env) : path.join(codexProjectRoot(cwd), '.codex')
   return {
     dir,
     hooksJson: path.join(dir, 'hooks.json'),
@@ -865,7 +873,7 @@ export function codexHookIdentityHash(handler: InstalledHandler): string {
 }
 
 function codexTrustState(env: NodeJS.ProcessEnv): Record<string, unknown> {
-  const file = path.join(configHome(env, 'CODEX_HOME', '.codex'), 'config.toml')
+  const file = path.join(codexGlobalDir(env), 'config.toml')
   if (!existsSync(file)) return {}
   try {
     const parsed = parseToml(readFileSync(file, 'utf8')) as Record<string, unknown>
