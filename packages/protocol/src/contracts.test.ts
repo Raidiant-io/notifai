@@ -10,6 +10,7 @@ import {
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   summarizeOverall,
+  SubmitFeedbackRequest,
   SubmitNotificationRequest,
   validateDraft,
   type NotificationDraftT,
@@ -60,6 +61,65 @@ describe('submission wire contract', () => {
       warnings: [],
     }
     expect(receipt.reply_expires_at).toBe('2026-08-11T12:00:00.000Z')
+  })
+})
+
+describe('feedback wire contract', () => {
+  const client = {
+    cli_version: '0.5.1',
+    cli_channel: 'stable' as const,
+    os: 'darwin',
+    node: 'v24.0.0',
+  }
+  const log = {
+    encoding: 'gzip+base64' as const,
+    bytes: 'H4sIAAAAAAAAA4s=',
+    uncompressed_bytes: 0,
+    compressed_bytes: 20,
+    record_count: 0,
+    truncated: false,
+    since: '2026-08-13T00:00:00.000Z',
+    until: '2026-08-13T01:00:00.000Z',
+    schema_version: 1,
+  }
+
+  it('accepts a text-only report and a report with a well-shaped log', () => {
+    expect(
+      Value.Check(SubmitFeedbackRequest, {
+        message: 'The send path failed after pairing.',
+        include_logs: false,
+        client,
+      }),
+    ).toBe(true)
+    expect(
+      Value.Check(SubmitFeedbackRequest, {
+        message: 'The send path failed after pairing.',
+        include_logs: true,
+        log,
+        client,
+      }),
+    ).toBe(true)
+  })
+
+  it('rejects an empty message, an overlong message, and an unknown log encoding', () => {
+    expect(
+      Value.Check(SubmitFeedbackRequest, { message: '', include_logs: false, client }),
+    ).toBe(false)
+    expect(
+      Value.Check(SubmitFeedbackRequest, {
+        message: 'x'.repeat(4001),
+        include_logs: false,
+        client,
+      }),
+    ).toBe(false)
+    expect(
+      Value.Check(SubmitFeedbackRequest, {
+        message: 'ok',
+        include_logs: true,
+        log: { ...log, encoding: 'plain' },
+        client,
+      }),
+    ).toBe(false)
   })
 })
 

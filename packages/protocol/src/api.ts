@@ -417,3 +417,61 @@ export interface ProjectView {
 export interface ListProjectsResponse {
   projects: ProjectView[]
 }
+
+// ---------------------------------------------------------------------------
+// Feedback intake (paired machine → developers)
+// ---------------------------------------------------------------------------
+
+const feedbackLogFields = {
+  encoding: Type.Literal('gzip+base64'),
+  uncompressed_bytes: Type.Integer({ minimum: 0 }),
+  compressed_bytes: Type.Integer({ minimum: 1 }),
+  record_count: Type.Integer({ minimum: 0 }),
+  truncated: Type.Boolean(),
+  since: Type.String({ minLength: 20, maxLength: 40 }),
+  until: Type.String({ minLength: 20, maxLength: 40 }),
+  schema_version: Type.Integer({ minimum: 1 }),
+} as const
+
+/** Content-free metadata for an optional compressed log slice. */
+export const FeedbackLogMeta = Type.Object(feedbackLogFields, { additionalProperties: false })
+export type FeedbackLogMetaT = Static<typeof FeedbackLogMeta>
+
+export const FeedbackLogAttachment = Type.Object(
+  {
+    ...feedbackLogFields,
+    bytes: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+)
+export type FeedbackLogAttachmentT = Static<typeof FeedbackLogAttachment>
+
+export const FeedbackClient = Type.Object(
+  {
+    cli_version: Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()]),
+    cli_channel: Type.Union([
+      Type.Literal('dev'),
+      Type.Literal('prerelease'),
+      Type.Literal('stable'),
+    ]),
+    os: Type.String({ minLength: 1, maxLength: 128 }),
+    node: Type.String({ minLength: 1, maxLength: 64 }),
+  },
+  { additionalProperties: false },
+)
+export type FeedbackClientT = Static<typeof FeedbackClient>
+
+export const SubmitFeedbackRequest = Type.Object(
+  {
+    message: Type.String({ minLength: 1, maxLength: 4000 }),
+    include_logs: Type.Boolean(),
+    log: Type.Optional(FeedbackLogAttachment),
+    client: FeedbackClient,
+  },
+  { additionalProperties: false },
+)
+export type SubmitFeedbackRequestT = Static<typeof SubmitFeedbackRequest>
+
+export interface SubmitFeedbackResponse {
+  report_id: string
+}

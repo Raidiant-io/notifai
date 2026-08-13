@@ -10,6 +10,10 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- SubmitFeedbackRequest and SubmitFeedbackResponse for consented feedback, including an optional gzip+base64 log slice.
+
 ## [0.3.0] - 2026-08-12
 
 ### Added
