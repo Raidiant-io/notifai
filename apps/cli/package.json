@@ -16,12 +16,12 @@
     "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "pretest": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "node ../../scripts/run-cli-tests.mjs",
     "prepack": "pnpm run build"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
-    "@raidiant/notifai-protocol": "0.3.0",
+    "@raidiant/notifai-protocol": "0.4.0",
     "commander": "^14.0.0",
     "picocolors": "^1.1.1",
     "smol-toml": "^1.4.0"

@@ -50,13 +50,13 @@ jobs:
           else
             pnpm --filter @raidiant/notifai-protocol test
             if [ "${{ runner.os }}" = "Windows" ]; then
-              pnpm --filter @raidiant/notifai exec vitest run \
+              pnpm --filter @raidiant/notifai test -- \
                 src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts
-              pnpm --filter @raidiant/notifai exec vitest run \
+              pnpm --filter @raidiant/notifai test -- \
                 src/hook-adapter.test.ts src/install-hooks.test.ts \
                 --testNamePattern="Windows"
             else
-              pnpm --filter @raidiant/notifai exec vitest run src/codex-wake.test.ts
+              pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
             fi
           fi
 

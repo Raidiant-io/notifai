@@ -976,7 +976,8 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
     .filter(
       (device) =>
         (device.platform === 'ios' || device.platform === 'macos') &&
-        device.registration_healthy,
+        device.registration_healthy &&
+        device.reply_protocol_version === 1,
     )
     .filter((device) => configured === null || configured.includes(device.device_id))
     .map((device) => device.device_id)
