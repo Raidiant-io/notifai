@@ -1266,6 +1266,86 @@ describe('Cursor hook commands', () => {
   })
 })
 
+describe('Codex hook representation', () => {
+  const execPath = process.execPath
+  const scriptPath = fileURLToPath(import.meta.url)
+
+  function writeInlineStop(repo: string, command: string): string {
+    const file = path.join(repo, '.codex', 'config.toml')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', `command = "${command}"`, ''].join(
+        '\n',
+      ),
+    )
+    return file
+  }
+
+  it('installs into existing inline [hooks] and does not create hooks.json', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-inline-install-'))
+    const toml = writeInlineStop(cwd, 'gdh-stop')
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
+    const text = readFileSync(toml, 'utf8')
+    expect(text).toContain('gdh-stop')
+    expect(text).toContain('--owner notifai')
+    expect(text).toContain('[[hooks.UserPromptSubmit]]')
+    expect(io.outLines.join('\n')).toContain(toml)
+    expect(io.outLines.join('\n')).toMatch(/Stop and the existing one will both fire/i)
+  })
+
+  it('collapses a leftover hooks.json onto inline [hooks] and says both Stops will run', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-collapse-'))
+    const toml = writeInlineStop(cwd, 'gdh-stop')
+    const json = path.join(cwd, '.codex', 'hooks.json')
+    const env = isolatedEnv(cwd)
+    const io = new CapturedIo()
+    const client = {
+      health: async () => false,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+
+    applyPlan(json, {
+      hooks: buildHookConfig({
+        adapterPath: hookAdapterPath(deps.hookAdapterHome),
+        harness: 'codex',
+      }),
+    })
+
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    const before = io.outLines.join('\n')
+    expect(before).toMatch(/hooks \(codex representation\)/)
+    expect(before).toMatch(/prefer a single representation/)
+    expect(before).toMatch(/Stop handlers will both (run|fire)/i)
+    expect(before).toContain('notifai hooks install --harness codex')
+
+    io.outLines = []
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(existsSync(json)).toBe(false)
+    expect(readFileSync(toml, 'utf8')).toContain('gdh-stop')
+    expect(readFileSync(toml, 'utf8')).toContain('--owner notifai')
+    expect(io.outLines.join('\n')).toMatch(/collaps/i)
+
+    const installations = findInstallations(cwd, env, deps.hookAdapterHome).filter(
+      (installation) => installation.harness === 'codex',
+    )
+    expect(installations).toHaveLength(1)
+    expect(installations[0]?.file).toBe(toml)
+
+    expect(hooksUninstallCommand(deps, { harness: 'codex', scriptPath })).toBe(EXIT.ok)
+    expect(readFileSync(toml, 'utf8')).toContain('gdh-stop')
+    expect(readFileSync(toml, 'utf8')).not.toContain('--owner notifai')
+  })
+})
+
 describe('harness activation guidance', () => {
   const execPath = process.execPath
   const scriptPath = fileURLToPath(import.meta.url)

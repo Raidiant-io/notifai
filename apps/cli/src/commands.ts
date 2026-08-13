@@ -100,13 +100,18 @@ import {
   applyPlan,
   buildCursorHookConfig,
   buildHookConfig,
+  collapseUnusedCodexRepresentation,
   codexLayerDir,
+  codexLayerPaths,
+  codexRepresentationProblems,
   codexTrustProblems,
   codexProjectRoot,
   detectHarness,
   detectedHarnesses,
   findInstallations,
   handlerEvent,
+  hookDefinitionFiles,
+  inspectCodexLayer,
   loadCursorSettings,
   loadSettings,
   mergeCursorHooks,
@@ -2243,9 +2248,12 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return EXIT.ok
   }
 
+  let foreignStopCount = 0
+  let collapsedFrom: string | null = null
   try {
     withTargetFileLock(file, () => {
       const document = loadSettings(file)
+      foreignStopCount = foreignStopHandlers(document).length
       const result = mergeHooks(
         document,
         buildHookConfig({
@@ -2257,6 +2265,13 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       applyPlan(file, result.document)
       return result
     })
+    if (harness === 'codex') {
+      collapsedFrom = collapseUnusedCodexRepresentation(
+        file,
+        scriptPath,
+        codexLayerPaths(flags.global ?? false, deps.cwd, deps.env),
+      )
+    }
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
@@ -2267,7 +2282,28 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     if (layer !== null) mkdirSync(layer, { recursive: true })
   }
   printHooksInstallClose(deps, harness, file)
+  if (collapsedFrom !== null) {
+    deps.io.out(`Collapsed ${collapsedFrom} onto ${file} so this layer has one representation.`)
+  }
+  if (foreignStopCount > 0) {
+    deps.io.out(
+      "This layer already has a Stop handler. Codex runs every matching handler, so Notifai's Stop and the existing one will both fire.",
+    )
+  }
+  if (harness === 'codex') {
+    for (const problem of codexRepresentationProblems(deps.cwd, deps.env)) {
+      deps.io.out(problem)
+    }
+  }
   return EXIT.ok
+}
+
+function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { command: string }[] }[]> }): { command: string }[] {
+  const groups = document.hooks?.['Stop']
+  if (!Array.isArray(groups)) return []
+  return groups
+    .flatMap((group) => group.hooks ?? [])
+    .filter((handler) => !/ hook (user-prompt-submit|stop|session-end)\b/.test(handler.command))
 }
 
 /**
@@ -2355,28 +2391,33 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     )
     return EXIT.ok
   }
-  let stripped: ReturnType<typeof removeHooks> | null
+  const files = hookDefinitionFiles(harness, flags.global ?? false, deps.cwd, deps.env)
+  const existing = files.filter((candidate) => existsSync(candidate))
+  if (existing.length === 0) {
+    deps.io.out(`Nothing to remove: ${file} does not exist.`)
+    return EXIT.ok
+  }
+  let removedAny = false
   try {
-    stripped = withTargetFileLock(file, () => {
-      if (!existsSync(file)) return null
-      const document = loadSettings(file)
-      const result = removeHooks(document, scriptPath)
-      applyPlan(file, result.document)
-      return result
-    })
+    for (const candidate of existing) {
+      const stripped = withTargetFileLock(candidate, () => {
+        const document = loadSettings(candidate)
+        const result = removeHooks(document, scriptPath)
+        applyPlan(candidate, result.document)
+        return result
+      })
+      if (stripped.replaced.length > 0) {
+        removedAny = true
+        deps.io.out(`Removed Notifai hooks (${stripped.replaced.join(', ')}) from ${candidate}`)
+      }
+    }
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
   }
-  if (stripped === null) {
-    deps.io.out(`Nothing to remove: ${file} does not exist.`)
-    return EXIT.ok
+  if (!removedAny) {
+    deps.io.out(`No Notifai hooks found in ${existing.join(', ')}`)
   }
-  deps.io.out(
-    stripped.replaced.length > 0
-      ? `Removed Notifai hooks (${stripped.replaced.join(', ')}) from ${file}`
-      : `No Notifai hooks found in ${file}`,
-  )
   return EXIT.ok
 }
 
@@ -4648,7 +4689,11 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       harness,
       installations: installations.filter((i) => i.harness === harness),
     }))
-    .filter((entry) => entry.installations.length > 1)
+    .filter(
+      (entry) =>
+        entry.installations.some((installation) => installation.global) &&
+        entry.installations.some((installation) => !installation.global),
+    )
   if (duplicated.length > 0) {
     checks.push({
       name: 'hooks (duplicates)',
@@ -4659,6 +4704,26 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
             `${entry.harness}: ${entry.installations.length} hook definitions are active, so each event will fire all of them. Keep either project or global routing and uninstall the other: ${entry.installations.map((installation) => installation.file).join(', ')}`,
         )
         .join('; '),
+    })
+  }
+
+  const representationProblems = codexRepresentationProblems(deps.cwd, deps.env)
+  if (representationProblems.length > 0) {
+    const collapseCommand = representationProblems.some((problem) => problem.includes('--global'))
+      ? 'notifai hooks install --harness codex --global'
+      : 'notifai hooks install --harness codex'
+    checks.push({
+      name: 'hooks (codex representation)',
+      ok: false,
+      detail: representationProblems.join('; '),
+      ...(representationProblems.some((problem) => problem.includes('to collapse onto'))
+        ? {
+            remedy: {
+              summary: 'collapse this Codex layer onto a single hook file',
+              command: collapseCommand,
+            },
+          }
+        : {}),
     })
   }
 
@@ -4861,14 +4926,19 @@ function codexStrayWorktreeCheck(
   const layer = codexLayerDir(deps.cwd)
   if (layer === null) return null
   const root = codexProjectRoot(deps.cwd)
-  const stray = path.join(path.dirname(layer), '.codex', 'hooks.json')
-  if (!existsSync(path.join(root, '.codex', 'hooks.json'))) return null
+  const project = inspectCodexLayer(codexLayerPaths(false, deps.cwd, deps.env))
+  if (project.jsonEvents.length === 0 && project.tomlEvents.length === 0) return null
+  const strayJson = path.join(path.dirname(layer), '.codex', 'hooks.json')
+  const strayToml = path.join(path.dirname(layer), '.codex', 'config.toml')
   const problems: string[] = []
   if (!existsSync(layer)) {
     problems.push(`${layer} is missing, so Codex never looks for project hooks here`)
   }
-  if (existsSync(stray)) {
-    problems.push(`${stray} is never read — Codex reads ${root}/.codex/hooks.json instead`)
+  if (existsSync(strayJson) && path.resolve(strayJson) !== path.resolve(project.paths.hooksJson)) {
+    problems.push(`${strayJson} is never read — Codex reads ${project.writeTarget} instead`)
+  }
+  if (existsSync(strayToml) && path.resolve(strayToml) !== path.resolve(project.paths.configToml)) {
+    problems.push(`${strayToml} is never read — Codex reads ${project.writeTarget} instead`)
   }
   return {
     name: 'hooks (codex worktree)',

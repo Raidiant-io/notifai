@@ -29,10 +29,12 @@ import {
   codexProjectRoot,
   findInstallations,
   codexHookIdentityHash,
+  codexRepresentationProblems,
   codexTrustKey,
   codexTrustProblems,
   handlerEvent,
   hookCommand,
+  loadSettings,
   mergeHooks,
   removeHooks,
   settingsFile,
@@ -230,6 +232,60 @@ describe('settings locations', () => {
       path.join(os.homedir(), '.codex', 'hooks.json'),
     )
   })
+
+  it('writes Codex hooks into an existing inline [hooks] instead of inventing hooks.json', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-toml-layer-'))
+    mkdirSync(path.join(repo, '.codex'), { recursive: true })
+    writeFileSync(
+      path.join(repo, '.codex', 'config.toml'),
+      [
+        'model = "gpt-5.6"',
+        '',
+        '[[hooks.PostToolUse]]',
+        'matcher = "Bash"',
+        '',
+        '[[hooks.PostToolUse.hooks]]',
+        'type = "command"',
+        'command = "gdh-guard"',
+        '',
+        '[[hooks.Stop]]',
+        '',
+        '[[hooks.Stop.hooks]]',
+        'type = "command"',
+        'command = "gdh-stop"',
+        '',
+      ].join('\n'),
+    )
+
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'config.toml'))
+  })
+
+  it('does not treat the Codex trust store as an inline hook representation', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-trust-only-'))
+    writeFileSync(
+      path.join(home, 'config.toml'),
+      `[hooks.state."${home}/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+    )
+
+    expect(settingsFile('codex', true, '/repo', { CODEX_HOME: home })).toBe(
+      path.join(home, 'hooks.json'),
+    )
+  })
+
+  it('keeps writing to inline [hooks] when a leftover hooks.json only holds Notifai', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-both-'))
+    const layer = path.join(repo, '.codex')
+    mkdirSync(layer, { recursive: true })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
+        '\n',
+      ),
+    )
+    applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
+
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'config.toml'))
+  })
 })
 
 /**
@@ -423,9 +479,96 @@ describe('writing the settings file', () => {
     applyPlan(file, { hooks: {} })
     expect(statSync(file).mode & 0o777).toBe(0o600)
   })
+
+  it('merges into Codex config.toml without dropping trust state or foreign hooks', () => {
+    const dir = scratch()
+    const file = path.join(dir, 'config.toml')
+    writeFileSync(
+      file,
+      [
+        'model = "gpt-5.6"',
+        '',
+        '[features]',
+        'hooks = true',
+        '',
+        `[hooks.state."${file}:stop:0:0"]`,
+        'trusted_hash = "sha256:abc"',
+        '',
+        '[[hooks.Stop]]',
+        '',
+        '[[hooks.Stop.hooks]]',
+        'type = "command"',
+        'command = "gdh-stop"',
+        '',
+      ].join('\n'),
+    )
+
+    const merged = mergeHooks(loadSettings(file), ours(), SCRIPT)
+    applyPlan(file, merged.document)
+
+    const text = readFileSync(file, 'utf8')
+    expect(text).toContain('model = "gpt-5.6"')
+    expect(text).toContain('trusted_hash = "sha256:abc"')
+    expect(text).toContain('gdh-stop')
+    expect(text).toContain('hook stop')
+    expect(text).toContain('[[hooks.UserPromptSubmit]]')
+    expect(text).toContain('[[hooks.SessionEnd]]')
+    expect(merged.document.hooks?.['Stop']?.flatMap((group) => group.hooks)).toHaveLength(2)
+  })
 })
 
 describe('finding what is installed', () => {
+  it('reports Notifai handlers written as inline Codex [hooks]', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-find-toml-'))
+    const file = path.join(cwd, '.codex', 'config.toml')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      [
+        '[[hooks.Stop]]',
+        '',
+        '[[hooks.Stop.hooks]]',
+        'type = "command"',
+        'command = "gdh-stop"',
+        '',
+        '[[hooks.Stop]]',
+        '',
+        '[[hooks.Stop.hooks]]',
+        'type = "command"',
+        `command = "${hookCommand(ADAPTER, 'stop', 'codex')}"`,
+        '',
+      ].join('\n'),
+    )
+
+    const found = findInstallations(cwd, { CODEX_HOME: path.join(cwd, 'no-codex-here') })
+    const codex = found.find((installation) => installation.harness === 'codex' && !installation.global)
+    expect(codex?.file).toBe(file)
+    expect(codex?.handlers.map((handler) => handler.event)).toEqual(['Stop'])
+    expect(codex?.handlers[0]?.handlerIndex).toBe(0)
+    expect(codex?.handlers[0]?.groupIndex).toBe(1)
+  })
+
+  it('names a Codex layer that loads both representations', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-dual-rep-'))
+    const layer = path.join(cwd, '.codex')
+    mkdirSync(layer, { recursive: true })
+    applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
+        '\n',
+      ),
+    )
+
+    const problems = codexRepresentationProblems(cwd, { CODEX_HOME: path.join(cwd, 'no-codex-here') })
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('loading hooks from both')
+    expect(problems[0]).toContain(path.join(layer, 'hooks.json'))
+    expect(problems[0]).toContain(path.join(layer, 'config.toml'))
+    expect(problems[0]).toMatch(/prefer a single representation for this layer/)
+    expect(problems[0]).toMatch(/Stop/)
+  })
+
   it('reports handlers from either harness with their positions', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-find-'))
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })

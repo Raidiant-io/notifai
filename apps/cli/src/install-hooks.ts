@@ -3,12 +3,13 @@ import {
   lstatSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { parse as parseToml } from 'smol-toml'
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { hookAdapterPath } from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
@@ -30,10 +31,12 @@ const OPENCODE_EVENTS = [
 /**
  * Harness hook installation.
  *
- * Claude Code's `settings.json` and Codex's `hooks.json` use the same shape —
+ * Claude Code's `settings.json` and Codex's hook files use the same shape —
  * `hooks` maps an event name to matcher groups, each holding command handlers
  * with an optional timeout — so one generator serves both. Only the file
- * location and the event set differ.
+ * location and the event set differ. Codex accepts that shape as `hooks.json`
+ * or as inline `[hooks]` tables in the same layer's `config.toml`; one
+ * representation per layer, never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -260,9 +263,7 @@ export function settingsFile(
         ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude'), 'settings.json')
         : path.join(cwd, '.claude', 'settings.local.json')
     case 'codex':
-      return global
-        ? path.join(configHome(env, 'CODEX_HOME', '.codex'), 'hooks.json')
-        : path.join(codexProjectRoot(cwd), '.codex', 'hooks.json')
+      return inspectCodexLayer(codexLayerPaths(global, cwd, env)).writeTarget
     default:
       return assertNeverHarness(harness)
   }
@@ -363,6 +364,159 @@ export function configHome(env: NodeJS.ProcessEnv, variable: string, fallback: s
   return override !== undefined && override !== '' ? override : path.join(os.homedir(), fallback)
 }
 
+export interface CodexLayerPaths {
+  dir: string
+  hooksJson: string
+  configToml: string
+}
+
+/** The two files Codex will look at for one config layer. */
+export function codexLayerPaths(
+  global: boolean,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): CodexLayerPaths {
+  const dir = global
+    ? configHome(env, 'CODEX_HOME', '.codex')
+    : path.join(codexProjectRoot(cwd), '.codex')
+  return {
+    dir,
+    hooksJson: path.join(dir, 'hooks.json'),
+    configToml: path.join(dir, 'config.toml'),
+  }
+}
+
+export interface CodexLayerInspection {
+  paths: CodexLayerPaths
+  jsonEvents: string[]
+  tomlEvents: string[]
+  writeTarget: string
+  dual: boolean
+  overlappingEvents: string[]
+  canCollapse: boolean
+}
+
+/**
+ * Which representation this Codex layer already uses.
+ *
+ * Codex loads `hooks.json` and inline `[hooks]` side by side, runs every
+ * matching handler, and warns when both exist. `[hooks.state]` is the trust
+ * store, not a hook definition, so it does not count as a representation.
+ */
+export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
+  const jsonDocument = tryLoadSettings(paths.hooksJson)
+  const tomlDocument = tryLoadSettings(paths.configToml)
+  const jsonEvents = hookEventNames(jsonDocument?.hooks)
+  const tomlEvents = hookEventNames(tomlDocument?.hooks)
+  const jsonForeign = documentHasForeignHandlers(jsonDocument)
+  const tomlForeign = documentHasForeignHandlers(tomlDocument)
+  const jsonOurs = documentHasOurHandlers(jsonDocument)
+  const tomlOurs = documentHasOurHandlers(tomlDocument)
+  const dual = jsonEvents.length > 0 && tomlEvents.length > 0
+  let writeTarget = paths.hooksJson
+  if (tomlEvents.length > 0 && jsonEvents.length === 0) writeTarget = paths.configToml
+  else if (jsonEvents.length > 0 && tomlEvents.length === 0) writeTarget = paths.hooksJson
+  else if (dual) {
+    if (tomlForeign && !jsonForeign) writeTarget = paths.configToml
+    else if (jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
+    else if (!jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
+    else if (tomlOurs && !jsonOurs) writeTarget = paths.configToml
+    else if (jsonOurs && !tomlOurs) writeTarget = paths.hooksJson
+    else writeTarget = paths.hooksJson
+  }
+  return {
+    paths,
+    jsonEvents,
+    tomlEvents,
+    writeTarget,
+    dual,
+    overlappingEvents: jsonEvents.filter((event) => tomlEvents.includes(event)),
+    canCollapse: dual && !(jsonForeign && tomlForeign),
+  }
+}
+
+/** Every file in this layer Codex might already be reading hooks from. */
+export function hookDefinitionFiles(
+  harness: Harness,
+  global: boolean,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (harness !== 'codex') return [settingsFile(harness, global, cwd, env)]
+  const paths = codexLayerPaths(global, cwd, env)
+  return [paths.hooksJson, paths.configToml]
+}
+
+/**
+ * Drop the unused representation after writing the one this layer already had.
+ *
+ * Only safe when the discarded file has no one else's handlers. `hooks.json`
+ * is deleted once it has no events left so Codex stops warning; `config.toml`
+ * is never deleted.
+ */
+export function collapseUnusedCodexRepresentation(
+  keepFile: string,
+  scriptPath: string,
+  paths: CodexLayerPaths,
+): string | null {
+  const other = keepFile === paths.hooksJson ? paths.configToml : paths.hooksJson
+  if (!existsSync(other)) return null
+  const document = tryLoadSettings(other)
+  if (document === null || documentHasForeignHandlers(document)) return null
+  const stripped = removeHooks(document, scriptPath)
+  if (other === paths.hooksJson && hookEventNames(stripped.document.hooks).length === 0) {
+    rmSync(other)
+    return other
+  }
+  applyPlan(other, stripped.document)
+  return other
+}
+
+export function codexRepresentationProblems(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return [false, true].flatMap((global) => {
+    const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env))
+    if (!layer.dual) return []
+    const overlap =
+      layer.overlappingEvents.length > 0
+        ? ` Matching handlers from both files all run — this layer's ${layer.overlappingEvents.join(', ')} handlers will both fire.`
+        : ' Matching handlers from both files all run.'
+    const collapse = layer.canCollapse
+      ? ` Run \`notifai hooks install --harness codex${global ? ' --global' : ''}\` to collapse onto ${path.basename(layer.writeTarget)}.`
+      : ' Both files have other hooks, so Notifai cannot collapse them.'
+    return [
+      `loading hooks from both ${layer.paths.hooksJson} and ${layer.paths.configToml}; prefer a single representation for this layer.${overlap}${collapse}`,
+    ]
+  })
+}
+
+function tryLoadSettings(file: string): SettingsDocument | null {
+  if (!existsSync(file)) return null
+  try {
+    return loadSettings(file)
+  } catch {
+    return null
+  }
+}
+
+function hookEventNames(hooks: SettingsDocument['hooks']): string[] {
+  return Object.entries(hooks ?? {})
+    .filter(([, value]) => Array.isArray(value))
+    .map(([event]) => event)
+}
+
+function documentHasForeignHandlers(document: SettingsDocument | null): boolean {
+  if (document === null) return false
+  return locateAllHandlers(document).some((handler) => !isNotifaiCommand(handler.command))
+}
+
+function documentHasOurHandlers(document: SettingsDocument | null): boolean {
+  if (document === null) return false
+  return locateHandlers(document).length > 0
+}
+
 /** Best-effort detection so `hooks install` usually needs no flags. */
 /**
  * Harnesses this *project* shows evidence of, in the working directory only.
@@ -427,7 +581,7 @@ export function detectHarness(cwd: string, env: NodeJS.ProcessEnv = process.env)
   return global.length === 1 ? global[0]! : null
 }
 
-interface SettingsDocument {
+export interface SettingsDocument {
   hooks?: HookConfig
   [key: string]: unknown
 }
@@ -575,6 +729,11 @@ export function mergeHooks(
   const removed: string[] = []
 
   for (const [event, groups] of Object.entries(existing.hooks ?? {})) {
+    if (!Array.isArray(groups)) {
+      // Codex keeps `[hooks.state]` beside event tables. It is not a matcher list.
+      ;(hooks as Record<string, unknown>)[event] = groups
+      continue
+    }
     const { groups: foreign, removed: hadOurs } = withoutOurs(groups, scriptPath)
     if (hadOurs) {
       if (event in incoming) replaced.push(event)
@@ -595,6 +754,10 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
   const hooks: HookConfig = {}
   const replaced: string[] = []
   for (const [event, groups] of Object.entries(existing.hooks ?? {})) {
+    if (!Array.isArray(groups)) {
+      ;(hooks as Record<string, unknown>)[event] = groups
+      continue
+    }
     const { groups: foreign, removed } = withoutOurs(groups, scriptPath)
     if (removed) replaced.push(event)
     if (foreign.length > 0) hooks[event] = foreign
@@ -613,13 +776,31 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  * support.
  */
 export function applyPlan(file: string, document: SettingsDocument | CursorSettingsDocument): void {
-  atomicWriteFileSync(file, `${JSON.stringify(document, null, 2)}\n`, {
+  const body = isTomlSettingsPath(file)
+    ? `${stringifyToml(document)}\n`
+    : `${JSON.stringify(document, null, 2)}\n`
+  atomicWriteFileSync(file, body, {
     requireCurrentUserOwner: true,
   })
 }
 
 export function loadSettings(file: string): SettingsDocument {
-  return readSettings(file)
+  return isTomlSettingsPath(file) ? readTomlSettings(file) : readSettings(file)
+}
+
+function isTomlSettingsPath(file: string): boolean {
+  return file.endsWith('.toml')
+}
+
+function readTomlSettings(file: string): SettingsDocument {
+  if (!existsSync(file)) return {}
+  const source = readOwnedRegularFile(file)
+  try {
+    const parsed: unknown = parseToml(source)
+    return typeof parsed === 'object' && parsed !== null ? (parsed as SettingsDocument) : {}
+  } catch {
+    throw new Error(`Could not parse ${file}; fix or move it before installing hooks.`)
+  }
 }
 
 export function loadCursorSettings(file: string): CursorSettingsDocument {
@@ -770,10 +951,6 @@ function isNotifaiCommand(command: string): boolean {
   return / hook (user-prompt-submit|stop|session-end)\b/.test(command)
 }
 
-function isNotifaiHandler(handler: HookHandler): boolean {
-  return isNotifaiCommand(handler.command)
-}
-
 /** Every place either harness would read a Notifai handler from. */
 export function findInstallations(
   cwd: string,
@@ -783,7 +960,8 @@ export function findInstallations(
   const found: Installation[] = []
   for (const harness of HARNESSES) {
     for (const global of [false, true]) {
-      const file = settingsFile(harness, global, cwd, env)
+      const files = hookDefinitionFiles(harness, global, cwd, env)
+      for (const file of files) {
       if (!existsSync(file)) continue
       // OpenCode's adapter is a plugin module, not a settings document, so it
       // is reported as one installation covering all three events rather than
@@ -841,7 +1019,7 @@ export function findInstallations(
       }
       let document: SettingsDocument
       try {
-        document = readSettings(file)
+        document = loadSettings(file)
       } catch {
         continue
       }
@@ -849,6 +1027,7 @@ export function findInstallations(
       if (handlers.length > 0) {
         const problems = harnessMarkerProblems(harness, handlers, adapterHome)
         found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
+      }
       }
     }
   }
@@ -893,26 +1072,30 @@ function locateCursorHandlers(document: CursorSettingsDocument): InstalledHandle
   return handlers
 }
 
-function locateHandlers(document: SettingsDocument): InstalledHandler[] {
+function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
   const handlers: InstalledHandler[] = []
   for (const [event, groups] of Object.entries(document.hooks ?? {})) {
+    if (!Array.isArray(groups)) continue
     groups.forEach((group, groupIndex) => {
       group.hooks?.forEach((handler, handlerIndex) => {
-        if (isNotifaiHandler(handler)) {
-          handlers.push({
-            event,
-            groupIndex,
-            handlerIndex,
-            command: handler.command,
-            ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
-            ...(handler.async === undefined ? {} : { async: handler.async }),
-            ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
-          })
-        }
+        if (typeof handler?.command !== 'string') return
+        handlers.push({
+          event,
+          groupIndex,
+          handlerIndex,
+          command: handler.command,
+          ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
+          ...(handler.async === undefined ? {} : { async: handler.async }),
+          ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
+        })
       })
     })
   }
   return handlers
+}
+
+function locateHandlers(document: SettingsDocument): InstalledHandler[] {
+  return locateAllHandlers(document).filter((handler) => isNotifaiCommand(handler.command))
 }
 
 /** The hook event a handler's command actually invokes, e.g. `stop`. */
