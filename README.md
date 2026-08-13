@@ -53,7 +53,7 @@ or public TestFlight link for the Private Alpha.
 ## Status
 
 Notifai is pre-1.0 and published under Apache-2.0. The current packages are
-`@raidiant/notifai` 0.5.1 and `@raidiant/notifai-protocol` 0.3.0; their
+`@raidiant/notifai` <!--x-release-please-start-notifai-->0.5.1<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->0.3.0<!--x-release-please-end-->; their
 versions advance independently. Only the latest published version is
 supported.
 
@@ -68,9 +68,8 @@ pnpm test           # unit tests (no Docker, no network)
 pnpm typecheck
 pnpm lint
 pnpm check:boundary # verify no private imports or disallowed files
-pnpm check:commit   # last commit is a conventional commit
+pnpm check:commit   # last commit is a conventional commit (commitlint)
 pnpm check:release  # verify package contents, metadata, docs, and licenses
-pnpm release        # dry-run the next version and changelog
 ```
 
 The CLI binary builds to `apps/cli/dist/main.js`.
@@ -82,8 +81,8 @@ installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
 delegates to the native `npx skills` flow, which lets a human choose project or
 global scope and owns placement, links, provenance, and updates. The skill is
-from the immutable public tag `v0.5.1`; the underlying installer source is
-`Raidiant-io/notifai#v0.5.1` (`#` selects a Git ref). For unattended use,
+from the immutable public tag `v<!--x-release-please-start-notifai-->0.5.1<!--x-release-please-end-->`; the underlying installer source is
+`Raidiant-io/notifai#v<!--x-release-please-start-notifai-->0.5.1<!--x-release-please-end-->` (`#` selects a Git ref). For unattended use,
 choose the scope explicitly: `notifai init --skills --skills-scope project` or
 `notifai init --skills --skills-scope global`.
 

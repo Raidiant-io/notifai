@@ -41,8 +41,6 @@ jobs:
 
       - run: pnpm -r test
 
-      - run: pnpm test:release
-
       - run: pnpm lint
 
       - run: pnpm -r typecheck
@@ -120,11 +118,11 @@ jobs:
       - name: Lint commit messages
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            node scripts/check-commit.mjs --range "${{ github.event.pull_request.base.sha }}..HEAD"
+            pnpm exec commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose
           elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-            node scripts/check-commit.mjs
+            pnpm check:commit
           else
-            node scripts/check-commit.mjs --range "${{ github.event.before }}..HEAD"
+            pnpm exec commitlint --from "${{ github.event.before }}" --to HEAD --verbose
           fi
 
   dependency-review:

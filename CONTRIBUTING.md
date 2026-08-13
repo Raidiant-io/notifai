@@ -31,9 +31,8 @@ pnpm check:boundary:self-test
 pnpm check:boundary   # structural allowlist + forbidden-content scan
 pnpm -r build
 pnpm -r test          # no Docker, no network
-pnpm test:release     # commit / SemVer / changelog machine
 pnpm lint && pnpm -r typecheck
-pnpm check:commit     # last commit is conventional
+pnpm check:commit     # commitlint on the last commit
 pnpm check:release    # package allowlist, metadata, docs, and licenses
 ```
 
@@ -44,15 +43,9 @@ scanner paths against ephemeral canaries.
 
 ## Commit messages
 
-Conventional Commits, public audience. The first line is:
-
-```
-<type>(<scope>)!: <description>
-```
-
-`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `revert`. Optional
-scope `cli`, `protocol`, `skill`, or `repo`. Description is an imperative
-sentence with no trailing period and no tracker IDs.
+[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/),
+public audience. Validated by commitlint with
+`@commitlint/config-conventional`.
 
 ```
 feat(cli): wake Claude sessions through the inbox socket
@@ -60,7 +53,7 @@ fix(protocol): reject an empty question set
 ```
 
 `pnpm check:commit` lints the last commit. Point `core.hooksPath` at
-`scripts/githooks` so the `commit-msg` hook runs it for you.
+`scripts/githooks` so the `commit-msg` hook runs commitlint.
 
 ## What makes a change easy to accept
 

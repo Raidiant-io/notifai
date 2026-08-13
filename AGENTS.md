@@ -18,16 +18,9 @@ packages; when a change seems to need one, the client-visible part belongs
 in `packages/protocol` and the rest stays private.
 
 Write commit messages for a public audience: no internal issue-tracker IDs,
-decision-log references, or private project names. Use Conventional Commits:
-
-```
-<type>(<scope>)!: <description>
-```
-
-Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `revert`.
-Scopes: `cli`, `protocol`, `skill`, `repo` — omit the scope to infer it from
-paths. Description is the sentence you would have written anyway; no trailing
-period. `pnpm check:commit` is the linter; the `commit-msg` hook calls it.
+decision-log references, or private project names. Use Conventional Commits
+1.0.0. `pnpm check:commit` is commitlint (`@commitlint/config-conventional`).
+The `commit-msg` hook runs it.
 
 ## Gates — run before every commit
 
@@ -36,9 +29,8 @@ pnpm check:boundary:self-test # prove boundary canaries still fail
 pnpm check:boundary   # structural allowlist + forbidden-content scan
 pnpm -r build         # protocol first — the CLI resolves its built exports
 pnpm -r test          # unit tests; no Docker, no network
-pnpm test:release     # conventional-commit / SemVer / changelog tests
 pnpm lint && pnpm -r typecheck
-pnpm check:commit     # HEAD must be a conventional commit
+pnpm check:commit     # commitlint on HEAD
 pnpm check:release    # packed files, metadata, docs, licenses, CLI version
 ```
 
@@ -56,11 +48,10 @@ This repository is published, and `@raidiant/notifai` and
 `@raidiant/notifai-protocol` are on npm as of 2026-08-05. That does not
 make the next release routine.
 
-Do not run `npm publish`, do not run `pnpm release --cut` / `--github`, do
-not create releases or tags, and do not push this repository anywhere new,
-without the maintainer asking for it in that instance. A version, once
-published, cannot be taken back. `pnpm release` with no flags is a dry-run
-and is safe. The machine is documented in `docs/RELEASING.md`.
+Do not merge a release-please PR, do not `npm publish`, and do not create
+tags, without the maintainer asking for a release in that instance. A
+version, once published, cannot be taken back. Git pushes of ordinary
+commits are fine. The machine is documented in `docs/RELEASING.md`.
 
 The skill installer source (`SKILLS_SOURCE`) is an immutable public tag,
 derived at runtime from the package version in `apps/cli/src/release.ts` — so
@@ -102,6 +93,6 @@ uses OIDC trusted publishing or a workflow secret — never anything in-tree.
 - `skills/notifai` — the agent skill: when to notify, how to write for a
   lock-screen banner.
 - `docs/BOUNDARY.md` — the boundary policy the gates enforce.
-- `docs/RELEASING.md` — conventional commits, SemVer house rule, `pnpm release`.
+- `docs/RELEASING.md` — SemVer, Conventional Commits, commitlint, release-please.
 
 `CLAUDE.md` is a symlink to this file; keep them one document.

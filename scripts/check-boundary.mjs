@@ -51,6 +51,9 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   'pnpm-lock.yaml',
   'tsconfig.base.json',
   'eslint.config.js',
+  'commitlint.config.js',
+  'release-please-config.json',
+  '.release-please-manifest.json',
   'node_modules',
 ])
 

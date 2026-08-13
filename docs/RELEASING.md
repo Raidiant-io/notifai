@@ -1,23 +1,23 @@
 # Releasing
 
-`@raidiant/notifai` and `@raidiant/notifai-protocol` version independently.
-A version number is a compatibility promise, not a name for a story.
+`@raidiant/notifai` and `@raidiant/notifai-protocol` version independently
+under [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## The promise
+## SemVer mapping
 
-Until 1.0.0:
-
-| Change | Bump |
+| Commit | Bump |
 | --- | --- |
-| Breaking | minor (`0.y+1.0`) |
-| Compatible feature or fix | patch |
-| Docs, chore, test, ci, refactor | none |
+| `fix:` | patch |
+| `feat:` | minor |
+| `BREAKING CHANGE:` or `type!:` | major |
 
-After 1.0.0 the SemVer 2.0.0 / Conventional Commits mapping applies: breaking
-→ major, `feat` → minor, `fix` → patch.
+That is the Conventional Commits spec. It is not special-cased for 0.x: a
+breaking change on `0.5.1` is `1.0.0`. `0.y.z` is valid SemVer (initial
+development). Pre-release labels (`1.0.0-rc.1`) exist if we need them later.
 
-`^0.5.1` on npm is `>=0.5.1 <0.6.0`. A 0.x minor ejects every caret
-installer, so it is reserved for breaks.
+The packages on npm today are `0.5.1` and `0.3.0`. Those numbers stay until
+the next cut.
 
 ## Commits
 
@@ -25,13 +25,9 @@ installer, so it is reserved for breaks.
 <type>(<scope>)!: <description>
 ```
 
-Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `revert`.
-Scopes: `cli`, `protocol`, `skill`, `repo`. Scope is optional — the release
-command infers it from the paths you touched. `skill` bumps the CLI (the
-skill ships in the CLI tag).
-
-Description is the public-audience sentence this repository already writes.
-No tracker IDs, no trailing period.
+Validated by [commitlint](https://commitlint.js.org/) with
+`@commitlint/config-conventional`. Types, scopes, and header length are
+that config’s defaults — not a house list.
 
 ```
 feat(cli): wake Claude sessions through the inbox socket
@@ -39,26 +35,24 @@ fix(protocol): reject an empty question set
 feat(cli)!: remove the presence gate
 ```
 
-`pnpm check:commit` lints HEAD, a message, or a range. The `commit-msg` hook
-calls it. CI calls it on every push and pull request. A prose commit in a
-release range is a hard failure, not a skip.
+`pnpm check:commit` runs `commitlint --last`. The `commit-msg` hook runs
+commitlint. CI runs it on the pushed or PR range.
 
-## Cut a release
+Write for a public audience: no internal tracker IDs.
 
-Never publishes. Never pushes. Never prompts.
+## Cutting a release
 
-```
-pnpm release              # print the plan
-pnpm release --write      # bump package.json, CHANGELOG.md, README
-pnpm release --cut        # write, commit, annotated tags
-pnpm release --github     # --cut plus `gh release create`
-pnpm release --package cli
-pnpm release --json
-```
+[release-please](https://github.com/googleapis/release-please) opens and
+updates a Release PR on every push to `main`. Merging that PR is the cut:
+it bumps `package.json`, writes `CHANGELOG.md`, and creates the annotated
+tags.
 
-Tags: `v0.5.2` for the CLI (the skill pin is `Raidiant-io/notifai#v0.5.2`),
-`protocol-v0.3.1` for the protocol.
+- CLI tag: `v0.5.2` (the skill pin is `Raidiant-io/notifai#v${version}`)
+- Protocol tag: `protocol-v0.3.1`
 
-Then, and only when the maintainer asked for a publish: push the commit and
-tags from the canonical clone, `npm publish` only the packages that changed,
-and `pnpm check:published`.
+**Do not merge a Release PR unless the maintainer asked for a release.**
+The PR existing is not a release.
+
+release-please does not publish to npm. After the tags exist, and only when
+the maintainer asked: publish the packages that changed, then
+`pnpm check:published`.

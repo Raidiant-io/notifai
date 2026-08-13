@@ -161,7 +161,7 @@ try {
   failures.push(`could not execute built CLI version check (${String(error)})`)
 }
 
-const readme = readFileSync(path.join(root, 'README.md'), 'utf8')
+const readme = readFileSync(path.join(root, 'README.md'), 'utf8').replace(/<!--[\s\S]*?-->/g, '')
 for (const { manifest, directory } of packages) {
   requireValue(
     readme.includes(`\`${manifest.name}\` ${manifest.version}`),

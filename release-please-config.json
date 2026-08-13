@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "changelog-type": "default",
+  "packages": {
+    "apps/cli": {
+      "release-type": "node",
+      "package-name": "@raidiant/notifai",
+      "component": "notifai",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": ["../../README.md"]
+    },
+    "packages/protocol": {
+      "release-type": "node",
+      "package-name": "@raidiant/notifai-protocol",
+      "component": "protocol",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": ["../../README.md"]
+    }
+  }
+}
