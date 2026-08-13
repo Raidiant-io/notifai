@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -21,13 +22,25 @@ export function commandInvocation(
   env = process.env,
 ) {
   if (platform !== 'win32') return { file: command, args: [...args], options: {} }
-  const home = env.PNPM_HOME
-  if (command === 'pnpm' && typeof home === 'string' && home !== '') {
-    const installRoot = path.dirname(home)
+  const executable = env.npm_execpath
+  if (command === 'pnpm' && typeof executable === 'string' && executable !== '') {
     return {
       file: process.execPath,
-      args: [path.join(installRoot, 'pnpm', 'bin', 'pnpm.cjs'), ...args],
+      args: [executable, ...args],
       options: { windowsHide: true },
+    }
+  }
+  const home = env.PNPM_HOME
+  if (command === 'pnpm' && typeof home === 'string' && home !== '') {
+    const shim = path.join(home, 'pnpm.cmd')
+    const match = /"([^"]*pnpm\.cjs)"/.exec(readFileSync(shim, 'utf8'))
+    if (match !== null) {
+      const relative = match[1].replace(/^%~dp0[\\/]/i, '').split(/[\\/]+/).join(path.sep)
+      return {
+        file: process.execPath,
+        args: [path.resolve(home, relative), ...args],
+        options: { windowsHide: true },
+      }
     }
   }
   return { file: `${command}.cmd`, args: [...args], options: { windowsHide: true } }
