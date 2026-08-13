@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Notify the user through Notifai when work finishes, blocks, or needs their attention. Use for sending native notifications from agents via the notifai CLI and for configuring when/how a user wants to be notified (per project or globally).
+description: Notify the user through Notifai when work finishes, blocks, or needs their attention. Use for sending native notifications from agents via the notifai CLI, setting Notifai up when it is missing or not ready, and configuring when/how a user wants to be notified (per project or globally).
 ---
 
 # Notifai
@@ -42,6 +42,39 @@ override and return to the inherited or shipped value. Precedence is flag >
 session > project-local > project > machine-global > default; `notifai config
 show --explain` shows the winning source.
 
+## Set Notifai up
+
+You are the wizard. `init` is the coordinator you invoke. `doctor` is how you
+branch. Never paste a diagnosis. Never tell the user to run `notifai init`,
+`notifai hooks install`, `notifai doctor`, or `notifai login` when you have a
+shell.
+
+1. Run `notifai doctor --json`. A nonzero `exit_code` is a gap to close, not a
+   report to show the user. Informational `--` lines do not fail the command.
+2. Run everything a process can:
+   - `notifai init` with flags (`--project-id`, `--skills --skills-scope
+     project|global`, `--hooks` or `--no-hooks`). Unattended `init` never
+     prompts; optional steps need those flags.
+   - `notifai hooks install --harness <active>` after they choose question
+     routing.
+   - `notifai config set … --yes` for a decision they just made.
+   - `notifai login` when this machine is unpaired. It opens the browser.
+3. Ask the user only for decisions a process cannot make. One structured
+   question with choices, not "run this in your terminal":
+   - Approve this machine in the browser (after you started login).
+   - Install the companion, sign in, and allow notifications.
+   - This project vs this machine (skill, hooks, and config together).
+   - Whether they want questions routed.
+4. When `init` or `doctor` prints a CLI command, run that command yourself
+   unless the next act is one of the human-only items above. Do not attempt
+   browser sign-in or companion installs yourself.
+
+`init` stays the idempotent coordinator: credentials, project identity,
+optional hooks, device readiness, and one receipt-backed verification
+notification. `doctor` is read-only and never sends a probe. Its exit status is nonzero
+when any displayed check is `FAIL`. Treat a nonzero result as a readiness
+failure to resolve, not as permission to bypass routing or fabricate evidence.
+
 ## Compose and send
 
 The common send needs a concise title, a useful body, and the right kind:
@@ -79,8 +112,8 @@ notifai send --title "Failed · api" --body "Integration tests failed." \
 
 ### Kind profiles
 
-Kind profiles are the normal attention mechanism. Do not repeat sound and level
-flags on ordinary sends:
+Kind profiles own attention. Never pass `--sound` or `--level` unless you
+intentionally override both the kind profile and saved user config.
 
 | Effective kind | Default sound | Default level |
 | --- | --- | --- |
@@ -88,11 +121,12 @@ flags on ordinary sends:
 | `done` | `done` | `passive` |
 | question (`--reply`) | `attention` | `active` |
 
-An explicit `--sound` or `--level` wins, followed by saved user config, then
-the kind profile. Use those overrides only when the situation or user policy
-really differs. `time_sensitive` is not a question default; reserve it for a
-case where acting late loses value. A reply request is always a question, so
-the CLI rejects `--kind done --reply`.
+Pass `--kind` (and `--reply` for a question). An explicit `--sound` or
+`--level` wins over saved config and the kind profile — that is why they are
+overrides, not completeness. Use them only when the situation or the user's
+stated policy really differs from both. `time_sensitive` is not a question
+default; reserve it for a case where acting late loses value. A reply request
+is always a question, so the CLI rejects `--kind done --reply`.
 
 Useful delivery controls:
 
@@ -290,23 +324,8 @@ in [Harness setup and recovery](references/harness-setup.md).
 output and `notifai status <request_id>` for the evidence trail. Provider
 Acceptance does not prove display or human attention. A Companion Receipt only
 proves that a companion process or extension observed delivery; `unknown` is
-not proof of failure.
-
-```bash
-notifai init
-notifai doctor
-```
-
-`init` is the idempotent setup coordinator. It covers credentials, project
-identity, optional hooks, device readiness, and one receipt-backed verification
-notification. Agents must not attempt browser sign-in or optional installs
-without the user's explicit choice; relay the exact action `init` reports.
-
-`doctor` is read-only and never sends a probe. Its exit status is nonzero when
-any displayed check is `FAIL`; JSON output reports the same value as
-`exit_code`. Informational `--` lines do not fail the command. Treat a
-nonzero result as a readiness failure to resolve, not as permission to bypass
-routing or fabricate evidence.
+not proof of failure. Setup gaps belong in [Set Notifai up](#set-notifai-up),
+not in a pasted doctor report.
 
 ## Find out what already happened
 

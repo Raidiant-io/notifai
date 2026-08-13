@@ -275,8 +275,6 @@ const send = program
   .option('--session <id>', 'session identity (env: NOTIFAI_SESSION); presentation varies by surface')
   .option('--event <event>', 'agent event name, e.g. tests_passed')
   .optionsGroup(SEND_GROUP.presentation)
-  .option('--sound <sound>', 'default | done | attention | alert | none')
-  .option('--level <level>', 'interruption level: passive | active | time_sensitive')
   .option('--collapse-key <key>', 'replace earlier notifications with the same key')
   .option('--thread-id <id>', 'group related notifications')
   .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
@@ -295,6 +293,8 @@ const send = program
   // a message pointing at `ask` instead of "unknown option".
   .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
   .optionsGroup(SEND_GROUP.advanced)
+  .option('--sound <sound>', 'override kind profile / saved config: default | done | attention | alert | none')
+  .option('--level <level>', 'override kind profile / saved config: passive | active | time_sensitive')
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
   .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
@@ -336,7 +336,7 @@ const send = program
 
 send.addHelpText(
   'after',
-  `\nKind profiles (used unless --sound, --level, or saved user config overrides them):\n  update    sound none       level passive\n  done      sound done       level passive\n  question  sound attention  level active (--reply)\n`,
+  `\nKind profiles apply automatically. Pass --sound or --level only to override them or saved user config:\n  update    sound none       level passive\n  done      sound done       level passive\n  question  sound attention  level active (--reply)\n`,
 )
 
 program

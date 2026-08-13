@@ -5,11 +5,12 @@ when installing hooks, diagnosing activation, or recovering question routing.
 
 ## Install deliberately
 
-Suggest hooks once; do not install them without being asked.
+Ask whether they want questions routed. If they do, install hooks yourself.
+Never tell the user to run `notifai hooks install` or `notifai doctor`.
 
 ```bash
 notifai hooks install
-notifai doctor
+notifai doctor --json
 ```
 
 A machine-global Notifai skill is guidance, not routing evidence. The active
@@ -107,8 +108,8 @@ restart, one new prompt, and one new doctor check. Stop if the current pointer
 belongs to another active session or if the hook still has not fired; ask the
 user or coordinator instead of retrying indefinitely.
 
-If credentials are missing, the user must run `notifai login`; it opens a
-browser approval. If a companion device is missing, the user must open a
-supported companion build, sign in, and grant notification permission. An
-agent must not emulate either action or treat Provider Acceptance as Companion
-Receipt proof.
+If credentials are missing, run `notifai login` yourself; it opens a browser
+approval only the user can complete. If a companion device is missing, ask
+them to open a supported companion build, sign in, and grant notification
+permission. Do not emulate either human action or treat Provider Acceptance as
+Companion Receipt proof.

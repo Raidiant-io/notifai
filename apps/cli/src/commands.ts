@@ -36,7 +36,7 @@ import {
   configBounds,
   configDefaultValue,
   findProjectConfigPath,
-  findProjectLocalConfigPath,
+  personalProjectConfigPath,
   globalConfigPath,
   loadConfig,
   sessionConfigPath,
@@ -46,7 +46,7 @@ import {
   type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
-import { skillsSource } from './release.js'
+import { packageVersion, skillsSource } from './release.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import {
@@ -117,7 +117,7 @@ import {
   type Harness,
   type Installation,
 } from './install-hooks.js'
-import { HARNESS_CAPABILITIES } from './harnesses.js'
+import { HARNESS_CAPABILITIES, HARNESS_LABELS } from './harnesses.js'
 import {
   claudeWakeRoute,
   inspectClaudeInbox,
@@ -132,6 +132,8 @@ import {
 import {
   inspectHookAdapter,
   installHookAdapter,
+  isNpxAdapterTarget,
+  type HookAdapterTarget,
 } from './hook-adapter.js'
 import {
   isOurOpencodePlugin,
@@ -196,7 +198,7 @@ export interface CommandDeps {
   /** Test seam; production fixes the hook adapter under os.homedir(). */
   hookAdapterHome?: string
   /** Test seam; production uses this process's Node and CLI paths. */
-  hookInstallTarget?: { execPath: string; scriptPath: string }
+  hookInstallTarget?: HookAdapterTarget
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
@@ -3197,8 +3199,8 @@ function observedCompanionReceipt(
  * gap, so re-running is how you check the setup as much as how you create it.
  * With a human at a terminal it walks them through the missing pieces; run by
  * an agent it never prompts — each optional step is answered by a flag, and
- * whatever only the user can do (signing in, pairing a companion device) is printed as
- * the exact command to hand back to them.
+ * whatever only the user can do (signing in, pairing a companion device) is
+ * printed as the next human action. An agent runs every CLI command itself.
  */
 /**
  * Close a gap the CLI is allowed to close on its own, without asking.

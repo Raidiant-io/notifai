@@ -20,6 +20,33 @@ describe('Notifai agent skill', () => {
     expect(skill).toContain('| question (`--reply`) | `attention` | `active` |')
   })
 
+  it('makes the agent the setup wizard', () => {
+    expect(skill.indexOf('## Set Notifai up')).toBeGreaterThan(skill.indexOf('## When to notify'))
+    expect(skill.indexOf('## Set Notifai up')).toBeLessThan(skill.indexOf('## Compose and send'))
+    expect(skill).toContain('Never tell the user to run')
+    expect(skill).toContain('notifai init')
+    expect(skill).toContain('notifai hooks install')
+    expect(skill).toContain('notifai doctor')
+    expect(skill).toContain('notifai login')
+    expect(skill).toContain('Ask the user only for decisions a process cannot make')
+    expect(skill).not.toContain('relay the exact action')
+    expect(harnessReference).toContain('install hooks yourself')
+    expect(harnessReference).toContain('run `notifai login` yourself')
+    expect(harnessReference).not.toContain('the user must run `notifai login`')
+    expect(harnessReference).not.toContain('do not install them without being asked')
+  })
+
+  it('treats --sound and --level as overrides, not completeness', () => {
+    expect(skill).toMatch(/Never pass `--sound` or `--level` unless/)
+    const examples = [...skill.matchAll(/```(?:bash)?\n([\s\S]*?)```/g)].map((match) => match[1])
+    const sendExamples = examples.filter((example) => example.includes('notifai send'))
+    expect(sendExamples.length).toBeGreaterThan(0)
+    for (const example of sendExamples) {
+      expect(example).not.toMatch(/(^|\s)--sound\b/)
+      expect(example).not.toMatch(/(^|\s)--level\b/)
+    }
+  })
+
   it('documents reply lifecycle, routing, session minting, and doctor exits', () => {
     for (const required of [
       '--reply-choice',

@@ -414,7 +414,9 @@ describe('command contracts', () => {
     expect(source).not.toContain(".option('--badge")
     expect(source).not.toContain(".option('--relevance")
     expect(source).not.toContain(".option('--target-content-id")
-    expect(source).toContain('Kind profiles')
+    expect(source).toContain('Kind profiles apply automatically')
+    expect(source).toContain('Pass --sound or --level only to override')
+    expect(source).toContain('override kind profile / saved config')
   })
 
   it('rejects a question nobody will wait for', async () => {
