@@ -515,7 +515,7 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
   const tomlOurs = documentHasOurHandlers(tomlDocument)
   const dual = jsonEvents.length > 0 && tomlEvents.length > 0
   let writeTarget = paths.hooksJson
-  if (tomlEvents.length > 0 && jsonEvents.length === 0 && tomlForeign) {
+  if (tomlEvents.length > 0 && jsonEvents.length === 0) {
     writeTarget = paths.configToml
   } else if (dual) {
     if (tomlForeign && !jsonForeign) writeTarget = paths.configToml
@@ -651,7 +651,7 @@ function globalHarnessEvidence(
   const home = harnessAccountHome(env, platform)
   const found: Harness[] = []
   if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
-  if (existsSync(path.join(home, '.codex'))) found.push('codex')
+  if (existsSync(codexGlobalDir(env, platform))) found.push('codex')
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
   if (existsSync(path.join(home, '.config', 'opencode'))) found.push('opencode')
   return found

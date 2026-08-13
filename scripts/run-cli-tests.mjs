@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -35,17 +35,35 @@ for (const key of Object.keys(env)) {
   }
 }
 
+const signals = ['SIGINT', 'SIGTERM']
+let child
+let forwardedSignal
+
 try {
   const vitest = fileURLToPath(import.meta.resolve('vitest/vitest.mjs'))
   const forwarded = process.argv.slice(2)
   if (forwarded[0] === '--') forwarded.shift()
-  const result = spawnSync(process.execPath, [vitest, 'run', ...forwarded], {
+  child = spawn(process.execPath, [vitest, 'run', ...forwarded], {
     cwd: fileURLToPath(new URL('../apps/cli', import.meta.url)),
     env,
     stdio: 'inherit',
   })
-  if (result.error !== undefined) throw result.error
-  process.exitCode = result.status ?? 1
+  for (const signal of signals) {
+    process.once(signal, () => {
+      forwardedSignal = signal
+      child.kill(signal)
+    })
+  }
+  const result = await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => resolve({ code, signal }))
+  })
+  if (forwardedSignal !== undefined || result.signal !== null) {
+    process.exitCode = 128 + (os.constants.signals[forwardedSignal ?? result.signal] ?? 0)
+  } else {
+    process.exitCode = result.code ?? 1
+  }
 } finally {
+  for (const signal of signals) process.removeAllListeners(signal)
   rmSync(root, { recursive: true, force: true })
 }
