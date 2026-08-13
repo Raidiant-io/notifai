@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @raidiant/notifai-protocol build && pnpm --filter @raidiant/notifai build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",

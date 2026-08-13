@@ -40,9 +40,13 @@ safety depends on this code being private, that *is* a vulnerability and
 we want to hear about it.
 
 **Machine credentials are stored per-machine, not in the repository.**
-On macOS they go to the Keychain; the file fallback is written `0600`. A
-credential is scoped to one machine and can be revoked without affecting
-others.
+On macOS they go to the Keychain. On Windows they are protected with the
+Data Protection API for the current user and stored under
+`%LOCALAPPDATA%\notifai`, not roaming configuration. On Linux they are a
+`0600` file. `NOTIFAI_CREDENTIALS=file` forces the plaintext file store
+for development and tests; POSIX mode bits are not an NTFS ACL, so that
+override is not a protected Windows store. A credential is scoped to one
+machine and can be revoked without affecting others.
 
 **A Companion Receipt proves delivery to a device, not display to a
 person.** It is deliberately not evidence that anyone saw anything.

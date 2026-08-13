@@ -7,13 +7,18 @@ import {
   statSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { hookAdapterPath } from './hook-adapter.js'
+import {
+  hookAdapterPath,
+  hookHostPlatform,
+  inspectHookAdapter,
+  type HookHostPlatform,
+} from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
 import { HARNESSES, type Harness } from './harnesses.js'
+import { accountHome } from './platform.js'
 
 export { HARNESSES, type Harness } from './harnesses.js'
 
@@ -68,20 +73,42 @@ export interface InstallPlan {
   config: HookConfig
 }
 
+export interface HookCommandOptions {
+  platform?: NodeJS.Platform | HookHostPlatform
+  /** Registered Node used to interpret the Windows adapter. Ignored on POSIX. */
+  nodePath?: string
+}
+
 /**
  * The command each hook runs. Harness definitions know only the stable
  * user-level adapter. Mutable Node, package-manager, version, and checkout
- * paths live behind that seam and never enter a trusted hook identity.
+ * paths live behind that seam and never enter a trusted hook identity —
+ * except on Windows, where CreateProcess cannot run the adapter without an
+ * explicit Node executable, so the registered interpreter is named first.
  */
 export function hookCommand(
   adapterPath: string,
   event: string,
   harness?: Harness,
+  options: HookCommandOptions = {},
 ): string {
   return (
-    `${quote(adapterPath)} hook ${event} ${OWNER_MARKER}` +
+    `${hookCommandPrefix(adapterPath, options)}hook ${event} ${OWNER_MARKER}` +
     (harness === undefined ? '' : ` --harness ${harness}`)
   )
+}
+
+/** The leading argv that every Notifai handler must start with. */
+export function hookCommandPrefix(
+  adapterPath: string,
+  options: HookCommandOptions = {},
+): string {
+  const host = hookHostPlatform(options.platform)
+  if (host === 'win32') {
+    const nodePath = options.nodePath ?? process.execPath
+    return `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(adapterPath)} `
+  }
+  return `${quote(adapterPath)} `
 }
 
 /**
@@ -110,11 +137,39 @@ function quote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`
 }
 
+/**
+ * Quote one Windows argv element so CommandLineToArgvW / CreateProcess keep
+ * it as a single argument. Always used for the Node and adapter paths, which
+ * routinely contain spaces (`Program Files`) and must not use POSIX quotes
+ * inside JSON or TOML harness documents.
+ */
+export function quoteWindowsArg(value: string): string {
+  let out = '"'
+  let slashes = 0
+  for (const ch of value) {
+    if (ch === '\\') {
+      slashes += 1
+      continue
+    }
+    if (ch === '"') {
+      out += '\\'.repeat(slashes * 2 + 1) + '"'
+      slashes = 0
+      continue
+    }
+    out += '\\'.repeat(slashes) + ch
+    slashes = 0
+  }
+  return `${out}${'\\'.repeat(slashes * 2)}"`
+}
+
 export interface BuildOptions {
   /** Stable user-level executable installed by the hook adapter module. */
   adapterPath: string
   /** The installed adapter stamps its exact harness into project pointers. */
   harness?: Harness
+  platform?: NodeJS.Platform | HookHostPlatform
+  /** Registered Node named first in Windows hook commands. */
+  nodePath?: string
 }
 
 /**
@@ -154,24 +209,36 @@ export const BLOCKING_STOP_TIMEOUT_SECONDS = 540
  * declared ceiling above the wait — except Codex, which owns that number
  * itself and whose definition must stay byte-stable for its trust store.
  */
-function stopHandler(adapterPath: string, harness: Harness | undefined): HookHandler {
-  const command = hookCommand(adapterPath, 'stop', harness)
-  if (harness === 'claude-code') {
+function stopHandler(
+  adapterPath: string,
+  harness: Harness | undefined,
+  options: HookCommandOptions,
+): HookHandler {
+  const command = hookCommand(adapterPath, 'stop', harness, options)
+  if (harness === 'claude-code' && hookHostPlatform(options.platform) === 'posix') {
     return { type: 'command', command, timeout: CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'codex') return { type: 'command', command }
   return { type: 'command', command, timeout: BLOCKING_STOP_TIMEOUT_SECONDS }
 }
 
+function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
+  return {
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
+    ...(options.nodePath === undefined ? {} : { nodePath: options.nodePath }),
+  }
+}
+
 export function buildHookConfig(options: BuildOptions): HookConfig {
   const { adapterPath } = options
+  const commandOptions = commandOptionsFrom(options)
   return {
     UserPromptSubmit: [
       {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(adapterPath, 'user-prompt-submit', options.harness),
+            command: hookCommand(adapterPath, 'user-prompt-submit', options.harness, commandOptions),
             // Claude Code caps UserPromptSubmit at 30s; stay well inside it so
             // a slow network can never delay the user's own prompt.
             timeout: 15,
@@ -179,13 +246,13 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         ],
       },
     ],
-    Stop: [{ hooks: [stopHandler(adapterPath, options.harness)] }],
+    Stop: [{ hooks: [stopHandler(adapterPath, options.harness, commandOptions)] }],
     SessionEnd: [
       {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(adapterPath, 'session-end', options.harness),
+            command: hookCommand(adapterPath, 'session-end', options.harness, commandOptions),
             // Both harnesses give SessionEnd a ~1-3s budget, so this handler
             // only touches local state.
             timeout: 3,
@@ -212,16 +279,17 @@ interface CursorSettingsDocument {
 
 /** Cursor's native schema is flat and uses lower-camel lifecycle event names. */
 export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
+  const commandOptions = commandOptionsFrom(options)
   return {
     beforeSubmitPrompt: [
       {
-        command: hookCommand(options.adapterPath, 'user-prompt-submit', 'cursor'),
+        command: hookCommand(options.adapterPath, 'user-prompt-submit', 'cursor', commandOptions),
         timeout: 15,
       },
     ],
     stop: [
       {
-        command: hookCommand(options.adapterPath, 'stop', 'cursor'),
+        command: hookCommand(options.adapterPath, 'stop', 'cursor', commandOptions),
         timeout: BLOCKING_STOP_TIMEOUT_SECONDS,
         // A continuation may register a real follow-up question. Match the
         // session-state cap so those chains are useful but never unbounded.
@@ -230,7 +298,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
     ],
     sessionEnd: [
       {
-        command: hookCommand(options.adapterPath, 'session-end', 'cursor'),
+        command: hookCommand(options.adapterPath, 'session-end', 'cursor', commandOptions),
         timeout: 3,
       },
     ],
@@ -247,27 +315,41 @@ export function settingsFile(
   global: boolean,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
   switch (harness) {
     // OpenCode has no settings document to merge into — its adapter is a
     // generated plugin module, so it owns a whole file instead.
     case 'opencode':
-      return opencodePluginPath(global, cwd, env)
+      return opencodePluginPath(global, cwd, env, platform)
     case 'cursor': {
-      const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
+      const home = harnessAccountHome(env, platform)
       return global
         ? path.join(home, '.cursor', 'hooks.json')
         : path.join(cwd, '.cursor', 'hooks.json')
     }
     case 'claude-code':
       return global
-        ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude'), 'settings.json')
+        ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude', platform), 'settings.json')
         : path.join(cwd, '.claude', 'settings.local.json')
     case 'codex':
-      return inspectCodexLayer(codexLayerPaths(global, cwd, env)).writeTarget
+      return inspectCodexLayer(codexLayerPaths(global, cwd, env, platform)).writeTarget
     default:
       return assertNeverHarness(harness)
   }
+}
+
+/**
+ * The account home harness config roots are resolved against.
+ *
+ * Delegates to the shared process/path `accountHome` so Cursor, OpenCode,
+ * Claude, and Codex follow the same Windows USERPROFILE / MSYS HOME rules.
+ */
+export function harnessAccountHome(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string {
+  return accountHome(env, hookHostPlatform(platform) === 'win32' ? 'win32' : 'linux')
 }
 
 function assertNeverHarness(harness: never): never {
@@ -360,19 +442,24 @@ function commonGitDir(gitDir: string): string {
  * state), not the user-global hook file. Global Codex hooks are always
  * `~/.codex`.
  */
-export function configHome(env: NodeJS.ProcessEnv, variable: string, fallback: string): string {
+export function configHome(
+  env: NodeJS.ProcessEnv,
+  variable: string,
+  fallback: string,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string {
   const override = env[variable]
-  return override !== undefined && override !== '' ? override : path.join(userHome(env), fallback)
-}
-
-function userHome(env: NodeJS.ProcessEnv): string {
-  const home = env['HOME']
-  return home !== undefined && home !== '' ? home : os.homedir()
+  if (override !== undefined && override !== '') return override
+  const home = harnessAccountHome(env, platform)
+  return path.join(home, fallback)
 }
 
 /** User-global Codex config directory. Ignores `CODEX_HOME`. */
-export function codexGlobalDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(userHome(env), '.codex')
+export function codexGlobalDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string {
+  return path.join(harnessAccountHome(env, platform), '.codex')
 }
 
 export interface CodexLayerPaths {
@@ -386,8 +473,11 @@ export function codexLayerPaths(
   global: boolean,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): CodexLayerPaths {
-  const dir = global ? codexGlobalDir(env) : path.join(codexProjectRoot(cwd), '.codex')
+  const dir = global
+    ? codexGlobalDir(env, platform)
+    : path.join(codexProjectRoot(cwd), '.codex')
   return {
     dir,
     hooksJson: path.join(dir, 'hooks.json'),
@@ -447,9 +537,10 @@ export function hookDefinitionFiles(
   global: boolean,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string[] {
-  if (harness !== 'codex') return [settingsFile(harness, global, cwd, env)]
-  const paths = codexLayerPaths(global, cwd, env)
+  if (harness !== 'codex') return [settingsFile(harness, global, cwd, env, platform)]
+  const paths = codexLayerPaths(global, cwd, env, platform)
   return [paths.hooksJson, paths.configToml]
 }
 
@@ -544,8 +635,11 @@ function localHarnessEvidence(cwd: string): Harness[] {
 }
 
 /** Harnesses installed anywhere on this machine — a much weaker signal. */
-function globalHarnessEvidence(env: NodeJS.ProcessEnv = process.env): Harness[] {
-  const home = env['HOME'] !== undefined && env['HOME'] !== '' ? env['HOME'] : os.homedir()
+function globalHarnessEvidence(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): Harness[] {
+  const home = harnessAccountHome(env, platform)
   const found: Harness[] = []
   if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
   if (existsSync(path.join(home, '.codex'))) found.push('codex')
@@ -561,8 +655,15 @@ function globalHarnessEvidence(env: NodeJS.ProcessEnv = process.env): Harness[] 
  *
  * `AGENTS.md` still counts for nothing — see `localHarnessEvidence`.
  */
-export function detectedHarnesses(cwd: string, env: NodeJS.ProcessEnv = process.env): Harness[] {
-  const seen = new Set<Harness>([...localHarnessEvidence(cwd), ...globalHarnessEvidence(env)])
+export function detectedHarnesses(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): Harness[] {
+  const seen = new Set<Harness>([
+    ...localHarnessEvidence(cwd),
+    ...globalHarnessEvidence(env, platform),
+  ])
   return HARNESSES.filter((harness) => seen.has(harness))
 }
 
@@ -575,10 +676,14 @@ export function detectedHarnesses(cwd: string, env: NodeJS.ProcessEnv = process.
  * are several harnesses. `detectedHarnesses` is the default for install;
  * this helper stays for uninstall and any caller that cannot take a list.
  */
-export function detectHarness(cwd: string, env: NodeJS.ProcessEnv = process.env): Harness | null {
+export function detectHarness(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): Harness | null {
   const local = localHarnessEvidence(cwd)
   if (local.length > 0) return local.length === 1 ? local[0]! : null
-  const global = globalHarnessEvidence(env)
+  const global = globalHarnessEvidence(env, platform)
   return global.length === 1 ? global[0]! : null
 }
 
@@ -957,11 +1062,17 @@ export function findInstallations(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   adapterHome?: string,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): Installation[] {
+  const nodePath = inspectHookAdapter(adapterHome, platform).target?.execPath
+  const commandOptions: HookCommandOptions = {
+    platform,
+    ...(nodePath === undefined ? {} : { nodePath }),
+  }
   const found: Installation[] = []
   for (const harness of HARNESSES) {
     for (const global of [false, true]) {
-      const files = hookDefinitionFiles(harness, global, cwd, env)
+      const files = hookDefinitionFiles(harness, global, cwd, env, platform)
       for (const file of files) {
       if (!existsSync(file)) continue
       // OpenCode's adapter is a plugin module, not a settings document, so it
@@ -998,7 +1109,10 @@ export function findInstallations(
             event,
             groupIndex: 0,
             handlerIndex: 0,
-            command: hookCommand(target.adapter, hookEvent, 'opencode'),
+            command: hookCommand(target.adapter, hookEvent, 'opencode', {
+              ...commandOptions,
+              ...(target.nodePath === undefined ? {} : { nodePath: target.nodePath }),
+            }),
             ...(target.timeoutSeconds === undefined ? {} : { timeout: target.timeoutSeconds }),
           })),
         })
@@ -1013,7 +1127,7 @@ export function findInstallations(
         }
         const handlers = locateCursorHandlers(document)
         if (handlers.length > 0) {
-          const problems = harnessMarkerProblems(harness, handlers, adapterHome)
+          const problems = harnessMarkerProblems(harness, handlers, adapterHome, commandOptions)
           found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
         }
         continue
@@ -1026,7 +1140,7 @@ export function findInstallations(
       }
       const handlers = locateHandlers(document)
       if (handlers.length > 0) {
-        const problems = harnessMarkerProblems(harness, handlers, adapterHome)
+        const problems = harnessMarkerProblems(harness, handlers, adapterHome, commandOptions)
         found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
       }
       }
@@ -1039,6 +1153,7 @@ function harnessMarkerProblems(
   harness: Harness,
   handlers: InstalledHandler[],
   adapterHome?: string,
+  options: HookCommandOptions = {},
 ): string[] {
   const problems: string[] = []
   if (!handlers.every((handler) => handler.command.includes(`--harness ${harness}`))) {
@@ -1046,7 +1161,7 @@ function harnessMarkerProblems(
       `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
     )
   }
-  const expected = `${quote(hookAdapterPath(adapterHome))} hook `
+  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome), options)}hook `
   if (!handlers.every((handler) => handler.command.startsWith(expected))) {
     problems.push(
       'installed commands still name a mutable CLI or runtime path; rerun `notifai hooks install` to migrate to the stable adapter',

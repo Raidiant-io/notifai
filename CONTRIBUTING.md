@@ -21,7 +21,7 @@ advisory.
 
 ```sh
 pnpm install
-pnpm -r build      # protocol first; the CLI resolves its built exports
+pnpm build         # protocol first; the CLI resolves its built exports
 ```
 
 ## Before you open a pull request
@@ -29,7 +29,7 @@ pnpm -r build      # protocol first; the CLI resolves its built exports
 ```sh
 pnpm check:boundary:self-test
 pnpm check:boundary   # structural allowlist + forbidden-content scan
-pnpm -r build
+pnpm build
 pnpm -r test          # no Docker, no network
 pnpm lint && pnpm -r typecheck
 pnpm check:commit     # commitlint on the last commit

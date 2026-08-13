@@ -27,7 +27,7 @@ The `commit-msg` hook runs it.
 ```sh
 pnpm check:boundary:self-test # prove boundary canaries still fail
 pnpm check:boundary   # structural allowlist + forbidden-content scan
-pnpm -r build         # protocol first — the CLI resolves its built exports
+pnpm build            # protocol first — the CLI resolves its built exports
 pnpm -r test          # unit tests; no Docker, no network
 pnpm lint && pnpm -r typecheck
 pnpm check:commit     # commitlint on HEAD

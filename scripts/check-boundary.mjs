@@ -23,8 +23,9 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { repositoryRoot } from './cross-platform.mjs'
 
-const root = path.resolve(import.meta.dirname, '..')
+const root = repositoryRoot
 
 const TOP_LEVEL_ALLOWLIST = new Set([
   '.git',

@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -40,6 +39,7 @@ import {
   globalConfigPath,
   loadConfig,
   sessionConfigPath,
+  stateDir,
   type CliConfig,
   type ConfigKey,
   type FlagOverrides,
@@ -154,6 +154,7 @@ import {
   type SendFlags,
 } from './send.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
+import { openUrl } from './platform.js'
 
 export interface CommandIo {
   out(line: string): void
@@ -204,6 +205,8 @@ export interface CommandDeps {
   hookAdapterHome?: string
   /** Test seam; production uses this process's Node and CLI paths. */
   hookInstallTarget?: HookAdapterTarget
+  /** Test seam; production uses process.platform for adapter format and quoting. */
+  hookPlatform?: NodeJS.Platform
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
@@ -1486,6 +1489,7 @@ function stopWakeRoute(
 ): EscalationDeliveryRoute | undefined {
   if (sessionId === undefined) return undefined
   if (harness === 'claude-code') {
+    if ((deps.hookPlatform ?? process.platform) === 'win32') return undefined
     return claudeWakeRoute({
       sessionId,
       cwd,
@@ -1709,7 +1713,7 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
   const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, now)
   let sessionId: string | undefined
   if (active !== null) {
-    const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
+    const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
     const activeInstalled = installations.some(
       (installation) => installation.harness === active.harness,
     )
@@ -1991,10 +1995,10 @@ function activeQuestionRouteProblems(
       }
     }
   }
-  for (const problem of inspectHookAdapter(deps.hookAdapterHome).problems) {
+  for (const problem of inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform).problems) {
     problems.push(problem)
   }
-  for (const installation of matching) problems.push(...stopShapeProblems(installation))
+  for (const installation of matching) problems.push(...stopShapeProblems(installation, deps.hookPlatform))
   problems.push(...codexTrustProblems(matching, deps.env))
   return [...new Set(problems)]
 }
@@ -2056,7 +2060,7 @@ function diagnoseActiveHarnessSession(
  * checked after a prompt before assuming that a new session is required.
  */
 function diagnoseMissingSession(deps: CommandDeps): string[] {
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
   if (installations.length === 0) {
     return [
       'Could not tell which harness session this is: no Notifai hooks are installed for this project.',
@@ -2207,15 +2211,17 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   const adapterTarget = resolveHookAdapterTarget(deps, flags)
   const scriptPath =
     flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
+  const hookPlatform = deps.hookPlatform ?? process.platform
+  const nodePath = adapterTarget.execPath
   let adapterPath: string
   try {
-    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome).path
+    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform).path
   } catch (err) {
     deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
     return EXIT.failed
   }
   const wantGlobal = flags.global === true
-  const existing = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome).filter(
+  const existing = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(
     (installation) => installation.harness === harness,
   )
   const otherScope = existing.filter((installation) => installation.global !== wantGlobal)
@@ -2231,7 +2237,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       return EXIT.failed
     }
   }
-  const file = settingsFile(harness, wantGlobal, deps.cwd, deps.env)
+  const file = settingsFile(harness, wantGlobal, deps.cwd, deps.env, hookPlatform)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
   // merged into a settings document, so it owns the whole file.
@@ -2239,6 +2245,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return installOpencodePlugin(deps, file, {
       adapterPath,
       timeoutSeconds: BLOCKING_STOP_TIMEOUT_SECONDS,
+      platform: hookPlatform,
+      nodePath,
     })
   }
 
@@ -2251,6 +2259,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
           buildCursorHookConfig({
             adapterPath,
             harness: 'cursor',
+            platform: hookPlatform,
+            nodePath,
           }),
           scriptPath,
         )
@@ -2276,6 +2286,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         buildHookConfig({
           adapterPath,
           harness,
+          platform: hookPlatform,
+          nodePath,
         }),
         scriptPath,
       )
@@ -2331,7 +2343,12 @@ function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { comm
 function installOpencodePlugin(
   deps: CommandDeps,
   file: string,
-  options: { adapterPath: string; timeoutSeconds: number },
+  options: {
+    adapterPath: string
+    timeoutSeconds: number
+    platform?: NodeJS.Platform
+    nodePath?: string
+  },
 ): number {
   try {
     withTargetFileLock(file, () => {
@@ -2360,7 +2377,13 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
-  const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
+  const file = settingsFile(
+    harness,
+    flags.global ?? false,
+    deps.cwd,
+    deps.env,
+    deps.hookPlatform,
+  )
   if (harness === 'opencode') {
     try {
       return withTargetFileLock(file, () => {
@@ -3193,9 +3216,7 @@ function setupProofPath(deps: CommandDeps): string {
     // the resolved absolute path is still a stable local identity for it.
   }
   const digest = createHash('sha256').update(projectDir).digest('hex').slice(0, 32)
-  const xdg = deps.env['XDG_STATE_HOME']
-  const base = xdg && xdg !== '' ? xdg : path.join(os.homedir(), '.local', 'state')
-  return path.join(base, 'notifai', 'setup-proofs', `${digest}.json`)
+  return path.join(stateDir(deps.env), 'setup-proofs', `${digest}.json`)
 }
 
 function readSetupProof(deps: CommandDeps): SetupProofRecord | null {
@@ -4399,7 +4420,7 @@ function remedyLine(state: ReadinessState): string {
  * is, is each check's own call (`HookCheck`).
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
   const active = activeHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const settings: ReadinessState = {
@@ -4492,13 +4513,16 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
  *     hashes into `trusted_hash`, and an untrusted handler is simply not run.
  *   - Everything else blocks its turn and needs a ceiling above the wait.
  */
-function stopShapeProblems(installation: Installation): string[] {
+function stopShapeProblems(
+  installation: Installation,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   if (installation.harness === 'codex') return []
   const problems: string[] = []
   for (const handler of installation.handlers.filter(
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
-    if (installation.harness === 'claude-code') {
+    if (installation.harness === 'claude-code' && platform !== 'win32') {
       if (handler.async !== true) {
         problems.push(
           `${installation.file} declares a blocking Stop handler; the Claude Code wake route needs \`async: true\` so the turn ends while the waiter runs`,
@@ -4532,7 +4556,7 @@ interface HookCheck {
 
 function hookChecks(deps: CommandDeps): HookCheck[] {
   const checks: HookCheck[] = []
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
+  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
 
   // Not having hooks is a setup someone chose, not a fault: `send` works
   // without them. A setup that cannot work is what deserves to go red.
@@ -4651,7 +4675,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const adapterProblems = installations.flatMap((installation) =>
     (installation.problems ?? []).map((problem) => `${installation.file}: ${problem}`),
   )
-  const sharedAdapter = inspectHookAdapter(deps.hookAdapterHome)
+  const sharedAdapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
   adapterProblems.push(...sharedAdapter.problems)
   if (adapterProblems.length > 0) {
     checks.push({
@@ -4683,7 +4707,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   })
 
   const shapeProblems = installations.flatMap((installation) =>
-    stopShapeProblems(installation).map(
+    stopShapeProblems(installation, deps.hookPlatform).map(
       (problem) =>
         `${problem} — run \`notifai hooks install --harness ${installation.harness}${installation.global ? ' --global' : ''}\``,
     ),
@@ -5069,20 +5093,6 @@ export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
           return log.error(message)
       }
     },
-    openUrl: (url) => {
-      try {
-        if (process.platform === 'darwin') {
-          spawn('open', [url], { stdio: 'ignore', detached: true }).unref()
-        } else if (process.platform === 'win32') {
-          // `start` is a cmd builtin; spawn('start', …) cannot work on Windows.
-          // Empty title argument keeps URLs with special characters intact.
-          spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref()
-        } else {
-          spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref()
-        }
-      } catch {
-        // Browser opening is best-effort; the URL is printed anyway.
-      }
-    },
+    openUrl,
   }
 }

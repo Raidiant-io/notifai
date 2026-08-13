@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
+import { configHome, stateHome } from './platform.js'
 
 /**
  * Layered configuration with provenance. Most specific wins:
@@ -163,10 +163,11 @@ export function configDefaultValue(key: ConfigKey): unknown {
   return DEFAULTS[key]
 }
 
-export function globalConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  const xdg = env['XDG_CONFIG_HOME']
-  const base = xdg && xdg !== '' ? xdg : path.join(os.homedir(), '.config')
-  return path.join(base, 'notifai')
+export function globalConfigDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return path.join(configHome(env, platform), 'notifai')
 }
 
 export function globalConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -178,10 +179,11 @@ export function globalConfigPath(env: NodeJS.ProcessEnv = process.env): string {
  * session config overrides. Separate from the config dir because none of it is
  * user-authored and none of it should ever be synced or committed.
  */
-export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
-  const xdg = env['XDG_STATE_HOME']
-  const base = xdg && xdg !== '' ? xdg : path.join(os.homedir(), '.local', 'state')
-  return path.join(base, 'notifai')
+export function stateDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return path.join(stateHome(env, platform), 'notifai')
 }
 
 /** Per-harness-session override file; see the ConfigSource doc comment. */

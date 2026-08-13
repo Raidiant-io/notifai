@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { describe, expect, it } from 'vitest'
 import { parseChoices } from './send.js'
 import {
@@ -19,7 +20,9 @@ import {
   opencodePluginSource,
   opencodePluginTarget,
 } from './opencode-plugin.js'
+import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import {
+  BLOCKING_STOP_TIMEOUT_SECONDS,
   HARNESSES,
   applyPlan,
   detectHarness,
@@ -33,7 +36,9 @@ import {
   codexTrustKey,
   codexTrustProblems,
   handlerEvent,
+  harnessAccountHome,
   hookCommand,
+  quoteWindowsArg,
   loadSettings,
   mergeHooks,
   removeHooks,
@@ -126,7 +131,7 @@ describe('hook config', () => {
     })
   })
 
-  it('gives Claude Code an asynchronous Stop with an explicit waiter budget', () => {
+  it('gives Claude Code an asynchronous Stop with an explicit waiter budget on POSIX', () => {
     const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
 
     // `async: true` is what frees the turn: the handler returns at once and the
@@ -141,6 +146,22 @@ describe('hook config', () => {
     })
     expect(claude['UserPromptSubmit']?.[0]?.hooks[0]?.async).toBeUndefined()
     expect(claude['SessionEnd']?.[0]?.hooks[0]?.async).toBeUndefined()
+  })
+
+  it('gives Claude Code a blocking Stop continuation on Windows', () => {
+    const options = {
+      adapterPath: 'C:\\Users\\Ada\\.notifai\\bin\\hook-adapter',
+      harness: 'claude-code' as const,
+      platform: 'win32' as const,
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    }
+    const claude = buildHookConfig(options)
+
+    expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
+      type: 'command',
+      command: hookCommand(options.adapterPath, 'stop', 'claude-code', options),
+      timeout: BLOCKING_STOP_TIMEOUT_SECONDS,
+    })
   })
 
   it('leaves exactly one handler per event when an old blocking shape is reinstalled over', () => {
@@ -860,5 +881,99 @@ describe('detectHarness', () => {
     // return either a single harness or null — never an arbitrary pick.
     const answer = detectHarness(empty)
     expect(answer === null || HARNESSES.includes(answer)).toBe(true)
+  })
+})
+
+describe('Windows hook commands and discovery', () => {
+  const winNode = 'C:\\Program Files\\nodejs\\node.exe'
+  const winAdapter = 'C:\\Users\\Ada Lovelace\\.notifai\\bin\\hook-adapter'
+  const winOpts = { platform: 'win32' as const, nodePath: winNode }
+
+  it('keeps POSIX command bytes unchanged', () => {
+    expect(hookCommand(ADAPTER, 'stop')).toBe(`'${ADAPTER}' hook stop --owner notifai`)
+    expect(hookCommand(ADAPTER, 'stop', 'codex')).toBe(
+      `'${ADAPTER}' hook stop --owner notifai --harness codex`,
+    )
+  })
+
+  it('emits a Windows-safe command with no POSIX single quotes', () => {
+    const command = hookCommand(winAdapter, 'stop', 'codex', winOpts)
+    expect(command).toBe(
+      `"${winNode}" "${winAdapter}" hook stop --owner notifai --harness codex`,
+    )
+    expect(command).not.toContain("'")
+    expect(quoteWindowsArg('C:\\ends\\with\\')).toBe('"C:\\ends\\with\\\\"')
+    expect(quoteWindowsArg('say "hi"')).toBe('"say \\"hi\\""')
+  })
+
+  it('round-trips the Windows command through JSON and TOML documents', () => {
+    const command = hookCommand(winAdapter, 'stop', 'cursor', winOpts)
+    expect(JSON.parse(JSON.stringify({ command }))).toEqual({ command })
+    expect(parseToml(stringifyToml({ command }))).toEqual({ command })
+  })
+
+  it('discovers a Windows-quoted installation as the stable adapter', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-win-discover-'))
+    const homeDir = path.join(cwd, 'home')
+    const script = path.join(cwd, 'cli.js')
+    writeFileSync(script, '')
+    installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir, 'win32')
+    const adapter = hookAdapterPath(homeDir)
+    mkdirSync(path.join(cwd, '.claude'), { recursive: true })
+    applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
+      hooks: buildHookConfig({
+        adapterPath: adapter,
+        harness: 'claude-code',
+        platform: 'win32',
+        nodePath: process.execPath,
+      }),
+    })
+
+    const found = findInstallations(
+      cwd,
+      { HOME: homeDir, USERPROFILE: 'C:\\Users\\Ada' },
+      homeDir,
+      'win32',
+    )
+    expect(found).toHaveLength(1)
+    expect(found[0]?.harness).toBe('claude-code')
+    expect(found[0]?.problems ?? []).toEqual([])
+    expect(found[0]?.handlers[0]?.command.startsWith(`${quoteWindowsArg(process.execPath)} `)).toBe(
+      true,
+    )
+  })
+
+  it('prefers a Windows-absolute USERPROFILE over an MSYS HOME', () => {
+    const env = { HOME: '/c/Users/msys', USERPROFILE: 'C:\\Users\\Ada' }
+    expect(harnessAccountHome(env, 'win32')).toBe('C:\\Users\\Ada')
+    expect(settingsFile('cursor', true, '/repo', env, 'win32')).toBe(
+      path.join('C:\\Users\\Ada', '.cursor', 'hooks.json'),
+    )
+    expect(settingsFile('claude-code', true, '/repo', env, 'win32')).toBe(
+      path.join('C:\\Users\\Ada', '.claude', 'settings.json'),
+    )
+    expect(opencodePluginPath(true, '/repo', env, 'win32')).toBe(
+      path.join('C:\\Users\\Ada', '.config', 'opencode', 'plugins', 'notifai.js'),
+    )
+  })
+
+  it('makes OpenCode spawn the adapter through Node on Windows with shell:false', () => {
+    const source = opencodePluginSource({
+      adapterPath: winAdapter,
+      timeoutSeconds: 240,
+      platform: 'win32',
+      nodePath: winNode,
+    })
+    expect(source).toContain(`const NODE = ${JSON.stringify(winNode)}`)
+    expect(source).toContain('spawn(NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "opencode"]')
+    expect(source).toContain('shell: false')
+    expect(source).toContain('windowsHide: true')
+    expect(source).not.toContain('spawn(ADAPTER,')
+    expect(opencodePluginTarget(source)).toEqual({
+      adapter: winAdapter,
+      current: true,
+      timeoutSeconds: 240,
+      nodePath: winNode,
+    })
   })
 })

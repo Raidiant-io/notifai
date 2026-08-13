@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
+import { accountHome, npxLaunch } from './platform.js'
 
 /** The two scopes offered by the skills installer. */
 export type SkillScope = 'project' | 'global'
@@ -52,10 +52,9 @@ interface LockFile {
 function skillLockPath(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): string {
   if (scope === 'project') return path.join(cwd, 'skills-lock.json')
   const stateHome = env['XDG_STATE_HOME']
-  const home = env['HOME'] ?? env['USERPROFILE'] ?? os.homedir()
   return stateHome !== undefined && stateHome !== ''
     ? path.join(stateHome, 'skills', '.skill-lock.json')
-    : path.join(home, '.agents', '.skill-lock.json')
+    : path.join(accountHome(env), '.agents', '.skill-lock.json')
 }
 
 function readLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): LockFile {
@@ -76,8 +75,7 @@ function conventionalSkillPath(
   env: NodeJS.ProcessEnv,
 ): string {
   if (scope === 'project') return path.join(cwd, '.agents', 'skills', name)
-  const home = env['HOME'] ?? env['USERPROFILE'] ?? os.homedir()
-  return path.join(home, '.agents', 'skills', name)
+  return path.join(accountHome(env), '.agents', 'skills', name)
 }
 
 function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): NativeSkill[] {
@@ -103,11 +101,8 @@ function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv):
 
 function run(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn('npx', args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: 'inherit',
-    })
+    const launch = npxLaunch(args, options)
+    const child = spawn(launch.file, launch.args, launch.options)
     child.on('error', () => resolve(1))
     child.on('exit', (code) => resolve(code ?? 1))
   })

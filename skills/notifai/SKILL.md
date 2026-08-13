@@ -173,8 +173,16 @@ notifai config set project my-app --project --yes
 Use one stable opaque session ID for the whole agent run. Exporting it once is
 less error-prone than repeating `--session`:
 
-```bash
+POSIX shells:
+
+```sh
 export NOTIFAI_SESSION="$(node -p "require('node:crypto').randomUUID()")"
+```
+
+PowerShell:
+
+```powershell
+$env:NOTIFAI_SESSION = node -p "require('node:crypto').randomUUID()"
 ```
 
 Do not mint a new ID per send. Hooks normally learn their harness session from

@@ -22,8 +22,9 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { execCommand, repositoryRoot } from './cross-platform.mjs'
 
-const root = path.resolve(import.meta.dirname, '..')
+const root = repositoryRoot
 const failures = []
 const notes = []
 
@@ -65,7 +66,9 @@ for (const entry of selected) {
 
   let tarballUrl
   try {
-    tarballUrl = execFileSync('npm', ['view', label, 'dist.tarball'], { encoding: 'utf8' }).trim()
+    tarballUrl = execCommand('npm', ['view', label, 'dist.tarball'], {
+      encoding: 'utf8',
+    }).trim()
   } catch (error) {
     failures.push(`${label}: not published, or npm view failed (${String(error)})`)
     continue

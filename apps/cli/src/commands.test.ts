@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,7 +51,7 @@ import {
 } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
-import { CONFIG_KEYS, loadConfig, personalProjectConfigPath } from './config.js'
+import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, stateDir } from './config.js'
 import { createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
@@ -219,6 +219,7 @@ function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
     HOME: home,
     CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
     CODEX_HOME: path.join(home, '.codex'),
+    OPENCODE_CONFIG_DIR: path.join(home, '.config', 'opencode'),
     XDG_CONFIG_HOME: path.join(cwd, 'config'),
     XDG_STATE_HOME: path.join(cwd, 'state'),
   }
@@ -1225,6 +1226,7 @@ describe('Cursor hook commands', () => {
         XDG_STATE_HOME: path.join(cwd, 'state'),
         CODEX_HOME: path.join(cwd, 'codex'),
         CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
+        OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode'),
       },
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
@@ -1485,7 +1487,11 @@ describe('harness activation guidance', () => {
     const deps = {
       ...makeDeps(io, {} as ApiClient),
       cwd,
-      env: { HOME: path.join(cwd, 'home'), XDG_STATE_HOME: path.join(cwd, 'state') },
+      env: {
+        HOME: path.join(cwd, 'home'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode-home'),
+      },
     }
 
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(
@@ -2664,6 +2670,7 @@ describe('init', () => {
         XDG_STATE_HOME: path.join(cwd, 'state'),
         CODEX_HOME: path.join(cwd, 'codex'),
         CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
+        OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode'),
       },
     }
 
@@ -2895,6 +2902,8 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
     expect(io.outLines.join('\n')).toContain('Provider accepted the notification')
     expect(io.outLines.join('\n')).toContain('Proof may still arrive')
+    const proofDir = path.join(stateDir(deps.env), 'setup-proofs')
+    expect(readdirSync(proofDir).some((name) => name.endsWith('.json'))).toBe(true)
 
     io.outLines = []
     io.errLines = []
@@ -4133,6 +4142,7 @@ describe('asking before the hooks have ever run', () => {
         XDG_STATE_HOME: cwd,
         CODEX_HOME: path.join(cwd, 'none'),
         CLAUDE_CONFIG_DIR: path.join(cwd, 'none'),
+        OPENCODE_CONFIG_DIR: path.join(cwd, 'none'),
       },
     }
 

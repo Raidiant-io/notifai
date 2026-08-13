@@ -10,9 +10,43 @@ permissions:
   contents: read
 
 jobs:
-  # Full gate stack on the Node ceiling. Boundary, lint, typecheck, release,
-  # and the prod audit are not Node-version-sensitive for this tree, so they
-  # run once rather than once per matrix cell.
+  # Prove the public sending surface on every supported desktop OS and at both
+  # ends of the Node range. Windows and macOS run the release package check too:
+  # it executes the platform's real package-manager shims and inspects pnpm pack.
+  platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['20', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Protocol before CLI: the CLI resolves its built exports.
+      - run: pnpm build
+
+      - run: pnpm -r test
+
+      - run: pnpm -r typecheck
+
+      - run: pnpm lint
+
+      # Checks the actual pnpm pack file list, package metadata, license/docs,
+      # production dependency licenses, and CLI version single source.
+      - run: pnpm check:release
+
+  # Platform-independent policy gates run once on the Node ceiling.
   gates:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -35,42 +69,6 @@ jobs:
       - run: pnpm check:boundary:self-test
 
       - run: pnpm check:boundary
-
-      # Protocol before CLI: the CLI resolves its built exports.
-      - run: pnpm -r build
-
-      - run: pnpm -r test
-
-      - run: pnpm lint
-
-      - run: pnpm -r typecheck
-
-      # Checks the actual pnpm pack file list, package metadata, license/docs,
-      # production dependency licenses, and CLI version single source.
-      - run: pnpm check:release
-
-  # Engines floor only. Build and test are the steps that can genuinely
-  # diverge across Node majors; everything else lives in gates on 24.
-  # The middle LTS is not covered — floor + ceiling is enough for a CLI
-  # that agents invoke on whatever Node the user has.
-  node-floor:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '20'
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm -r build
-
-      - run: pnpm -r test
 
   secret-history:
     runs-on: ubuntu-latest
@@ -116,6 +114,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Lint commit messages
+        shell: bash
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             pnpm exec commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose

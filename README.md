@@ -42,6 +42,32 @@ prints help instead of prompting, output stays uncoloured, and `--json` is
 available on the commands that report. Nothing in the CLI ever waits on stdin
 unless a human is demonstrably there.
 
+## Platform support
+
+The sending CLI runs on macOS, Linux, and Windows. The Companion Apps that
+receive notifications are currently Apple-only: iPhone and macOS. Windows and
+Linux Companion Apps are later product work, not part of this repository or the
+current CLI support claim.
+
+| Surface | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| Approved Machine CLI: login, configuration, send, ask, doctor | Supported | Supported | Supported |
+| Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; blocking Stop continuation because no live inbox socket exists |
+| Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
+| Cursor hooks | Supported; use blocking `notifai send --kind question --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenCode hooks | Supported; use blocking `notifai send --kind question --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| Notifai Companion App | iPhone and macOS | Not yet | Not yet |
+
+“Fails closed” means Notifai keeps the accepted answer in the session journal
+for the next hook rather than starting an unproven or divergent agent turn.
+Claude Code live inbox wake requires Claude Code 2.1.224 or newer and is an
+upstream macOS/Linux capability; on Windows, Notifai keeps Stop open and returns
+the accepted answer through Claude Code's ordinary continuation channel. Cursor does not expose the conversation
+identity needed to prove asynchronous return, and OpenCode has no proven
+exactly-once continuation after `session.idle`; their hooks still support
+lifecycle cleanup and routing diagnostics, while blocking reply mode provides
+the reliable question path.
+
 ## Companion App installation
 
 Private Alpha Companion Apps are distributed only through controlled TestFlight

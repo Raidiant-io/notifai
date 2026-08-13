@@ -3,8 +3,9 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { execCommand, repositoryRoot } from './cross-platform.mjs'
 
-const root = path.resolve(import.meta.dirname, '..')
+const root = repositoryRoot
 const failures = []
 
 function readJson(relative) {
@@ -64,7 +65,7 @@ for (const entry of packages) {
 
   let packed
   try {
-    const output = execFileSync(
+    const output = execCommand(
       'pnpm',
       ['--filter', manifest.name, 'pack', '--dry-run', '--json'],
       { cwd: root, encoding: 'utf8' },
@@ -184,7 +185,7 @@ requireValue(rootLicense.includes('Apache License'), 'LICENSE must contain Apach
 
 try {
   const licenses = JSON.parse(
-    execFileSync('pnpm', ['licenses', 'list', '--prod', '--json'], { cwd: root, encoding: 'utf8' }),
+    execCommand('pnpm', ['licenses', 'list', '--prod', '--json'], { cwd: root, encoding: 'utf8' }),
   )
   /**
    * Permissive licences cleared for redistribution inside an Apache-2.0
@@ -199,7 +200,7 @@ try {
    * anything that is not plainly permissive belongs in front of a human
    * before it ships to npm.
    */
-  const allowedLicenses = new Set(['MIT', 'BSD-3-Clause', 'ISC'])
+  const allowedLicenses = new Set(['Apache-2.0', 'MIT', 'BSD-3-Clause', 'ISC'])
   for (const license of Object.keys(licenses)) {
     requireValue(allowedLicenses.has(license), `production dependency license requires review: ${license}`)
   }

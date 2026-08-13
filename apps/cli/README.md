@@ -56,6 +56,10 @@ For a harness that cannot resume an idle agent turn, `notifai send
 
 ## Agent harnesses
 
+The CLI and managed hook adapters support macOS, Linux, and Windows. Receiving
+still requires the current iPhone or macOS Companion App; native Windows and
+Linux Companion Apps are not shipped yet.
+
 ```sh
 notifai hooks install
 ```
@@ -67,13 +71,19 @@ or add one it did not see. This is what lets an agent's question reach
 your phone without the agent having to cooperate — no question detection,
 no state in a context window that compaction will eat.
 
-Every harness definition calls one stable user-level adapter at
-`~/.notifai/bin/hook-adapter`. Node, package manager, CLI version, checkout,
-XDG directories, and notification preferences are resolved behind it, so
-upgrades and configuration changes do not rewrite trusted hook definitions.
-The first migration may require one Codex `/hooks` approval; later repairs keep
-the same identity. Codex's Stop definition omits its timeout so the host default
-remains authoritative; prompt-submit and session-end retain fixed short limits.
+Every harness definition calls one stable user-level adapter under the account
+home (`~/.notifai/bin/hook-adapter` on macOS/Linux and the corresponding user
+profile path on Windows). Node, package manager, CLI version, checkout,
+configuration directories, and notification preferences are resolved behind
+it, so upgrades and configuration changes do not rewrite trusted hook
+definitions. Windows invokes its JavaScript adapter through the registered Node
+executable; macOS/Linux retain the POSIX adapter and its stable command bytes.
+Claude Code Stop returns immediately into the live inbox route on macOS/Linux;
+on Windows, where upstream exposes no inbox socket, Stop stays open and returns
+the accepted answer through the harness continuation. The first migration may
+require one Codex `/hooks` approval; later repairs keep the same identity.
+Codex's Stop definition omits its timeout so the host default remains
+authoritative; prompt-submit and session-end retain fixed short limits.
 
 `notifai doctor` compares Codex trust on a best-effort basis against Codex's
 current persisted representation. Notifai never writes that trust store;
