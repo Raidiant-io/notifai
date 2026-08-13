@@ -36,7 +36,7 @@ import {
   configBounds,
   configDefaultValue,
   findProjectConfigPath,
-  personalProjectConfigPath,
+  findProjectLocalConfigPath,
   globalConfigPath,
   loadConfig,
   sessionConfigPath,
@@ -46,7 +46,7 @@ import {
   type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
-import { packageVersion, skillsSource } from './release.js'
+import { skillsSource } from './release.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import {
@@ -117,7 +117,7 @@ import {
   type Harness,
   type Installation,
 } from './install-hooks.js'
-import { HARNESS_CAPABILITIES, HARNESS_LABELS } from './harnesses.js'
+import { HARNESS_CAPABILITIES } from './harnesses.js'
 import {
   claudeWakeRoute,
   inspectClaudeInbox,
@@ -132,8 +132,6 @@ import {
 import {
   inspectHookAdapter,
   installHookAdapter,
-  isNpxAdapterTarget,
-  type HookAdapterTarget,
 } from './hook-adapter.js'
 import {
   isOurOpencodePlugin,
@@ -198,7 +196,7 @@ export interface CommandDeps {
   /** Test seam; production fixes the hook adapter under os.homedir(). */
   hookAdapterHome?: string
   /** Test seam; production uses this process's Node and CLI paths. */
-  hookInstallTarget?: HookAdapterTarget
+  hookInstallTarget?: { execPath: string; scriptPath: string }
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
