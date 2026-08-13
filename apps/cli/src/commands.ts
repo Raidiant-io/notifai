@@ -4940,7 +4940,7 @@ function wakeRouteCheck(
   }
   if (active.harness === 'codex') {
     const readiness = inspectCodexResume(deps.env, {
-      platform: process.platform,
+      platform: deps.hookPlatform ?? process.platform,
       directoryExists: (directory) => existsSync(directory),
     })
     return {

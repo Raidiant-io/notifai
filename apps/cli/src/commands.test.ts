@@ -4048,7 +4048,12 @@ describe('asking before the hooks have ever run', () => {
       ...isolatedEnv(cwd),
       CODEX_THREAD_ID: '9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8',
     }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      hookPlatform: 'darwin' as NodeJS.Platform,
+    }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
 
     io.outLines = []
@@ -4059,14 +4064,8 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     await doctorCommand(deps, {})
     const out = io.outLines.join('\n')
-    if (process.platform === 'darwin') {
-      expect(out).toMatch(/ok\s+hooks \(wake route\)/)
-      expect(out).toContain('can prove a stopped thread unowned before resuming it')
-    } else {
-      // Linux has no non-blocking `flock` through Node's `open(2)` flags, so
-      // the gate stays shut and doctor says so rather than implying a wake.
-      expect(out).toContain('nothing can be resumed')
-    }
+    expect(out).toMatch(/ok\s+hooks \(wake route\)/)
+    expect(out).toContain('can prove a stopped thread unowned before resuming it')
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {

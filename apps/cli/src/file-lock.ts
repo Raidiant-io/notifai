@@ -48,6 +48,19 @@ interface FileIdentity {
   ino: number
 }
 
+/**
+ * Identity for one published lock entry.
+ *
+ * Linux can immediately reuse an inode after an unlinked entry is replaced at
+ * the same path. The creation/change timestamp keeps that replacement distinct
+ * even when its device and inode numbers happen to match the removed entry.
+ */
+interface EntryIdentity {
+  dev: bigint
+  ino: bigint
+  ctimeNs: bigint
+}
+
 interface ChoosingEntry {
   kind: 'choosing'
   name: string
@@ -124,10 +137,22 @@ function assertSameDirectory(directory: string, expected: FileIdentity): void {
   }
 }
 
-function sameIdentity(file: string, expected: FileIdentity): boolean {
+function entryIdentity(stat: { dev: bigint; ino: bigint; ctimeNs: bigint }): EntryIdentity {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    ctimeNs: stat.ctimeNs,
+  }
+}
+
+function sameEntryIdentity(file: string, expected: EntryIdentity): boolean {
   try {
-    const current = lstatSync(file)
-    return current.dev === expected.dev && current.ino === expected.ino
+    const current = lstatSync(file, { bigint: true })
+    return (
+      current.dev === expected.dev &&
+      current.ino === expected.ino &&
+      current.ctimeNs === expected.ctimeNs
+    )
   } catch {
     return false
   }
@@ -173,11 +198,10 @@ function liveEntries(
   return live
 }
 
-function publishEmpty(file: string): FileIdentity {
+function publishEmpty(file: string): EntryIdentity {
   const handle = openSync(file, 'wx', 0o600)
   try {
-    const stat = fstatSync(handle)
-    return { dev: stat.dev, ino: stat.ino }
+    return entryIdentity(fstatSync(handle, { bigint: true }))
   } finally {
     closeSync(handle)
   }
@@ -188,7 +212,7 @@ function publishChoosing(
   name: string,
   deadline: number,
   observe: FileLockOptions['observe'],
-): { file: string; fileIdentity: FileIdentity; directoryIdentity: FileIdentity } {
+): { file: string; fileIdentity: EntryIdentity; directoryIdentity: FileIdentity } {
   const file = path.join(directory, name)
   for (;;) {
     try {
@@ -227,7 +251,7 @@ export function withFileLock<T>(file: string, action: () => T, options: FileLock
   const token = randomBytes(FILE_LOCK_TOKEN_BYTES).toString('hex')
   const choosingName = `choosing-${pid}-${token}`
   let ownedPath: string | null = null
-  let ownedIdentity: FileIdentity | null = null
+  let ownedIdentity: EntryIdentity | null = null
   let directoryIdentity: FileIdentity | null = null
   let operationFailed = false
 
@@ -249,6 +273,7 @@ export function withFileLock<T>(file: string, action: () => T, options: FileLock
     // ticket, never a gap in which a live contender has no published state.
     renameSync(ownedPath, ticketPath)
     ownedPath = ticketPath
+    ownedIdentity = entryIdentity(lstatSync(ticketPath, { bigint: true }))
 
     for (;;) {
       const blockers: string[] = []
@@ -273,7 +298,7 @@ export function withFileLock<T>(file: string, action: () => T, options: FileLock
     let releaseChanged = false
     if (ownedPath !== null && ownedIdentity !== null) {
       try {
-        if (sameIdentity(ownedPath, ownedIdentity)) unlinkSync(ownedPath)
+        if (sameEntryIdentity(ownedPath, ownedIdentity)) unlinkSync(ownedPath)
         else releaseChanged = true
       } catch {
         // External cleanup cannot turn a release failure into a caller failure.
