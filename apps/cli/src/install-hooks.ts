@@ -39,10 +39,10 @@ const OPENCODE_EVENTS = [
  * Claude Code's `settings.json` and Codex's hook files use the same shape —
  * `hooks` maps an event name to matcher groups, each holding command handlers
  * with an optional timeout — so one generator serves both. Only the file
- * location and the event set differ. Codex still loads a leftover
- * `hooks.json`, but that file is the legacy representation. We write inline
- * `[hooks]` tables in the same layer's `config.toml`. One representation per
- * layer, never both.
+ * location and the event set differ. Codex supports either a dedicated
+ * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`.
+ * We default to the dedicated file so installing hooks never rewrites Codex's
+ * main configuration and trust store. One representation per layer, never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -437,10 +437,10 @@ function commonGitDir(gitDir: string): string {
 }
 
 /**
- * Claude Code honors `CLAUDE_CONFIG_DIR`. Codex hook files do not follow
- * `CODEX_HOME`: that variable is the live process home (locks, session
- * state), not the user-global hook file. Global Codex hooks are always
- * `~/.codex`.
+ * Harness-specific home variables relocate the whole active harness home.
+ * This matters under session managers that give each Codex account its own
+ * `CODEX_HOME`: writing to the OS account's ~/.codex would configure a
+ * different Codex installation than the one running the command.
  */
 export function configHome(
   env: NodeJS.ProcessEnv,
@@ -454,12 +454,12 @@ export function configHome(
   return path.join(home, fallback)
 }
 
-/** User-global Codex config directory. Ignores `CODEX_HOME`. */
+/** User-global Codex config directory for the active Codex installation. */
 export function codexGlobalDir(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
-  return path.join(harnessAccountHome(env, platform), '.codex')
+  return configHome(env, 'CODEX_HOME', '.codex', platform)
 }
 
 export interface CodexLayerPaths {
@@ -498,10 +498,10 @@ export interface CodexLayerInspection {
 /**
  * Which representation this Codex layer already uses.
  *
- * `hooks.json` is the legacy file. We write inline `[hooks]` in
- * `config.toml` unless this layer already has someone else's hooks only in
- * `hooks.json` — writing a second file would make Codex load both and run
- * every matching handler. `[hooks.state]` is the trust store, not a hook
+ * Codex supports `hooks.json` and inline `[hooks]` side by side, but loads both
+ * and runs every matching handler. Prefer the dedicated file for a new layer;
+ * preserve an existing single representation so installing Notifai never
+ * invents a dual layer. `[hooks.state]` is the trust store, not a hook
  * definition, so it does not count as a representation.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
@@ -511,14 +511,18 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
   const tomlEvents = hookEventNames(tomlDocument?.hooks)
   const jsonForeign = documentHasForeignHandlers(jsonDocument)
   const tomlForeign = documentHasForeignHandlers(tomlDocument)
+  const jsonOurs = documentHasOurHandlers(jsonDocument)
+  const tomlOurs = documentHasOurHandlers(tomlDocument)
   const dual = jsonEvents.length > 0 && tomlEvents.length > 0
-  // Current representation. Stay on the legacy file only when that is
-  // already where someone else's hooks live and toml has none.
-  let writeTarget = paths.configToml
-  if (jsonEvents.length > 0 && tomlEvents.length === 0 && jsonForeign) {
-    writeTarget = paths.hooksJson
-  } else if (dual && jsonForeign && !tomlForeign) {
-    writeTarget = paths.hooksJson
+  let writeTarget = paths.hooksJson
+  if (tomlEvents.length > 0 && jsonEvents.length === 0 && tomlForeign) {
+    writeTarget = paths.configToml
+  } else if (dual) {
+    if (tomlForeign && !jsonForeign) writeTarget = paths.configToml
+    else if (jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
+    else if (!jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
+    else if (tomlOurs && !jsonOurs) writeTarget = paths.configToml
+    else writeTarget = paths.hooksJson
   }
   return {
     paths,
@@ -607,6 +611,11 @@ function hookEventNames(hooks: SettingsDocument['hooks']): string[] {
 function documentHasForeignHandlers(document: SettingsDocument | null): boolean {
   if (document === null) return false
   return locateAllHandlers(document).some((handler) => !isNotifaiCommand(handler.command))
+}
+
+function documentHasOurHandlers(document: SettingsDocument | null): boolean {
+  if (document === null) return false
+  return locateHandlers(document).length > 0
 }
 
 /** Best-effort detection so `hooks install` usually needs no flags. */

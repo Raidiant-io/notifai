@@ -184,7 +184,15 @@ function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
       `trustInstalledCodexHooks will only write under ${tmpRoot}, not ${resolvedHome}`,
     )
   }
-  const file = path.join(resolvedHome, '.codex', 'config.toml')
+  const codexHome = env['CODEX_HOME'] !== undefined && env['CODEX_HOME'] !== ''
+    ? path.resolve(env['CODEX_HOME'])
+    : path.join(resolvedHome, '.codex')
+  if (codexHome !== tmpRoot && !codexHome.startsWith(`${tmpRoot}${path.sep}`)) {
+    throw new Error(
+      `trustInstalledCodexHooks will only write under ${tmpRoot}, not ${codexHome}`,
+    )
+  }
+  const file = path.join(codexHome, 'config.toml')
   const installations = findInstallations(cwd, env).filter(
     (installation) => installation.harness === 'codex',
   )
@@ -1327,7 +1335,7 @@ describe('Codex hook representation', () => {
     expect(io.outLines.join('\n')).toMatch(/Stop and the existing one will both fire/i)
   })
 
-  it('collapses a leftover hooks.json onto inline [hooks] and says both Stops will run', async () => {
+  it('preserves a foreign inline Stop while collapsing our duplicate definition', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-collapse-'))
     const toml = writeInlineStop(cwd, 'gdh-stop')
     const json = path.join(cwd, '.codex', 'hooks.json')
@@ -2520,8 +2528,8 @@ describe('init', () => {
     )
     expect(wired).toEqual(['claude-code', 'codex'])
     expect(existsSync(path.join(cwd, '.claude', 'settings.local.json'))).toBe(true)
-    expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(true)
-    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(true)
+    expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(false)
     expect(io.outLines.join('\n')).toContain('Installed claude-code hooks')
     expect(io.outLines.join('\n')).toContain('Installed codex hooks')
   })
@@ -3352,11 +3360,12 @@ describe('asking before the hooks have ever run', () => {
     }
   })
 
-  it('refuses to write Codex trust into the real user config', () => {
+  it('refuses to write Codex trust outside the isolated test account', () => {
     expect(() => trustInstalledCodexHooks(os.tmpdir(), {})).toThrow(/requires env.HOME/)
-    expect(() => trustInstalledCodexHooks(os.tmpdir(), { HOME: os.homedir() })).toThrow(
+    expect(() => trustInstalledCodexHooks(os.tmpdir(), { HOME: path.dirname(os.tmpdir()) })).toThrow(
       /will only write under/,
     )
+    expect(os.homedir()).toBe(process.env['NOTIFAI_TEST_HOME'])
   })
 
   it('names the active Codex harness instead of unrelated installed adapters', () => {
@@ -3630,7 +3639,7 @@ describe('asking before the hooks have ever run', () => {
       .find((installation) => installation.harness === 'codex')
       ?.handlers.find((handler) => handler.event === 'Stop')
     expect(stop).toBeDefined()
-    const configFile = path.join(env.HOME!, '.codex', 'config.toml')
+    const configFile = path.join(env.CODEX_HOME!, 'config.toml')
     writeFileSync(
       configFile,
       readFileSync(configFile, 'utf8').replace(codexHookIdentityHash(stop!), 'sha256:obsolete'),
@@ -3774,8 +3783,8 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    mkdirSync(path.join(env.HOME!, '.codex'), { recursive: true })
-    applyPlan(path.join(env.HOME!, '.codex', 'config.toml'), {
+    mkdirSync(env.CODEX_HOME!, { recursive: true })
+    applyPlan(path.join(env.CODEX_HOME!, 'config.toml'), {
       hooks: buildHookConfig({
         adapterPath: hookAdapterPath(deps.hookAdapterHome),
         harness: 'codex',

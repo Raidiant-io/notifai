@@ -16,7 +16,7 @@
     "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "pretest": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "node ../../scripts/run-cli-tests.mjs",
     "prepack": "pnpm run build"
   },
   "dependencies": {
