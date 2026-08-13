@@ -294,23 +294,21 @@ async function testNotificationScreen(deps: CommandDeps): Promise<void> {
   })
   if (cancelled(body)) return
 
-  const sound = await clack.select<string>({
-    message: 'Sound',
+  const kind = await clack.select<string>({
+    message: 'Kind',
     options: [
-      { value: 'default', label: 'Default', hint: 'the standard tone' },
-      { value: 'done', label: 'Done', hint: 'the completion chime' },
-      { value: 'attention', label: 'Attention' },
-      { value: 'none', label: 'Silent' },
+      { value: 'update', label: 'Update', hint: 'something happened' },
+      { value: 'done', label: 'Done', hint: 'work finished' },
     ],
-    initialValue: 'default',
+    initialValue: 'done',
   })
-  if (cancelled(sound)) return
+  if (cancelled(kind)) return
 
   clack.log.step('Sending, then waiting for your devices to confirm…')
   const code = await sendCommand(deps, {
     title: String(title),
     body: String(body),
-    sound: String(sound),
+    kind: String(kind),
     ...(project !== null ? { project } : {}),
   })
   if (code === EXIT.ok) clack.log.success('Delivered. Check the device it landed on.')
