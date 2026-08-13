@@ -33,17 +33,8 @@ export interface SkillsAddOptions {
 export interface NativeSkills {
   /** Launch the native interactive `npx skills add` flow. */
   add(options: SkillsAddOptions): Promise<number>
-  /** Ask the native installer for its managed install inventory. */
+  /** Read installer-managed inventory from lock files. Does not spawn npx. */
   list(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): Promise<SkillsListResult>
-}
-
-interface JsonSkill {
-  name?: unknown
-  path?: unknown
-  scope?: unknown
-  source?: unknown
-  sourceType?: unknown
-  sourceUrl?: unknown
 }
 
 interface LockEntry {
@@ -51,6 +42,7 @@ interface LockEntry {
   sourceType?: unknown
   sourceUrl?: unknown
   ref?: unknown
+  skillPath?: unknown
 }
 
 interface LockFile {
@@ -77,78 +69,47 @@ function readLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): LockF
   }
 }
 
-function lockEntryFor(lock: LockFile, name: string): LockEntry | undefined {
-  const direct = lock.skills?.[name]
-  if (direct) return direct
-  const normalized = name.toLowerCase().replace(/[\s_]+/g, '-')
-  const key = Object.keys(lock.skills ?? {}).find(
-    (candidate) => candidate.toLowerCase().replace(/[\s_]+/g, '-') === normalized,
-  )
-  return key === undefined ? undefined : lock.skills?.[key]
+function conventionalSkillPath(
+  scope: SkillScope,
+  name: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (scope === 'project') return path.join(cwd, '.agents', 'skills', name)
+  const home = env['HOME'] ?? env['USERPROFILE'] ?? os.homedir()
+  return path.join(home, '.agents', 'skills', name)
 }
 
-function jsonArray(stdout: string): unknown[] | null {
-  const start = stdout.indexOf('[')
-  const end = stdout.lastIndexOf(']')
-  if (start < 0 || end < start) return null
-  try {
-    const parsed: unknown = JSON.parse(stdout.slice(start, end + 1))
-    return Array.isArray(parsed) ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-function managedSkills(stdout: string, scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): NativeSkill[] | null {
-  const entries = jsonArray(stdout)
-  if (entries === null) return null
+function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): NativeSkill[] {
   const lock = readLock(scope, cwd, env)
-  return entries.flatMap((entry): NativeSkill[] => {
+  return Object.entries(lock.skills ?? {}).flatMap(([name, entry]): NativeSkill[] => {
     if (entry === null || typeof entry !== 'object') return []
-    const value = entry as JsonSkill
-    if (
-      typeof value.name !== 'string' ||
-      typeof value.path !== 'string' ||
-      value.scope !== scope
-    ) {
-      return []
-    }
-    const lockEntry = lockEntryFor(lock, value.name)
     return [
       {
-        name: value.name,
+        name,
         scope,
-        path: value.path,
-        source: typeof value.source === 'string' ? value.source : null,
-        sourceType: typeof value.sourceType === 'string' ? value.sourceType : null,
-        sourceUrl: typeof value.sourceUrl === 'string' ? value.sourceUrl : null,
-        ref: typeof lockEntry?.ref === 'string' ? lockEntry.ref : null,
+        path:
+          typeof entry.skillPath === 'string' && entry.skillPath !== ''
+            ? entry.skillPath
+            : conventionalSkillPath(scope, name, cwd, env),
+        source: typeof entry.source === 'string' ? entry.source : null,
+        sourceType: typeof entry.sourceType === 'string' ? entry.sourceType : null,
+        sourceUrl: typeof entry.sourceUrl === 'string' ? entry.sourceUrl : null,
+        ref: typeof entry.ref === 'string' ? entry.ref : null,
       },
     ]
   })
 }
 
-function run(
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; stdio: 'inherit' | 'capture' },
-): Promise<{ code: number; stdout: string }> {
+function run(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn('npx', args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: options.stdio === 'inherit' ? 'inherit' : ['ignore', 'pipe', 'ignore'],
+      stdio: 'inherit',
     })
-    if (options.stdio === 'capture') {
-      let stdout = ''
-      child.stdout?.on('data', (chunk: Buffer | string) => {
-        stdout += chunk.toString()
-      })
-      child.on('error', () => resolve({ code: 1, stdout }))
-      child.on('exit', (code) => resolve({ code: code ?? 1, stdout }))
-      return
-    }
-    child.on('error', () => resolve({ code: 1, stdout: '' }))
-    child.on('exit', (code) => resolve({ code: code ?? 1, stdout: '' }))
+    child.on('error', () => resolve(1))
+    child.on('exit', (code) => resolve(code ?? 1))
   })
 }
 
@@ -160,18 +121,13 @@ export const nativeSkills: NativeSkills = {
     // An explicit scope is the unattended contract. Native `--yes` keeps all
     // remaining installer prompts non-interactive after the scope is chosen.
     if (options.scope !== undefined) args.push('--yes')
-    return (await run(args, { cwd: options.cwd, env: options.env, stdio: 'inherit' })).code
+    return run(args, { cwd: options.cwd, env: options.env })
   },
 
   async list(scope, cwd, env) {
-    const result = await run(
-      ['-y', 'skills', 'list', '--json', ...(scope === 'global' ? ['--global'] : [])],
-      { cwd, env, stdio: 'capture' },
-    )
-    if (result.code !== 0) return { skills: [], error: `npx skills list exited with code ${result.code}` }
-    const skills = managedSkills(result.stdout, scope, cwd, env)
-    return skills === null
-      ? { skills: [], error: 'npx skills list returned invalid JSON' }
-      : { skills }
+    // Presence is already on disk. `npx skills list` takes seconds and cannot
+    // change whether the notifai skill is installed — the lock file is what
+    // the installer itself consults.
+    return { skills: skillsFromLock(scope, cwd, env) }
   },
 }

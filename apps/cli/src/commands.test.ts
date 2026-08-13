@@ -50,8 +50,8 @@ import {
   findInstallations,
 } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
-import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
-import { CONFIG_KEYS, loadConfig } from './config.js'
+import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
+import { CONFIG_KEYS, loadConfig, personalProjectConfigPath } from './config.js'
 import { createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
@@ -1279,9 +1279,10 @@ describe('harness activation guidance', () => {
       hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath }),
     ).toBe(EXIT.ok)
 
-    expect(io.outLines.join('\n')).toContain(
-      'Claude Code reloads project hook files without a restart.',
-    )
+    const output = io.outLines.join('\n')
+    expect(output).toContain('Installed claude-code hooks in')
+    expect(output).toContain('Send one Claude Code prompt, then check `notifai doctor`.')
+    expect(output).not.toMatch(/timeout|asynchronous|600s/i)
   })
 
   it('does not invent a Codex hook trust gate', () => {
@@ -1296,6 +1297,52 @@ describe('harness activation guidance', () => {
     const output = io.outLines.join('\n')
     expect(output).toContain('Send one Codex prompt, then check `notifai doctor`.')
     expect(output).not.toMatch(/trust|approve/i)
+  })
+
+  it('names the installed harness in the close, never a different one', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-close-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+
+    expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
+
+    const output = io.outLines.join('\n')
+    expect(output).toContain('Installed cursor hooks in')
+    expect(output).toContain('Send one Cursor prompt, then check `notifai doctor`.')
+    expect(output).not.toMatch(/Codex|Claude Code|OpenCode/)
+    expect(output).not.toMatch(/timeout|worktree|fails closed/i)
+  })
+
+  it('pins hooks to npx when that is how this CLI is running', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-npx-hooks-'))
+    const npmCli = path.join(cwd, 'npm-cli.js')
+    writeFileSync(npmCli, '')
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: {
+        npm_command: 'exec',
+        npm_execpath: npmCli,
+        HOME: path.join(cwd, 'home'),
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+      },
+    }
+
+    expect(
+      hooksInstallCommand(deps, {
+        harness: 'claude-code',
+        execPath: process.execPath,
+        scriptPath: path.join(cwd, '_npx', 'hash', 'node_modules', '@raidiant', 'notifai', 'dist', 'main.js'),
+      }),
+    ).toBe(EXIT.ok)
+
+    const inspected = inspectHookAdapter(deps.hookAdapterHome)
+    expect(inspected.problems).toEqual([])
+    expect(inspected.target && 'spec' in inspected.target ? inspected.target.spec : null).toMatch(
+      /^@raidiant\/notifai@/,
+    )
   })
 
   it('keeps OpenCode permission prompts local and reports unsupported continuation', async () => {
@@ -1323,8 +1370,9 @@ describe('harness activation guidance', () => {
       EXIT.ok,
     )
 
-    expect(io.outLines.join('\n')).toContain('Permission prompts stay in OpenCode.')
-    expect(io.outLines.join('\n')).toContain('does not expose a proven exactly-once continuation')
+    expect(io.outLines.join('\n')).toContain('Installed opencode hooks in')
+    expect(io.outLines.join('\n')).toContain('Send one OpenCode prompt, then check `notifai doctor`.')
+    expect(io.outLines.join('\n')).not.toMatch(/Permission prompts|exactly-once continuation/)
     const pluginFile = path.join(cwd, '.opencode', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
     expect(plugin).toContain('const TIMEOUT_MS = 540000')
@@ -1615,8 +1663,34 @@ describe('config surfaces', () => {
     const io = new CapturedIo()
     expect(configShowCommand(configDeps(io), {})).toBe(EXIT.ok)
     expect(io.outLines).toHaveLength(CONFIG_KEYS.length)
-    expect(io.outLines[0]).toMatch(/^base_url = "/)
+    expect(io.outLines[0]).toMatch(/^wait_seconds = /)
     for (const line of io.outLines) expect(line).toMatch(/^[a-z_]+ = /)
+  })
+
+  it('gives agents the current value, source, and one-line meaning', () => {
+    const io = new CapturedIo()
+    expect(configShowCommand(configDeps(io), { json: true })).toBe(EXIT.ok)
+    const parsed = JSON.parse(io.outLines.join('\n')) as Record<
+      string,
+      { value: unknown; source: string; summary: string }
+    >
+    expect(parsed['base_url']).toBeUndefined()
+    expect(parsed['ttl_seconds']).toEqual({
+      value: 86400,
+      source: 'default',
+      summary: expect.stringContaining('deliver'),
+    })
+    expect(parsed['ask_grace_seconds']?.value).toBe(0)
+    expect(parsed['ask_grace_seconds']?.summary).toBeTruthy()
+    expect(Object.keys(parsed).sort()).toEqual([...CONFIG_KEYS].sort())
+  })
+
+  it('refuses to treat the service origin as a setting', async () => {
+    const io = new CapturedIo()
+    expect(await configSetCommand(configDeps(io), 'base_url', 'https://attacker.example', { yes: true })).toBe(
+      EXIT.usage,
+    )
+    expect(io.errLines[0]).toBe('Unknown setting "base_url".')
   })
 
   it('explains each setting once a human is at the terminal', () => {
@@ -1800,11 +1874,11 @@ describe('interactive command UX', () => {
     }
 
     expect(await configSetCommand(deps, 'sound', 'done', {})).toBe(EXIT.ok)
+    const localFile = personalProjectConfigPath(cwd, deps.env)
     expect(io.prompts[0]).toBe('Where should this setting live?')
-    expect(io.prompts[1]).toContain(path.join(cwd, '.notifai', 'config.local.toml'))
-    expect(readFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'utf8')).toContain(
-      'sound = "done"',
-    )
+    expect(io.prompts[1]).toContain(localFile)
+    expect(readFileSync(localFile, 'utf8')).toContain('sound = "done"')
+    expect(existsSync(path.join(cwd, '.notifai', 'config.local.toml'))).toBe(false)
   })
 
   it('bypasses interactive config selection with --yes and uses the global default', async () => {
@@ -1827,13 +1901,14 @@ describe('interactive command UX', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-config-unset-layer-'))
     const io = new InteractiveIo()
     io.selectAnswer = 'local'
-    const localFile = path.join(cwd, '.notifai', 'config.local.toml')
+    const env = { XDG_CONFIG_HOME: path.join(cwd, 'xdg') }
+    const localFile = personalProjectConfigPath(cwd, env)
     mkdirSync(path.dirname(localFile), { recursive: true })
     writeFileSync(localFile, 'sound = "done"\n')
     const deps = {
       ...makeDeps(io, {} as ApiClient),
       cwd,
-      env: { XDG_CONFIG_HOME: path.join(cwd, 'xdg') },
+      env,
     }
 
     expect(await configUnsetCommand(deps, 'sound', {})).toBe(EXIT.ok)
@@ -2043,7 +2118,11 @@ describe('init', () => {
   it('writes the project identifier into .notifai/config.toml and is idempotent', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'My Project-'))
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps: CommandDeps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
 
     expect(await initCommand(deps, {})).toBe(EXIT.failed)
     const configPath = path.join(cwd, '.notifai', 'config.toml')
@@ -2055,9 +2134,10 @@ describe('init', () => {
 
     io.outLines = []
     expect(await initCommand(deps, { skills: false })).toBe(EXIT.failed)
-    // Idempotent: the second run re-derives the same slug and says so as a
-    // settled state rather than repeating the write.
-    expect(io.outLines.join('\n')).toContain('Project identity: "my-project-')
+    // Idempotent: the second run re-derives the same slug and does not reprint
+    // doctor's ready-state dump.
+    expect(io.outLines.join('\n')).toMatch(/^Next:/m)
+    expect(io.outLines.join('\n')).not.toContain('Project identity:')
     expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
   })
 
@@ -2565,9 +2645,6 @@ describe('init', () => {
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
     expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
     expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
-    expect(io.outLines.join('\n')).toContain(
-      "Companion Receipt (the app's delivery confirmation) observed from iPhone",
-    )
     expect(io.outLines.join('\n')).toContain('All set.')
     expect(submitCalls).toBe(1)
     expect(submittedDraft?.draft.event).toBe('setup_verified')
@@ -2723,9 +2800,7 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     expect(submitCalls).toBe(2)
     expect(io.outLines.join('\n')).toContain('saved proof had expired; sent replacement req_replacement')
-    expect(io.outLines.join('\n')).toContain(
-      "Companion Receipt (the app's delivery confirmation) observed from iPhone",
-    )
+    expect(io.outLines.join('\n')).toContain('All set.')
   })
 
   it('reports a proof-state write failure instead of crashing or sending twice', async () => {
@@ -2893,6 +2968,126 @@ describe('init', () => {
     }
 
     expect(submitCalls).toBe(2)
+  })
+})
+
+describe('readiness assessment cost', () => {
+  it('does not re-probe the service after init closes a local-only gap', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-local-reassess-'))
+    const io = new CapturedIo()
+    let healthCalls = 0
+    const client = {
+      health: async () => {
+        healthCalls += 1
+        return true
+      },
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(healthCalls).toBe(1)
+    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain('project =')
+  })
+
+  it('reuses remote probes when only local state could have changed', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-local-only-'))
+    const io = new CapturedIo()
+    let healthCalls = 0
+    let deviceCalls = 0
+    let evidenceCalls = 0
+    const client = {
+      health: async () => {
+        healthCalls += 1
+        return true
+      },
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        deviceCalls += 1
+        return { devices: [] }
+      },
+      accessStatus: async () => ({ email: 'user@example.com' }),
+      evidence: async () => {
+        evidenceCalls += 1
+        throw new Error('unused')
+      },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    const previous = await assessReadiness(deps)
+    expect(healthCalls).toBe(1)
+    expect(deviceCalls).toBe(1)
+
+    const next = await assessReadiness(deps, { previous, refresh: ['local'] })
+    expect(healthCalls).toBe(1)
+    expect(deviceCalls).toBe(1)
+    expect(evidenceCalls).toBe(0)
+    expect(next.states.find((state) => state.id === 'server')).toEqual(
+      previous.states.find((state) => state.id === 'server'),
+    )
+  })
+
+  it('renders a supplied doctor report without probing again', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'doctor-reuse-'))
+    const io = new CapturedIo()
+    let healthCalls = 0
+    const client = {
+      health: async () => {
+        healthCalls += 1
+        return true
+      },
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    const readiness = await assessReadiness(deps)
+    expect(healthCalls).toBe(1)
+    expect(await doctorCommand(deps, { json: true }, { readiness })).toBe(EXIT.failed)
+    expect(healthCalls).toBe(1)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
+  })
+
+  it('treats a lock-file pin as installed without asking npx', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-'))
+    writeFileSync(
+      path.join(cwd, 'skills-lock.json'),
+      `${JSON.stringify({
+        skills: {
+          notifai: {
+            source: 'Raidiant-io/notifai',
+            sourceType: 'github',
+            ref: RELEASE_REF,
+          },
+        },
+      })}\n`,
+    )
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+
+    const readiness = await assessReadiness({
+      ...makeDeps(io, client),
+      cwd,
+      env: { ...isolatedEnv(cwd), PATH: '/nonexistent' },
+      nativeSkills: realNativeSkills,
+    })
+    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+      status: 'ready',
+      detail: `installed from ${SKILLS_SOURCE} in the project scope`,
+    })
   })
 })
 
@@ -3566,13 +3761,12 @@ describe('asking before the hooks have ever run', () => {
 
   it('shows resolved question-routing values with their winning config sources', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-routing-config-'))
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(
-      path.join(cwd, '.notifai', 'config.local.toml'),
-      'ask_notifications = false\nask_grace_seconds = 90\n',
-    )
+    const env = { XDG_CONFIG_HOME: path.join(cwd, 'xdg') }
+    const localFile = personalProjectConfigPath(cwd, env)
+    mkdirSync(path.dirname(localFile), { recursive: true })
+    writeFileSync(localFile, 'ask_notifications = false\nask_grace_seconds = 90\n')
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: {} }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
 
     await doctorCommand(deps, {})
 

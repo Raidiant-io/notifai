@@ -36,7 +36,7 @@ import {
   configBounds,
   configDefaultValue,
   findProjectConfigPath,
-  findProjectLocalConfigPath,
+  personalProjectConfigPath,
   globalConfigPath,
   loadConfig,
   sessionConfigPath,
@@ -46,7 +46,7 @@ import {
   type LogLevel,
 } from './config.js'
 import { acceptedValues, configInfo } from './config-schema.js'
-import { skillsSource } from './release.js'
+import { packageVersion, skillsSource } from './release.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import {
@@ -59,6 +59,7 @@ import {
   firstBlocker,
   openItems,
   type Readiness,
+  type ReadinessRefresh,
   type ReadinessState,
   type StateStatus,
 } from './readiness.js'
@@ -117,7 +118,7 @@ import {
   type Harness,
   type Installation,
 } from './install-hooks.js'
-import { HARNESS_CAPABILITIES } from './harnesses.js'
+import { HARNESS_CAPABILITIES, HARNESS_LABELS } from './harnesses.js'
 import {
   claudeWakeRoute,
   inspectClaudeInbox,
@@ -132,6 +133,8 @@ import {
 import {
   inspectHookAdapter,
   installHookAdapter,
+  isNpxAdapterTarget,
+  type HookAdapterTarget,
 } from './hook-adapter.js'
 import {
   isOurOpencodePlugin,
@@ -196,7 +199,7 @@ export interface CommandDeps {
   /** Test seam; production fixes the hook adapter under os.homedir(). */
   hookAdapterHome?: string
   /** Test seam; production uses this process's Node and CLI paths. */
-  hookInstallTarget?: { execPath: string; scriptPath: string }
+  hookInstallTarget?: HookAdapterTarget
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
@@ -2134,6 +2137,54 @@ export interface HooksInstallFlags {
   scriptPath?: string
 }
 
+/** True when this process is `npx` / `npm exec`, not a global or linked install. */
+export function runningViaNpx(env: NodeJS.ProcessEnv, scriptPath: string): boolean {
+  if (env['npm_command'] === 'exec') return true
+  return scriptPath.includes(`${path.sep}_npx${path.sep}`)
+}
+
+function fileHookInstallTarget(
+  target: HookAdapterTarget | undefined,
+): { execPath: string; scriptPath: string } | undefined {
+  if (target === undefined || isNpxAdapterTarget(target)) return undefined
+  return target
+}
+
+function resolveHookAdapterTarget(deps: CommandDeps, flags: HooksInstallFlags): HookAdapterTarget {
+  if (deps.hookInstallTarget !== undefined && isNpxAdapterTarget(deps.hookInstallTarget)) {
+    return deps.hookInstallTarget
+  }
+  const fileTarget = fileHookInstallTarget(deps.hookInstallTarget)
+  const execPath = flags.execPath ?? fileTarget?.execPath ?? process.execPath
+  const scriptPath = flags.scriptPath ?? fileTarget?.scriptPath ?? process.argv[1] ?? 'notifai'
+  if (runningViaNpx(deps.env, scriptPath)) {
+    const version = packageVersion()
+    const npmCli = deps.env['npm_execpath']
+    if (version === null) {
+      throw new Error(
+        'Could not read this CLI version, so an npx hook target cannot be pinned. Install `@raidiant/notifai` globally and rerun `notifai hooks install`.',
+      )
+    }
+    if (typeof npmCli !== 'string' || npmCli === '') {
+      throw new Error(
+        'This process looks like npx but npm_execpath is missing. Install `@raidiant/notifai` globally and rerun `notifai hooks install`.',
+      )
+    }
+    return { kind: 'npx', execPath, npmCli, spec: `@raidiant/notifai@${version}` }
+  }
+  return { execPath, scriptPath }
+}
+
+function printHooksInstallClose(deps: CommandDeps, harness: Harness, file: string): void {
+  const label = HARNESS_LABELS[harness]
+  if (deps.io.interactive === true && deps.io.note) {
+    void deps.io.note(`${file}\nSend one ${label} prompt, then run \`notifai doctor\`.`, `${label} hooks installed`)
+    return
+  }
+  deps.io.out(`Installed ${harness} hooks in ${file}`)
+  deps.io.out(`Send one ${label} prompt, then check \`notifai doctor\`.`)
+}
+
 export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
   if (flags.harness === undefined) {
     const detected = detectedHarnesses(deps.cwd, deps.env)
@@ -2149,16 +2200,16 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   }
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
-  const execPath = flags.execPath ?? deps.hookInstallTarget?.execPath ?? process.execPath
-  const scriptPath = flags.scriptPath ?? deps.hookInstallTarget?.scriptPath ?? process.argv[1] ?? 'notifai'
+  const adapterTarget = resolveHookAdapterTarget(deps, flags)
+  const scriptPath =
+    flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
   let adapterPath: string
   try {
-    adapterPath = installHookAdapter({ execPath, scriptPath }, deps.hookAdapterHome).path
+    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome).path
   } catch (err) {
     deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
     return EXIT.failed
   }
-  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const file = settingsFile(harness, flags.global ?? false, deps.cwd, deps.env)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
@@ -2171,9 +2222,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   }
 
   if (harness === 'cursor') {
-    let merged: ReturnType<typeof mergeCursorHooks>
     try {
-      merged = withTargetFileLock(file, () => {
+      withTargetFileLock(file, () => {
         const document = loadCursorSettings(file)
         const result = mergeCursorHooks(
           document,
@@ -2190,25 +2240,12 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       deps.io.err(String(err))
       return EXIT.failed
     }
-    deps.io.out(`Installed ${harness} hooks in ${file}`)
-    if (merged.replaced.length > 0) deps.io.out(`  replaced: ${merged.replaced.join(', ')}`)
-    if (merged.added.length > 0) deps.io.out(`  added: ${merged.added.join(', ')}`)
-    if (flags.global) {
-      deps.io.out('Send one Cursor prompt, then check `notifai doctor`. If the hook has not fired,')
-      deps.io.out('start a new Cursor session and try one prompt again.')
-    } else {
-      deps.io.out('Send one Cursor prompt, then check `notifai doctor`. If the hook has not fired,')
-      deps.io.out('start a new Cursor session and try one prompt again.')
-    }
-    deps.io.out('Cursor hooks can emit a native follow-up, but its agent shell does not expose')
-    deps.io.out('the exact conversation id needed to register safely. `notifai ask` therefore')
-    deps.io.out('fails closed; use blocking `notifai send --reply` for questions.')
+    printHooksInstallClose(deps, harness, file)
     return EXIT.ok
   }
 
-  let merged: ReturnType<typeof mergeHooks>
   try {
-    merged = withTargetFileLock(file, () => {
+    withTargetFileLock(file, () => {
       const document = loadSettings(file)
       const result = mergeHooks(
         document,
@@ -2226,54 +2263,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return EXIT.failed
   }
 
-  deps.io.out(`Installed ${harness} hooks in ${file}`)
-  if (merged.replaced.length > 0) deps.io.out(`  replaced: ${merged.replaced.join(', ')}`)
-  if (merged.added.length > 0) deps.io.out(`  added: ${merged.added.join(', ')}`)
-  if (merged.removed.length > 0) {
-    deps.io.out(`  removed: ${merged.removed.join(', ')} (this build no longer serves them)`)
-  }
-  deps.io.out('')
-  deps.io.out(
-    config.ask_grace_seconds.value === 0
-      ? 'A question registered with `notifai ask` goes to your devices immediately when the agent turn ends, whether or not you are at this machine.'
-      : `A question registered with \`notifai ask\` stays in the terminal for ${config.ask_grace_seconds.value}s from registration and then goes to your devices whether or not you are at this machine.`,
-  )
   if (harness === 'codex') {
     const layer = flags.global ? null : codexLayerDir(deps.cwd)
-    if (layer !== null) {
-      // Codex reads project hooks from the main repository but only looks when
-      // a `.codex` directory sits at or above cwd, so a worktree install has to
-      // write one file and create one directory in two different places. Doing
-      // it silently would leave the next person deriving this the hard way
-      //.
-      mkdirSync(layer, { recursive: true })
-      deps.io.out('')
-      deps.io.out('You are in a worktree. Codex reads project hooks from the main repository,')
-      deps.io.out(`so they were written to ${file}. ${layer} was created so this`)
-      deps.io.out('worktree discovers that file. Each other worktree needs its own `.codex`')
-      deps.io.out('directory; rerun this installer from that worktree to create it.')
-    }
+    if (layer !== null) mkdirSync(layer, { recursive: true })
   }
-  deps.io.out('')
-  if (harness === 'claude-code') {
-    // Codex deliberately gets no counterpart line: its Stop definition is
-    // byte-identical to the one earlier builds wrote, so nothing about its
-    // trust state changed and saying so would invent a gate that is not there.
-    deps.io.out(
-      `The Stop handler is asynchronous: it returns at once, so your turn ends normally, and it waits for your answer out of band for up to ${CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS}s before delivering it back into this session. That timeout is written explicitly because Claude Code kills a background hook at its own 600s default and reports nothing when it does.`,
-    )
-    deps.io.out('')
-  }
-  if (harness === 'claude-code' && flags.global !== true) {
-    deps.io.out('Claude Code reloads project hook files without a restart. Send one new prompt,')
-    deps.io.out('then check `notifai doctor` to confirm that the hook fired.')
-  } else if (harness === 'claude-code') {
-    deps.io.out('Send one new Claude Code prompt, then check `notifai doctor`. If the hook has')
-    deps.io.out('not fired, start a new Claude Code session and try one prompt again.')
-  } else {
-    deps.io.out('Send one Codex prompt, then check `notifai doctor`. If the hook has not fired,')
-    deps.io.out('start a new Codex session and try one prompt again.')
-  }
+  printHooksInstallClose(deps, harness, file)
   return EXIT.ok
 }
 
@@ -2306,16 +2300,7 @@ function installOpencodePlugin(
     deps.io.err(String(err))
     return EXIT.failed
   }
-  deps.io.out(`Installed the OpenCode plugin at ${file}`)
-  deps.io.out('')
-  deps.io.out('It maps chat.message to presence, session.idle to question escalation, and')
-  deps.io.out('session.deleted to local cleanup through the same `notifai hook` commands')
-  deps.io.out('the other harnesses run. Permission prompts stay in OpenCode.')
-  deps.io.out('OpenCode does not expose a proven exactly-once continuation after session.idle,')
-  deps.io.out('so `notifai ask` fails closed there. Use blocking `notifai send --reply` when')
-  deps.io.out('the answer must return to the agent without another human prompt.')
-  deps.io.out('')
-  deps.io.out('Restart OpenCode: it loads plugins once at start.')
+  printHooksInstallClose(deps, 'opencode', file)
   return EXIT.ok
 }
 
@@ -2483,7 +2468,14 @@ export function configShowCommand(
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   if (flags.json) {
     const output = Object.fromEntries(
-      CONFIG_KEYS.map((key) => [key, { value: config[key].value, source: config[key].source }]),
+      CONFIG_KEYS.map((key) => [
+        key,
+        {
+          value: config[key].value,
+          source: config[key].source,
+          summary: configInfo(key).summary,
+        },
+      ]),
     )
     deps.io.out(JSON.stringify(output, null, 2))
     return EXIT.ok
@@ -2692,7 +2684,7 @@ async function configMutationTarget(
     const selected = await deps.io.select('Where should this setting live?', [
       { value: 'global', label: 'This machine', hint: 'applies across projects' },
       { value: 'project', label: 'This project (shared)', hint: '.notifai/config.toml' },
-      { value: 'local', label: 'This project (personal)', hint: 'keep config.local.toml gitignored' },
+      { value: 'local', label: 'This project (personal)', hint: 'stored on this machine, not in the repo' },
     ])
     if (selected === null) {
       deps.io.err('No configuration layer selected.')
@@ -2704,7 +2696,7 @@ async function configMutationTarget(
   const targetPath = flags.session
     ? sessionConfigPath(flags.session, deps.env)
     : layer === 'local'
-      ? (findProjectLocalConfigPath(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'config.local.toml'))
+      ? personalProjectConfigPath(deps.cwd, deps.env)
       : layer === 'project'
         ? (findProjectConfigPath(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'config.toml'))
         : globalConfigPath(deps.env)
@@ -3579,6 +3571,13 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
   return 'pending'
 }
 
+/** Closing a local gap cannot have changed the service, the keychain, or devices. */
+function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined {
+  return id === 'project' || id === 'hooks' || id === 'skill' || id === 'question-routing-settings'
+    ? ['local']
+    : undefined
+}
+
 /** Whether an optional gap should be closed, given flags and who is watching. */
 function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
   // Naming the project is init's whole reason to touch the filesystem, costs
@@ -3638,12 +3637,13 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   }
   await deps.io.intro?.('Notifai setup')
 
-  const reassess = () =>
-    assessReadiness(
-      deps,
-      flags.skillsScope === undefined ? {} : { skillScope: flags.skillsScope },
-    )
-  let readiness = await reassess()
+  const skillOpts = flags.skillsScope === undefined ? {} : { skillScope: flags.skillsScope }
+  let readiness = await assessReadiness(deps, skillOpts)
+  const reassess = (refresh?: readonly ReadinessRefresh[]) =>
+    assessReadiness(deps, {
+      ...skillOpts,
+      ...(refresh === undefined ? {} : { previous: readiness, refresh }),
+    })
   let failed = false
   const attempted = new Set<string>()
 
@@ -3674,7 +3674,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         const result = await closeGap(deps, state, flags)
         if (result === 'failed') failed = true
         if (result === 'failed' && state.status === 'optional-gap') {
-          readiness = await reassess()
+          readiness = await reassess(refreshAfterClose(state.id))
           advanced = true
           break
         }
@@ -3682,7 +3682,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           stop = true
           break
         }
-        readiness = await reassess()
+        readiness = await reassess(refreshAfterClose(state.id))
         advanced = true
         break
       }
@@ -3695,7 +3695,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           stop = true
           break
         }
-        readiness = await reassess()
+        readiness = await reassess(refreshAfterClose(state.id))
         advanced = true
         break
       }
@@ -3745,36 +3745,81 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   }
 
   readiness = await reassess()
-  for (const state of readiness.states.filter((s) => s.status === 'ready')) {
-    deps.io.out(`${state.title}: ${state.detail}`)
-  }
-
+  await printInitClose(deps, readiness, flags)
   const blocker = firstBlocker(readiness)
-  if (blocker === null) {
-    const skipped = openItems(readiness).filter(
-      (state) => !(state.id === 'skill' && flags.skills === false),
-    )
-    for (const state of skipped) deps.io.out(`Optional, not set up — ${remedyLine(state)}`)
-    deps.io.out('All set. Agents in this project can notify you and ask questions.')
-    await deps.io.outro?.('All set ✨')
-    return failed ? EXIT.failed : EXIT.ok
+  if (blocker === null) return failed ? EXIT.failed : EXIT.ok
+  return failed || deps.io.interactive !== true ? EXIT.failed : EXIT.ok
+}
+
+function isHookSubstate(id: string): boolean {
+  return id === 'hooks' || id.startsWith('hooks-') || id === 'question-routing-settings'
+}
+
+function leftoverOptionals(readiness: Readiness, flags: InitFlags): ReadinessState[] {
+  return readiness.states.filter((state) => {
+    if (state.status !== 'optional-gap') return false
+    if (isHookSubstate(state.id)) return false
+    if (state.id === 'skill' && flags.skills === false) return false
+    return true
+  })
+}
+
+function printOptionalLeftovers(deps: CommandDeps, leftovers: readonly ReadinessState[]): void {
+  for (const state of leftovers) {
+    deps.io.out(`Optional, not set up — ${state.detail}`)
+  }
+}
+
+function questionsWillRoute(readiness: Readiness): boolean {
+  const hooks = readiness.states.find((state) => state.id === 'hooks')
+  const settings = readiness.states.find((state) => state.id === 'question-routing-settings')
+  return hooks?.status === 'ready' && settings?.status !== 'gap'
+}
+
+async function printInitClose(
+  deps: CommandDeps,
+  readiness: Readiness,
+  flags: InitFlags,
+): Promise<void> {
+  const blocker = firstBlocker(readiness)
+  const canSend = readiness.states.find((state) => state.id === 'devices')?.status === 'ready'
+  const questions = questionsWillRoute(readiness)
+  const leftovers = leftoverOptionals(readiness, flags)
+
+  if (deps.io.interactive === true) {
+    if (blocker === null) {
+      const lines = [
+        canSend ? 'You can send notifications.' : 'You are signed in.',
+        questions
+          ? 'Questions will reach your devices.'
+          : 'Questions stay in the terminal until hooks are installed.',
+      ]
+      await deps.io.note?.(lines.join('\n'), 'Ready')
+      printOptionalLeftovers(deps, leftovers)
+      deps.io.out('All set. Agents in this project can notify you and ask questions.')
+      await deps.io.outro?.('All set ✨')
+      return
+    }
+    await deps.io.note?.(`${blocker.title} — ${blocker.detail}\n${remedyLine(blocker)}`, 'Next')
+    deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
+    deps.io.out(`  ${remedyLine(blocker)}`)
+    if (blocker.remedy?.by === 'user-elsewhere' || blocker.remedy?.by === 'user-here') {
+      deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
+    }
+    await deps.io.outro?.('One step remains (above)')
+    return
   }
 
-  // Exactly one. Everything else waits until this is done, because the next
-  // gap is frequently a consequence of this one and naming it now would send
-  // the reader off to fix something that is not actually wrong.
-  deps.io.out('')
+  if (blocker === null) {
+    printOptionalLeftovers(deps, leftovers)
+    deps.io.out('All set. Agents in this project can notify you and ask questions.')
+    return
+  }
   deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
   deps.io.out(`  ${remedyLine(blocker)}`)
-  // Both "do it here" and "do it elsewhere" leave setup mid-journey; re-run is
-  // how the rest is recovered either way.
   if (blocker.remedy?.by === 'user-elsewhere' || blocker.remedy?.by === 'user-here') {
     deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
   }
-  await deps.io.outro?.('One step remains (above)')
-  // An agent must be able to branch on setup being blocked without parsing
-  // prose. A present human may deliberately leave and resume later.
-  return failed || deps.io.interactive !== true ? EXIT.failed : EXIT.ok
 }
 
 // ---------------------------------------------------------------------------
@@ -3820,6 +3865,66 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
   }
 }
 
+function projectReadiness(deps: CommandDeps, config: CliConfig): ReadinessState {
+  const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
+  const projectSlug = config.project.value
+  return projectSlug !== null
+    ? {
+        id: 'project',
+        title: 'Project identity',
+        status: 'ready',
+        detail: `"${projectSlug}" (${config.project.source})`,
+      }
+    : {
+        id: 'project',
+        title: 'Project identity',
+        // Not a blocker: a send without a project simply carries no project
+        // identity. init always sets one because it is free and reversible,
+        // but an unlabelled setup works, so this must not go red.
+        status: 'optional-gap',
+        detail: `not set in ${configPath} — sends from here carry no project identity`,
+        remedy: {
+          by: 'cli',
+          summary: 'name this project after its directory',
+          command: 'notifai init',
+        },
+      }
+}
+
+function remoteStatesFrom(previous: Readiness): {
+  credential: ReadinessState
+  server: ReadinessState
+  contract: ReadinessState
+  auth: ReadinessState
+  devices: ReadinessState
+  proof: ReadinessState
+} | null {
+  const pick = (id: string): ReadinessState | undefined => previous.states.find((state) => state.id === id)
+  const credential = pick('credential')
+  const server = pick('server')
+  const contract = pick('contract')
+  const auth = pick('auth')
+  const devices = pick('devices')
+  const proof = pick('proof')
+  if (
+    credential === undefined ||
+    server === undefined ||
+    contract === undefined ||
+    auth === undefined ||
+    devices === undefined ||
+    proof === undefined
+  ) {
+    return null
+  }
+  return { credential, server, contract, auth, devices, proof }
+}
+
+function remoteInvalidatedByConfig(previous: Readiness, config: CliConfig): boolean {
+  if (config.base_url.source === 'default') return false
+  const server = previous.states.find((state) => state.id === 'server')
+  return server === undefined || !server.detail.includes(config.base_url.value)
+}
+
 /**
  * Read the whole setup once, in dependency order.
  *
@@ -3831,38 +3936,46 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
  */
 export async function assessReadiness(
   deps: CommandDeps,
-  options: { skillScope?: SkillScope } = {},
+  options: {
+    skillScope?: SkillScope
+    previous?: Readiness
+    refresh?: readonly ReadinessRefresh[]
+  } = {},
 ): Promise<Readiness> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const previous = options.previous
+  const refresh = options.refresh
+  if (previous !== undefined && refresh !== undefined && refresh.length === 0) return previous
+
+  const reuseRemote =
+    previous !== undefined &&
+    refresh !== undefined &&
+    !refresh.includes('remote') &&
+    !remoteInvalidatedByConfig(previous, config)
+  if (reuseRemote) {
+    const reused = remoteStatesFrom(previous)
+    if (reused !== null) {
+      return {
+        states: [
+          projectReadiness(deps, config),
+          reused.credential,
+          reused.server,
+          reused.contract,
+          reused.auth,
+          ...hookStates(deps),
+          await skillReadiness(deps, options.skillScope),
+          reused.devices,
+          reused.proof,
+        ],
+      }
+    }
+  }
+
   const states: ReadinessState[] = []
   let accountClient: ApiClient | null = null
   let accountDevices: RoutableDevice[] | null = null
 
-  const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
-  const projectSlug = config.project.value
-  states.push(
-    projectSlug !== null
-      ? {
-          id: 'project',
-          title: 'Project identity',
-          status: 'ready',
-          detail: `"${projectSlug}" (${config.project.source})`,
-        }
-      : {
-          id: 'project',
-          title: 'Project identity',
-          // Not a blocker: a send without a project simply carries no project
-          // identity. init always sets one because it is free and reversible,
-          // but an unlabelled setup works, so this must not go red.
-          status: 'optional-gap',
-          detail: `not set in ${configPath} — sends from here carry no project identity`,
-          remedy: {
-            by: 'cli',
-            summary: 'name this project after its directory',
-            command: 'notifai init',
-          },
-        },
-  )
+  states.push(projectReadiness(deps, config))
 
   const credential = deps.store.load()
   states.push(
@@ -3905,10 +4018,10 @@ export async function assessReadiness(
           id: 'server',
           title: 'Service',
           status: 'gap',
-          detail: `cannot reach ${baseUrl} (${config.base_url.source})`,
+          detail: `cannot reach ${baseUrl}`,
           remedy: {
             by: 'user-here',
-            summary: 'check your network, or the base_url shown above',
+            summary: 'check your network',
             command: 'notifai doctor',
           },
         },
@@ -4134,8 +4247,12 @@ async function setupProofState(
   }
 }
 
-export async function doctorCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
-  const readiness = await assessReadiness(deps)
+export async function doctorCommand(
+  deps: CommandDeps,
+  flags: { json?: boolean },
+  options: { readiness?: Readiness } = {},
+): Promise<number> {
+  const readiness = options.readiness ?? (await assessReadiness(deps))
   const blocker = firstBlocker(readiness)
   const ok = blocker === null
 

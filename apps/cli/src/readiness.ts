@@ -86,3 +86,41 @@ export function isReady(readiness: Readiness): boolean {
 export function openItems(readiness: Readiness): ReadinessState[] {
   return readiness.states.filter((s) => s.status === 'gap' || s.status === 'optional-gap')
 }
+
+/**
+ * Work an assessment can do.
+ *
+ * `local` is this machine's files: project config, hook installs, skill lock
+ * files. `remote` is everything that leaves the process — the keychain, the
+ * service, the account, devices, and delivery evidence. The split exists so a
+ * redraw after a settings change does not pay for a health check.
+ */
+export type ReadinessRefresh = 'local' | 'remote'
+
+/**
+ * After a menu action, which readiness work is worth doing.
+ *
+ * `null` means keep the assessment already in hand. Doctor is the report, not
+ * a mutation: the check it just ran is the redraw. A test send and a device
+ * list cannot change setup. Settings and hook wiring stay on this machine
+ * unless the caller says the service URL itself moved.
+ */
+export function refreshAfterMenuAction(
+  action: 'setup' | 'account' | 'test' | 'devices' | 'settings' | 'routing' | 'doctor',
+  changed: boolean,
+  options: { remote?: boolean } = {},
+): readonly ReadinessRefresh[] | null {
+  switch (action) {
+    case 'doctor':
+    case 'test':
+    case 'devices':
+      return null
+    case 'setup':
+    case 'account':
+      return changed ? ['local', 'remote'] : null
+    case 'settings':
+    case 'routing':
+      if (!changed) return null
+      return options.remote === true ? ['local', 'remote'] : ['local']
+  }
+}
