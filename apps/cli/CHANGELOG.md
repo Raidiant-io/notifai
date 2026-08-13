@@ -10,6 +10,13 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-13
+
+### Fixed
+
+- Codex hook installation writes inline `[hooks]` in `config.toml`. It does not create the legacy `hooks.json`.
+- Hook installation is one scope: project or machine-global, not both. A project install is a no-op when global already covers the machine.
+
 ## [1.0.0] - 2026-08-13
 
 ### Removed
@@ -146,7 +153,8 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 - First public release of the `notifai` CLI under Apache-2.0.
 
-[unreleased]: https://github.com/Raidiant-io/notifai/compare/v1.0.0...HEAD
+[unreleased]: https://github.com/Raidiant-io/notifai/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Raidiant-io/notifai/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Raidiant-io/notifai/compare/v0.5.1...v1.0.0
 [0.5.1]: https://github.com/Raidiant-io/notifai/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Raidiant-io/notifai/compare/v0.4.0...v0.5.0
