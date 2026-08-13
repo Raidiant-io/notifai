@@ -86,3 +86,27 @@ from the immutable public tag `v0.5.1`; the underlying installer source is
 `Raidiant-io/notifai#v0.5.1` (`#` selects a Git ref). For unattended use,
 choose the scope explicitly: `notifai init --skills --skills-scope project` or
 `notifai init --skills --skills-scope global`.
+
+## The installed hooks
+
+`notifai hooks install` writes three hooks into the agent harness. After
+install you will see `UserPromptSubmit`, `Stop`, and `SessionEnd` in that
+harness's hook file. They are how a question reaches your devices and how the
+answer comes back, without the agent keeping any of that in its context.
+
+**UserPromptSubmit** (`user-prompt-submit`) runs when you send a prompt. That
+is the proof you are at the keyboard, so Notifai retires any question still
+waiting on your devices and remembers this session for later `notifai ask`
+calls. It has to run here: only this moment can tell that you were present for
+this turn.
+
+**Stop** (`stop`) runs when the agent turn ends. If the agent registered a
+question with `notifai ask`, this is when that question can leave for your
+devices and when a device answer is handed back into the next turn. It has to
+run at Stop because that is the first moment the turn is over and the agent is
+waiting.
+
+**SessionEnd** (`session-end`) runs when the session closes. It drops this
+session's local state and queues any leftover questions for retirement so they
+do not sit on your devices after the agent is gone. It has to run here because
+no later hook for this session will fire.
