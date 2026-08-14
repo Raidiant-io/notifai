@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [0.6.0](https://github.com/Raidiant-io/notifai/compare/protocol-v0.5.0...protocol-v0.6.0) (2026-08-14)
+
+
+### Features
+
+* **protocol:** add billing error statuses ([f7cbca2](https://github.com/Raidiant-io/notifai/commit/f7cbca2663469776d079787fa3b608bcecd40f45))
+* **protocol:** expose media upload finalization ([290f050](https://github.com/Raidiant-io/notifai/commit/290f0507442ab3ac87ed57380273f8f5419b3616))
+* require authoritative media upload finalization ([1150ffe](https://github.com/Raidiant-io/notifai/commit/1150ffe18d004da4f9809be08f3b5875b31d3a21))
+
 ## [0.5.0](https://github.com/Raidiant-io/notifai/compare/protocol-v0.4.1...protocol-v0.5.0) (2026-08-13)
 
 
