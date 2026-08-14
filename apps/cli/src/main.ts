@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { Command } from 'commander'
 import {
+  acknowledgeCommand,
   askCommand,
   accessStatusCommand,
   authStatusCommand,
@@ -353,6 +354,19 @@ program
   })
 
 program
+  .command('acknowledge <request_id>')
+  .helpGroup(GROUP.agent)
+  .summary("Tell the user what you'll do because of their reply")
+  .description(
+    'Record the required Agent Acknowledgement for a replied-to notification request; never prompts',
+  )
+  .requiredOption('--text <text>', 'concrete work you will do because of the reply')
+  .option('--json', 'machine-readable output')
+  .action(async (requestId: string, opts: { text: string; json?: boolean }) => {
+    process.exit(await acknowledgeCommand(deps, requestId, opts))
+  })
+
+program
   .command('status <request_id>')
   .helpGroup(GROUP.agent)
   .summary('Show the evidence trail for a request')
@@ -423,8 +437,9 @@ program
   .helpGroup(GROUP.agent)
   .summary('Retire a question so late answers are rejected')
   .description('Retire a question so late answers are rejected rather than lost')
-  .action(async (requestId: string) => {
-    process.exit(await closeCommand(deps, requestId))
+  .option('--json', 'machine-readable output')
+  .action(async (requestId: string, opts: { json?: boolean }) => {
+    process.exit(await closeCommand(deps, requestId, opts))
   })
 
 // Hidden, not removed. It is an entry point the hook installer writes into a

@@ -16,6 +16,33 @@ import type {
 /** REST v1 wire contract shared by server, CLI, dashboard, and Companion App. */
 
 // ---------------------------------------------------------------------------
+// Account preferences
+// ---------------------------------------------------------------------------
+
+/**
+ * Default for accounts without a persisted preference. The server applies this
+ * value when reading the setting; clients never infer a missing wire field.
+ */
+export const DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED = true
+
+export const AccountPreferences = Type.Object(
+  {
+    agent_acknowledgements_enabled: Type.Boolean({
+      default: DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED,
+    }),
+  },
+  { additionalProperties: false },
+)
+export type AccountPreferencesT = Static<typeof AccountPreferences>
+export type AccountPreferencesResponse = AccountPreferencesT
+
+export const UpdateAccountPreferencesRequest = Type.Object(
+  { agent_acknowledgements_enabled: Type.Boolean() },
+  { additionalProperties: false },
+)
+export type UpdateAccountPreferencesRequestT = Static<typeof UpdateAccountPreferencesRequest>
+
+// ---------------------------------------------------------------------------
 // Account access (the account shell is not product access)
 // ---------------------------------------------------------------------------
 
@@ -126,7 +153,7 @@ export const RegisterInstallationRequest = Type.Object(
     display_name: Type.String({ minLength: 1, maxLength: 128 }),
     app_version: Type.String({ minLength: 1, maxLength: 32 }),
     /** Reply wire shape this Companion can submit; absent means notification-only. */
-    reply_protocol_version: Type.Optional(Type.Integer({ minimum: 1, maximum: 1 })),
+    reply_protocol_version: Type.Optional(Type.Literal(2)),
   },
   { additionalProperties: false },
 )
@@ -210,6 +237,11 @@ export interface SubmissionReceipt {
   request_id: string
   /** Committed reply deadline; null when this request did not ask for a reply. */
   reply_expires_at: string | null
+  /**
+   * Immutable account-preference snapshot taken when a reply-enabled request is
+   * accepted. False for requests that did not ask for a reply.
+   */
+  agent_acknowledgement_required: boolean
   /** True when idempotency returned a previously accepted request. */
   replayed: boolean
   overall: OverallState
@@ -357,11 +389,50 @@ export interface ReplyView {
   created_at: string
 }
 
+export interface AgentAcknowledgementView {
+  text: string
+  created_at: string
+}
+
 export interface ListRepliesResponse {
   request_id: string
   /** Null when the Notification Request did not request replies. */
   reply_expires_at: string | null
+  /** Immutable account-preference snapshot recorded at request acceptance. */
+  agent_acknowledgement_required: boolean
+  /** The one recorded Agent Acknowledgement, or null while none is available. */
+  agent_acknowledgement: AgentAcknowledgementView | null
   replies: ReplyView[]
+}
+
+/** Agent-authored follow-up text is kept intentionally smaller than a user reply. */
+export const AGENT_ACKNOWLEDGEMENT_MAX_LENGTH = 1000
+
+/**
+ * The service trims `text` before validation and persistence. After trimming it
+ * must be non-empty and no longer than AGENT_ACKNOWLEDGEMENT_MAX_LENGTH.
+ */
+export const PutAgentAcknowledgementRequest = Type.Object(
+  {
+    text: Type.String({
+      minLength: 1,
+      maxLength: AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
+      pattern: '.*\\S.*',
+    }),
+  },
+  { additionalProperties: false },
+)
+export type PutAgentAcknowledgementRequestT = Static<typeof PutAgentAcknowledgementRequest>
+
+export interface PutAgentAcknowledgementResponse {
+  status: 'recorded' | 'replayed'
+  agent_acknowledgement: AgentAcknowledgementView
+}
+
+export interface GetAgentAcknowledgementResponse {
+  request_id: string
+  agent_acknowledgement_required: boolean
+  agent_acknowledgement: AgentAcknowledgementView | null
 }
 
 // ---------------------------------------------------------------------------

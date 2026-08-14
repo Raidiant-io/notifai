@@ -23,11 +23,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
+  acknowledgeCommand,
   askCommand,
   accessStatusCommand,
   buildQuestions,
   assessReadiness,
   capabilitiesCommand,
+  closeCommand,
   configExplainCommand,
   configSetCommand,
   configShowCommand,
@@ -257,6 +259,8 @@ function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
 
 const receipt: SubmissionReceipt = {
   request_id: 'req_reply_test',
+  reply_expires_at: '2026-08-02T18:00:00.000Z',
+  agent_acknowledgement_required: true,
   replayed: false,
   overall: 'provider_accepted_all',
   deliveries: [
@@ -285,10 +289,18 @@ const reply: ReplyView = {
   created_at: '2026-08-01T18:01:00.000Z',
 }
 
-function replyResponse(replies: ReplyView[] = []): ListRepliesResponse {
+function replyResponse(
+  replies: ReplyView[] = [],
+  options: {
+    required?: boolean
+    acknowledgement?: ListRepliesResponse['agent_acknowledgement']
+  } = {},
+): ListRepliesResponse {
   return {
     request_id: receipt.request_id,
     reply_expires_at: '2026-08-02T18:00:00.000Z',
+    agent_acknowledgement_required: options.required ?? true,
+    agent_acknowledgement: options.acknowledgement ?? null,
     replies,
   }
 }
@@ -635,7 +647,11 @@ describe('command contracts', () => {
     ).toBe(EXIT.ok)
     expect(polls).toHaveLength(3)
     expect(polls.every((poll) => poll.waitSeconds <= 25)).toBe(true)
-    expect(io.outLines.at(-1)).toBe('reply from iPhone: yes, after the migration')
+    expect(io.outLines).toContain('reply from iPhone: yes, after the migration')
+    expect(io.outLines).toContain('Agent Acknowledgement required.')
+    expect(io.outLines.join('\n')).toContain(
+      `notifai acknowledge ${receipt.request_id} --text <text>`,
+    )
     const received = readLogRecords(deps.env, { event: ['reply.received'] }).records
     expect(received).toHaveLength(1)
     expect(received[0]?.data).toMatchObject({
@@ -718,7 +734,11 @@ describe('command contracts', () => {
       }),
     ).toBe(EXIT.ok)
     expect(replyCalls).toBe(3)
-    expect(io.outLines.at(-1)).toBe('reply from iPhone: yes, after the migration')
+    expect(io.outLines).toContain('reply from iPhone: yes, after the migration')
+    expect(io.outLines).toContain('Agent Acknowledgement required.')
+    expect(io.outLines.join('\n')).toContain(
+      `notifai acknowledge ${receipt.request_id} --text <text>`,
+    )
     expect(io.errLines.join('\n')).not.toContain('internal_error')
   })
 
@@ -799,9 +819,14 @@ describe('command contracts', () => {
     expect(JSON.parse(io.outLines[1] ?? '{}')).toEqual({
       type: 'reply_result',
       request_id: receipt.request_id,
+      reply_expires_at: '2026-08-02T18:00:00.000Z',
       replies: [],
+      agent_acknowledgement_required: true,
+      agent_acknowledgement: null,
+      acknowledgement_command: null,
       degraded: false,
     })
+    expect(io.outLines).not.toContain('Agent Acknowledgement required.')
     expect(io.errLines.join('\n')).toContain(`notifai replies ${receipt.request_id}`)
     expect(io.errLines.join('\n')).toContain(`notifai close ${receipt.request_id}`)
   })
@@ -827,8 +852,224 @@ describe('command contracts', () => {
     expect(JSON.parse(io.outLines[1] ?? '{}')).toEqual({
       type: 'reply_result',
       request_id: receipt.request_id,
+      reply_expires_at: '2026-08-02T18:00:00.000Z',
       replies: [reply],
+      agent_acknowledgement_required: true,
+      agent_acknowledgement: null,
+      acknowledgement_command: `notifai acknowledge ${receipt.request_id} --text <text>`,
       degraded: false,
+    })
+  })
+
+  it('acknowledges non-interactively, trims text, emits JSON, and logs request identity', async () => {
+    const io = new CapturedIo()
+    let submitted: { requestId: string; text: string } | undefined
+    const client = {
+      putAgentAcknowledgement: async (requestId: string, body: { text: string }) => {
+        submitted = { requestId, text: body.text }
+        return {
+          status: 'recorded' as const,
+          agent_acknowledgement: {
+            text: body.text,
+            created_at: '2026-08-13T12:01:00.000Z',
+          },
+        }
+      },
+    } as unknown as ApiClient
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-acknowledge-log-'))
+    const deps = makeDeps(io, client)
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'acknowledge' })
+
+    expect(
+      await acknowledgeCommand(deps, receipt.request_id, {
+        text: '  I will deploy staging now.  ',
+        json: true,
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitted).toEqual({
+      requestId: receipt.request_id,
+      text: 'I will deploy staging now.',
+    })
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
+      request_id: receipt.request_id,
+      outcome: 'recorded',
+      acknowledgement: {
+        text: 'I will deploy staging now.',
+        created_at: '2026-08-13T12:01:00.000Z',
+      },
+      agent_acknowledgement_required: true,
+    })
+    const events = readLogRecords(deps.env, {
+      request: receipt.request_id,
+      event: ['acknowledgement.attempted', 'acknowledgement.outcome'],
+    }).records
+    expect(events.map((event) => event.event)).toEqual([
+      'acknowledgement.attempted',
+      'acknowledgement.outcome',
+    ])
+  })
+
+  it('clears a matching active-session obligation after acknowledgement success', async () => {
+    const io = new CapturedIo()
+    const client = {
+      putAgentAcknowledgement: async () => ({
+        status: 'recorded' as const,
+        agent_acknowledgement: {
+          text: 'I will deploy staging now.',
+          created_at: '2026-08-13T12:01:00.000Z',
+        },
+      }),
+    } as unknown as ApiClient
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-ack-clear-'))
+    const deps = makeDeps(io, client)
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    const now = 1_800_000_000_000
+    deps.now = () => now
+    writeSessionState('ack-session', deps.env, {
+      acknowledgement_due: [{ request_id: receipt.request_id, recorded_at: now }],
+    })
+    writeProjectSession(deps.cwd, deps.env, 'ack-session', now, 'codex')
+
+    expect(
+      await acknowledgeCommand(deps, receipt.request_id, {
+        text: 'I will deploy staging now.',
+      }),
+    ).toBe(EXIT.ok)
+    expect(readSessionState('ack-session', deps.env).acknowledgement_due).toBeUndefined()
+  })
+
+  it('reports idempotent acknowledgement replay in concise human output', async () => {
+    const io = new CapturedIo()
+    const client = {
+      putAgentAcknowledgement: async () => ({
+        status: 'replayed' as const,
+        agent_acknowledgement: {
+          text: 'I will deploy staging now.',
+          created_at: '2026-08-13T12:01:00.000Z',
+        },
+      }),
+    } as unknown as ApiClient
+
+    expect(
+      await acknowledgeCommand(makeDeps(io, client), receipt.request_id, {
+        text: 'I will deploy staging now.',
+      }),
+    ).toBe(EXIT.ok)
+    expect(io.outLines).toEqual([
+      `Agent Acknowledgement replayed for ${receipt.request_id} at 2026-08-13T12:01:00.000Z.`,
+    ])
+  })
+
+  it.each([
+    { text: undefined, message: '--text is required' },
+    { text: '   ', message: '--text is required' },
+    { text: 'x'.repeat(1001), message: 'at most 1000 characters' },
+  ])('rejects invalid acknowledgement text before network: $message', async ({ text, message }) => {
+    const io = new CapturedIo()
+    let calls = 0
+    const client = {
+      putAgentAcknowledgement: async () => {
+        calls += 1
+        throw new Error('should not be reached')
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await acknowledgeCommand(makeDeps(io, client), receipt.request_id, { text }),
+    ).toBe(EXIT.usage)
+    expect(calls).toBe(0)
+    expect(io.errLines.join('\n')).toContain(message)
+  })
+
+  it.each([
+    [new ApiCallError(409, 'conflict', 'A different acknowledgement is already recorded.'), EXIT.failed, 'conflict'],
+    [new ApiCallError(409, 'reply_not_enabled', 'Agent Acknowledgements are disabled.'), EXIT.failed, 'reply_not_enabled'],
+    [new ApiCallError(409, 'conflict', 'No user reply has been recorded yet.'), EXIT.failed, 'No user reply'],
+    [new ApiCallError(404, 'not_found', 'This request is unavailable or its content was purged.'), EXIT.failed, 'purged'],
+    [new ApiCallError(401, 'machine_revoked', 'This machine was revoked.'), EXIT.auth, 'machine_revoked'],
+    [new NetworkError('Could not reach the service'), EXIT.network, 'Could not reach'],
+  ] as const)(
+    'maps stable acknowledgement failure %#',
+    async (error, expectedExit, expectedCopy) => {
+      const io = new CapturedIo()
+      const client = {
+        putAgentAcknowledgement: async () => {
+          throw error
+        },
+      } as unknown as ApiClient
+
+      expect(
+        await acknowledgeCommand(makeDeps(io, client), receipt.request_id, { text: 'Next work.' }),
+      ).toBe(expectedExit)
+      expect(io.errLines.join('\n')).toContain(expectedCopy)
+    },
+  )
+
+  it('reports required-but-not-yet-due state before any user reply', async () => {
+    const io = new CapturedIo()
+    const client = {
+      replies: async () => replyResponse([]),
+    } as unknown as ApiClient
+
+    expect(await repliesCommand(makeDeps(io, client), receipt.request_id, {})).toBe(EXIT.noReply)
+    expect(io.outLines).toContain(
+      'Agent Acknowledgement: required after a user reply; no reply is recorded yet.',
+    )
+    expect(io.outLines.join('\n')).not.toContain('notifai acknowledge')
+  })
+
+  it('exposes disabled acknowledgement state without a follow-up command', async () => {
+    const io = new CapturedIo()
+    const client = {
+      replies: async () => replyResponse([reply], { required: false }),
+    } as unknown as ApiClient
+
+    expect(await repliesCommand(makeDeps(io, client), receipt.request_id, {})).toBe(EXIT.ok)
+    expect(io.outLines).toContain('Agent Acknowledgement: not required for this request.')
+    expect(io.outLines.join('\n')).not.toContain('notifai acknowledge')
+  })
+
+  it('exposes an existing acknowledgement without repeating the follow-up command', async () => {
+    const io = new CapturedIo()
+    const acknowledgement = {
+      text: 'I will deploy staging now.',
+      created_at: '2026-08-13T12:01:00.000Z',
+    }
+    const client = {
+      replies: async () => replyResponse([reply], { acknowledgement }),
+    } as unknown as ApiClient
+
+    expect(
+      await repliesCommand(makeDeps(io, client), receipt.request_id, { json: true }),
+    ).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toMatchObject({
+      agent_acknowledgement_required: true,
+      agent_acknowledgement: acknowledgement,
+      acknowledgement_command: null,
+    })
+  })
+
+  it('close exposes the acknowledgement requirement and exact follow-up command', async () => {
+    const io = new CapturedIo()
+    const client = {
+      closeReplies: async () => replyResponse([reply]),
+    } as unknown as ApiClient
+
+    expect(await closeCommand(makeDeps(io, client), receipt.request_id, { json: true })).toBe(
+      EXIT.ok,
+    )
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toMatchObject({
+      request_id: receipt.request_id,
+      agent_acknowledgement_required: true,
+      agent_acknowledgement: null,
+      acknowledgement_command: `notifai acknowledge ${receipt.request_id} --text <text>`,
     })
   })
 
@@ -851,7 +1092,11 @@ describe('command contracts', () => {
 
     expect(await repliesCommand(deps, receipt.request_id, { after: 7 })).toBe(EXIT.ok)
     expect(requested).toEqual({ waitSeconds: 0, afterSeq: 7 })
-    expect(io.outLines).toEqual(['reply from iPhone: yes, after the migration'])
+    expect(io.outLines).toEqual([
+      'reply from iPhone: yes, after the migration',
+      'Agent Acknowledgement required.',
+      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
+    ])
     expect(readLogRecords(deps.env, { event: ['reply.received'] }).records).toHaveLength(1)
   })
 
@@ -876,6 +1121,8 @@ describe('command contracts', () => {
     expect(io.outLines).toEqual([
       `pending request ${receipt.request_id}`,
       'reply from iPhone: yes, after the migration',
+      'Agent Acknowledgement required.',
+      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
     ])
   })
 
@@ -2156,7 +2403,7 @@ describe('init', () => {
     platform: 'ios' as const,
     permission_status: 'authorized',
     registration_healthy: true,
-    reply_protocol_version: 1,
+    reply_protocol_version: 2,
     last_seen_at: '2026-08-05T18:00:00.000Z',
   }
 

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { Value } from '@sinclair/typebox/value'
 import {
+  AccountPreferences,
+  AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   CAPABILITIES_V1,
+  DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED,
   defaultDeliveryPolicy,
   effectiveKind,
   estimateApnsPayloadBytes,
@@ -9,11 +12,16 @@ import {
   MACOS_CAPABILITIES_V1,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
+  RegisterInstallationRequest,
   summarizeOverall,
   SubmitFeedbackRequest,
   SubmitNotificationRequest,
+  PutAgentAcknowledgementRequest,
+  UpdateAccountPreferencesRequest,
   validateDraft,
+  type ListRepliesResponse,
   type NotificationDraftT,
+  type PutAgentAcknowledgementResponse,
   type SubmissionReceipt,
 } from './index.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
@@ -34,8 +42,42 @@ function freeTextReply(expiresInSeconds = 86400): NotificationDraftT['reply'] {
   return { expires_in_seconds: expiresInSeconds, questions: [{ id: 'q', text: 'Your call?' }] }
 }
 
+describe('account preference and reply capability contracts', () => {
+  it('defines an explicit default-true account preference and a closed update shape', () => {
+    expect(DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED).toBe(true)
+    expect(Value.Check(AccountPreferences, { agent_acknowledgements_enabled: true })).toBe(true)
+    expect(Value.Check(AccountPreferences, { agent_acknowledgements_enabled: false })).toBe(true)
+    expect(Value.Check(AccountPreferences, {})).toBe(false)
+    expect(
+      Value.Check(UpdateAccountPreferencesRequest, { agent_acknowledgements_enabled: false }),
+    ).toBe(true)
+    expect(
+      Value.Check(UpdateAccountPreferencesRequest, {
+        agent_acknowledgements_enabled: true,
+        unknown: true,
+      }),
+    ).toBe(false)
+  })
+
+  it('accepts reply protocol version 2 only', () => {
+    const installation = {
+      installation_id: 'ins_abcdefghij',
+      platform: 'ios',
+      display_name: 'Phone',
+      app_version: '2.0.0',
+    }
+    expect(
+      Value.Check(RegisterInstallationRequest, { ...installation, reply_protocol_version: 2 }),
+    ).toBe(true)
+    expect(
+      Value.Check(RegisterInstallationRequest, { ...installation, reply_protocol_version: 1 }),
+    ).toBe(false)
+    expect(Value.Check(RegisterInstallationRequest, installation)).toBe(true)
+  })
+})
+
 describe('submission wire contract', () => {
-  it('accepts a bounded client request id and exposes the committed reply deadline', () => {
+  it('accepts a bounded client request id and exposes the committed reply contract', () => {
     const request = {
       request_id: `req_${'a'.repeat(24)}`,
       idempotency_key: 'submission-wire-1',
@@ -55,12 +97,51 @@ describe('submission wire contract', () => {
     const receipt: SubmissionReceipt = {
       request_id: request.request_id,
       reply_expires_at: '2026-08-11T12:00:00.000Z',
+      agent_acknowledgement_required: true,
       replayed: false,
       overall: 'pending',
       deliveries: [],
       warnings: [],
     }
     expect(receipt.reply_expires_at).toBe('2026-08-11T12:00:00.000Z')
+    expect(receipt.agent_acknowledgement_required).toBe(true)
+  })
+})
+
+describe('Agent Acknowledgement wire contract', () => {
+  it('requires bounded non-empty text after service trimming', () => {
+    expect(Value.Check(PutAgentAcknowledgementRequest, { text: 'I will deploy staging.' })).toBe(
+      true,
+    )
+    expect(Value.Check(PutAgentAcknowledgementRequest, { text: '' })).toBe(false)
+    expect(
+      Value.Check(PutAgentAcknowledgementRequest, {
+        text: 'x'.repeat(AGENT_ACKNOWLEDGEMENT_MAX_LENGTH + 1),
+      }),
+    ).toBe(false)
+    expect(Value.Check(PutAgentAcknowledgementRequest, { text: '   ' })).toBe(false)
+    expect(Value.Check(PutAgentAcknowledgementRequest, { text: '  next step  ' })).toBe(true)
+  })
+
+  it('defines pending and recorded reply views plus recorded/replayed PUT results', () => {
+    const pending: ListRepliesResponse = {
+      request_id: 'req_example',
+      reply_expires_at: '2026-08-13T12:00:00.000Z',
+      agent_acknowledgement_required: true,
+      agent_acknowledgement: null,
+      replies: [],
+    }
+    expect(pending.agent_acknowledgement).toBeNull()
+
+    const response: PutAgentAcknowledgementResponse = {
+      status: 'recorded',
+      agent_acknowledgement: {
+        text: 'I will deploy staging.',
+        created_at: '2026-08-13T12:01:00.000Z',
+      },
+    }
+    const replayed: PutAgentAcknowledgementResponse = { ...response, status: 'replayed' }
+    expect([response.status, replayed.status]).toEqual(['recorded', 'replayed'])
   })
 })
 
@@ -271,6 +352,57 @@ describe('validateDraft', () => {
     expect(validateDraft(withReply, MACOS_CAPABILITIES_V1).ok).toBe(true)
   })
 
+  it('carries the acknowledgement snapshot on original questions only', () => {
+    const ids = { requestId: 'req_x', deliveryId: 'del_x' }
+    const question = draft({ reply: freeTextReply() })
+    const required = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), {
+      agentAcknowledgementRequired: true,
+    })
+    const disabled = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), {
+      agentAcknowledgementRequired: false,
+    })
+    const ordinary = buildApnsEnvelope(draft(), ids, null, 'ios', null, null, {
+      agentAcknowledgementRequired: true,
+    })
+
+    expect(
+      (required.payload['notifai'] as Record<string, unknown>)[
+        'agent_acknowledgement_required'
+      ],
+    ).toBe(true)
+    expect(
+      (disabled.payload['notifai'] as Record<string, unknown>)[
+        'agent_acknowledgement_required'
+      ],
+    ).toBe(false)
+    expect(
+      (ordinary.payload['notifai'] as Record<string, unknown>)[
+        'agent_acknowledgement_required'
+      ],
+    ).toBeUndefined()
+  })
+
+  it('carries acknowledgement availability metadata without its text', () => {
+    const sync = draft({
+      lifecycle: { tier: 'done', retires_request_id: 'req_original' },
+    })
+    const envelope = buildApnsEnvelope(
+      sync,
+      { requestId: 'req_sync', deliveryId: 'del_sync' },
+      null,
+      'ios',
+      null,
+      null,
+      null,
+      { createdAt: new Date('2026-08-13T12:01:00.000Z') },
+    )
+    const notifai = envelope.payload['notifai'] as Record<string, unknown>
+    expect(notifai['agent_acknowledgement_available']).toBe(true)
+    expect(notifai['agent_acknowledgement_created_at']).toBe('2026-08-13T12:01:00.000Z')
+    expect(JSON.stringify(envelope.payload)).not.toContain('I will deploy')
+    expect(notifai).not.toHaveProperty('agent_acknowledgement_text')
+  })
+
   it('carries the question set to the device and picks the answering surface', () => {
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
     const choices = [
@@ -466,6 +598,36 @@ describe('validateDraft', () => {
     expect(estimateApnsPayloadBytes(withImage)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
     )
+  })
+
+  it('keeps maximum acknowledgement metadata estimation equal to rendering', () => {
+    const maximum = draft({
+      event: 'x'.repeat(128),
+      presentation: {
+        title: 'T'.repeat(512),
+        subtitle: 'S'.repeat(512),
+        body: 'B'.repeat(2048),
+      },
+      lifecycle: { tier: 'done', retires_request_id: 'req_original' },
+      delivery: { ttl_seconds: 60, collapse_key: 'c'.repeat(64) },
+    })
+    const envelope = buildApnsEnvelope(
+      maximum,
+      {
+        requestId: 'req_00000000000000000000000000',
+        deliveryId: 'del_00000000000000000000000000',
+        receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+      },
+      null,
+      'ios',
+      null,
+      null,
+      null,
+      { createdAt: new Date(0) },
+    )
+    const rendered = new TextEncoder().encode(JSON.stringify(envelope.payload)).length
+    expect(estimateApnsPayloadBytes(maximum)).toBe(rendered)
+    expect(rendered).toBeLessThanOrEqual(IOS_CAPABILITIES_V1.payload_limit_bytes)
   })
 
   it('uses macOS platform options in the shared APNs envelope', () => {
