@@ -102,7 +102,6 @@ import {
   applyPlan,
   buildCursorHookConfig,
   buildHookConfig,
-  collapseUnusedCodexRepresentation,
   codexLayerDir,
   codexLayerPaths,
   codexRepresentationProblems,
@@ -121,6 +120,7 @@ import {
   removeCursorHooks,
   removeHooks,
   settingsFile,
+  withCodexLayerTransaction,
   type Harness,
   type Installation,
 } from './install-hooks.js'
@@ -2382,12 +2382,17 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       return EXIT.failed
     }
   }
-  const file = settingsFile(harness, wantGlobal, deps.cwd, deps.env, hookPlatform)
+  const codexPaths =
+    harness === 'codex'
+      ? codexLayerPaths(wantGlobal, deps.cwd, deps.env, hookPlatform)
+      : null
+  const settingsTarget =
+    codexPaths?.configToml ?? settingsFile(harness, wantGlobal, deps.cwd, deps.env, hookPlatform)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
   // merged into a settings document, so it owns the whole file.
   if (harness === 'opencode') {
-    return installOpencodePlugin(deps, file, {
+    return installOpencodePlugin(deps, settingsTarget, {
       adapterPath,
       timeoutSeconds: BLOCKING_STOP_TIMEOUT_SECONDS,
       platform: hookPlatform,
@@ -2397,8 +2402,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
 
   if (harness === 'cursor') {
     try {
-      withTargetFileLock(file, () => {
-        const document = loadCursorSettings(file)
+      withTargetFileLock(settingsTarget, () => {
+        const document = loadCursorSettings(settingsTarget)
         const result = mergeCursorHooks(
           document,
           buildCursorHookConfig({
@@ -2409,43 +2414,40 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
           }),
           scriptPath,
         )
-        applyPlan(file, result.document)
+        applyPlan(settingsTarget, result.document)
         return result
       })
     } catch (err) {
       deps.io.err(String(err))
       return EXIT.failed
     }
-    printHooksInstallClose(deps, harness, file)
+    printHooksInstallClose(deps, harness, settingsTarget)
     return EXIT.ok
   }
 
-  let foreignStopCount = 0
-  let collapsedFrom: string | null = null
+  const installInto = (file: string): { file: string; foreignStopCount: number } => {
+    const document = loadSettings(file)
+    const foreignStopCount = foreignStopHandlers(document).length
+    const result = mergeHooks(
+      document,
+      buildHookConfig({
+        adapterPath,
+        harness,
+        platform: hookPlatform,
+        nodePath,
+      }),
+      scriptPath,
+    )
+    applyPlan(file, result.document)
+    return { file, foreignStopCount }
+  }
+
+  let installed: { file: string; foreignStopCount: number }
   try {
-    withTargetFileLock(file, () => {
-      const document = loadSettings(file)
-      foreignStopCount = foreignStopHandlers(document).length
-      const result = mergeHooks(
-        document,
-        buildHookConfig({
-          adapterPath,
-          harness,
-          platform: hookPlatform,
-          nodePath,
-        }),
-        scriptPath,
-      )
-      applyPlan(file, result.document)
-      return result
-    })
-    if (harness === 'codex') {
-      collapsedFrom = collapseUnusedCodexRepresentation(
-        file,
-        scriptPath,
-        codexLayerPaths(flags.global ?? false, deps.cwd, deps.env),
-      )
-    }
+    installed =
+      codexPaths === null
+        ? withTargetFileLock(settingsTarget, () => installInto(settingsTarget))
+        : withCodexLayerTransaction(codexPaths, (inspection) => installInto(inspection.writeTarget))
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
@@ -2455,17 +2457,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     const layer = flags.global ? null : codexLayerDir(deps.cwd)
     if (layer !== null) mkdirSync(layer, { recursive: true })
   }
-  printHooksInstallClose(deps, harness, file)
-  if (collapsedFrom !== null) {
-    deps.io.out(`Collapsed ${collapsedFrom} onto ${file} so this layer has one representation.`)
-  }
-  if (foreignStopCount > 0) {
+  printHooksInstallClose(deps, harness, installed.file)
+  if (installed.foreignStopCount > 0) {
     deps.io.out(
       "This layer already has a Stop handler. Codex runs every matching handler, so Notifai's Stop and the existing one will both fire.",
     )
   }
   if (harness === 'codex') {
-    for (const problem of codexRepresentationProblems(deps.cwd, deps.env)) {
+    for (const problem of codexRepresentationProblems(deps.cwd, deps.env, hookPlatform)) {
       deps.io.out(problem)
     }
   }
@@ -2522,13 +2521,13 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
-  const file = settingsFile(
-    harness,
-    flags.global ?? false,
-    deps.cwd,
-    deps.env,
-    deps.hookPlatform,
-  )
+  const global = flags.global ?? false
+  const codexPaths =
+    harness === 'codex'
+      ? codexLayerPaths(global, deps.cwd, deps.env, deps.hookPlatform)
+      : null
+  const file =
+    codexPaths?.configToml ?? settingsFile(harness, global, deps.cwd, deps.env, deps.hookPlatform)
   if (harness === 'opencode') {
     try {
       return withTargetFileLock(file, () => {
@@ -2576,32 +2575,48 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     )
     return EXIT.ok
   }
-  const files = hookDefinitionFiles(harness, flags.global ?? false, deps.cwd, deps.env)
-  const existing = files.filter((candidate) => existsSync(candidate))
-  if (existing.length === 0) {
-    deps.io.out(`Nothing to remove: ${file} does not exist.`)
-    return EXIT.ok
-  }
-  let removedAny = false
-  try {
+  const removeInstalledHooks = (): { existing: string[]; removedAny: boolean } => {
+    const files =
+      codexPaths === null
+        ? hookDefinitionFiles(harness, global, deps.cwd, deps.env, deps.hookPlatform)
+        : [codexPaths.hooksJson, codexPaths.configToml]
+    const existing = files.filter((candidate) => existsSync(candidate))
+    let removedAny = false
     for (const candidate of existing) {
-      const stripped = withTargetFileLock(candidate, () => {
+      const removeFromCandidate = () => {
         const document = loadSettings(candidate)
         const result = removeHooks(document, scriptPath)
-        applyPlan(candidate, result.document)
+        if (result.replaced.length > 0) applyPlan(candidate, result.document)
         return result
-      })
+      }
+      const stripped =
+        codexPaths === null
+          ? withTargetFileLock(candidate, removeFromCandidate)
+          : removeFromCandidate()
       if (stripped.replaced.length > 0) {
         removedAny = true
         deps.io.out(`Removed Notifai hooks (${stripped.replaced.join(', ')}) from ${candidate}`)
       }
     }
+    return { existing, removedAny }
+  }
+
+  let result: { existing: string[]; removedAny: boolean }
+  try {
+    result =
+      codexPaths === null
+        ? removeInstalledHooks()
+        : withCodexLayerTransaction(codexPaths, removeInstalledHooks)
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
   }
-  if (!removedAny) {
-    deps.io.out(`No Notifai hooks found in ${existing.join(', ')}`)
+  if (result.existing.length === 0) {
+    deps.io.out(`Nothing to remove: ${file} does not exist.`)
+    return EXIT.ok
+  }
+  if (!result.removedAny) {
+    deps.io.out(`No Notifai hooks found in ${result.existing.join(', ')}`)
   }
   return EXIT.ok
 }
@@ -4896,23 +4911,16 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
-  const representationProblems = codexRepresentationProblems(deps.cwd, deps.env)
+  const representationProblems = codexRepresentationProblems(
+    deps.cwd,
+    deps.env,
+    deps.hookPlatform,
+  )
   if (representationProblems.length > 0) {
-    const collapseCommand = representationProblems.some((problem) => problem.includes('--global'))
-      ? 'notifai hooks install --harness codex --global'
-      : 'notifai hooks install --harness codex'
     checks.push({
       name: 'hooks (codex representation)',
       ok: false,
       detail: representationProblems.join('; '),
-      ...(representationProblems.some((problem) => problem.includes('to collapse onto'))
-        ? {
-            remedy: {
-              summary: 'collapse this Codex layer onto a single hook file',
-              command: collapseCommand,
-            },
-          }
-        : {}),
     })
   }
 

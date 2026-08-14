@@ -253,15 +253,12 @@ describe('settings locations', () => {
     expect(settingsFile('claude-code', true, '/repo', {})).toBe(
       path.join(process.env['HOME']!, '.claude', 'settings.json'),
     )
-    expect(settingsFile('codex', true, '/repo', {})).toBe(
-      path.join(process.env['HOME']!, '.codex', 'hooks.json'),
-    )
   })
 
-  it('uses the dedicated Codex hooks file for a new layer', () => {
-    expect(settingsFile('codex', false, '/repo', {})).toBe('/repo/.codex/hooks.json')
+  it('uses inline Codex hooks for a new layer', () => {
+    expect(settingsFile('codex', false, '/repo', {})).toBe('/repo/.codex/config.toml')
     expect(settingsFile('codex', true, '/repo', {})).toBe(
-      path.join(os.homedir(), '.codex', 'hooks.json'),
+      path.join(os.homedir(), '.codex', 'config.toml'),
     )
   })
 
@@ -273,67 +270,24 @@ describe('settings locations', () => {
     expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
   })
 
-  it('keeps a Notifai-only inline representation so existing trust remains valid', () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-ours-toml-'))
-    mkdirSync(path.join(repo, '.codex'), { recursive: true })
-    applyPlan(path.join(repo, '.codex', 'config.toml'), { hooks: ours() })
-
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'config.toml'))
-  })
-
-  it('stays on hooks.json when that file already holds someone else\'s hooks', () => {
+  it('stays on hooks.json when it alone has hooks, even if config.toml already exists', () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
-    mkdirSync(path.join(repo, '.codex'), { recursive: true })
-    applyPlan(path.join(repo, '.codex', 'hooks.json'), {
+    const layer = path.join(repo, '.codex')
+    mkdirSync(layer, { recursive: true })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      `[hooks.state."${layer}/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+    )
+    applyPlan(path.join(layer, 'hooks.json'), {
       hooks: {
         Stop: [{ hooks: [{ type: 'command', command: 'gdh-stop' }] }],
       },
     })
 
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'hooks.json'))
   })
 
-  it('writes Codex hooks into an existing inline [hooks] instead of inventing hooks.json', () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-toml-layer-'))
-    mkdirSync(path.join(repo, '.codex'), { recursive: true })
-    writeFileSync(
-      path.join(repo, '.codex', 'config.toml'),
-      [
-        'model = "gpt-5.6"',
-        '',
-        '[[hooks.PostToolUse]]',
-        'matcher = "Bash"',
-        '',
-        '[[hooks.PostToolUse.hooks]]',
-        'type = "command"',
-        'command = "gdh-guard"',
-        '',
-        '[[hooks.Stop]]',
-        '',
-        '[[hooks.Stop.hooks]]',
-        'type = "command"',
-        'command = "gdh-stop"',
-        '',
-      ].join('\n'),
-    )
-
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'config.toml'))
-  })
-
-  it('does not treat the Codex trust store as an inline hook representation', () => {
-    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-trust-only-'))
-    mkdirSync(path.join(home, '.codex'), { recursive: true })
-    writeFileSync(
-      path.join(home, '.codex', 'config.toml'),
-      `[hooks.state."${home}/.codex/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
-    )
-
-    expect(settingsFile('codex', true, '/repo', { HOME: home, CODEX_HOME: path.join(home, '.codex') })).toBe(
-      path.join(home, '.codex', 'hooks.json'),
-    )
-  })
-
-  it('preserves foreign inline hooks when both representations exist', () => {
+  it('does not migrate our hooks when both representations already exist', () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-both-'))
     const layer = path.join(repo, '.codex')
     mkdirSync(layer, { recursive: true })
@@ -345,7 +299,7 @@ describe('settings locations', () => {
     )
     applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
 
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'config.toml'))
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'hooks.json'))
   })
 })
 
@@ -371,7 +325,7 @@ describe('a Codex install run inside a git worktree', () => {
   it('targets the main repository, which is the file Codex actually reads', () => {
     const { main, worktree } = repoWithWorktree()
 
-    expect(settingsFile('codex', false, worktree, {})).toBe(path.join(main, '.codex', 'hooks.json'))
+    expect(settingsFile('codex', false, worktree, {})).toBe(path.join(main, '.codex', 'config.toml'))
     expect(codexProjectRoot(worktree)).toBe(main)
   })
 
@@ -438,7 +392,7 @@ describe('a Codex install run inside a git worktree', () => {
 
   it('follows the active harness home for global hook install', () => {
     expect(settingsFile('codex', true, '/repo', { HOME: '/user', CODEX_HOME: '/managed/codex' })).toBe(
-      '/managed/codex/hooks.json',
+      '/managed/codex/config.toml',
     )
     expect(settingsFile('claude-code', true, '/repo', { CLAUDE_CONFIG_DIR: '/managed/claude' })).toBe(
       '/managed/claude/settings.json',

@@ -1565,6 +1565,20 @@ describe('Codex hook representation', () => {
     return file
   }
 
+  it('installs a new layer into config.toml without creating hooks.json', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-new-layer-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    const toml = path.join(cwd, '.codex', 'config.toml')
+    expect(existsSync(toml)).toBe(true)
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
+    expect(readFileSync(toml, 'utf8')).toContain('[[hooks.UserPromptSubmit]]')
+    expect(io.outLines.join('\n')).toContain(toml)
+  })
+
   it('installs into existing inline [hooks] and does not create hooks.json', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-inline-install-'))
     const toml = writeInlineStop(cwd, 'gdh-stop')
@@ -1582,8 +1596,47 @@ describe('Codex hook representation', () => {
     expect(io.outLines.join('\n')).toMatch(/Stop and the existing one will both fire/i)
   })
 
-  it('preserves a foreign inline Stop while collapsing our duplicate definition', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-collapse-'))
+  it('installs into hooks.json when it alone already contains hooks', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-json-install-'))
+    const layer = path.join(cwd, '.codex')
+    const json = path.join(layer, 'hooks.json')
+    const toml = path.join(layer, 'config.toml')
+    mkdirSync(layer, { recursive: true })
+    applyPlan(json, {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'gdh-stop' }] }],
+      },
+    })
+    writeFileSync(toml, '# keep this comment\nmodel = "gpt-5.6"\n')
+    const beforeToml = readFileSync(toml, 'utf8')
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    expect(readFileSync(toml, 'utf8')).toBe(beforeToml)
+    expect(readFileSync(json, 'utf8')).toContain('gdh-stop')
+    expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
+    expect(io.outLines.join('\n')).toContain(json)
+    expect(io.outLines.join('\n')).not.toMatch(/loading hooks from both/i)
+  })
+
+  it('leaves config.toml byte-identical when uninstall finds no Notifai hooks', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-noop-uninstall-'))
+    const toml = writeInlineStop(cwd, 'gdh-stop')
+    const before = `# keep this comment\n${readFileSync(toml, 'utf8')}`
+    writeFileSync(toml, before)
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+
+    expect(hooksUninstallCommand(deps, { harness: 'codex', scriptPath })).toBe(EXIT.ok)
+
+    expect(readFileSync(toml, 'utf8')).toBe(before)
+    expect(io.outLines.join('\n')).toContain('No Notifai hooks found')
+  })
+
+  it('does not migrate our hooks when both representations already exist', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-dual-'))
     const toml = writeInlineStop(cwd, 'gdh-stop')
     const json = path.join(cwd, '.codex', 'hooks.json')
     const env = isolatedEnv(cwd)
@@ -1608,24 +1661,22 @@ describe('Codex hook representation', () => {
     expect(before).toMatch(/hooks \(codex representation\)/)
     expect(before).toMatch(/prefer a single representation/)
     expect(before).toMatch(/Stop handlers will both (run|fire)/i)
-    expect(before).toContain('notifai hooks install --harness codex')
+    expect(before).not.toContain('notifai hooks install --harness codex')
 
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    expect(existsSync(json)).toBe(false)
+    expect(existsSync(json)).toBe(true)
+    expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
     expect(readFileSync(toml, 'utf8')).toContain('gdh-stop')
-    expect(readFileSync(toml, 'utf8')).toContain('--owner notifai')
-    expect(io.outLines.join('\n')).toMatch(/collaps/i)
+    expect(readFileSync(toml, 'utf8')).not.toContain('--owner notifai')
+    expect(io.outLines.join('\n')).toMatch(/loading hooks from both/i)
+    expect(io.outLines.join('\n')).not.toMatch(/collaps/i)
 
     const installations = findInstallations(cwd, env, deps.hookAdapterHome).filter(
       (installation) => installation.harness === 'codex',
     )
     expect(installations).toHaveLength(1)
-    expect(installations[0]?.file).toBe(toml)
-
-    expect(hooksUninstallCommand(deps, { harness: 'codex', scriptPath })).toBe(EXIT.ok)
-    expect(readFileSync(toml, 'utf8')).toContain('gdh-stop')
-    expect(readFileSync(toml, 'utf8')).not.toContain('--owner notifai')
+    expect(installations[0]?.file).toBe(json)
   })
 })
 
@@ -2776,8 +2827,8 @@ describe('init', () => {
     )
     expect(wired).toEqual(['claude-code', 'codex'])
     expect(existsSync(path.join(cwd, '.claude', 'settings.local.json'))).toBe(true)
-    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(true)
-    expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(false)
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
+    expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(true)
     expect(io.outLines.join('\n')).toContain('Installed claude-code hooks')
     expect(io.outLines.join('\n')).toContain('Installed codex hooks')
   })
