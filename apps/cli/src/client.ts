@@ -5,6 +5,7 @@ import type {
   CapabilityDocument,
   CreateMediaUploadRequestT,
   CreateMediaUploadResponse,
+  FinalizeMediaUploadResponse,
   EvidenceSnapshot,
   GetAgentAcknowledgementResponse,
   ListDevicesResponse,
@@ -84,6 +85,7 @@ export interface ApiClient {
     options: { waitSeconds: number },
   ): Promise<GetAgentAcknowledgementResponse>
   createMediaUpload(body: CreateMediaUploadRequestT): Promise<CreateMediaUploadResponse>
+  finalizeMediaUpload(mediaId: string): Promise<FinalizeMediaUploadResponse>
   uploadMedia(grant: CreateMediaUploadResponse, bytes: Uint8Array): Promise<void>
   health(): Promise<boolean>
 }
@@ -248,6 +250,8 @@ export function createClient(
         waitSeconds,
       ),
     createMediaUpload: (body) => call('POST', '/api/v1/media', body),
+    finalizeMediaUpload: (mediaId) =>
+      call('POST', `/api/v1/media/${encodeURIComponent(mediaId)}/finalize`),
     uploadMedia: async (grant, bytes) => {
       let response: Response
       try {
@@ -265,6 +269,13 @@ export function createClient(
       if (!response.ok) {
         throw new NetworkError(`Upload rejected with status ${response.status}`)
       }
+      // A successful storage PUT is not authorization to reference the media.
+      // The idempotent finalize call makes the server inspect provider metadata
+      // and commit authoritative quota before the command can use media_id.
+      await call<FinalizeMediaUploadResponse>(
+        'POST',
+        `/api/v1/media/${encodeURIComponent(grant.media_id)}/finalize`,
+      )
     },
     health: async () => {
       try {

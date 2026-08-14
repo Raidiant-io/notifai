@@ -25,6 +25,8 @@ export const REPLY_CATEGORY_ID = 'notifai.reply'
 export const REPLY_CHOICE_CATEGORY_ID = 'notifai.reply.choice'
 export const REPLY_ACTION_ID = 'notifai.reply.text'
 export const REPLY_MAX_LENGTH = 4000
+/** Apple notification image-attachment ceiling, shared by intake and capabilities. */
+export const NOTIFICATION_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 /** Device platforms known to the public contract. Delivery support is registry-owned. */
 export const PLATFORMS = ['ios', 'macos'] as const

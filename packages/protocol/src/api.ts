@@ -1,6 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
 import {
   NotificationDraft,
+  NOTIFICATION_IMAGE_MAX_BYTES,
   PlatformSchema,
   ProviderSchema,
   REPLY_MAX_LENGTH,
@@ -446,7 +447,7 @@ export const CreateMediaUploadRequest = Type.Object(
       Type.Literal('image/png'),
       Type.Literal('image/gif'),
     ]),
-    size_bytes: Type.Integer({ minimum: 1, maximum: 10 * 1024 * 1024 }),
+    size_bytes: Type.Integer({ minimum: 1, maximum: NOTIFICATION_IMAGE_MAX_BYTES }),
     sha256: Type.String({ pattern: '^[a-f0-9]{64}$' }),
   },
   { additionalProperties: false },
@@ -459,6 +460,13 @@ export interface CreateMediaUploadResponse {
   /** Headers the client must send with the PUT upload. */
   upload_headers: Record<string, string>
   expires_at: string
+}
+
+export interface FinalizeMediaUploadResponse {
+  media_id: string
+  /** Storage-provider-observed bytes used for quota accounting. */
+  size_bytes: number
+  status: 'ready'
 }
 
 // ---------------------------------------------------------------------------

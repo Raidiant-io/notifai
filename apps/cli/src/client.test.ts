@@ -133,6 +133,52 @@ describe('a server that never answers', () => {
     ])
   })
 
+  it('finalizes provider metadata before treating a storage upload as usable', async () => {
+    const seen: { method?: string; url?: string; authorization?: string; bytes: number }[] = []
+    const baseUrl = await serving((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+      request.on('end', () => {
+        seen.push({
+          method: request.method,
+          url: request.url,
+          ...(request.headers.authorization
+            ? { authorization: request.headers.authorization }
+            : {}),
+          bytes: Buffer.concat(chunks).byteLength,
+        })
+        if (request.method === 'POST') {
+          response.setHeader('content-type', 'application/json')
+          response.end(JSON.stringify({ media_id: 'med_1', size_bytes: 4, status: 'ready' }))
+        } else {
+          response.statusCode = 200
+          response.end()
+        }
+      })
+    })
+    const client = createClient(baseUrl, 'Bearer machine')
+
+    await client.uploadMedia(
+      {
+        media_id: 'med_1',
+        upload_url: `${baseUrl}/signed-upload`,
+        upload_headers: { 'content-type': 'image/png' },
+        expires_at: '2026-08-14T12:00:00.000Z',
+      },
+      new Uint8Array([1, 2, 3, 4]),
+    )
+
+    expect(seen).toEqual([
+      { method: 'PUT', url: '/signed-upload', bytes: 4 },
+      {
+        method: 'POST',
+        url: '/api/v1/media/med_1/finalize',
+        authorization: 'Bearer machine',
+        bytes: 0,
+      },
+    ])
+  })
+
   it('treats a truncated body as a transport failure, not a crash', async () => {
     // A body that stops mid-JSON used to escape as a raw parse error outside
     // the retry path, so nothing backed off and retried it.
