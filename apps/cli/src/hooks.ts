@@ -118,6 +118,18 @@ export interface SessionState {
    * reaches the harness replays it instead of erasing it.
    */
   accepted?: AcceptedAnswerDelivery
+  /**
+   * Required Agent Acknowledgements that the resumed agent still owes. This is
+   * separate from answer delivery: the answer journal may settle as soon as a
+   * harness accepts the continuation, while this obligation must survive until
+   * the service confirms the agent-authored follow-up exists.
+   */
+  acknowledgement_due?: AcknowledgementDue[]
+}
+
+export interface AcknowledgementDue {
+  request_id: string
+  recorded_at: number
 }
 
 interface AcceptedAnswerDelivery {
@@ -784,6 +796,7 @@ export type GateReason =
   | 'continuation-repeat'
   | 'continuation-limit'
   | 'delivery-limit'
+  | 'acknowledgement-required'
   | 'notifications-off'
   | 'claimed-elsewhere'
   | 'no-devices'
@@ -977,7 +990,7 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
       (device) =>
         (device.platform === 'ios' || device.platform === 'macos') &&
         device.registration_healthy &&
-        device.reply_protocol_version === 1,
+        device.reply_protocol_version === 2,
     )
     .filter((device) => configured === null || configured.includes(device.device_id))
     .map((device) => device.device_id)
@@ -1340,6 +1353,8 @@ interface AnsweredPending {
   pending: PendingQuestion
   reply: ReplyView
   replies: ReplyView[]
+  /** Immutable server snapshot for this request, known after a replies/close response. */
+  agent_acknowledgement_required?: boolean | undefined
 }
 
 interface FinalizedPending {
@@ -1364,7 +1379,15 @@ async function finalizePendings(
 function finalizedAnswer(finalized: FinalizedPending): AnsweredPending | null {
   const replies = finalized.response?.replies ?? []
   const reply = replies.at(-1)
-  return reply === undefined ? null : { pending: finalized.pending, reply, replies }
+  return reply === undefined
+    ? null
+    : {
+        pending: finalized.pending,
+        reply,
+        replies,
+        agent_acknowledgement_required:
+          finalized.response?.agent_acknowledgement_required,
+      }
 }
 
 /** Persist and surface one answer without letting the two representations drift. */
@@ -1476,13 +1499,45 @@ function answerContext(answered: AnsweredPending): string {
  * tied to the question that asked it, with a truthful note about anything
  * still waiting.
  */
+function acknowledgementCommand(requestId: string): string {
+  return `notifai acknowledge ${requestId} --text <text>`
+}
+
+function acknowledgementContext(answered: AnsweredPending[]): string {
+  const due = answered.filter(
+    (entry) =>
+      entry.agent_acknowledgement_required === true && entry.pending.request_id !== undefined,
+  )
+  if (due.length === 0) {
+    return ' Agent Acknowledgement is not required for the answered request(s).'
+  }
+  if (due.length === 1) {
+    const requestId = due[0]!.pending.request_id!
+    return (
+      ` Agent Acknowledgement is required for request ${requestId}. Immediately, before doing the resumed work or ending this turn, run ` +
+      `\`${acknowledgementCommand(requestId)}\` with non-empty text saying what concrete work you will do because of the reply; a bare acknowledgement is insufficient.`
+    )
+  }
+  const commands = due
+    .map((entry) => {
+      const requestId = entry.pending.request_id!
+      return `- ${requestId}: \`${acknowledgementCommand(requestId)}\``
+    })
+    .join('\n')
+  return (
+    ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below with non-empty text saying what concrete work you will do because of that reply; a bare acknowledgement is insufficient:\n` +
+    commands
+  )
+}
+
 function answersContext(answered: AnsweredPending[], remaining: number): string {
   const tail =
     remaining > 0
       ? ` (${remaining} more registered question${remaining === 1 ? ' is' : 's are'} still waiting for an answer.)`
       : ''
+  const guidance = acknowledgementContext(answered)
   if (answered.length === 1) {
-    return answerContext(answered[0]!) + tail
+    return answerContext(answered[0]!) + tail + guidance
   }
   const lines = answered.map(({ pending, replies }) => {
     const latest = replies.at(-1)!
@@ -1494,7 +1549,7 @@ function answersContext(answered: AnsweredPending[], remaining: number): string 
     const identity = ids.length === 0 ? '' : `question_id${ids.length === 1 ? '' : 's'} ${ids.join(', ')}: `
     return `- ${identity}${JSON.stringify(pending.question)} → ${answer}`
   })
-  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}${tail}`
+  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}${tail}${guidance}`
 }
 
 function stopAnswerOutput(context: string): string {
@@ -1525,12 +1580,25 @@ function stageAcceptedAnswers(
     const pendingRemaining = pendingList(current).filter(
       (entry) => !answered.some(({ pending }) => isSamePending(entry, pending)),
     )
+    const acknowledgementDue = [...(current.acknowledgement_due ?? [])]
+    for (const answer of answered) {
+      const requestId = answer.pending.request_id
+      if (
+        answer.agent_acknowledgement_required === true &&
+        requestId !== undefined &&
+        !acknowledgementDue.some((entry) => entry.request_id === requestId)
+      ) {
+        acknowledgementDue.push({ request_id: requestId, recorded_at: accepted.recorded_at })
+      }
+    }
     const next: SessionState = {
       ...current,
       accepted,
     }
     if (pendingRemaining.length > 0) next.pending = pendingRemaining
     else delete next.pending
+    if (acknowledgementDue.length > 0) next.acknowledgement_due = acknowledgementDue
+    else delete next.acknowledgement_due
     return next
   })
   return accepted
@@ -1545,6 +1613,68 @@ function amendAcceptedAnswers(
   updateSessionState(sessionId, ctx.env, (current) =>
     current.accepted === undefined ? current : { ...current, accepted: amend(current.accepted) },
   )
+}
+
+export function clearAcknowledgementObligation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  requestId: string,
+): boolean {
+  let cleared = false
+  updateSessionState(sessionId, env, (current) => {
+    const due = current.acknowledgement_due ?? []
+    const remaining = due.filter((entry) => entry.request_id !== requestId)
+    cleared = remaining.length !== due.length
+    if (!cleared) return current
+    const next = { ...current }
+    if (remaining.length > 0) next.acknowledgement_due = remaining
+    else delete next.acknowledgement_due
+    return next
+  })
+  return cleared
+}
+
+function acknowledgementBlockContext(due: readonly AcknowledgementDue[]): string {
+  const commands = due
+    .map((entry) => `- ${entry.request_id}: \`${acknowledgementCommand(entry.request_id)}\``)
+    .join('\n')
+  return (
+    `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for request${due.length === 1 ? '' : 's'} ${due.map((entry) => entry.request_id).join(', ')}. ` +
+    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'} with non-empty text saying what concrete work you will do because of the reply; a bare acknowledgement is insufficient:\n${commands}`
+  )
+}
+
+async function reconcileAcknowledgementObligations(
+  ctx: HookContext,
+  sessionId: string,
+  due: readonly AcknowledgementDue[],
+): Promise<AcknowledgementDue[]> {
+  const unresolved: AcknowledgementDue[] = []
+  for (const obligation of due) {
+    try {
+      const snapshot = await ctx.client.agentAcknowledgement(obligation.request_id, {
+        waitSeconds: 0,
+      })
+      if (
+        snapshot.agent_acknowledgement_required === false ||
+        snapshot.agent_acknowledgement !== null
+      ) {
+        clearAcknowledgementObligation(sessionId, ctx.env, obligation.request_id)
+      } else {
+        unresolved.push(obligation)
+      }
+    } catch (err) {
+      unresolved.push(obligation)
+      ctx.log?.error('hook.gate', {
+        verdict: 'held',
+        reason: 'acknowledgement-required',
+        stage: 'reconcile-failed',
+        request_id: obligation.request_id,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+  return unresolved
 }
 
 /**
@@ -1666,7 +1796,14 @@ export async function handleUserPromptSubmit(
           `could not confirm the close fence for ${entry.pending.request_id}; preserving the durable answer already observed`,
         )
       }
-      return { ...entry, replies, reply: replies.at(-1)! }
+      return {
+        ...entry,
+        replies,
+        reply: replies.at(-1)!,
+        agent_acknowledgement_required:
+          response?.agent_acknowledgement_required ??
+          entry.agent_acknowledgement_required,
+      }
     })
     if (answered.length > 0) {
       stageAcceptedAnswers(
@@ -1800,6 +1937,27 @@ export async function runEscalationWaiter(
     let state = readSessionState(sessionId, ctx.env)
     if (state.accepted !== undefined) {
       const accepted = state.accepted
+      if (envelope.stop_hook_active === true && pendingList(state).length > 0) {
+        const due = await reconcileAcknowledgementObligations(
+          ctx,
+          sessionId,
+          state.acknowledgement_due ?? [],
+        )
+        if (due.length > 0) {
+          gate(ctx, 'held', 'acknowledgement-required', {
+            request_ids: due.map((entry) => entry.request_id),
+          })
+          return {
+            stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
+            notes,
+            log: {
+              stage: 'acknowledgement-required',
+              request_ids: due.map((entry) => entry.request_id),
+            },
+          }
+        }
+        state = readSessionState(sessionId, ctx.env)
+      }
       // Acknowledgement is per route, because routes end in different places.
       //
       // A blocking continuation ends at this process's stdout, which the
@@ -1819,6 +1977,54 @@ export async function runEscalationWaiter(
       }
       settleAcceptedAnswers(ctx, sessionId, accepted)
       settledAnswerThisPass = true
+      state = readSessionState(sessionId, ctx.env)
+      const currentAcceptedIds = new Set(
+        accepted.answers.flatMap(({ pending }) =>
+          pending.request_id === undefined ? [] : [pending.request_id],
+        ),
+      )
+      const due = await reconcileAcknowledgementObligations(
+        ctx,
+        sessionId,
+        (state.acknowledgement_due ?? []).filter((entry) =>
+          currentAcceptedIds.has(entry.request_id),
+        ),
+      )
+      if (due.length > 0) {
+        gate(ctx, 'held', 'acknowledgement-required', {
+          request_ids: due.map((entry) => entry.request_id),
+        })
+        return {
+          stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
+          notes,
+          log: {
+            stage: 'acknowledgement-required',
+            request_ids: due.map((entry) => entry.request_id),
+          },
+        }
+      }
+      state = readSessionState(sessionId, ctx.env)
+    }
+
+    if (state.accepted === undefined && (state.acknowledgement_due?.length ?? 0) > 0) {
+      const due = await reconcileAcknowledgementObligations(
+        ctx,
+        sessionId,
+        state.acknowledgement_due!,
+      )
+      if (due.length > 0) {
+        gate(ctx, 'held', 'acknowledgement-required', {
+          request_ids: due.map((entry) => entry.request_id),
+        })
+        return {
+          stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
+          notes,
+          log: {
+            stage: 'acknowledgement-required',
+            request_ids: due.map((entry) => entry.request_id),
+          },
+        }
+      }
       state = readSessionState(sessionId, ctx.env)
     }
 
@@ -2014,7 +2220,14 @@ async function handleClaimedStop(
             `could not confirm the close fence for ${entry.pending.request_id}; delivering the durable answer already observed`,
           )
         }
-        return { ...entry, replies, reply: replies.at(-1)! }
+        return {
+        ...entry,
+        replies,
+        reply: replies.at(-1)!,
+        agent_acknowledgement_required:
+          response?.agent_acknowledgement_required ??
+          entry.agent_acknowledgement_required,
+      }
       })
       const accepted = stageAcceptedAnswers(
         ctx,
@@ -2429,7 +2642,13 @@ async function escalate(
     // unreachable, never discard the durable reply already observed.
     const finalReplies = finalized.response?.replies ?? []
     const authoritative = finalReplies.length > 0 ? finalReplies : replies
-    answered.push({ pending: entry, reply: authoritative.at(-1)!, replies: authoritative })
+    answered.push({
+      pending: entry,
+      reply: authoritative.at(-1)!,
+      replies: authoritative,
+      agent_acknowledgement_required:
+        finalized.response?.agent_acknowledgement_required,
+    })
     if (finalized.response === null) {
       notes.push(
         `could not confirm the close fence for ${entry.request_id}; delivering the durable answer already observed`,
@@ -2491,19 +2710,28 @@ export function handleSessionEnd(
       `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
     )
   }
-  if (state.accepted !== undefined) {
-    const preserved: SessionState = { accepted: state.accepted }
+  if (state.accepted !== undefined || (state.acknowledgement_due?.length ?? 0) > 0) {
+    const preserved: SessionState = {}
+    if (state.accepted !== undefined) preserved.accepted = state.accepted
+    if (state.acknowledgement_due !== undefined && state.acknowledgement_due.length > 0) {
+      preserved.acknowledgement_due = state.acknowledgement_due
+    }
     if (state.last_prompt_at !== undefined) preserved.last_prompt_at = state.last_prompt_at
     if (state.last_stop_at !== undefined) preserved.last_stop_at = state.last_stop_at
     if (state.continuation !== undefined) preserved.continuation = state.continuation
     writeSessionState(sessionId, env, preserved)
-    notes.push('preserved an accepted device answer for this exact session to resume')
+    notes.push(
+      state.accepted !== undefined
+        ? 'preserved an accepted device answer for this exact session to resume'
+        : 'preserved required Agent Acknowledgement obligations for this exact session',
+    )
     return {
       notes,
       log: {
-        outcome: 'answer-preserved',
+        outcome: state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
         queued_retirements: orphans.length,
-        accepted_answers: state.accepted.answers.length,
+        accepted_answers: state.accepted?.answers.length ?? 0,
+        acknowledgement_due: state.acknowledgement_due?.length ?? 0,
       },
     }
   }

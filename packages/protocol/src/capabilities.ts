@@ -425,6 +425,12 @@ export function estimateApnsPayloadBytes(draft: NotificationDraftT, platform: Pl
       : null,
     // ISO-8601 instants are fixed width, so any date reserves the real room.
     draft.reply !== undefined ? new Date(0) : null,
+    // Reply-enabled requests always carry the immutable server snapshot. Boolean
+    // true is the longer JSON representation and therefore the safe estimate.
+    draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,
+    // Done-tier syncs may announce acknowledgement availability. The timestamp
+    // is fixed width and text is deliberately absent from APNs.
+    draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0) } : null,
   )
   return new TextEncoder().encode(JSON.stringify(envelope.payload)).length
 }

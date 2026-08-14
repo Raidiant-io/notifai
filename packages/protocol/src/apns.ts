@@ -43,6 +43,18 @@ export interface EnvelopeIds {
   receiptToken?: string | null
 }
 
+/** Server-owned metadata for the original reply-enabled Notification Request. */
+export interface ReplyMetadata {
+  /** Immutable account-preference snapshot taken at request acceptance. */
+  agentAcknowledgementRequired: boolean
+}
+
+/** Metadata for a silent sync emitted after an Agent Acknowledgement exists. */
+export interface AgentAcknowledgementSync {
+  /** Creation time of the persisted acknowledgement; its text never enters APNs. */
+  createdAt: Date
+}
+
 /**
  * Encoded token width — a 16-byte truncated HMAC, base64url, no padding. It is
  * fixed by construction, which is what lets pre-flight size estimation reserve
@@ -62,6 +74,8 @@ export function buildApnsEnvelope(
    * the notification instead of requiring a lookup to offer a reply later.
    */
   replyExpiresAt: Date | null = null,
+  replyMetadata: ReplyMetadata | null = null,
+  agentAcknowledgementSync: AgentAcknowledgementSync | null = null,
 ): ApnsEnvelope {
   const options = draft.platform?.[platform]
   // A state change is not news (D-B): a `done` draft retires what it replaces
@@ -72,7 +86,16 @@ export function buildApnsEnvelope(
     return {
       payload: {
         aps: { 'content-available': 1 },
-        notifai: notifaiKey(draft, ids, mediaUrl, projectIdentity, replyExpiresAt, options),
+        notifai: notifaiKey(
+          draft,
+          ids,
+          mediaUrl,
+          projectIdentity,
+          replyExpiresAt,
+          options,
+          replyMetadata,
+          agentAcknowledgementSync,
+        ),
       },
       priority: 5,
       pushType: 'background',
@@ -117,7 +140,16 @@ export function buildApnsEnvelope(
     aps['mutable-content'] = 1
   }
 
-  const notifai = notifaiKey(draft, ids, mediaUrl, projectIdentity, replyExpiresAt, options)
+  const notifai = notifaiKey(
+    draft,
+    ids,
+    mediaUrl,
+    projectIdentity,
+    replyExpiresAt,
+    options,
+    replyMetadata,
+    agentAcknowledgementSync,
+  )
 
   return {
     payload: { aps, notifai },
@@ -138,6 +170,8 @@ function notifaiKey(
   projectIdentity: ProjectIdentity | null,
   replyExpiresAt: Date | null,
   options?: NonNullable<NotificationDraftT['platform']>[Platform],
+  replyMetadata?: ReplyMetadata | null,
+  agentAcknowledgementSync?: AgentAcknowledgementSync | null,
 ): Record<string, unknown> {
   const kind = effectiveKind(draft)
   return {
@@ -181,6 +215,20 @@ function notifaiKey(
     // composer from this value.
     ...(draft.reply !== undefined && replyExpiresAt !== null
       ? { reply_expires_at: replyExpiresAt.toISOString() }
+      : {}),
+    // The original question carries the immutable server snapshot so every
+    // Companion renders the same post-reply state. Non-question pushes omit it.
+    ...(draft.reply !== undefined && replyMetadata !== null && replyMetadata !== undefined
+      ? { agent_acknowledgement_required: replyMetadata.agentAcknowledgementRequired }
+      : {}),
+    // A later silent state sync announces availability and time only. The text
+    // stays out of APNs and is fetched through the authenticated contract.
+    ...(draft.lifecycle?.tier === 'done' &&
+    agentAcknowledgementSync != null
+      ? {
+          agent_acknowledgement_available: true,
+          agent_acknowledgement_created_at: agentAcknowledgementSync.createdAt.toISOString(),
+        }
       : {}),
     // The question set travels with the notification for the same reason the
     // deadline does: the content extension and the in-app surfaces must render

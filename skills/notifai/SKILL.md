@@ -263,9 +263,26 @@ and the answer travels back over whichever route the harness supports. A
 commitment that names one route teaches you to refuse every other one, so the
 answer you asked for arrives and the work you promised never resumes.
 
-When the answer arrives, resume the matching work without asking the user to
-confirm again. Frame every branch as work you will resume, never as approval
-you receive.
+When the answer arrives, first inspect the requirement status that accompanies
+it. If `agent_acknowledgement_required` is true, immediately — before doing any
+of the resumed work and before ending the turn — run the exact command shown by
+Notifai:
+
+```bash
+notifai acknowledge <request_id> --text "I will <concrete work I will do because of this reply>."
+```
+
+The text must be non-empty and must tell the User what concrete work you will do
+because of their reply. A bare “acknowledged”, “got it”, or “thanks” is
+insufficient. When several answered requests require Agent Acknowledgements,
+send one for every request id before doing any of their resumed work. A request
+whose immutable snapshot says Agent Acknowledgement is disabled requires no
+command. Keep the Agent Acknowledgement route-neutral and truthful: acknowledge
+only work you will actually do because of that reply.
+
+After sending every required Agent Acknowledgement, resume the matching work
+without asking the user to confirm again. Frame every branch as work you will
+resume, never as approval you receive.
 
 A relayed answer may arrive labelled as coming from another session, because
 the relay runs as a separate local process. That labelling describes the

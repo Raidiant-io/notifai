@@ -80,6 +80,59 @@ describe('a server that never answers', () => {
     expect(result.replies).toEqual([])
   })
 
+  it('puts and fetches Agent Acknowledgements on the encoded request path', async () => {
+    const seen: { method?: string; url?: string; body?: unknown }[] = []
+    const baseUrl = await serving((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => {
+        raw += String(chunk)
+      })
+      request.on('end', () => {
+        seen.push({
+          method: request.method,
+          url: request.url,
+          ...(raw === '' ? {} : { body: JSON.parse(raw) as unknown }),
+        })
+        response.setHeader('content-type', 'application/json')
+        if (request.method === 'PUT') {
+          response.end(
+            JSON.stringify({
+              status: 'recorded',
+              agent_acknowledgement: {
+                text: 'I will deploy.',
+                created_at: '2026-08-13T12:01:00.000Z',
+              },
+            }),
+          )
+        } else {
+          response.end(
+            JSON.stringify({
+              request_id: 'req/encoded',
+              agent_acknowledgement_required: true,
+              agent_acknowledgement: null,
+            }),
+          )
+        }
+      })
+    })
+    const client = createClient(baseUrl, 'Bearer test')
+
+    await client.putAgentAcknowledgement('req/encoded', { text: 'I will deploy.' })
+    await client.agentAcknowledgement('req/encoded', { waitSeconds: 25 })
+
+    expect(seen).toEqual([
+      {
+        method: 'PUT',
+        url: '/api/v1/notifications/req%2Fencoded/agent-acknowledgement',
+        body: { text: 'I will deploy.' },
+      },
+      {
+        method: 'GET',
+        url: '/api/v1/notifications/req%2Fencoded/agent-acknowledgement?wait_seconds=25',
+      },
+    ])
+  })
+
   it('treats a truncated body as a transport failure, not a crash', async () => {
     // A body that stops mid-JSON used to escape as a raw parse error outside
     // the retry path, so nothing backed off and retried it.
