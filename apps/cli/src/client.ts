@@ -250,6 +250,8 @@ export function createClient(
         waitSeconds,
       ),
     createMediaUpload: (body) => call('POST', '/api/v1/media', body),
+    // Storage-observed bytes become authoritative before a send can reference
+    // the upload; the caller's declared size is only a request.
     finalizeMediaUpload: (mediaId) =>
       call('POST', `/api/v1/media/${encodeURIComponent(mediaId)}/finalize`),
     uploadMedia: async (grant, bytes) => {
