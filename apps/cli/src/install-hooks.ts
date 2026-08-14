@@ -3,13 +3,13 @@ import {
   lstatSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { withTargetFileLock } from './file-lock.js'
 import {
   hookAdapterPath,
   hookHostPlatform,
@@ -41,8 +41,9 @@ const OPENCODE_EVENTS = [
  * with an optional timeout — so one generator serves both. Only the file
  * location and the event set differ. Codex supports either a dedicated
  * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`.
- * We default to the dedicated file so installing hooks never rewrites Codex's
- * main configuration and trust store. One representation per layer, never both.
+ * We default a hook-empty layer to inline config and preserve whichever single
+ * representation a populated layer already uses. One representation per layer,
+ * never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -492,37 +493,32 @@ export interface CodexLayerInspection {
   writeTarget: string
   dual: boolean
   overlappingEvents: string[]
-  canCollapse: boolean
 }
 
 /**
  * Which representation this Codex layer already uses.
  *
  * Codex supports `hooks.json` and inline `[hooks]` side by side, but loads both
- * and runs every matching handler. Prefer the dedicated file for a new layer;
+ * and runs every matching handler. Use inline config for a hook-empty layer and
  * preserve an existing single representation so installing Notifai never
- * invents a dual layer. `[hooks.state]` is the trust store, not a hook
- * definition, so it does not count as a representation.
+ * invents a dual layer. When the layer is already dual, keep our handlers in
+ * the representation that already contains them instead of silently migrating
+ * them. `[hooks.state]` is the trust store, not a hook definition, so it does
+ * not count as a representation.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
   const jsonDocument = tryLoadSettings(paths.hooksJson)
   const tomlDocument = tryLoadSettings(paths.configToml)
   const jsonEvents = hookEventNames(jsonDocument?.hooks)
   const tomlEvents = hookEventNames(tomlDocument?.hooks)
-  const jsonForeign = documentHasForeignHandlers(jsonDocument)
-  const tomlForeign = documentHasForeignHandlers(tomlDocument)
-  const jsonOurs = documentHasOurHandlers(jsonDocument)
-  const tomlOurs = documentHasOurHandlers(tomlDocument)
   const dual = jsonEvents.length > 0 && tomlEvents.length > 0
-  let writeTarget = paths.hooksJson
-  if (tomlEvents.length > 0 && jsonEvents.length === 0) {
-    writeTarget = paths.configToml
+  let writeTarget = paths.configToml
+  if (jsonEvents.length > 0 && tomlEvents.length === 0) {
+    writeTarget = paths.hooksJson
   } else if (dual) {
-    if (tomlForeign && !jsonForeign) writeTarget = paths.configToml
-    else if (jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
-    else if (!jsonForeign && !tomlForeign) writeTarget = paths.hooksJson
-    else if (tomlOurs && !jsonOurs) writeTarget = paths.configToml
-    else writeTarget = paths.hooksJson
+    const jsonOurs = documentHasOurHandlers(jsonDocument)
+    const tomlOurs = documentHasOurHandlers(tomlDocument)
+    if (jsonOurs && !tomlOurs) writeTarget = paths.hooksJson
   }
   return {
     paths,
@@ -530,9 +526,21 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
     tomlEvents,
     writeTarget,
     dual,
-    overlappingEvents: jsonEvents.filter((event) => tomlEvents.includes(event)),
-    canCollapse: dual && !(jsonForeign && tomlForeign),
+    overlappingEvents: dual
+      ? jsonEvents.filter((event) => tomlEvents.includes(event))
+      : [],
   }
+}
+
+/**
+ * Serialize one Notifai transaction across both representations in a Codex
+ * layer, then inspect that layer only after acquiring the shared anchor.
+ */
+export function withCodexLayerTransaction<T>(
+  paths: CodexLayerPaths,
+  action: (inspection: CodexLayerInspection) => T,
+): T {
+  return withTargetFileLock(paths.configToml, () => action(inspectCodexLayer(paths)))
 }
 
 /** Every file in this layer Codex might already be reading hooks from. */
@@ -548,47 +556,20 @@ export function hookDefinitionFiles(
   return [paths.hooksJson, paths.configToml]
 }
 
-/**
- * Drop the unused representation after writing the one this layer already had.
- *
- * Only safe when the discarded file has no one else's handlers. `hooks.json`
- * is deleted once it has no events left so Codex stops warning; `config.toml`
- * is never deleted.
- */
-export function collapseUnusedCodexRepresentation(
-  keepFile: string,
-  scriptPath: string,
-  paths: CodexLayerPaths,
-): string | null {
-  const other = keepFile === paths.hooksJson ? paths.configToml : paths.hooksJson
-  if (!existsSync(other)) return null
-  const document = tryLoadSettings(other)
-  if (document === null || documentHasForeignHandlers(document)) return null
-  const stripped = removeHooks(document, scriptPath)
-  if (other === paths.hooksJson && hookEventNames(stripped.document.hooks).length === 0) {
-    rmSync(other)
-    return other
-  }
-  applyPlan(other, stripped.document)
-  return other
-}
-
 export function codexRepresentationProblems(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string[] {
   return [false, true].flatMap((global) => {
-    const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env))
+    const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env, platform))
     if (!layer.dual) return []
     const overlap =
       layer.overlappingEvents.length > 0
         ? ` Matching handlers from both files all run — this layer's ${layer.overlappingEvents.join(', ')} handlers will both fire.`
         : ' Matching handlers from both files all run.'
-    const collapse = layer.canCollapse
-      ? ` Run \`notifai hooks install --harness codex${global ? ' --global' : ''}\` to collapse onto ${path.basename(layer.writeTarget)}.`
-      : ' Both files have other hooks, so Notifai cannot collapse them.'
     return [
-      `loading hooks from both ${layer.paths.hooksJson} and ${layer.paths.configToml}; prefer a single representation for this layer.${overlap}${collapse}`,
+      `loading hooks from both ${layer.paths.hooksJson} and ${layer.paths.configToml}; prefer a single representation for this layer.${overlap} Notifai preserves existing representations instead of migrating them automatically.`,
     ]
   })
 }
@@ -606,11 +587,6 @@ function hookEventNames(hooks: SettingsDocument['hooks']): string[] {
   return Object.entries(hooks ?? {})
     .filter(([, value]) => Array.isArray(value))
     .map(([event]) => event)
-}
-
-function documentHasForeignHandlers(document: SettingsDocument | null): boolean {
-  if (document === null) return false
-  return locateAllHandlers(document).some((handler) => !isNotifaiCommand(handler.command))
 }
 
 function documentHasOurHandlers(document: SettingsDocument | null): boolean {
