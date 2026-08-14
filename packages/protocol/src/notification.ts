@@ -51,7 +51,7 @@ export const ImageRef = Type.Object(
  * 16 KiB of markdown — comfortably more than the whole APNs envelope, which is
  * the point. This never rides the push: the envelope is 4096 bytes and the
  * banner already spends part of it, so the companion fetches this on open, the
- * same shape as the existing media path. Held to the server's 72-hour content
+ * same shape as the existing media path. Held to the server's one-week content
  * retention like every other piece of presentation content.
  */
 export const DETAIL_MAX_BYTES = 16 * 1024
@@ -121,9 +121,9 @@ export type ReplyChoiceT = Static<typeof ReplyChoice>
 export const REPLY_MAX_CHOICES = 6
 
 /**
- * Upper bound on a reply window, pinned to the server's 72-hour content
- * retention. A longer window would outlive the stored draft, and the
- * server cannot accept an answer to a question it has already forgotten — a
+ * Upper bound on a reply window. The server retains content for one week, so
+ * this deliberately shorter 72-hour interaction window cannot outlive the
+ * stored draft. The server cannot accept an answer to a question it has forgotten — a
  * choice reply arriving after the sweep was rejected as `unknown_choice` and
  * permanently discarded by the device outbox.
  */
