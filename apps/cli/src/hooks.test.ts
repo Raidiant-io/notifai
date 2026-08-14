@@ -158,6 +158,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       }
     },
     createMediaUpload: notUsed,
+    finalizeMediaUpload: notUsed,
     uploadMedia: notUsed,
     health: async () => true,
     submit: async (body) => {

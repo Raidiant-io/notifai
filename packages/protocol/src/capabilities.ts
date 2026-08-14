@@ -7,6 +7,7 @@ import {
   INTERRUPTION_LEVELS,
   REPLY_MAX_LENGTH,
   COLLAPSE_KEY_MAX_BYTES,
+  NOTIFICATION_IMAGE_MAX_BYTES,
   type Platform,
 } from './notification.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
@@ -64,7 +65,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'presentation.image',
       status: 'supported',
-      constraints: { max_bytes: 10 * 1024 * 1024, media_types: ['image/jpeg', 'image/png', 'image/gif'] },
+      constraints: { max_bytes: NOTIFICATION_IMAGE_MAX_BYTES, media_types: ['image/jpeg', 'image/png', 'image/gif'] },
       reason: 'Attached through the Notification Service Extension; text remains intelligible if media retrieval fails.',
     },
     { path: 'platform.ios.sound', status: 'supported', constraints: { allowed: [...IOS_SOUNDS, null] } },

@@ -2392,12 +2392,7 @@ describe('interactive command UX', () => {
     const deps: CommandDeps = {
       ...makeDeps(io, client),
       cwd,
-      env: {
-        XDG_CONFIG_HOME: path.join(cwd, 'config'),
-        XDG_STATE_HOME: path.join(cwd, 'state'),
-        CODEX_HOME: path.join(cwd, 'codex'),
-        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
-      },
+      env: isolatedEnv(cwd),
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
@@ -2993,19 +2988,16 @@ describe('init', () => {
     const deps = {
       ...makeDeps(io, client),
       cwd,
-      env: {
-        HOME: path.join(cwd, 'home'),
-        XDG_CONFIG_HOME: path.join(cwd, 'config'),
-        XDG_STATE_HOME: path.join(cwd, 'state'),
-        CODEX_HOME: path.join(cwd, 'codex'),
-        CLAUDE_CONFIG_DIR: path.join(cwd, 'claude'),
-        OPENCODE_CONFIG_DIR: path.join(cwd, 'opencode'),
-      },
+      env: isolatedEnv(cwd),
+      nativeSkills: {
+        list: async () => ({ skills: [] }),
+        add: async () => 0,
+      } satisfies NativeSkills,
     }
 
     expect(await initCommand(deps, {})).toBe(EXIT.ok)
-    expect(asked.some((q) => q.includes('hooks'))).toBe(true)
-    expect(asked.some((q) => q.includes('skill'))).toBe(true)
+    expect(asked).toEqual(expect.arrayContaining([expect.stringMatching(/hooks/)]))
+    expect(asked).toEqual(expect.arrayContaining([expect.stringMatching(/skill/)]))
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
     // Device wait prompts only after optionals have been considered.
