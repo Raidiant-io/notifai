@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [2.0.1](https://github.com/Raidiant-io/notifai/compare/v2.0.0...v2.0.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **cli:** require acknowledgement protocol at runtime ([bbec8ca](https://github.com/Raidiant-io/notifai/commit/bbec8ca386cd2a86c58a579daf70905d667865d5))
+* **cli:** require acknowledgement protocol at runtime ([43f94cd](https://github.com/Raidiant-io/notifai/commit/43f94cde1a90b4ca4f5f0fce8356d4832c618216))
+
 ## [2.0.0](https://github.com/Raidiant-io/notifai/compare/v1.1.0...v2.0.0) (2026-08-13)
 
 
