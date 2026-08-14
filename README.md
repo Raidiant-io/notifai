@@ -37,6 +37,25 @@ notifai config unset <key>   # return a setting to its inherited/default value
 notifai doctor               # check every part of the setup
 ```
 
+Agents can ask for a reply, collect it directly, and send the required Agent
+Acknowledgement without any interactive prompt:
+
+```sh
+notifai send --title "Deploy?" --body "Choose when ready." --reply
+# after the user's reply, the CLI prints the exact follow-up command
+notifai acknowledge req_example --text "I will deploy the approved build to staging now."
+
+notifai replies req_example --json
+notifai close req_example --json
+```
+
+When the request's immutable setting snapshot requires an Agent
+Acknowledgement, `send --reply`, `replies`, and `close` expose
+`agent_acknowledgement_required`, the current `agent_acknowledgement`, and
+`acknowledgement_command` while it is still absent. A request whose snapshot
+disabled Agent Acknowledgements reports that they are not required and never
+prints a follow-up command.
+
 Anywhere that is not a terminal — a script, a CI job, an agent — `notifai`
 prints help instead of prompting, output stays uncoloured, and `--json` is
 available on the commands that report. Nothing in the CLI ever waits on stdin

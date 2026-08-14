@@ -6,10 +6,13 @@ import type {
   CreateMediaUploadRequestT,
   CreateMediaUploadResponse,
   EvidenceSnapshot,
+  GetAgentAcknowledgementResponse,
   ListDevicesResponse,
   ListRepliesResponse,
   Platform,
   PollPairingResponse,
+  PutAgentAcknowledgementRequestT,
+  PutAgentAcknowledgementResponse,
   SubmissionReceipt,
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
@@ -72,6 +75,14 @@ export interface ApiClient {
   ): Promise<ListRepliesResponse>
   /** Retire a question and return the replies committed before the close fence. */
   closeReplies(requestId: string): Promise<ListRepliesResponse>
+  putAgentAcknowledgement(
+    requestId: string,
+    body: PutAgentAcknowledgementRequestT,
+  ): Promise<PutAgentAcknowledgementResponse>
+  agentAcknowledgement(
+    requestId: string,
+    options: { waitSeconds: number },
+  ): Promise<GetAgentAcknowledgementResponse>
   createMediaUpload(body: CreateMediaUploadRequestT): Promise<CreateMediaUploadResponse>
   uploadMedia(grant: CreateMediaUploadResponse, bytes: Uint8Array): Promise<void>
   health(): Promise<boolean>
@@ -222,6 +233,19 @@ export function createClient(
       call<ListRepliesResponse>(
         'POST',
         `/api/v1/notifications/${encodeURIComponent(requestId)}/replies/close`,
+      ),
+    putAgentAcknowledgement: (requestId, body) =>
+      call<PutAgentAcknowledgementResponse>(
+        'PUT',
+        `/api/v1/notifications/${encodeURIComponent(requestId)}/agent-acknowledgement`,
+        body,
+      ),
+    agentAcknowledgement: (requestId, { waitSeconds }) =>
+      call<GetAgentAcknowledgementResponse>(
+        'GET',
+        `/api/v1/notifications/${encodeURIComponent(requestId)}/agent-acknowledgement?wait_seconds=${waitSeconds}`,
+        undefined,
+        waitSeconds,
       ),
     createMediaUpload: (body) => call('POST', '/api/v1/media', body),
     uploadMedia: async (grant, bytes) => {

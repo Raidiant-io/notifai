@@ -89,6 +89,9 @@ interface Recorder {
   beforeReplies?: () => Promise<void>
   /** Per-request answer stream for multi-question ownership tests. */
   repliesFor?: (requestId: string) => ReplyView[]
+  acknowledgementRequiredFor?: (requestId: string) => boolean
+  acknowledged?: Set<string>
+  acknowledgementChecks?: string[]
 }
 
 function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
@@ -115,7 +118,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'ios' as const,
           permission_status: 'authorized',
           registration_healthy: true,
-          reply_protocol_version: 1,
+          reply_protocol_version: 2,
           last_seen_at: null,
         },
         {
@@ -124,13 +127,36 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'macos' as const,
           permission_status: 'authorized',
           registration_healthy: true,
-          reply_protocol_version: 1,
+          reply_protocol_version: 2,
           last_seen_at: null,
         },
       ],
     }),
     capabilities: notUsed,
     evidence: notUsed,
+    putAgentAcknowledgement: async (requestId, body) => {
+      recorder.acknowledged ??= new Set()
+      recorder.acknowledged.add(requestId)
+      return {
+        status: 'recorded',
+        agent_acknowledgement: {
+          text: body.text,
+          created_at: new Date(NOW).toISOString(),
+        },
+      }
+    },
+    agentAcknowledgement: async (requestId) => {
+      recorder.acknowledgementChecks ??= []
+      recorder.acknowledgementChecks.push(requestId)
+      const required = recorder.acknowledgementRequiredFor?.(requestId) ?? true
+      return {
+        request_id: requestId,
+        agent_acknowledgement_required: required,
+        agent_acknowledgement: recorder.acknowledged?.has(requestId)
+          ? { text: 'I will continue.', created_at: new Date(NOW).toISOString() }
+          : null,
+      }
+    },
     createMediaUpload: notUsed,
     uploadMedia: notUsed,
     health: async () => true,
@@ -145,6 +171,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       return {
         request_id: requestId,
         reply_expires_at: new Date(NOW + 480_000).toISOString(),
+        agent_acknowledgement_required:
+          recorder.acknowledgementRequiredFor?.(requestId) ?? true,
         replayed: false,
         overall: 'provider_accepted_all',
         deliveries: [],
@@ -156,6 +184,11 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       return ({
         request_id: requestId,
         reply_expires_at: null,
+        agent_acknowledgement_required:
+          recorder.acknowledgementRequiredFor?.(requestId) ?? true,
+        agent_acknowledgement: recorder.acknowledged?.has(requestId)
+          ? { text: 'I will continue.', created_at: new Date(NOW).toISOString() }
+          : null,
         replies: recordedReplies(requestId),
       }) satisfies ListRepliesResponse
     },
@@ -164,6 +197,11 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       return {
         request_id: requestId,
         reply_expires_at: new Date(NOW).toISOString(),
+        agent_acknowledgement_required:
+          recorder.acknowledgementRequiredFor?.(requestId) ?? true,
+        agent_acknowledgement: recorder.acknowledged?.has(requestId)
+          ? { text: 'I will continue.', created_at: new Date(NOW).toISOString() }
+          : null,
         replies: recordedReplies(requestId),
       } satisfies ListRepliesResponse
     },
@@ -842,6 +880,8 @@ describe('nagging guards', () => {
     registerQuestion('n3', h.env, { question: 'First question?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3' }))
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
     await h.deps.sleep?.(1)
     registerQuestion('n3', h.env, { question: 'Follow-up question?' }, (h.deps.now?.() ?? NOW))
     h.io.outLines = []
@@ -1215,6 +1255,8 @@ describe('the waiter owning one question to the end', () => {
     ])
 
     answers.set('req_hook_2', [reply({ text: 'Second answer' })])
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
     h.io.outLines = []
     await hookRunCommand(
       h.deps,
@@ -1621,6 +1663,8 @@ describe('several questions in flight', () => {
     expect(JSON.parse(h.io.outLines.at(-1)!).reason).toContain('Ship it')
     expect(readSessionState('answer-handoff', h.env).accepted).toBeDefined()
 
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add('req_existing')
     h.io.outLines = []
     await hookRunCommand(
       h.deps,
@@ -1636,6 +1680,104 @@ describe('several questions in flight', () => {
           entry.draft.lifecycle?.retires_request_id === 'req_existing',
       )?.draft.lifecycle?.state,
     ).toBe('answered')
+  })
+
+  it('blocks Stop with the exact command until a required Agent Acknowledgement is recorded', async () => {
+    const h = harness([reply({ text: 'Ship it' })])
+    writeSessionState('ack-required', h.env, {
+      pending: [
+        {
+          question: 'Ship it?',
+          request_id: 'req_ack_required',
+          collapse_key: 'collapse-ack-required',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 60_000,
+        },
+      ],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-required' }))
+    expect(readSessionState('ack-required', h.env).acknowledgement_due).toEqual([
+      { request_id: 'req_ack_required', recorded_at: NOW },
+    ])
+
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'ack-required', stop_hook_active: true }),
+    )
+
+    const blocked = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
+    expect(blocked.decision).toBe('block')
+    expect(blocked.reason).toContain('req_ack_required')
+    expect(blocked.reason).toContain(
+      'notifai acknowledge req_ack_required --text <text>',
+    )
+    expect(blocked.reason).toContain('concrete work')
+    expect(readSessionState('ack-required', h.env).accepted).toBeUndefined()
+  })
+
+  it('reconciles a server-recorded Agent Acknowledgement after a local clearing crash', async () => {
+    const h = harness([])
+    writeSessionState('ack-heal', h.env, {
+      acknowledgement_due: [{ request_id: 'req_ack_heal', recorded_at: NOW }],
+    })
+    h.recorder.acknowledged = new Set(['req_ack_heal'])
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-heal' }))
+
+    expect(h.recorder.acknowledgementChecks).toEqual(['req_ack_heal'])
+    expect(readSessionState('ack-heal', h.env).acknowledgement_due).toBeUndefined()
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('records only the requests whose immutable snapshot requires acknowledgement', async () => {
+    const h = harness([])
+    repliesByRequest(
+      h,
+      new Map([
+        ['req_hook_1', [reply({ text: 'Ship it' })]],
+        ['req_hook_2', [reply({ text: 'Staging' })]],
+      ]),
+    )
+    h.recorder.acknowledgementRequiredFor = (requestId) =>
+      h.recorder.aliases.get(requestId) === 1
+    writeSessionState('ack-mixed', h.env, { last_prompt_at: AWAY })
+    registerQuestion('ack-mixed', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('ack-mixed', h.env, { question: 'Deploy where?' }, NOW + 1)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-mixed' }))
+
+    const state = readSessionState('ack-mixed', h.env)
+    expect(state.acknowledgement_due?.map((entry) => entry.request_id)).toEqual([
+      h.recorder.receipts[0],
+    ])
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { reason?: string }
+    expect(output.reason).toContain(h.recorder.receipts[0]!)
+    expect(output.reason).not.toContain(h.recorder.receipts[1]!)
+  })
+
+  it('lists every required request and command in a multi-answer continuation', async () => {
+    const h = harness([])
+    repliesByRequest(
+      h,
+      new Map([
+        ['req_hook_1', [reply({ text: 'Ship it' })]],
+        ['req_hook_2', [reply({ text: 'Staging' })]],
+      ]),
+    )
+    writeSessionState('ack-multiple', h.env, { last_prompt_at: AWAY })
+    registerQuestion('ack-multiple', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('ack-multiple', h.env, { question: 'Deploy where?' }, NOW + 1)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-multiple' }))
+
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { reason?: string }
+    for (const requestId of h.recorder.receipts) {
+      expect(output.reason).toContain(requestId)
+      expect(output.reason).toContain(`notifai acknowledge ${requestId} --text <text>`)
+    }
   })
 
   it('resumes with a partial answer and keeps the rest registered', async () => {
@@ -1658,6 +1800,8 @@ describe('several questions in flight', () => {
     // The remaining question's answer arrives before the next turn ends; the
     // late-answer path hands it over without asking anything twice.
     byRequest.set('req_hook_2', [reply({ text: 'Staging' })])
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
     h.io.outLines = []
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi3', stop_hook_active: true }))
 
@@ -2179,6 +2323,8 @@ describe('user-prompt-submit hook', () => {
     registerQuestion('s16', h.env, { question: 'Ship it?' })
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's16' }))
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
     await hookRunCommand(
       h.deps,
       'stop',
@@ -2399,6 +2545,8 @@ describe('telling concurrent agents apart', () => {
     registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
     await hookRunCommand(
       h.deps,
       'stop',

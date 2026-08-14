@@ -87,6 +87,10 @@ export const LOG_EVENTS = [
   'ask.registered',
   /** An answer came back from a device. */
   'reply.received',
+  /** An agent attempted to acknowledge the user's reply. */
+  'acknowledgement.attempted',
+  /** The service recorded or replayed an Agent Acknowledgement. */
+  'acknowledgement.outcome',
   /** A harness hook started. */
   'hook.start',
   /** A hook decided whether a question may leave the terminal, and why. */

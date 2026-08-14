@@ -71,7 +71,7 @@ describe('Notifai agent skill', () => {
       'same turn',
       'each offered answer',
       'unexpected typed answer',
-      'work you will resume',
+      'work you resume',
       'never as approval',
       'permission prompt',
       'interactive picker',
@@ -82,6 +82,37 @@ describe('Notifai agent skill', () => {
       expect(askGuidance).toContain(required)
     }
     expect(askGuidance).toMatch(/without asking the user to\s+confirm again/)
+  })
+
+  it('requires concrete Agent Acknowledgements before resumed work or turn end', () => {
+    const askGuidance = skill.slice(
+      skill.indexOf('### Register a turn-ending question'),
+      skill.indexOf('## Verify delivery and readiness'),
+    )
+    const requirement = askGuidance.indexOf('agent_acknowledgement_required')
+    const command = askGuidance.indexOf('notifai acknowledge <request_id> --text')
+    const resume = askGuidance.indexOf('After sending every required Agent Acknowledgement')
+
+    expect(requirement).toBeGreaterThanOrEqual(0)
+    expect(command).toBeGreaterThan(requirement)
+    expect(resume).toBeGreaterThan(command)
+    for (const required of [
+      'immediately',
+      'before doing any',
+      'of the resumed work',
+      'before ending the turn',
+      'must be non-empty',
+      'concrete work you will do',
+      'because of their reply',
+      'bare “acknowledged”',
+      'one for every request id',
+      'disabled',
+      'requires no',
+      'command',
+      'route-neutral and truthful',
+    ]) {
+      expect(askGuidance).toContain(required)
+    }
   })
 
   it('teaches agents to report config JSON fields instead of paraphrasing defaults', () => {

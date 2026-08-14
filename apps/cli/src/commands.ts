@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import {
+  AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   CAPABILITIES_V1,
   QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
@@ -65,6 +66,7 @@ import {
 import type { Tone } from './ui/theme.js'
 import {
   WAITER_CEILING_SECONDS,
+  clearAcknowledgementObligation,
   handleSessionEnd,
   handleStop,
   handleUserPromptSubmit,
@@ -685,6 +687,7 @@ export async function sendCommand(
     title: flags.title,
     overall: receipt.overall,
     replayed: receipt.replayed,
+    agent_acknowledgement_required: receipt.agent_acknowledgement_required,
     deliveries: receipt.deliveries.length,
     wait_seconds: waitSeconds,
     exit: receiptExit,
@@ -715,6 +718,9 @@ export async function sendCommand(
               type: 'reply_result',
               request_id: receipt.request_id,
               replies: [],
+              agent_acknowledgement_required: receipt.agent_acknowledgement_required,
+              agent_acknowledgement: null,
+              acknowledgement_command: null,
               degraded: false,
             })
           : JSON.stringify(receipt, null, 2),
@@ -733,15 +739,15 @@ export async function sendCommand(
     recordReplies(deps, receipt.request_id, result.response.replies)
     if (flags.json) {
       deps.io.out(
-        JSON.stringify({
-          type: 'reply_result',
-          request_id: receipt.request_id,
-          replies: result.response.replies,
-          degraded: result.degraded,
-        }),
+        JSON.stringify(replyResultJson(result.response, result.degraded)),
       )
-    } else if (result.response.replies.length > 0) printReplies(deps, result.response.replies)
-    else printNoReply(deps, receipt.request_id, result.response.reply_expires_at)
+    } else if (result.response.replies.length > 0) {
+      printReplies(deps, result.response.replies)
+      printAcknowledgementStatus(deps, result.response)
+    } else {
+      printNoReply(deps, receipt.request_id, result.response.reply_expires_at)
+      printAcknowledgementStatus(deps, result.response)
+    }
     if (result.degraded) {
       log(deps).error('cli.error', {
         kind: 'network',
@@ -893,12 +899,14 @@ export async function repliesCommand(
         })
         recordReplies(deps, requestId, result.response.replies)
         if (flags.json) {
-          jsonBodies.push({ ...result.response, degraded: result.degraded })
+          jsonBodies.push(replyResultJson(result.response, result.degraded))
         } else if (result.response.replies.length > 0) {
           if (flags.pending === true) deps.io.out(`pending request ${requestId}`)
           printReplies(deps, result.response.replies)
+          printAcknowledgementStatus(deps, result.response)
         } else {
           printNoReply(deps, requestId, result.response.reply_expires_at)
+          printAcknowledgementStatus(deps, result.response)
         }
         anyReplies ||= result.response.replies.length > 0
         if (result.degraded) degradedRequestIds.push(requestId)
@@ -996,7 +1004,13 @@ export async function waitForReply(
   return {
     response:
       lastResponse ??
-      ({ request_id: requestId, reply_expires_at: null, replies: [] } satisfies ListRepliesResponse),
+      ({
+        request_id: requestId,
+        reply_expires_at: null,
+        agent_acknowledgement_required: false,
+        agent_acknowledgement: null,
+        replies: [],
+      } satisfies ListRepliesResponse),
     timedOut: true,
     // A poll succeeded at some point, so we do not throw — but the last thing
     // we know is that we could not reach the server. Reporting that as a plain
@@ -1034,6 +1048,56 @@ function degradedWaitWarning(requestId: string): string {
 }
 function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0
+}
+
+function acknowledgementCommand(
+  requestId: string,
+  required: boolean,
+  acknowledgement: ListRepliesResponse['agent_acknowledgement'],
+  hasReply = true,
+): string | null {
+  return required && acknowledgement === null && hasReply
+    ? `notifai acknowledge ${requestId} --text <text>`
+    : null
+}
+
+function replyResultJson(response: ListRepliesResponse, degraded: boolean): object {
+  return {
+    type: 'reply_result',
+    request_id: response.request_id,
+    reply_expires_at: response.reply_expires_at,
+    replies: response.replies,
+    agent_acknowledgement_required: response.agent_acknowledgement_required,
+    agent_acknowledgement: response.agent_acknowledgement,
+    acknowledgement_command: acknowledgementCommand(
+      response.request_id,
+      response.agent_acknowledgement_required,
+      response.agent_acknowledgement,
+      response.replies.length > 0,
+    ),
+    degraded,
+  }
+}
+
+function printAcknowledgementStatus(deps: CommandDeps, response: ListRepliesResponse): void {
+  if (!response.agent_acknowledgement_required) {
+    deps.io.out('Agent Acknowledgement: not required for this request.')
+    return
+  }
+  if (response.agent_acknowledgement !== null) {
+    deps.io.out(
+      `Agent Acknowledgement: recorded at ${response.agent_acknowledgement.created_at}: ${response.agent_acknowledgement.text}`,
+    )
+    return
+  }
+  if (response.replies.length > 0) {
+    deps.io.out('Agent Acknowledgement required.')
+    deps.io.out(
+      `next: Run \`${acknowledgementCommand(response.request_id, true, null)}\` with concrete text saying what you will do because of the reply.`,
+    )
+    return
+  }
+  deps.io.out('Agent Acknowledgement: required after a user reply; no reply is recorded yet.')
 }
 
 function recordReplies(deps: CommandDeps, requestId: string, replies: readonly ReplyView[]): void {
@@ -2123,14 +2187,95 @@ function hookActivationAdvice(installations: Installation[]): string {
   return `${advice.join('. ')}.`
 }
 
+/** Record the one Agent Acknowledgement associated with a replied-to request. */
+export async function acknowledgeCommand(
+  deps: CommandDeps,
+  requestId: string,
+  flags: { text?: string; json?: boolean },
+): Promise<number> {
+  const text = flags.text?.trim() ?? ''
+  if (text.length === 0) {
+    deps.io.err('--text is required and must contain non-whitespace text.')
+    return EXIT.usage
+  }
+  if (text.length > AGENT_ACKNOWLEDGEMENT_MAX_LENGTH) {
+    deps.io.err(
+      `--text must be at most ${AGENT_ACKNOWLEDGEMENT_MAX_LENGTH} characters after trimming.`,
+    )
+    return EXIT.usage
+  }
+
+  const logger = log(deps)
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  logger.info('acknowledgement.attempted', {
+    request_id: requestId,
+    text,
+    characters: text.length,
+  })
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  try {
+    const result = await authed.client.putAgentAcknowledgement(requestId, { text })
+    const output = {
+      request_id: requestId,
+      outcome: result.status,
+      acknowledgement: result.agent_acknowledgement,
+      agent_acknowledgement_required: true,
+    }
+    logger.info('acknowledgement.outcome', {
+      request_id: requestId,
+      outcome: result.status,
+      text: result.agent_acknowledgement.text,
+      created_at: result.agent_acknowledgement.created_at,
+      agent_acknowledgement_required: true,
+    })
+    const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
+    if (sessionId !== null) {
+      clearAcknowledgementObligation(sessionId, deps.env, requestId)
+    }
+    if (flags.json) deps.io.out(JSON.stringify(output, null, 2))
+    else {
+      deps.io.out(
+        `Agent Acknowledgement ${result.status} for ${requestId} at ${result.agent_acknowledgement.created_at}.`,
+      )
+    }
+    return EXIT.ok
+  } catch (err) {
+    return reportError(deps, err, { operation: 'agent_acknowledgement', request_id: requestId })
+  }
+}
+
 /** Retire a question so a late answer is rejected rather than silently lost. */
-export async function closeCommand(deps: CommandDeps, requestId: string): Promise<number> {
+export async function closeCommand(
+  deps: CommandDeps,
+  requestId: string,
+  flags: { json?: boolean } = {},
+): Promise<number> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    await authed.client.closeReplies(requestId)
-    deps.io.out(`Closed the reply window for ${requestId}.`)
+    const response = await authed.client.closeReplies(requestId)
+    if (flags.json) {
+      deps.io.out(
+        JSON.stringify(
+          {
+            ...response,
+            acknowledgement_command: acknowledgementCommand(
+              response.request_id,
+              response.agent_acknowledgement_required,
+              response.agent_acknowledgement,
+              response.replies.length > 0,
+            ),
+          },
+          null,
+          2,
+        ),
+      )
+    } else {
+      deps.io.out(`Closed the reply window for ${requestId}.`)
+      if (response.replies.length > 0) printAcknowledgementStatus(deps, response)
+    }
     return EXIT.ok
   } catch (err) {
     return reportError(deps, err)
