@@ -1,4 +1,4 @@
 {
-  "apps/cli": "3.0.0",
+  "apps/cli": "3.0.1",
   "packages/protocol": "0.6.0"
 }
