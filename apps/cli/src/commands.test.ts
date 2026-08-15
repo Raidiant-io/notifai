@@ -1755,8 +1755,14 @@ describe('Codex hook representation', () => {
     expect(io.outLines.join('\n')).toContain('No Notifai hooks found')
   })
 
-  it('does not migrate our hooks when both representations already exist', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-dual-'))
+  /**
+   * Notifai in one file, someone else's hooks in the other: every handler
+   * fires once, so doctor has nothing to report and the foreign file is not
+   * ours to rewrite. Doctor used to fail here — the check read "two files" as
+   * "two Notifai copies" and pointed at configuration another program owns.
+   */
+  it('passes doctor when only the other representation is foreign', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-rep-'))
     const toml = writeInlineStop(cwd, 'gdh-stop')
     const json = path.join(cwd, '.codex', 'hooks.json')
     const env = isolatedEnv(cwd)
@@ -1776,12 +1782,8 @@ describe('Codex hook representation', () => {
     })
 
     io.outLines = []
-    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    const before = io.outLines.join('\n')
-    expect(before).toMatch(/hooks \(codex representation\)/)
-    expect(before).toMatch(/prefer a single representation/)
-    expect(before).toMatch(/Stop handlers will both (run|fire)/i)
-    expect(before).not.toContain('notifai hooks install --harness codex')
+    await doctorCommand(deps, {})
+    expect(io.outLines.join('\n')).not.toMatch(/hooks \(codex representation\)/)
 
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
@@ -1789,7 +1791,7 @@ describe('Codex hook representation', () => {
     expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
     expect(readFileSync(toml, 'utf8')).toContain('gdh-stop')
     expect(readFileSync(toml, 'utf8')).not.toContain('--owner notifai')
-    expect(io.outLines.join('\n')).toMatch(/loading hooks from both/i)
+    expect(io.outLines.join('\n')).not.toMatch(/installed in both/i)
     expect(io.outLines.join('\n')).not.toMatch(/collaps/i)
 
     const installations = findInstallations(cwd, env, deps.hookAdapterHome).filter(
@@ -1797,6 +1799,44 @@ describe('Codex hook representation', () => {
     )
     expect(installations).toHaveLength(1)
     expect(installations[0]?.file).toBe(json)
+  })
+
+  it('fails doctor when Notifai itself is installed in both representations', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-dual-'))
+    const json = path.join(cwd, '.codex', 'hooks.json')
+    const env = isolatedEnv(cwd)
+    const io = new CapturedIo()
+    const client = {
+      health: async () => false,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    applyPlan(json, {
+      hooks: buildHookConfig({
+        adapterPath: hookAdapterPath(deps.hookAdapterHome),
+        harness: 'codex',
+      }),
+    })
+
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    const reported = io.outLines.join('\n')
+    expect(reported).toMatch(/hooks \(codex representation\)/)
+    expect(reported).toMatch(/installed in both/i)
+    expect(reported).toMatch(/notify twice per turn/)
+    expect(reported).toMatch(/notifai hooks uninstall --harness codex/)
+
+    // The named remedy has to actually clear it, including the copy in the
+    // file Notifai would not have chosen to write.
+    io.outLines = []
+    expect(hooksUninstallCommand(deps, { harness: 'codex', scriptPath })).toBe(EXIT.ok)
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+    await doctorCommand(deps, {})
+    expect(io.outLines.join('\n')).not.toMatch(/hooks \(codex representation\)/)
   })
 })
 
