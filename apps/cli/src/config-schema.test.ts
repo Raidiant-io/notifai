@@ -86,7 +86,7 @@ describe('formatValue', () => {
   it('explains what an unset value means instead of printing null', () => {
     // `sound = null` is accurate and tells the reader nothing about what will
     // happen; the whole complaint about the old output in one line.
-    expect(formatValue('sound', null)).toBe('each notification uses the sound for its kind')
+    expect(formatValue('sound', null)).toBe('not specified; the destination uses its normal behavior')
     expect(formatValue('devices', null)).toBe('every device that can receive')
   })
 

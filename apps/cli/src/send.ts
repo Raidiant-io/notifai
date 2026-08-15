@@ -2,16 +2,20 @@ import {
   CLI_SOUNDS,
   COLLAPSE_KEY_MAX_BYTES,
   INTERRUPTION_LEVELS,
+  MEDIA_MAX_ITEMS,
   NOTIFICATION_SCHEMA_VERSION,
   QUESTION_TEXT_MAX_LENGTH,
+  bannerExcerpt,
   type IosOptionsT,
   type LifecycleT,
   type MacosOptionsT,
+  type MediaItemT,
   type NotificationDraftT,
   NOTIFICATION_KINDS,
   PLATFORMS,
   type Platform,
   type QuestionT,
+  type SourceContextT,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import type { CliConfig } from './config.js'
@@ -20,15 +24,17 @@ type CliSound = (typeof CLI_SOUNDS)[number]
 
 export interface SendFlags {
   title: string
+  /** The one canonical Markdown body. */
   body: string
   subtitle?: string
-  /** Long-form markdown for the app's detail view; never on the banner. */
-  detail?: string
   event?: string
-  /** What this notification is: update (default), done, or question. */
+  /** What this notification is; absent means update. */
   kind?: string
   project?: string
-  session?: string
+  /** Opaque exact-session override. */
+  sessionId?: string
+  /** Human-readable session label override. */
+  sessionLabel?: string
   device?: string[]
   all?: boolean
   ttl?: number
@@ -37,7 +43,15 @@ export interface SendFlags {
   threadId?: string
   level?: string
   data?: string[]
-  image?: string
+  /** Ready media ids in author-supplied order. Commands resolve paths and URLs first. */
+  image?: string[]
+  /** Optional alt text paired with images by position. */
+  imageAlt?: string[]
+  /**
+   * Complete canonical media manifest for internal callers that already froze
+   * uploads and alt text. Mutually exclusive with the CLI's parallel inputs.
+   */
+  media?: MediaItemT[]
   /** Enable the inline reply action for this Notification Request. */
   reply?: boolean
   /** How long the server accepts a reply after submission. */
@@ -67,33 +81,109 @@ export type DraftBuild =
   | { ok: true; draft: NotificationDraftT; platform: Platform }
   | { ok: false; error: string }
 
+/** Invocation-derived values beneath explicit and configured author input. */
+export interface DraftInvocation {
+  inferredProject?: string | null
+  source?: SourceContextT
+}
+
+const POSITIONAL_MEDIA_REFERENCE = /media:(\d+)(?![A-Za-z0-9_-])/g
+
+/** Validate media cardinality and positional alt pairing before any upload starts. */
+export function validateMediaInputs(
+  images: readonly string[] | undefined,
+  alts: readonly string[] | undefined,
+): string | null {
+  const imageCount = images?.length ?? 0
+  const imageAlts = alts ?? []
+  if (imageCount > MEDIA_MAX_ITEMS) return `Attach at most ${MEDIA_MAX_ITEMS} images.`
+  if (imageAlts.length > imageCount) {
+    return `Received ${imageAlts.length} --image-alt values for ${imageCount} --image values.`
+  }
+  if (imageAlts.some((alt) => alt.length < 1 || alt.length > 256)) {
+    return '--image-alt must be 1-256 characters.'
+  }
+  return null
+}
+
+/** Validate a frozen value-object manifest without collapsing sparse alt text. */
+function validateMediaManifest(media: readonly MediaItemT[]): string | null {
+  if (media.length > MEDIA_MAX_ITEMS) return `Attach at most ${MEDIA_MAX_ITEMS} images.`
+  if (media.some((item) => item.alt !== undefined && (item.alt.length < 1 || item.alt.length > 256))) {
+    return 'Media alt text must be 1-256 characters.'
+  }
+  return null
+}
+
+/** Rewrite authorable 1-based media positions to canonical ready media ids. */
+export function rewriteMediaReferences(
+  body: string,
+  mediaIds: readonly string[],
+): { ok: true; body: string } | { ok: false; error: string } {
+  let error: string | undefined
+  const rewritten = body.replace(POSITIONAL_MEDIA_REFERENCE, (reference, digits: string) => {
+    const position = Number(digits)
+    if (
+      !Number.isSafeInteger(position) ||
+      position < 1 ||
+      position > MEDIA_MAX_ITEMS ||
+      digits !== String(position) ||
+      mediaIds[position - 1] === undefined
+    ) {
+      error = `Body reference "${reference}" has no matching --image occurrence.`
+      return reference
+    }
+    return `media:${mediaIds[position - 1]}`
+  })
+  return error === undefined ? { ok: true, body: rewritten } : { ok: false, error }
+}
+
 /** Merge flags over resolved config into a Notification Request draft. */
-export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
+export function buildDraft(
+  config: CliConfig,
+  flags: SendFlags,
+  invocation: DraftInvocation = {},
+): DraftBuild {
   if (!flags.title || !flags.body) return { ok: false, error: 'Both --title and --body are required.' }
   const platform = resolvePlatform(flags.platform)
   if (!platform) {
     return { ok: false, error: `Unknown platform "${flags.platform}" — use ${PLATFORMS.join(' or ')}.` }
   }
 
+  if (flags.media !== undefined && (flags.image !== undefined || flags.imageAlt !== undefined)) {
+    return { ok: false, error: 'Internal media manifests cannot be combined with --image or --image-alt.' }
+  }
+  const imageIds = flags.media?.map((item) => item.media_id) ?? flags.image ?? []
+  const imageAlts = flags.imageAlt ?? []
+  const mediaInputError =
+    flags.media === undefined
+      ? validateMediaInputs(imageIds, imageAlts)
+      : validateMediaManifest(flags.media)
+  if (mediaInputError !== null) return { ok: false, error: mediaInputError }
+  const media =
+    flags.media ??
+    imageIds.map((media_id, index) => ({
+      media_id,
+      ...(imageAlts[index] !== undefined ? { alt: imageAlts[index] } : {}),
+    }))
+  const body = rewriteMediaReferences(flags.body, imageIds)
+  if (!body.ok) return body
+
   const deviceIds = flags.all ? null : (flags.device?.length ? flags.device : config.devices.value)
   const targets: NotificationDraftT['targets'] =
     deviceIds && deviceIds.length > 0 ? { mode: 'selected', device_ids: deviceIds } : { mode: 'all' }
 
-  const effectiveKind = flags.reply ? 'question' : (flags.kind ?? 'update')
-  const profile = KIND_PROFILES[effectiveKind as keyof typeof KIND_PROFILES]
-  const configuredSound = config.sound.source === 'default' ? undefined : config.sound.value
-  const sound = flags.sound ?? configuredSound ?? profile?.sound
+  // Kind is semantic status metadata for Companion presentation. It never
+  // chooses native-banner attention; only an explicit flag or saved preference
+  // may add sound or interruption fields to the platform payload.
+  const sound = flags.sound ?? config.sound.value
   if (sound !== null && sound !== undefined && !CLI_SOUNDS.includes(sound as CliSound)) {
     return {
       ok: false,
       error: `Unknown sound "${sound}" — supported: ${CLI_SOUNDS.map((value) => `"${value}"`).join(', ')}.`,
     }
   }
-  const configuredLevel =
-    config.interruption_level.source === 'default'
-      ? undefined
-      : config.interruption_level.value
-  const level = flags.level ?? configuredLevel ?? profile?.level
+  const level = flags.level ?? config.interruption_level.value
   if (
     level !== null &&
     level !== undefined &&
@@ -144,10 +234,7 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
     }
   }
 
-  const project = flags.project ?? config.project.value
-  // Harnesses can export NOTIFAI_SESSION once instead of passing the flag
-  // on every send.
-  const session = flags.session ?? process.env['NOTIFAI_SESSION']
+  const project = flags.project ?? config.project.value ?? invocation.inferredProject
 
   // Ids are derived from labels so an agent writing a one-liner does not have
   // to invent them, but they stay the stable thing it branches on afterwards.
@@ -161,19 +248,19 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
   if (flags.replyMulti && choices === null && flags.questions === undefined) {
     return { ok: false, error: '--reply-multi needs answers to select between; add --reply-choice.' }
   }
-  // The banner body doubles as the question text on a single-question send, so
-  // it inherits the question's readable-in-full bound; context beyond that
-  // belongs in --detail, which never rides the banner.
+  // A single reply question is the first readable block of the canonical body.
+  // Context may follow after a blank line without changing what the user answers.
+  const derivedQuestion = bannerExcerpt(body.body).split('\n', 1)[0]!.trim()
   if (
     flags.reply &&
     flags.questions === undefined &&
-    flags.body.length > QUESTION_TEXT_MAX_LENGTH
+    derivedQuestion.length > QUESTION_TEXT_MAX_LENGTH
   ) {
     return {
       ok: false,
       error:
-        `A question must be readable where it is answered: keep it within ${QUESTION_TEXT_MAX_LENGTH} ` +
-        'characters and put the longer context in --detail.',
+        `Keep the question within ${QUESTION_TEXT_MAX_LENGTH} characters and put ` +
+        'the longer context after a blank line — the first paragraph is the question.',
     }
   }
 
@@ -185,15 +272,12 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
       : {}),
     ...(flags.lifecycle !== undefined ? { lifecycle: flags.lifecycle } : {}),
     ...(project !== null && project !== undefined ? { project } : {}),
-    ...(session !== undefined && session !== '' ? { session } : {}),
+    ...(invocation.source !== undefined ? { source: invocation.source } : {}),
     presentation: {
       title: flags.title,
-      body: flags.body,
+      body: body.body,
       ...(flags.subtitle !== undefined ? { subtitle: flags.subtitle } : {}),
-      ...(flags.detail !== undefined && flags.detail.trim() !== ''
-        ? { detail: flags.detail }
-        : {}),
-      ...(flags.image !== undefined ? { image: { media_id: flags.image } } : {}),
+      ...(media.length > 0 ? { media } : {}),
     },
     targets,
     delivery: { ttl_seconds: ttl, collapse_key: collapse },
@@ -204,7 +288,7 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
             questions: flags.questions ?? [
               {
                 id: 'q1',
-                text: flags.body,
+                text: derivedQuestion,
                 ...(choices !== null ? { choices } : {}),
                 ...(flags.replyMulti ? { multi: true } : {}),
               },
@@ -222,12 +306,6 @@ export function buildDraft(config: CliConfig, flags: SendFlags): DraftBuild {
   }
   return { ok: true, draft, platform }
 }
-
-const KIND_PROFILES = {
-  update: { sound: 'none', level: 'passive' },
-  done: { sound: 'done', level: 'passive' },
-  question: { sound: 'attention', level: 'active' },
-} as const
 
 function resolvePlatform(value: string | undefined): Platform | null {
   if (value === undefined) return 'ios'

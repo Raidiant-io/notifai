@@ -107,14 +107,14 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     choiceHints: {
       default: 'the standard notification tone',
       done: 'the completion chime',
-      attention: 'used for questions that want an answer',
+      attention: 'a distinct attention tone',
       alert: 'the most insistent tone',
       none: 'silent — arrives without a sound',
     },
-    summary: 'Override the sound every notification uses',
+    summary: 'Set the sound notifications from here use',
     detail:
-      'Normally the sound comes from what the notification is: progress updates are silent, completions get the done chime, questions get the attention tone. Setting this pins one sound for everything sent from here, overriding those profiles.\n\nA common use is `none`, to make a noisy project completely silent.',
-    unsetMeans: 'each notification uses the sound for its kind',
+      'Setting this pins one sound for every notification sent from here. Kind remains semantic status metadata and never changes native-banner attention.\n\nLeave this unset to omit the sound field and let the destination use its normal behavior. A common explicit preference is `none`, to make a noisy project completely silent.',
+    unsetMeans: 'not specified; the destination uses its normal behavior',
   },
   interruption_level: {
     label: 'Interruption level',
@@ -126,10 +126,10 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       active: 'wakes the screen and plays the sound',
       time_sensitive: 'may break through Focus modes',
     },
-    summary: 'Override how insistently notifications arrive',
+    summary: 'Set how insistently notifications from here arrive',
     detail:
-      'How hard a notification tries to reach you, in the operating system\'s terms. Like the sound, this is normally decided by what the notification is; setting it pins one level for everything.\n\n`time_sensitive` can pierce a Focus mode, so it is worth reserving for the cases that genuinely earn it.',
-    unsetMeans: 'each notification uses the level for its kind',
+      'How hard a notification tries to reach you, in the operating system\'s terms. Setting this pins one level for everything sent from here; kind never changes it.\n\nLeave this unset to omit the field and let the destination use its normal behavior. `time_sensitive` can pierce a Focus mode, so reserve it for cases that genuinely earn it.',
+    unsetMeans: 'not specified; the destination uses its normal behavior',
   },
   devices: {
     label: 'Default devices',
@@ -178,8 +178,8 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'string',
     summary: 'The name this project reports itself as',
     detail:
-      'Stamped on every notification sent from this directory, and how the companion apps group and filter what arrives. Normally set once in `.notifai/config.toml` and committed, so everyone working on the repository reports the same name.',
-    unsetMeans: 'notifications arrive without a project',
+      'Stamped on every notification sent from this directory, and how the companion apps group and filter what arrives. When unset, the CLI infers a stable identifier from Git (shared across linked worktrees) or the current directory. Set it in `.notifai/config.toml` only when that inferred name is not the identity you want.',
+    unsetMeans: 'inferred from Git or the current directory',
     example: 'my-app',
   },
   notify_criteria: {

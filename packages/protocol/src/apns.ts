@@ -1,3 +1,4 @@
+import { bannerExcerpt } from './content.js'
 import {
   DEFAULT_NOTIFICATION_KIND,
   effectiveKind,
@@ -11,39 +12,26 @@ export interface ApnsEnvelope {
   payload: Record<string, unknown>
   /** APNs priority derived from the selected platform interruption level. */
   priority: 10 | 5
-  /**
-   * APNs push type the transport must send. `background` is the silent state
-   * sync of a `done` lifecycle draft; 5 is the only legal priority for it.
-   */
+  /** Background is the silent state sync of a `done` lifecycle draft. */
   pushType: 'alert' | 'background'
 }
 
-/**
- * Pure APNs payload assembly shared by server rendering and client-side size
- * estimation. Transport headers such as expiration and collapse are owned by
- * the server's APNs renderer rather than the public draft.
- */
-/** Dispatch-time Project identity resolved by the server. */
+/** Dispatch-time Project identity resolved by the service. */
 export interface ProjectIdentity {
   /** User-facing sender name; companions fall back to the identifier. */
   name?: string | null
-  /** Generated public or custom signed avatar URL the NSE can fetch. */
+  /** Generated public or custom signed avatar URL the extension can fetch. */
   imageUrl?: string | null
 }
 
-/**
- * What a companion needs to name this delivery back to the server. The receipt
- * token is the delivery's own secret: it lets an extension
- * acknowledge arrival without a user session, which is why neither Notification
- * Service Extension touches the keychain any more.
- */
+/** What a companion needs to name this Delivery back to the service. */
 export interface EnvelopeIds {
   requestId: string
   deliveryId: string
   receiptToken?: string | null
 }
 
-/** Server-owned metadata for the original reply-enabled Notification Request. */
+/** Service-owned metadata for the original reply-enabled Notification Request. */
 export interface ReplyMetadata {
   /** Immutable account-preference snapshot taken at request acceptance. */
   agentAcknowledgementRequired: boolean
@@ -55,37 +43,33 @@ export interface AgentAcknowledgementSync {
   createdAt: Date
 }
 
-/**
- * Encoded token width — a 16-byte truncated HMAC, base64url, no padding. It is
- * fixed by construction, which is what lets pre-flight size estimation reserve
- * the exact room the real token will take.
- */
+/** Service-derived context carried by a done-tier retirement. */
+export interface RetirementAnswerContext {
+  answeredVia: string
+  answer?: string
+}
+
+/** Encoded width of the per-Delivery receipt token. */
 export const RECEIPT_TOKEN_LENGTH = 22
 
+/** Pure APNs payload assembly shared by rendering and client-side size estimation. */
 export function buildApnsEnvelope(
   draft: NotificationDraftT,
   ids: EnvelopeIds,
   mediaUrl: string | null,
   platform: Platform = 'ios',
   projectIdentity: ProjectIdentity | null = null,
-  /**
-   * Server-owned close time of this request's reply window. Companions keep
-   * their notification history on-device, so the deadline travels with
-   * the notification instead of requiring a lookup to offer a reply later.
-   */
+  /** Service-owned close time of this request's reply window. */
   replyExpiresAt: Date | null = null,
+  retirementAnswerContext: RetirementAnswerContext | null = null,
   replyMetadata: ReplyMetadata | null = null,
   agentAcknowledgementSync: AgentAcknowledgementSync | null = null,
 ): ApnsEnvelope {
   const options = draft.platform?.[platform]
-  // A state change is not news (D-B): a `done` draft retires what it replaces
-  // rather than announcing itself. Apple forbids alert, sound, and badge
-  // alongside content-available, and the remaining aps keys only describe
-  // visible notifications, so the silent form carries exactly one key.
   if (draft.lifecycle?.tier === 'done') {
     return {
       payload: {
-        aps: { 'content-available': 1 },
+        aps: { 'content-available': 1, 'mutable-content': 1 },
         notifai: notifaiKey(
           draft,
           ids,
@@ -93,6 +77,7 @@ export function buildApnsEnvelope(
           projectIdentity,
           replyExpiresAt,
           options,
+          retirementAnswerContext,
           replyMetadata,
           agentAcknowledgementSync,
         ),
@@ -101,23 +86,20 @@ export function buildApnsEnvelope(
       pushType: 'background',
     }
   }
+
   const aps: Record<string, unknown> = {
     alert: {
       title: draft.presentation.title,
       ...(draft.presentation.subtitle !== undefined ? { subtitle: draft.presentation.subtitle } : {}),
-      body: draft.presentation.body,
+      body: bannerExcerpt(draft.presentation.body),
     },
   }
-  // Omitted is the explicit silent form. Semantic names resolve to CAF files
-  // bundled in the companion apps; 'default' stays the APNs keyword.
   if (options?.sound !== null) {
     const sound = options?.sound ?? 'default'
     aps['sound'] = sound === 'default' ? 'default' : `${sound}.caf`
   }
   if (options?.badge !== undefined && options.badge !== null) aps['badge'] = options.badge
   if (options?.thread_id !== undefined && options.thread_id !== null) aps['thread-id'] = options.thread_id
-  // The capability document's default is active, so both estimate and send
-  // now materialize the same APNs interruption-level rule.
   aps['interruption-level'] = options?.interruption_level ?? 'active'
   if (options?.relevance_score !== undefined && options.relevance_score !== null) {
     aps['relevance-score'] = options.relevance_score
@@ -126,43 +108,35 @@ export function buildApnsEnvelope(
     aps['target-content-id'] = options.target_content_id
   }
   if (draft.reply !== undefined) {
-    // A single free-text question keeps the system inline-reply category, so
-    // the keyboard is one long-press away. Anything richer — choices, or a
-    // set of questions — is answered on the content-extension card.
     const [first] = draft.reply.questions
     const usesCard = draft.reply.questions.length > 1 || first?.choices !== undefined
     aps['category'] = usesCard ? REPLY_CHOICE_CATEGORY_ID : REPLY_CATEGORY_ID
   }
-  if (mediaUrl !== null || draft.project !== undefined) {
-    // The Notification Service Extension downloads and attaches the image
-    // and applies the project's communication identity; text still shows if
-    // the extension or downloads fail.
-    aps['mutable-content'] = 1
-  }
-
-  const notifai = notifaiKey(
-    draft,
-    ids,
-    mediaUrl,
-    projectIdentity,
-    replyExpiresAt,
-    options,
-    replyMetadata,
-    agentAcknowledgementSync,
-  )
+  // Every alert reaches the Notification Service Extension so closed-app
+  // history capture does not depend on the presence of media or Project identity.
+  aps['mutable-content'] = 1
 
   return {
-    payload: { aps, notifai },
+    payload: {
+      aps,
+      notifai: notifaiKey(
+        draft,
+        ids,
+        mediaUrl,
+        projectIdentity,
+        replyExpiresAt,
+        options,
+        retirementAnswerContext,
+        replyMetadata,
+        agentAcknowledgementSync,
+      ),
+    },
     priority: options?.interruption_level === 'passive' ? 5 : 10,
     pushType: 'alert',
   }
 }
 
-/**
- * The custom `notifai` payload key — everything companions need that is not
- * APNs presentation. Assembled once so the silent `done` form publishes the
- * same identifiers as the alert it retires.
- */
+/** The custom `notifai` payload key shared by alert and silent state syncs. */
 function notifaiKey(
   draft: NotificationDraftT,
   ids: EnvelopeIds,
@@ -170,69 +144,57 @@ function notifaiKey(
   projectIdentity: ProjectIdentity | null,
   replyExpiresAt: Date | null,
   options?: NonNullable<NotificationDraftT['platform']>[Platform],
+  retirementAnswerContext?: RetirementAnswerContext | null,
   replyMetadata?: ReplyMetadata | null,
   agentAcknowledgementSync?: AgentAcknowledgementSync | null,
 ): Record<string, unknown> {
   const kind = effectiveKind(draft)
+  const excerpt = bannerExcerpt(draft.presentation.body)
   return {
     request_id: ids.requestId,
     delivery_id: ids.deliveryId,
-    // The delivery's own secret, spent on exactly one thing: acknowledging
-    // that this push arrived. Costs 40 bytes of a 4096-byte envelope and buys
-    // an extension that needs no session, no keychain and no entitlement.
     ...(ids.receiptToken != null ? { receipt_token: ids.receiptToken } : {}),
     ...(draft.event !== undefined ? { event: draft.event } : {}),
-    // Only when it says something. `update` is what a reader assumes in its
-    // absence, and the envelope is 4096 bytes — no key earns space by
-    // restating the default.
     ...(kind !== DEFAULT_NOTIFICATION_KIND ? { kind } : {}),
-    // The lifecycle axis rides every push so companions can render
-    // needs-you / new / done without a server lookup; on a background
-    // retirement it is the whole message.
     ...(draft.lifecycle !== undefined ? { lifecycle: draft.lifecycle } : {}),
-    // The two correlation ids do different jobs on a retirement: the
-    // collapse key (also the APNs apns-collapse-id) removes the DELIVERED
-    // notification, while retires_request_id finds the on-device HISTORY
-    // entry — keyed by request id — and marks it done.
     ...(draft.lifecycle?.tier === 'done' && draft.lifecycle.retires_request_id !== undefined
       ? { retires_request_id: draft.lifecycle.retires_request_id }
       : {}),
+    ...(draft.lifecycle?.tier === 'done' && retirementAnswerContext != null
+      ? {
+          answered_via: retirementAnswerContext.answeredVia,
+          ...(retirementAnswerContext.answer !== undefined
+            ? { answer: retirementAnswerContext.answer }
+            : {}),
+        }
+      : {}),
     ...(draft.delivery.collapse_key !== null ? { collapse_key: draft.delivery.collapse_key } : {}),
     ...(draft.project !== undefined ? { project: draft.project } : {}),
-    // Session badge input; companions hash it into a shape+color.
-    ...(draft.session !== undefined ? { session: draft.session } : {}),
-    // Sender identity for communication-style presentation.
+    ...(draft.source?.session_id !== undefined ? { session_id: draft.source.session_id } : {}),
+    ...(draft.source?.session_label !== undefined ? { session_label: draft.source.session_label } : {}),
+    ...(draft.source?.harness !== undefined ? { harness: draft.source.harness } : {}),
+    ...(draft.source?.branch !== undefined ? { branch: draft.source.branch } : {}),
+    ...(draft.source?.worktree !== undefined ? { worktree: draft.source.worktree } : {}),
     ...(projectIdentity?.name != null ? { project_name: projectIdentity.name } : {}),
     ...(projectIdentity?.imageUrl != null ? { project_image_url: projectIdentity.imageUrl } : {}),
     ...(options?.custom_data !== undefined ? { data: options.custom_data } : {}),
     ...(mediaUrl !== null ? { media_url: mediaUrl } : {}),
-    // A flag, never the content. Long-form detail is up to 16 KiB and
-    // the whole envelope is 4096 bytes, so the companion is told there is
-    // something to fetch and fetches it when the user opens the notification.
-    ...(draft.presentation.detail !== undefined ? { has_detail: true } : {}),
-    // Only meaningful alongside the reply category, and only the server knows
-    // the absolute deadline; the companion offers or retires its in-app
-    // composer from this value.
+    ...(draft.presentation.media !== undefined
+      ? { media_count: draft.presentation.media.length }
+      : {}),
+    ...(excerpt !== draft.presentation.body ? { has_full_body: true } : {}),
     ...(draft.reply !== undefined && replyExpiresAt !== null
       ? { reply_expires_at: replyExpiresAt.toISOString() }
       : {}),
-    // The original question carries the immutable server snapshot so every
-    // Companion renders the same post-reply state. Non-question pushes omit it.
-    ...(draft.reply !== undefined && replyMetadata !== null && replyMetadata !== undefined
+    ...(draft.reply !== undefined && replyMetadata != null
       ? { agent_acknowledgement_required: replyMetadata.agentAcknowledgementRequired }
       : {}),
-    // A later silent state sync announces availability and time only. The text
-    // stays out of APNs and is fetched through the authenticated contract.
-    ...(draft.lifecycle?.tier === 'done' &&
-    agentAcknowledgementSync != null
+    ...(draft.lifecycle?.tier === 'done' && agentAcknowledgementSync != null
       ? {
           agent_acknowledgement_available: true,
           agent_acknowledgement_created_at: agentAcknowledgementSync.createdAt.toISOString(),
         }
       : {}),
-    // The question set travels with the notification for the same reason the
-    // deadline does: the content extension and the in-app surfaces must render
-    // texts and labels with no network round-trip and no server lookup.
     ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),
   }
 }

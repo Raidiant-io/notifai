@@ -84,56 +84,53 @@ failure to resolve, not as permission to bypass routing or fabricate evidence.
 
 ## Compose and send
 
-The common send needs a concise title, a useful body, and the right kind:
+The common send needs a brief substantive title, one canonical Markdown body,
+and the right kind:
 
 ```bash
 notifai send \
-  --title "Done · my-app" \
-  --body "All 42 tests passed in 3m 10s. Next: review the release candidate." \
-  --kind done \
-  --project my-app
+  --title "All 42 tests passed" \
+  --body "The suite finished in 3m 10s. Next: review the release candidate." \
+  --kind done
 ```
 
-Write for a glance:
+Write for a glance and for the in-app detail view:
 
-- Lead the title with the message type, then the project or subject: `Done ·
-  api`, `Failed · web`, `Question · release`. This is guidance, not a hard
-  limit. The CLI warns when a title runs beyond roughly 40 characters because
-  shorter titles survive more native surfaces.
-- Make the title carry the message on its own. Put the next fact the user would
-  ask for in the body: result, count, duration, error gist, or next action.
-- Keep the body to one or two short plain-text sentences. Native banners do not
-  render Markdown.
+- Make the title brief and immediately understandable on its own. Write only the
+  specific substance: `All 42 tests passed`, `Checkout is blocked by tax setup`,
+  `Migration 0007 failed`. Never repeat the type or Project in the title; use
+  `--kind` for type, and let Notifai infer Project identity.
+- Put the next fact the user would ask for in the body: result, count, duration,
+  error gist, evidence, or next action. The body is always Markdown and may be
+  long when the full context is useful.
+- Put the most useful readable sentence or paragraph first. Native banners show
+  a bounded plain-text excerpt derived from the same body; Companion Apps render
+  the complete Markdown.
+- Use `--body-file <path|->` for long bodies from a file or stdin. Do not create a
+  second summary/detail split; there is one body.
 - A completion notice must say what comes next. A bare “done” sends the user
   back to the terminal to discover why it matters.
 - Keep wording channel-neutral. Do not assume a phone, desktop, or a particular
   interaction such as “tap here.”
 
-Put long-form Markdown in `--detail` or `--detail-file`; detail is available in
-the companion app and never appears on the banner:
-
 ```bash
-notifai send --title "Failed · api" --body "Integration tests failed." \
-  --detail-file ./test-report.md --kind done --project api
+notifai send --title "Integration tests failed" \
+  --body-file ./test-report.md --kind failed
 ```
 
-### Kind profiles
+### Kind and attention
 
-Kind profiles own attention. Never pass `--sound` or `--level` unless you
-intentionally override both the kind profile and saved user config.
+Pass `--kind` (and `--reply` for a question) so Companion Apps can present the
+notification's semantic status. Kind never chooses a native-banner sound or
+interruption level. Do not pass `--sound` or `--level` unless the user asked for
+that attention behavior for this send; saved preferences already apply without
+flags. With neither an explicit flag nor a saved preference, Notifai omits the
+field and lets the destination use its normal behavior.
 
-| Effective kind | Default sound | Default level |
-| --- | --- | --- |
-| `update` (default) | `none` | `passive` |
-| `done` | `done` | `passive` |
-| question (`--reply`) | `attention` | `active` |
-
-Pass `--kind` (and `--reply` for a question). An explicit `--sound` or
-`--level` wins over saved config and the kind profile — that is why they are
-overrides, not completeness. Use them only when the situation or the user's
-stated policy really differs from both. `time_sensitive` is not a question
-default; reserve it for a case where acting late loses value. A reply request
-is always a question, so the CLI rejects `--kind done --reply`.
+An explicit `--sound` or `--level` wins over saved config, so these flags are
+overrides rather than completeness. `time_sensitive` can pierce Focus modes;
+reserve it for a case where acting late loses value. A reply request is always
+a question, so the CLI rejects `--kind done --reply`.
 
 Useful delivery controls:
 
@@ -143,8 +140,12 @@ Useful delivery controls:
 - `--ttl <seconds>` controls how long delivery remains useful. The CLI warns on
   explicit windows longer than 72 hours.
 - `--data <key=value>` carries namespaced custom data; repeat it for more keys.
-- `--image <path|url|media_id>` attaches meaningful visual evidence. Check
-  `notifai capabilities --platform <platform>` when the image is essential.
+- `--image <path|url|media_id>` attaches meaningful visual evidence; repeat it
+  in the intended gallery order (maximum 8). Pair optional `--image-alt` values
+  by position. Inside the same body, `media:1` through `media:8` refer to those
+  ordered image occurrences and are rewritten to canonical media ids before
+  submission. Check `notifai capabilities --platform <platform>` when media is
+  essential.
 
 ### Routing
 
@@ -153,8 +154,8 @@ fields to both iOS and macOS. Inspect device IDs before narrowing delivery:
 
 ```bash
 notifai devices
-notifai send --title "Update · api" --body "Staging deploy started." --device dev_abc
-notifai send --title "Update · api" --body "Staging deploy started." \
+notifai send --title "Staging deploy started" --body "Health checks are green." --device dev_abc
+notifai send --title "Staging deploy started" --body "Health checks are green." \
   --device dev_abc --device dev_xyz
 ```
 
@@ -164,37 +165,30 @@ delivery device.
 
 ### Project and session identity
 
-Set the project once when possible:
+Notifai infers Project identity from the invocation directory when no flag or
+configured value exists. Git worktrees of one repository share one Project;
+outside Git, the directory basename is used when it forms a safe identifier.
+Use `--project` only as an explicit override, or persist a deliberate choice:
 
 ```bash
 notifai config set project my-app --project --yes
 ```
 
-Use one stable opaque session ID for the whole agent run. Exporting it once is
-less error-prone than repeating `--session`:
-
-POSIX shells:
-
-```sh
-export NOTIFAI_SESSION="$(node -p "require('node:crypto').randomUUID()")"
-```
-
-PowerShell:
-
-```powershell
-$env:NOTIFAI_SESSION = node -p "require('node:crypto').randomUUID()"
-```
-
-Do not mint a new ID per send. Hooks normally learn their harness session from
-the harness itself; never invent an ID to bypass a failed doctor check.
+Notifai also uses the exact active harness session when the harness exposes one.
+The opaque id remains machine-only; a stable human-readable session label,
+branch, and privacy-safe worktree basename travel separately. Do not mint an id
+or repeat it in User-facing text. Use `--session-id` / `NOTIFAI_SESSION_ID` and
+`--session-label` / `NOTIFAI_SESSION_LABEL` only when you truly have an exact
+override. A label without an id is rejected, and unsupported or uncertain
+harnesses omit session identity honestly.
 
 ## Ask for a decision
 
 A notification that asks must be answerable from the notification. Do not put
 an unanswerable question in a completion body. Keep the question itself short
-enough to read where it is answered; put reasoning, logs, and context in
-`--detail` (markdown, shown only in the app) rather than stretching the
-question.
+enough to read where it is answered; put reasoning, logs, and Markdown context
+in `--body` / `--body-file`. The CLI composes the canonical body as the question
+first, a blank line, then that context.
 
 Answering rules that hold for every question:
 
@@ -216,10 +210,10 @@ the result is machine-checkable:
 
 ```bash
 notifai send \
-  --title "Question · release" \
+  --title "Deploy migration 0007 now?" \
   --body "Deploy migration 0007 to production now?" \
   --reply --reply-choice "Deploy now" --reply-choice "Hold" \
-  --reply-timeout 900 --project release
+  --reply-timeout 900
 ```
 
 Add `--reply-multi` when several of the offered answers may be chosen at
@@ -297,9 +291,10 @@ real question text, and the user's answer. Do not add claims about trust,
 urgency, provenance, permission, or whether confirmation is needed.
 
 `ask` takes the same question surface: `--multi` for multi-select,
-`--detail`/`--detail-file` for long-form context. Several questions that
-genuinely belong together can travel as one notification, answered as a
-short form on the device — pass `--form <path>` (or `-` for stdin) with:
+`--body`/`--body-file` for Markdown context, and repeatable `--image` /
+`--image-alt` for ordered media. Several questions that genuinely belong
+together can travel as one notification, answered as a short form on the
+device — pass `--form <path>` (or `-` for stdin) with:
 
 ```json
 {
@@ -308,7 +303,7 @@ short form on the device — pass `--form <path>` (or `-` for stdin) with:
     { "text": "Which checks may I skip?", "choices": ["Lint", "E2E"], "multi": true },
     { "text": "Anything to watch?" }
   ],
-  "detail": "Optional markdown context."
+  "body": "Optional Markdown context."
 }
 ```
 

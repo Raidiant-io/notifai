@@ -32,10 +32,12 @@ project or the machine. An unattended caller must select one explicitly:
 notifai send --title "Deploy finished" --body "staging, 2m14s" --kind done
 ```
 
-Write for a lock screen. The title gets a couple of seconds of attention
-and usually has to carry the whole message; assume the body may never be
-read. Long-form content belongs in `--detail`, which never appears on the
-banner and is shown in the companion app for when you sit down.
+Write a brief title whose substance is immediately understandable; type lives
+in `--kind`, and Project identity is inferred from the invocation directory.
+The one body is always Markdown. Native banners show a bounded readable
+plain-text excerpt from it, while Companion Apps render the complete body. Use
+`--body-file <path|->` for long content. Repeat `--image` for an ordered image
+collection and use `media:1`, `media:2`, and so on for inline references.
 
 ## Asking you a question
 

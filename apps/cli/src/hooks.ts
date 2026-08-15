@@ -14,9 +14,11 @@ import path from 'node:path'
 import type {
   LifecycleEndState,
   ListRepliesResponse,
+  MediaItemT,
   NotificationDraftT,
   QuestionT,
   ReplyView,
+  SourceContextT,
   SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import {
@@ -160,6 +162,8 @@ export interface RetiringQuestion {
   device_ids: string[]
   /** Shown if the companion has no history entry to correlate against. */
   question: string
+  project?: string
+  source?: SourceContextT
   state: LifecycleEndState
 }
 
@@ -175,8 +179,6 @@ export interface RetiringQuestion {
  * next holds a client.
  */
 export interface OrphanRetirement extends RetiringQuestion {
-  /** Label of the session that asked, so the retirement sync matches its badge. */
-  session?: string
   /** Epoch ms when the entry was orphaned; entries beyond the TTL are dropped. */
   enqueued_at: number
 }
@@ -208,8 +210,13 @@ export interface PendingQuestion {
    * texts, choices, multi flags. What actually rides the push.
    */
   questions?: QuestionT[]
-  /** Long-form markdown context, shown in the companion's detail view. */
-  detail?: string
+  /** Canonical Markdown body composed when the question was registered. */
+  body?: string
+  /** Final ordered media collection; uploads complete before registration. */
+  media?: MediaItemT[]
+  /** Final Project and Source Context frozen at registration. */
+  project?: string
+  source?: SourceContextT
   /** Set once the question has actually been pushed, so it can be retired. */
   request_id?: string
   collapse_key?: string
@@ -840,10 +847,10 @@ async function prepareQuestionSubmission(
     title: string
     body: string
     questions: QuestionT[]
-    detail?: string | undefined
+    media?: MediaItemT[] | undefined
+    project?: string | undefined
+    source?: SourceContextT | undefined
     event: string
-    /** Which agent is asking; two of them must not look alike. */
-    session?: string | undefined
     /** How long the server keeps accepting an answer. */
     windowSeconds: number
     /** Absolute owner deadline persisted before submit. */
@@ -857,19 +864,23 @@ async function prepareQuestionSubmission(
   if (answerable.length === 0) {
     return { error: 'no device can answer a question yet; leaving this to the terminal' }
   }
-  const build = buildDraft(ctx.config, {
-    title: options.title,
-    body: options.body,
-    event: options.event,
-    lifecycle: { tier: 'needs_you' },
-    ...(options.session !== undefined ? { session: options.session } : {}),
-    device: answerable,
-    reply: true,
-    replyWindow: Math.max(60, options.windowSeconds),
-    questions: options.questions,
-    ...(options.detail !== undefined ? { detail: options.detail } : {}),
-    collapseKey,
-  })
+  const build = buildDraft(
+    ctx.config,
+    {
+      title: options.title,
+      body: options.body,
+      event: options.event,
+      lifecycle: { tier: 'needs_you' },
+      ...(options.project !== undefined ? { project: options.project } : {}),
+      ...(options.media !== undefined ? { media: options.media } : {}),
+      device: answerable,
+      reply: true,
+      replyWindow: Math.max(60, options.windowSeconds),
+      questions: options.questions,
+      collapseKey,
+    },
+    options.source === undefined ? {} : { source: options.source },
+  )
   if (!build.ok) return { error: build.error }
 
   return {
@@ -997,23 +1008,6 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
 }
 
 /**
- * The session id this push is attributed to — the same one `send` carries.
- *
- * The hook has always known `session_id` and never passed it on, so two agents
- * in separate worktrees produced identical notifications and the user could
- * answer the wrong one's question. An exported `NOTIFAI_SESSION`
- * still wins, for coherence rather than vanity: it is THE session id wherever
- * it is set, so a session that exported one before launching must carry
- * the same on its own sends and on the questions its hooks push. A name the
- * user chose also outlives harness restarts, which a per-launch UUID cannot.
- */
-function sessionLabel(ctx: HookContext, envelope: HookEnvelope): string | undefined {
-  const explicit = ctx.env['NOTIFAI_SESSION']
-  if (explicit !== undefined && explicit !== '') return explicit
-  return envelope.session_id
-}
-
-/**
  * Everything retirement needs. Narrower than a HookContext on purpose:
  * `notifai ask` supersedes the previous question and it is a plain command with
  * no hook payload, no idle probe and nothing to sleep for.
@@ -1058,18 +1052,23 @@ async function retire(
   endState: LifecycleEndState,
   retiresRequestId: string,
   devices?: string[],
-  session?: string | undefined,
+  project?: string | undefined,
+  source?: SourceContextT | undefined,
 ): Promise<boolean> {
-  const build = buildDraft(ctx.config, {
-    title,
-    body,
-    event: 'question_retired',
-    lifecycle: { tier: 'done', state: endState, retires_request_id: retiresRequestId },
-    ...(session !== undefined ? { session } : {}),
-    ...(devices !== undefined && devices.length > 0 ? { device: devices } : {}),
-    collapseKey,
-    level: 'passive',
-  })
+  const build = buildDraft(
+    ctx.config,
+    {
+      title,
+      body,
+      event: 'question_retired',
+      lifecycle: { tier: 'done', state: endState, retires_request_id: retiresRequestId },
+      ...(project !== undefined ? { project } : {}),
+      ...(devices !== undefined && devices.length > 0 ? { device: devices } : {}),
+      collapseKey,
+      level: 'passive',
+    },
+    source === undefined ? {} : { source },
+  )
   if (!build.ok) return false
   try {
     await ctx.client.submit(
@@ -1150,6 +1149,8 @@ function retiringQuestion(
     collapse_key: pending.collapse_key!,
     device_ids: [...pending.device_ids!],
     question: pending.question,
+    ...(pending.project !== undefined ? { project: pending.project } : {}),
+    ...(pending.source !== undefined ? { source: pending.source } : {}),
     state,
   }
 }
@@ -1172,7 +1173,6 @@ export async function drainRetirements(
   ctx: RetireDeps,
   sessionId: string,
   env: NodeJS.ProcessEnv,
-  session?: string | undefined,
 ): Promise<string[]> {
   const queue = readSessionState(sessionId, env).retiring ?? []
   if (queue.length === 0) return []
@@ -1188,7 +1188,8 @@ export async function drainRetirements(
       entry.state,
       entry.request_id,
       retirementDeviceIds(entry),
-      session,
+      entry.project,
+      entry.source,
     )
     if (sent) {
       retired.push(entry.request_id)
@@ -1241,7 +1242,6 @@ function updateOrphanQueue(
 export function orphanRetirements(
   env: NodeJS.ProcessEnv,
   entries: RetiringQuestion[],
-  session: string | undefined,
   now: number,
 ): void {
   if (entries.length === 0) return
@@ -1249,11 +1249,7 @@ export function orphanRetirements(
     const known = new Set(queue.map((entry) => entry.request_id))
     const added = entries
       .filter((entry) => !known.has(entry.request_id))
-      .map((entry) => ({
-        ...entry,
-        ...(session !== undefined ? { session } : {}),
-        enqueued_at: now,
-      }))
+      .map((entry) => ({ ...entry, enqueued_at: now }))
     return [...queue, ...added].slice(-ORPHAN_QUEUE_CAP)
   })
 }
@@ -1291,7 +1287,8 @@ export async function drainOrphanRetirements(
       entry.state,
       entry.request_id,
       retirementDeviceIds(entry),
-      entry.session,
+      entry.project,
+      entry.source,
     )
     if (sent) {
       done.push(entry.request_id)
@@ -1865,7 +1862,7 @@ export async function handleUserPromptSubmit(
     notes.push('the late device answer will continue the agent at this turn’s Stop')
     return { notes }
   }
-  const retired = await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))
+  const retired = await drainRetirements(ctx, sessionId, ctx.env)
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
   const swept = [...retired, ...orphaned]
   if (swept.length > 0) {
@@ -2031,7 +2028,7 @@ export async function runEscalationWaiter(
     const pending = pendingList(state)
     if (pending.length === 0) {
       const swept = [
-        ...(await drainRetirements(ctx, sessionId, ctx.env, sessionLabel(ctx, envelope))),
+        ...(await drainRetirements(ctx, sessionId, ctx.env)),
         ...(await drainOrphanRetirements(ctx, ctx.env, ctx.now())),
       ]
       if (swept.length > 0) {
@@ -2378,21 +2375,19 @@ async function escalate(
     const questions = pendingQuestions(entry)
     let intent = entry.submission
     if (intent === undefined) {
+      if (entry.body === undefined) {
+        notes.push('registered question has no canonical body; register it again with this CLI')
+        continue
+      }
       const prepared = await prepareQuestionSubmission(ctx, {
-        title:
-          ctx.config.project.value === null
-            ? 'Question'
-            : `Question · ${ctx.config.project.value}`,
-        // A set is answered on the expanded card; the banner leads with the
-        // first question and says how much more is waiting behind it.
-        body:
-          questions.length > 1
-            ? `${questions[0]!.text} (+${questions.length - 1} more)`
-            : entry.question,
+        // Type and Project have their own fields; the title is only substance.
+        title: questions[0]!.text,
+        body: entry.body,
         questions,
-        ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+        ...(entry.media !== undefined ? { media: entry.media } : {}),
+        ...(entry.project !== undefined ? { project: entry.project } : {}),
+        ...(entry.source !== undefined ? { source: entry.source } : {}),
         event: 'agent_question',
-        session: sessionLabel(ctx, envelope),
         windowSeconds: replyWindowSeconds,
         ownerDeadlineAt,
       })
@@ -2704,8 +2699,7 @@ export function handleSessionEnd(
     }
   }
   if (orphans.length > 0) {
-    const label = env['NOTIFAI_SESSION']
-    orphanRetirements(env, orphans, label !== undefined && label !== '' ? label : sessionId, now)
+    orphanRetirements(env, orphans, now)
     notes.push(
       `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
     )

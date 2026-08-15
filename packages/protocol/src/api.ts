@@ -2,9 +2,11 @@ import { Type, type Static } from '@sinclair/typebox'
 import {
   NotificationDraft,
   NOTIFICATION_IMAGE_MAX_BYTES,
+  NotificationMediaTypeSchema,
   PlatformSchema,
   ProviderSchema,
   REPLY_MAX_LENGTH,
+  type NotificationMediaType,
   type Platform,
 } from './notification.js'
 import type {
@@ -442,11 +444,7 @@ export interface GetAgentAcknowledgementResponse {
 
 export const CreateMediaUploadRequest = Type.Object(
   {
-    media_type: Type.Union([
-      Type.Literal('image/jpeg'),
-      Type.Literal('image/png'),
-      Type.Literal('image/gif'),
-    ]),
+    media_type: NotificationMediaTypeSchema,
     size_bytes: Type.Integer({ minimum: 1, maximum: NOTIFICATION_IMAGE_MAX_BYTES }),
     sha256: Type.String({ pattern: '^[a-f0-9]{64}$' }),
   },
@@ -467,6 +465,24 @@ export interface FinalizeMediaUploadResponse {
   /** Storage-provider-observed bytes used for quota accounting. */
   size_bytes: number
   status: 'ready'
+}
+
+/** One ordered image in the authenticated full-content response. */
+export interface NotificationContentMediaItem {
+  media_id: string
+  /** Zero-based collection position. */
+  position: number
+  media_type: NotificationMediaType
+  alt: string | null
+  /** Fresh signed URL, or null once the asset is no longer available. */
+  url: string | null
+}
+
+/** Full canonical content fetched by a Companion App when a notification opens. */
+export interface NotificationContentResponse {
+  request_id: string
+  body: string
+  media: NotificationContentMediaItem[]
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox'
+import { BODY_MAX_LENGTH } from './content.js'
 import { LIFECYCLE_END_STATES, LIFECYCLE_TIERS } from './lifecycle.js'
 
 /**
@@ -18,15 +19,19 @@ export const COLLAPSE_KEY_MAX_BYTES = 64
 export const REPLY_CATEGORY_ID = 'notifai.reply'
 /**
  * Question sets carry their own category so the expanded notification is the
- * answering surface: the content extension renders the choices (and the
- * secondary typed-answer path — a free-text answer is always possible, it just
- * never competes with the choices at equal prominence).
+ * answering surface: the content extension renders choices and the secondary
+ * typed-answer path.
  */
 export const REPLY_CHOICE_CATEGORY_ID = 'notifai.reply.choice'
 export const REPLY_ACTION_ID = 'notifai.reply.text'
 export const REPLY_MAX_LENGTH = 4000
 /** Apple notification image-attachment ceiling, shared by intake and capabilities. */
 export const NOTIFICATION_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+export const NOTIFICATION_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif'] as const
+export type NotificationMediaType = (typeof NOTIFICATION_MEDIA_TYPES)[number]
+export const NotificationMediaTypeSchema = Type.Union(
+  NOTIFICATION_MEDIA_TYPES.map((mediaType) => Type.Literal(mediaType)),
+)
 
 /** Device platforms known to the public contract. Delivery support is registry-owned. */
 export const PLATFORMS = ['ios', 'macos'] as const
@@ -38,37 +43,43 @@ export const PROVIDERS = ['apns'] as const
 export type Provider = (typeof PROVIDERS)[number]
 export const ProviderSchema = Type.Union(PROVIDERS.map((provider) => Type.Literal(provider)))
 
-export const ImageRef = Type.Object(
+export const MediaItem = Type.Object(
   {
     media_id: Type.String({ pattern: '^med_[A-Za-z0-9_-]+$' }),
+    /** Accessibility and fallback text; also the inline-render fallback. */
+    alt: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
   },
   { additionalProperties: false },
 )
 
-/**
- * Long-form detail, for reading rather than glancing.
- *
- * 16 KiB of markdown — comfortably more than the whole APNs envelope, which is
- * the point. This never rides the push: the envelope is 4096 bytes and the
- * banner already spends part of it, so the companion fetches this on open, the
- * same shape as the existing media path. Held to the server's one-week content
- * retention like every other piece of presentation content.
- */
-export const DETAIL_MAX_BYTES = 16 * 1024
+export const MEDIA_MAX_ITEMS = 8
 
 export const Presentation = Type.Object(
   {
     title: Type.String({ minLength: 1, maxLength: 512 }),
-    body: Type.String({ minLength: 1, maxLength: 2048 }),
     subtitle: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
-    /**
-     * Markdown shown only in the companion app's detail view. The banner is
-     * unaffected: `title` and `body` remain the whole of what a glance gets,
-     * and an agent that has more to say puts it here instead of overstuffing
-     * the body it knows will be truncated.
-     */
-    detail: Type.Optional(Type.String({ minLength: 1, maxLength: DETAIL_MAX_BYTES })),
-    image: Type.Optional(ImageRef),
+    /** The one canonical body. Always interpreted as Markdown. */
+    body: Type.String({ minLength: 1, maxLength: BODY_MAX_LENGTH }),
+    /** Ordered image attachments. Order is meaning: first is representative. */
+    media: Type.Optional(Type.Array(MediaItem, { minItems: 1, maxItems: MEDIA_MAX_ITEMS })),
+  },
+  { additionalProperties: false },
+)
+
+export const SourceContext = Type.Object(
+  {
+    /** Opaque routing/grouping identity. Never rendered in User-facing text. */
+    session_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    /** The only session string a User-facing surface may display. */
+    session_label: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+    /** Open harness slug, set only when authoritatively known. */
+    harness: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 32, pattern: '^[a-z][a-z0-9-]*$' }),
+    ),
+    /** Git branch name; omitted on detached HEAD and outside Git. */
+    branch: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    /** Privacy-safe linked-worktree basename, never a filesystem path. */
+    worktree: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   },
   { additionalProperties: false },
 )
@@ -91,9 +102,7 @@ export const DeliveryPolicy = Type.Object(
     /** No collapse by default; opting in requests replacement semantics. */
     collapse_key: Type.Union(
       [Type.String({ minLength: 1, maxLength: COLLAPSE_KEY_MAX_BYTES }), Type.Null()],
-      {
-      default: null,
-      },
+      { default: null },
     ),
   },
   { additionalProperties: false },
@@ -113,42 +122,25 @@ export const ReplyChoice = Type.Object(
 )
 export type ReplyChoiceT = Static<typeof ReplyChoice>
 
-/**
- * Upper bound on choices in one question. Held low deliberately: the buttons
- * render in the expanded notification, where vertical space is scarce and a
- * long list stops being answerable at a glance.
- */
+/** Upper bound on choices in one question. */
 export const REPLY_MAX_CHOICES = 6
 
-/**
- * Upper bound on a reply window. The server retains content for one week, so
- * this deliberately shorter 72-hour interaction window cannot outlive the
- * stored draft. The server cannot accept an answer to a question it has forgotten — a
- * choice reply arriving after the sweep was rejected as `unknown_choice` and
- * permanently discarded by the device outbox.
- */
+/** A reply window cannot outlive retained Notification Request content. */
 export const REPLY_MAX_WINDOW_SECONDS = 72 * 3600
 
-/**
- * Upper bound on questions in one notification, matched to what one expanded
- * card can step through and one glance can justify. The harness question
- * tools settled on the same number.
- */
+/** Upper bound on questions in one notification. */
 export const REPLY_MAX_QUESTIONS = 4
 
 /**
- * Upper bound on one question's text. It must be readable in full on the
- * surface that offers the answers; anything longer belongs in
- * `presentation.detail`, which travels out-of-band and costs the envelope
- * nothing.
+ * One question must be readable in full on the surface that offers the answers.
+ * Longer context follows it in the canonical Markdown body.
  */
 export const QUESTION_TEXT_MAX_LENGTH = 500
 
 /**
  * One question in a reply request. With `choices` it is a closed question
- * answered by id; without, a free-text question. Either way a typed answer is
- * always possible on the companion — the choices are the primary surface, not
- * a wall — so an agent must be prepared to receive text where it asked for a
+ * answered by id; without, a free-text question. A typed answer remains possible
+ * either way, so an agent must be prepared to receive text where it offered a
  * token.
  */
 export const Question = Type.Object(
@@ -175,21 +167,13 @@ export const ReplyRequest = Type.Object(
       maximum: REPLY_MAX_WINDOW_SECONDS,
       default: 86400,
     }),
-    /**
-     * What is being asked, in order. One entry is the common case; several
-     * are answered as a short form — one by one, back navigation, a single
-     * submission (the harness pattern).
-     */
+    /** What is being asked, in order. */
     questions: Type.Array(Question, { minItems: 1, maxItems: REPLY_MAX_QUESTIONS }),
   },
   { additionalProperties: false },
 )
 
-/**
- * Semantic sound names shipped by the iOS Companion App. Names are
- * intents, not file names, so future channels can map them to their own
- * sound/importance mechanisms.
- */
+/** Semantic sound names shipped by the iOS Companion App. */
 export const IOS_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
 /** Semantic sound names shipped by the macOS Companion App. */
 export const MACOS_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
@@ -207,7 +191,7 @@ export const IosOptions = Type.Object(
     /** Caller-selected categories are unsupported; companions own their fixed reply categories. */
     category: Type.Optional(Type.Null()),
     interruption_level: Type.Optional(
-      Type.Union(INTERRUPTION_LEVELS.map((l) => Type.Literal(l))),
+      Type.Union(INTERRUPTION_LEVELS.map((level) => Type.Literal(level))),
     ),
     relevance_score: Type.Optional(Type.Union([Type.Number({ minimum: 0, maximum: 1 }), Type.Null()])),
     target_content_id: Type.Optional(
@@ -223,11 +207,7 @@ export const IosOptions = Type.Object(
   { additionalProperties: false },
 )
 
-/**
- * macOS UserNotifications options carried in the shared APNs alert envelope.
- * Sounds come from the bundled semantic set; arbitrary sound files and
- * action categories remain explicit capability-document exclusions.
- */
+/** macOS UserNotifications options carried in the shared APNs alert envelope. */
 export const MacosOptions = Type.Object(
   {
     sound: Type.Optional(Type.Union([...MACOS_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()])),
@@ -252,28 +232,15 @@ export const MacosOptions = Type.Object(
   { additionalProperties: false },
 )
 
-/**
- * Sender-chosen Project identifier slug. Projects are registered
- * lazily and idempotently on first send; there is no explicit registration
- * step for agents. Lowercase to keep identifiers canonical across machines.
- */
+/** Sender-chosen Project identifier slug. */
 export const PROJECT_IDENTIFIER_PATTERN = '^[a-z0-9][a-z0-9._-]{0,63}$'
 
-/**
- * Sender-declared position on the lifecycle axis. `state` is detail inside
- * the `done` tier — how the question ended — and is rejected on other tiers
- * by validateDraft, which the schema alone cannot express.
- */
+/** Sender-declared position on the lifecycle axis. */
 export const Lifecycle = Type.Object(
   {
     tier: Type.Union(LIFECYCLE_TIERS.map((tier) => Type.Literal(tier))),
     state: Type.Optional(Type.Union(LIFECYCLE_END_STATES.map((state) => Type.Literal(state)))),
-    /**
-     * The request id of the question this `done` draft retires. Collapse keys
-     * are optional and were never persisted by companions, so neither the
-     * delivered-notification removal nor the history-entry update can rely on
-     * one; the request id always exists.
-     */
+    /** The request id of the question this `done` draft retires. */
     retires_request_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   },
   { additionalProperties: false },
@@ -281,40 +248,27 @@ export const Lifecycle = Type.Object(
 export type LifecycleT = Static<typeof Lifecycle>
 
 /**
- * What kind of thing this notification *is*.
- *
- * A third axis, and deliberately not a rename of either of the other two.
- * `lifecycle` says whether something still wants the user; `interruption_level`
- * says how loudly to arrive. Neither can express the difference between "the
- * deploy finished" and "the build is still running" — both are ordinary news
- * that wants nothing and arrives quietly, yet a user scanning a day of them
- * cares which is which. The difference is semantic, and it is one users
- * actually read for.
- *
- * Three values, because three is what an agent can actually be trusted to
- * choose between. Kept closed so the companion can render each one rather than
- * printing whatever word the agent invented.
+ * What kind of thing this notification is. Kept closed so Companion Apps can
+ * treat each value semantically rather than printing a sender-invented word.
  */
 export const NOTIFICATION_KINDS = [
   /** Ordinary news. The default, and the honest answer most of the time. */
   'update',
-  /** Asks the user something. Implied by a `reply` block; see below. */
+  /** Asks the user something. Implied by a `reply` block. */
   'question',
-  /** A body of work finished. The one an agent should reach for on completion. */
+  /** A body of work finished successfully. */
   'done',
+  /** Work reached a terminal unsuccessful outcome. */
+  'failed',
+  /** Work cannot proceed until an external dependency or decision changes. */
+  'blocked',
 ] as const
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]
 
 /** Absent means `update`: a send that says nothing about itself is news. */
 export const DEFAULT_NOTIFICATION_KIND: NotificationKind = 'update'
 
-/**
- * The kind a draft actually has.
- *
- * A `reply` block is a question by construction, so asking is never something
- * the sender has to declare twice — and never something it can get wrong. Only
- * the `update`/`done` distinction is genuinely the sender's to make.
- */
+/** A reply block is a question by construction, whatever kind was supplied. */
 export function effectiveKind(draft: NotificationDraftT): NotificationKind {
   if (draft.reply !== undefined) return 'question'
   return draft.kind ?? DEFAULT_NOTIFICATION_KIND
@@ -325,27 +279,14 @@ export const NotificationDraft = Type.Object(
     schema_version: Type.Literal(NOTIFICATION_SCHEMA_VERSION),
     /** The user-chosen Agent Event name; free-form, no closed taxonomy. */
     event: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-    /**
-     * What this notification is (see NOTIFICATION_KINDS). Absent means
-     * `update`. Optional rather than defaulted because `Value.Check` does not
-     * apply defaults, and a required field would invalidate every draft
-     * written before this one existed.
-     */
+    /** What this notification is. Absent means `update`. */
     kind: Type.Optional(Type.Union(NOTIFICATION_KINDS.map((kind) => Type.Literal(kind)))),
-    /**
-     * What this notification wants from the user (see lifecycle.ts). Absent
-     * means `new`. A draft whose tier is `done` is a state change, not news:
-     * renderers deliver it silently and companions retire what it replaces.
-     */
+    /** What this notification wants from the user. Absent means `new`. */
     lifecycle: Type.Optional(Lifecycle),
     /** Optional Project identity; lazily recorded server-side. */
     project: Type.Optional(Type.String({ pattern: PROJECT_IDENTIFIER_PATTERN })),
-    /**
-     * Opaque per-sender-session identifier. Companions derive a
-     * deterministic avatar badge from it so concurrent agent sessions are
-     * visually distinguishable; never interpreted server-side.
-     */
-    session: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    /** Structured provenance; opaque ids remain machine-only. */
+    source: Type.Optional(SourceContext),
     presentation: Presentation,
     targets: TargetSelector,
     delivery: DeliveryPolicy,
@@ -360,6 +301,8 @@ export const NotificationDraft = Type.Object(
   { additionalProperties: false },
 )
 
+export type MediaItemT = Static<typeof MediaItem>
+export type SourceContextT = Static<typeof SourceContext>
 export type DeliveryPolicyT = Static<typeof DeliveryPolicy>
 export type ReplyRequestT = Static<typeof ReplyRequest>
 export type IosOptionsT = Static<typeof IosOptions>

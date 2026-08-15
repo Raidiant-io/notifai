@@ -262,18 +262,29 @@ const send = program
   .summary('Send a notification')
   .description('Send a notification')
   .optionsGroup(SEND_GROUP.content)
-  .requiredOption('--title <title>', 'notification title')
-  .requiredOption('--body <body>', 'notification body')
-  .option('--subtitle <subtitle>', 'a line between the title and the body')
-  .option('--detail <markdown>', 'long-form markdown shown only in the app, never on the banner')
-  .option('--detail-file <path>', 'read --detail from a file (use - for stdin)')
-  .option('--image <path|url|media_id>', 'upload or attach an image')
+  .requiredOption('--title <title>', 'brief title whose substance is immediately understandable')
+  .option('--body <markdown>', 'canonical Markdown body')
+  .option('--body-file <path>', 'read the canonical Markdown body from a file (use - for stdin)')
+  .option('--subtitle <subtitle>', 'a plain-text line between the title and body')
+  .option(
+    '--image <path|url|media_id>',
+    'upload or attach an image in collection order (repeatable, maximum 8)',
+    (v: string, all: string[]) => [...all, v],
+    [],
+  )
+  .option(
+    '--image-alt <text>',
+    'alt text paired with --image occurrences by position (repeatable)',
+    (v: string, all: string[]) => [...all, v],
+    [],
+  )
   .optionsGroup(SEND_GROUP.routing)
-  .option('--kind <kind>', 'what this is: update (default) | done | question (requires --reply)')
-  .option('--project <id>', 'project identifier, e.g. my-app (lazily registered)')
+  .option('--kind <kind>', 'what this is: update (default) | done | failed | blocked | question (requires --reply)')
+  .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
   .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--all', 'target all routable devices (overrides configured devices)')
-  .option('--session <id>', 'session identity (env: NOTIFAI_SESSION); presentation varies by surface')
+  .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
+  .option('--session-label <text>', 'human session label override (env: NOTIFAI_SESSION_LABEL)')
   .option('--event <event>', 'agent event name, e.g. tests_passed')
   .optionsGroup(SEND_GROUP.presentation)
   .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -294,8 +305,8 @@ const send = program
   // a message pointing at `ask` instead of "unknown option".
   .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
   .optionsGroup(SEND_GROUP.advanced)
-  .option('--sound <sound>', 'override kind profile / saved config: default | done | attention | alert | none')
-  .option('--level <level>', 'override kind profile / saved config: passive | active | time_sensitive')
+  .option('--sound <sound>', 'override saved sound: default | done | attention | alert | none')
+  .option('--level <level>', 'override saved interruption level: passive | active | time_sensitive')
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
   .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
@@ -308,24 +319,22 @@ const send = program
     const wait = typeof opts['wait'] === 'number' ? opts['wait'] : undefined
     const noBlock = opts['block'] === false
     const sendOpts = { ...opts }
-    // Same empty-collector normalisation as `ask`.
-    if (Array.isArray(sendOpts['replyChoice']) && sendOpts['replyChoice'].length === 0) {
-      delete sendOpts['replyChoice']
+    // Commander collectors default to []; an empty list means "not passed".
+    for (const key of ['replyChoice', 'image', 'imageAlt']) {
+      if (Array.isArray(sendOpts[key]) && sendOpts[key].length === 0) delete sendOpts[key]
     }
     delete sendOpts['block']
-    // Long-form detail is usually a build log or a diff summary, which nobody
-    // wants to shell-escape onto a command line.
-    const detailFile = sendOpts['detailFile']
-    delete sendOpts['detailFile']
-    if (typeof detailFile === 'string') {
-      if (sendOpts['detail'] !== undefined) {
-        deps.io.err('Pass either --detail or --detail-file, not both.')
+    const bodyFile = sendOpts['bodyFile']
+    delete sendOpts['bodyFile']
+    if (typeof bodyFile === 'string') {
+      if (sendOpts['body'] !== undefined) {
+        deps.io.err('Pass either --body or --body-file, not both.')
         process.exit(2)
       }
       try {
-        sendOpts['detail'] = readFileSync(detailFile === '-' ? 0 : detailFile, 'utf8')
+        sendOpts['body'] = readFileSync(bodyFile === '-' ? 0 : bodyFile, 'utf8')
       } catch (err) {
-        deps.io.err(`Could not read ${detailFile}: ${String(err)}`)
+        deps.io.err(`Could not read ${bodyFile}: ${String(err)}`)
         process.exit(2)
       }
     }
@@ -337,7 +346,7 @@ const send = program
 
 send.addHelpText(
   'after',
-  `\nKind profiles apply automatically. Pass --sound or --level only to override them or saved user config:\n  update    sound none       level passive\n  done      sound done       level passive\n  question  sound attention  level active (--reply)\n`,
+  `\nKind describes status in the Companion Apps; it never chooses banner sound or interruption level.\nWithout --sound/--level or saved preferences, those fields are omitted for the destination to handle.\n`,
 )
 
 program
@@ -387,28 +396,46 @@ program
     (v: string, all: string[]) => [...all, v], [],
   )
   .option('--multi', 'with --choice, several answers may be selected')
-  .option('--detail <markdown>', 'long-form context shown only in the app, never on the banner')
-  .option('--detail-file <path>', 'read --detail from a file (use - for stdin)')
+  .option('--body <markdown>', 'optional Markdown context appended after the question block')
+  .option('--body-file <path>', 'read optional Markdown context from a file (use - for stdin)')
   .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin)')
-  .option('--session <id>', 'session id (default: the session working in this directory, else $NOTIFAI_SESSION)')
-  .action((question: string | undefined, opts: {
+  .option(
+    '--image <path|url|media_id>',
+    'upload or attach an image in collection order (repeatable, maximum 8)',
+    (v: string, all: string[]) => [...all, v],
+    [],
+  )
+  .option(
+    '--image-alt <text>',
+    'alt text paired with --image occurrences by position (repeatable)',
+    (v: string, all: string[]) => [...all, v],
+    [],
+  )
+  .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
+  .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
+  .option('--session-label <text>', 'human session label override (env: NOTIFAI_SESSION_LABEL)')
+  .action(async (question: string | undefined, opts: {
     choice?: string[]
     multi?: boolean
-    detail?: string
-    detailFile?: string
+    body?: string
+    bodyFile?: string
     form?: string
-    session?: string
+    image?: string[]
+    imageAlt?: string[]
+    project?: string
+    sessionId?: string
+    sessionLabel?: string
   }) => {
-    let detail = opts.detail
-    if (typeof opts.detailFile === 'string') {
-      if (detail !== undefined) {
-        deps.io.err('Pass either --detail or --detail-file, not both.')
+    let body = opts.body
+    if (typeof opts.bodyFile === 'string') {
+      if (body !== undefined) {
+        deps.io.err('Pass either --body or --body-file, not both.')
         process.exit(2)
       }
       try {
-        detail = readFileSync(opts.detailFile === '-' ? 0 : opts.detailFile, 'utf8')
+        body = readFileSync(opts.bodyFile === '-' ? 0 : opts.bodyFile, 'utf8')
       } catch (err) {
-        deps.io.err(`Could not read ${opts.detailFile}: ${String(err)}`)
+        deps.io.err(`Could not read ${opts.bodyFile}: ${String(err)}`)
         process.exit(2)
       }
     }
@@ -421,15 +448,19 @@ program
         process.exit(2)
       }
     }
-    // commander's collector defaults to []; an empty list means "not asked".
+    // Commander collectors default to []; an empty list means "not passed".
     const flags: Parameters<typeof askCommand>[2] = {
-      ...(opts.session !== undefined ? { session: opts.session } : {}),
       ...(opts.choice?.length ? { choice: opts.choice } : {}),
       ...(opts.multi ? { multi: true } : {}),
-      ...(detail !== undefined ? { detail } : {}),
+      ...(body !== undefined ? { body } : {}),
       ...(form !== undefined ? { form } : {}),
+      ...(opts.image?.length ? { image: opts.image } : {}),
+      ...(opts.imageAlt?.length ? { imageAlt: opts.imageAlt } : {}),
+      ...(opts.project !== undefined ? { project: opts.project } : {}),
+      ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
+      ...(opts.sessionLabel !== undefined ? { sessionLabel: opts.sessionLabel } : {}),
     }
-    process.exit(askCommand(deps, question, flags))
+    process.exit(await askCommand(deps, question, flags))
   })
 
 program

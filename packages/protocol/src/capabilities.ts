@@ -7,9 +7,11 @@ import {
   INTERRUPTION_LEVELS,
   REPLY_MAX_LENGTH,
   COLLAPSE_KEY_MAX_BYTES,
+  MEDIA_MAX_ITEMS,
   NOTIFICATION_IMAGE_MAX_BYTES,
   type Platform,
 } from './notification.js'
+import { BANNER_EXCERPT_MAX_LENGTH, BODY_MAX_LENGTH } from './content.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
 
 /**
@@ -46,11 +48,23 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
   interruption_levels: [...INTERRUPTION_LEVELS],
   fields: [
     { path: 'presentation.title', status: 'supported' },
-    { path: 'presentation.body', status: 'supported' },
+    {
+      path: 'presentation.body',
+      status: 'supported',
+      constraints: {
+        max_length: BODY_MAX_LENGTH,
+        format: 'markdown',
+        banner: 'plain-text excerpt',
+        excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+        remote_images: 'not fetched',
+      },
+    },
     { path: 'presentation.subtitle', status: 'supported' },
-    // Never rendered on the banner by design: it is fetched and shown
-    // in the companion's detail view, so it costs nothing against the envelope.
-    { path: 'presentation.detail', status: 'supported' },
+    {
+      path: 'source',
+      status: 'supported',
+      reason: 'session_id is machine-only and never displayed; session_label is the human session name.',
+    },
     {
       path: 'reply',
       status: 'supported',
@@ -63,10 +77,16 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
         'Inline reply through the notification category; the button and placeholder text are fixed by the app.',
     },
     {
-      path: 'presentation.image',
+      path: 'presentation.media',
       status: 'supported',
-      constraints: { max_bytes: NOTIFICATION_IMAGE_MAX_BYTES, media_types: ['image/jpeg', 'image/png', 'image/gif'] },
-      reason: 'Attached through the Notification Service Extension; text remains intelligible if media retrieval fails.',
+      constraints: {
+        max_items: MEDIA_MAX_ITEMS,
+        max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
+        media_types: ['jpeg', 'png', 'gif'],
+        representative: 'first resolvable',
+        banner_shows: 'one representative + count',
+      },
+      reason: 'The first resolvable image is attached to the banner; the full ordered collection remains available in the app.',
     },
     { path: 'platform.ios.sound', status: 'supported', constraints: { allowed: [...IOS_SOUNDS, null] } },
     { path: 'platform.ios.badge', status: 'supported' },
@@ -128,11 +148,23 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
   interruption_levels: [...INTERRUPTION_LEVELS],
   fields: [
     { path: 'presentation.title', status: 'supported' },
-    { path: 'presentation.body', status: 'supported' },
+    {
+      path: 'presentation.body',
+      status: 'supported',
+      constraints: {
+        max_length: BODY_MAX_LENGTH,
+        format: 'markdown',
+        banner: 'plain-text excerpt',
+        excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+        remote_images: 'not fetched',
+      },
+    },
     { path: 'presentation.subtitle', status: 'supported' },
-    // Never rendered on the banner by design: it is fetched and shown
-    // in the companion's detail view, so it costs nothing against the envelope.
-    { path: 'presentation.detail', status: 'supported' },
+    {
+      path: 'source',
+      status: 'supported',
+      reason: 'session_id is machine-only and never displayed; session_label is the human session name.',
+    },
     // The Mac registers the reply category and answers through the same
     // ReplyOutbox as iOS. One difference worth naming: iOS renders
     // closed questions with a notification content extension, which macOS has
@@ -140,10 +172,17 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     // the banner. The answer reaches the agent either way.
     { path: 'reply', status: 'supported' },
     {
-      path: 'presentation.image',
+      path: 'presentation.media',
       status: 'downgraded',
+      constraints: {
+        max_items: MEDIA_MAX_ITEMS,
+        max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
+        media_types: ['jpeg', 'png', 'gif'],
+        representative: 'first resolvable',
+        banner_shows: 'none',
+      },
       reason:
-        'Remote images are currently omitted on macOS; the text notification is still delivered.',
+        'The macOS banner omits images; the full ordered collection remains available in the app.',
     },
     { path: 'platform.macos.sound', status: 'supported', constraints: { allowed: [...MACOS_SOUNDS, null] } },
     { path: 'platform.macos.badge', status: 'supported' },
@@ -325,6 +364,27 @@ export function validateDraft(
     })
   }
 
+  if (typed.source?.session_label !== undefined && typed.source.session_id === undefined) {
+    errors.push({
+      code: 'invalid_request',
+      path: 'source.session_label',
+      message: 'A session label needs an opaque session id behind it; omit both when identity is unknown.',
+    })
+  }
+
+  const attachedMedia = new Set(typed.presentation.media?.map((item) => item.media_id) ?? [])
+  const referencedMedia = new Set(
+    [...typed.presentation.body.matchAll(/media:(med_[A-Za-z0-9_-]+)/g)].map((match) => match[1]!),
+  )
+  for (const mediaId of referencedMedia) {
+    if (!attachedMedia.has(mediaId)) {
+      warnings.push({
+        path: 'presentation.body',
+        message: `Inline media reference media:${mediaId} has no matching presentation.media item; companions will show its fallback text.`,
+      })
+    }
+  }
+
   // How something ended is detail inside `done`; on any other tier it would
   // claim an ending the notification has not had.
   if (typed.lifecycle !== undefined && typed.lifecycle.tier !== 'done') {
@@ -417,7 +477,9 @@ export function estimateApnsPayloadBytes(draft: NotificationDraftT, platform: Pl
       // reserves exactly the room the real token will take.
       receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
     },
-    draft.presentation.image ? 'https://x.invalid/'.padEnd(500, 'a') : null,
+    platform === 'ios' && draft.presentation.media !== undefined
+      ? 'https://x.invalid/'.padEnd(500, 'a')
+      : null,
     platform,
     // A project may resolve to a sender name and signed avatar URL at
     // dispatch; reserve worst-case room so acceptance implies deliverability.
@@ -426,6 +488,8 @@ export function estimateApnsPayloadBytes(draft: NotificationDraftT, platform: Pl
       : null,
     // ISO-8601 instants are fixed width, so any date reserves the real room.
     draft.reply !== undefined ? new Date(0) : null,
+    // Retirement answer context is server-derived and absent from authored drafts.
+    null,
     // Reply-enabled requests always carry the immutable server snapshot. Boolean
     // true is the longer JSON representation and therefore the safe estimate.
     draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,

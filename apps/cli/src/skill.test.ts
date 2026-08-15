@@ -13,11 +13,13 @@ describe('Notifai agent skill', () => {
     expect(skill.indexOf('## When to notify')).toBeLessThan(skill.indexOf('## Compose and send'))
   })
 
-  it('teaches kind profiles and a correctly classified completion', () => {
+  it('separates semantic kind from native-banner attention', () => {
     expect(skill).toContain('--kind done')
-    expect(skill).toContain('| `update` (default) | `none` | `passive` |')
-    expect(skill).toContain('| `done` | `done` | `passive` |')
-    expect(skill).toContain('| question (`--reply`) | `attention` | `active` |')
+    expect(skill).toMatch(/Kind never chooses a native-banner sound\s+or\s+interruption level/)
+    expect(skill).toContain('lets the destination use its normal behavior')
+    expect(skill).not.toContain('Kind profiles')
+    expect(skill).not.toMatch(/\| `failed` \| `alert`/)
+    expect(skill).not.toMatch(/\| `blocked` \| `attention`/)
   })
 
   it('makes the agent the setup wizard', () => {
@@ -36,8 +38,25 @@ describe('Notifai agent skill', () => {
     expect(harnessReference).not.toContain('do not install them without being asked')
   })
 
+  it('teaches one Markdown body, ordered media, and substance-only titles', () => {
+    for (const required of [
+      'one canonical Markdown body',
+      '--body-file <path|->',
+      'media:1',
+      'maximum 8',
+      'Never repeat the type or Project in the title',
+      'All 42 tests passed',
+    ]) {
+      expect(skill).toContain(required)
+    }
+    expect(skill).not.toContain('--detail')
+    expect(skill).not.toContain('Done ·')
+    expect(skill).not.toContain('Failed ·')
+    expect(skill).not.toContain('Question ·')
+  })
+
   it('treats --sound and --level as overrides, not completeness', () => {
-    expect(skill).toMatch(/Never pass `--sound` or `--level` unless/)
+    expect(skill).toMatch(/Do not pass `--sound` or `--level` unless/)
     const examples = [...skill.matchAll(/```(?:bash)?\n([\s\S]*?)```/g)].map((match) => match[1])
     const sendExamples = examples.filter((example) => example.includes('notifai send'))
     expect(sendExamples.length).toBeGreaterThan(0)
@@ -47,18 +66,23 @@ describe('Notifai agent skill', () => {
     }
   })
 
-  it('documents reply lifecycle, routing, session minting, and doctor exits', () => {
+  it('documents reply lifecycle, routing, inferred source context, and doctor exits', () => {
     for (const required of [
       '--reply-choice',
       'notifai close <request_id>',
       'notifai devices',
       '--device',
       '--all',
-      "require('node:crypto').randomUUID()",
+      'Project identity from the invocation directory',
+      '--session-id',
+      'NOTIFAI_SESSION_ID',
+      'Do not mint an id',
       'exit status is nonzero',
     ]) {
       expect(skill).toContain(required)
     }
+    expect(skill).not.toContain("require('node:crypto').randomUUID()")
+    expect(skill).not.toMatch(/`NOTIFAI_SESSION`/)
   })
 
   it('turns a registered question into a same-turn work-resumption commitment', () => {
