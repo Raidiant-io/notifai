@@ -8,9 +8,14 @@
  * belonged to the previous version, and it satisfied every pre-publish check,
  * reported the new version correctly, and was believed for a day.
  *
- * So this runs *after* publishing and asks the only question left: is the code
- * on the registry byte-for-byte the code we meant to send? It reads npm and
- * the local build, and needs no credentials.
+ * So this runs *after* publishing and asks the only question left: is the
+ * package on the registry the one we meant to send? That is two comparisons,
+ * because a package is two things: the compiled files, byte for byte, and the
+ * manifest metadata npm resolves installs from. A release once shipped
+ * matching compiled files whose published `dependencies` still named the
+ * previous protocol version — every file compared clean while every clean
+ * install crashed at startup. It reads npm and the local build, and needs no
+ * credentials.
  *
  * Usage:
  *   node scripts/verify-published.mjs                # every publishable package
@@ -40,6 +45,34 @@ for (const name of requested) {
 }
 
 const sha256 = (contents) => createHash('sha256').update(contents).digest('hex')
+
+/**
+ * Manifest fields where published/local skew changes what an install resolves
+ * or executes. `dependencies` is the field that already shipped a startup
+ * crash; the others are the same failure through a different door.
+ */
+const METADATA_FIELDS = [
+  'dependencies',
+  'optionalDependencies',
+  'peerDependencies',
+  'bin',
+  'main',
+  'types',
+  'exports',
+  'engines',
+]
+
+/** JSON with recursively sorted object keys, so key order never masquerades as a difference. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+    return `{${entries.join(',')}}`
+  }
+  return JSON.stringify(value)
+}
 
 /** Every file under a directory, relative and sorted, so two trees compare. */
 function treeFiles(directory) {
@@ -102,11 +135,24 @@ for (const entry of selected) {
       continue
     }
 
-    const publishedVersion = JSON.parse(
+    const publishedManifest = JSON.parse(
       readFileSync(path.join(scratch, 'package', 'package.json'), 'utf8'),
-    ).version
-    if (publishedVersion !== version) {
-      failures.push(`${label}: published manifest says ${publishedVersion}`)
+    )
+    if (publishedManifest.version !== version) {
+      failures.push(`${label}: published manifest says ${publishedManifest.version}`)
+    }
+
+    // Compiled files being identical says nothing about the metadata installs
+    // resolve from, so the resolution-shaping fields must match the local
+    // manifest too. `null` stands in for an absent field on either side.
+    for (const field of METADATA_FIELDS) {
+      const published = canonical(publishedManifest[field] ?? null)
+      const local = canonical(manifest[field] ?? null)
+      if (published !== local) {
+        failures.push(
+          `${label}: published package.json ${field} is ${published}, local manifest says ${local}`,
+        )
+      }
     }
 
     for (const file of publishedFiles) {
@@ -127,7 +173,9 @@ for (const entry of selected) {
     }
 
     if (failures.length === 0) {
-      notes.push(`${label}: ${publishedFiles.length} compiled files match the local build exactly`)
+      notes.push(
+        `${label}: ${publishedFiles.length} compiled files and the resolution metadata match this checkout exactly`,
+      )
     }
   } catch (error) {
     failures.push(`${label}: verification failed (${String(error)})`)

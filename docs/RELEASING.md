@@ -57,6 +57,16 @@ The root `README.md` version markers are updated in the release commit.
 release-please cannot climb out of a package directory to edit them
 (`extra-files` rejects `../`).
 
+When a release changes both packages, the cut must also carry the CLI's
+`@raidiant/notifai-protocol` dependency pin forward to the protocol version
+being released. The workspace always links the local protocol, so a stale pin
+passes every workspace gate and crashes every clean registry install at
+startup. `pnpm check:packed` exists to catch exactly this: it installs the
+packed tarballs in an isolated directory using their packed dependency
+metadata and runs the installed bin. Run it before publishing; CI runs it on
+every push.
+
 release-please does not publish to npm. After the tags exist, and only when
 the maintainer asked: publish the packages that changed, then
-`pnpm check:published`.
+`pnpm check:published` — it verifies both the compiled files and the
+resolution-shaping manifest metadata against the registry.
