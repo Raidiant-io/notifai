@@ -585,8 +585,8 @@ export function codexRepresentationProblems(
     const doubled = layer.ourJsonEvents.filter((event) => layer.ourTomlEvents.includes(event))
     const consequence =
       doubled.length > 0
-        ? `Codex runs every matching handler, so this layer's ${doubled.join(', ')} notify twice per turn`
-        : `Codex runs both files, so this layer's ${[...new Set([...layer.ourJsonEvents, ...layer.ourTomlEvents])].join(', ')} handlers are split between them and only one file stays current`
+        ? `Codex runs every matching handler, so this layer notifies twice per turn for ${doubled.join(', ')}`
+        : `Codex runs both files, so this layer's Notifai handlers are split between them (${[...new Set([...layer.ourJsonEvents, ...layer.ourTomlEvents])].join(', ')}) and the next install refreshes only one file`
     const scope = global ? ' --global' : ''
     return [
       `Notifai hooks are installed in both ${layer.paths.hooksJson} and ${layer.paths.configToml}; ${consequence}. Run \`notifai hooks uninstall --harness codex${scope}\` and then \`notifai hooks install --harness codex${scope}\` to leave exactly one copy; foreign hooks in either file are left alone.`,

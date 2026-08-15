@@ -598,7 +598,7 @@ describe('finding what is installed', () => {
     expect(problems[0]).toContain(path.join(layer, 'hooks.json'))
     expect(problems[0]).toContain(path.join(layer, 'config.toml'))
     expect(problems[0]).toMatch(/Stop/)
-    expect(problems[0]).toMatch(/notify twice per turn/)
+    expect(problems[0]).toMatch(/notifies twice per turn for UserPromptSubmit, Stop, SessionEnd/)
     expect(problems[0]).toMatch(/notifai hooks uninstall --harness codex/)
     expect(problems[0]).not.toMatch(/--global/)
   })
