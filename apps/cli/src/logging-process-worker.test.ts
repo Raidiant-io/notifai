@@ -19,7 +19,10 @@ if (worker === undefined) {
       const maxBytes = Number(process.env['NOTIFAI_ROTATION_MAX_BYTES'])
       const maxFiles = Number(process.env['NOTIFAI_ROTATION_MAX_FILES'])
       writeFileSync(readyPath, 'ready')
-      const startDeadline = Date.now() + 10_000
+      // The parent's absolute deadline, not a countdown of this worker's own:
+      // the barrier fails for everyone at one instant, so a worker that started
+      // early cannot walk out on a parent still waiting for its last sibling.
+      const startDeadline = Number(process.env['NOTIFAI_ROTATION_DEADLINE'])
       while (!existsSync(startPath)) {
         if (Date.now() >= startDeadline) throw new Error('rotation parent never released the barrier')
         await new Promise((resolve) => setTimeout(resolve, 2))
@@ -33,7 +36,10 @@ if (worker === undefined) {
         logger.info('cli.end', { worker, sequence, pad: 'p'.repeat(140) })
         await new Promise((resolve) => setTimeout(resolve, 1))
       }
-      expect(logger.enabled).toBe(true)
+      // The sink switches itself off for the rest of a process the first time a
+      // write throws, so this is the whole point of the worker: every record it
+      // was given reached the shared file through the cross-process lock.
+      expect(logger.enabled, 'the shared-log sink switched itself off mid-run').toBe(true)
     })
   })
 }

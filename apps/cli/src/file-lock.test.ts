@@ -206,6 +206,47 @@ describe('cross-process file lock', () => {
   }, 30_000)
 })
 
+describe('rendezvous contention', () => {
+  // The last contender out removes the rendezvous directory, so a contender
+  // registering at that instant races the removal. Both tests drive that race
+  // from the registering observation, which is the window the racing releaser
+  // would otherwise have to hit by luck — on a loaded machine it does.
+  function raceAtRegistration(interfere: (lock: string) => void): void {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-rendezvous-'))
+    const lock = path.join(root, 'shared.lock')
+    let raced = false
+    let entered = 0
+
+    withFileLock(lock, () => { entered += 1 }, {
+      observe(observation) {
+        if (observation.phase !== 'registering' || raced) return
+        raced = true
+        interfere(lock)
+      },
+    })
+
+    expect(raced).toBe(true)
+    expect(entered).toBe(1)
+    // Release still cleans up after itself, whichever rendezvous it ended in.
+    expect(existsSync(lock)).toBe(false)
+    rmSync(root, { recursive: true, force: true })
+  }
+
+  it('registers again when a releasing contender removed the rendezvous', () => {
+    raceAtRegistration((lock) => rmSync(lock, { recursive: true }))
+  })
+
+  it('holds the rendezvous it landed in, not the one it scanned', () => {
+    // A third contender recreates the directory before this one publishes, so
+    // the entry lands in a directory whose identity nobody has recorded yet.
+    // Treating that as tampering used to break the caller outright.
+    raceAtRegistration((lock) => {
+      rmSync(lock, { recursive: true })
+      mkdirSync(lock, { mode: 0o700 })
+    })
+  })
+})
+
 describe('target file transaction lock', () => {
   it('refuses a symlinked target parent before publishing a contender', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-target-lock-'))
