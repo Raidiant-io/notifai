@@ -4760,6 +4760,66 @@ describe('a server behind this CLI', () => {
   })
 })
 
+/**
+ * The same class of failure through the command path. A rejected `send` printed
+ * only "invalid_request: The draft was not accepted." while the server's
+ * details — naming the exact offending field — went to the local log alone.
+ * stderr is the one line an agent's next turn actually reads, so the diagnosis
+ * has to be on it. Direction-neutral on purpose: the mismatch has been seen
+ * with the server behind the CLI and with the CLI behind the server.
+ */
+describe('command failures carrying server details', () => {
+  const throwingClient = (status: number, details: unknown = null): ApiClient =>
+    ({
+      submit: async () => {
+        throw new ApiCallError(status, 'invalid_request', 'The draft was not accepted.', null, details)
+      },
+    }) as unknown as ApiClient
+
+  it('names the rejected field and the contract mismatch on a 422', async () => {
+    const io = new CapturedIo()
+    const client = throwingClient(422, [
+      { code: 'invalid_request', path: 'presentation.detail', message: 'Unexpected property' },
+    ])
+
+    expect(await sendCommand(makeDeps(io, client), { title: 'Deploy finished', body: 'All green.' })).toBe(
+      EXIT.failed,
+    )
+
+    const said = io.errLines.join(' ')
+    expect(said).toContain('the server rejected: presentation.detail')
+    expect(said).toMatch(/sent a field the server did not accept/)
+    expect(said).toContain('notifai doctor')
+    expect(said).not.toMatch(/older than this CLI/)
+  })
+
+  it('prints the rejected paths without the contract line when the status is not 422', async () => {
+    const io = new CapturedIo()
+    const client = throwingClient(400, [
+      { code: 'invalid_request', path: 'presentation.detail', message: 'Unexpected property' },
+    ])
+
+    expect(await sendCommand(makeDeps(io, client), { title: 'Deploy finished', body: 'All green.' })).toBe(
+      EXIT.failed,
+    )
+
+    const said = io.errLines.join(' ')
+    expect(said).toContain('the server rejected: presentation.detail')
+    expect(said).not.toContain('notifai doctor')
+    expect(said).not.toMatch(/did not accept/)
+  })
+
+  it('prints exactly the code and message when the error carries no details', async () => {
+    const io = new CapturedIo()
+
+    expect(await sendCommand(makeDeps(io, throwingClient(409)), { title: 'Deploy finished', body: 'All green.' })).toBe(
+      EXIT.failed,
+    )
+
+    expect(io.errLines).toEqual(['invalid_request: The draft was not accepted.'])
+  })
+})
+
 describe('question sets', () => {
   it('maps --reply-multi into the single question', async () => {
     const io = new CapturedIo()
