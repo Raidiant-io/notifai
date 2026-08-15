@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [4.0.0](https://github.com/Raidiant-io/notifai/compare/v3.0.1...v4.0.0) (2026-08-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `--detail` and `--detail-file` are removed; the one canonical Markdown body is `--body` / `--body-file`. `--session` is removed, replaced by `--session-id` and `--session-label`. `--image` is now a repeatable ordered collection (max 8) with `--image-alt` for alt text.
+
+### Features
+
+* add unified notification content and source context ([3e6479a](https://github.com/Raidiant-io/notifai/commit/3e6479ae22c64c6886c1e919ba3183486e408596))
+* add unified notification content and source context ([2473ed5](https://github.com/Raidiant-io/notifai/commit/2473ed51df42b56652435c611a57f3751fa484f5))
+
+
+### Bug Fixes
+
+* attribute the unified-content break and propagate workspace dependency bumps ([cb438ce](https://github.com/Raidiant-io/notifai/commit/cb438cec76de9b393d7673554dc440a764887f76))
+* **cli:** document replacements for the removed send flags ([44af905](https://github.com/Raidiant-io/notifai/commit/44af90536a1e6fa5af2ec6b58a19ea68f2d76b96))
+* print server rejection details on command failures ([884fc78](https://github.com/Raidiant-io/notifai/commit/884fc78b62382ad23a49e1c5b92772dd1b8d574b))
+* print server rejection details on command failures ([c9ec4e4](https://github.com/Raidiant-io/notifai/commit/c9ec4e45130784fff7b8ab4da560899eaddffcc5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 0.6.0 to 1.0.0
+
 ## [3.0.1](https://github.com/Raidiant-io/notifai/compare/v3.0.0...v3.0.1) (2026-08-14)
 
 
