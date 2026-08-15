@@ -32,7 +32,7 @@ session in this directory ran both UserPromptSubmit and Stop, and pass **hooks
 (stop shape)** — which is where an older, blocking Claude Code definition or a
 missing explicit timeout is caught. For Codex, **hooks (trust)** must also pass.
 The check is fail-closed against the exact active session identity where the
-harness exports one. Do not invent `--session` to bypass it.
+harness exports one. An explicit `--session-id` cannot create missing routing evidence; do not invent one to bypass the check.
 
 **hooks (wake route)** reports, without probing anything, whether an answer
 could start a turn in this exact session on its own. It never blocks: when it

@@ -14,11 +14,12 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import type {
-  ListRepliesResponse,
-  ReplyView,
-  SubmissionReceipt,
-  SubmitNotificationRequestT,
+import {
+  sessionLabelFromId,
+  type ListRepliesResponse,
+  type ReplyView,
+  type SubmissionReceipt,
+  type SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
@@ -54,10 +55,45 @@ import {
   readMatchingProjectSessionPointer,
   readProjectSession,
   readSessionState,
-  registerQuestion,
+  registerQuestion as persistQuestion,
   writeProjectSession,
-  writeSessionState,
+  writeSessionState as persistSessionState,
+  type PendingQuestion,
+  type SessionState,
 } from './hooks.js'
+
+/** New-format test fixtures always carry the canonical body explicitly. */
+function registerQuestion(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  question: PendingQuestion,
+  now?: number,
+): void {
+  persistQuestion(
+    sessionId,
+    env,
+    { ...question, body: question.body ?? question.question },
+    now,
+  )
+}
+
+function writeSessionState(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  state: SessionState,
+): void {
+  persistSessionState(sessionId, env, {
+    ...state,
+    ...(state.pending === undefined
+      ? {}
+      : {
+          pending: state.pending.map((entry) => ({
+            ...entry,
+            body: entry.body ?? entry.question,
+          })),
+        }),
+  })
+}
 
 class CapturedIo implements CommandIo {
   outLines: string[] = []
@@ -432,16 +468,38 @@ describe('pushing a registered question', () => {
       device_ids: ['dev_iphone', 'dev_mac'],
     })
     expect(h.recorder.submitted[0]?.draft.presentation).toMatchObject({
-      title: 'Question',
+      title: 'Ship it?',
       body: 'Ship it?',
     })
-    expect(h.recorder.submitted[0]?.draft.platform).toEqual({
-      ios: { sound: 'attention', interruption_level: 'active' },
-      macos: { sound: 'attention', interruption_level: 'active' },
-    })
+    expect(h.recorder.submitted[0]?.draft.platform).toBeUndefined()
   })
 
-  it('names the resolved project in the pushed question title', async () => {
+  it('keeps sparse alt text paired with its original media item', async () => {
+    const h = harness([reply({ text: 'Yes' })])
+    writeSessionState('media-order', h.env, { last_prompt_at: AWAY })
+    registerQuestion(
+      'media-order',
+      h.env,
+      {
+        question: 'Which image should ship?',
+        body: 'Compare ![the second image](media:med_second).',
+        media: [
+          { media_id: 'med_first' },
+          { media_id: 'med_second', alt: 'Second image' },
+        ],
+      },
+      NOW,
+    )
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'media-order' }))
+
+    expect(h.recorder.submitted[0]?.draft.presentation.media).toEqual([
+      { media_id: 'med_first' },
+      { media_id: 'med_second', alt: 'Second image' },
+    ])
+  })
+
+  it('keeps Project identity out of the substantive question title', async () => {
     const h = harness([reply({ text: 'Yes' })])
     const projectDir = path.join(h.deps.cwd, '.notifai')
     mkdirSync(projectDir, { recursive: true })
@@ -450,11 +508,17 @@ describe('pushing a registered question', () => {
       'project = "notifai-cli"\nask_grace_seconds = 0\n',
     )
     writeSessionState('project-title', h.env, { last_prompt_at: AWAY })
-    registerQuestion('project-title', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion(
+      'project-title',
+      h.env,
+      { question: 'Ship it?', project: 'notifai-cli' },
+      NOW,
+    )
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'project-title', cwd: h.deps.cwd }))
 
-    expect(h.recorder.submitted[0]?.draft.presentation.title).toBe('Question · notifai-cli')
+    expect(h.recorder.submitted[0]?.draft.presentation.title).toBe('Ship it?')
+    expect(h.recorder.submitted[0]?.draft.project).toBe('notifai-cli')
   })
 })
 
@@ -1900,7 +1964,6 @@ describe('a question that outlives its session', () => {
         question: 'Old?',
         state: 'expired',
       }],
-      undefined,
       NOW - 25 * 3600 * 1000,
     )
     const drained = await drainOrphanRetirements(
@@ -1962,7 +2025,7 @@ describe('ask registration', () => {
     const h = harness()
     // Inside a hook, a rejection is only a stderr note the agent never reads —
     // so it would look registered and then silently never ask.
-    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], session: 'a1' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
     expect(readSessionState('a1', h.env).pending).toBeUndefined()
   })
 
@@ -1993,7 +2056,7 @@ describe('ask registration', () => {
             { text: 'Deploy where?', choices: ['Staging', 'Production'], multi: true },
             { text: 'Anything to watch?' },
           ],
-          detail: '## Context\nThe long story.',
+          body: '## Context\nThe long story.',
         }) },
       undefined,
     )
@@ -2002,18 +2065,18 @@ describe('ask registration', () => {
     registerQuestion('form1', h.env, {
       question: built.questions[0]!.text,
       questions: built.questions,
-      ...(built.detail === undefined ? {} : { detail: built.detail }),
+      body: built.body,
     })
     const pending = readSessionState('form1', h.env).pending?.[0]
     expect(pending?.questions).toHaveLength(2)
-    expect(pending?.detail).toContain('long story')
+    expect(pending?.body).toContain('long story')
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
     const draft = h.recorder.submitted[0]?.draft
-    // The banner leads with the first question and admits the rest exists;
-    // the full set rides the payload for the answering card.
-    expect(draft?.presentation.body).toBe('Deploy where? (+1 more)')
-    expect(draft?.presentation.detail).toContain('long story')
+    expect(draft?.presentation.title).toBe('Deploy where?')
+    expect(draft?.presentation.body).toBe(
+      '1. Deploy where?\n2. Anything to watch?\n\n## Context\nThe long story.',
+    )
     expect(draft?.reply?.questions).toEqual([
       {
         id: 'deploy-where',
@@ -2108,7 +2171,7 @@ describe('ask registration', () => {
 
   it('does not let an explicit session bypass exact active-harness proof', () => {
     const h = harness()
-    expect(askCommand(h.deps, 'Ship it?', { session: 'guessed' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { sessionId: 'guessed' })).toBe(EXIT.usage)
     expect(readSessionState('guessed', h.env).pending).toBeUndefined()
   })
 
@@ -2529,21 +2592,46 @@ describe('malformed input', () => {
 })
 
 describe('telling concurrent agents apart', () => {
-  it('stamps the harness session on the question it pushes', async () => {
-    // The hook has always known session_id and never passed it on, so two
-    // agents in separate worktrees produced identical notifications and the
-    // user could answer the wrong one's question.
+  it('stamps structured Source Context on the question it pushes', async () => {
     const h = harness([])
-    registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion(
+      'sess-abc',
+      h.env,
+      {
+        question: 'Ship it?',
+        source: {
+          session_id: 'sess-abc',
+          session_label: sessionLabelFromId('sess-abc'),
+          harness: 'claude-code',
+        },
+      },
+      NOW,
+    )
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
 
-    expect(h.recorder.submitted[0]?.draft.session).toBe('sess-abc')
+    expect(h.recorder.submitted[0]?.draft.source).toEqual({
+      session_id: 'sess-abc',
+      session_label: sessionLabelFromId('sess-abc'),
+      harness: 'claude-code',
+    })
   })
 
   it('stamps the retirement too, so it lands on the right agent’s notification', async () => {
     const h = harness([reply({ text: 'Yes' })])
-    registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion(
+      'sess-abc',
+      h.env,
+      {
+        question: 'Ship it?',
+        source: {
+          session_id: 'sess-abc',
+          session_label: sessionLabelFromId('sess-abc'),
+          harness: 'claude-code',
+        },
+      },
+      NOW,
+    )
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
     h.recorder.acknowledged ??= new Set()
@@ -2555,17 +2643,35 @@ describe('telling concurrent agents apart', () => {
     )
 
     const retirement = h.recorder.submitted.find((s) => s.draft.event === 'question_retired')
-    expect(retirement?.draft.session).toBe('sess-abc')
+    expect(retirement?.draft.source).toEqual({
+      session_id: 'sess-abc',
+      session_label: sessionLabelFromId('sess-abc'),
+      harness: 'claude-code',
+    })
   })
 
-  it('prefers a name the user chose over the harness UUID', async () => {
+  it('preserves a human session label without displaying the opaque id', async () => {
     const h = harness([])
-    h.env['NOTIFAI_SESSION'] = 'migration-worktree'
-    registerQuestion('sess-abc', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion(
+      'sess-abc',
+      h.env,
+      {
+        question: 'Ship it?',
+        source: {
+          session_id: 'sess-abc',
+          session_label: 'Migration Worktree',
+          harness: 'claude-code',
+        },
+      },
+      NOW,
+    )
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sess-abc' }))
 
-    expect(h.recorder.submitted[0]?.draft.session).toBe('migration-worktree')
+    const draft = h.recorder.submitted[0]?.draft
+    expect(draft?.source?.session_label).toBe('Migration Worktree')
+    expect(draft?.presentation.title).not.toContain('sess-abc')
+    expect(draft?.presentation.body).not.toContain('sess-abc')
   })
 })
 
@@ -2713,7 +2819,6 @@ describe('durable state writes', () => {
             state: 'expired',
           },
         ],
-        'linked-pointer',
         NOW,
       ),
     ).toThrow(/symlink/)

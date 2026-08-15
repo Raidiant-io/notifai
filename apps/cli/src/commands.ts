@@ -13,6 +13,7 @@ import {
   type EvidenceSnapshot,
   type AccountAccessResponse,
   type ListRepliesResponse,
+  type NotificationDraftT,
   type Platform,
   type QuestionT,
   type ReplyView,
@@ -153,8 +154,15 @@ import {
   parseChoices,
   receiptExitCode,
   slugify,
+  validateMediaInputs,
+  type DraftInvocation,
   type SendFlags,
 } from './send.js'
+import {
+  buildSourceContext,
+  inferInvocationContext,
+  projectSlugFrom as inferredProjectSlugFrom,
+} from './invocation-context.js'
 import type { NativeSkill, NativeSkills, SkillScope } from './native-skills.js'
 import { openUrl } from './platform.js'
 
@@ -568,6 +576,36 @@ export async function capabilitiesCommand(
 // send / status
 // ---------------------------------------------------------------------------
 
+function resolveDraftInvocation(
+  deps: CommandDeps,
+  flags: Pick<SendFlags, 'sessionId' | 'sessionLabel'>,
+  active: ActiveHarnessSession | null,
+): { ok: true; invocation: DraftInvocation } | { ok: false; error: string } {
+  const inferred = inferInvocationContext(deps.cwd)
+  const source = buildSourceContext({
+    env: deps.env,
+    invocation: inferred,
+    ...(flags.sessionId !== undefined ? { sessionId: flags.sessionId } : {}),
+    ...(flags.sessionLabel !== undefined ? { sessionLabel: flags.sessionLabel } : {}),
+    ...(active === null
+      ? {}
+      : {
+          activeHarness: {
+            harness: active.harness,
+            ...(active.sessionId === undefined ? {} : { sessionId: active.sessionId }),
+          },
+        }),
+  })
+  if (!source.ok) return source
+  return {
+    ok: true,
+    invocation: {
+      inferredProject: inferred.project,
+      ...(source.source === undefined ? {} : { source: source.source }),
+    },
+  }
+}
+
 export async function sendCommand(
   deps: CommandDeps,
   flags: SendFlags & {
@@ -583,8 +621,12 @@ export async function sendCommand(
   const hasReplyChoice = Array.isArray(flags.replyChoice)
     ? flags.replyChoice.length > 0
     : flags.replyChoice !== undefined
-  if (flags.reply && flags.kind === 'done') {
-    deps.io.err('--kind done cannot be combined with --reply; a reply request is a question.')
+  if (flags.reply && flags.kind !== undefined && flags.kind !== 'question') {
+    deps.io.err(`--kind ${flags.kind} cannot be combined with --reply; a reply request is a question.`)
+    return EXIT.usage
+  }
+  if (!flags.reply && flags.kind === 'question') {
+    deps.io.err('--kind question requires --reply so the question can be answered.')
     return EXIT.usage
   }
   if (
@@ -627,22 +669,42 @@ export async function sendCommand(
     deps.io.err(`--reply-window must be an integer from 60 to ${REPLY_MAX_WINDOW_SECONDS} seconds.`)
     return EXIT.usage
   }
+  const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
+  if (mediaInputError !== null) {
+    deps.io.err(mediaInputError)
+    return EXIT.usage
+  }
   const config = loadLoggedConfig(deps, {
     cwd: deps.cwd,
     env: deps.env,
     flags: { base_url: flags.baseUrl, wait_seconds: flags.wait } as FlagOverrides,
   })
+  const source = resolveDraftInvocation(
+    deps,
+    flags,
+    activeHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)()),
+  )
+  if (!source.ok) {
+    deps.io.err(source.error)
+    return EXIT.usage
+  }
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
-  if (flags.image !== undefined && !flags.image.startsWith('med_')) {
-    const uploaded = await uploadImage(deps, authed.client, flags.image)
+  const mediaIds: string[] = []
+  for (const image of flags.image ?? []) {
+    if (image.startsWith('med_')) {
+      mediaIds.push(image)
+      continue
+    }
+    const uploaded = await uploadImage(deps, authed.client, image)
     if (!uploaded.ok) {
       deps.io.err(uploaded.error)
       return uploaded.exit
     }
-    flags = { ...flags, image: uploaded.mediaId }
+    mediaIds.push(uploaded.mediaId)
   }
-  const build = buildDraft(config, flags)
+  flags = { ...flags, image: mediaIds }
+  const build = buildDraft(config, flags, source.invocation)
   if (!build.ok) {
     deps.io.err(build.error)
     return EXIT.usage
@@ -805,15 +867,9 @@ function emitSendWarnings(
       `Heads up: this title is ${flags.title.length} characters; notification titles work best around 40 characters or fewer.`,
     )
   }
-  if (looksLikeMarkdown(flags.body)) {
+  if (/^(?:update|done|question|failed|blocked)\s*(?:[·:—-]|$)/i.test(flags.title.trim())) {
     deps.io.err(
-      'Heads up: --body looks like Markdown, but banners show plain text. Put long-form Markdown in --detail or --detail-file.',
-    )
-  }
-  const effectiveKind = flags.reply ? 'question' : (flags.kind ?? 'update')
-  if (effectiveKind === 'update' && /^(done|failed)\b/i.test(flags.title.trim())) {
-    deps.io.err(
-      `Heads up: this title announces completion but the notification kind is update. Use --kind done for finished work.`,
+      'Heads up: keep the title to the specific substance. Put notification type in --kind; project identity is inferred separately.',
     )
   }
   if (
@@ -830,12 +886,6 @@ function emitSendWarnings(
       'Heads up: this explicit --ttl is longer than 72 hours; stale notifications may arrive after they are useful.',
     )
   }
-}
-
-function looksLikeMarkdown(value: string): boolean {
-  return /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-+*]\s|>\s|\d+\.\s|```)|(?:\*\*|__|~~|`)[^\n]+(?:\*\*|__|~~|`)|\[[^\]]+\]\([^)]+\)/m.test(
-    value,
-  )
 }
 
 export async function repliesCommand(
@@ -1640,11 +1690,15 @@ export interface AskFlags {
   choice?: string[]
   /** The single question is multi-select: several answers may be chosen. */
   multi?: boolean
-  /** Long-form markdown context; shown in the app, never on the banner. */
-  detail?: string
+  /** Optional Markdown context appended after the question block. */
+  body?: string
   /** Raw JSON for a multi-question form; replaces the positional question. */
   form?: string
-  session?: string
+  image?: string[]
+  imageAlt?: string[]
+  project?: string
+  sessionId?: string
+  sessionLabel?: string
 }
 
 /** The `--form` document: what an agent writes to ask several things at once. */
@@ -1654,15 +1708,20 @@ interface AskFormQuestion {
   multi?: boolean
 }
 
+export interface BuiltQuestions {
+  questions: QuestionT[]
+  /** Canonical Markdown body: question block first, optional context second. */
+  body: string
+}
+
 /**
- * Turn ask input into the question set that will ride the push. Everything is
- * validated here, at registration, because the push happens inside a hook
- * where a rejection becomes a stderr note the agent never reads.
+ * Turn ask input into questions plus their canonical body. Everything is
+ * validated at registration because a later hook failure is easy to miss.
  */
 export function buildQuestions(
   flags: AskFlags,
   question: string | undefined,
-): { ok: true; questions: QuestionT[]; detail?: string } | { ok: false; error: string } {
+): { ok: true; questions: QuestionT[]; body: string } | { ok: false; error: string } {
   if (flags.form !== undefined) {
     if (question !== undefined || flags.choice?.length || flags.multi) {
       return { ok: false, error: '--form replaces the positional question, --choice, and --multi.' }
@@ -1671,21 +1730,41 @@ export function buildQuestions(
     try {
       parsed = JSON.parse(flags.form)
     } catch {
-      return { ok: false, error: '--form must be JSON: {"questions": [{"text", "choices"?, "multi"?}], "detail"?}.' }
+      return {
+        ok: false,
+        error: '--form must be JSON: {"questions": [{"text", "choices"?, "multi"?}], "body"?}.',
+      }
     }
-    if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { questions?: unknown }).questions)) {
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return { ok: false, error: '--form needs a "questions" array (1-4 entries).' }
     }
-    const form = parsed as { questions: unknown[]; detail?: unknown }
-    if (form.questions.length < 1 || form.questions.length > REPLY_MAX_QUESTIONS) {
-      return { ok: false, error: `A form asks 1-${REPLY_MAX_QUESTIONS} questions; this one has ${form.questions.length}.` }
+    const record = parsed as Record<string, unknown>
+    const unknownKeys = Object.keys(record).filter((key) => key !== 'questions' && key !== 'body')
+    if (unknownKeys.length > 0) {
+      return {
+        ok: false,
+        error: `Unknown --form ${unknownKeys.length === 1 ? 'key' : 'keys'}: ${unknownKeys.join(', ')}. Use "body" for Markdown context.`,
+      }
     }
-    if (form.detail !== undefined && typeof form.detail !== 'string') {
-      return { ok: false, error: '"detail" must be a markdown string.' }
+    if (!Array.isArray(record['questions'])) {
+      return { ok: false, error: '--form needs a "questions" array (1-4 entries).' }
+    }
+    const formQuestions = record['questions']
+    if (formQuestions.length < 1 || formQuestions.length > REPLY_MAX_QUESTIONS) {
+      return {
+        ok: false,
+        error: `A form asks 1-${REPLY_MAX_QUESTIONS} questions; this one has ${formQuestions.length}.`,
+      }
+    }
+    if (record['body'] !== undefined && typeof record['body'] !== 'string') {
+      return { ok: false, error: '"body" must be a Markdown string.' }
+    }
+    if (flags.body !== undefined && record['body'] !== undefined) {
+      return { ok: false, error: 'Pass form context in either --body or the form "body" key, not both.' }
     }
     const questions: QuestionT[] = []
     const usedIds = new Set<string>()
-    for (const [index, entry] of form.questions.entries()) {
+    for (const [index, entry] of formQuestions.entries()) {
       if (typeof entry !== 'object' || entry === null || typeof (entry as AskFormQuestion).text !== 'string') {
         return { ok: false, error: `Question ${index + 1} needs a "text" string.` }
       }
@@ -1694,7 +1773,16 @@ export function buildQuestions(
       if ('error' in built) return { ok: false, error: `Question ${index + 1}: ${built.error}` }
       questions.push(built.question)
     }
-    return { ok: true, questions, ...(form.detail !== undefined ? { detail: form.detail } : {}) }
+    const context = flags.body ?? (record['body'] as string | undefined)
+    const questionBlock = questions.map((entry, index) => `${index + 1}. ${entry.text}`).join('\n')
+    return {
+      ok: true,
+      questions,
+      body:
+        context !== undefined && context.trim() !== ''
+          ? `${questionBlock}\n\n${context}`
+          : questionBlock,
+    }
   }
 
   if (question === undefined || question.trim() === '') {
@@ -1702,10 +1790,14 @@ export function buildQuestions(
   }
   const built = buildOneQuestion(question, flags.choice, flags.multi === true, 0, new Set())
   if ('error' in built) return { ok: false, error: built.error }
+  const context = flags.body
   return {
     ok: true,
     questions: [built.question],
-    ...(flags.detail !== undefined && flags.detail.trim() !== '' ? { detail: flags.detail } : {}),
+    body:
+      context !== undefined && context.trim() !== ''
+        ? `${built.question.text}\n\n${context}`
+        : built.question.text,
   }
 }
 
@@ -1722,7 +1814,7 @@ function buildOneQuestion(
     return {
       error:
         `a question must be readable where it is answered: keep it within ` +
-        `${QUESTION_TEXT_MAX_LENGTH} characters and put the longer context in detail.`,
+        `${QUESTION_TEXT_MAX_LENGTH} characters and put the longer context in --body.`,
     }
   }
   const choices = parseChoices(choiceLabels)
@@ -1743,18 +1835,165 @@ function buildOneQuestion(
   }
 }
 
+function buildAskDraft(
+  config: CliConfig,
+  built: BuiltQuestions,
+  flags: AskFlags,
+  invocation: DraftInvocation,
+  mediaIds: string[],
+): { ok: true; draft: NotificationDraftT } | { ok: false; error: string } {
+  const result = buildDraft(
+    config,
+    {
+      title: built.questions[0]!.text,
+      body: built.body,
+      ...(flags.project !== undefined ? { project: flags.project } : {}),
+      ...(mediaIds.length > 0 ? { image: mediaIds } : {}),
+      ...(flags.imageAlt !== undefined ? { imageAlt: flags.imageAlt } : {}),
+      reply: true,
+      questions: built.questions,
+    },
+    invocation,
+  )
+  if (!result.ok) return result
+  const capabilities = CAPABILITIES_V1.describe(result.platform)
+  if (capabilities === null) return { ok: false, error: 'No iOS capability contract is available.' }
+  const validation = validateDraft(result.draft, capabilities)
+  if (!validation.ok) {
+    return {
+      ok: false,
+      error: validation.errors.map((issue) => `${issue.path}: ${issue.message}`).join('\n'),
+    }
+  }
+  return { ok: true, draft: result.draft }
+}
+
+function recordRegisteredQuestion(
+  deps: CommandDeps,
+  sessionId: string,
+  built: BuiltQuestions,
+  draft: NotificationDraftT,
+): number {
+  try {
+    registerQuestion(
+      sessionId,
+      deps.env,
+      {
+        question: built.questions[0]!.text,
+        questions: built.questions,
+        body: draft.presentation.body,
+        ...(draft.project !== undefined ? { project: draft.project } : {}),
+        ...(draft.source !== undefined ? { source: draft.source } : {}),
+        ...(draft.presentation.media !== undefined ? { media: draft.presentation.media } : {}),
+      },
+      (deps.now ?? Date.now)(),
+    )
+  } catch (err) {
+    log(deps).error('ask.registered', { ok: false, session: sessionId, message: String(err) })
+    deps.io.err(`Could not register the question: ${err instanceof Error ? err.message : String(err)}`)
+    return EXIT.failed
+  }
+  log(deps).info('ask.registered', {
+    ok: true,
+    session: sessionId,
+    questions: built.questions.length,
+    text: built.questions[0]!.text,
+    choices: built.questions[0]!.choices?.length ?? 0,
+    media: draft.presentation.media?.length ?? 0,
+  })
+  for (const [index, entry] of built.questions.entries()) {
+    const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
+    if (entry.choices !== undefined) {
+      const kind = entry.multi === true ? 'answers offered (several may be chosen)' : 'answers offered'
+      deps.io.out(`${prefix}${entry.text} — ${kind}: ${entry.choices.map((choice) => choice.label).join(' / ')}`)
+    } else if (built.questions.length > 1) {
+      deps.io.out(`${prefix}${entry.text} — free text`)
+    }
+  }
+  deps.io.out(
+    built.questions.length > 1
+      ? `${built.questions.length} questions registered as one form. Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
+      : 'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
+  )
+  deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
+  for (const [index, entry] of built.questions.entries()) {
+    const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
+    if (entry.choices !== undefined) {
+      for (const choice of entry.choices) {
+        deps.io.out(
+          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the concrete work you will resume.`,
+        )
+      }
+      deps.io.out(
+        `- ${questionPrefix}For an unexpected typed answer: state how it will determine the concrete work you resume.`,
+      )
+    } else {
+      deps.io.out(
+        `- ${questionPrefix}For the free-text answer: state how its content will determine the concrete work you resume.`,
+      )
+    }
+  }
+  deps.io.out(
+    'When the answer arrives, resume the matching work without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
+  )
+  deps.io.out(
+    'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
+  )
+  return EXIT.ok
+}
+
+async function uploadAskMedia(
+  deps: CommandDeps,
+  config: CliConfig,
+  sessionId: string,
+  built: BuiltQuestions,
+  flags: AskFlags,
+  invocation: DraftInvocation,
+): Promise<number> {
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  const mediaIds: string[] = []
+  for (const image of flags.image ?? []) {
+    if (image.startsWith('med_')) {
+      mediaIds.push(image)
+      continue
+    }
+    const uploaded = await uploadImage(deps, authed.client, image)
+    if (!uploaded.ok) {
+      deps.io.err(uploaded.error)
+      return uploaded.exit
+    }
+    mediaIds.push(uploaded.mediaId)
+  }
+  const ready = buildAskDraft(config, built, flags, invocation, mediaIds)
+  if (!ready.ok) {
+    deps.io.err(ready.error)
+    return EXIT.usage
+  }
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft)
+}
+
 /**
  * Registers a question for turn-end routing. Returns immediately so the agent
  * can ask in prose and end its turn; the terminal keeps the question to itself
  * for `ask_grace_seconds` before it reaches any device.
  */
-export function askCommand(deps: CommandDeps, question: string | undefined, flags: AskFlags): number {
+export function askCommand(
+  deps: CommandDeps,
+  question: string | undefined,
+  flags: AskFlags,
+): number | Promise<number> {
   // Validate before route discovery. A malformed question belongs to the
   // caller and should not be hidden behind whichever harness setup issue
   // happens to exist on this machine.
   const built = buildQuestions(flags, question)
   if (!built.ok) {
     deps.io.err(built.error)
+    return EXIT.usage
+  }
+  const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
+  if (mediaInputError !== null) {
+    deps.io.err(mediaInputError)
     return EXIT.usage
   }
   const routingConfig = loadConfig({ cwd: deps.cwd, env: deps.env })
@@ -1816,12 +2055,6 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
       }
       return EXIT.usage
     }
-    if (flags.session !== undefined && flags.session !== active.sessionId) {
-      deps.io.err(
-        `Question routing is not ready: --session ${flags.session} does not match the exact active ${active.label} session ${active.sessionId}; refusing cross-session routing.`,
-      )
-      return EXIT.usage
-    }
     const routeProblems = activeQuestionRouteProblems(deps, active, installations)
     if (routeProblems.length > 0) {
       for (const problem of routeProblems) deps.io.err(`Question routing is not ready: ${problem}`)
@@ -1845,71 +2078,37 @@ export function askCommand(deps: CommandDeps, question: string | undefined, flag
     for (const line of diagnoseMissingSession(deps)) deps.io.err(line)
     return EXIT.usage
   }
-  try {
-    registerQuestion(
-      sessionId,
-      deps.env,
-      {
-        question: built.questions[0]!.text,
-        questions: built.questions,
-        ...(built.detail !== undefined ? { detail: built.detail } : {}),
-      },
-      (deps.now ?? Date.now)(),
+  const source = resolveDraftInvocation(deps, flags, active)
+  if (!source.ok) {
+    deps.io.err(source.error)
+    return EXIT.usage
+  }
+  if (source.invocation.source?.session_id !== sessionId) {
+    deps.io.err(
+      `Question routing is not ready: --session-id or NOTIFAI_SESSION_ID does not match the exact active ${active.label} session; refusing cross-session routing.`,
     )
-  } catch (err) {
-    log(deps).error('ask.registered', { ok: false, session: sessionId, message: String(err) })
-    deps.io.err(`Could not register the question: ${err instanceof Error ? err.message : String(err)}`)
-    return EXIT.failed
+    return EXIT.usage
   }
-  // `ask` returns immediately and the push happens later inside a hook, so this
-  // is the only local evidence that the question was ever registered — the
-  // starting point for "the agent asked, and nothing ever reached my phone".
-  log(deps).info('ask.registered', {
-    ok: true,
-    session: sessionId,
-    questions: built.questions.length,
-    text: built.questions[0]!.text,
-    choices: built.questions[0]!.choices?.length ?? 0,
-  })
-  for (const [index, entry] of built.questions.entries()) {
-    const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
-    if (entry.choices !== undefined) {
-      const kind = entry.multi === true ? 'answers offered (several may be chosen)' : 'answers offered'
-      deps.io.out(`${prefix}${entry.text} — ${kind}: ${entry.choices.map((choice) => choice.label).join(' / ')}`)
-    } else if (built.questions.length > 1) {
-      deps.io.out(`${prefix}${entry.text} — free text`)
-    }
+
+  // Placeholders let every body, source, project, media, and payload limit fail
+  // before an upload starts. The real ids replace them only after this passes.
+  const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
+  const preflight = buildAskDraft(routingConfig, built, flags, source.invocation, placeholders)
+  if (!preflight.ok) {
+    deps.io.err(preflight.error)
+    return EXIT.usage
   }
-  deps.io.out(
-    built.questions.length > 1
-      ? `${built.questions.length} questions registered as one form. Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
-      : 'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
-  )
-  deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
-  for (const [index, entry] of built.questions.entries()) {
-    const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
-    if (entry.choices !== undefined) {
-      for (const choice of entry.choices) {
-        deps.io.out(
-          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the concrete work you will resume.`,
-        )
-      }
-      deps.io.out(
-        `- ${questionPrefix}For an unexpected typed answer: state how it will determine the concrete work you resume.`,
-      )
-    } else {
-      deps.io.out(
-        `- ${questionPrefix}For the free-text answer: state how its content will determine the concrete work you resume.`,
-      )
-    }
+  if ((flags.image?.length ?? 0) > 0) {
+    return uploadAskMedia(
+      deps,
+      routingConfig,
+      sessionId,
+      built,
+      flags,
+      source.invocation,
+    )
   }
-  deps.io.out(
-    'When the answer arrives, resume the matching work without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
-  )
-  deps.io.out(
-    'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
-  )
-  return EXIT.ok
+  return recordRegisteredQuestion(deps, sessionId, built, preflight.draft)
 }
 
 /**
@@ -3294,14 +3493,9 @@ async function skillReadiness(
   }
 }
 
-/** Derive a contract-valid project slug from a directory name. */
+/** Derive a contract-valid project slug; init alone needs a non-empty fallback. */
 export function projectSlugFrom(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9._-]+/g, '-')
-    .replaceAll(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, '')
-    .slice(0, 64)
-  return slug.length > 0 && /^[a-z0-9]/.test(slug) ? slug : 'project'
+  return inferredProjectSlugFrom(name) ?? 'project'
 }
 
 export interface InitFlags {
@@ -4106,29 +4300,40 @@ async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boo
 }
 
 function projectReadiness(deps: CommandDeps, config: CliConfig): ReadinessState {
-  const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
-  const projectSlug = config.project.value
-  return projectSlug !== null
-    ? {
-        id: 'project',
-        title: 'Project identity',
-        status: 'ready',
-        detail: `"${projectSlug}" (${config.project.source})`,
-      }
-    : {
-        id: 'project',
-        title: 'Project identity',
-        // Not a blocker: a send without a project simply carries no project
-        // identity. init always sets one because it is free and reversible,
-        // but an unlabelled setup works, so this must not go red.
-        status: 'optional-gap',
-        detail: `not set in ${configPath} — sends from here carry no project identity`,
-        remedy: {
-          by: 'cli',
-          summary: 'name this project after its directory',
-          command: 'notifai init',
-        },
-      }
+  const configured = config.project.value
+  if (configured !== null) {
+    return {
+      id: 'project',
+      title: 'Project identity',
+      status: 'ready',
+      detail: `"${configured}" (${config.project.source})`,
+    }
+  }
+  const inferred = inferInvocationContext(deps.cwd).project
+  if (inferred !== null) {
+    return {
+      id: 'project',
+      title: 'Project identity',
+      status: 'optional-gap',
+      detail: `"${inferred}" is inferred for each send; init can stamp it into shared config`,
+      remedy: {
+        by: 'cli',
+        summary: 'make the inferred Project identity explicit for every checkout',
+        command: 'notifai init',
+      },
+    }
+  }
+  return {
+    id: 'project',
+    title: 'Project identity',
+    status: 'optional-gap',
+    detail: 'the directory name has no characters a Project identifier can use',
+    remedy: {
+      by: 'cli',
+      summary: 'choose an explicit Project identifier',
+      command: 'notifai init --project-id my-project',
+    },
+  }
 }
 
 function remoteStatesFrom(previous: Readiness): {

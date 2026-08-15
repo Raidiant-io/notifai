@@ -3,6 +3,7 @@ import { Value } from '@sinclair/typebox/value'
 import {
   AccountPreferences,
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
+  BODY_MAX_LENGTH,
   CAPABILITIES_V1,
   DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED,
   defaultDeliveryPolicy,
@@ -273,11 +274,35 @@ describe('validateDraft', () => {
     expect(notifai['project_name']).toBe('My App')
   })
 
-  it('carries the session identifier into the envelope for badge rendering', () => {
-    const withSession = draft({ project: 'my-app', session: 'sess_abc123' })
-    expect(validateDraft(withSession).ok).toBe(true)
-    const envelope = buildApnsEnvelope(withSession, { requestId: 'req_x', deliveryId: 'del_x' }, null)
-    expect((envelope.payload['notifai'] as Record<string, unknown>)['session']).toBe('sess_abc123')
+  it('carries structured source context without using the opaque id as display text', () => {
+    const withSource = draft({
+      project: 'my-app',
+      source: {
+        session_id: 'sess_abc123',
+        session_label: 'Olive Caribou',
+        harness: 'claude-code',
+        branch: 'feature/context',
+        worktree: 'context-worktree',
+      },
+    })
+    expect(validateDraft(withSource).ok).toBe(true)
+    const envelope = buildApnsEnvelope(withSource, { requestId: 'req_x', deliveryId: 'del_x' }, null)
+    const notifai = envelope.payload['notifai'] as Record<string, unknown>
+    expect(notifai).toMatchObject({
+      session_id: 'sess_abc123',
+      session_label: 'Olive Caribou',
+      harness: 'claude-code',
+      branch: 'feature/context',
+      worktree: 'context-worktree',
+    })
+    expect(notifai).not.toHaveProperty('session')
+  })
+
+  it('rejects a display label with no session identity behind it', () => {
+    expect(validateDraft(draft({ source: { session_label: 'Invented Label' } }))).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'source.session_label' })],
+    })
   })
 
   it('rejects project identifiers outside the slug alphabet', () => {
@@ -296,6 +321,86 @@ describe('validateDraft', () => {
     const report = validateDraft({ ...draft(), icon: 'rocket.png' })
     expect(report.ok).toBe(false)
     expect(report.errors[0]?.code).toBe('invalid_request')
+  })
+
+  it('accepts the canonical Markdown body bound and rejects one character more', () => {
+    expect(
+      validateDraft(
+        draft({ presentation: { title: 'Bound', body: 'x'.repeat(BODY_MAX_LENGTH) } }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({ presentation: { title: 'Bound', body: 'x'.repeat(BODY_MAX_LENGTH + 1) } }),
+      ).ok,
+    ).toBe(false)
+  })
+
+  it('accepts up to eight ordered media items with bounded alt text', () => {
+    const media = Array.from({ length: 8 }, (_, index) => ({
+      media_id: `med_${index}`,
+      alt: `Image ${index + 1}`,
+    }))
+    expect(validateDraft(draft({ presentation: { title: 'Gallery', body: 'Body', media } })).ok).toBe(
+      true,
+    )
+    expect(
+      validateDraft(
+        draft({
+          presentation: {
+            title: 'Gallery',
+            body: 'Body',
+            media: [...media, { media_id: 'med_ninth' }],
+          },
+        }),
+      ).ok,
+    ).toBe(false)
+    expect(
+      validateDraft(
+        draft({
+          presentation: {
+            title: 'Gallery',
+            body: 'Body',
+            media: [{ media_id: 'med_one', alt: 'x'.repeat(257) }],
+          },
+        }),
+      ).ok,
+    ).toBe(false)
+  })
+
+  it('warns when an inline canonical media reference is not attached', () => {
+    const report = validateDraft(
+      draft({
+        presentation: {
+          title: 'Comparison',
+          body: '![diff](media:med_missing)',
+          media: [{ media_id: 'med_attached' }],
+        },
+      }),
+    )
+    expect(report).toMatchObject({
+      ok: true,
+      warnings: [
+        expect.objectContaining({
+          path: 'presentation.body',
+          message: expect.stringContaining('media:med_missing'),
+        }),
+      ],
+    })
+  })
+
+  it('rejects the deleted detail, singular image, and top-level session shapes', () => {
+    const base = draft()
+    expect(
+      validateDraft({ ...base, presentation: { ...base.presentation, detail: 'legacy' } }).ok,
+    ).toBe(false)
+    expect(
+      validateDraft({
+        ...base,
+        presentation: { ...base.presentation, image: { media_id: 'med_legacy' } },
+      }).ok,
+    ).toBe(false)
+    expect(validateDraft({ ...base, session: 'legacy-session' }).ok).toBe(false)
   })
 
   it('reports oversized payloads with payload_too_large', () => {
@@ -355,13 +460,13 @@ describe('validateDraft', () => {
   it('carries the acknowledgement snapshot on original questions only', () => {
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
     const question = draft({ reply: freeTextReply() })
-    const required = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), {
+    const required = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), null, {
       agentAcknowledgementRequired: true,
     })
-    const disabled = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), {
+    const disabled = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), null, {
       agentAcknowledgementRequired: false,
     })
-    const ordinary = buildApnsEnvelope(draft(), ids, null, 'ios', null, null, {
+    const ordinary = buildApnsEnvelope(draft(), ids, null, 'ios', null, null, null, {
       agentAcknowledgementRequired: true,
     })
 
@@ -391,6 +496,7 @@ describe('validateDraft', () => {
       { requestId: 'req_sync', deliveryId: 'del_sync' },
       null,
       'ios',
+      null,
       null,
       null,
       null,
@@ -522,7 +628,9 @@ describe('validateDraft', () => {
     expect(CAPABILITIES_V1.describe('macos')).toBe(MACOS_CAPABILITIES_V1)
     expect(MACOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ path: 'presentation.image', status: 'downgraded' }),
+        expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
+        expect.objectContaining({ path: 'presentation.body', status: 'supported' }),
+        expect.objectContaining({ path: 'source', status: 'supported' }),
         expect.objectContaining({ path: 'reply', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
@@ -532,22 +640,26 @@ describe('validateDraft', () => {
     )
   })
 
-  it('warns when macOS delivery omits a requested image', () => {
-    const withImage = draft({
-      presentation: { title: 'Hi', body: 'Body', image: { media_id: 'med_example' } },
+  it('warns when the macOS banner omits an ordered media collection', () => {
+    const withMedia = draft({
+      presentation: {
+        title: 'Hi',
+        body: 'Body',
+        media: [{ media_id: 'med_first' }, { media_id: 'med_second', alt: 'Graph' }],
+      },
     })
 
-    expect(validateDraft(withImage, MACOS_CAPABILITIES_V1)).toMatchObject({
+    expect(validateDraft(withMedia, MACOS_CAPABILITIES_V1)).toMatchObject({
       ok: true,
       errors: [],
       warnings: [
         {
-          path: 'presentation.image',
-          message: expect.stringContaining('omitted on macOS'),
+          path: 'presentation.media',
+          message: expect.stringContaining('banner omits images'),
         },
       ],
     })
-    expect(validateDraft(withImage, IOS_CAPABILITIES_V1).warnings).toEqual([])
+    expect(validateDraft(withMedia, IOS_CAPABILITIES_V1).warnings).toEqual([])
   })
 
   it('warns when a target requests Time Sensitive behavior without the capability', () => {
@@ -575,27 +687,41 @@ describe('validateDraft', () => {
   })
 
   it('uses the same APNs envelope rules for estimation and rendering', () => {
-    const withImage = draft({
+    const withMedia = draft({
       event: 'tests_passed',
-      presentation: { title: 'Hi', body: 'Body', image: { media_id: 'med_example' } },
+      source: {
+        session_id: 'sess_example',
+        session_label: 'Amber Falcon',
+        harness: 'codex',
+        branch: 'feature/media',
+        worktree: 'media-worktree',
+      },
+      presentation: {
+        title: 'All checks passed',
+        body: '**All checks passed.**\n\nSee the attached graph.',
+        media: [{ media_id: 'med_example', alt: 'Build graph' }],
+      },
       platform: { ios: {} },
     })
     const mediaUrl = 'https://x.invalid/'.padEnd(500, 'a')
     const envelope = buildApnsEnvelope(
-      withImage,
+      withMedia,
       {
         requestId: 'req_00000000000000000000000000',
         deliveryId: 'del_00000000000000000000000000',
-        // Every real dispatch carries one, so the estimate reserves its width.
         receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
       },
       mediaUrl,
     )
     const aps = envelope.payload['aps'] as Record<string, unknown>
+    const alert = aps['alert'] as Record<string, unknown>
+    const notifai = envelope.payload['notifai'] as Record<string, unknown>
 
+    expect(alert['body']).toBe('All checks passed.\nSee the attached graph.')
     expect(aps['interruption-level']).toBe('active')
     expect(aps['mutable-content']).toBe(1)
-    expect(estimateApnsPayloadBytes(withImage)).toBe(
+    expect(notifai).toMatchObject({ has_full_body: true, media_count: 1 })
+    expect(estimateApnsPayloadBytes(withMedia)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
     )
   })
@@ -620,6 +746,7 @@ describe('validateDraft', () => {
       },
       null,
       'ios',
+      null,
       null,
       null,
       null,
@@ -687,7 +814,10 @@ describe('question lifecycle (D-A, D-B, D-C)', () => {
     })
     const envelope = buildApnsEnvelope(retirement, { requestId: 'req_x', deliveryId: 'del_x' }, null)
 
-    expect(envelope.payload['aps']).toEqual({ 'content-available': 1 })
+    expect(envelope.payload['aps']).toEqual({
+      'content-available': 1,
+      'mutable-content': 1,
+    })
     expect(envelope.pushType).toBe('background')
     // 5 is the only legal priority for a background push.
     expect(envelope.priority).toBe(5)
@@ -792,10 +922,17 @@ describe('notification kind', () => {
     )
   })
 
+  it('carries failed and blocked as closed semantic kinds', () => {
+    expect(validateDraft(draft({ kind: 'failed' })).ok).toBe(true)
+    expect(validateDraft(draft({ kind: 'blocked' })).ok).toBe(true)
+    expect(notifaiKeyOf(draft({ kind: 'failed' }))['kind']).toBe('failed')
+    expect(notifaiKeyOf(draft({ kind: 'blocked' }))['kind']).toBe('blocked')
+  })
+
   it('rejects a kind outside the closed vocabulary', () => {
-    expect(validateDraft(draft({ kind: 'blocked' } as unknown as Partial<NotificationDraftT>)).ok).toBe(
-      false,
-    )
+    expect(
+      validateDraft(draft({ kind: 'progress' } as unknown as Partial<NotificationDraftT>)).ok,
+    ).toBe(false)
   })
 })
 

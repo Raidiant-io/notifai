@@ -388,6 +388,117 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('project')
   })
 
+  it('infers Project and exact Claude Source Context without printing the opaque id', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'Notifai Project '))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CLAUDECODE: '1',
+        CLAUDE_CODE_SESSION_ID: 'opaque-claude-session-42',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'All checks passed',
+        body: '**42 checks** passed.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.project).toMatch(/^notifai-project-/)
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'opaque-claude-session-42',
+      harness: 'claude-code',
+    })
+    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+    expect(io.outLines.join('\n')).not.toContain('opaque-claude-session-42')
+    expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
+  })
+
+  it('uploads repeatable images in order and sends only canonical media references', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-media-order-'))
+    const first = path.join(root, 'first.png')
+    const second = path.join(root, 'second.gif')
+    writeFileSync(first, 'first image')
+    writeFileSync(second, 'second image')
+    const uploaded: string[] = []
+    let grants = 0
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      createMediaUpload: async () => {
+        grants += 1
+        return {
+          media_id: `med_uploaded_${grants}`,
+          upload_url: `https://upload.invalid/${grants}`,
+          upload_headers: {},
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        }
+      },
+      uploadMedia: async (grant: { media_id: string }) => {
+        uploaded.push(grant.media_id)
+      },
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(new CapturedIo(), client), {
+        title: 'Visual comparison is ready',
+        body:
+          '![first](media:1) ![second](media:2) ![ready](media:med_existing)',
+        image: [first, second, 'med_attached_only'],
+        imageAlt: ['First state', 'Second state'],
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(uploaded).toEqual(['med_uploaded_1', 'med_uploaded_2'])
+    expect(submitted?.draft.presentation.media).toEqual([
+      { media_id: 'med_uploaded_1', alt: 'First state' },
+      { media_id: 'med_uploaded_2', alt: 'Second state' },
+      { media_id: 'med_attached_only' },
+    ])
+    expect(submitted?.draft.presentation.body).toBe(
+      '![first](media:med_uploaded_1) ![second](media:med_uploaded_2) ![ready](media:med_existing)',
+    )
+    expect(submitted?.draft.presentation.body).not.toMatch(/media:[1-8](?!\d)/)
+  })
+
+  it('rejects media cardinality and alt pairing before any upload', async () => {
+    const io = new CapturedIo()
+    let uploads = 0
+    const client = {
+      createMediaUpload: async () => {
+        uploads += 1
+        throw new Error('must not upload')
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Visual comparison',
+        body: 'See it.',
+        image: ['one.png'],
+        imageAlt: ['one', 'two'],
+      }),
+    ).toBe(EXIT.usage)
+    expect(uploads).toBe(0)
+    expect(io.errLines.join(' ')).toContain('2 --image-alt')
+  })
+
   it('rejects done plus reply before authentication or submission', async () => {
     const io = new CapturedIo()
     let submitCalls = 0
@@ -416,16 +527,12 @@ describe('command contracts', () => {
       warning: /titles work best around 40/i,
     },
     {
-      flags: { title: 'Details', body: '**bold Markdown**' },
-      warning: /--body looks like Markdown.*--detail/i,
-    },
-    {
       flags: { title: 'Done · build', body: 'All green.' },
-      warning: /Use --kind done/i,
+      warning: /keep the title to the specific substance/i,
     },
     {
       flags: { title: 'Failed · build', body: 'One integration test failed.' },
-      warning: /Use --kind done/i,
+      warning: /Put notification type in --kind/i,
     },
     {
       flags: { title: 'Update', body: 'Still relevant.', ttl: 259_201 },
@@ -456,14 +563,27 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toMatch(/machine-global config/i)
   })
 
-  it('removes unmanaged provider fields from the public send flags', () => {
+  it('keeps only the current public notification-authoring flags', () => {
     const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
     expect(source).not.toContain(".option('--badge")
     expect(source).not.toContain(".option('--relevance")
     expect(source).not.toContain(".option('--target-content-id")
-    expect(source).toContain('Kind profiles apply automatically')
-    expect(source).toContain('Pass --sound or --level only to override')
-    expect(source).toContain('override kind profile / saved config')
+    const sendGrammar = source.slice(source.indexOf(".command('send')"), source.indexOf('send.addHelpText'))
+    const askGrammar = source.slice(source.indexOf(".command('ask [question]')"), source.indexOf(".command('close"))
+    for (const grammar of [sendGrammar, askGrammar]) {
+      expect(grammar).not.toContain(".option('--detail")
+      expect(grammar).not.toContain(".option('--session <")
+      expect(grammar).toContain(".option('--body-file")
+      expect(grammar).toContain(".option('--session-id")
+      expect(grammar).toContain(".option('--session-label")
+      expect(grammar).toContain("'--image <path|url|media_id>'")
+      expect(grammar).toContain("'--image-alt <text>'")
+    }
+    expect(source).toContain('Kind describes status in the Companion Apps')
+    expect(source).toContain('it never chooses banner sound or interruption level')
+    expect(source).toContain('override saved sound')
+    expect(source).not.toContain('Kind profiles apply automatically')
+    expect(source).not.toContain('sound alert      level active')
   })
 
   it('rejects a question nobody will wait for', async () => {
@@ -3732,6 +3852,74 @@ describe('asking before the hooks have ever run', () => {
     expect(io.outLines).toContain(
       'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
     )
+    expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
+      session_id: 'codex-current-thread',
+      harness: 'codex',
+    })
+    expect(
+      readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
+    ).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+  })
+
+  it('uploads ask images before registration and freezes canonical body media', async () => {
+    const cwd = scratchDir('notifai-ask-media-')
+    const first = path.join(cwd, 'first.png')
+    const second = path.join(cwd, 'second.gif')
+    writeFileSync(first, 'first')
+    writeFileSync(second, 'second')
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-media-thread',
+    }
+    let grant = 0
+    const uploaded: string[] = []
+    const client = {
+      createMediaUpload: async () => {
+        grant += 1
+        return {
+          media_id: `med_ask_${grant}`,
+          upload_url: `https://upload.invalid/${grant}`,
+          upload_headers: {},
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        }
+      },
+      uploadMedia: async (value: { media_id: string }) => {
+        uploaded.push(value.media_id)
+      },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-media-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-media-thread', 42, 'codex')
+    io.outLines = []
+
+    expect(
+      await askCommand(deps, 'Which visual should I use?', {
+        body: 'Compare ![first](media:1) with ![second](media:2).',
+        image: [first, second],
+        imageAlt: ['First option', 'Second option'],
+      }),
+    ).toBe(EXIT.ok)
+
+    const pending = readSessionState('codex-media-thread', env).pending?.[0]
+    expect(uploaded).toEqual(['med_ask_1', 'med_ask_2'])
+    expect(pending?.body).toBe(
+      'Which visual should I use?\n\nCompare ![first](media:med_ask_1) with ![second](media:med_ask_2).',
+    )
+    expect(pending?.media).toEqual([
+      { media_id: 'med_ask_1', alt: 'First option' },
+      { media_id: 'med_ask_2', alt: 'Second option' },
+    ])
+    expect(pending?.source).toMatchObject({
+      session_id: 'codex-media-thread',
+      harness: 'codex',
+    })
   })
 
   // A harness exports its markers into everything it starts, so a nested
@@ -3763,7 +3951,10 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('codex-current-thread', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(readSessionState('codex-current-thread', env).pending?.[0]).toMatchObject({
+      question: 'Ship it?',
+      source: { session_id: 'codex-current-thread', harness: 'codex' },
+    })
     expect(readSessionState('claude-orchestrator', env).pending).toBeUndefined()
   })
 
@@ -3792,7 +3983,10 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('claude-current', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(readSessionState('claude-current', env).pending?.[0]).toMatchObject({
+      question: 'Ship it?',
+      source: { session_id: 'claude-current', harness: 'claude-code' },
+    })
     expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
   })
 
@@ -4595,26 +4789,76 @@ describe('question sets', () => {
     expect(submitted?.draft.reply?.questions?.[0]?.choices).toHaveLength(3)
   })
 
-  it('rejects a question body too long for the answering surface', async () => {
+  it('derives the answerable question from the first banner block', async () => {
     const io = new CapturedIo()
-    let submitCalls = 0
+    let submitted: SubmitNotificationRequestT | undefined
     const client = {
-      submit: async () => {
-        submitCalls += 1
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
         return receipt
       },
+      replies: async () => replyResponse([reply]),
     } as unknown as ApiClient
 
+    const body = `Which environment?\n\n${'Long Markdown context. '.repeat(30)}`
     expect(
       await sendCommand(makeDeps(io, client), {
-        title: 'Question',
-        body: 'x'.repeat(501),
+        title: 'Choose the deployment environment',
+        body,
         reply: true,
         replyTimeout: 30,
       }),
-    ).toBe(EXIT.usage)
-    expect(submitCalls).toBe(0)
-    expect(io.errLines.join(' ')).toContain('--detail')
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.presentation.body).toBe(body)
+    expect(submitted?.draft.reply?.questions[0]?.text).toBe('Which environment?')
+  })
+
+  it('composes one question before optional Markdown context', () => {
+    expect(
+      buildQuestions(
+        { body: '## Why\nThe release window closes today.' },
+        'Which environment?',
+      ),
+    ).toMatchObject({
+      ok: true,
+      body: 'Which environment?\n\n## Why\nThe release window closes today.',
+      questions: [{ text: 'Which environment?' }],
+    })
+  })
+
+  it('composes numbered form questions before form context', () => {
+    expect(
+      buildQuestions(
+        {
+          form: JSON.stringify({
+            questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }],
+            body: '## Context\nTraffic is elevated.',
+          }),
+        },
+        undefined,
+      ),
+    ).toMatchObject({
+      ok: true,
+      body:
+        '1. Deploy where?\n2. What should I monitor?\n\n## Context\nTraffic is elevated.',
+    })
+  })
+
+  it('rejects the deleted form detail key instead of treating it as context', () => {
+    expect(
+      buildQuestions(
+        {
+          form: JSON.stringify({
+            questions: [{ text: 'Deploy?' }],
+            detail: 'legacy context',
+          }),
+        },
+        undefined,
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Unknown --form key: detail'),
+    })
   })
 
   it('generates unique question ids when texts collide', () => {
