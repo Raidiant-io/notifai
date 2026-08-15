@@ -22,6 +22,14 @@ import path from 'node:path'
  * process cannot remove a later owner's entry; because process liveness, rather
  * than age, decides recovery, a delayed holder is never mistaken for a dead one.
  *
+ * The rendezvous directory lives only as long as it has entries: the last
+ * contender out removes it, so an idle machine keeps no lock state. That makes
+ * the directory itself a contended resource. A contender registering while
+ * another releases can find it gone, half-deleted, or already replaced by a
+ * third contender, and none of those is a broken lock — so publication retries
+ * within the caller's deadline and pins its rendezvous only once its own entry
+ * is in the directory, which is the moment removal becomes impossible.
+ *
  * Acquisition is deliberately bounded because both harness hooks and logging
  * must fail open rather than hold an agent turn indefinitely.
  */
@@ -32,6 +40,8 @@ const ENTRY_PATTERN = /^(choosing|ticket-(\d+))-(\d+)-([0-9a-f]+)$/
 const lockSleep = new Int32Array(new SharedArrayBuffer(4))
 
 export type FileLockObservation =
+  /** The rendezvous has been scanned and this contender is about to publish. */
+  | { phase: 'registering'; entry: string }
   | { phase: 'choosing-published'; entry: string }
   | { phase: 'stale-entry'; entry: string }
   | { phase: 'waiting'; blockers: string[] }
@@ -125,6 +135,16 @@ function assertOwnedDirectory(directory: string): FileIdentity {
   return { dev: stat.dev, ino: stat.ino }
 }
 
+/**
+ * The rendezvous a contender was using is no longer the directory at that path.
+ *
+ * Fatal once an entry is published — a contender's own entry makes the
+ * directory non-empty, so no cooperating releaser can remove it. Before
+ * publication it means only that a releaser removed an empty rendezvous while
+ * this contender was registering in it, which is ordinary contention.
+ */
+class RendezvousReplaced extends Error {}
+
 function assertSameDirectory(directory: string, expected: FileIdentity): void {
   const current = lstatSync(directory)
   if (
@@ -133,7 +153,7 @@ function assertSameDirectory(directory: string, expected: FileIdentity): void {
     current.dev !== expected.dev ||
     current.ino !== expected.ino
   ) {
-    throw new Error(`${directory} changed while the file lock was active.`)
+    throw new RendezvousReplaced(`${directory} changed while the file lock was active.`)
   }
 }
 
@@ -207,6 +227,24 @@ function publishEmpty(file: string): EntryIdentity {
   }
 }
 
+/**
+ * True when a publication attempt lost its rendezvous rather than found a
+ * broken one.
+ *
+ * A releaser removes an empty rendezvous directory the moment the last entry
+ * goes, so a contender registering at that instant sees the removal from
+ * whichever side it reached first. All three are the same event: `ENOENT` when
+ * the directory is already gone, `EINVAL` when APFS reports a directory that is
+ * still being deleted, and a replaced identity when a third contender recreated
+ * it first. None of them says anything about the lock's integrity, because a
+ * contender with no published entry owns nothing yet.
+ */
+function lostTheRendezvous(err: unknown): boolean {
+  if (err instanceof RendezvousReplaced) return true
+  const code = (err as NodeJS.ErrnoException).code
+  return code === 'ENOENT' || code === 'EINVAL'
+}
+
 function publishChoosing(
   directory: string,
   name: string,
@@ -217,21 +255,33 @@ function publishChoosing(
   for (;;) {
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
-      const directoryIdentity = assertOwnedDirectory(directory)
+      const registrar = assertOwnedDirectory(directory)
       chmodSync(directory, 0o700)
       // Recover before registration so a delayed stale cleanup can only name an
       // old owner's unique path, never this contender's future one.
-      liveEntries(directory, directoryIdentity, observe)
+      liveEntries(directory, registrar, observe)
+      observe?.({ phase: 'registering', entry: name })
       const fileIdentity = publishEmpty(file)
-      assertSameDirectory(directory, directoryIdentity)
+      // Pin the rendezvous that holds the entry, not the one scanned before it
+      // existed. `open` resolves the path atomically, so the entry lands in
+      // whichever directory the path named at that instant — and from then on
+      // that directory is non-empty, so no cooperating releaser can remove it.
+      // Reading the identity here therefore names the contender's real
+      // rendezvous even when the scanned one was removed and recreated
+      // underneath it.
+      const directoryIdentity = assertOwnedDirectory(directory)
+      if (!sameEntryIdentity(file, fileIdentity)) {
+        throw new RendezvousReplaced(`${directory} no longer holds ${name}.`)
+      }
       return { file, fileIdentity, directoryIdentity }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-      // The previous holder removed an empty rendezvous directory between our
-      // mkdir and publication. Recreate it; once our entry exists, no cooperating
-      // releaser can remove the non-empty directory underneath us.
+      if (!lostTheRendezvous(err)) throw err
+      // Recreate it and register again; the deadline, not the number of losses,
+      // decides when contention becomes a failure.
       if (Date.now() >= deadline) {
-        throw new Error(`timed out publishing file lock contender in ${directory}`)
+        throw new Error(
+          `timed out publishing file lock contender in ${directory}: ${(err as Error).message}`,
+        )
       }
       Atomics.wait(lockSleep, 0, 0, FILE_LOCK_POLL_MS)
     }

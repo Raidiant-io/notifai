@@ -35,22 +35,30 @@ function lines(env: NodeJS.ProcessEnv): LogRecord[] {
     .map((line) => JSON.parse(line) as LogRecord)
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
+async function waitUntil(predicate: () => boolean, deadline: number): Promise<void> {
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error('timed out waiting for rotation workers')
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
 }
 
-function rotationWorker(
-  env: NodeJS.ProcessEnv,
-  worker: number,
-  records: number,
-  maxBytes: number,
-  maxFiles: number,
-  startPath: string,
-): { readyPath: string; done: Promise<void> } {
+interface RotationRun {
+  env: NodeJS.ProcessEnv
+  worker: number
+  records: number
+  maxBytes: number
+  maxFiles: number
+  startPath: string
+  /**
+   * When the rendezvous has failed, as an absolute instant every participant
+   * reads the same way. A per-side countdown would let the first worker to
+   * report ready abandon a parent that is still waiting for the last one.
+   */
+  deadline: number
+}
+
+function rotationWorker(run: RotationRun): { readyPath: string; done: Promise<void> } {
+  const { env, worker } = run
   const readyPath = path.join(env['XDG_STATE_HOME']!, `rotation-ready-${worker}`)
   const vitest = path.join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs')
   const child = spawn(
@@ -62,11 +70,12 @@ function rotationWorker(
         ...process.env,
         ...env,
         NOTIFAI_ROTATION_WORKER: String(worker),
-        NOTIFAI_ROTATION_RECORDS: String(records),
-        NOTIFAI_ROTATION_MAX_BYTES: String(maxBytes),
-        NOTIFAI_ROTATION_MAX_FILES: String(maxFiles),
+        NOTIFAI_ROTATION_RECORDS: String(run.records),
+        NOTIFAI_ROTATION_MAX_BYTES: String(run.maxBytes),
+        NOTIFAI_ROTATION_MAX_FILES: String(run.maxFiles),
         NOTIFAI_ROTATION_READY: readyPath,
-        NOTIFAI_ROTATION_START: startPath,
+        NOTIFAI_ROTATION_START: run.startPath,
+        NOTIFAI_ROTATION_DEADLINE: String(run.deadline),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -263,11 +272,15 @@ describe('rotation', () => {
     const maxBytes = 4_000
     const maxFiles = 100
     const startPath = path.join(env['XDG_STATE_HOME']!, 'rotation-start')
+    // Four cold Vitest processes have to reach the barrier before any of them
+    // writes, and a busy CI host schedules them far apart. The budget is shared,
+    // so it bounds the whole rendezvous rather than each side of it.
+    const deadline = Date.now() + 20_000
     const children = Array.from({ length: workers }, (_, worker) =>
-      rotationWorker(env, worker, recordsPerWorker, maxBytes, maxFiles, startPath),
+      rotationWorker({ env, worker, records: recordsPerWorker, maxBytes, maxFiles, startPath, deadline }),
     )
 
-    await waitUntil(() => children.every(({ readyPath }) => existsSync(readyPath)))
+    await waitUntil(() => children.every(({ readyPath }) => existsSync(readyPath)), deadline)
     writeFileSync(startPath, 'go')
     await Promise.all(children.map(({ done }) => done))
 
@@ -293,8 +306,10 @@ describe('rotation', () => {
     // name race may lose or duplicate one.
     expect(retainedRecords).toBe(workers * recordsPerWorker)
     expect(seen.size).toBe(workers * recordsPerWorker)
-    expect([...seen.values()].every((count) => count === 1)).toBe(true)
-  })
+    // Name the offending records: a bare boolean would report a duplication bug
+    // as "expected false to be true" and leave the next reader nothing to go on.
+    expect([...seen].filter(([, count]) => count !== 1)).toEqual([])
+  }, 90_000)
 })
 
 describe('failure isolation', () => {
