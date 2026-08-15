@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [1.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v0.6.0...protocol-v1.0.0) (2026-08-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** `presentation.detail` is removed; `presentation.image` is replaced by the ordered `presentation.media` collection; the top-level `session` field is replaced by the structured `source` context; the APNs custom payload replaces `has_detail` with `media_count`.
+
+### Features
+
+* add unified notification content and source context ([3e6479a](https://github.com/Raidiant-io/notifai/commit/3e6479ae22c64c6886c1e919ba3183486e408596))
+* add unified notification content and source context ([2473ed5](https://github.com/Raidiant-io/notifai/commit/2473ed51df42b56652435c611a57f3751fa484f5))
+
+
+### Bug Fixes
+
+* attribute the unified-content break and propagate workspace dependency bumps ([cb438ce](https://github.com/Raidiant-io/notifai/commit/cb438cec76de9b393d7673554dc440a764887f76))
+* **protocol:** document the unified wire contract ([99053b5](https://github.com/Raidiant-io/notifai/commit/99053b5c7e6f0755bbba45d06bad048cfb98812e))
+
 ## [0.6.0](https://github.com/Raidiant-io/notifai/compare/protocol-v0.5.0...protocol-v0.6.0) (2026-08-14)
 
 
