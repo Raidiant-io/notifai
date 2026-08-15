@@ -1,9 +1,9 @@
 # `@raidiant/notifai-protocol`
 
 The public wire contract used by the Notifai CLI and service. It provides
-TypeBox schemas and TypeScript types for notification drafts, REST v1
-requests and responses, status vocabulary, lifecycle hints, and platform
-capabilities.
+TypeBox schemas and TypeScript types for notification drafts, ordered media
+collections, structured source context, REST v1 requests and responses,
+status vocabulary, lifecycle hints, and platform capabilities.
 
 ```ts
 import { CAPABILITIES_V1, validateDraft } from '@raidiant/notifai-protocol'
