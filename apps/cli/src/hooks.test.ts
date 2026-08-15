@@ -1216,7 +1216,106 @@ describe('the waiter owning one question to the end', () => {
     expect(h.recorder.submitted[0]).toEqual(firstAttempt)
   })
 
-  it('preserves and exactly replays an intent after a definitive submit rejection', async () => {
+  it('remints a frozen draft after a terminal 422 instead of replaying it', async () => {
+    const h = harness([])
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async () => {
+          throw new ApiCallError(401, 'unauthorized', 'Sign in again.')
+        },
+      } as ApiClient
+    }
+    writeSessionState('rejected-submit', h.env, { last_prompt_at: AWAY })
+    registerQuestion('rejected-submit', h.env, { question: 'Deploy?' }, NOW)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-submit' }))
+    const frozen = readSessionState('rejected-submit', h.env).pending?.[0]?.submission
+    if (frozen === undefined) throw new Error('expected a persisted submission intent')
+
+    let submits = 0
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => {
+          submits += 1
+          if (body.request_id === frozen.request_id) {
+            throw new ApiCallError(422, 'invalid_request', 'The draft was rejected.', null, [
+              { path: 'presentation.detail', message: 'Unexpected property' },
+            ])
+          }
+          return client.submit(body, waitSeconds)
+        },
+      } as ApiClient
+    }
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-submit' }))
+
+    expect(submits).toBe(2)
+    expect(h.recorder.submitted[0]?.request_id).toBeDefined()
+    expect(h.recorder.submitted[0]?.request_id).not.toBe(frozen.request_id)
+    expect(h.io.errLines.join('\n')).toContain('reminting the draft')
+    expect(readSessionState('rejected-submit', h.env).pending).toBeUndefined()
+  })
+
+  it('retires a reminted draft that the server still rejects', async () => {
+    const h = harness([])
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async () => {
+          throw new ApiCallError(401, 'unauthorized', 'Sign in again.')
+        },
+      } as ApiClient
+    }
+    writeSessionState('rejected-forever', h.env, { last_prompt_at: AWAY })
+    registerQuestion('rejected-forever', h.env, { question: 'Deploy?' }, NOW)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-forever' }))
+    expect(readSessionState('rejected-forever', h.env).pending?.[0]?.submission).toBeDefined()
+
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async () => {
+          throw new ApiCallError(422, 'invalid_request', 'The draft was rejected.')
+        },
+      } as ApiClient
+    }
+    h.advanceClock(600_000)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-forever' }))
+    expect(readSessionState('rejected-forever', h.env).pending).toBeUndefined()
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-forever' }))
+    expect(h.recorder.submitted).toEqual([])
+    expect(h.io.errLines.join('\n')).toContain('retiring the question so it is not retried forever')
+  })
+
+  it('retires a freshly minted draft the current contract rejects', async () => {
+    const h = harness([])
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        submit: async () => {
+          throw new ApiCallError(422, 'invalid_request', 'The draft was rejected.')
+        },
+      } as ApiClient
+    }
+    writeSessionState('fresh-422', h.env, { last_prompt_at: AWAY })
+    registerQuestion('fresh-422', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'fresh-422' }))
+
+    expect(readSessionState('fresh-422', h.env).pending).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('retiring it because the current draft will never be accepted')
+  })
+
+  it('preserves a frozen intent after a retryable client rejection', async () => {
     const h = harness([])
     const factory = h.deps.clientFactory
     let polls = 0
@@ -1225,7 +1324,7 @@ describe('the waiter owning one question to the end', () => {
       return {
         ...client,
         submit: async () => {
-          throw new ApiCallError(422, 'invalid_request', 'The draft was rejected.')
+          throw new ApiCallError(401, 'unauthorized', 'Sign in again.')
         },
         replies: async () => {
           polls += 1
@@ -1233,23 +1332,23 @@ describe('the waiter owning one question to the end', () => {
         },
       } as ApiClient
     }
-    writeSessionState('rejected-submit', h.env, { last_prompt_at: AWAY })
-    registerQuestion('rejected-submit', h.env, { question: 'Deploy?' }, NOW)
+    writeSessionState('auth-submit', h.env, { last_prompt_at: AWAY })
+    registerQuestion('auth-submit', h.env, { question: 'Deploy?' }, NOW)
 
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-submit' }))
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'auth-submit' }))
 
-    const pending = readSessionState('rejected-submit', h.env).pending?.[0]
+    const pending = readSessionState('auth-submit', h.env).pending?.[0]
     expect(pending?.request_id).toBeUndefined()
     expect(pending?.submission?.request_id).toMatch(/^req_[A-Za-z0-9_-]{22,24}$/)
     expect(polls).toBe(0)
-    expect(h.io.errLines.join('\n')).toContain('submission was rejected')
+    expect(h.io.errLines.join('\n')).toContain('preserving it for recovery')
 
     const frozen = pending?.submission
     if (frozen === undefined) throw new Error('expected a persisted submission intent')
     writeGlobalConfig(h, 'project = "changed-after-crash"\n')
     h.advanceClock(600_000)
     h.deps.clientFactory = factory
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'rejected-submit' }))
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'auth-submit' }))
 
     expect(h.recorder.submitted[0]).toEqual({
       request_id: frozen.request_id,
