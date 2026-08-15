@@ -1826,7 +1826,7 @@ describe('Codex hook representation', () => {
     const reported = io.outLines.join('\n')
     expect(reported).toMatch(/hooks \(codex representation\)/)
     expect(reported).toMatch(/installed in both/i)
-    expect(reported).toMatch(/notify twice per turn/)
+    expect(reported).toMatch(/notifies twice per turn/)
     expect(reported).toMatch(/notifai hooks uninstall --harness codex/)
 
     // The named remedy has to actually clear it, including the copy in the
