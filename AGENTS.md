@@ -32,6 +32,7 @@ pnpm -r test          # unit tests; no Docker, no network
 pnpm lint && pnpm -r typecheck
 pnpm check:commit     # commitlint on HEAD
 pnpm check:release    # packed files, metadata, docs, licenses, CLI version
+pnpm check:packed     # isolated registry-shaped install of the packed CLI; needs registry access
 ```
 
 CI also runs `pnpm check:secrets` with its pinned gitleaks binary. That gate
@@ -69,10 +70,19 @@ sent. `prepack` rebuilds before packing and every build starts by clearing
 whatever directory publishing runs from. `check:release` then proves the packed
 `src/` and `dist/` correspond module for module.
 
+Before publishing, `pnpm check:packed` installs the packed tarballs in an
+isolated directory outside the workspace, registry-shaped, and runs the
+installed bin. Workspace linking always resolves the protocol sitting next to
+the CLI, so it is the only pre-publish gate that can catch the packed manifest
+pinning any other protocol version — a defect every workspace-bound gate
+passes and every clean user install crashes on.
+
 After publishing, run `pnpm check:published`. It downloads the tarball npm is
-serving and compares it byte for byte against the local build. Pre-publish
-gates can only ever vouch for the tree they ran in; this is the only check that
-vouches for the artifact users install. A release is not done until it passes.
+serving and compares it against the local checkout: the compiled files byte
+for byte, and the manifest metadata installs resolve from (dependencies, bin,
+exports, engines). Pre-publish gates can only ever vouch for the tree they ran
+in; this is the only check that vouches for the artifact users install. A
+release is not done until it passes.
 
 ## npm credentials
 
