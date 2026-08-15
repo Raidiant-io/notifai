@@ -557,25 +557,86 @@ describe('finding what is installed', () => {
     expect(codex?.handlers[0]?.groupIndex).toBe(1)
   })
 
-  it('names a Codex layer that loads both representations', () => {
+  /**
+   * The shape a session manager leaves behind: it owns `hooks.json` for its own
+   * agent lifecycle, Notifai sits in `config.toml`, and every handler fires
+   * exactly once. Reported as a Notifai failure for a whole release, it sent
+   * users to hand-edit a file another program regenerates — for nothing.
+   */
+  it('says nothing when the other representation holds only foreign hooks', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreign-rep-'))
+    const layer = path.join(cwd, '.codex')
+    mkdirSync(layer, { recursive: true })
+    applyPlan(path.join(layer, 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: '/bin/sh /opt/other-tool/hook.sh' }] }],
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: '/bin/sh /opt/other-tool/hook.sh' }] },
+        ],
+      },
+    })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
+    )
+
+    expect(codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })).toEqual([])
+  })
+
+  it('names the events a Notifai copy in each file would notify twice for', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-dual-rep-'))
     const layer = path.join(cwd, '.codex')
     mkdirSync(layer, { recursive: true })
     applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
     writeFileSync(
       path.join(layer, 'config.toml'),
-      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
-        '\n',
-      ),
+      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
     )
 
     const problems = codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })
     expect(problems).toHaveLength(1)
-    expect(problems[0]).toContain('loading hooks from both')
     expect(problems[0]).toContain(path.join(layer, 'hooks.json'))
     expect(problems[0]).toContain(path.join(layer, 'config.toml'))
-    expect(problems[0]).toMatch(/prefer a single representation for this layer/)
     expect(problems[0]).toMatch(/Stop/)
+    expect(problems[0]).toMatch(/notify twice per turn/)
+    expect(problems[0]).toMatch(/notifai hooks uninstall --harness codex/)
+    expect(problems[0]).not.toMatch(/--global/)
+  })
+
+  it('reports Notifai split across both files, where only one copy stays current', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-split-rep-'))
+    const layer = path.join(cwd, '.codex')
+    mkdirSync(layer, { recursive: true })
+    const { Stop, ...rest } = ours()
+    applyPlan(path.join(layer, 'hooks.json'), { hooks: { Stop: Stop! } })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      stringifyToml({ hooks: rest as unknown as Record<string, unknown> }),
+    )
+
+    const problems = codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/split between them/)
+    expect(problems[0]).toMatch(/Stop/)
+    expect(problems[0]).toMatch(/UserPromptSubmit/)
+    expect(problems[0]).not.toMatch(/twice per turn/)
+  })
+
+  it('scopes the remedy to the global layer it found the duplicate in', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-global-rep-'))
+    const home = path.join(cwd, 'isolated-home')
+    const layer = path.join(home, '.codex')
+    mkdirSync(layer, { recursive: true })
+    applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
+    )
+
+    const problems = codexRepresentationProblems(cwd, { HOME: home })
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/notifai hooks uninstall --harness codex --global/)
+    expect(problems[0]).toMatch(/notifai hooks install --harness codex --global/)
   })
 
   it('reports handlers from either harness with their positions', () => {

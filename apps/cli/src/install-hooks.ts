@@ -42,8 +42,9 @@ const OPENCODE_EVENTS = [
  * location and the event set differ. Codex supports either a dedicated
  * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`.
  * We default a hook-empty layer to inline config and preserve whichever single
- * representation a populated layer already uses. One representation per layer,
- * never both.
+ * representation a populated layer already uses. Notifai lives in one of them,
+ * never both — a layer whose other file holds someone else's hooks is that
+ * other tool's arrangement, and stays untouched.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -488,11 +489,13 @@ export function codexLayerPaths(
 
 export interface CodexLayerInspection {
   paths: CodexLayerPaths
+  /** Every event this file defines a handler for, whoever owns it. */
   jsonEvents: string[]
   tomlEvents: string[]
+  /** The subset of those events whose handlers are Notifai's own. */
+  ourJsonEvents: string[]
+  ourTomlEvents: string[]
   writeTarget: string
-  dual: boolean
-  overlappingEvents: string[]
 }
 
 /**
@@ -511,24 +514,22 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
   const tomlDocument = tryLoadSettings(paths.configToml)
   const jsonEvents = hookEventNames(jsonDocument?.hooks)
   const tomlEvents = hookEventNames(tomlDocument?.hooks)
+  const ourJsonEvents = ourHandlerEvents(jsonDocument)
+  const ourTomlEvents = ourHandlerEvents(tomlDocument)
   const dual = jsonEvents.length > 0 && tomlEvents.length > 0
   let writeTarget = paths.configToml
   if (jsonEvents.length > 0 && tomlEvents.length === 0) {
     writeTarget = paths.hooksJson
-  } else if (dual) {
-    const jsonOurs = documentHasOurHandlers(jsonDocument)
-    const tomlOurs = documentHasOurHandlers(tomlDocument)
-    if (jsonOurs && !tomlOurs) writeTarget = paths.hooksJson
+  } else if (dual && ourJsonEvents.length > 0 && ourTomlEvents.length === 0) {
+    writeTarget = paths.hooksJson
   }
   return {
     paths,
     jsonEvents,
     tomlEvents,
+    ourJsonEvents,
+    ourTomlEvents,
     writeTarget,
-    dual,
-    overlappingEvents: dual
-      ? jsonEvents.filter((event) => tomlEvents.includes(event))
-      : [],
   }
 }
 
@@ -556,6 +557,23 @@ export function hookDefinitionFiles(
   return [paths.hooksJson, paths.configToml]
 }
 
+/**
+ * Layers where *Notifai* is installed in both Codex representations.
+ *
+ * A layer that uses `hooks.json` and inline `[hooks]` at once is not by itself
+ * a Notifai fault: Codex supports both, loads both, runs every matching
+ * handler, and already prints its own "prefer a single representation" warning
+ * at startup. Foreign handlers in the other file are the user's — often written
+ * by another tool that manages that file — and repeating Codex's warning as a
+ * Notifai failure demanded an edit to configuration Notifai does not own, for a
+ * condition where every handler still fires exactly once.
+ *
+ * What is ours to diagnose is Notifai in both files. Then one event really does
+ * send two Notification Requests per turn, and the copy outside the write
+ * target keeps firing an older definition after the next install refreshes only
+ * the other one. Uninstall strips Notifai from both files, so the remedy is
+ * exact — and it never touches a foreign handler.
+ */
 export function codexRepresentationProblems(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -563,13 +581,15 @@ export function codexRepresentationProblems(
 ): string[] {
   return [false, true].flatMap((global) => {
     const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env, platform))
-    if (!layer.dual) return []
-    const overlap =
-      layer.overlappingEvents.length > 0
-        ? ` Matching handlers from both files all run — this layer's ${layer.overlappingEvents.join(', ')} handlers will both fire.`
-        : ' Matching handlers from both files all run.'
+    if (layer.ourJsonEvents.length === 0 || layer.ourTomlEvents.length === 0) return []
+    const doubled = layer.ourJsonEvents.filter((event) => layer.ourTomlEvents.includes(event))
+    const consequence =
+      doubled.length > 0
+        ? `Codex runs every matching handler, so this layer's ${doubled.join(', ')} notify twice per turn`
+        : `Codex runs both files, so this layer's ${[...new Set([...layer.ourJsonEvents, ...layer.ourTomlEvents])].join(', ')} handlers are split between them and only one file stays current`
+    const scope = global ? ' --global' : ''
     return [
-      `loading hooks from both ${layer.paths.hooksJson} and ${layer.paths.configToml}; prefer a single representation for this layer.${overlap} Notifai preserves existing representations instead of migrating them automatically.`,
+      `Notifai hooks are installed in both ${layer.paths.hooksJson} and ${layer.paths.configToml}; ${consequence}. Run \`notifai hooks uninstall --harness codex${scope}\` and then \`notifai hooks install --harness codex${scope}\` to leave exactly one copy; foreign hooks in either file are left alone.`,
     ]
   })
 }
@@ -589,9 +609,10 @@ function hookEventNames(hooks: SettingsDocument['hooks']): string[] {
     .map(([event]) => event)
 }
 
-function documentHasOurHandlers(document: SettingsDocument | null): boolean {
-  if (document === null) return false
-  return locateHandlers(document).length > 0
+/** Events this document defines a Notifai handler for, by their event key. */
+function ourHandlerEvents(document: SettingsDocument | null): string[] {
+  if (document === null) return []
+  return [...new Set(locateHandlers(document).map((handler) => handler.event))]
 }
 
 /** Best-effort detection so `hooks install` usually needs no flags. */
