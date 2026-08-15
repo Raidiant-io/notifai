@@ -312,6 +312,19 @@ function reportError(
   })
   if (err instanceof ApiCallError) {
     deps.io.err(`${err.code}: ${err.message}`)
+    // The server's field-level details were already being logged above, but
+    // stderr is the one surface an agent's next turn actually reads — so the
+    // diagnosis has to be on it, the same way the hook path prints it.
+    const paths = rejectedPaths(err.details)
+    if (paths.length > 0) deps.io.err(`the server rejected: ${paths.join(', ')}`)
+    // A 422 on a request this CLI built is not a user error: the two sides
+    // disagree about the contract, in whichever direction. `doctor` says which.
+    if (err.status === 422) {
+      deps.io.err(
+        'this build sent a field the server did not accept — the CLI and server ' +
+          'disagree about the contract; check with `notifai doctor`',
+      )
+    }
     if (err.nextAction) deps.io.err(`next: ${err.nextAction}`)
     if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth
     return err.status >= 500 ? EXIT.network : EXIT.failed
