@@ -1449,6 +1449,46 @@ function isSamePending(a: PendingQuestion, b: PendingQuestion): boolean {
   return a.question === b.question && a.asked_at === b.asked_at
 }
 
+/**
+ * The frozen draft itself will never be accepted. Replaying it forever hides a
+ * contract-skew (deleted fields, unexpected properties) as a recoverable wait.
+ * Auth, conflicts, and timeouts are not this class.
+ */
+function isTerminalDraftRejection(err: ApiCallError): boolean {
+  return err.status === 422 || (err.status === 400 && err.code === 'invalid_request')
+}
+
+function dropPendingQuestion(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  entry: PendingQuestion,
+): void {
+  updateSessionState(sessionId, env, (current) => {
+    const pending = pendingList(current).filter((candidate) => !isSamePending(candidate, entry))
+    const next: SessionState = { ...current }
+    if (pending.length > 0) next.pending = pending
+    else delete next.pending
+    return next
+  })
+}
+
+function clearFrozenSubmission(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  entry: PendingQuestion,
+): void {
+  updateSessionState(sessionId, env, (current) => {
+    const list = pendingList(current)
+    const index = list.findIndex((candidate) => isSamePending(candidate, entry))
+    if (index < 0) return current
+    const next = [...list]
+    const copy = { ...next[index]! }
+    delete copy.submission
+    next[index] = copy
+    return { ...current, pending: next }
+  })
+}
+
 /** The question set this pending record pushes, however it was registered. */
 function pendingQuestions(pending: PendingQuestion): QuestionT[] {
   return pending.questions ?? [{ id: 'q1', text: pending.question }]
@@ -2439,12 +2479,80 @@ async function escalate(
     try {
       receipt = await submitQuestion(ctx, intent)
       admissionConfirmed = true
-    } catch (err) {
-      if (err instanceof ApiCallError && err.status < 500 && err.status !== 408) {
-        // A concrete client response is an admission rejection, not an
-        // ambiguous commit. Keep the frozen intent for a later retry and leave
-        // the question in the terminal; polling a request the server says it
-        // did not accept only burns the owner window and hides the real fault.
+    } catch (caught) {
+      let err: unknown = caught
+      if (err instanceof ApiCallError && isTerminalDraftRejection(err)) {
+        ctx.log?.error('hook.pushed', {
+          ok: false,
+          request_id: intent.request_id,
+          status: err.status,
+          code: err.code,
+          message: err.message,
+        })
+        if (entry.submission !== undefined) {
+          notes.push(
+            `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
+          )
+          clearFrozenSubmission(sessionId, ctx.env, entry)
+          if (entry.body === undefined) {
+            dropPendingQuestion(sessionId, ctx.env, entry)
+            notes.push('registered question has no canonical body; retired the frozen draft instead of retrying it')
+            continue
+          }
+          const reminted = await prepareQuestionSubmission(ctx, {
+            title: questions[0]!.text,
+            body: entry.body,
+            questions,
+            ...(entry.media !== undefined ? { media: entry.media } : {}),
+            ...(entry.project !== undefined ? { project: entry.project } : {}),
+            ...(entry.source !== undefined ? { source: entry.source } : {}),
+            event: 'agent_question',
+            windowSeconds: replyWindowSeconds,
+            ownerDeadlineAt,
+          })
+          if ('error' in reminted) {
+            dropPendingQuestion(sessionId, ctx.env, entry)
+            notes.push(reminted.error)
+            continue
+          }
+          intent = reminted
+          updateSessionState(sessionId, ctx.env, (current) => {
+            const list = pendingList(current)
+            const index = list.findIndex((candidate) => isSamePending(candidate, entry))
+            if (index < 0) return current
+            const next = [...list]
+            next[index] = { ...next[index]!, submission: reminted }
+            return { ...current, pending: next }
+          })
+          try {
+            receipt = await submitQuestion(ctx, intent)
+            admissionConfirmed = true
+          } catch (retryErr) {
+            if (retryErr instanceof ApiCallError && isTerminalDraftRejection(retryErr)) {
+              dropPendingQuestion(sessionId, ctx.env, entry)
+              notes.push(
+                `reminted draft was also rejected (${retryErr.code}, HTTP ${retryErr.status}); retiring the question so it is not retried forever`,
+              )
+              ctx.log?.error('hook.pushed', {
+                ok: false,
+                request_id: intent.request_id,
+                status: retryErr.status,
+                code: retryErr.code,
+                message: retryErr.message,
+              })
+              continue
+            }
+            err = retryErr
+          }
+        } else {
+          dropPendingQuestion(sessionId, ctx.env, entry)
+          notes.push(
+            `question submission was rejected (${err.code}, HTTP ${err.status}); retiring it because the current draft will never be accepted`,
+          )
+          continue
+        }
+      }
+      if (!admissionConfirmed && err instanceof ApiCallError && err.status < 500 && err.status !== 408) {
         notes.push(
           `question submission was rejected (${err.code}, HTTP ${err.status}); preserving it for recovery`,
         )
@@ -2457,11 +2565,10 @@ async function escalate(
         })
         continue
       }
-      // This is deliberately not a fail-open return. A transport failure is
-      // ambiguous: the server may already have dispatched the card. The
-      // client-generated request id keeps polling/finalization possible.
-      notes.push(`question submission response was ambiguous; recovering ${intent.request_id}`)
-      ctx.log?.error('hook.pushed', { ok: false, request_id: intent.request_id, message: String(err) })
+      if (!admissionConfirmed) {
+        notes.push(`question submission response was ambiguous; recovering ${intent.request_id}`)
+        ctx.log?.error('hook.pushed', { ok: false, request_id: intent.request_id, message: String(err) })
+      }
     }
     if (admissionConfirmed) {
       ctx.log?.info('hook.pushed', {
