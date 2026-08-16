@@ -27,7 +27,18 @@ function positiveControls() {
     execFileSync('git', ['config', 'user.email', 'control@example.invalid'], { cwd: fixture })
 
     // Construct the canary at runtime so the scanner source itself stays clean.
-    const canary = ['gh', 'p'].join('') + '_' + randomBytes(27).toString('base64url').slice(0, 36)
+    //
+    // Drawn from the alphabet the rule it proves actually matches. It used to
+    // come from base64url, which includes `-` and `_`, so two thirds of runs
+    // produced a canary the personal-access-token rule could not match and the
+    // control passed only when some generic entropy rule happened to fire
+    // instead. A gate that fails at random is one people learn to re-run rather
+    // than read.
+    const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    const canary =
+      ['gh', 'p'].join('') +
+      '_' +
+      Array.from(randomBytes(36), (byte) => alphabet[byte % alphabet.length]).join('')
     const canaryFile = path.join(fixture, 'control.txt')
     writeFileSync(canaryFile, `TOKEN=${canary}\n`)
     run(['dir', '--no-banner', '--redact', '--exit-code', '23', '.'], fixture, 23)
