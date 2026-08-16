@@ -158,7 +158,7 @@ When the current command cannot continue without the answer:
 
 ```bash
 notifai send --reply \
-  --title "Deploy migration 0007?" \
+  --title "Migration 0007 is ready" \
   --body "Deploy migration 0007 to production now?
 
 Staging is green. Production has 40k rows in the affected table." \
@@ -193,6 +193,8 @@ the question and returns immediately:
 notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
+
+Add `--json` to get the questions back with the choice ids you will branch on.
 
 **Registering is not the end of the turn.** In that same turn, ask the question
 in the conversation and say what each answer will make you do:
