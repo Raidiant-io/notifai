@@ -66,7 +66,7 @@ import {
 } from './readiness.js'
 import type { Tone } from './ui/theme.js'
 import {
-  WAITER_CEILING_SECONDS,
+  waiterCeilingSeconds,
   clearAcknowledgementObligation,
   handleSessionEnd,
   handleStop,
@@ -1411,7 +1411,12 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
-  const processDeadlineAt = now() + WAITER_CEILING_SECONDS * 1000
+  // Claude Code's Stop handler is installed `async`, so it returns at once and
+  // this process keeps waiting with nobody's turn held open. That is the only
+  // case where a long wall clock costs the user nothing, and the same condition
+  // `stopHandler` uses to declare it.
+  const detachedWaiter = harness === 'claude-code' && (deps.hookPlatform ?? process.platform) !== 'win32'
+  const processDeadlineAt = now() + waiterCeilingSeconds(detachedWaiter) * 1000
 
   const logger = log(deps)
   logger.bind({ cmd: `hook ${event}` })
@@ -1737,6 +1742,8 @@ function rejectedPaths(details: unknown): string[] {
 }
 
 export interface AskFlags {
+  /** Emit the registration and its turn obligation as one JSON object. */
+  json?: boolean
   choice?: string[]
   /** The single question is multi-select: several answers may be chosen. */
   multi?: boolean
@@ -1923,6 +1930,7 @@ function recordRegisteredQuestion(
   sessionId: string,
   built: BuiltQuestions,
   draft: NotificationDraftT,
+  json = false,
 ): number {
   try {
     registerQuestion(
@@ -1951,6 +1959,37 @@ function recordRegisteredQuestion(
     choices: built.questions[0]!.choices?.length ?? 0,
     media: draft.presentation.media?.length ?? 0,
   })
+  // The block below is the densest guidance this CLI prints, and until now it
+  // was prose only: an agent could not read back the choice ids it must branch
+  // on without asking the server for them. The JSON form carries the same
+  // obligation as data.
+  if (json) {
+    deps.io.out(
+      JSON.stringify(
+        {
+          registered: true,
+          questions: built.questions.map((entry) => ({
+            id: entry.id,
+            text: entry.text,
+            ...(entry.choices === undefined ? {} : { choices: entry.choices }),
+            ...(entry.multi === true ? { multi: true } : {}),
+          })),
+          next: {
+            end_turn: true,
+            in_this_turn:
+              'Ask the question in the conversation and say what concrete work each possible answer will make you resume, then end the turn.',
+            route_neutral:
+              'Never say where the answer must arrive; it returns by whatever route the harness supports.',
+            on_answer:
+              'Acknowledge it, then resume the committed work without asking the user to confirm again.',
+          },
+        },
+        null,
+        2,
+      ),
+    )
+    return EXIT.ok
+  }
   for (const [index, entry] of built.questions.entries()) {
     const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
     if (entry.choices !== undefined) {
@@ -2020,7 +2059,7 @@ async function uploadAskMedia(
     deps.io.err(ready.error)
     return EXIT.usage
   }
-  return recordRegisteredQuestion(deps, sessionId, built, ready.draft)
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, flags.json === true)
 }
 
 /**
@@ -2158,7 +2197,7 @@ export function askCommand(
       source.invocation,
     )
   }
-  return recordRegisteredQuestion(deps, sessionId, built, preflight.draft)
+  return recordRegisteredQuestion(deps, sessionId, built, preflight.draft, flags.json === true)
 }
 
 /**
@@ -4291,7 +4330,11 @@ async function printInitClose(
       ]
       await deps.io.note?.(lines.join('\n'), 'Ready')
       printOptionalLeftovers(deps, leftovers)
-      deps.io.out('All set. Agents in this project can notify you and ask questions.')
+      deps.io.out(
+      questions
+        ? 'All set. Agents in this project can notify you and ask you questions.'
+        : 'All set. Agents in this project can notify you. Questions stay in the terminal until hooks are installed.',
+    )
       await deps.io.outro?.('All set ✨')
       return
     }
@@ -4307,7 +4350,11 @@ async function printInitClose(
 
   if (blocker === null) {
     printOptionalLeftovers(deps, leftovers)
-    deps.io.out('All set. Agents in this project can notify you and ask questions.')
+    deps.io.out(
+      questions
+        ? 'All set. Agents in this project can notify you and ask you questions.'
+        : 'All set. Agents in this project can notify you. Questions stay in the terminal until hooks are installed.',
+    )
     return
   }
   deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)

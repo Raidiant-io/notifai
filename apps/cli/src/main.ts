@@ -428,6 +428,7 @@ program
     (v: string, all: string[]) => [...all, v], [],
   )
   .option('--multi', 'with --choice, several answers may be selected')
+  .option('--json', 'machine-readable output')
   .option('--body <markdown>', 'optional Markdown context appended after the question block')
   .option('--body-file <path>', 'read optional Markdown context from a file (use - for stdin)')
   .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin)')
@@ -449,6 +450,7 @@ program
   .action(async (question: string | undefined, opts: {
     choice?: string[]
     multi?: boolean
+    json?: boolean
     body?: string
     bodyFile?: string
     form?: string
@@ -491,6 +493,7 @@ program
       ...(opts.project !== undefined ? { project: opts.project } : {}),
       ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
       ...(opts.sessionLabel !== undefined ? { sessionLabel: opts.sessionLabel } : {}),
+      ...(opts.json === true ? { json: true } : {}),
     }
     process.exit(await askCommand(deps, question, flags))
   })

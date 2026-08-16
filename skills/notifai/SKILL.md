@@ -43,7 +43,7 @@ Every key comes back as `{ value, source, summary }`. `notify_criteria` is the
 user's standing instruction about what is worth interrupting them for. Quote
 values as they are — never flatten one into "the defaults apply".
 
-Absent criteria of their own, notify when:
+When they have set none, notify when:
 
 - long-running work finished, succeeded, or failed
 - you are blocked on something only the user can give
@@ -62,9 +62,6 @@ shared policy, no flag for this machine:
 notifai config set notify_criteria "Only when you're blocked or CI-length work finishes" --project --yes
 notifai config unset notify_criteria --project --yes
 ```
-
-`unset` removes a value at one layer so the next one down applies again — reach
-for it instead of writing a value that means "ignore the layer above".
 
 ## Send
 
@@ -90,9 +87,11 @@ that is true**. Calling a failure `done` does not soften it, it hides it.
 Write for a glance:
 
 - **Title** — the specific substance, understandable alone, around 40
-  characters: `All 42 tests
-  passed`, `Migration 0007 failed`, `Checkout is blocked by tax setup`. Never
-  put the kind or the project in it; both travel on their own.
+  characters: `All 42 tests passed`, `Migration 0007 failed`, `Checkout is
+  blocked by tax setup`. Never put the kind or the project in it; both travel
+  on their own. `Task complete`, `Build failed` and `Need input` all fail the
+  same way — they send the user back to the terminal to find out what actually
+  happened.
 - **Body** — one canonical Markdown body carrying the next fact they would ask
   for: the result, the count, the duration, the error, what happens next when
   there is a next. Lead with the most useful sentence; the banner excerpt is
@@ -106,11 +105,6 @@ notifai send --kind failed \
   --subtitle "Rolled back cleanly; production is untouched" \
   --body-file ./migration-report.md
 ```
-
-Weak titles are the usual failure, and they all share one trait — they send the
-user back to the terminal to find out what happened. `Task complete`,
-`Build failed`, `Need input` do that. `All 42 tests passed`,
-`Migration 0007 failed`, `Deploy 0007 to production?` do not.
 
 Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
 channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
@@ -126,10 +120,10 @@ Other controls, when they earn their place:
   `--image-alt` paired by position; `media:1`…`media:8` reference them from the
   body. Check `notifai capabilities --platform <platform>` when an image is the
   message rather than decoration.
-- `--sound` and `--level` override the kind's sound and the user's saved
-  preference. Pass them only when the user asked for that behaviour on this
-  send. `--level time_sensitive` can pierce Focus; it is for news that loses
-  value if read late.
+- `--sound` overrides the kind's sound; `--level` sets how insistently it
+  arrives. Both belong to the user — pass one only when they asked for that
+  behaviour on this send. `time_sensitive` is accepted but does not currently
+  break through Focus; `notifai capabilities` is what a platform honours.
 - `--device` only when the user asked for specific devices. Otherwise every
   device they registered is the right answer and you do not need to think about
   it.
@@ -164,7 +158,7 @@ When the current command cannot continue without the answer:
 
 ```bash
 notifai send --reply \
-  --title "Deploy migration 0007?" \
+  --title "Migration 0007 is ready" \
   --body "Deploy migration 0007 to production now?
 
 Staging is green. Production has 40k rows in the affected table." \
@@ -199,6 +193,8 @@ the question and returns immediately:
 notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
+
+Add `--json` to get the questions back with the choice ids you will branch on.
 
 **Registering is not the end of the turn.** In that same turn, ask the question
 in the conversation and say what each answer will make you do:
