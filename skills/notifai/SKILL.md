@@ -127,8 +127,8 @@ Other controls, when they earn their place:
 - `--device` only when the user asked for specific devices. Otherwise every
   device they registered is the right answer and you do not need to think about
   it.
-- `--event <name>` names what happened (`tests_passed`, `deploy_failed`) so the
-  user can find it later in `notifai status` and `notifai logs`.
+- `--event <name>` names what happened (`tests_passed`, `deploy_failed`); it
+  comes back in `notifai status` and rides the request for the apps to group on.
 - `--idempotency-key <key>` when you retry a send that failed or timed out.
   Reusing the key is what stops one event becoming two notifications.
 
@@ -336,7 +336,9 @@ notifai logs --since 10m --json  # JSONL on stdout, for parsing
 
 `hook.gate` records carry a fixed `reason` — `notifications-off`,
 `claimed-elsewhere`, `no-question`, `no-session`, `answered`,
-`acknowledgement-required`, `continuation-repeat`, `continuation-limit`,
+`acknowledgement-required`, `acknowledgement-abandoned`, `harness-cannot-continue`,
+`continuation-repeat`,
+`continuation-limit`,
 `delivery-limit`, `proceeding` — so filter on that, never on the wording of a
 message. `notifications-off` is the one the user deliberately never sees, which
 is why it is worth ruling out before concluding anything is broken.

@@ -6,6 +6,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import {
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   CAPABILITIES_V1,
+  PLATFORMS,
   QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
   REPLY_MAX_WINDOW_SECONDS,
@@ -32,7 +33,6 @@ import {
 import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
-  LOG_LEVELS,
   NUMERIC_CONFIG_KEYS,
   configBounds,
   configDefaultValue,
@@ -82,6 +82,7 @@ import {
   type EscalationDeliveryRoute,
   type HookContext,
   type HookHarness,
+  MIN_REPLY_WINDOW_SECONDS,
 } from './hooks.js'
 import {
   LOG_EVENTS,
@@ -95,9 +96,11 @@ import {
   renderRecord,
   type LogQuery,
   type Logger,
+  RECORD_LEVELS,
 } from './logging.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
+  stopHandlerIsDetached,
   CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
   HARNESSES,
   applyPlan,
@@ -569,6 +572,13 @@ export async function capabilitiesCommand(
   deps: CommandDeps,
   flags: { json?: boolean; platform?: Platform },
 ): Promise<number> {
+  // Locally, and with the same message `send` gives. Spending a round trip to
+  // have the server answer "Request validation failed" told the caller neither
+  // which flag was wrong nor what it accepts.
+  if (flags.platform !== undefined && !(PLATFORMS as readonly string[]).includes(flags.platform)) {
+    deps.io.err(`Unknown platform "${flags.platform}" — use ${PLATFORMS.join(' or ')}.`)
+    return EXIT.usage
+  }
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const credential = deps.store.load()
   const baseUrl = resolvedBaseUrl(config, credential)
@@ -691,10 +701,12 @@ export async function sendCommand(
     flags.reply &&
     flags.replyWindow !== undefined &&
     (!Number.isInteger(flags.replyWindow) ||
-      flags.replyWindow < 60 ||
+      flags.replyWindow < MIN_REPLY_WINDOW_SECONDS ||
       flags.replyWindow > REPLY_MAX_WINDOW_SECONDS)
   ) {
-    deps.io.err(`--reply-window must be an integer from 60 to ${REPLY_MAX_WINDOW_SECONDS} seconds.`)
+    deps.io.err(
+      `--reply-window must be an integer from ${MIN_REPLY_WINDOW_SECONDS} to ${REPLY_MAX_WINDOW_SECONDS} seconds.`,
+    )
     return EXIT.usage
   }
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
@@ -726,7 +738,7 @@ export async function sendCommand(
     }
     const uploaded = await uploadImage(deps, authed.client, image)
     if (!uploaded.ok) {
-      deps.io.err(uploaded.error)
+      if (uploaded.error !== null) deps.io.err(uploaded.error)
       return uploaded.exit
     }
     mediaIds.push(uploaded.mediaId)
@@ -1335,7 +1347,8 @@ const MEDIA_TYPES: Record<string, 'image/jpeg' | 'image/png' | 'image/gif'> = {
 
 type UploadResult =
   | { ok: true; mediaId: string }
-  | { ok: false; error: string; exit: number }
+  /** `error: null` means `reportError` already said it; do not print it twice. */
+  | { ok: false; error: string | null; exit: number }
 
 /** `--image` accepts a media id, a local file path, or an http(s) URL. */
 async function uploadImage(deps: CommandDeps, client: ApiClient, source: string): Promise<UploadResult> {
@@ -1370,7 +1383,13 @@ async function uploadImage(deps: CommandDeps, client: ApiClient, source: string)
     await client.uploadMedia(grant, bytes)
     return { ok: true, mediaId: grant.media_id }
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err), exit: EXIT.network }
+    // Every other API failure in this file goes through `reportError`, which
+    // maps a revoked credential to the auth code, a server fault to the network
+    // one and everything else to plain failure, and records it in the local
+    // log with whatever next step the server named. This used to answer
+    // `network` to all of them, so an image too large for the account exited
+    // the same way an unreachable server did, and nothing about it was logged.
+    return { ok: false, error: null, exit: reportError(deps, err) }
   }
 }
 
@@ -1413,11 +1432,10 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
-  // Claude Code's Stop handler is installed `async`, so it returns at once and
-  // this process keeps waiting with nobody's turn held open. That is the only
-  // case where a long wall clock costs the user nothing, and the same condition
-  // `stopHandler` uses to declare it.
-  const detachedWaiter = harness === 'claude-code' && (deps.hookPlatform ?? process.platform) !== 'win32'
+  // The waiter may spend a long wall clock exactly when no turn is held open
+  // for it, which is the same condition the installer used to declare
+  // `async: true`. One predicate decides it for both.
+  const detachedWaiter = stopHandlerIsDetached(harness, deps.hookPlatform ?? process.platform)
   const processDeadlineAt = now() + waiterCeilingSeconds(detachedWaiter) * 1000
 
   const logger = log(deps)
@@ -1611,20 +1629,7 @@ export async function hookRunCommand(
       ...outcome.log,
     })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
-    if (outcome.stdout !== undefined) {
-      let stdout = outcome.stdout
-      if (
-        harness !== undefined &&
-        event === 'stop' &&
-        HARNESS_CAPABILITIES[harness].stopContinuation === 'followup-message'
-      ) {
-        const decision = JSON.parse(outcome.stdout) as { decision?: unknown; reason?: unknown }
-        if (decision.decision === 'block' && typeof decision.reason === 'string') {
-          stdout = JSON.stringify({ followup_message: decision.reason })
-        }
-      }
-      deps.io.out(stdout)
-    }
+    if (outcome.stdout !== undefined) deps.io.out(outcome.stdout)
     return EXIT.ok
   } catch (err) {
     // SessionEnd defers its start record until after cleanup; if cleanup itself
@@ -2051,7 +2056,7 @@ async function uploadAskMedia(
     }
     const uploaded = await uploadImage(deps, authed.client, image)
     if (!uploaded.ok) {
-      deps.io.err(uploaded.error)
+      if (uploaded.error !== null) deps.io.err(uploaded.error)
       return uploaded.exit
     }
     mediaIds.push(uploaded.mediaId)
@@ -2643,7 +2648,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (flags.harness === undefined) {
     const detected = detectedHarnesses(deps.cwd, deps.env)
     if (detected.length === 0) {
-      deps.io.err(`Could not tell which harness to install for — pass --harness <${HARNESSES.join('|')}>.`)
+      deps.io.err(`Could not tell which harness you mean — pass --harness <${HARNESSES.join('|')}>.`)
       return EXIT.usage
     }
     let ok = true
@@ -2940,13 +2945,6 @@ function assertOwnedRegularFile(file: string): void {
   }
 }
 
-const HARNESS_LABEL: Record<Harness, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  opencode: 'OpenCode',
-}
-
 function resolveHarness(deps: CommandDeps, requested: string | undefined): Harness | null {
   if (requested !== undefined) {
     if ((HARNESSES as readonly string[]).includes(requested)) return requested as Harness
@@ -2983,7 +2981,7 @@ async function pickHarnessesToInstall(
       'Which agent harnesses should Notifai wire here?',
       HARNESSES.map((name) => ({
         value: name,
-        label: HARNESS_LABEL[name],
+        label: HARNESS_LABELS[name],
         ...(detected.includes(name) ? { hint: 'detected on this machine' } : {}),
       })),
       detected,
@@ -3456,8 +3454,8 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
     query.since = since
   }
   if (flags.level !== undefined) {
-    if (!(LOG_LEVELS as readonly string[]).includes(flags.level)) {
-      deps.io.err(`--level takes one of: ${LOG_LEVELS.join(', ')} — not "${flags.level}".`)
+    if (!(RECORD_LEVELS as readonly string[]).includes(flags.level)) {
+      deps.io.err(`--level takes one of: ${RECORD_LEVELS.join(', ')} — not "${flags.level}".`)
       return EXIT.usage
     }
     query.level = flags.level as LogLevel
@@ -4949,15 +4947,41 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
     ]
   }
 
+/**
+ * A human title per check.
+ *
+ * Three checks used to collapse onto "Question routing", so a reader could not
+ * tell which of them had failed, and the rest fell through to their internal
+ * name — `hooks (stale)` beside `Delivery proof`. The `id` stays the stable
+ * thing to branch on; this is only what a person reads.
+ */
+const CHECK_TITLES: Readonly<Record<string, string>> = {
+  hooks: 'Question routing',
+  'hooks (detected)': 'Harnesses detected',
+  'hooks (active harness)': 'Routing for this harness',
+  'hooks (active session)': 'Routing for this session',
+  'hooks (stale)': 'Hook definitions current',
+  'hooks (adapter)': 'Hook adapter',
+  'hooks (trust)': 'Codex hook trust',
+  'hooks (stop shape)': 'Turn-end hook shape',
+  'hooks (duplicates)': 'Duplicate hook installs',
+  'hooks (codex representation)': 'Codex hook representation',
+  'hooks (question admission)': 'Question admission',
+  'hooks (fired)': 'Hooks have run here',
+  'hooks (answer continuation)': 'How an answer returns',
+  'hooks (wake route)': 'Direct wake route',
+}
+
+function checkTitle(name: string): string {
+  return CHECK_TITLES[name] ?? name
+}
+
   /** Real but not in the way; see the note above. */
   const informational = new Set<string>()
   return [
     ...hookChecks(deps).map((check) => ({
       id: check.name.replace(/[ ()]+/g, '-').replace(/-$/, ''),
-      title:
-        check.name === 'hooks' || check.name.startsWith('hooks (active')
-          ? 'Question routing'
-          : check.name,
+      title: checkTitle(check.name),
       status: check.ok
         ? 'ready' as const
         : check.informational === true || informational.has(check.name)
@@ -5007,7 +5031,7 @@ function stopShapeProblems(
   for (const handler of installation.handlers.filter(
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
-    if (installation.harness === 'claude-code' && platform !== 'win32') {
+    if (stopHandlerIsDetached(installation.harness, platform)) {
       if (handler.async !== true) {
         problems.push(
           `${installation.file} declares a blocking Stop handler; the Claude Code wake route needs \`async: true\` so the turn ends while the waiter runs`,
@@ -5068,7 +5092,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       name: 'hooks (detected)',
       ok: false,
       informational: true,
-      detail: `${unwired.map((harness) => HARNESS_LABEL[harness]).join(', ')} detected on this machine but not wired`,
+      detail: `${unwired.map((harness) => HARNESS_LABELS[harness]).join(', ')} detected on this machine but not wired`,
       remedy: {
         summary: 'install hooks for every detected harness',
         command: 'notifai hooks install',

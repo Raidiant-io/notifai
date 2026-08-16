@@ -128,6 +128,8 @@ export interface SessionState {
    * the service confirms the agent-authored follow-up exists.
    */
   acknowledgement_due?: AcknowledgementDue[]
+  /** Consecutive turns this session has been held for an acknowledgement. */
+  acknowledgement_blocks?: number
 }
 
 export interface AcknowledgementDue {
@@ -159,6 +161,8 @@ interface AcceptedAnswerDelivery {
    * passes through.
    */
   delivery_attempts?: number
+  /** Turns this answer has been held without being handed to the agent. */
+  held_deliveries?: number
 }
 
 /** A delivered question awaiting its retirement push. */
@@ -296,7 +300,7 @@ export function waiterCeilingSeconds(detached: boolean): number {
  * than this is rejected outright, and accepting one would in any case let the
  * server go on taking an answer after the waiter that owns it has returned.
  */
-const MIN_REPLY_WINDOW_SECONDS = 60
+export const MIN_REPLY_WINDOW_SECONDS = 60
 
 /**
  * The terminal-first wait: the question sits in the terminal for
@@ -509,6 +513,17 @@ export function pruneAbandonedSessions(
  * no trustworthy PID fall back to an age limit.
  */
 const CLAIM_TTL_MS = WAITER_CEILING_SECONDS * 1000
+
+/**
+ * How long a crashed claim *guard* blocks the next hook.
+ *
+ * The claim itself may legitimately be held for the whole waiter, so it takes
+ * that ceiling. The guard is a short lock around the claim's own bookkeeping —
+ * a few file operations — and borrowing the waiter's ceiling for it meant a
+ * hook killed at exactly the wrong moment wedged this session's Stop path for
+ * eight minutes, for a critical section that never runs longer than a second.
+ */
+const CLAIM_GUARD_TTL_MS = 30_000
 const heldClaims = new Map<string, string>()
 
 export function claimQuestionPush(
@@ -602,7 +617,7 @@ function acquireClaimGuard(file: string): boolean {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
       try {
-        if (Date.now() - statSync(file).mtimeMs < CLAIM_TTL_MS) return false
+        if (Date.now() - statSync(file).mtimeMs < CLAIM_GUARD_TTL_MS) return false
       } catch {
         // A vanished/corrupt guard is safe to retry once.
       }
@@ -836,6 +851,8 @@ export const GATE_REASONS = [
   'continuation-limit',
   'delivery-limit',
   'acknowledgement-required',
+  'acknowledgement-abandoned',
+  'harness-cannot-continue',
   'notifications-off',
   'claimed-elsewhere',
   'elapsed',
@@ -916,7 +933,7 @@ async function prepareQuestionSubmission(
       ...(options.media !== undefined ? { media: options.media } : {}),
       device: answerable,
       reply: true,
-      replyWindow: Math.max(60, options.windowSeconds),
+      replyWindow: Math.max(MIN_REPLY_WINDOW_SECONDS, options.windowSeconds),
       questions: options.questions,
       collapseKey,
     },
@@ -1353,6 +1370,21 @@ const LATE_PROMPT_POLL_SECONDS = 3
  */
 export const MAX_CONTINUATION_COUNT = 3
 
+/**
+ * How many turns an answer may be *held* before it is settled unread.
+ *
+ * A hold is not a delivery: the route reported that it handed nothing over, so
+ * the agent has not seen the answer and the wake-loop the continuation cap
+ * exists to stop has not happened. Counting holds against that cap meant three
+ * turns where a liveness probe could not reach a busy session were enough to
+ * discard an answer the user had already given.
+ *
+ * It still has to end. A route that can never deliver would otherwise retry
+ * every turn for the life of the session, so holds get their own, far looser
+ * bound — loose because each one costs nothing and the answer is still wanted.
+ */
+export const MAX_HELD_DELIVERIES = 20
+
 interface PendingPoll {
   /** The answer to act on: the latest reply, because a later one corrects. */
   reply: ReplyView | null
@@ -1749,6 +1781,71 @@ function acknowledgementBlockContext(due: readonly AcknowledgementDue[]): string
   )
 }
 
+/**
+ * How many turns in a row a session may be held waiting for an acknowledgement.
+ *
+ * The gate is the one place hooks deliberately break the fail-open rule, and it
+ * had no bound at all: an agent that could not or would not acknowledge — or a
+ * server that stayed unreachable, since an error here counts as unresolved —
+ * held every turn of that session for ever. Blocking a user's agent
+ * indefinitely does not get them an acknowledgement; it costs them the agent as
+ * well as the acknowledgement.
+ */
+const MAX_ACKNOWLEDGEMENT_BLOCKS = 3
+
+/**
+ * Hold the turn for an outstanding acknowledgement, or give up and let it
+ * through once holding has stopped being worth its cost.
+ *
+ * Returns the outcome that blocks the turn, or `null` to carry on.
+ */
+function holdForAcknowledgement(
+  ctx: HookContext,
+  sessionId: string,
+  due: readonly AcknowledgementDue[],
+  notes: string[],
+): HookOutcome | null {
+  if (due.length === 0) return null
+  const requestIds = due.map((entry) => entry.request_id)
+  const blocks = (readSessionState(sessionId, ctx.env).acknowledgement_blocks ?? 0) + 1
+  if (blocks > MAX_ACKNOWLEDGEMENT_BLOCKS) {
+    // Drop the obligation with the reason recorded. The answer was already
+    // delivered; what is lost is the agent's receipt for it, and the log is
+    // where that loss stays visible.
+    for (const requestId of requestIds) clearAcknowledgementObligation(sessionId, ctx.env, requestId)
+    resetAcknowledgementBlocks(sessionId, ctx.env)
+    gate(ctx, 'proceeding', 'acknowledgement-abandoned', {
+      request_ids: requestIds,
+      blocks: blocks - 1,
+      limit: MAX_ACKNOWLEDGEMENT_BLOCKS,
+    })
+    notes.push(
+      `no acknowledgement after ${MAX_ACKNOWLEDGEMENT_BLOCKS} turns; continuing without one rather than holding this session for ever`,
+    )
+    return null
+  }
+  updateSessionState(sessionId, ctx.env, (current) => ({
+    ...current,
+    acknowledgement_blocks: blocks,
+  }))
+  gate(ctx, 'held', 'acknowledgement-required', { request_ids: requestIds, blocks })
+  return {
+    stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
+    notes,
+    log: { stage: 'acknowledgement-required', request_ids: requestIds },
+  }
+}
+
+/** A turn that was not held resets the streak; only consecutive holds count. */
+function resetAcknowledgementBlocks(sessionId: string, env: NodeJS.ProcessEnv): void {
+  updateSessionState(sessionId, env, (current) => {
+    if (current.acknowledgement_blocks === undefined) return current
+    const next = { ...current }
+    delete next.acknowledgement_blocks
+    return next
+  })
+}
+
 async function reconcileAcknowledgementObligations(
   ctx: HookContext,
   sessionId: string,
@@ -1949,6 +2046,16 @@ export async function handleUserPromptSubmit(
       ...(unasked.length > 0 ? { pending: unasked } : {}),
       ...(retiring.length > 0 ? { retiring } : {}),
       ...(current.accepted === undefined ? {} : { accepted: current.accepted }),
+      // Carried across a prompt on purpose. This rewrite rebuilds the state
+      // from named fields, so anything omitted is silently erased — and an
+      // erased obligation means the user never learns their reply was read,
+      // which is the one thing acknowledgement exists to guarantee.
+      ...(current.acknowledgement_due === undefined
+        ? {}
+        : { acknowledgement_due: current.acknowledgement_due }),
+      ...(current.acknowledgement_blocks === undefined
+        ? {}
+        : { acknowledgement_blocks: current.acknowledgement_blocks }),
       // The user typed, so whatever chain of answer-driven continuations was
       // running, a human has taken the turn and the consecutive count starts
       // over. Only a real prompt reaches here: the journal branch above returns
@@ -2098,19 +2205,8 @@ export async function runEscalationWaiter(
           currentAcceptedIds.has(entry.request_id),
         ),
       )
-      if (due.length > 0) {
-        gate(ctx, 'held', 'acknowledgement-required', {
-          request_ids: due.map((entry) => entry.request_id),
-        })
-        return {
-          stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
-          notes,
-          log: {
-            stage: 'acknowledgement-required',
-            request_ids: due.map((entry) => entry.request_id),
-          },
-        }
-      }
+      const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+      if (held !== null) return held
       state = readSessionState(sessionId, ctx.env)
     }
 
@@ -2120,19 +2216,9 @@ export async function runEscalationWaiter(
         sessionId,
         state.acknowledgement_due!,
       )
-      if (due.length > 0) {
-        gate(ctx, 'held', 'acknowledgement-required', {
-          request_ids: due.map((entry) => entry.request_id),
-        })
-        return {
-          stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
-          notes,
-          log: {
-            stage: 'acknowledgement-required',
-            request_ids: due.map((entry) => entry.request_id),
-          },
-        }
-      }
+      const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+      if (held !== null) return held
+      resetAcknowledgementBlocks(sessionId, ctx.env)
       state = readSessionState(sessionId, ctx.env)
     }
 
@@ -2203,6 +2289,20 @@ async function deliverAcceptedAnswers(
 ): Promise<HookOutcome> {
   const { answers: answered, remaining } = accepted
   const requestIds = summarizeRequestIds(answered.map((entry) => entry.pending)).ids
+  const held = accepted.held_deliveries ?? 0
+  if (held >= MAX_HELD_DELIVERIES) {
+    gate(ctx, 'held', 'delivery-limit', {
+      route: route.kind,
+      held,
+      limit: MAX_HELD_DELIVERIES,
+      request_ids: requestIds,
+    })
+    settleAcceptedAnswers(ctx, sessionId, accepted)
+    notes.push(
+      `no route could hand the user's answer over in ${MAX_HELD_DELIVERIES} turns; not holding it any longer`,
+    )
+    return { notes }
+  }
   const attempt = (accepted.delivery_attempts ?? 0) + 1
   if (attempt > MAX_CONTINUATION_COUNT) {
     gate(ctx, 'held', 'delivery-limit', {
@@ -2253,6 +2353,17 @@ async function deliverAcceptedAnswers(
       delivered_at: ctx.now(),
       delivered_route: deliveredRoute,
     }))
+  } else if (delivered.acknowledgement === 'held') {
+    // Give the delivery attempt back and count the hold instead. The attempt
+    // was counted before the call because one that dies mid-delivery still
+    // happened and a counter written afterwards could be evaded by crashing —
+    // but a route that *returns* `held` proves both that this process survived
+    // and that nothing was handed over.
+    amendAcceptedAnswers(ctx, sessionId, (current) => ({
+      ...current,
+      delivery_attempts: accepted.delivery_attempts ?? 0,
+      held_deliveries: (current.held_deliveries ?? 0) + 1,
+    }))
   }
   ctx.log?.info('hook.answer', {
     answered: true,
@@ -2293,7 +2404,11 @@ async function handleClaimedStop(
   ) {
     for (const entry of live) await closeQuietly(ctx, entry.request_id!)
     await retirePendings(ctx, envelope, sessionId, pending, 'expired')
-    gate(ctx, 'held', 'no-question')
+    // Not `no-question`: there was a question, and this says so. Reading the
+    // log to find out why an ask never travelled is the whole reason these
+    // reasons exist, and the wrong one sent that reader looking for a question
+    // that was right there.
+    gate(ctx, 'held', 'harness-cannot-continue', { harness: ctx.harness })
     notes.push(`${HARNESS_CAPABILITIES[ctx.harness].deliveryContract}; use a blocking \`notifai send --reply\` question`)
     return { notes }
   }
@@ -2671,16 +2786,21 @@ async function escalate(
       request_id: intent.request_id,
       collapse_key: intent.collapse_key,
       device_ids: intent.device_ids,
-      // Submission and every later poll share one wall-clock owner. The
-      // server may start its relative window a little later while the submit
-      // response is in flight; closing at this deadline is therefore the
-      // authoritative backstop against accepting an answer into a void.
-      reply_deadline_at: Math.min(
-        intent.owner_deadline_at,
-        Number.isFinite(committedReplyDeadline)
-          ? committedReplyDeadline
-          : intent.owner_deadline_at,
-      ),
+      // When the server stops accepting an answer — not when this owner stops
+      // waiting for one. Those were the same number until the window became a
+      // setting, and taking the minimum silently capped every question at the
+      // waiter's ceiling: a question asked with a day-long window was swept as
+      // stale about eight minutes later and retired, so the answer given over
+      // lunch met a closed question.
+      //
+      // Both consumers of this field already clamp to the owner's own ceiling
+      // (`Math.min(hardDeadlineAt, …)` when deriving the ceiling, and
+      // `Math.min(ceilingAt, …)` when deriving the wait), so recording the
+      // real expiry here lengthens what the user gets without lengthening what
+      // this process waits.
+      reply_deadline_at: Number.isFinite(committedReplyDeadline)
+        ? committedReplyDeadline
+        : intent.owner_deadline_at,
     }
     delete live.submission
     submitted.push(live)
@@ -2768,10 +2888,37 @@ async function escalate(
   if (permanentFailure !== null) notes.push(permanentFailure)
 
   if (waited.byRequest.size === 0) {
-    // Once this owner returns, no shipped command-hook harness can guarantee
-    // a later answer reaches the same agent turn. Close first, then retire the
-    // local records, so the Companion never accepts an answer into a void.
-    const finalized = await finalizePendings(ctx, waitingOn)
+    // This owner is done listening. That used to mean the question was over:
+    // it closed the window server-side and retired the record, on the reasoning
+    // that no later answer could reach the same agent turn.
+    //
+    // The reaching was never the point — the *accepting* is. A question whose
+    // window is still open is polled again by the next prompt and the next
+    // Stop, and an answer found there is journaled and replayed. Closing here
+    // capped every question at this owner's ceiling however long a window the
+    // user had configured, which is what made a day-long window mean eight
+    // minutes.
+    //
+    // So: finalize only what the server has genuinely stopped accepting, and
+    // leave the rest live for the turn that comes next. A session that truly
+    // ends still retires its questions — that is what the session-end hook is
+    // for, and it is the honest place for it.
+    const expired = waitingOn.filter(
+      (entry) =>
+        entry.reply_deadline_at === undefined ||
+        entry.reply_deadline_at <= ctx.now() ||
+        // A permanent rejection is the server saying this question can never be
+        // answered, whatever its window says. Leaving it open would strand a
+        // dead question on the user's devices.
+        waited.permanentFailures.has(entry.request_id!),
+    )
+    const stillAnswerable = waitingOn.filter((entry) => !expired.includes(entry))
+    if (stillAnswerable.length > 0) {
+      notes.push(
+        `${stillAnswerable.length} question${stillAnswerable.length === 1 ? ' is' : 's are'} still answerable; leaving ${stillAnswerable.length === 1 ? 'it' : 'them'} open for the next turn rather than closing ${stillAnswerable.length === 1 ? 'it' : 'them'} with this waiter`,
+      )
+    }
+    const finalized = await finalizePendings(ctx, expired)
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)

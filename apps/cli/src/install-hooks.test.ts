@@ -828,16 +828,21 @@ describe('the OpenCode adapter', () => {
     expect(source).not.toContain('"permission.ask"')
   })
 
-  it('injects collected late answers into the next OpenCode user message', () => {
-    expect(source).toContain('hookSpecificOutput?.additionalContext')
-    expect(source).toContain('synthetic: true')
+  it('publishes the session pointer on a user message without injecting content', () => {
+    // The CLI has never emitted `hookSpecificOutput.additionalContext`, so the
+    // injection this used to assert could not fire. The handler earns its place
+    // by publishing the pointer that lets `notifai ask` find this session.
+    expect(source).toContain('"chat.message"')
+    expect(source).toContain('hook_event_name: "UserPromptSubmit"')
+    expect(source).not.toContain('additionalContext')
+    expect(source).not.toContain('synthetic: true')
   })
 
   it('injects an exact active-harness and session marker into OpenCode shells', () => {
     expect(source).toContain('"shell.env"')
     expect(source).toContain('NOTIFAI_ACTIVE_HARNESS')
     expect(source).toContain('NOTIFAI_ACTIVE_SESSION_ID')
-    expect(source).toContain('input.sessionID')
+    expect(source).toContain('input?.sessionID')
   })
 
   it('carries the ownership marker so a second checkout replaces it', () => {

@@ -4,13 +4,21 @@ import { NOTIFICATION_KINDS } from '@raidiant/notifai-protocol'
 import { GATE_REASONS } from './hooks.js'
 
 /**
- * These tests assert the *contract* the skill has to teach, not the sentences
- * it teaches it in. An assertion that pins wording makes every improvement to
- * the guidance look like a regression, which is how guidance goes stale: the
- * cheapest way to keep the suite green becomes leaving the prose alone.
+ * These tests assert what the skill has to teach, not the sentences it teaches
+ * it in — as far as that is achievable. Pinning wording makes every
+ * improvement to the guidance look like a regression, which is how guidance
+ * goes stale: the cheapest way to keep a suite green becomes leaving the prose
+ * alone.
  *
- * So: order, vocabulary, obligations, budget, and agreement with the CLI —
- * never phrasing.
+ * What is genuinely structural: section order, the vocabularies the CLI can
+ * actually emit (`NOTIFICATION_KINDS`, `GATE_REASONS`), the token budget, that
+ * every example would pass the CLI's own validation, and that every command an
+ * agent needs is reachable.
+ *
+ * Some assertions do match on phrases, and honestly so: a rule like "never say
+ * where the answer must arrive" has no structural signature, and the cost of
+ * it silently disappearing is higher than the cost of rewording a regex. Those
+ * are matched case-insensitively and loosely on purpose.
  */
 
 const skillPath = new URL('../../../skills/notifai/SKILL.md', import.meta.url)

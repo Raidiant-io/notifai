@@ -49,6 +49,7 @@ import {
   drainOrphanRetirements,
   runEscalationWaiter,
   MAX_CONTINUATION_COUNT,
+  MAX_HELD_DELIVERIES,
   orphanRetirements,
   pruneAbandonedSessions,
   releaseQuestionPush,
@@ -134,6 +135,8 @@ interface Recorder {
   /** Per-request answer stream for multi-question ownership tests. */
   repliesFor?: (requestId: string) => ReplyView[]
   acknowledgementRequiredFor?: (requestId: string) => boolean
+  /** The window the server commits to, when a test needs one unlike the waiter's. */
+  replyExpiresAt?: string
   /** Whether that request's acknowledgement must carry text; default true. */
   acknowledgementTextRequiredFor?: (requestId: string) => boolean
   acknowledged?: Set<string>
@@ -219,7 +222,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       recorder.receipts.push(requestId)
       return {
         request_id: requestId,
-        reply_expires_at: new Date(NOW + 480_000).toISOString(),
+        reply_expires_at: recorder.replyExpiresAt ?? new Date(NOW + 480_000).toISOString(),
         agent_acknowledgement_required:
           recorder.acknowledgementRequiredFor?.(requestId) ?? true,
         agent_acknowledgement_text_required:
@@ -1085,6 +1088,12 @@ describe('late answer collection', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-prompt' }))
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Hold')
+    // The obligation survives the user typing — that is the whole point of
+    // recording it — so the turn after the answer is held for it. Satisfy it
+    // the way the agent would, then the retirement proceeds.
+    expect(readSessionState('late-prompt', h.env).acknowledgement_due).toHaveLength(1)
+    h.recorder.acknowledged = new Set(['req_live'])
+
     await hookRunCommand(
       h.deps,
       'stop',
@@ -1958,6 +1967,31 @@ describe('several questions in flight', () => {
     expect(blocked.decision).toBe('block')
     expect(blocked.reason).toContain('notifai acknowledge req_ack_textless`')
     expect(blocked.reason).not.toContain('--text')
+  })
+
+  it('gives up holding the turn rather than wedging the session for ever', async () => {
+    // The acknowledgement gate is the one place hooks break the fail-open rule.
+    // Unbounded, an agent that never acknowledges — or a server that stays
+    // unreachable, since an error counts as unresolved — held every turn of
+    // this session for good.
+    const h = harness([])
+    writeSessionState('ack-wedge', h.env, {
+      acknowledgement_due: [{ request_id: 'req_wedge', recorded_at: NOW }],
+    })
+
+    const blocked: unknown[] = []
+    for (let turn = 0; turn < 3; turn += 1) {
+      h.io.outLines.length = 0
+      await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-wedge' }))
+      blocked.push(h.io.outLines.length > 0)
+    }
+    expect(blocked).toEqual([true, true, true])
+
+    // The fourth turn is let through, and the obligation stops being owed.
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-wedge' }))
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('ack-wedge', h.env).acknowledgement_due).toBeUndefined()
   })
 
   it('reconciles a server-recorded Agent Acknowledgement after a local clearing crash', async () => {
@@ -3738,6 +3772,47 @@ describe('escalation waiter delivery seam', () => {
     expect(readSessionState('waiter-once', h.env).accepted).toBeUndefined()
   })
 
+  it('does not spend the delivery cap on turns where nothing was handed over', async () => {
+    // The bug: holds counted against MAX_CONTINUATION_COUNT, so three turns
+    // where a liveness probe could not reach a busy session were enough to
+    // settle an answer the user had already given, unread.
+    const h = harness([])
+    const sessionId = 'waiter-transient-holds'
+    journaled(h, sessionId)
+    const context = waiterContext(h)
+    let handedOver = 0
+    let pass = 0
+
+    for (; pass < MAX_CONTINUATION_COUNT + 2; pass += 1) {
+      await runEscalationWaiter(context, {
+        sessionId,
+        envelope: { session_id: sessionId, stop_hook_active: false },
+        route: {
+          kind: 'inbox-socket',
+          deliver: async () => ({ notes: [], acknowledgement: 'held' as const }),
+        },
+        processDeadlineAt: NOW + 480_000,
+      })
+    }
+    // Still journaled after more holds than the delivery cap allows.
+    expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
+
+    // And when a route can finally take it, it is delivered rather than lost.
+    await runEscalationWaiter(context, {
+      sessionId,
+      envelope: { session_id: sessionId, stop_hook_active: false },
+      route: {
+        kind: 'inbox-socket',
+        deliver: async () => {
+          handedOver += 1
+          return { notes: [], acknowledgement: 'delivered' as const }
+        },
+      },
+      processDeadlineAt: NOW + 480_000,
+    })
+    expect(handedOver).toBe(1)
+  })
+
   it('bounds deliveries by the continuation cap on every route', async () => {
     // A route that never acknowledges must still stop. The cap lives where all
     // routes pass, so no future route can be the one it does not cover.
@@ -3749,7 +3824,7 @@ describe('escalation waiter delivery seam', () => {
       let deliveries = 0
       const notes: string[] = []
 
-      for (let pass = 0; pass < MAX_CONTINUATION_COUNT + 3; pass += 1) {
+      for (let pass = 0; pass < MAX_HELD_DELIVERIES + 3; pass += 1) {
         const outcome = await runEscalationWaiter(context, {
           sessionId,
           envelope: { session_id: sessionId, stop_hook_active: false },
@@ -3765,9 +3840,11 @@ describe('escalation waiter delivery seam', () => {
         notes.push(...outcome.notes)
       }
 
-      expect(deliveries).toBe(MAX_CONTINUATION_COUNT)
+      // A hold is not a delivery — nothing was handed over — so it does not
+      // spend the wake-loop cap. It still has to end, on its own looser bound.
+      expect(deliveries).toBe(MAX_HELD_DELIVERIES)
       expect(notes.join('\n')).toContain(
-        `${MAX_CONTINUATION_COUNT} times without being acknowledged`,
+        `could hand the user's answer over in ${MAX_HELD_DELIVERIES} turns`,
       )
       expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
     }
@@ -3799,5 +3876,88 @@ describe('escalation waiter delivery seam', () => {
     )
     expect(claimQuestionPush('waiter-failed-route', h.env)).toBe(true)
     releaseQuestionPush('waiter-failed-route', h.env)
+  })
+})
+
+
+describe('session state across a prompt', () => {
+  it('carries every kind of session state across a typed prompt', async () => {
+    // The prompt handler rebuilds state from named fields, so a field nobody
+    // remembered to name is erased by the user typing. That is how an
+    // acknowledgement obligation once vanished. This fails if a future field is
+    // added to SessionState and not carried across.
+    const h = harness([])
+    const before = {
+      last_prompt_at: AWAY,
+      last_stop_at: NOW - 1_000,
+      retiring: [
+        {
+          request_id: 'req_carry',
+          collapse_key: 'collapse-carry',
+          device_ids: ['dev_iphone'],
+          question: 'Carried?',
+          state: 'expired' as const,
+        },
+      ],
+      continuation: { answered_at: NOW - 2_000, count: 2 },
+      acknowledgement_due: [{ request_id: 'req_carry_ack', recorded_at: NOW }],
+      acknowledgement_blocks: 2,
+    }
+    writeSessionState('carry-all', h.env, before)
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'carry-all', cwd: h.deps.cwd }),
+    )
+
+    const after = readSessionState('carry-all', h.env)
+    for (const key of Object.keys(before) as (keyof typeof before)[]) {
+      expect(after[key], `${key} did not survive the prompt`).toBeDefined()
+    }
+    // The one field a prompt resets rather than carries.
+    expect(after.continuation?.count).toBe(0)
+    expect(after.acknowledgement_blocks).toBe(2)
+  })
+})
+
+describe('a question outliving the waiter that pushed it', () => {
+  it('records when the server stops accepting, not when this owner stops waiting', async () => {
+    // These were the same number until the window became a setting, and taking
+    // the minimum capped every question at the waiter's ceiling: a day-long
+    // window was swept as stale about eight minutes later and retired, so the
+    // answer given over lunch met a closed question.
+    const h = harness([])
+    const aDayOut = NOW + 86_400_000
+    h.recorder.replyExpiresAt = new Date(aDayOut).toISOString()
+    writeSessionState('outlive', h.env, { last_prompt_at: AWAY })
+    registerQuestion('outlive', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'outlive' }))
+
+    const state = readSessionState('outlive', h.env)
+    const live = state.pending?.[0]
+    // Still live, still carrying the server's window — not the waiter's.
+    expect(live?.request_id).toBeDefined()
+    expect(live?.reply_deadline_at).toBe(aDayOut)
+    // Not closed and not retired: those are what capped it at eight minutes.
+    expect(state.retiring).toBeUndefined()
+    expect(h.recorder.closed).toEqual([])
+    // And the waiter still stopped at its own ceiling rather than waiting a day.
+    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
+  })
+
+  it('still closes a question the server has genuinely stopped accepting', async () => {
+    const h = harness([])
+    h.recorder.replyExpiresAt = new Date(NOW + 90_000).toISOString()
+    writeSessionState('short-window', h.env, { last_prompt_at: AWAY })
+    registerQuestion('short-window', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'short-window' }))
+
+    // Its window closed inside the waiter's ceiling, so it is retired here
+    // rather than left for a turn that could never collect it.
+    expect(readSessionState('short-window', h.env).pending).toBeUndefined()
+    expect(h.recorder.closed.length).toBe(1)
   })
 })

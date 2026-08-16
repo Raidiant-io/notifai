@@ -25,7 +25,7 @@ export const unicode: boolean =
   process.env['ConEmuTask'] === '{cmd::Cmder}'
 
 /** True when 24-bit colour is available, which the banner gradient needs. */
-export function supportsTrueColor(env: NodeJS.ProcessEnv = process.env): boolean {
+function supportsTrueColor(env: NodeJS.ProcessEnv = process.env): boolean {
   if (!pc.isColorSupported) return false
   const colorterm = env['COLORTERM'] ?? ''
   if (/^(truecolor|24bit)$/i.test(colorterm)) return true
@@ -63,7 +63,7 @@ function mix(a: Rgb, b: Rgb, t: number): Rgb {
  * Sample the brand ramp at `t` in [0, 1]. Multi-stop so the gradient keeps the
  * icon's coral midtones instead of washing straight from pink to magenta.
  */
-export function rampAt(t: number, ramp: readonly string[] = BRAND_RAMP): string {
+function rampAt(t: number, ramp: readonly string[] = BRAND_RAMP): string {
   const clamped = Math.min(1, Math.max(0, t))
   const span = ramp.length - 1
   const scaled = clamped * span
@@ -83,20 +83,6 @@ const ANSI_GLOBAL = /\[[0-9;]*m/g
 const ANSI_SPLIT = /(\[[0-9;]*m)/
 const ANSI_ONLY = /^\[[0-9;]*m$/
 
-/**
- * Paint `text` across the brand ramp, one escape per character.
- *
- * Falls back to a single flat brand colour without truecolor, and to the bare
- * string with colour off — a gradient is the most decorative thing this CLI
- * does, so it must also be the first thing to degrade quietly.
- */
-export function gradient(text: string, ramp: readonly string[] = BRAND_RAMP): string {
-  if (!pc.isColorSupported) return text
-  if (!supportsTrueColor()) return pc.magenta(text)
-  const chars = [...text]
-  const last = Math.max(1, chars.length - 1)
-  return chars.map((char, i) => (char === ' ' ? char : `${rampAt(i / last, ramp)}${char}`)).join('') + RESET
-}
 
 /**
  * Paint each line of a block so the gradient runs left-to-right across the

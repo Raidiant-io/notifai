@@ -1861,9 +1861,10 @@ describe('Codex hook representation', () => {
 
     io.outLines = []
     await doctorCommand(deps, {})
+    // Their assertions, this branch's check title.
     const report = io.outLines.join('\n')
-    expect(report).not.toMatch(/FAIL {2}hooks \(codex representation\)/)
-    expect(report).toMatch(/ok {4}hooks \(codex representation\)/)
+    expect(report).not.toMatch(/FAIL {2}Codex hook representation/)
+    expect(report).toMatch(/ok {4}Codex hook representation/)
     expect(report).toMatch(/Notifai will not modify it/)
 
     io.outLines = []
@@ -1905,7 +1906,7 @@ describe('Codex hook representation', () => {
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     const reported = io.outLines.join('\n')
-    expect(reported).toMatch(/hooks \(codex representation\)/)
+    expect(reported).toMatch(/Codex hook representation/)
     expect(reported).toMatch(/installed in both/i)
     expect(reported).toMatch(/notifies twice per turn/)
     expect(reported).toMatch(/notifai hooks uninstall --harness codex/)
@@ -1917,7 +1918,7 @@ describe('Codex hook representation', () => {
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).not.toMatch(/hooks \(codex representation\)/)
+    expect(io.outLines.join('\n')).not.toMatch(/Codex hook representation/)
   })
 })
 
@@ -2034,14 +2035,14 @@ describe('harness activation guidance', () => {
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('hooks (answer continuation)')
+    expect(io.outLines.join('\n')).toContain('How an answer returns')
     expect(io.outLines.join('\n')).toContain('no proven answer continuation')
-    expect(io.outLines.join('\n')).not.toContain('hooks (adapter)')
+    expect(io.outLines.join('\n')).not.toContain('Hook adapter')
 
     writeFileSync(pluginFile, plugin.replace(/^const ADAPTER_VERSION = .*\n/m, ''))
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('hooks (adapter)')
+    expect(io.outLines.join('\n')).toContain('Hook adapter')
     expect(io.outLines.join('\n')).toContain('obsolete OpenCode event wiring')
   })
 
@@ -2140,7 +2141,7 @@ describe('stable hook installation', () => {
 
     io.outLines = []
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).not.toMatch(/hooks \(duplicates\)/)
+    expect(io.outLines.join('\n')).not.toMatch(/Duplicate hook installs/)
 
     expect(hooksUninstallCommand(deps, { harness: 'claude-code' })).toBe(EXIT.ok)
     expect(existsSync(hookAdapterPath(deps.hookAdapterHome))).toBe(true)
@@ -4259,7 +4260,7 @@ describe('asking before the hooks have ever run', () => {
 
     io.outLines = []
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).toMatch(/FAIL\s+hooks \(trust\).*Stop/is)
+    expect(io.outLines.join('\n')).toMatch(/FAIL\s+Codex hook trust.*Stop/is)
     expect(io.outLines.join('\n')).toMatch(/best-effort.*never writes.*\/hooks/is)
   })
 
@@ -4512,7 +4513,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toMatch(/FAIL\s+Question routing:.*active Claude Code/is)
+    expect(io.outLines.join('\n')).toMatch(/FAIL\s+Routing for this harness.*active Claude Code/is)
   })
 
   it('treats an unfired pointer as informational, with a prompt as the remedy', async () => {
@@ -4581,7 +4582,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).toMatch(/ok\s+hooks \(stop shape\)/)
+    expect(io.outLines.join('\n')).toMatch(/ok\s+Turn\-end hook shape/)
   })
 
   it('names an old blocking Claude Stop handler as the reason no wake can happen', async () => {
@@ -4610,7 +4611,7 @@ describe('asking before the hooks have ever run', () => {
 
     await doctorCommand(deps, {})
     const out = io.outLines.join('\n')
-    expect(out).toMatch(/FAIL\s+hooks \(stop shape\)/)
+    expect(out).toMatch(/FAIL\s+Turn\-end hook shape/)
     expect(out).toContain('needs `async: true`')
     expect(out).toContain('kills the backgrounded waiter at its 600s default')
   })
@@ -4653,7 +4654,7 @@ describe('asking before the hooks have ever run', () => {
 
     await doctorCommand(deps, {})
     const out = io.outLines.join('\n')
-    expect(out).toMatch(/ok\s+hooks \(wake route\)/)
+    expect(out).toMatch(/ok\s+Direct wake route/)
     expect(out).toContain(socket)
     expect(out).toContain('an answer can start a turn here without you')
     // Doctor never widens the user's inbound policy to make Notifai work: the
@@ -4670,10 +4671,10 @@ describe('asking before the hooks have ever run', () => {
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed) // unreachable test server
     const out = io.outLines.join('\n')
     // Honest, and not a blocker: nothing is lost, it simply arrives later.
-    expect(out).toMatch(/--\s+hooks \(wake route\)/)
+    expect(out).toMatch(/--\s+Direct wake route/)
     expect(out).toContain('`--bare` binds no inbox socket')
     expect(out).toContain("at this session's next turn")
-    expect(out).not.toMatch(/FAIL\s+hooks \(wake route\)/)
+    expect(out).not.toMatch(/FAIL\s+Direct wake route/)
   })
 
   it('fails closed on an inbox protocol it does not recognise', async () => {
@@ -4721,7 +4722,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     await doctorCommand(deps, {})
     const out = io.outLines.join('\n')
-    expect(out).toMatch(/ok\s+hooks \(wake route\)/)
+    expect(out).toMatch(/ok\s+Direct wake route/)
     expect(out).toContain('can prove a stopped thread unowned before resuming it')
   })
 

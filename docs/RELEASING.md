@@ -49,8 +49,8 @@ updates a Release PR on every push to `main`. Merging that PR is the cut:
 it bumps `package.json`, writes `CHANGELOG.md`, and creates the annotated
 tags.
 
-- CLI tag: `v1.0.2` (the skill pin is `Raidiant-io/notifai#v${version}`)
-- Protocol tag: `protocol-v0.4.1`
+- CLI tag: `v<version>` (the skill pin is `Raidiant-io/notifai#v${version}`)
+- Protocol tag: `protocol-v<version>`
 
 **Do not merge a Release PR unless the maintainer asked for a release.**
 The PR existing is not a release.

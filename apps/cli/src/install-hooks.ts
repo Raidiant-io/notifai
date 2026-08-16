@@ -202,6 +202,22 @@ export const CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS = 3600
 export const BLOCKING_STOP_TIMEOUT_SECONDS = 540
 
 /**
+ * Whether this harness's Stop handler runs detached from the turn.
+ *
+ * Three places decide this — the installer that declares `async: true`, the
+ * hook runtime that picks the waiter's wall clock, and doctor's check that the
+ * installed definition still has the right shape — and they must agree or the
+ * waiter outlives a turn nobody left open. They were three separate spellings
+ * of the same condition with nothing tying them together.
+ */
+export function stopHandlerIsDetached(
+  harness: Harness | undefined,
+  platform?: Parameters<typeof hookHostPlatform>[0],
+): boolean {
+  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+}
+
+/**
  * The turn-end handler, whose shape is the whole per-harness difference.
  *
  * Claude Code takes the answer over its own inbox socket, so its Stop hook is
@@ -217,7 +233,7 @@ function stopHandler(
   options: HookCommandOptions,
 ): HookHandler {
   const command = hookCommand(adapterPath, 'stop', harness, options)
-  if (harness === 'claude-code' && hookHostPlatform(options.platform) === 'posix') {
+  if (stopHandlerIsDetached(harness, options.platform)) {
     return { type: 'command', command, timeout: CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'codex') return { type: 'command', command }
