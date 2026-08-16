@@ -43,7 +43,7 @@ Every key comes back as `{ value, source, summary }`. `notify_criteria` is the
 user's standing instruction about what is worth interrupting them for. Quote
 values as they are — never flatten one into "the defaults apply".
 
-Absent criteria of their own, notify when:
+When they have set none, notify when:
 
 - long-running work finished, succeeded, or failed
 - you are blocked on something only the user can give
@@ -62,9 +62,6 @@ shared policy, no flag for this machine:
 notifai config set notify_criteria "Only when you're blocked or CI-length work finishes" --project --yes
 notifai config unset notify_criteria --project --yes
 ```
-
-`unset` removes a value at one layer so the next one down applies again — reach
-for it instead of writing a value that means "ignore the layer above".
 
 ## Send
 
@@ -107,10 +104,8 @@ notifai send --kind failed \
   --body-file ./migration-report.md
 ```
 
-Weak titles are the usual failure, and they all share one trait — they send the
-user back to the terminal to find out what happened. `Task complete`,
-`Build failed`, `Need input` do that. `All 42 tests passed`,
-`Migration 0007 failed`, `Deploy 0007 to production?` do not.
+`Task complete`, `Build failed`, `Need input` all fail the same way: they send
+the user back to the terminal to find out what actually happened.
 
 Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
 channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
