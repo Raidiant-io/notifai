@@ -5039,6 +5039,17 @@ describe('question sets', () => {
     }
   })
 
+  it('reports a registration as data, with the ids an agent must branch on', () => {
+    // The prose block is the densest guidance this CLI prints, but a choice id
+    // cannot be read back out of prose.
+    const built = buildQuestions(
+      { choice: ['Deploy now', 'Hold'] },
+      'Deploy migration 0007 to production?',
+    )
+    if (!built.ok) throw new Error(built.error)
+    expect(built.questions[0]?.choices?.map((choice) => choice.id)).toEqual(['deploy-now', 'hold'])
+  })
+
   it('rejects forms outside the documented shape', () => {
     expect(buildQuestions({ form: 'not json' }, undefined)).toMatchObject({ ok: false })
     expect(
