@@ -1609,20 +1609,7 @@ export async function hookRunCommand(
       ...outcome.log,
     })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
-    if (outcome.stdout !== undefined) {
-      let stdout = outcome.stdout
-      if (
-        harness !== undefined &&
-        event === 'stop' &&
-        HARNESS_CAPABILITIES[harness].stopContinuation === 'followup-message'
-      ) {
-        const decision = JSON.parse(outcome.stdout) as { decision?: unknown; reason?: unknown }
-        if (decision.decision === 'block' && typeof decision.reason === 'string') {
-          stdout = JSON.stringify({ followup_message: decision.reason })
-        }
-      }
-      deps.io.out(stdout)
-    }
+    if (outcome.stdout !== undefined) deps.io.out(outcome.stdout)
     return EXIT.ok
   } catch (err) {
     // SessionEnd defers its start record until after cleanup; if cleanup itself
@@ -4940,15 +4927,41 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
     ]
   }
 
+/**
+ * A human title per check.
+ *
+ * Three checks used to collapse onto "Question routing", so a reader could not
+ * tell which of them had failed, and the rest fell through to their internal
+ * name — `hooks (stale)` beside `Delivery proof`. The `id` stays the stable
+ * thing to branch on; this is only what a person reads.
+ */
+const CHECK_TITLES: Readonly<Record<string, string>> = {
+  hooks: 'Question routing',
+  'hooks (detected)': 'Harnesses detected',
+  'hooks (active harness)': 'Routing for this harness',
+  'hooks (active session)': 'Routing for this session',
+  'hooks (stale)': 'Hook definitions current',
+  'hooks (adapter)': 'Hook adapter',
+  'hooks (trust)': 'Codex hook trust',
+  'hooks (stop shape)': 'Turn-end hook shape',
+  'hooks (duplicates)': 'Duplicate hook installs',
+  'hooks (codex representation)': 'Codex hook representation',
+  'hooks (question admission)': 'Question admission',
+  'hooks (fired)': 'Hooks have run here',
+  'hooks (answer continuation)': 'How an answer returns',
+  'hooks (wake route)': 'Direct wake route',
+}
+
+function checkTitle(name: string): string {
+  return CHECK_TITLES[name] ?? name
+}
+
   /** Real but not in the way; see the note above. */
   const informational = new Set<string>()
   return [
     ...hookChecks(deps).map((check) => ({
       id: check.name.replace(/[ ()]+/g, '-').replace(/-$/, ''),
-      title:
-        check.name === 'hooks' || check.name.startsWith('hooks (active')
-          ? 'Question routing'
-          : check.name,
+      title: checkTitle(check.name),
       status: check.ok
         ? 'ready' as const
         : check.informational === true || informational.has(check.name)

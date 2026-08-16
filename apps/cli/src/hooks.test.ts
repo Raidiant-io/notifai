@@ -1960,6 +1960,31 @@ describe('several questions in flight', () => {
     expect(blocked.reason).not.toContain('--text')
   })
 
+  it('gives up holding the turn rather than wedging the session for ever', async () => {
+    // The acknowledgement gate is the one place hooks break the fail-open rule.
+    // Unbounded, an agent that never acknowledges — or a server that stays
+    // unreachable, since an error counts as unresolved — held every turn of
+    // this session for good.
+    const h = harness([])
+    writeSessionState('ack-wedge', h.env, {
+      acknowledgement_due: [{ request_id: 'req_wedge', recorded_at: NOW }],
+    })
+
+    const blocked: unknown[] = []
+    for (let turn = 0; turn < 3; turn += 1) {
+      h.io.outLines.length = 0
+      await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-wedge' }))
+      blocked.push(h.io.outLines.length > 0)
+    }
+    expect(blocked).toEqual([true, true, true])
+
+    // The fourth turn is let through, and the obligation stops being owed.
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-wedge' }))
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('ack-wedge', h.env).acknowledgement_due).toBeUndefined()
+  })
+
   it('reconciles a server-recorded Agent Acknowledgement after a local clearing crash', async () => {
     const h = harness([])
     writeSessionState('ack-heal', h.env, {

@@ -48,15 +48,17 @@ default; prompt-submit and session-end retain fixed short limits on both.
 Migrating an older Codex definition requires one unavoidable `/hooks` approval;
 later upgrades must not require another.
 
-Before the first `notifai ask` in a new harness session, `doctor` must name the
-active harness under **Question routing**, report under **hooks (fired)** that a
-session in this directory ran both UserPromptSubmit and Stop, and pass **hooks
-(stop shape)** — which is where an older, blocking Claude Code definition or a
-missing explicit timeout is caught. For Codex, **hooks (trust)** must also pass.
+Before the first `notifai ask` in a new harness session, `doctor --json` must
+show `hooks-active-harness` naming the harness, `hooks-fired` confirming that a
+session in this directory ran both UserPromptSubmit and Stop, and
+`hooks-stop-shape` passing — which is where an older, blocking Claude Code
+definition or a missing explicit timeout is caught. For Codex, `hooks-trust`
+must also pass. Branch on those `id`s: the titles beside them are for people
+and may be reworded.
 The check is fail-closed against the exact active session identity where the
 harness exports one. An explicit `--session-id` cannot create missing routing evidence; do not invent one to bypass the check.
 
-**hooks (wake route)** reports, without probing anything, whether an answer
+`hooks-wake-route` reports, without probing anything, whether an answer
 could start a turn in this exact session on its own. It never blocks: when it
 cannot, the answer is held and replayed at the session's next turn instead.
 
@@ -68,7 +70,7 @@ Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 - **Claude Code:** project hook files reload without a restart. Send one new
   prompt so the hook publishes the session pointer, then run `notifai doctor`.
 - **Codex:** run `notifai hooks install --harness codex`, end one harmless turn,
-  send one new prompt, then run `notifai doctor`. If **hooks (trust)** fails,
+  send one new prompt, then run `notifai doctor`. If `hooks-trust` fails,
   open `/hooks` in Codex and approve or enable the Notifai handlers. Codex
   resolves project hooks from the main
   repository. In a linked worktree, the installer writes the shared file to

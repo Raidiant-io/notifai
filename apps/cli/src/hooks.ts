@@ -128,6 +128,8 @@ export interface SessionState {
    * the service confirms the agent-authored follow-up exists.
    */
   acknowledgement_due?: AcknowledgementDue[]
+  /** Consecutive turns this session has been held for an acknowledgement. */
+  acknowledgement_blocks?: number
 }
 
 export interface AcknowledgementDue {
@@ -836,6 +838,8 @@ export const GATE_REASONS = [
   'continuation-limit',
   'delivery-limit',
   'acknowledgement-required',
+  'acknowledgement-abandoned',
+  'harness-cannot-continue',
   'notifications-off',
   'claimed-elsewhere',
   'elapsed',
@@ -1749,6 +1753,71 @@ function acknowledgementBlockContext(due: readonly AcknowledgementDue[]): string
   )
 }
 
+/**
+ * How many turns in a row a session may be held waiting for an acknowledgement.
+ *
+ * The gate is the one place hooks deliberately break the fail-open rule, and it
+ * had no bound at all: an agent that could not or would not acknowledge — or a
+ * server that stayed unreachable, since an error here counts as unresolved —
+ * held every turn of that session for ever. Blocking a user's agent
+ * indefinitely does not get them an acknowledgement; it costs them the agent as
+ * well as the acknowledgement.
+ */
+const MAX_ACKNOWLEDGEMENT_BLOCKS = 3
+
+/**
+ * Hold the turn for an outstanding acknowledgement, or give up and let it
+ * through once holding has stopped being worth its cost.
+ *
+ * Returns the outcome that blocks the turn, or `null` to carry on.
+ */
+function holdForAcknowledgement(
+  ctx: HookContext,
+  sessionId: string,
+  due: readonly AcknowledgementDue[],
+  notes: string[],
+): HookOutcome | null {
+  if (due.length === 0) return null
+  const requestIds = due.map((entry) => entry.request_id)
+  const blocks = (readSessionState(sessionId, ctx.env).acknowledgement_blocks ?? 0) + 1
+  if (blocks > MAX_ACKNOWLEDGEMENT_BLOCKS) {
+    // Drop the obligation with the reason recorded. The answer was already
+    // delivered; what is lost is the agent's receipt for it, and the log is
+    // where that loss stays visible.
+    for (const requestId of requestIds) clearAcknowledgementObligation(sessionId, ctx.env, requestId)
+    resetAcknowledgementBlocks(sessionId, ctx.env)
+    gate(ctx, 'proceeding', 'acknowledgement-abandoned', {
+      request_ids: requestIds,
+      blocks: blocks - 1,
+      limit: MAX_ACKNOWLEDGEMENT_BLOCKS,
+    })
+    notes.push(
+      `no acknowledgement after ${MAX_ACKNOWLEDGEMENT_BLOCKS} turns; continuing without one rather than holding this session for ever`,
+    )
+    return null
+  }
+  updateSessionState(sessionId, ctx.env, (current) => ({
+    ...current,
+    acknowledgement_blocks: blocks,
+  }))
+  gate(ctx, 'held', 'acknowledgement-required', { request_ids: requestIds, blocks })
+  return {
+    stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
+    notes,
+    log: { stage: 'acknowledgement-required', request_ids: requestIds },
+  }
+}
+
+/** A turn that was not held resets the streak; only consecutive holds count. */
+function resetAcknowledgementBlocks(sessionId: string, env: NodeJS.ProcessEnv): void {
+  updateSessionState(sessionId, env, (current) => {
+    if (current.acknowledgement_blocks === undefined) return current
+    const next = { ...current }
+    delete next.acknowledgement_blocks
+    return next
+  })
+}
+
 async function reconcileAcknowledgementObligations(
   ctx: HookContext,
   sessionId: string,
@@ -2098,19 +2167,8 @@ export async function runEscalationWaiter(
           currentAcceptedIds.has(entry.request_id),
         ),
       )
-      if (due.length > 0) {
-        gate(ctx, 'held', 'acknowledgement-required', {
-          request_ids: due.map((entry) => entry.request_id),
-        })
-        return {
-          stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
-          notes,
-          log: {
-            stage: 'acknowledgement-required',
-            request_ids: due.map((entry) => entry.request_id),
-          },
-        }
-      }
+      const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+      if (held !== null) return held
       state = readSessionState(sessionId, ctx.env)
     }
 
@@ -2120,19 +2178,9 @@ export async function runEscalationWaiter(
         sessionId,
         state.acknowledgement_due!,
       )
-      if (due.length > 0) {
-        gate(ctx, 'held', 'acknowledgement-required', {
-          request_ids: due.map((entry) => entry.request_id),
-        })
-        return {
-          stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
-          notes,
-          log: {
-            stage: 'acknowledgement-required',
-            request_ids: due.map((entry) => entry.request_id),
-          },
-        }
-      }
+      const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+      if (held !== null) return held
+      resetAcknowledgementBlocks(sessionId, ctx.env)
       state = readSessionState(sessionId, ctx.env)
     }
 
@@ -2293,7 +2341,11 @@ async function handleClaimedStop(
   ) {
     for (const entry of live) await closeQuietly(ctx, entry.request_id!)
     await retirePendings(ctx, envelope, sessionId, pending, 'expired')
-    gate(ctx, 'held', 'no-question')
+    // Not `no-question`: there was a question, and this says so. Reading the
+    // log to find out why an ask never travelled is the whole reason these
+    // reasons exist, and the wrong one sent that reader looking for a question
+    // that was right there.
+    gate(ctx, 'held', 'harness-cannot-continue', { harness: ctx.harness })
     notes.push(`${HARNESS_CAPABILITIES[ctx.harness].deliveryContract}; use a blocking \`notifai send --reply\` question`)
     return { notes }
   }

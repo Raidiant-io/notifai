@@ -18,10 +18,7 @@ export type DeliveryRoute =
   | 'hold-for-next-turn'
   | 'unsupported'
 
-export type StopContinuation =
-  | 'decision-block'
-  | 'followup-message'
-  | 'unsupported'
+export type StopContinuation = 'decision-block' | 'unsupported'
 
 export interface HarnessCapability {
   /** How an answer is admitted to another turn in the already-open session. */
