@@ -2018,6 +2018,16 @@ export async function handleUserPromptSubmit(
       ...(unasked.length > 0 ? { pending: unasked } : {}),
       ...(retiring.length > 0 ? { retiring } : {}),
       ...(current.accepted === undefined ? {} : { accepted: current.accepted }),
+      // Carried across a prompt on purpose. This rewrite rebuilds the state
+      // from named fields, so anything omitted is silently erased — and an
+      // erased obligation means the user never learns their reply was read,
+      // which is the one thing acknowledgement exists to guarantee.
+      ...(current.acknowledgement_due === undefined
+        ? {}
+        : { acknowledgement_due: current.acknowledgement_due }),
+      ...(current.acknowledgement_blocks === undefined
+        ? {}
+        : { acknowledgement_blocks: current.acknowledgement_blocks }),
       // The user typed, so whatever chain of answer-driven continuations was
       // running, a human has taken the turn and the consecutive count starts
       // over. Only a real prompt reaches here: the journal branch above returns
