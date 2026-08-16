@@ -98,6 +98,7 @@ import {
 } from './logging.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
+  stopHandlerIsDetached,
   CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
   HARNESSES,
   applyPlan,
@@ -1411,11 +1412,10 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
-  // Claude Code's Stop handler is installed `async`, so it returns at once and
-  // this process keeps waiting with nobody's turn held open. That is the only
-  // case where a long wall clock costs the user nothing, and the same condition
-  // `stopHandler` uses to declare it.
-  const detachedWaiter = harness === 'claude-code' && (deps.hookPlatform ?? process.platform) !== 'win32'
+  // The waiter may spend a long wall clock exactly when no turn is held open
+  // for it, which is the same condition the installer used to declare
+  // `async: true`. One predicate decides it for both.
+  const detachedWaiter = stopHandlerIsDetached(harness, deps.hookPlatform ?? process.platform)
   const processDeadlineAt = now() + waiterCeilingSeconds(detachedWaiter) * 1000
 
   const logger = log(deps)
@@ -5004,7 +5004,7 @@ function stopShapeProblems(
   for (const handler of installation.handlers.filter(
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
-    if (installation.harness === 'claude-code' && platform !== 'win32') {
+    if (stopHandlerIsDetached(installation.harness, platform)) {
       if (handler.async !== true) {
         problems.push(
           `${installation.file} declares a blocking Stop handler; the Claude Code wake route needs \`async: true\` so the turn ends while the waiter runs`,
