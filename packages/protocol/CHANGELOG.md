@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [2.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v1.0.0...protocol-v2.0.0) (2026-08-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* `notifai send` now requires --kind. The account preference `agent_acknowledgements_enabled` is renamed to `agent_acknowledgement_text_enabled` and governs only the written reply.
+
+### Features
+
+* make kind required and carry attention, and always acknowledge an answer ([07e7c21](https://github.com/Raidiant-io/notifai/commit/07e7c216d52f3041e50ce5c7ec1ce4a3f8491e64))
+
 ## [1.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v0.6.0...protocol-v1.0.0) (2026-08-15)
 
 
