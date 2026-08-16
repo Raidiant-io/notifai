@@ -64,6 +64,7 @@ import {
   WAITER_CEILING_SECONDS,
   DETACHED_WAITER_CEILING_SECONDS,
 } from './hooks.js'
+import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
   CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
@@ -1422,7 +1423,7 @@ describe('the waiter owning one question to the end', () => {
     expect(h.io.errLines.join('\n')).toContain('expired with its continuation owner')
   })
 
-  it('charges sequential submission latency to one deadline', async () => {
+  it('charges sequential submission latency to one owner deadline, not to the answer window', async () => {
     const h = harness([reply({ text: 'Done' })])
     writeSessionState('latency', h.env, { last_prompt_at: AWAY })
     registerQuestion('latency', h.env, { question: 'First?' }, NOW)
@@ -1434,9 +1435,12 @@ describe('the waiter owning one question to the end', () => {
     const windows = h.recorder.submitted
       .filter((entry) => entry.draft.event === 'agent_question')
       .map((entry) => entry.draft.reply?.expires_in_seconds)
-    // Both windows end at the same absolute moment: the second question's is
-    // shorter by exactly the 40s the first submission spent.
-    expect(windows).toEqual([480, 440])
+    // How long the user may answer does not shrink because this owner spent
+    // part of its own budget getting the question out. Both questions stay
+    // answerable for the configured window.
+    expect(windows).toEqual([86_400, 86_400])
+    // The owner's own budget is still one shared deadline, and it is still
+    // charged for the latency: the whole pass fits inside the waiter ceiling.
     expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
   })
 
@@ -2126,7 +2130,7 @@ describe('a question that outlives its session', () => {
     expect(retirements(h).filter((r) => r.retires === first)).toHaveLength(count)
   })
 
-  it('gives up on an orphan older than a day instead of queueing it for ever', async () => {
+  it('gives up on an orphan that outlived the longest answerable window', async () => {
     const h = harness([])
     orphanRetirements(
       h.env,
@@ -2137,7 +2141,7 @@ describe('a question that outlives its session', () => {
         question: 'Old?',
         state: 'expired',
       }],
-      NOW - 25 * 3600 * 1000,
+      NOW - (REPLY_MAX_WINDOW_SECONDS + 2 * 3600) * 1000,
     )
     const drained = await drainOrphanRetirements(
       { client: h.deps.clientFactory('https://test.notifai.invalid', 'Bearer x'), config: loadConfig({ cwd: h.deps.cwd, env: h.env }) },

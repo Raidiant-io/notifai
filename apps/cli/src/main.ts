@@ -326,7 +326,11 @@ const send = program
   .optionsGroup(SEND_GROUP.reply)
   .option('--reply', 'enable the inline reply action and block for the answer')
   .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
-  .option('--reply-window <seconds>', 'how long the server accepts a reply (default: 3600)', (v: string) => Number(v))
+  .option(
+    '--reply-window <seconds>',
+    'how long an answer is still accepted, 60-259200 (default: reply_window_seconds, a day)',
+    (v: string) => Number(v),
+  )
   .option(
     '--reply-choice <label>',
     'with --reply, ask a closed question; repeat the flag once per answer (2-6)',

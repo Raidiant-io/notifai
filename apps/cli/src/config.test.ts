@@ -245,12 +245,32 @@ describe('draft building', () => {
     })
   })
 
-  it('keeps a blocking reply answerable for one hour by default', () => {
+  it('keeps a question answerable for a day by default', () => {
+    // A question asked before someone steps away should still be theirs to
+    // answer when they come back; the CLI used to cut the wire contract's own
+    // default down to an hour.
     const config = loadConfig({ cwd: base.cwd, env: base.env })
     const build = buildDraft(config, { title: 'Question', body: 'Deploy?', reply: true })
     if (!build.ok) throw new Error(build.error)
 
-    expect(build.draft.reply?.expires_in_seconds).toBe(3_600)
+    expect(build.draft.reply?.expires_in_seconds).toBe(86_400)
+  })
+
+  it('lets the user shorten or lengthen how long an answer is accepted', () => {
+    const { env, cwd } = setup({ projectToml: 'reply_window_seconds = 7200\n' })
+    const config = loadConfig({ cwd, env })
+    const build = buildDraft(config, { title: 'Question', body: 'Deploy?', reply: true })
+    if (!build.ok) throw new Error(build.error)
+    expect(build.draft.reply?.expires_in_seconds).toBe(7_200)
+
+    const explicit = buildDraft(config, {
+      title: 'Question',
+      body: 'Deploy?',
+      reply: true,
+      replyWindow: 600,
+    })
+    if (!explicit.ok) throw new Error(explicit.error)
+    expect(explicit.draft.reply?.expires_in_seconds).toBe(600)
   })
 
   it('orders explicit and configured Project identity over inference', () => {

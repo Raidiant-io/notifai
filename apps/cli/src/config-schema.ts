@@ -99,6 +99,17 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     example: '0',
   },
 
+  reply_window_seconds: {
+    label: 'How long an answer is accepted',
+    group: 'questions',
+    kind: 'integer',
+    unit: 's',
+    summary: 'How long the service keeps accepting your answer to a question',
+    detail:
+      'A question stays answerable for this long after it is asked. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nThis is not how long anything waits on you. The agent ends its turn immediately; if it is still running when you answer, the answer reaches it directly, and otherwise it is delivered at that session\'s next turn. Shortening this only makes an answer arrive too late to be accepted.',
+    example: '86400',
+  },
+
   sound: {
     label: 'Sound',
     group: 'delivery',
