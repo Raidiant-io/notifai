@@ -49,6 +49,7 @@ import {
   drainOrphanRetirements,
   runEscalationWaiter,
   MAX_CONTINUATION_COUNT,
+  MAX_HELD_DELIVERIES,
   orphanRetirements,
   pruneAbandonedSessions,
   releaseQuestionPush,
@@ -3771,6 +3772,47 @@ describe('escalation waiter delivery seam', () => {
     expect(readSessionState('waiter-once', h.env).accepted).toBeUndefined()
   })
 
+  it('does not spend the delivery cap on turns where nothing was handed over', async () => {
+    // The bug: holds counted against MAX_CONTINUATION_COUNT, so three turns
+    // where a liveness probe could not reach a busy session were enough to
+    // settle an answer the user had already given, unread.
+    const h = harness([])
+    const sessionId = 'waiter-transient-holds'
+    journaled(h, sessionId)
+    const context = waiterContext(h)
+    let handedOver = 0
+    let pass = 0
+
+    for (; pass < MAX_CONTINUATION_COUNT + 2; pass += 1) {
+      await runEscalationWaiter(context, {
+        sessionId,
+        envelope: { session_id: sessionId, stop_hook_active: false },
+        route: {
+          kind: 'inbox-socket',
+          deliver: async () => ({ notes: [], acknowledgement: 'held' as const }),
+        },
+        processDeadlineAt: NOW + 480_000,
+      })
+    }
+    // Still journaled after more holds than the delivery cap allows.
+    expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
+
+    // And when a route can finally take it, it is delivered rather than lost.
+    await runEscalationWaiter(context, {
+      sessionId,
+      envelope: { session_id: sessionId, stop_hook_active: false },
+      route: {
+        kind: 'inbox-socket',
+        deliver: async () => {
+          handedOver += 1
+          return { notes: [], acknowledgement: 'delivered' as const }
+        },
+      },
+      processDeadlineAt: NOW + 480_000,
+    })
+    expect(handedOver).toBe(1)
+  })
+
   it('bounds deliveries by the continuation cap on every route', async () => {
     // A route that never acknowledges must still stop. The cap lives where all
     // routes pass, so no future route can be the one it does not cover.
@@ -3782,7 +3824,7 @@ describe('escalation waiter delivery seam', () => {
       let deliveries = 0
       const notes: string[] = []
 
-      for (let pass = 0; pass < MAX_CONTINUATION_COUNT + 3; pass += 1) {
+      for (let pass = 0; pass < MAX_HELD_DELIVERIES + 3; pass += 1) {
         const outcome = await runEscalationWaiter(context, {
           sessionId,
           envelope: { session_id: sessionId, stop_hook_active: false },
@@ -3798,9 +3840,11 @@ describe('escalation waiter delivery seam', () => {
         notes.push(...outcome.notes)
       }
 
-      expect(deliveries).toBe(MAX_CONTINUATION_COUNT)
+      // A hold is not a delivery — nothing was handed over — so it does not
+      // spend the wake-loop cap. It still has to end, on its own looser bound.
+      expect(deliveries).toBe(MAX_HELD_DELIVERIES)
       expect(notes.join('\n')).toContain(
-        `${MAX_CONTINUATION_COUNT} times without being acknowledged`,
+        `could hand the user's answer over in ${MAX_HELD_DELIVERIES} turns`,
       )
       expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
     }

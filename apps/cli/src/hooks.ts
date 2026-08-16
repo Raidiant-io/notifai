@@ -161,6 +161,8 @@ interface AcceptedAnswerDelivery {
    * passes through.
    */
   delivery_attempts?: number
+  /** Turns this answer has been held without being handed to the agent. */
+  held_deliveries?: number
 }
 
 /** A delivered question awaiting its retirement push. */
@@ -1357,6 +1359,21 @@ const LATE_PROMPT_POLL_SECONDS = 3
  */
 export const MAX_CONTINUATION_COUNT = 3
 
+/**
+ * How many turns an answer may be *held* before it is settled unread.
+ *
+ * A hold is not a delivery: the route reported that it handed nothing over, so
+ * the agent has not seen the answer and the wake-loop the continuation cap
+ * exists to stop has not happened. Counting holds against that cap meant three
+ * turns where a liveness probe could not reach a busy session were enough to
+ * discard an answer the user had already given.
+ *
+ * It still has to end. A route that can never deliver would otherwise retry
+ * every turn for the life of the session, so holds get their own, far looser
+ * bound — loose because each one costs nothing and the answer is still wanted.
+ */
+export const MAX_HELD_DELIVERIES = 20
+
 interface PendingPoll {
   /** The answer to act on: the latest reply, because a later one corrects. */
   reply: ReplyView | null
@@ -2261,6 +2278,20 @@ async function deliverAcceptedAnswers(
 ): Promise<HookOutcome> {
   const { answers: answered, remaining } = accepted
   const requestIds = summarizeRequestIds(answered.map((entry) => entry.pending)).ids
+  const held = accepted.held_deliveries ?? 0
+  if (held >= MAX_HELD_DELIVERIES) {
+    gate(ctx, 'held', 'delivery-limit', {
+      route: route.kind,
+      held,
+      limit: MAX_HELD_DELIVERIES,
+      request_ids: requestIds,
+    })
+    settleAcceptedAnswers(ctx, sessionId, accepted)
+    notes.push(
+      `no route could hand the user's answer over in ${MAX_HELD_DELIVERIES} turns; not holding it any longer`,
+    )
+    return { notes }
+  }
   const attempt = (accepted.delivery_attempts ?? 0) + 1
   if (attempt > MAX_CONTINUATION_COUNT) {
     gate(ctx, 'held', 'delivery-limit', {
@@ -2310,6 +2341,17 @@ async function deliverAcceptedAnswers(
       ...current,
       delivered_at: ctx.now(),
       delivered_route: deliveredRoute,
+    }))
+  } else if (delivered.acknowledgement === 'held') {
+    // Give the delivery attempt back and count the hold instead. The attempt
+    // was counted before the call because one that dies mid-delivery still
+    // happened and a counter written afterwards could be evaded by crashing —
+    // but a route that *returns* `held` proves both that this process survived
+    // and that nothing was handed over.
+    amendAcceptedAnswers(ctx, sessionId, (current) => ({
+      ...current,
+      delivery_attempts: accepted.delivery_attempts ?? 0,
+      held_deliveries: (current.held_deliveries ?? 0) + 1,
     }))
   }
   ctx.log?.info('hook.answer', {
