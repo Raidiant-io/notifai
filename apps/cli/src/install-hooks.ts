@@ -456,7 +456,19 @@ export function configHome(
   return path.join(home, fallback)
 }
 
-/** User-global Codex config directory for the active Codex installation. */
+/**
+ * User-global Codex config directory for the *running* Codex installation.
+ *
+ * `CODEX_HOME` replaces the home; it does not shadow it. `codex doctor` with
+ * the variable set reports that directory for every path it resolves and never
+ * consults `~/.codex` at all. So a session manager that points Codex at its own
+ * home makes `~/.codex` inert for those sessions, and installing there would
+ * write hooks the running agent never reads while reporting success.
+ *
+ * Following the variable is therefore correct even though it means install and
+ * doctor resolve different homes when run from different shells. Doctor names
+ * the home it inspected for exactly that reason — see `codexHomeNote`.
+ */
 export function codexGlobalDir(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
@@ -499,15 +511,29 @@ export interface CodexLayerInspection {
 }
 
 /**
- * Which representation this Codex layer already uses.
+ * Where Notifai writes in this Codex layer: wherever Notifai already is, and
+ * inline `config.toml` otherwise.
  *
- * Codex supports `hooks.json` and inline `[hooks]` side by side, but loads both
- * and runs every matching handler. Use inline config for a hook-empty layer and
- * preserve an existing single representation so installing Notifai never
- * invents a dual layer. When the layer is already dual, keep our handlers in
- * the representation that already contains them instead of silently migrating
- * them. `[hooks.state]` is the trust store, not a hook definition, so it does
- * not count as a representation.
+ * Codex supports `hooks.json` and inline `[hooks]` side by side, loads both,
+ * and runs every matching handler. The tempting rule is to join whichever
+ * representation the layer already uses, so Notifai never adds Codex's "prefer
+ * one representation per layer" startup warning. Notifai must not do that,
+ * because a hook entry carries no marker saying who owns it: a `hooks.json`
+ * full of foreign handlers may be one a person wrote by hand or one a tool
+ * regenerates wholesale, and those two look identical from here. Appending to
+ * the second kind gets Notifai's handlers deleted the next time that tool
+ * rewrites its file — silently, on a product whose entire job is reaching
+ * someone who is not at the keyboard to notice it stopped.
+ *
+ * So Notifai only ever writes a file it owns. The warning it may cause is
+ * Codex accurately reporting that two handler sets merge and all of them fire;
+ * it is noise, and `codexCoexistenceNotes` explains it. That trade is
+ * deliberate: visible noise over silent non-delivery.
+ *
+ * Staying put where Notifai already is also keeps reinstalls idempotent and
+ * preserves the `[hooks.state]` trust hash, which Codex keys by file path and
+ * handler index. `[hooks.state]` is the trust store, not a hook definition, so
+ * it does not count as a representation.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
   const jsonDocument = tryLoadSettings(paths.hooksJson)
@@ -516,13 +542,8 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
   const tomlEvents = hookEventNames(tomlDocument?.hooks)
   const ourJsonEvents = ourHandlerEvents(jsonDocument)
   const ourTomlEvents = ourHandlerEvents(tomlDocument)
-  const dual = jsonEvents.length > 0 && tomlEvents.length > 0
-  let writeTarget = paths.configToml
-  if (jsonEvents.length > 0 && tomlEvents.length === 0) {
-    writeTarget = paths.hooksJson
-  } else if (dual && ourJsonEvents.length > 0 && ourTomlEvents.length === 0) {
-    writeTarget = paths.hooksJson
-  }
+  const writeTarget =
+    ourJsonEvents.length > 0 && ourTomlEvents.length === 0 ? paths.hooksJson : paths.configToml
   return {
     paths,
     jsonEvents,
@@ -592,6 +613,58 @@ export function codexRepresentationProblems(
       `Notifai hooks are installed in both ${layer.paths.hooksJson} and ${layer.paths.configToml}; ${consequence}. Run \`notifai hooks uninstall --harness codex${scope}\` and then \`notifai hooks install --harness codex${scope}\` to leave exactly one copy; foreign hooks in either file are left alone.`,
     ]
   })
+}
+
+/**
+ * Layers where Notifai and someone else each own one Codex representation.
+ *
+ * This is not a fault and never fails a check. Codex loads `hooks.json` and
+ * inline `[hooks]` together and runs every matching handler, so both sets fire
+ * exactly once — but Codex also prints "prefer one representation per layer"
+ * at startup, and a user who sees that warning deserves to know which file is
+ * Notifai's, which is not, and that Notifai will not touch the one it does not
+ * own. Saying nothing here is what made the warning look like Notifai's bug.
+ */
+export function codexCoexistenceNotes(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string[] {
+  return [false, true].flatMap((global) => {
+    const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env, platform))
+    const inJson = layer.ourJsonEvents.length > 0
+    const inToml = layer.ourTomlEvents.length > 0
+    if (inJson === inToml) return []
+    const ours = inJson ? layer.paths.hooksJson : layer.paths.configToml
+    const theirs = inJson ? layer.paths.configToml : layer.paths.hooksJson
+    const theirEvents = inJson ? layer.tomlEvents : layer.jsonEvents
+    if (theirEvents.length === 0) return []
+    const stop = theirEvents.includes('Stop')
+      ? " That file's Stop handler can end a turn before Notifai's answer arrives, because Codex lets any Stop handler stop continuation."
+      : ''
+    return [
+      `Notifai's Codex hooks are in ${ours}. ${theirs} defines hooks Notifai does not own (${theirEvents.join(', ')}) and Notifai will not modify it. Codex loads both files and runs every matching handler, so each set fires exactly once; its "prefer one representation per layer" startup warning is reporting that, not a Notifai fault.${stop}`,
+    ]
+  })
+}
+
+/**
+ * What `CODEX_HOME` is doing to this shell, when it is doing anything.
+ *
+ * Codex replaces its whole home when the variable is set, so hooks installed
+ * from a shell without it are simply absent here, and its trust store is keyed
+ * by absolute file path — a config copied between homes arrives untrusted.
+ * Both facts turn into "Notifai is not wired" reports that look like a bug in
+ * the installer, so doctor names the home it actually inspected.
+ */
+export function codexHomeNote(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string | null {
+  const effective = codexGlobalDir(env, platform)
+  const accountDefault = path.join(harnessAccountHome(env, platform), '.codex')
+  if (effective === accountDefault) return null
+  return `CODEX_HOME points Codex at ${effective}, so ${accountDefault} is not read by Codex in this shell at all. Global hooks installed from a shell without CODEX_HOME live there and are invisible here; Codex also keys hook trust by absolute file path, so hooks copied between homes need approving again in each one.`
 }
 
 function tryLoadSettings(file: string): SettingsDocument | null {
