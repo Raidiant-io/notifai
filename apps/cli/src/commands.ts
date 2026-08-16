@@ -6,6 +6,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import {
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   CAPABILITIES_V1,
+  PLATFORMS,
   QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
   REPLY_MAX_WINDOW_SECONDS,
@@ -571,6 +572,13 @@ export async function capabilitiesCommand(
   deps: CommandDeps,
   flags: { json?: boolean; platform?: Platform },
 ): Promise<number> {
+  // Locally, and with the same message `send` gives. Spending a round trip to
+  // have the server answer "Request validation failed" told the caller neither
+  // which flag was wrong nor what it accepts.
+  if (flags.platform !== undefined && !(PLATFORMS as readonly string[]).includes(flags.platform)) {
+    deps.io.err(`Unknown platform "${flags.platform}" — use ${PLATFORMS.join(' or ')}.`)
+    return EXIT.usage
+  }
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const credential = deps.store.load()
   const baseUrl = resolvedBaseUrl(config, credential)
