@@ -106,6 +106,8 @@ import {
   buildHookConfig,
   codexLayerDir,
   codexLayerPaths,
+  codexCoexistenceNotes,
+  codexHomeNote,
   codexRepresentationProblems,
   codexTrustProblems,
   codexProjectRoot,
@@ -2760,6 +2762,13 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     for (const problem of codexRepresentationProblems(deps.cwd, deps.env, hookPlatform)) {
       deps.io.out(problem)
     }
+    for (const note of codexCoexistenceNotes(deps.cwd, deps.env, hookPlatform)) {
+      deps.io.out(note)
+    }
+    if (flags.global) {
+      const home = codexHomeNote(deps.env, hookPlatform)
+      if (home !== null) deps.io.out(home)
+    }
   }
   return EXIT.ok
 }
@@ -5248,6 +5257,20 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       ok: false,
       detail: representationProblems.join('; '),
     })
+  } else {
+    const coexistence = codexCoexistenceNotes(deps.cwd, deps.env, deps.hookPlatform)
+    if (coexistence.length > 0) {
+      checks.push({
+        name: 'hooks (codex representation)',
+        ok: true,
+        detail: coexistence.join('; '),
+      })
+    }
+  }
+
+  const codexHome = codexHomeNote(deps.env, deps.hookPlatform)
+  if (codexHome !== null) {
+    checks.push({ name: 'hooks (codex home)', ok: true, detail: codexHome })
   }
 
   if (active !== null && activeInstallations.length > 0) {

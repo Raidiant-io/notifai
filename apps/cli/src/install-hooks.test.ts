@@ -32,6 +32,8 @@ import {
   codexProjectRoot,
   findInstallations,
   codexHookIdentityHash,
+  codexCoexistenceNotes,
+  codexHomeNote,
   codexRepresentationProblems,
   codexTrustKey,
   codexTrustProblems,
@@ -270,7 +272,13 @@ describe('settings locations', () => {
     expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
   })
 
-  it('stays on hooks.json when it alone has hooks, even if config.toml already exists', () => {
+  /**
+   * A `hooks.json` nobody has proven is Notifai's is not Notifai's to write.
+   * Joining it would avoid Codex's dual-representation warning, but a hook
+   * entry carries no owner, so the file may belong to a tool that regenerates
+   * it wholesale and would drop our handlers without a word.
+   */
+  it('writes config.toml rather than joining a hooks.json that is not ours', () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
     const layer = path.join(repo, '.codex')
     mkdirSync(layer, { recursive: true })
@@ -284,7 +292,7 @@ describe('settings locations', () => {
       },
     })
 
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'hooks.json'))
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'config.toml'))
   })
 
   it('does not migrate our hooks when both representations already exist', () => {
@@ -581,6 +589,40 @@ describe('finding what is installed', () => {
     )
 
     expect(codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })).toEqual([])
+  })
+
+  it('names the foreign file and says Notifai will not touch it', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-coexist-'))
+    const layer = path.join(cwd, '.codex')
+    mkdirSync(layer, { recursive: true })
+    applyPlan(path.join(layer, 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: '/bin/sh /opt/other-tool/hook.sh' }] }],
+      },
+    })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
+    )
+
+    const notes = codexCoexistenceNotes(cwd, { HOME: path.join(cwd, 'isolated-home') })
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain(path.join(layer, 'hooks.json'))
+    expect(notes[0]).toContain('Notifai will not modify it')
+    expect(notes[0]).toContain('not a Notifai fault')
+    expect(notes[0]).toContain("can end a turn before Notifai's answer arrives")
+  })
+
+  it('says nothing when Notifai is the only thing in the layer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-coexist-alone-'))
+    const layer = path.join(cwd, '.codex')
+    mkdirSync(layer, { recursive: true })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
+    )
+
+    expect(codexCoexistenceNotes(cwd, { HOME: path.join(cwd, 'isolated-home') })).toEqual([])
   })
 
   it('names the events a Notifai copy in each file would notify twice for', () => {
@@ -1024,5 +1066,32 @@ describe('Windows hook commands and discovery', () => {
       timeoutSeconds: 240,
       nodePath: winNode,
     })
+  })
+})
+
+/**
+ * `CODEX_HOME` replaces the Codex home rather than shadowing it: `codex doctor`
+ * with the variable set resolves every path inside it and never reads
+ * `~/.codex`. Installing to the account default anyway would write hooks the
+ * running agent cannot see, so Notifai follows the variable — and says so,
+ * because the same divergence is what makes a correct install look absent.
+ */
+describe('codex home note', () => {
+  it('is silent when CODEX_HOME is unset', () => {
+    expect(codexHomeNote({ HOME: '/home/someone' }, 'linux')).toBeNull()
+  })
+
+  it('is silent when CODEX_HOME names the account default', () => {
+    expect(
+      codexHomeNote({ HOME: '/home/someone', CODEX_HOME: '/home/someone/.codex' }, 'linux'),
+    ).toBeNull()
+  })
+
+  it('names both homes and why the other one is not read', () => {
+    const note = codexHomeNote({ HOME: '/home/someone', CODEX_HOME: '/runtime/home' }, 'linux')
+    expect(note).toContain('/runtime/home')
+    expect(note).toContain('/home/someone/.codex')
+    expect(note).toContain('not read by Codex in this shell')
+    expect(note).toContain('trust by absolute file path')
   })
 })

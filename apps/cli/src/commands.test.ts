@@ -1779,7 +1779,13 @@ describe('Codex hook representation', () => {
     expect(io.outLines.join('\n')).toMatch(/Stop and the existing one will both fire/i)
   })
 
-  it('installs into hooks.json when it alone already contains hooks', () => {
+  /**
+   * The foreign `hooks.json` stays byte-identical and Notifai lands inline.
+   * Codex will now warn that the layer uses both representations; the install
+   * output says why, because that warning is Codex reporting a merge, not a
+   * fault, and a silent one would read as Notifai's bug.
+   */
+  it('leaves a foreign hooks.json alone and installs inline instead', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-json-install-'))
     const layer = path.join(cwd, '.codex')
     const json = path.join(layer, 'hooks.json')
@@ -1797,11 +1803,20 @@ describe('Codex hook representation', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
 
-    expect(readFileSync(toml, 'utf8')).toBe(beforeToml)
-    expect(readFileSync(json, 'utf8')).toContain('gdh-stop')
-    expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
-    expect(io.outLines.join('\n')).toContain(json)
-    expect(io.outLines.join('\n')).not.toMatch(/loading hooks from both/i)
+    const beforeJson = readFileSync(json, 'utf8')
+    expect(beforeJson).toContain('gdh-stop')
+    expect(beforeJson).not.toContain('--owner notifai')
+    const after = readFileSync(toml, 'utf8')
+    // Every setting already in the file survives. Comments do not: the TOML
+    // writer round-trips through a parser that does not carry them. That is a
+    // standing limitation of the writer, not of this rule.
+    expect(beforeToml).toContain('gpt-5.6')
+    expect(after).toContain('gpt-5.6')
+    expect(after).toContain('--owner notifai')
+    expect(io.outLines.join('\n')).toContain(toml)
+    expect(io.outLines.join('\n')).toMatch(/Notifai will not modify it/)
+    expect(io.outLines.join('\n')).toMatch(/not a Notifai fault/)
+    expect(io.outLines.join('\n')).not.toMatch(/installed in both/i)
   })
 
   it('leaves config.toml byte-identical when uninstall finds no Notifai hooks', () => {
@@ -1846,7 +1861,11 @@ describe('Codex hook representation', () => {
 
     io.outLines = []
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).not.toMatch(/Codex hook representation/)
+    // Their assertions, this branch's check title.
+    const report = io.outLines.join('\n')
+    expect(report).not.toMatch(/FAIL {2}Codex hook representation/)
+    expect(report).toMatch(/ok {4}Codex hook representation/)
+    expect(report).toMatch(/Notifai will not modify it/)
 
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
