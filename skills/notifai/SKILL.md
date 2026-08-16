@@ -87,9 +87,11 @@ that is true**. Calling a failure `done` does not soften it, it hides it.
 Write for a glance:
 
 - **Title** — the specific substance, understandable alone, around 40
-  characters: `All 42 tests
-  passed`, `Migration 0007 failed`, `Checkout is blocked by tax setup`. Never
-  put the kind or the project in it; both travel on their own.
+  characters: `All 42 tests passed`, `Migration 0007 failed`, `Checkout is
+  blocked by tax setup`. Never put the kind or the project in it; both travel
+  on their own. `Task complete`, `Build failed` and `Need input` all fail the
+  same way — they send the user back to the terminal to find out what actually
+  happened.
 - **Body** — one canonical Markdown body carrying the next fact they would ask
   for: the result, the count, the duration, the error, what happens next when
   there is a next. Lead with the most useful sentence; the banner excerpt is
@@ -103,9 +105,6 @@ notifai send --kind failed \
   --subtitle "Rolled back cleanly; production is untouched" \
   --body-file ./migration-report.md
 ```
-
-`Task complete`, `Build failed`, `Need input` all fail the same way: they send
-the user back to the terminal to find out what actually happened.
 
 Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
 channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
@@ -121,10 +120,10 @@ Other controls, when they earn their place:
   `--image-alt` paired by position; `media:1`…`media:8` reference them from the
   body. Check `notifai capabilities --platform <platform>` when an image is the
   message rather than decoration.
-- `--sound` and `--level` override the kind's sound and the user's saved
-  preference. Pass them only when the user asked for that behaviour on this
-  send. `--level time_sensitive` can pierce Focus; it is for news that loses
-  value if read late.
+- `--sound` overrides the kind's sound; `--level` sets how insistently it
+  arrives. Both belong to the user — pass one only when they asked for that
+  behaviour on this send. `time_sensitive` is accepted but does not currently
+  break through Focus; `notifai capabilities` is what a platform honours.
 - `--device` only when the user asked for specific devices. Otherwise every
   device they registered is the right answer and you do not need to think about
   it.
