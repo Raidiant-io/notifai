@@ -60,7 +60,14 @@ import {
   writeSessionState as persistSessionState,
   type PendingQuestion,
   type SessionState,
+  waiterCeilingSeconds,
+  WAITER_CEILING_SECONDS,
+  DETACHED_WAITER_CEILING_SECONDS,
 } from './hooks.js'
+import {
+  BLOCKING_STOP_TIMEOUT_SECONDS,
+  CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
+} from './install-hooks.js'
 
 /** New-format test fixtures always carry the canonical body explicitly. */
 function registerQuestion(
@@ -460,6 +467,27 @@ function writeGlobalConfig(h: Harness, toml: string): void {
 
 /** Long enough ago that no test is accidentally sensitive to the stamp. */
 const AWAY = NOW - 600_000
+
+describe('the waiter wall clock', () => {
+  it('spends a held turn sparingly and a detached one generously', () => {
+    // A held turn is somebody's terminal, so the short ceiling is the cost of
+    // waiting. Detached, nothing is held, and the same number only shortens how
+    // long a direct wake stays possible.
+    expect(waiterCeilingSeconds(false)).toBe(WAITER_CEILING_SECONDS)
+    expect(waiterCeilingSeconds(true)).toBe(DETACHED_WAITER_CEILING_SECONDS)
+    expect(DETACHED_WAITER_CEILING_SECONDS).toBeGreaterThan(WAITER_CEILING_SECONDS)
+  })
+
+  it('stays under the timeout the async Stop handler declares', () => {
+    // That declaration's kill is silent: past it the waiter vanishes and the
+    // answer the user already gave is never delivered.
+    expect(DETACHED_WAITER_CEILING_SECONDS).toBeLessThan(CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS)
+  })
+
+  it('leaves the blocking host headroom above the waiter it declares for', () => {
+    expect(BLOCKING_STOP_TIMEOUT_SECONDS).toBeGreaterThan(WAITER_CEILING_SECONDS)
+  })
+})
 
 describe('pushing a registered question', () => {
   // Found by a live Claude Code session: a spawned agent always has a

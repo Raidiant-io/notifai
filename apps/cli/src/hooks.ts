@@ -265,6 +265,29 @@ function summarizeRequestIds(entries: readonly PendingQuestion[]): {
 export const WAITER_CEILING_SECONDS = 480
 
 /**
+ * The same wall clock where the waiter runs in the background instead of
+ * inside a held turn.
+ *
+ * On a host that holds its turn, 480 s is a real cost to the person sitting in
+ * front of it, and the number above is right. On Claude Code the Stop hook
+ * returns at once and the waiter is detached, so the same 480 s buys nothing
+ * and costs a direct wake: an answer arriving at minute nine had to wait for
+ * the session's next turn even though nothing was blocked.
+ *
+ * This sits under `CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS` (3600) with headroom,
+ * because that declaration's kill is silent, and under the reply window the
+ * question was pushed with. Past it the journal still delivers at the next
+ * turn — the ceiling decides how long a *direct* wake stays possible, never
+ * whether the answer survives.
+ */
+export const DETACHED_WAITER_CEILING_SECONDS = 3300
+
+/** The waiter's wall clock, which depends on whether a turn is held open for it. */
+export function waiterCeilingSeconds(detached: boolean): number {
+  return detached ? DETACHED_WAITER_CEILING_SECONDS : WAITER_CEILING_SECONDS
+}
+
+/**
  * The wire contract's shortest reply window. A question submitted with less
  * than this is rejected outright, and accepting one would in any case let the
  * server go on taking an answer after the waiter that owns it has returned.

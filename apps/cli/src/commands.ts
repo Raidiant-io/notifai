@@ -67,6 +67,7 @@ import {
 import type { Tone } from './ui/theme.js'
 import {
   WAITER_CEILING_SECONDS,
+  waiterCeilingSeconds,
   clearAcknowledgementObligation,
   handleSessionEnd,
   handleStop,
@@ -1411,7 +1412,12 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
-  const processDeadlineAt = now() + WAITER_CEILING_SECONDS * 1000
+  // Claude Code's Stop handler is installed `async`, so it returns at once and
+  // this process keeps waiting with nobody's turn held open. That is the only
+  // case where a long wall clock costs the user nothing, and the same condition
+  // `stopHandler` uses to declare it.
+  const detachedWaiter = harness === 'claude-code' && (deps.hookPlatform ?? process.platform) !== 'win32'
+  const processDeadlineAt = now() + waiterCeilingSeconds(detachedWaiter) * 1000
 
   const logger = log(deps)
   logger.bind({ cmd: `hook ${event}` })
