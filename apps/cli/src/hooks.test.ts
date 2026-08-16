@@ -134,6 +134,8 @@ interface Recorder {
   /** Per-request answer stream for multi-question ownership tests. */
   repliesFor?: (requestId: string) => ReplyView[]
   acknowledgementRequiredFor?: (requestId: string) => boolean
+  /** The window the server commits to, when a test needs one unlike the waiter's. */
+  replyExpiresAt?: string
   /** Whether that request's acknowledgement must carry text; default true. */
   acknowledgementTextRequiredFor?: (requestId: string) => boolean
   acknowledged?: Set<string>
@@ -219,7 +221,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       recorder.receipts.push(requestId)
       return {
         request_id: requestId,
-        reply_expires_at: new Date(NOW + 480_000).toISOString(),
+        reply_expires_at: recorder.replyExpiresAt ?? new Date(NOW + 480_000).toISOString(),
         agent_acknowledgement_required:
           recorder.acknowledgementRequiredFor?.(requestId) ?? true,
         agent_acknowledgement_text_required:
@@ -3872,5 +3874,46 @@ describe('session state across a prompt', () => {
     // The one field a prompt resets rather than carries.
     expect(after.continuation?.count).toBe(0)
     expect(after.acknowledgement_blocks).toBe(2)
+  })
+})
+
+describe('a question outliving the waiter that pushed it', () => {
+  it('records when the server stops accepting, not when this owner stops waiting', async () => {
+    // These were the same number until the window became a setting, and taking
+    // the minimum capped every question at the waiter's ceiling: a day-long
+    // window was swept as stale about eight minutes later and retired, so the
+    // answer given over lunch met a closed question.
+    const h = harness([])
+    const aDayOut = NOW + 86_400_000
+    h.recorder.replyExpiresAt = new Date(aDayOut).toISOString()
+    writeSessionState('outlive', h.env, { last_prompt_at: AWAY })
+    registerQuestion('outlive', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'outlive' }))
+
+    const state = readSessionState('outlive', h.env)
+    const live = state.pending?.[0]
+    // Still live, still carrying the server's window — not the waiter's.
+    expect(live?.request_id).toBeDefined()
+    expect(live?.reply_deadline_at).toBe(aDayOut)
+    // Not closed and not retired: those are what capped it at eight minutes.
+    expect(state.retiring).toBeUndefined()
+    expect(h.recorder.closed).toEqual([])
+    // And the waiter still stopped at its own ceiling rather than waiting a day.
+    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
+  })
+
+  it('still closes a question the server has genuinely stopped accepting', async () => {
+    const h = harness([])
+    h.recorder.replyExpiresAt = new Date(NOW + 90_000).toISOString()
+    writeSessionState('short-window', h.env, { last_prompt_at: AWAY })
+    registerQuestion('short-window', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'short-window' }))
+
+    // Its window closed inside the waiter's ceiling, so it is retired here
+    // rather than left for a turn that could never collect it.
+    expect(readSessionState('short-window', h.env).pending).toBeUndefined()
+    expect(h.recorder.closed.length).toBe(1)
   })
 })

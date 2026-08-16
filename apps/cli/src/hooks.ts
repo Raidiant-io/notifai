@@ -2733,16 +2733,21 @@ async function escalate(
       request_id: intent.request_id,
       collapse_key: intent.collapse_key,
       device_ids: intent.device_ids,
-      // Submission and every later poll share one wall-clock owner. The
-      // server may start its relative window a little later while the submit
-      // response is in flight; closing at this deadline is therefore the
-      // authoritative backstop against accepting an answer into a void.
-      reply_deadline_at: Math.min(
-        intent.owner_deadline_at,
-        Number.isFinite(committedReplyDeadline)
-          ? committedReplyDeadline
-          : intent.owner_deadline_at,
-      ),
+      // When the server stops accepting an answer — not when this owner stops
+      // waiting for one. Those were the same number until the window became a
+      // setting, and taking the minimum silently capped every question at the
+      // waiter's ceiling: a question asked with a day-long window was swept as
+      // stale about eight minutes later and retired, so the answer given over
+      // lunch met a closed question.
+      //
+      // Both consumers of this field already clamp to the owner's own ceiling
+      // (`Math.min(hardDeadlineAt, …)` when deriving the ceiling, and
+      // `Math.min(ceilingAt, …)` when deriving the wait), so recording the
+      // real expiry here lengthens what the user gets without lengthening what
+      // this process waits.
+      reply_deadline_at: Number.isFinite(committedReplyDeadline)
+        ? committedReplyDeadline
+        : intent.owner_deadline_at,
     }
     delete live.submission
     submitted.push(live)
@@ -2830,10 +2835,37 @@ async function escalate(
   if (permanentFailure !== null) notes.push(permanentFailure)
 
   if (waited.byRequest.size === 0) {
-    // Once this owner returns, no shipped command-hook harness can guarantee
-    // a later answer reaches the same agent turn. Close first, then retire the
-    // local records, so the Companion never accepts an answer into a void.
-    const finalized = await finalizePendings(ctx, waitingOn)
+    // This owner is done listening. That used to mean the question was over:
+    // it closed the window server-side and retired the record, on the reasoning
+    // that no later answer could reach the same agent turn.
+    //
+    // The reaching was never the point — the *accepting* is. A question whose
+    // window is still open is polled again by the next prompt and the next
+    // Stop, and an answer found there is journaled and replayed. Closing here
+    // capped every question at this owner's ceiling however long a window the
+    // user had configured, which is what made a day-long window mean eight
+    // minutes.
+    //
+    // So: finalize only what the server has genuinely stopped accepting, and
+    // leave the rest live for the turn that comes next. A session that truly
+    // ends still retires its questions — that is what the session-end hook is
+    // for, and it is the honest place for it.
+    const expired = waitingOn.filter(
+      (entry) =>
+        entry.reply_deadline_at === undefined ||
+        entry.reply_deadline_at <= ctx.now() ||
+        // A permanent rejection is the server saying this question can never be
+        // answered, whatever its window says. Leaving it open would strand a
+        // dead question on the user's devices.
+        waited.permanentFailures.has(entry.request_id!),
+    )
+    const stillAnswerable = waitingOn.filter((entry) => !expired.includes(entry))
+    if (stillAnswerable.length > 0) {
+      notes.push(
+        `${stillAnswerable.length} question${stillAnswerable.length === 1 ? ' is' : 's are'} still answerable; leaving ${stillAnswerable.length === 1 ? 'it' : 'them'} open for the next turn rather than closing ${stillAnswerable.length === 1 ? 'it' : 'them'} with this waiter`,
+      )
+    }
+    const finalized = await finalizePendings(ctx, expired)
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)
