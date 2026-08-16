@@ -725,7 +725,7 @@ export async function sendCommand(
     }
     const uploaded = await uploadImage(deps, authed.client, image)
     if (!uploaded.ok) {
-      deps.io.err(uploaded.error)
+      if (uploaded.error !== null) deps.io.err(uploaded.error)
       return uploaded.exit
     }
     mediaIds.push(uploaded.mediaId)
@@ -1334,7 +1334,8 @@ const MEDIA_TYPES: Record<string, 'image/jpeg' | 'image/png' | 'image/gif'> = {
 
 type UploadResult =
   | { ok: true; mediaId: string }
-  | { ok: false; error: string; exit: number }
+  /** `error: null` means `reportError` already said it; do not print it twice. */
+  | { ok: false; error: string | null; exit: number }
 
 /** `--image` accepts a media id, a local file path, or an http(s) URL. */
 async function uploadImage(deps: CommandDeps, client: ApiClient, source: string): Promise<UploadResult> {
@@ -1369,7 +1370,13 @@ async function uploadImage(deps: CommandDeps, client: ApiClient, source: string)
     await client.uploadMedia(grant, bytes)
     return { ok: true, mediaId: grant.media_id }
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err), exit: EXIT.network }
+    // Every other API failure in this file goes through `reportError`, which
+    // maps a revoked credential to the auth code, a server fault to the network
+    // one and everything else to plain failure, and records it in the local
+    // log with whatever next step the server named. This used to answer
+    // `network` to all of them, so an image too large for the account exited
+    // the same way an unreachable server did, and nothing about it was logged.
+    return { ok: false, error: null, exit: reportError(deps, err) }
   }
 }
 
@@ -2036,7 +2043,7 @@ async function uploadAskMedia(
     }
     const uploaded = await uploadImage(deps, authed.client, image)
     if (!uploaded.ok) {
-      deps.io.err(uploaded.error)
+      if (uploaded.error !== null) deps.io.err(uploaded.error)
       return uploaded.exit
     }
     mediaIds.push(uploaded.mediaId)
