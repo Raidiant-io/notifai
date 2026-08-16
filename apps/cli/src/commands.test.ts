@@ -1807,11 +1807,8 @@ describe('Codex hook representation', () => {
     expect(beforeJson).toContain('gdh-stop')
     expect(beforeJson).not.toContain('--owner notifai')
     const after = readFileSync(toml, 'utf8')
-    // Every setting already in the file survives. Comments do not: the TOML
-    // writer round-trips through a parser that does not carry them. That is a
-    // standing limitation of the writer, not of this rule.
-    expect(beforeToml).toContain('gpt-5.6')
-    expect(after).toContain('gpt-5.6')
+    // The user's file arrives back as the file they wrote, plus our hooks.
+    expect(after).toContain(beforeToml.trimEnd())
     expect(after).toContain('--owner notifai')
     expect(io.outLines.join('\n')).toContain(toml)
     expect(io.outLines.join('\n')).toMatch(/Notifai will not modify it/)

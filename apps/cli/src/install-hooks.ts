@@ -978,11 +978,105 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  */
 export function applyPlan(file: string, document: SettingsDocument | CursorSettingsDocument): void {
   const body = isTomlSettingsPath(file)
-    ? `${stringifyToml(document)}\n`
+    ? tomlBody(file, document as SettingsDocument)
     : `${JSON.stringify(document, null, 2)}\n`
   atomicWriteFileSync(file, body, {
     requireCurrentUserOwner: true,
   })
+}
+
+/**
+ * A TOML file rewritten around its `[hooks]` tables, not over them.
+ *
+ * `config.toml` is the user's, and for most of them it is hand-written: model
+ * choices, sandbox settings, MCP servers, and the comments explaining why. A
+ * parse-and-restringify write returns all of that as data and none of it as
+ * the document they wrote — comments gone, order normalized, spacing theirs no
+ * longer. Notifai adds three hook handlers; it has no business reflowing the
+ * rest.
+ *
+ * So everything outside `[hooks...]` is carried across as the exact bytes it
+ * came in as, and only the hooks tables are regenerated — re-emitted at the end
+ * of the file, because TOML does not care where a table sits and splicing into
+ * the middle would mean reasoning about a region line by line. If the result
+ * cannot be proven to parse back to the document asked for, this falls back to
+ * the whole-file rewrite rather than risk a file it half-understood.
+ */
+function tomlBody(file: string, document: SettingsDocument): string {
+  const whole = `${stringifyToml(document)}\n`
+  if (!existsSync(file)) return whole
+  let previous: string
+  try {
+    previous = readOwnedRegularFile(file)
+  } catch {
+    return whole
+  }
+  return spliceTomlHooks(previous, document) ?? whole
+}
+
+/** A TOML table header line, e.g. `[hooks.state."…"]` or `[[hooks.Stop]]`. */
+const TOML_TABLE_HEADER = /^\s*\[\[?([^[\]]+)\]\]?\s*(?:#.*)?$/
+
+/**
+ * The first key in a dotted TOML key path, unquoting it if it is quoted.
+ * `hooks.state."/a/b:stop:0:0"` is rooted at `hooks`, and so is `hooks.Stop`.
+ */
+function firstTomlKey(keyPath: string): string {
+  const trimmed = keyPath.trim()
+  const quote = trimmed[0]
+  if (quote === '"' || quote === "'") {
+    const end = trimmed.indexOf(quote, 1)
+    return end === -1 ? trimmed.slice(1) : trimmed.slice(1, end)
+  }
+  const dot = trimmed.indexOf('.')
+  return (dot === -1 ? trimmed : trimmed.slice(0, dot)).trim()
+}
+
+/**
+ * `source` with its hooks tables replaced by `document`'s, or null when that
+ * cannot be done safely — an inline top-level `hooks` key, or a result that
+ * does not parse back to exactly the document asked for.
+ */
+function spliceTomlHooks(source: string, document: SettingsDocument): string | null {
+  const kept: string[] = []
+  let inHooks = false
+  for (const line of source.split('\n')) {
+    const header = TOML_TABLE_HEADER.exec(line)
+    if (header !== null) inHooks = firstTomlKey(header[1] ?? '') === 'hooks'
+    // A root-level `hooks = …` or `hooks.x = …` would survive the splice and
+    // then collide with the tables appended below.
+    if (!inHooks && /^\s*hooks\s*[.=]/.test(line)) return null
+    if (!inHooks) kept.push(line)
+  }
+
+  const hooks = document.hooks
+  const body = hooks === undefined ? '' : stringifyToml({ hooks })
+  const head = kept.join('\n').trimEnd()
+  const spliced =
+    body === '' ? `${head}\n` : head === '' ? `${body}\n` : `${head}\n\n${body}\n`
+
+  try {
+    if (!sameTomlValue(parseToml(spliced), document)) return null
+  } catch {
+    return null
+  }
+  return spliced
+}
+
+/** Structural equality for parsed TOML, which carries dates as well as data. */
+function sameTomlValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((item, index) => sameTomlValue(item, b[index]))
+  }
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  const left = a as Record<string, unknown>
+  const right = b as Record<string, unknown>
+  const keys = Object.keys(left)
+  if (keys.length !== Object.keys(right).length) return false
+  return keys.every((key) => key in right && sameTomlValue(left[key], right[key]))
 }
 
 export function loadSettings(file: string): SettingsDocument {

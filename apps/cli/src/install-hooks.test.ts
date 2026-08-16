@@ -1095,3 +1095,88 @@ describe('codex home note', () => {
     expect(note).toContain('trust by absolute file path')
   })
 })
+
+/**
+ * `config.toml` is the user's file and usually hand-written. Notifai adds three
+ * handlers to it and must hand back everything else exactly as it arrived —
+ * comments, ordering, and spacing included.
+ */
+describe('writing config.toml around what is already there', () => {
+  const layerFor = (name: string): string => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), name))
+    const layer = path.join(repo, '.codex')
+    mkdirSync(layer, { recursive: true })
+    return layer
+  }
+
+  it('leaves every byte outside the hooks tables untouched', () => {
+    const layer = layerFor('notifai-toml-comments-')
+    const file = path.join(layer, 'config.toml')
+    const original = [
+      '# why this model, in the user\'s own words',
+      'model = "gpt-5.6"   # trailing note',
+      '',
+      '[mcp_servers.linear]',
+      '# a comment nobody but the user cares about',
+      'command = "npx"',
+      'args = ["-y", "linear-mcp"]',
+      '',
+    ].join('\n')
+    writeFileSync(file, original)
+
+    applyPlan(file, { ...loadSettings(file), hooks: ours() })
+
+    const after = readFileSync(file, 'utf8')
+    expect(after).toContain(original.trimEnd())
+    expect(after).toContain("# why this model, in the user's own words")
+    expect(after).toContain('# trailing note')
+    expect(after).toContain('# a comment nobody but the user cares about')
+    expect(parseToml(after)).toMatchObject({ model: 'gpt-5.6' })
+    expect(after).toContain('[[hooks.Stop]]')
+  })
+
+  it('replaces the hooks tables rather than appending a second copy', () => {
+    const layer = layerFor('notifai-toml-replace-')
+    const file = path.join(layer, 'config.toml')
+    writeFileSync(file, '# keep me\nmodel = "gpt-5.6"\n')
+
+    applyPlan(file, { ...loadSettings(file), hooks: ours() })
+    const once = readFileSync(file, 'utf8')
+    applyPlan(file, { ...loadSettings(file), hooks: ours() })
+    const twice = readFileSync(file, 'utf8')
+
+    expect(twice).toBe(once)
+    expect(twice).toContain('# keep me')
+    expect(twice.match(/\[\[hooks\.Stop\]\]/g) ?? []).toHaveLength(1)
+  })
+
+  it('carries the Codex trust store across a write', () => {
+    const layer = layerFor('notifai-toml-trust-')
+    const file = path.join(layer, 'config.toml')
+    writeFileSync(
+      file,
+      `model = "gpt-5.6"\n\n[hooks.state."${layer}/config.toml:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+    )
+
+    const existing = loadSettings(file)
+    applyPlan(file, { ...existing, hooks: { ...existing.hooks, ...ours() } })
+
+    const after = parseToml(readFileSync(file, 'utf8')) as {
+      hooks: { state: Record<string, { trusted_hash: string }> }
+    }
+    expect(after.hooks.state[`${layer}/config.toml:stop:0:0`]?.trusted_hash).toBe('sha256:abc')
+  })
+
+  it('falls back to a whole-file write when the splice cannot be trusted', () => {
+    const layer = layerFor('notifai-toml-inline-')
+    const file = path.join(layer, 'config.toml')
+    // An inline top-level `hooks` key cannot be spliced around, only rewritten.
+    writeFileSync(file, '# this comment is lost, and that is the safe outcome\nhooks = {}\n')
+
+    applyPlan(file, { hooks: ours() })
+
+    const after = readFileSync(file, 'utf8')
+    expect(after).toContain('[[hooks.Stop]]')
+    expect(after).not.toContain('hooks = {}')
+  })
+})
