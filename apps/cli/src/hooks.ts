@@ -300,7 +300,7 @@ export function waiterCeilingSeconds(detached: boolean): number {
  * than this is rejected outright, and accepting one would in any case let the
  * server go on taking an answer after the waiter that owns it has returned.
  */
-const MIN_REPLY_WINDOW_SECONDS = 60
+export const MIN_REPLY_WINDOW_SECONDS = 60
 
 /**
  * The terminal-first wait: the question sits in the terminal for
@@ -513,6 +513,17 @@ export function pruneAbandonedSessions(
  * no trustworthy PID fall back to an age limit.
  */
 const CLAIM_TTL_MS = WAITER_CEILING_SECONDS * 1000
+
+/**
+ * How long a crashed claim *guard* blocks the next hook.
+ *
+ * The claim itself may legitimately be held for the whole waiter, so it takes
+ * that ceiling. The guard is a short lock around the claim's own bookkeeping —
+ * a few file operations — and borrowing the waiter's ceiling for it meant a
+ * hook killed at exactly the wrong moment wedged this session's Stop path for
+ * eight minutes, for a critical section that never runs longer than a second.
+ */
+const CLAIM_GUARD_TTL_MS = 30_000
 const heldClaims = new Map<string, string>()
 
 export function claimQuestionPush(
@@ -606,7 +617,7 @@ function acquireClaimGuard(file: string): boolean {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
       try {
-        if (Date.now() - statSync(file).mtimeMs < CLAIM_TTL_MS) return false
+        if (Date.now() - statSync(file).mtimeMs < CLAIM_GUARD_TTL_MS) return false
       } catch {
         // A vanished/corrupt guard is safe to retry once.
       }
@@ -922,7 +933,7 @@ async function prepareQuestionSubmission(
       ...(options.media !== undefined ? { media: options.media } : {}),
       device: answerable,
       reply: true,
-      replyWindow: Math.max(60, options.windowSeconds),
+      replyWindow: Math.max(MIN_REPLY_WINDOW_SECONDS, options.windowSeconds),
       questions: options.questions,
       collapseKey,
     },

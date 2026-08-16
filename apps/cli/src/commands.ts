@@ -81,6 +81,7 @@ import {
   type EscalationDeliveryRoute,
   type HookContext,
   type HookHarness,
+  MIN_REPLY_WINDOW_SECONDS,
 } from './hooks.js'
 import {
   LOG_EVENTS,
@@ -692,10 +693,12 @@ export async function sendCommand(
     flags.reply &&
     flags.replyWindow !== undefined &&
     (!Number.isInteger(flags.replyWindow) ||
-      flags.replyWindow < 60 ||
+      flags.replyWindow < MIN_REPLY_WINDOW_SECONDS ||
       flags.replyWindow > REPLY_MAX_WINDOW_SECONDS)
   ) {
-    deps.io.err(`--reply-window must be an integer from 60 to ${REPLY_MAX_WINDOW_SECONDS} seconds.`)
+    deps.io.err(
+      `--reply-window must be an integer from ${MIN_REPLY_WINDOW_SECONDS} to ${REPLY_MAX_WINDOW_SECONDS} seconds.`,
+    )
     return EXIT.usage
   }
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)

@@ -27,7 +27,6 @@ export const GROUP = {
   daily: 'Everyday:',
   agent: 'For agents and scripts:',
   advanced: 'Account and wiring:',
-  help: 'Help:',
 } as const
 
 /** Option groups for `send`, which carries thirty flags. */
@@ -45,7 +44,6 @@ const GROUP_ORDER: readonly string[] = [
   GROUP.daily,
   GROUP.agent,
   GROUP.advanced,
-  GROUP.help,
 ]
 
 function groupRank(heading: string): number {

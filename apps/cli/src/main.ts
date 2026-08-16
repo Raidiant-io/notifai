@@ -124,8 +124,6 @@ const program = new Command('notifai')
   // it. Without this, adding that default would silently break
   // `notifai help send` for everyone who reaches for it before `--help`.
   .helpCommand(true)
-  // Where the implicit help command lands; every other command names its own.
-  .commandsGroup(GROUP.help)
   .hook('preAction', (_program, actionCommand) => {
     logger.bind({ cmd: commandPath(actionCommand) })
     // SessionEnd uses the hook policy shared with commands.ts: local cleanup
