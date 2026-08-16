@@ -64,6 +64,7 @@ import {
   WAITER_CEILING_SECONDS,
   DETACHED_WAITER_CEILING_SECONDS,
 } from './hooks.js'
+import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
   CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
@@ -2126,7 +2127,7 @@ describe('a question that outlives its session', () => {
     expect(retirements(h).filter((r) => r.retires === first)).toHaveLength(count)
   })
 
-  it('gives up on an orphan older than a day instead of queueing it for ever', async () => {
+  it('gives up on an orphan that outlived the longest answerable window', async () => {
     const h = harness([])
     orphanRetirements(
       h.env,
@@ -2137,7 +2138,7 @@ describe('a question that outlives its session', () => {
         question: 'Old?',
         state: 'expired',
       }],
-      NOW - 25 * 3600 * 1000,
+      NOW - (REPLY_MAX_WINDOW_SECONDS + 2 * 3600) * 1000,
     )
     const drained = await drainOrphanRetirements(
       { client: h.deps.clientFactory('https://test.notifai.invalid', 'Bearer x'), config: loadConfig({ cwd: h.deps.cwd, env: h.env }) },

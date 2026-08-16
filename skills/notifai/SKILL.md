@@ -168,9 +168,9 @@ Staging is green. Production has 40k rows in the affected table." \
 
 Two different clocks, and confusing them is the usual mistake:
 `--reply-timeout` is how long *this command* blocks (default 900s);
-`--reply-window` is how long the *server* keeps accepting an answer (default
-3600s). A short timeout with a long window is the deliberate way to stop waiting
-and pick the answer up later:
+`--reply-window` is how long the answer is still *accepted* (default a day, set
+by `reply_window_seconds`). Blocking briefly against a long window is the
+deliberate way to stop waiting and pick the answer up later:
 
 ```bash
 notifai replies <request_id>          # the answer, whenever it landed
@@ -242,8 +242,10 @@ one, and a typed answer that arrives in parts is read together, in order. A
 relayed answer reaches you as the chosen label's text; run
 `notifai replies <request_id> --json` when you need the stable choice ids.
 
-If you are resuming and no answer was handed to you — or you never kept the
-request id — ask for what is outstanding rather than re-asking the user:
+A question stays answerable for a day by default, so an unanswered one is
+usually still open rather than lost. If you are resuming and no answer was
+handed to you — or you never kept the request id — ask for what is outstanding
+rather than re-asking the user:
 
 ```bash
 notifai replies --pending --json

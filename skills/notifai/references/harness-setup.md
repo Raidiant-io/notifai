@@ -154,7 +154,14 @@ each value came from. Beyond the usual scopes, `--session <id>` writes a
 preference that lasts only for one harness session.
 
 `ask_notifications` is the setting that turns question routing off for a scope;
-`ask_grace_seconds` is the terminal-first window described above.
+`ask_grace_seconds` is the terminal-first window described above;
+`reply_window_seconds` is how long an answer is still accepted, a day by
+default and up to three.
+
+Those are three different clocks and only the last one decides whether an
+answer is still wanted. Nothing waits on the user for a day: the asking turn
+ends immediately, the waiter gives up long before, and everything after that is
+the journal delivering at the session's next turn.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the

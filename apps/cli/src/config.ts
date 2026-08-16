@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
+import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
 import { configHome, stateHome } from './platform.js'
 
@@ -87,6 +88,8 @@ export interface CliConfig {
    * usefulness.
    */
   log_max_bytes: ResolvedValue<number>
+  /** How long the server keeps accepting an answer to a question. */
+  reply_window_seconds: ResolvedValue<number>
   /** Log files kept in total, the active one included. */
   log_max_files: ResolvedValue<number>
 }
@@ -102,6 +105,7 @@ export const CONFIG_KEYS = [
   'notify_criteria',
   'ask_notifications',
   'ask_grace_seconds',
+  'reply_window_seconds',
   'log_level',
   'log_max_bytes',
   'log_max_files',
@@ -116,6 +120,7 @@ export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
   'wait_seconds',
   'ttl_seconds',
   'ask_grace_seconds',
+  'reply_window_seconds',
   'log_max_bytes',
   'log_max_files',
 ]
@@ -149,6 +154,9 @@ const DEFAULTS = {
   // Questions reach devices as soon as the turn ends. A terminal-first grace
   // window is an opt-in delay on top of that.
   ask_grace_seconds: 0,
+  // A day. The wire contract's own default, and long enough that a question
+  // asked before someone steps away is still answerable when they come back.
+  reply_window_seconds: 86_400,
   // On by default: the log is the only account of what a headless hook did, and
   // a diagnostic nobody switched on before the thing went wrong is not one.
   log_level: 'info',
@@ -302,6 +310,10 @@ const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> =
   // longest window a user can choose still leaves an answer window the server
   // will accept — with room to spare for a timer that wakes late.
   ask_grace_seconds: { min: 0, max: 360 },
+  // The floor is the shortest window the wire contract accepts; the ceiling is
+  // the point past which a question would outlive the retained content it
+  // refers to.
+  reply_window_seconds: { min: 60, max: REPLY_MAX_WINDOW_SECONDS },
   // The floor keeps rotation from thrashing (a file smaller than a handful of
   // records would rotate on nearly every write); the ceiling is the point past
   // which "local diagnostics" has become "a database on your disk".
@@ -413,6 +425,7 @@ export function loadConfig(options: {
     notify_criteria: resolve('notify_criteria'),
     ask_notifications: resolve('ask_notifications'),
     ask_grace_seconds: resolve('ask_grace_seconds'),
+    reply_window_seconds: resolve('reply_window_seconds'),
     log_level: resolve('log_level'),
     log_max_bytes: resolve('log_max_bytes'),
     log_max_files: resolve('log_max_files'),

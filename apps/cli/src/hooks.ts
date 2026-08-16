@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
+import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import type {
   LifecycleEndState,
   ListRepliesResponse,
@@ -190,12 +191,15 @@ export interface OrphanRetirement extends RetiringQuestion {
 }
 
 /**
- * Past this, the question's reply window (3600s) has long expired server-side
- * and the companion shows it as dead on next open anyway; pushing a retirement
- * sync for it is noise. Also the backstop that keeps an unreachable server
- * from growing the queue for ever.
+ * A retirement is only worth syncing while the question it retires could still
+ * be answered, so this has to outlive the longest reply window a user can
+ * choose — it is derived from that bound rather than from a guess about how
+ * long questions stay open, which is exactly the assumption that broke when
+ * the window stopped being one hour. Past it the companion shows the question
+ * as dead on next open anyway. Also the backstop that keeps an unreachable
+ * server from growing the queue for ever.
  */
-const ORPHAN_TTL_MS = 24 * 3600 * 1000
+const ORPHAN_TTL_MS = (REPLY_MAX_WINDOW_SECONDS + 3600) * 1000
 
 /** More orphans than this means something is looping; keep the newest. */
 const ORPHAN_QUEUE_CAP = 50

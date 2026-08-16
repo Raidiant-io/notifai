@@ -291,7 +291,7 @@ export function buildDraft(
     ...(flags.reply
       ? {
           reply: {
-            expires_in_seconds: flags.replyWindow ?? 3600,
+            expires_in_seconds: flags.replyWindow ?? config.reply_window_seconds.value,
             questions: flags.questions ?? [
               {
                 id: 'q1',
