@@ -129,13 +129,15 @@ export const REPLY_MAX_CHOICES = 6
 export const REPLY_MAX_WINDOW_SECONDS = 72 * 3600
 
 /** Upper bound on questions in one notification. */
-export const REPLY_MAX_QUESTIONS = 4
+export const REPLY_MAX_QUESTIONS = 10
 
 /**
- * One question must be readable in full on the surface that offers the answers.
- * Longer context follows it in the canonical Markdown body.
+ * One question must be readable in full on the surface that offers the answers,
+ * which is a notification the user reads at a glance. This bound sits under the
+ * banner excerpt so a question always fits the surface it arrives on; longer
+ * context follows it in the canonical Markdown body.
  */
-export const QUESTION_TEXT_MAX_LENGTH = 500
+export const QUESTION_TEXT_MAX_LENGTH = 240
 
 /**
  * One question in a reply request. With `choices` it is a closed question
@@ -177,6 +179,8 @@ export const ReplyRequest = Type.Object(
 export const IOS_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
 /** Semantic sound names shipped by the macOS Companion App. */
 export const MACOS_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
+/** A semantic sound name a Companion App can play. */
+export type IosSound = (typeof IOS_SOUNDS)[number]
 /** CLI spelling adds `none` for the contract's explicit silent (`null`) value. */
 export const CLI_SOUNDS = [...IOS_SOUNDS, 'none'] as const
 
@@ -272,6 +276,32 @@ export const DEFAULT_NOTIFICATION_KIND: NotificationKind = 'update'
 export function effectiveKind(draft: NotificationDraftT): NotificationKind {
   if (draft.reply !== undefined) return 'question'
   return draft.kind ?? DEFAULT_NOTIFICATION_KIND
+}
+
+/**
+ * The sound each kind arrives with when nobody chose one.
+ *
+ * Kind states what happened; this table turns that truth into the attention it
+ * deserves, so an honest sender gets the right sound without reasoning about
+ * audio. A caller's explicit sound and the user's saved preference both outrank
+ * it — this is the floor, not a ceiling.
+ *
+ * It also closes the abuse this vocabulary used to invite: when kind drove
+ * nothing, an agent could keep a failure quiet by calling it `done`. Now that
+ * kind carries attention, the only rule an agent needs is to declare the kind
+ * that is true.
+ */
+export const DEFAULT_SOUND_BY_KIND: Readonly<Record<NotificationKind, IosSound>> = {
+  update: 'default',
+  question: 'attention',
+  done: 'done',
+  failed: 'alert',
+  blocked: 'attention',
+}
+
+/** The sound a kind arrives with absent an explicit choice. */
+export function defaultSoundForKind(kind: NotificationKind): IosSound {
+  return DEFAULT_SOUND_BY_KIND[kind]
 }
 
 export const NotificationDraft = Type.Object(

@@ -132,6 +132,12 @@ export interface SessionState {
 export interface AcknowledgementDue {
   request_id: string
   recorded_at: number
+  /**
+   * Whether this request's acknowledgement must carry text. Absent on state
+   * written before the obligation started recording it; treated as true, which
+   * is the default the service ships.
+   */
+  text_required?: boolean
 }
 
 interface AcceptedAnswerDelivery {
@@ -795,19 +801,27 @@ export interface HookContext {
  * the user sees in the terminal — but it is free to be rewritten, and a log a
  * filter cannot rely on is a log nobody filters.
  */
-export type GateReason =
-  | 'no-session'
-  | 'no-question'
-  | 'answered'
-  | 'already-asked'
-  | 'continuation-repeat'
-  | 'continuation-limit'
-  | 'delivery-limit'
-  | 'acknowledgement-required'
-  | 'notifications-off'
-  | 'claimed-elsewhere'
-  | 'no-devices'
-  | 'proceeding'
+export const GATE_REASONS = [
+  'no-session',
+  'no-question',
+  'answered',
+  'continuation-repeat',
+  'continuation-limit',
+  'delivery-limit',
+  'acknowledgement-required',
+  'notifications-off',
+  'claimed-elsewhere',
+  'elapsed',
+  'proceeding',
+] as const
+
+/**
+ * A runtime list rather than a bare type, so the guidance that tells agents to
+ * filter on these can be tested against the set the code can actually emit.
+ * `already-asked` and `no-devices` were declared here for a long time and never
+ * emitted once; documenting them taught agents to filter for silence.
+ */
+export type GateReason = (typeof GATE_REASONS)[number]
 
 function gate(
   ctx: HookContext,
@@ -1352,6 +1366,8 @@ interface AnsweredPending {
   replies: ReplyView[]
   /** Immutable server snapshot for this request, known after a replies/close response. */
   agent_acknowledgement_required?: boolean | undefined
+  /** Whether that acknowledgement must carry text; the account's snapshot. */
+  agent_acknowledgement_text_required?: boolean | undefined
 }
 
 interface FinalizedPending {
@@ -1384,6 +1400,8 @@ function finalizedAnswer(finalized: FinalizedPending): AnsweredPending | null {
         replies,
         agent_acknowledgement_required:
           finalized.response?.agent_acknowledgement_required,
+        agent_acknowledgement_text_required:
+          finalized.response?.agent_acknowledgement_text_required,
       }
 }
 
@@ -1536,8 +1554,20 @@ function answerContext(answered: AnsweredPending): string {
  * tied to the question that asked it, with a truthful note about anything
  * still waiting.
  */
-function acknowledgementCommand(requestId: string): string {
-  return `notifai acknowledge ${requestId} --text <text>`
+function acknowledgementCommand(requestId: string, textRequired = true): string {
+  return textRequired
+    ? `notifai acknowledge ${requestId} --text <text>`
+    : `notifai acknowledge ${requestId}`
+}
+
+/**
+ * The acknowledgement is owed either way; only its text is conditional. So the
+ * instruction never says "you may skip this" — it says what to run.
+ */
+function acknowledgementDemand(textRequired: boolean): string {
+  return textRequired
+    ? ' with non-empty text saying what concrete work you will do because of the reply; a bare acknowledgement is insufficient'
+    : ' exactly as shown; this account turned acknowledgement text off, so the receipt carries no words'
 }
 
 function acknowledgementContext(answered: AnsweredPending[]): string {
@@ -1549,20 +1579,23 @@ function acknowledgementContext(answered: AnsweredPending[]): string {
     return ' Agent Acknowledgement is not required for the answered request(s).'
   }
   if (due.length === 1) {
-    const requestId = due[0]!.pending.request_id!
+    const entry = due[0]!
+    const requestId = entry.pending.request_id!
+    const textRequired = entry.agent_acknowledgement_text_required !== false
     return (
       ` Agent Acknowledgement is required for request ${requestId}. Immediately, before doing the resumed work or ending this turn, run ` +
-      `\`${acknowledgementCommand(requestId)}\` with non-empty text saying what concrete work you will do because of the reply; a bare acknowledgement is insufficient.`
+      `\`${acknowledgementCommand(requestId, textRequired)}\`${acknowledgementDemand(textRequired)}.`
     )
   }
+  const anyTextRequired = due.some((entry) => entry.agent_acknowledgement_text_required !== false)
   const commands = due
     .map((entry) => {
       const requestId = entry.pending.request_id!
-      return `- ${requestId}: \`${acknowledgementCommand(requestId)}\``
+      return `- ${requestId}: \`${acknowledgementCommand(requestId, entry.agent_acknowledgement_text_required !== false)}\``
     })
     .join('\n')
   return (
-    ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below with non-empty text saying what concrete work you will do because of that reply; a bare acknowledgement is insufficient:\n` +
+    ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below${acknowledgementDemand(anyTextRequired)}:\n` +
     commands
   )
 }
@@ -1625,7 +1658,11 @@ function stageAcceptedAnswers(
         requestId !== undefined &&
         !acknowledgementDue.some((entry) => entry.request_id === requestId)
       ) {
-        acknowledgementDue.push({ request_id: requestId, recorded_at: accepted.recorded_at })
+        acknowledgementDue.push({
+          request_id: requestId,
+          recorded_at: accepted.recorded_at,
+          text_required: answer.agent_acknowledgement_text_required !== false,
+        })
       }
     }
     const next: SessionState = {
@@ -1673,11 +1710,15 @@ export function clearAcknowledgementObligation(
 
 function acknowledgementBlockContext(due: readonly AcknowledgementDue[]): string {
   const commands = due
-    .map((entry) => `- ${entry.request_id}: \`${acknowledgementCommand(entry.request_id)}\``)
+    .map(
+      (entry) =>
+        `- ${entry.request_id}: \`${acknowledgementCommand(entry.request_id, entry.text_required !== false)}\``,
+    )
     .join('\n')
+  const anyTextRequired = due.some((entry) => entry.text_required !== false)
   return (
     `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for request${due.length === 1 ? '' : 's'} ${due.map((entry) => entry.request_id).join(', ')}. ` +
-    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'} with non-empty text saying what concrete work you will do because of the reply; a bare acknowledgement is insufficient:\n${commands}`
+    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired)}:\n${commands}`
   )
 }
 
@@ -1840,6 +1881,9 @@ export async function handleUserPromptSubmit(
         agent_acknowledgement_required:
           response?.agent_acknowledgement_required ??
           entry.agent_acknowledgement_required,
+        agent_acknowledgement_text_required:
+          response?.agent_acknowledgement_text_required ??
+          entry.agent_acknowledgement_text_required,
       }
     })
     if (answered.length > 0) {
@@ -2264,6 +2308,9 @@ async function handleClaimedStop(
         agent_acknowledgement_required:
           response?.agent_acknowledgement_required ??
           entry.agent_acknowledgement_required,
+        agent_acknowledgement_text_required:
+          response?.agent_acknowledgement_text_required ??
+          entry.agent_acknowledgement_text_required,
       }
       })
       const accepted = stageAcceptedAnswers(
@@ -2392,7 +2439,7 @@ async function escalate(
     await awaitTerminalFirstWindow(ctx, oldest, ceilingAt)
     ctx.log?.debug('hook.gate', {
       verdict: 'grace',
-      reason: 'elapsed',
+      reason: 'elapsed' satisfies GateReason,
       waited_from: oldest,
       grace_seconds: ctx.config.ask_grace_seconds.value,
     })
@@ -2750,6 +2797,8 @@ async function escalate(
       replies: authoritative,
       agent_acknowledgement_required:
         finalized.response?.agent_acknowledgement_required,
+      agent_acknowledgement_text_required:
+        finalized.response?.agent_acknowledgement_text_required,
     })
     if (finalized.response === null) {
       notes.push(

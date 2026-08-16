@@ -5,7 +5,7 @@ import {
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   BODY_MAX_LENGTH,
   CAPABILITIES_V1,
-  DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED,
+  DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
   defaultDeliveryPolicy,
   effectiveKind,
   estimateApnsPayloadBytes,
@@ -45,19 +45,23 @@ function freeTextReply(expiresInSeconds = 86400): NotificationDraftT['reply'] {
 
 describe('account preference and reply capability contracts', () => {
   it('defines an explicit default-true account preference and a closed update shape', () => {
-    expect(DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED).toBe(true)
-    expect(Value.Check(AccountPreferences, { agent_acknowledgements_enabled: true })).toBe(true)
-    expect(Value.Check(AccountPreferences, { agent_acknowledgements_enabled: false })).toBe(true)
+    expect(DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED).toBe(true)
+    expect(Value.Check(AccountPreferences, { agent_acknowledgement_text_enabled: true })).toBe(true)
+    expect(Value.Check(AccountPreferences, { agent_acknowledgement_text_enabled: false })).toBe(
+      true,
+    )
     expect(Value.Check(AccountPreferences, {})).toBe(false)
     expect(
-      Value.Check(UpdateAccountPreferencesRequest, { agent_acknowledgements_enabled: false }),
+      Value.Check(UpdateAccountPreferencesRequest, { agent_acknowledgement_text_enabled: false }),
     ).toBe(true)
     expect(
       Value.Check(UpdateAccountPreferencesRequest, {
-        agent_acknowledgements_enabled: true,
+        agent_acknowledgement_text_enabled: true,
         unknown: true,
       }),
     ).toBe(false)
+    // The retired name must not survive as a silently accepted alias.
+    expect(Value.Check(AccountPreferences, { agent_acknowledgements_enabled: true })).toBe(false)
   })
 
   it('accepts reply protocol version 2 only', () => {
@@ -99,13 +103,17 @@ describe('submission wire contract', () => {
       request_id: request.request_id,
       reply_expires_at: '2026-08-11T12:00:00.000Z',
       agent_acknowledgement_required: true,
+      agent_acknowledgement_text_required: false,
       replayed: false,
       overall: 'pending',
       deliveries: [],
       warnings: [],
     }
     expect(receipt.reply_expires_at).toBe('2026-08-11T12:00:00.000Z')
+    // The two are independent: a reply request is always acknowledged, and the
+    // account decides only whether that acknowledgement carries text.
     expect(receipt.agent_acknowledgement_required).toBe(true)
+    expect(receipt.agent_acknowledgement_text_required).toBe(false)
   })
 })
 
@@ -114,6 +122,9 @@ describe('Agent Acknowledgement wire contract', () => {
     expect(Value.Check(PutAgentAcknowledgementRequest, { text: 'I will deploy staging.' })).toBe(
       true,
     )
+    // Text is optional on the wire so a text-free receipt is still recordable;
+    // the account's snapshot, not the schema, decides whether text was owed.
+    expect(Value.Check(PutAgentAcknowledgementRequest, {})).toBe(true)
     expect(Value.Check(PutAgentAcknowledgementRequest, { text: '' })).toBe(false)
     expect(
       Value.Check(PutAgentAcknowledgementRequest, {
@@ -129,10 +140,19 @@ describe('Agent Acknowledgement wire contract', () => {
       request_id: 'req_example',
       reply_expires_at: '2026-08-13T12:00:00.000Z',
       agent_acknowledgement_required: true,
+      agent_acknowledgement_text_required: true,
       agent_acknowledgement: null,
       replies: [],
     }
     expect(pending.agent_acknowledgement).toBeNull()
+
+    // Text off is still an acknowledgement: the recorded view carries empty
+    // text, which is what a Companion App renders as read-state.
+    const textless: PutAgentAcknowledgementResponse = {
+      status: 'recorded',
+      agent_acknowledgement: { text: '', created_at: '2026-08-13T12:01:00.000Z' },
+    }
+    expect(textless.agent_acknowledgement.text).toBe('')
 
     const response: PutAgentAcknowledgementResponse = {
       status: 'recorded',

@@ -54,6 +54,11 @@ By default a question reaches your devices when the agent turn ends, whether or
 not you are at the keyboard (`ask_grace_seconds = 0`). Set a positive grace
 period for a terminal-only answer window first.
 
+When you answer, the agent acknowledges it before it does anything else, so you
+find out your reply landed and what it set in motion — not just that you sent
+it. Answering from your phone and wondering whether anything happened is the
+whole problem this solves.
+
 For a harness that cannot resume an idle agent turn, `notifai send
 --reply` blocks and waits for the answer instead.
 

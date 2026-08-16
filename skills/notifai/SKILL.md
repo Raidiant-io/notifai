@@ -1,300 +1,226 @@
 ---
 name: notifai
-description: Notify the user through Notifai when work finishes, blocks, or needs their attention. Use for sending native notifications from agents via the notifai CLI, setting Notifai up when it is missing or not ready, and configuring when/how a user wants to be notified (per project or globally).
+description: Reach the user on their devices through Notifai when work finishes, fails, blocks, or needs a decision they alone can make. Use for sending a notification from an agent, asking the user a question and resuming when they answer, and setting Notifai up or working out why a notification or an answer did not arrive.
 ---
 
 # Notifai
 
-Notifai gives agents and local programs a channel-neutral way to reach the user
-through their companion devices. Use the `notifai` CLI; never hand-roll its
-delivery, reply, or harness behavior. The usual install is a real `notifai` on
-PATH (`npm install -g @raidiant/notifai`). If the user refuses a global bin,
-`npx --yes @raidiant/notifai@<version>` is a supported alternative — pin the
-version they accepted, and do not present npx as the default. Hooks installed
-from that invocation write the same pinned npx form. npx is slower than a
-real install; do not recommend it as the happy path.
+The user is not watching the terminal. Notifai is how you reach them, and how
+their answer reaches you.
 
-## When to notify
+Always go through the `notifai` CLI. Never hand-roll its HTTP calls, its hook
+files, or its reply polling — the CLI is where the routing, the retries, and the
+proof of delivery live.
 
-Read the user's criteria before deciding:
+If `notifai` is not on PATH, install it: `npm install -g @raidiant/notifai`.
+Only if the user refuses a global binary, use
+`npx --yes @raidiant/notifai@<version>` pinned to the version they accepted.
+Never unpinned, and never as the first suggestion.
+
+`notifai <command> --help` is the authoritative list of flags; where this file
+and the CLI disagree, the CLI is right. Add `--json` to anything you parse.
+Exit status is how you decide what to do next:
+
+| exit | meaning | what to do |
+| --- | --- | --- |
+| 0 | it worked | carry on |
+| 1 | it failed; stderr names the code | act on that — only a timed-out `send` is worth retrying, reusing `--idempotency-key` |
+| 2 | usage *or* setup; stderr names what to fix | fix that. For `ask` this is usually routing or sign-in, not a flag |
+| 3 | no answer yet | not a failure — collect it later |
+| 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
+| 5 | network | retry |
+
+## Decide whether to notify
+
+Read the user's own criteria first. They outrank your judgement, and you follow
+them literally:
 
 ```bash
 notifai config show --json
 ```
 
-Each key is `{ value, source, summary }`. Report those fields. Do not paraphrase a
-default into "shipped defaults apply" — print the value (`ask_grace_seconds` is
-`0`, `ttl_seconds` is `86400`). Follow `notify_criteria` literally when it is set. Otherwise:
+Every key comes back as `{ value, source, summary }`. `notify_criteria` is the
+user's standing instruction about what is worth interrupting them for. Quote
+values as they are — never flatten one into "the defaults apply".
 
-- Notify when a long-running task finishes, succeeds, or fails.
-- Notify when work is blocked on input only the user can provide.
-- Notify for an error or finding that needs attention soon.
-- Do not notify for routine progress, every file changed, or work the user will
-  see in the terminal within a few seconds.
-- Send once per event. Reuse a collapse key to replace stale status rather than
-  creating noise.
+Absent criteria of their own, notify when:
 
-When the user asks to change this policy, persist the requested wording at the
-right layer:
+- long-running work finished, succeeded, or failed
+- you are blocked on something only the user can give
+- a finding or an error needs attention soon
+
+Do not notify for routine progress, for each file you touch, or for anything
+they will see in the terminal in a few seconds. Noise teaches them to ignore the
+one that mattered. Send once per event.
+
+To persist a policy the user just gave you, write it at the layer that matches
+its audience — `--local` for a personal preference in this project (stored
+outside the repository, so never touch a gitignore for it), `--project` for
+shared policy, no flag for this machine:
 
 ```bash
-notifai config set notify_criteria "Only when blocked or CI-length work finishes" --project --yes
-notifai config set notify_criteria "Anything that needs me within the hour" --yes
+notifai config set notify_criteria "Only when you're blocked or CI-length work finishes" --project --yes
+notifai config unset notify_criteria --project --yes
 ```
 
-Use `--local` for a personal project preference. Notifai stores that layer
-outside the repository, so do not create or edit a gitignore for it. Use
-`--project` only for shared project policy. Use `notifai config unset <key>`
-with the same scope flag to remove an override and return to the inherited or
-shipped value. Precedence is flag > session > project-local > project >
-machine-global > default; `notifai config show --json` shows the winning source.
+`unset` removes a value at one layer so the next one down applies again — reach
+for it instead of writing a value that means "ignore the layer above".
 
-## Set Notifai up
-
-You are the wizard. `init` is the coordinator you invoke. `doctor` is how you
-branch. Never paste a diagnosis. Never tell the user to run `notifai init`,
-`notifai hooks install`, `notifai doctor`, or `notifai login` when you have a
-shell.
-
-1. Run `notifai doctor --json`. A nonzero `exit_code` is a gap to close, not a
-   report to show the user. Informational `--` lines do not fail the command.
-2. Run everything a process can:
-   - `notifai init` with flags (`--project-id`, `--skills --skills-scope
-     project|global`, `--hooks` or `--no-hooks`). Unattended `init` never
-     prompts; optional steps need those flags.
-   - `notifai hooks install --harness <active>` after they choose question
-     routing.
-   - `notifai config set … --yes` for a decision they just made.
-   - `notifai login` when this machine is unpaired. It opens the browser.
-3. Ask the user only for decisions a process cannot make. One structured
-   question with choices, not "run this in your terminal":
-   - Approve this machine in the browser (after you started login).
-   - Install the companion, sign in, and allow notifications.
-   - This project vs this machine (skill, hooks, and config together).
-   - Whether they want questions routed.
-4. When `init` or `doctor` prints a CLI command, run that command yourself
-   unless the next act is one of the human-only items above. Do not attempt
-   browser sign-in or companion installs yourself.
-
-`init` stays the idempotent coordinator: credentials, project identity,
-optional hooks, device readiness, and one receipt-backed verification
-notification. `doctor` is read-only and never sends a probe. Its exit status is nonzero
-when any displayed check is `FAIL`. Treat a nonzero result as a readiness
-failure to resolve, not as permission to bypass routing or fabricate evidence.
-
-## Compose and send
-
-The common send needs a brief substantive title, one canonical Markdown body,
-and the right kind:
+## Send
 
 ```bash
-notifai send \
+notifai send --kind done \
   --title "All 42 tests passed" \
-  --body "The suite finished in 3m 10s. Next: review the release candidate." \
-  --kind done
+  --body "Suite finished in 3m 10s. Next: review the release candidate."
 ```
 
-Write for a glance and for the in-app detail view:
+`--kind` is required, and it is the most consequential word you choose:
 
-- Make the title brief and immediately understandable on its own. Write only the
-  specific substance: `All 42 tests passed`, `Checkout is blocked by tax setup`,
-  `Migration 0007 failed`. Never repeat the type or Project in the title; use
-  `--kind` for type, and let Notifai infer Project identity.
-- Put the next fact the user would ask for in the body: result, count, duration,
-  error gist, evidence, or next action. The body is always Markdown and may be
-  long when the full context is useful.
-- Put the most useful readable sentence or paragraph first. Native banners show
-  a bounded plain-text excerpt derived from the same body; Companion Apps render
-  the complete Markdown.
-- Use `--body-file <path|->` for long bodies from a file or stdin. Do not create a
-  second summary/detail split; there is one body.
-- A completion notice must say what comes next. A bare “done” sends the user
-  back to the terminal to discover why it matters.
-- Keep wording channel-neutral. Do not assume a phone, desktop, or a particular
-  interaction such as “tap here.”
+| kind | what it means | how it arrives |
+| --- | --- | --- |
+| `update` | ordinary news | standard tone |
+| `done` | work finished successfully | completion chime |
+| `failed` | work reached a terminal failure | most insistent tone |
+| `blocked` | cannot proceed until something outside changes | attention tone |
+| `question` | set for you by `--reply` and by `ask` — never pass it | attention tone |
+
+Because kind decides how insistently the notification lands, **declare the kind
+that is true**. Calling a failure `done` does not soften it, it hides it.
+
+Write for a glance:
+
+- **Title** — the specific substance, understandable alone, around 40
+  characters: `All 42 tests
+  passed`, `Migration 0007 failed`, `Checkout is blocked by tax setup`. Never
+  put the kind or the project in it; both travel on their own.
+- **Body** — one canonical Markdown body carrying the next fact they would ask
+  for: the result, the count, the duration, the error, what happens next when
+  there is a next. Lead with the most useful sentence; the banner excerpt is
+  taken from the top of it.
+- **`--subtitle`** — one short line between title and body. Use it when the body
+  is long enough that its first line is not a fair summary of what is inside.
 
 ```bash
-notifai send --title "Integration tests failed" \
-  --body-file ./test-report.md --kind failed
+notifai send --kind failed \
+  --title "Migration 0007 failed" \
+  --subtitle "Rolled back cleanly; production is untouched" \
+  --body-file ./migration-report.md
 ```
 
-### Kind and attention
+Weak titles are the usual failure, and they all share one trait — they send the
+user back to the terminal to find out what happened. `Task complete`,
+`Build failed`, `Need input` do that. `All 42 tests passed`,
+`Migration 0007 failed`, `Deploy 0007 to production?` do not.
 
-Pass `--kind` (and `--reply` for a question) so Companion Apps can present the
-notification's semantic status. Kind never chooses a native-banner sound or
-interruption level. Do not pass `--sound` or `--level` unless the user asked for
-that attention behavior for this send; saved preferences already apply without
-flags. With neither an explicit flag nor a saved preference, Notifai omits the
-field and lets the destination use its normal behavior.
+Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
+channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
 
-An explicit `--sound` or `--level` wins over saved config, so these flags are
-overrides rather than completeness. `time_sensitive` can pierce Focus modes;
-reserve it for a case where acting late loses value. A reply request is always
-a question, so the CLI rejects `--kind done --reply`.
-
-Useful delivery controls:
+Other controls, when they earn their place:
 
 - `--thread-id <id>` groups related notifications.
-- `--collapse-key <key>` replaces an earlier notification with the same key.
-  Keep it at most 64 UTF-8 bytes.
-- `--ttl <seconds>` controls how long delivery remains useful. The CLI warns on
-  explicit windows longer than 72 hours.
-- `--data <key=value>` carries namespaced custom data; repeat it for more keys.
-- `--image <path|url|media_id>` attaches meaningful visual evidence; repeat it
-  in the intended gallery order (maximum 8). Pair optional `--image-alt` values
-  by position. Inside the same body, `media:1` through `media:8` refer to those
-  ordered image occurrences and are rewritten to canonical media ids before
-  submission. Check `notifai capabilities --platform <platform>` when media is
-  essential.
+- `--collapse-key <key>` replaces your own earlier notification instead of
+  stacking a second one (≤64 UTF-8 bytes).
+- `--ttl <seconds>` — how long delivery is still worth attempting. Never past the
+  point the news stops being useful.
+- `--image <path|url>` attaches visual evidence in order (up to 8), with
+  `--image-alt` paired by position; `media:1`…`media:8` reference them from the
+  body. Check `notifai capabilities --platform <platform>` when an image is the
+  message rather than decoration.
+- `--sound` and `--level` override the kind's sound and the user's saved
+  preference. Pass them only when the user asked for that behaviour on this
+  send. `--level time_sensitive` can pierce Focus; it is for news that loses
+  value if read late.
+- `--device` only when the user asked for specific devices. Otherwise every
+  device they registered is the right answer and you do not need to think about
+  it.
+- `--event <name>` names what happened (`tests_passed`, `deploy_failed`) so the
+  user can find it later in `notifai status` and `notifai logs`.
+- `--idempotency-key <key>` when you retry a send that failed or timed out.
+  Reusing the key is what stops one event becoming two notifications.
 
-### Routing
+Project and session identity are inferred from where you run; do not override
+them.
 
-By default a send targets every routable device and copies common optional
-fields to both iOS and macOS. Inspect device IDs before narrowing delivery:
+## Ask a question
 
-```bash
-notifai devices
-notifai send --title "Staging deploy started" --body "Health checks are green." --device dev_abc
-notifai send --title "Staging deploy started" --body "Health checks are green." \
-  --device dev_abc --device dev_xyz
-```
+A question must be answerable from the notification itself. Keep it under 240
+characters and let the reasoning follow it. Offer 2-6 closed choices when you
+can, one flag per choice — commas inside a label are literal. A typed answer is
+always possible, whatever buttons you offered.
 
-`--device` is repeatable. `--all` overrides configured device selection.
-`--platform ios|macos` limits optional platform fields; it does not choose a
-delivery device.
+**Where the question text comes from differs between the two commands.** With
+`ask`, it is the positional argument and `--body` is context. With
+`send --reply`, it is the *first line of the body* — the title is not the
+question — and context follows after a blank line.
 
-### Project and session identity
+There are two ways to ask, and the difference is who waits. The same question
+surface appears in both, but the flags are spelled differently: on `send` they
+carry a `--reply-` prefix (`--reply-choice`, `--reply-multi`), on `ask` they do
+not (`--choice`, `--multi`).
 
-Notifai infers Project identity from the invocation directory when no flag or
-configured value exists. Git worktrees of one repository share one Project;
-outside Git, the directory basename is used when it forms a safe identifier.
-Use `--project` only as an explicit override, or persist a deliberate choice:
+### Wait for the answer now
 
-```bash
-notifai config set project my-app --project --yes
-```
-
-Notifai also uses the exact active harness session when the harness exposes one.
-The opaque id remains machine-only; a stable human-readable session label,
-branch, and privacy-safe worktree basename travel separately. Do not mint an id
-or repeat it in User-facing text. Use `--session-id` / `NOTIFAI_SESSION_ID` and
-`--session-label` / `NOTIFAI_SESSION_LABEL` only when you truly have an exact
-override. A label without an id is rejected, and unsupported or uncertain
-harnesses omit session identity honestly.
-
-## Ask for a decision
-
-A notification that asks must be answerable from the notification. Do not put
-an unanswerable question in a completion body. Keep the question itself short
-enough to read where it is answered; put reasoning, logs, and Markdown context
-in `--body` / `--body-file`. The CLI composes the canonical body as the question
-first, a blank line, then that context.
-
-Answering rules that hold for every question:
-
-- **One flag, one answer.** `--choice`/`--reply-choice` never splits on
-  commas or anything else — a comma in a label is just a comma. Repeat the
-  flag once per answer (2-6).
-- **A typed answer is always possible.** Choice buttons are the primary
-  surface, but the user can always write their own answer instead (or in
-  addition, on multi-select). Branch on choice ids when you get them, and be
-  ready to read text where you offered buttons.
-- **The latest answer counts.** A later reply corrects an earlier one. A
-  free-text answer may arrive in parts; you receive every part in the order
-  written — read them together.
-
-### Block for the answer now
-
-Use `send --reply` when the current command must wait. Prefer closed choices so
-the result is machine-checkable:
+When the current command cannot continue without the answer:
 
 ```bash
-notifai send \
-  --title "Deploy migration 0007 now?" \
-  --body "Deploy migration 0007 to production now?" \
-  --reply --reply-choice "Deploy now" --reply-choice "Hold" \
+notifai send --reply \
+  --title "Deploy migration 0007?" \
+  --body "Deploy migration 0007 to production now?
+
+Staging is green. Production has 40k rows in the affected table." \
+  --reply-choice "Deploy now" --reply-choice "Hold" \
   --reply-timeout 900
 ```
 
-Add `--reply-multi` when several of the offered answers may be chosen at
-once; the reply then carries every chosen id. Exit code 3 means no reply
-yet, not delivery failure. Retrieve a late answer with
-`notifai replies <request_id>`, or retire a question that is no longer useful:
+Two different clocks, and confusing them is the usual mistake:
+`--reply-timeout` is how long *this command* blocks (default 900s);
+`--reply-window` is how long the *server* keeps accepting an answer (default
+3600s). A short timeout with a long window is the deliberate way to stop waiting
+and pick the answer up later:
 
 ```bash
-notifai close <request_id>
+notifai replies <request_id>          # the answer, whenever it landed
+notifai close <request_id>            # retire a question that stopped mattering
 ```
 
-State a safe default in the body when silence has meaning. Do not combine a
-reply request with `--no-block` or `--reply-timeout 0`; the CLI rejects a
-question nobody is waiting to hear.
+`send --reply --json` is the one command that prints two JSON objects, one per
+line — the receipt, then the answer. Read the last line. Everything else that
+takes `--json` prints a single object.
 
-### Register a turn-ending question
+Exit code 3 means no answer yet — not a delivery failure. On exit 0 the answer
+comes back on stdout and you act on it in the same command.
 
-On a configured harness, `notifai ask` records the decision and returns
-immediately. Registration is not the end of the asking turn. In that same turn,
-ask the question in the conversation and pre-commit to the concrete work you
-will resume for each offered answer before ending the turn:
+### Ask, end your turn, and resume when they answer
+
+When the answer should reach you at the start of your next turn, `ask` registers
+the question and returns immediately:
 
 ```bash
-notifai doctor
-notifai ask "Which environment should I use for the requested rollout?" \
+notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
 
-Then say, in your own words, what follows each answer: for example, “If you
-choose Staging, I’ll resume the requested rollout against staging. If you choose
-Production, I’ll resume it against production. If you choose Cancel, I’ll leave
-the rollout unchanged and resume final reporting.” Also state how an
-unexpected typed answer will determine the work you resume; typed answers
-remain possible even when you offered choices. For multi-select, cover how the
-selected combination determines the resumed work. Then end the turn.
+**Registering is not the end of the turn.** In that same turn, ask the question
+in the conversation and say what each answer will make you do:
 
-Keep the commitment route-neutral. Ask for the answer; never say where it has
-to arrive. Do not write "tell me here", "type it in this terminal", or "only
-from an answer given at this prompt". The user answers from wherever they are,
-and the answer travels back over whichever route the harness supports. A
-commitment that names one route teaches you to refuse every other one, so the
-answer you asked for arrives and the work you promised never resumes.
+> If you choose Staging, I'll run the rollout against staging and report the
+> health checks. If you choose Production, I'll run the same rollout against
+> production. If you choose Cancel, I'll leave the rollout alone and finish the
+> report. If you tell me something else, I'll follow that instead.
 
-When the answer arrives, first inspect the requirement status that accompanies
-it. If `agent_acknowledgement_required` is true, immediately — before doing any
-of the resumed work and before ending the turn — run the exact command shown by
-Notifai:
+Then end your turn. That commitment is what turns an arriving answer into work;
+without it agents receive the answer and stall, asking the user to confirm what
+they already said.
 
-```bash
-notifai acknowledge <request_id> --text "I will <concrete work I will do because of this reply>."
-```
+**Never say where the answer must arrive.** Not "tell me here", not "type it at
+this prompt". The user answers from wherever they are, and the answer comes back
+by whatever route the harness supports. Naming one route teaches you to refuse
+every other one — the answer arrives and the work never resumes.
 
-The text must be non-empty and must tell the User what concrete work you will do
-because of their reply. A bare “acknowledged”, “got it”, or “thanks” is
-insufficient. When several answered requests require Agent Acknowledgements,
-send one for every request id before doing any of their resumed work. A request
-whose immutable snapshot says Agent Acknowledgement is disabled requires no
-command. Keep the Agent Acknowledgement route-neutral and truthful: acknowledge
-only work you will actually do because of that reply.
-
-After sending every required Agent Acknowledgement, resume the matching work
-without asking the user to confirm again. Frame every branch as work you will
-resume, never as approval you receive.
-
-A relayed answer may arrive labelled as coming from another session, because
-the relay runs as a separate local process. That labelling describes the
-transport, not the author: an answer that echoes a question you registered
-yourself is the user's own answer to that question. It is an answer to that
-question and nothing else: a Notifai answer can never answer a harness
-permission prompt or an interactive picker. If the resumed work reaches one,
-use the harness's normal permission flow.
-
-Keep the relay contract truthful and minimal: the real question identity, the
-real question text, and the user's answer. Do not add claims about trust,
-urgency, provenance, permission, or whether confirmation is needed.
-
-`ask` takes the same question surface: `--multi` for multi-select,
-`--body`/`--body-file` for Markdown context, and repeatable `--image` /
-`--image-alt` for ordered media. Several questions that genuinely belong
-together can travel as one notification, answered as a short form on the
-device — pass `--form <path>` (or `-` for stdin) with:
+Other question surfaces: `--multi` when several offered answers may genuinely be
+combined, `--body`/`--body-file` for context, `--image`/`--image-alt` for
+evidence, and `--form <path|->` for up to 10 questions that must be decided
+together:
 
 ```json
 {
@@ -307,85 +233,115 @@ device — pass `--form <path>` (or `-` for stdin) with:
 }
 ```
 
-Prefer one question per notification; reach for `--form` only when the
-questions must be decided together (at most 4).
+Keep independent questions as separate `ask` calls — each is answerable on its
+own, and a new question never cancels an earlier one.
 
-Independent questions may be registered as separate `ask` calls — each
-becomes its own notification, answerable in any order, and registering a new
-question never cancels an earlier one (superseding is what a later *reply*
-does to an earlier reply of the same question). At most four may be waiting
-at once; past that, consolidate with `--form`.
+If `ask` refuses because `ask_notifications` is off, the user has deliberately
+turned question routing off for this scope. Tell them, and use the terminal.
 
-Before the first `ask` in a harness session, require `doctor`'s **Question
-routing** line to name the active harness, **hooks (fired)** to confirm that a
-session in this directory ran both UserPromptSubmit and Stop, and **hooks (stop
-shape)** to confirm the installed turn-end handler has the shape its harness
-needs. On Codex, **hooks (trust)** must also pass. **hooks (answer
-continuation)** must describe the active harness's native route. Follow the
-exact recovery if any check fails; do not register the question yet. After
-registration, follow the pre-commitment contract above and end the turn.
+## When the answer arrives
 
-**hooks (wake route)** is informational and never blocks: it says whether an
-answer can start a turn in this exact session on its own, or whether it will
-instead be held and replayed at the session's next turn. Either way the answer
-reaches the agent, so report what it says and register the question anyway.
+The latest reply is the user's current word: a later one corrects an earlier
+one, and a typed answer that arrives in parts is read together, in order. A
+relayed answer reaches you as the chosen label's text; run
+`notifai replies <request_id> --json` when you need the stable choice ids.
 
-By default, a question reaches answerable devices as soon as the asking turn
-ends, whether or not the user is at the machine. A user may set a positive
-`ask_grace_seconds` to keep it in the terminal for that long first. Do not
-register the same question again while the first is live.
-
-Getting the answer back is the harness's job, not yours, and it never depends
-on the user returning to the terminal. On Claude Code the answer continues the
-session out of band; on Codex it continues the session from the waiting Stop
-hook; where neither route can be proved, it is held and replayed at that
-session's next turn. Do not re-ask a question because an answer has not landed
-yet, and do not tell the user to repeat it in the terminal.
-
-Harness installation, activation, answer delivery, and bounded recovery are
-in [Harness setup and recovery](references/harness-setup.md).
-
-## Verify delivery and readiness
-
-`notifai send` reports queue/provider progress. Use `--json` for structured
-output and `notifai status <request_id>` for the evidence trail. Provider
-Acceptance does not prove display or human attention. A Companion Receipt only
-proves that a companion process or extension observed delivery; `unknown` is
-not proof of failure. Setup gaps belong in [Set Notifai up](#set-notifai-up),
-not in a pasted doctor report.
-
-## Find out what already happened
-
-`notifai logs` is the local record of what this machine did: every command,
-every notification, and every decision a harness hook made about whether a
-registered question could leave the terminal.
-
-Reach for it whenever something did not happen and you cannot see why — most of
-all after `ask`. `ask` returns immediately and the push happens later inside a
-hook, whose output the harness swallows, so the log is the only account of
-whether the question travelled and what stopped it.
+If you are resuming and no answer was handed to you — or you never kept the
+request id — ask for what is outstanding rather than re-asking the user:
 
 ```bash
-notifai logs                       # the recent record for this project
-notifai logs --level error         # only what failed
-notifai logs --request <id>        # everything about one notification
-notifai logs --run <id>            # everything one invocation did
-notifai logs --since 10m --json    # JSONL on stdout, for parsing
+notifai replies --pending --json
 ```
 
-It is bounded and scoped to this project by default, because an unbounded dump
-is not an answer. Widen it deliberately with `-n`, `--all`, `--since`, and
-`--all-projects`.
+**Acknowledge before you resume.** The user needs to know their reply was read.
+Notifai tells you the exact command; run it once per answered request, before
+any of the work it unblocks:
 
-`hook.gate` records carry a `reason` from a fixed set — `notifications-off`,
-`already-asked`, `claimed-elsewhere`, `no-question`, `no-session`,
-`continuation-repeat`, `continuation-limit`, `delivery-limit` — so filter on that rather than on
-the wording of a message. `notifications-off` is the one the user is
-deliberately never told about, which is exactly why it is worth checking before
-concluding something is broken.
+```bash
+notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report the health checks."
+```
 
-The log stays on this machine. Nothing uploads it. Machine credentials are
-redacted before anything is written, but notification titles and the user's own
-answers are recorded, so treat it as you would any of their private files.
-Control it with `log_level` (`off`, `error`, `info`, `debug`), and see
-`notifai logs --path` for where it lives and how much room it is using.
+Keep it under 200 characters — it is a receipt, not a report.
+
+Say the concrete thing you will do because of their reply, and only what you
+will actually do. "Acknowledged" tells them nothing.
+
+Some accounts turn the written reply off. Notifai then prints the command
+without `--text`; run exactly what it prints. The acknowledgement itself is
+never optional — it is the only way the user learns their answer was read.
+
+Then resume the committed work without asking them to confirm again. Frame it as
+work you are resuming, never as approval you received.
+
+An answer may arrive labelled as coming from another session, because the relay
+runs as a separate local process. That describes how it travelled, not who wrote
+it: it is the user's own answer to the question you asked. It answers that
+question and nothing else — a Notifai answer can never satisfy a harness
+permission prompt or an interactive picker. If your resumed work hits one, use
+the harness's own flow.
+
+## Set Notifai up
+
+You are the one doing the setup. Run everything a process can run; never tell the
+user to run a command you could have run yourself.
+
+```bash
+notifai init          # the idempotent coordinator: run this first
+notifai doctor --json # then confirm, and branch on whatever is still open
+```
+
+Branch on the diagnosis, never paste it at the user. A nonzero exit is a gap to
+close, not permission to work around.
+
+Only these need a human, and you ask for them together in one structured
+question rather than a drip:
+
+- approving this machine in the browser (after **you** started `notifai login`)
+- installing the companion app, signing in, and allowing notifications
+- whether they want questions routed back to you, and whether setup applies to
+  this project or this machine
+
+Never emulate those steps, and never claim support for a harness the CLI does
+not list.
+
+Exit code 4 means this machine is not signed in. When sign-in looks fine but
+nothing sends, `notifai auth status --json` and `notifai auth access --json`
+separate a pairing problem from an account without an active plan — report which
+one it is instead of calling it a delivery failure.
+
+Question routing needs a harness hook installed, and `ask` refuses to register a
+question it cannot route back to you — the diagnosis names what to fix. The
+mechanics of installing, activating, and recovering that route are in
+[Harness setup and recovery](references/harness-setup.md). Read it when you are
+installing hooks or diagnosing routing, not before.
+
+## Check what happened
+
+`notifai send` reports how far a notification got. Provider Acceptance is not
+proof it was displayed; a Companion Receipt is not proof it was read; `unknown`
+is not proof of failure. Say which of those you have.
+
+```bash
+notifai status <request_id>     # the evidence trail for one notification
+```
+
+When something did not happen and you cannot see why — most of all after `ask`,
+whose push happens later inside a hook the harness swallows — the local log is
+the only account:
+
+```bash
+notifai logs                     # recent record for this project
+notifai logs --level error       # only what failed
+notifai logs --request <id>      # everything about one notification
+notifai logs --since 10m --json  # JSONL on stdout, for parsing
+```
+
+`hook.gate` records carry a fixed `reason` — `notifications-off`,
+`claimed-elsewhere`, `no-question`, `no-session`, `answered`,
+`acknowledgement-required`, `continuation-repeat`, `continuation-limit`,
+`delivery-limit`, `proceeding` — so filter on that, never on the wording of a
+message. `notifications-off` is the one the user deliberately never sees, which
+is why it is worth ruling out before concluding anything is broken.
+
+The log never leaves the machine, and it contains the user's own answers. Treat
+it like any other private file of theirs.

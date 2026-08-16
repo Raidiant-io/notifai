@@ -126,6 +126,8 @@ interface Recorder {
   /** Per-request answer stream for multi-question ownership tests. */
   repliesFor?: (requestId: string) => ReplyView[]
   acknowledgementRequiredFor?: (requestId: string) => boolean
+  /** Whether that request's acknowledgement must carry text; default true. */
+  acknowledgementTextRequiredFor?: (requestId: string) => boolean
   acknowledged?: Set<string>
   acknowledgementChecks?: string[]
 }
@@ -176,7 +178,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       return {
         status: 'recorded',
         agent_acknowledgement: {
-          text: body.text,
+          text: body.text ?? '',
           created_at: new Date(NOW).toISOString(),
         },
       }
@@ -188,6 +190,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       return {
         request_id: requestId,
         agent_acknowledgement_required: required,
+        agent_acknowledgement_text_required:
+          recorder.acknowledgementTextRequiredFor?.(requestId) ?? true,
         agent_acknowledgement: recorder.acknowledged?.has(requestId)
           ? { text: 'I will continue.', created_at: new Date(NOW).toISOString() }
           : null,
@@ -210,6 +214,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
         reply_expires_at: new Date(NOW + 480_000).toISOString(),
         agent_acknowledgement_required:
           recorder.acknowledgementRequiredFor?.(requestId) ?? true,
+        agent_acknowledgement_text_required:
+          recorder.acknowledgementTextRequiredFor?.(requestId) ?? true,
         replayed: false,
         overall: 'provider_accepted_all',
         deliveries: [],
@@ -223,6 +229,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
         reply_expires_at: null,
         agent_acknowledgement_required:
           recorder.acknowledgementRequiredFor?.(requestId) ?? true,
+        agent_acknowledgement_text_required:
+          recorder.acknowledgementTextRequiredFor?.(requestId) ?? true,
         agent_acknowledgement: recorder.acknowledged?.has(requestId)
           ? { text: 'I will continue.', created_at: new Date(NOW).toISOString() }
           : null,
@@ -236,6 +244,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
         reply_expires_at: new Date(NOW).toISOString(),
         agent_acknowledgement_required:
           recorder.acknowledgementRequiredFor?.(requestId) ?? true,
+        agent_acknowledgement_text_required:
+          recorder.acknowledgementTextRequiredFor?.(requestId) ?? true,
         agent_acknowledgement: recorder.acknowledged?.has(requestId)
           ? { text: 'I will continue.', created_at: new Date(NOW).toISOString() }
           : null,
@@ -471,7 +481,8 @@ describe('pushing a registered question', () => {
       title: 'Ship it?',
       body: 'Ship it?',
     })
-    expect(h.recorder.submitted[0]?.draft.platform).toBeUndefined()
+    // A pushed question is a question, and a question has an attention tone.
+    expect(h.recorder.submitted[0]?.draft.platform?.ios?.sound).toBe('attention')
   })
 
   it('keeps sparse alt text paired with its original media item', async () => {
@@ -1862,7 +1873,7 @@ describe('several questions in flight', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-required' }))
     expect(readSessionState('ack-required', h.env).acknowledgement_due).toEqual([
-      { request_id: 'req_ack_required', recorded_at: NOW },
+      { request_id: 'req_ack_required', recorded_at: NOW, text_required: true },
     ])
 
     h.io.outLines = []
@@ -1880,6 +1891,41 @@ describe('several questions in flight', () => {
     )
     expect(blocked.reason).toContain('concrete work')
     expect(readSessionState('ack-required', h.env).accepted).toBeUndefined()
+  })
+
+  it('still blocks Stop, without asking for text, when the account turned text off', async () => {
+    const h = harness([reply({ text: 'Ship it' })])
+    h.recorder.acknowledgementTextRequiredFor = () => false
+    writeSessionState('ack-textless', h.env, {
+      pending: [
+        {
+          question: 'Ship it?',
+          request_id: 'req_ack_textless',
+          collapse_key: 'collapse-ack-textless',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 60_000,
+        },
+      ],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'ack-textless' }))
+    // The obligation is unchanged by the preference: the acknowledgement still
+    // has to happen, because the user's read-state depends on it.
+    expect(readSessionState('ack-textless', h.env).acknowledgement_due).toEqual([
+      { request_id: 'req_ack_textless', recorded_at: NOW, text_required: false },
+    ])
+
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'ack-textless', stop_hook_active: true }),
+    )
+
+    const blocked = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
+    expect(blocked.decision).toBe('block')
+    expect(blocked.reason).toContain('notifai acknowledge req_ack_textless`')
+    expect(blocked.reason).not.toContain('--text')
   })
 
   it('reconciles a server-recorded Agent Acknowledgement after a local clearing crash', async () => {

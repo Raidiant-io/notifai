@@ -16,8 +16,10 @@ That is the Conventional Commits spec. It is not special-cased for 0.x: a
 breaking change on `0.5.1` was `1.0.0`. A breaking change on `1.0.0` is
 `2.0.0`. Pre-release labels (`1.0.0-rc.1`) exist if we need them later.
 
-The packages on npm today are `1.0.1` and `0.4.0`. Those numbers stay until
-the next cut.
+What is on npm right now is whatever npm says — `npm view @raidiant/notifai
+version` and `npm view @raidiant/notifai-protocol version`. This document does
+not restate it, because a copied version number is wrong from the next release
+onward.
 
 ## Commits
 
