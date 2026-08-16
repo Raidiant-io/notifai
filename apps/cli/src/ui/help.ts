@@ -117,7 +117,14 @@ export function rootHelpFooter(): string {
     )}`,
     `  ${style.code('notifai init')}         ${style.dim(`${glyph.arrow} set this project up, step by step`)}`,
     '',
-    style.dim(`Every command takes ${style.code('--help')}. Machine-readable output: ${style.code('--json')}.`),
+    style.heading('First call, for an agent'),
+    `  ${style.code('notifai send --kind done --title "All 42 tests passed" --body "Finished in 3m 10s. Next: review the release candidate."')}`,
+    `  ${style.code('notifai ask "Deploy migration 0007 to production?" --choice Deploy --choice Hold')}`,
+    `  ${style.dim(`${glyph.arrow} ${style.code('ask')} needs question routing installed; ${style.code('notifai doctor --json')} says whether it is.`)}`,
+    '',
+    style.dim(
+      `Every command takes ${style.code('--help')}. Where a command has machine-readable output it takes ${style.code('--json')}.`,
+    ),
     style.dim(`Settings are explained by ${style.code('notifai config show')} and ${style.code('notifai config explain <key>')}.`),
   ]
   return lines.join('\n')

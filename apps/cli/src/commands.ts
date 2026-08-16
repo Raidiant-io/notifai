@@ -319,7 +319,9 @@ function reportError(
     if (paths.length > 0) deps.io.err(`the server rejected: ${paths.join(', ')}`)
     // A 422 on a request this CLI built is not a user error: the two sides
     // disagree about the contract, in whichever direction. `doctor` says which.
-    if (err.status === 422) {
+    // Codes that name a policy the account chose are the exception — the
+    // contract held, the body simply did not satisfy that account.
+    if (err.status === 422 && err.code !== 'acknowledgement_text_required') {
       deps.io.err(
         'this build sent a field the server did not accept — the CLI and server ' +
           'disagree about the contract; check with `notifai doctor`',
@@ -638,6 +640,17 @@ export async function sendCommand(
     deps.io.err(`--kind ${flags.kind} cannot be combined with --reply; a reply request is a question.`)
     return EXIT.usage
   }
+  // Kind now decides the sound a notification arrives with, so it is asked for
+  // at the boundary rather than defaulted silently: an unlabelled send would
+  // reach the user as ordinary news whatever actually happened.
+  if (!flags.reply && flags.kind === undefined) {
+    deps.io.err(
+      '--kind is required: say what this notification is. ' +
+        'update (news) · done (finished) · failed (terminal failure) · blocked (cannot proceed). ' +
+        '--reply makes it a question without --kind.',
+    )
+    return EXIT.usage
+  }
   if (!flags.reply && flags.kind === 'question') {
     deps.io.err('--kind question requires --reply so the question can be answered.')
     return EXIT.usage
@@ -794,6 +807,7 @@ export async function sendCommand(
               request_id: receipt.request_id,
               replies: [],
               agent_acknowledgement_required: receipt.agent_acknowledgement_required,
+              agent_acknowledgement_text_required: receipt.agent_acknowledgement_text_required,
               agent_acknowledgement: null,
               acknowledgement_command: null,
               degraded: false,
@@ -935,7 +949,14 @@ export async function repliesCommand(
       .map((entry) => entry.request_id)
       .filter((id): id is string => id !== undefined)
     if (requestIds.length === 0) {
-      deps.io.err(`Session ${sessionId} has no pushed question pending.`)
+      // `--json` is a promise about stdout, and an empty result is still a
+      // result: a caller that asked for machine-readable output must not have
+      // to parse an English sentence to learn there was nothing pending.
+      if (flags.json === true) {
+        deps.io.out(JSON.stringify({ session_id: sessionId, pending: [], replies: [] }, null, 2))
+      } else {
+        deps.io.err(`Session ${sessionId} has no pushed question pending.`)
+      }
       return EXIT.noReply
     }
   }
@@ -1071,6 +1092,7 @@ export async function waitForReply(
         request_id: requestId,
         reply_expires_at: null,
         agent_acknowledgement_required: false,
+        agent_acknowledgement_text_required: false,
         agent_acknowledgement: null,
         replies: [],
       } satisfies ListRepliesResponse),
@@ -1113,14 +1135,21 @@ function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0
 }
 
+function acknowledgeInvocation(requestId: string, textRequired: boolean): string {
+  return textRequired
+    ? `notifai acknowledge ${requestId} --text <text>`
+    : `notifai acknowledge ${requestId}`
+}
+
 function acknowledgementCommand(
   requestId: string,
   required: boolean,
+  textRequired: boolean,
   acknowledgement: ListRepliesResponse['agent_acknowledgement'],
   hasReply = true,
 ): string | null {
   return required && acknowledgement === null && hasReply
-    ? `notifai acknowledge ${requestId} --text <text>`
+    ? acknowledgeInvocation(requestId, textRequired)
     : null
 }
 
@@ -1132,9 +1161,11 @@ function replyResultJson(response: ListRepliesResponse, degraded: boolean): obje
     replies: response.replies,
     agent_acknowledgement_required: response.agent_acknowledgement_required,
     agent_acknowledgement: response.agent_acknowledgement,
+    agent_acknowledgement_text_required: response.agent_acknowledgement_text_required,
     acknowledgement_command: acknowledgementCommand(
       response.request_id,
       response.agent_acknowledgement_required,
+      response.agent_acknowledgement_text_required,
       response.agent_acknowledgement,
       response.replies.length > 0,
     ),
@@ -1147,16 +1178,22 @@ function printAcknowledgementStatus(deps: CommandDeps, response: ListRepliesResp
     deps.io.out('Agent Acknowledgement: not required for this request.')
     return
   }
+  const textRequired = response.agent_acknowledgement_text_required
   if (response.agent_acknowledgement !== null) {
+    const recorded = `Agent Acknowledgement: recorded at ${response.agent_acknowledgement.created_at}`
     deps.io.out(
-      `Agent Acknowledgement: recorded at ${response.agent_acknowledgement.created_at}: ${response.agent_acknowledgement.text}`,
+      response.agent_acknowledgement.text.length > 0
+        ? `${recorded}: ${response.agent_acknowledgement.text}`
+        : `${recorded}.`,
     )
     return
   }
   if (response.replies.length > 0) {
     deps.io.out('Agent Acknowledgement required.')
     deps.io.out(
-      `next: Run \`${acknowledgementCommand(response.request_id, true, null)}\` with concrete text saying what you will do because of the reply.`,
+      textRequired
+        ? `next: Run \`${acknowledgeInvocation(response.request_id, true)}\` with concrete text saying what you will do because of the reply.`
+        : `next: Run \`${acknowledgeInvocation(response.request_id, false)}\` so the user sees you read the reply; this account turned acknowledgement text off.`,
     )
     return
   }
@@ -1749,7 +1786,7 @@ export function buildQuestions(
       }
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return { ok: false, error: '--form needs a "questions" array (1-4 entries).' }
+      return { ok: false, error: `--form needs a "questions" array (1-${REPLY_MAX_QUESTIONS} entries).` }
     }
     const record = parsed as Record<string, unknown>
     const unknownKeys = Object.keys(record).filter((key) => key !== 'questions' && key !== 'body')
@@ -1760,7 +1797,7 @@ export function buildQuestions(
       }
     }
     if (!Array.isArray(record['questions'])) {
-      return { ok: false, error: '--form needs a "questions" array (1-4 entries).' }
+      return { ok: false, error: `--form needs a "questions" array (1-${REPLY_MAX_QUESTIONS} entries).` }
     }
     const formQuestions = record['questions']
     if (formQuestions.length < 1 || formQuestions.length > REPLY_MAX_QUESTIONS) {
@@ -2399,20 +2436,27 @@ function hookActivationAdvice(installations: Installation[]): string {
   return `${advice.join('. ')}.`
 }
 
-/** Record the one Agent Acknowledgement associated with a replied-to request. */
+/**
+ * Record the one Agent Acknowledgement associated with a replied-to request.
+ *
+ * `--text` is optional here because the acknowledgement is not: an account may
+ * turn the agent's written reply off, and the receipt must still be recorded so
+ * the user sees that an agent read the answer. The service holds the account's
+ * snapshot, so it — not this process — decides whether text was owed.
+ */
 export async function acknowledgeCommand(
   deps: CommandDeps,
   requestId: string,
   flags: { text?: string; json?: boolean },
 ): Promise<number> {
   const text = flags.text?.trim() ?? ''
-  if (text.length === 0) {
-    deps.io.err('--text is required and must contain non-whitespace text.')
+  if (flags.text !== undefined && text.length === 0) {
+    deps.io.err('--text must contain non-whitespace text. Drop it to acknowledge without text.')
     return EXIT.usage
   }
   if (text.length > AGENT_ACKNOWLEDGEMENT_MAX_LENGTH) {
     deps.io.err(
-      `--text must be at most ${AGENT_ACKNOWLEDGEMENT_MAX_LENGTH} characters after trimming.`,
+      `--text must be at most ${AGENT_ACKNOWLEDGEMENT_MAX_LENGTH} characters after trimming. Shorten it: an acknowledgement is a receipt, not a report.`,
     )
     return EXIT.usage
   }
@@ -2427,7 +2471,10 @@ export async function acknowledgeCommand(
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    const result = await authed.client.putAgentAcknowledgement(requestId, { text })
+    const result = await authed.client.putAgentAcknowledgement(
+      requestId,
+      text.length > 0 ? { text } : {},
+    )
     const output = {
       request_id: requestId,
       outcome: result.status,
@@ -2476,6 +2523,7 @@ export async function closeCommand(
             acknowledgement_command: acknowledgementCommand(
               response.request_id,
               response.agent_acknowledgement_required,
+              response.agent_acknowledgement_text_required,
               response.agent_acknowledgement,
               response.replies.length > 0,
             ),

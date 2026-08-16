@@ -6,6 +6,7 @@ import {
   PlatformSchema,
   ProviderSchema,
   REPLY_MAX_LENGTH,
+  REPLY_MAX_QUESTIONS,
   type NotificationMediaType,
   type Platform,
 } from './notification.js'
@@ -26,12 +27,18 @@ import type {
  * Default for accounts without a persisted preference. The server applies this
  * value when reading the setting; clients never infer a missing wire field.
  */
-export const DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED = true
+export const DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED = true
 
+/**
+ * The one account preference over Agent Acknowledgements, and it governs text
+ * only. Every answered request is acknowledged, so the User always learns that
+ * an agent read the answer; turning this off drops the agent's brief written
+ * reply, never the receipt itself.
+ */
 export const AccountPreferences = Type.Object(
   {
-    agent_acknowledgements_enabled: Type.Boolean({
-      default: DEFAULT_AGENT_ACKNOWLEDGEMENTS_ENABLED,
+    agent_acknowledgement_text_enabled: Type.Boolean({
+      default: DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
     }),
   },
   { additionalProperties: false },
@@ -40,7 +47,7 @@ export type AccountPreferencesT = Static<typeof AccountPreferences>
 export type AccountPreferencesResponse = AccountPreferencesT
 
 export const UpdateAccountPreferencesRequest = Type.Object(
-  { agent_acknowledgements_enabled: Type.Boolean() },
+  { agent_acknowledgement_text_enabled: Type.Boolean() },
   { additionalProperties: false },
 )
 export type UpdateAccountPreferencesRequestT = Static<typeof UpdateAccountPreferencesRequest>
@@ -241,10 +248,16 @@ export interface SubmissionReceipt {
   /** Committed reply deadline; null when this request did not ask for a reply. */
   reply_expires_at: string | null
   /**
-   * Immutable account-preference snapshot taken when a reply-enabled request is
-   * accepted. False for requests that did not ask for a reply.
+   * True for every request that asked for a reply, so an answered request
+   * always records that an agent read the answer.
    */
   agent_acknowledgement_required: boolean
+  /**
+   * Immutable account-preference snapshot taken when a reply-enabled request is
+   * accepted: true when that acknowledgement must carry text. False for
+   * requests that did not ask for a reply.
+   */
+  agent_acknowledgement_text_required: boolean
   /** True when idempotency returned a previously accepted request. */
   replayed: boolean
   overall: OverallState
@@ -336,7 +349,7 @@ export const SubmitReplyRequest = Type.Object(
      * resolves each against the stored draft, so a stored reply cannot
      * disagree with what was actually asked.
      */
-    answers: Type.Array(ReplyAnswer, { minItems: 1, maxItems: 4 }),
+    answers: Type.Array(ReplyAnswer, { minItems: 1, maxItems: REPLY_MAX_QUESTIONS }),
     /**
      * Which surface the user actually answered from. Two iOS
      * routes converge here — the custom text action and the system
@@ -393,6 +406,11 @@ export interface ReplyView {
 }
 
 export interface AgentAcknowledgementView {
+  /**
+   * The agent's brief written reply, or empty when the account turned
+   * acknowledgement text off. Empty text is still a recorded acknowledgement:
+   * it says an agent read the answer.
+   */
   text: string
   created_at: string
 }
@@ -401,27 +419,37 @@ export interface ListRepliesResponse {
   request_id: string
   /** Null when the Notification Request did not request replies. */
   reply_expires_at: string | null
-  /** Immutable account-preference snapshot recorded at request acceptance. */
+  /** True for every request that asked for a reply. */
   agent_acknowledgement_required: boolean
+  /**
+   * Immutable account-preference snapshot recorded at request acceptance: true
+   * when the acknowledgement must carry text.
+   */
+  agent_acknowledgement_text_required: boolean
   /** The one recorded Agent Acknowledgement, or null while none is available. */
   agent_acknowledgement: AgentAcknowledgementView | null
   replies: ReplyView[]
 }
 
 /** Agent-authored follow-up text is kept intentionally smaller than a user reply. */
-export const AGENT_ACKNOWLEDGEMENT_MAX_LENGTH = 1000
+export const AGENT_ACKNOWLEDGEMENT_MAX_LENGTH = 200
 
 /**
- * The service trims `text` before validation and persistence. After trimming it
- * must be non-empty and no longer than AGENT_ACKNOWLEDGEMENT_MAX_LENGTH.
+ * The service trims `text` before validation and persistence. When present it
+ * must be non-empty after trimming and no longer than
+ * AGENT_ACKNOWLEDGEMENT_MAX_LENGTH. Omitting it records the acknowledgement
+ * without text, which the service accepts only where the account turned
+ * acknowledgement text off.
  */
 export const PutAgentAcknowledgementRequest = Type.Object(
   {
-    text: Type.String({
-      minLength: 1,
-      maxLength: AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
-      pattern: '.*\\S.*',
-    }),
+    text: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
+        pattern: '.*\\S.*',
+      }),
+    ),
   },
   { additionalProperties: false },
 )
@@ -434,7 +462,10 @@ export interface PutAgentAcknowledgementResponse {
 
 export interface GetAgentAcknowledgementResponse {
   request_id: string
+  /** True for every request that asked for a reply. */
   agent_acknowledgement_required: boolean
+  /** True when the acknowledgement must carry text. */
+  agent_acknowledgement_text_required: boolean
   agent_acknowledgement: AgentAcknowledgementView | null
 }
 

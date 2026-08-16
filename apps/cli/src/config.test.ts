@@ -191,20 +191,32 @@ describe('draft building', () => {
       presentation: { title: 'T', body: 'B' },
       targets: { mode: 'all' },
       delivery: { ttl_seconds: 86400, collapse_key: null },
+      // An unlabelled draft is ordinary news, and news has a sound.
+      platform: { ios: { sound: 'default' }, macos: { sound: 'default' } },
     })
   })
 
   it.each([
-    {},
-    { kind: 'done' },
-    { kind: 'failed' },
-    { kind: 'blocked' },
-    { reply: true },
-  ])('never derives sound or interruption level from kind: %j', (flags) => {
+    { flags: {}, sound: 'default' },
+    { flags: { kind: 'update' }, sound: 'default' },
+    { flags: { kind: 'done' }, sound: 'done' },
+    { flags: { kind: 'failed' }, sound: 'alert' },
+    { flags: { kind: 'blocked' }, sound: 'attention' },
+    { flags: { kind: 'question' }, sound: 'attention' },
+    { flags: { reply: true }, sound: 'attention' },
+  ])('gives $flags the $sound sound when nobody chose one', ({ flags, sound }) => {
     const config = loadConfig({ cwd: base.cwd, env: base.env })
     const build = buildDraft(config, { title: 'T', body: 'B', ...flags })
     if (!build.ok) throw new Error(build.error)
-    expect(build.draft.platform).toBeUndefined()
+    expect(build.draft.platform?.ios?.sound).toBe(sound)
+    expect(build.draft.platform?.ios?.interruption_level).toBeUndefined()
+  })
+
+  it('lets an explicit sound outrank the kind it would have derived', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const explicit = buildDraft(config, { title: 'T', body: 'B', kind: 'failed', sound: 'none' })
+    if (!explicit.ok) throw new Error(explicit.error)
+    expect(explicit.draft.platform?.ios?.sound).toBeNull()
   })
 
   it('orders explicit flags over saved user config', () => {

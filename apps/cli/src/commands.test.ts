@@ -1,3 +1,4 @@
+import { REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
 import {
   existsSync,
   mkdirSync,
@@ -11,6 +12,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AGENT_ACKNOWLEDGEMENT_MAX_LENGTH } from '@raidiant/notifai-protocol'
 import type {
   CapabilityDocument,
   EvidenceSnapshot,
@@ -261,6 +263,7 @@ const receipt: SubmissionReceipt = {
   request_id: 'req_reply_test',
   reply_expires_at: '2026-08-02T18:00:00.000Z',
   agent_acknowledgement_required: true,
+  agent_acknowledgement_text_required: true,
   replayed: false,
   overall: 'provider_accepted_all',
   deliveries: [
@@ -293,6 +296,7 @@ function replyResponse(
   replies: ReplyView[] = [],
   options: {
     required?: boolean
+    textRequired?: boolean
     acknowledgement?: ListRepliesResponse['agent_acknowledgement']
   } = {},
 ): ListRepliesResponse {
@@ -300,6 +304,7 @@ function replyResponse(
     request_id: receipt.request_id,
     reply_expires_at: '2026-08-02T18:00:00.000Z',
     agent_acknowledgement_required: options.required ?? true,
+    agent_acknowledgement_text_required: options.textRequired ?? true,
     agent_acknowledgement: options.acknowledgement ?? null,
     replies,
   }
@@ -378,7 +383,7 @@ describe('command contracts', () => {
     } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(io, client), {
+      await sendCommand(makeDeps(io, client), { kind: 'update',
         title: 'T',
         body: 'B',
         project: 'Invalid Project!',
@@ -456,7 +461,7 @@ describe('command contracts', () => {
     } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(new CapturedIo(), client), {
+      await sendCommand(makeDeps(new CapturedIo(), client), { kind: 'update',
         title: 'Visual comparison is ready',
         body:
           '![first](media:1) ![second](media:2) ![ready](media:med_existing)',
@@ -488,7 +493,7 @@ describe('command contracts', () => {
     } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(io, client), {
+      await sendCommand(makeDeps(io, client), { kind: 'update',
         title: 'Visual comparison',
         body: 'See it.',
         image: ['one.png'],
@@ -523,19 +528,19 @@ describe('command contracts', () => {
 
   it.each([
     {
-      flags: { title: 'A title that is deliberately longer than forty characters', body: 'Plain.' },
+      flags: { kind: 'update', title: 'A title that is deliberately longer than forty characters', body: 'Plain.' },
       warning: /titles work best around 40/i,
     },
     {
-      flags: { title: 'Done · build', body: 'All green.' },
+      flags: { kind: 'done', title: 'Done · build', body: 'All green.' },
       warning: /keep the title to the specific substance/i,
     },
     {
-      flags: { title: 'Failed · build', body: 'One integration test failed.' },
+      flags: { kind: 'failed', title: 'Failed · build', body: 'One integration test failed.' },
       warning: /Put notification type in --kind/i,
     },
     {
-      flags: { title: 'Update', body: 'Still relevant.', ttl: 259_201 },
+      flags: { kind: 'update', title: 'Update', body: 'Still relevant.', ttl: 259_201 },
       warning: /longer than 72 hours/i,
     },
   ])('warns without rejecting a send: $warning', async ({ flags, warning }) => {
@@ -559,7 +564,7 @@ describe('command contracts', () => {
       cwd: root,
     }
 
-    expect(await sendCommand(deps, { title: 'Update', body: 'Still relevant.' })).toBe(EXIT.ok)
+    expect(await sendCommand(deps, { kind: 'update', title: 'Update', body: 'Still relevant.' })).toBe(EXIT.ok)
     expect(io.errLines.join('\n')).toMatch(/machine-global config/i)
   })
 
@@ -579,11 +584,11 @@ describe('command contracts', () => {
       expect(grammar).toContain("'--image <path|url|media_id>'")
       expect(grammar).toContain("'--image-alt <text>'")
     }
-    expect(source).toContain('Kind describes status in the Companion Apps')
-    expect(source).toContain('it never chooses banner sound or interruption level')
-    expect(source).toContain('override saved sound')
+    // Kind now selects the sound, so the help must say so — and must not carry
+    // the retired separation it replaced.
+    expect(source).toContain('Kind is required, and it selects the sound')
+    expect(source).not.toContain('it never chooses banner sound or interruption level')
     expect(source).not.toContain('Kind profiles apply automatically')
-    expect(source).not.toContain('sound alert      level active')
   })
 
   it('rejects a question nobody will wait for', async () => {
@@ -662,8 +667,8 @@ describe('command contracts', () => {
   })
 
   it.each([
-    { title: 'Deploy?   ', body: 'Ready.' },
-    { title: 'Deployment', body: 'Should I deploy?\n' },
+    { kind: 'update', title: 'Deploy?   ', body: 'Ready.' },
+    { kind: 'update', title: 'Deployment', body: 'Should I deploy?\n' },
   ])('warns on stderr when $title / $body ends in a question after trimming', async (flags) => {
     const io = new CapturedIo()
     const client = { submit: async () => receipt } as unknown as ApiClient
@@ -703,7 +708,7 @@ describe('command contracts', () => {
     } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(io, client), {
+      await sendCommand(makeDeps(io, client), { kind: 'update',
         title: 'Deploy?',
         body: 'Choose when ready.',
         replyChoice: ['Now', 'Later'],
@@ -720,7 +725,7 @@ describe('command contracts', () => {
     const client = { submit: async () => receipt } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(io, client), {
+      await sendCommand(makeDeps(io, client), { kind: 'update',
         title: 'Deployment',
         body: 'Should I deploy?',
         json: true,
@@ -942,6 +947,7 @@ describe('command contracts', () => {
       reply_expires_at: '2026-08-02T18:00:00.000Z',
       replies: [],
       agent_acknowledgement_required: true,
+      agent_acknowledgement_text_required: true,
       agent_acknowledgement: null,
       acknowledgement_command: null,
       degraded: false,
@@ -975,6 +981,7 @@ describe('command contracts', () => {
       reply_expires_at: '2026-08-02T18:00:00.000Z',
       replies: [reply],
       agent_acknowledgement_required: true,
+      agent_acknowledgement_text_required: true,
       agent_acknowledgement: null,
       acknowledgement_command: `notifai acknowledge ${receipt.request_id} --text <text>`,
       degraded: false,
@@ -1088,9 +1095,11 @@ describe('command contracts', () => {
   })
 
   it.each([
-    { text: undefined, message: '--text is required' },
-    { text: '   ', message: '--text is required' },
-    { text: 'x'.repeat(1001), message: 'at most 1000 characters' },
+    { text: '   ', message: 'must contain non-whitespace text' },
+    {
+      text: 'x'.repeat(AGENT_ACKNOWLEDGEMENT_MAX_LENGTH + 1),
+      message: `at most ${AGENT_ACKNOWLEDGEMENT_MAX_LENGTH} characters`,
+    },
   ])('rejects invalid acknowledgement text before network: $message', async ({ text, message }) => {
     const io = new CapturedIo()
     let calls = 0
@@ -1106,6 +1115,60 @@ describe('command contracts', () => {
     ).toBe(EXIT.usage)
     expect(calls).toBe(0)
     expect(io.errLines.join('\n')).toContain(message)
+  })
+
+  it('records an acknowledgement with no text at all', async () => {
+    const io = new CapturedIo()
+    let submitted: { requestId: string; body: { text?: string } } | undefined
+    const client = {
+      putAgentAcknowledgement: async (requestId: string, body: { text?: string }) => {
+        submitted = { requestId, body }
+        return {
+          status: 'recorded' as const,
+          agent_acknowledgement: { text: '', created_at: '2026-08-13T12:01:00.000Z' },
+        }
+      },
+    } as unknown as ApiClient
+
+    expect(await acknowledgeCommand(makeDeps(io, client), receipt.request_id, {})).toBe(EXIT.ok)
+    // No empty string either: an omitted field is what "no text" means on the
+    // wire, and the account's snapshot decides whether that was allowed.
+    expect(submitted).toEqual({ requestId: receipt.request_id, body: {} })
+    expect(io.outLines.join('\n')).toContain(`Agent Acknowledgement recorded for ${receipt.request_id}`)
+  })
+
+  it('names the missing text, not a contract mismatch, when the account requires it', async () => {
+    const io = new CapturedIo()
+    const client = {
+      putAgentAcknowledgement: async () => {
+        throw new ApiCallError(
+          422,
+          'acknowledgement_text_required',
+          'This account requires Agent Acknowledgement text.',
+          'Re-send the acknowledgement with text saying what you will do because of the reply.',
+        )
+      },
+    } as unknown as ApiClient
+
+    expect(await acknowledgeCommand(makeDeps(io, client), receipt.request_id, {})).toBe(EXIT.failed)
+    const err = io.errLines.join('\n')
+    expect(err).toContain('acknowledgement_text_required')
+    expect(err).toContain('next: Re-send the acknowledgement with text')
+    // The contract held; only this body fell short of the account's choice.
+    expect(err).not.toContain('disagree about the contract')
+  })
+
+  it('asks for a text-free acknowledgement when the account turned text off', async () => {
+    const io = new CapturedIo()
+    const client = {
+      replies: async () => replyResponse([reply], { textRequired: false }),
+    } as unknown as ApiClient
+
+    expect(await repliesCommand(makeDeps(io, client), receipt.request_id, {})).toBe(EXIT.ok)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Agent Acknowledgement required.')
+    expect(out).toContain(`notifai acknowledge ${receipt.request_id}\``)
+    expect(out).not.toContain('--text')
   })
 
   it.each([
@@ -4822,7 +4885,7 @@ describe('command failures carrying server details', () => {
       { code: 'invalid_request', path: 'presentation.detail', message: 'Unexpected property' },
     ])
 
-    expect(await sendCommand(makeDeps(io, client), { title: 'Deploy finished', body: 'All green.' })).toBe(
+    expect(await sendCommand(makeDeps(io, client), { kind: 'update', title: 'Deploy finished', body: 'All green.' })).toBe(
       EXIT.failed,
     )
 
@@ -4839,7 +4902,7 @@ describe('command failures carrying server details', () => {
       { code: 'invalid_request', path: 'presentation.detail', message: 'Unexpected property' },
     ])
 
-    expect(await sendCommand(makeDeps(io, client), { title: 'Deploy finished', body: 'All green.' })).toBe(
+    expect(await sendCommand(makeDeps(io, client), { kind: 'update', title: 'Deploy finished', body: 'All green.' })).toBe(
       EXIT.failed,
     )
 
@@ -4852,7 +4915,7 @@ describe('command failures carrying server details', () => {
   it('prints exactly the code and message when the error carries no details', async () => {
     const io = new CapturedIo()
 
-    expect(await sendCommand(makeDeps(io, throwingClient(409)), { title: 'Deploy finished', body: 'All green.' })).toBe(
+    expect(await sendCommand(makeDeps(io, throwingClient(409)), { kind: 'update', title: 'Deploy finished', body: 'All green.' })).toBe(
       EXIT.failed,
     )
 
@@ -4983,10 +5046,14 @@ describe('question sets', () => {
     ).toMatchObject({ ok: false })
     expect(
       buildQuestions(
-        { form: JSON.stringify({ questions: Array.from({ length: 5 }, (_, i) => ({ text: `Q${i}?` })) }) },
+        {
+          form: JSON.stringify({
+            questions: Array.from({ length: REPLY_MAX_QUESTIONS + 1 }, (_, i) => ({ text: `Q${i}?` })),
+          }),
+        },
         undefined,
       ),
-    ).toMatchObject({ ok: false, error: expect.stringContaining('1-4') })
+    ).toMatchObject({ ok: false, error: expect.stringContaining(`1-${REPLY_MAX_QUESTIONS}`) })
     expect(
       buildQuestions(
         { form: JSON.stringify({ questions: [{ text: 'Pick?', multi: true }] }) },

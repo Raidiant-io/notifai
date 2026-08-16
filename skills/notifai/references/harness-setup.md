@@ -1,7 +1,29 @@
 # Harness setup and recovery
 
-This reference contains per-harness mechanics for `notifai ask`. Read it only
-when installing hooks, diagnosing activation, or recovering question routing.
+The mechanics behind installing Notifai, routing questions to devices, and
+working out why either is not happening. Read it when you are installing,
+diagnosing, or recovering — not before.
+
+- [Signing this machine in](#signing-this-machine-in)
+- [Install deliberately](#install-deliberately)
+- [Activation by harness](#activation-by-harness)
+- [How the answer gets back to the agent](#how-the-answer-gets-back-to-the-agent)
+- [Bounded recovery](#bounded-recovery)
+- [Reading the record](#reading-the-record)
+- [Settings and environment](#settings-and-environment)
+
+## Signing this machine in
+
+Run `notifai login` yourself. It opens a browser page only the user can approve.
+
+In a headless or remote shell, `notifai login --no-open` prints the approval URL
+instead of trying to open a browser — hand the user that URL. `--name <name>`
+sets what the machine is called in their dashboard; the hostname is the default.
+
+`notifai auth status --json` says whether this machine is paired.
+`notifai auth access --json` says whether the account has an active plan. They
+fail differently and are worth separating before you report either as broken.
+`notifai logout` removes the stored credential.
 
 ## Install deliberately
 
@@ -38,9 +60,8 @@ harness exports one. An explicit `--session-id` cannot create missing routing ev
 could start a turn in this exact session on its own. It never blocks: when it
 cannot, the answer is held and replayed at the session's next turn instead.
 
-Codex trust diagnosis is a best-effort comparison with Codex's current
-persisted representation, not a supported trust-store API. Notifai never
-writes approvals; `/hooks` is authoritative if the two disagree.
+Notifai never writes trust approvals. If its diagnosis and Codex disagree,
+`/hooks` is authoritative.
 
 ## Activation by harness
 
@@ -85,21 +106,16 @@ meter differs per harness:
   answer is held in the session's journal and delivered at that session's next
   Stop. This is the floor under every route.
 
-An accepted answer is never dropped because delivery could not be proved, and
-never delivered twice: the journal is cleared only once a later hook shows the
-continuation actually ran. Repeated continuations are capped, so a wake loop
-cannot run away.
+An accepted answer is never dropped and never delivered twice, so a question
+that has not come back yet is still coming: do not re-ask it.
 
 `ask_grace_seconds` is the only setting that changes any of this. At its
 default of `0` the question reaches devices as soon as the asking turn ends. A
 positive value keeps it in the terminal for that long first, so an answer typed
-there wins without a notification ever leaving.
-
-When the reply window closes — at its deadline, or early when the answer is
-already in — Notifai asks the server to close it, and that transaction fence
-returns every reply that committed first. Only a confirmed-silent request is
-retired. If the fence is unreachable, the exact request is preserved for a
-later hook rather than erased or reported closed.
+there wins without a notification ever leaving. The window is skipped when a
+question from this session is already waiting on the user's devices: they have
+been interrupted already, and holding the second question back would only delay
+it.
 
 ## Bounded recovery
 
@@ -108,8 +124,39 @@ restart, one new prompt, and one new doctor check. Stop if the current pointer
 belongs to another active session or if the hook still has not fired; ask the
 user or coordinator instead of retrying indefinitely.
 
-If credentials are missing, run `notifai login` yourself; it opens a browser
-approval only the user can complete. If a companion device is missing, ask
-them to open a supported companion build, sign in, and grant notification
-permission. Do not emulate either human action or treat Provider Acceptance as
-Companion Receipt proof.
+If a companion device is missing, ask the user to open a supported companion
+build, sign in, and grant notification permission. Do not emulate that, and do
+not treat Provider Acceptance as Companion Receipt proof.
+
+To stop routing questions from this project, `notifai hooks uninstall`; add
+`--global` to remove a machine-wide install, and `--harness <name>` to name one
+when several are wired.
+
+## Reading the record
+
+`notifai logs` narrows several ways, and they compose:
+
+- `--request <id>` · `--run <id>` · `--session <id>` — one notification, one
+  invocation, one harness session
+- `--event <name>` (repeatable) · `--grep <text>` · `--level error`
+- `--since 10m|2h|1d|<ISO 8601>` · `-n <count>` · `--all` · `--project <id>` ·
+  `--all-projects`
+- `--json` for one record per line, `--path` for where the files are
+
+`--clear` deletes the user's local record. It is theirs, and nothing else keeps
+a copy — do not run it to tidy up.
+
+## Settings and environment
+
+`notifai config explain <key> [--json]` gives the full explanation of one
+setting; `notifai config show --explain` includes advanced keys and the file
+each value came from. Beyond the usual scopes, `--session <id>` writes a
+preference that lasts only for one harness session.
+
+`ask_notifications` is the setting that turns question routing off for a scope;
+`ask_grace_seconds` is the terminal-first window described above.
+
+`NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
+want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
+machine credential in a plaintext file rather than the OS keychain — only when
+the user has asked for it, and never on a shared machine.

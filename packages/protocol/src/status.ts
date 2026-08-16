@@ -91,6 +91,8 @@ export const ERROR_CODES = [
   'conflict',
   'reply_not_enabled',
   'reply_window_closed',
+  /** The account requires Agent Acknowledgement text and this one carried none. */
+  'acknowledgement_text_required',
   /** The submitted choice is not one this question offered; never retryable. */
   'unknown_choice',
   'internal_error',
@@ -101,7 +103,7 @@ export interface ApiErrorBody {
   error: {
     code: ErrorCode
     message: string
-    /** Stable machine-actionable next step, e.g. "Run `notifai auth login`." */
+    /** Stable machine-actionable next step, e.g. "Run `notifai login`." */
     next_action?: string
     details?: unknown
   }

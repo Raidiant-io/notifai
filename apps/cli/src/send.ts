@@ -12,6 +12,9 @@ import {
   type MediaItemT,
   type NotificationDraftT,
   NOTIFICATION_KINDS,
+  DEFAULT_NOTIFICATION_KIND,
+  defaultSoundForKind,
+  type NotificationKind,
   PLATFORMS,
   type Platform,
   type QuestionT,
@@ -173,10 +176,24 @@ export function buildDraft(
   const targets: NotificationDraftT['targets'] =
     deviceIds && deviceIds.length > 0 ? { mode: 'selected', device_ids: deviceIds } : { mode: 'all' }
 
-  // Kind is semantic status metadata for Companion presentation. It never
-  // chooses native-banner attention; only an explicit flag or saved preference
-  // may add sound or interruption fields to the platform payload.
-  const sound = flags.sound ?? config.sound.value
+  if (
+    flags.kind !== undefined &&
+    !NOTIFICATION_KINDS.includes(flags.kind as (typeof NOTIFICATION_KINDS)[number])
+  ) {
+    return {
+      ok: false,
+      error: `Unknown kind "${flags.kind}" — supported: ${NOTIFICATION_KINDS.map((kind) => `"${kind}"`).join(', ')}.`,
+    }
+  }
+
+  // Kind states what happened; the sound table turns that truth into the
+  // attention it deserves, so an honest sender gets the right sound without
+  // reasoning about audio. An explicit --sound and the user's saved preference
+  // both outrank it, and `none` still means silent.
+  const kindForSound: NotificationKind = flags.reply
+    ? 'question'
+    : ((flags.kind as NotificationKind | undefined) ?? DEFAULT_NOTIFICATION_KIND)
+  const sound = flags.sound ?? config.sound.value ?? defaultSoundForKind(kindForSound)
   if (sound !== null && sound !== undefined && !CLI_SOUNDS.includes(sound as CliSound)) {
     return {
       ok: false,
@@ -211,16 +228,6 @@ export function buildDraft(
     options.custom_data = data
   }
 
-  if (
-    flags.kind !== undefined &&
-    !NOTIFICATION_KINDS.includes(flags.kind as (typeof NOTIFICATION_KINDS)[number])
-  ) {
-    return {
-      ok: false,
-      error: `Unknown kind "${flags.kind}" — supported: ${NOTIFICATION_KINDS.map((kind) => `"${kind}"`).join(', ')}.`,
-    }
-  }
-
   const ttl = flags.ttl ?? config.ttl_seconds.value
   const collapse = flags.collapseKey ?? config.collapse_key.value
   if (
@@ -242,7 +249,7 @@ export function buildDraft(
   if (choices === 'invalid') {
     return {
       ok: false,
-      error: CHOICE_USAGE,
+      error: REPLY_CHOICE_USAGE,
     }
   }
   if (flags.replyMulti && choices === null && flags.questions === undefined) {
@@ -362,9 +369,18 @@ export function parseChoices(
 }
 
 /** Message shared by every surface that accepts choice labels. */
+/** `ask` spells this flag `--choice`. */
 export const CHOICE_USAGE =
   'Offer 2-6 answers, one --choice flag per answer, unique once slugified — ' +
   'e.g. --choice "Yes, ship it" --choice "Not yet".'
+
+/**
+ * `send` spells the same flag `--reply-choice`, and a remedy that names the
+ * other command's flag reproduces the error it is trying to fix.
+ */
+export const REPLY_CHOICE_USAGE =
+  'Offer 2-6 answers, one --reply-choice flag per answer, unique once slugified — ' +
+  'e.g. --reply-choice "Yes, ship it" --reply-choice "Not yet".'
 
 export function slugify(label: string): string {
   return label

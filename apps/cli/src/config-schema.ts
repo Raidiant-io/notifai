@@ -113,8 +113,8 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     },
     summary: 'Set the sound notifications from here use',
     detail:
-      'Setting this pins one sound for every notification sent from here. Kind remains semantic status metadata and never changes native-banner attention.\n\nLeave this unset to omit the sound field and let the destination use its normal behavior. A common explicit preference is `none`, to make a noisy project completely silent.',
-    unsetMeans: 'not specified; the destination uses its normal behavior',
+      'Setting this pins one sound for every notification sent from here, whatever kind it is.\n\nLeave it unset and each notification arrives with the sound its kind implies: the completion chime when work finished, the most insistent tone when it failed, a distinct attention tone for a question or blocked work, and the standard tone for ordinary news. A common explicit preference is `none`, to make a noisy project completely silent.',
+    unsetMeans: 'not set; each kind brings its own sound',
   },
   interruption_level: {
     label: 'Interruption level',
@@ -124,11 +124,11 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     choiceHints: {
       passive: 'no sound or wake — waits in the notification list',
       active: 'wakes the screen and plays the sound',
-      time_sensitive: 'may break through Focus modes',
+      time_sensitive: 'marks the notification urgent; Focus breakthrough is not available yet',
     },
     summary: 'Set how insistently notifications from here arrive',
     detail:
-      'How hard a notification tries to reach you, in the operating system\'s terms. Setting this pins one level for everything sent from here; kind never changes it.\n\nLeave this unset to omit the field and let the destination use its normal behavior. `time_sensitive` can pierce a Focus mode, so reserve it for cases that genuinely earn it.',
+      'How hard a notification tries to reach you, in the operating system\'s terms. Setting this pins one level for everything sent from here; kind chooses the sound, never this.\n\nLeave this unset to omit the field and let the destination use its normal behavior. `time_sensitive` is accepted and marks the notification urgent, but Focus breakthrough is not available yet — run `notifai capabilities` for what a platform actually honours.',
     unsetMeans: 'not specified; the destination uses its normal behavior',
   },
   devices: {

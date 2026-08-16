@@ -156,7 +156,39 @@ const program = new Command('notifai')
  * interactive tree cost nothing to the paths that never draw them — `send`,
  * `ask`, and the hook that runs in front of every prompt the user types.
  */
-program.action(async () => {
+/**
+ * Commander exits 1 for every usage error it detects itself, which contradicts
+ * the exit vocabulary this CLI documents and every hand-written usage error it
+ * returns. A caller branching on exit codes should not have to know which layer
+ * rejected it. Help and version stay successful.
+ */
+program.exitOverride((err) => {
+  process.exit(err.exitCode === 0 ? 0 : 2)
+})
+
+/**
+ * An unrecognised subcommand reaches the root as an excess argument, and
+ * "expected 0 arguments but got 1" tells a caller nothing about what it typed
+ * or what exists. Naming it — with the nearest real command when there is one —
+ * turns a dead end into one more try.
+ */
+program.argument('[command]', 'a notifai command').action(async (command?: string) => {
+  if (command !== undefined) {
+    const names = program.commands.map((cmd) => cmd.name())
+    const near = names.filter(
+      (name) =>
+        name.startsWith(command.slice(0, 2)) ||
+        command.startsWith(name.slice(0, 2)) ||
+        name.includes(command) ||
+        command.includes(name),
+    )
+    deps.io.err(
+      `Unknown command "${command}".` +
+        (near.length > 0 ? ` Did you mean: ${near.slice(0, 3).join(', ')}?` : '') +
+        ' Run notifai --help for the full list.',
+    )
+    process.exit(2)
+  }
   if (deps.io.interactive !== true) {
     program.outputHelp()
     return
@@ -279,7 +311,7 @@ const send = program
     [],
   )
   .optionsGroup(SEND_GROUP.routing)
-  .option('--kind <kind>', 'what this is: update (default) | done | failed | blocked | question (requires --reply)')
+  .option('--kind <kind>', 'what this is (required): update | done | failed | blocked — question is set by --reply')
   .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
   .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
   .option('--all', 'target all routable devices (overrides configured devices)')
@@ -346,8 +378,8 @@ const send = program
 
 send.addHelpText(
   'after',
-  `\nKind describes status in the Companion Apps; it never chooses banner sound or interruption level.\nWithout --sound/--level or saved preferences, those fields are omitted for the destination to handle.\n`,
-)
+  `\nKind is required, and it selects the sound the notification arrives with: done rings the completion chime, failed the most insistent tone, blocked and question a distinct attention tone, update the standard one.\nAn explicit --sound or --level, and the user's saved preference, both outrank that default.\n`,
+ )
 
 program
   .command('replies [request_id]')
@@ -369,9 +401,9 @@ program
   .description(
     'Record the required Agent Acknowledgement for a replied-to notification request; never prompts',
   )
-  .requiredOption('--text <text>', 'concrete work you will do because of the reply')
+  .option('--text <text>', 'concrete work you will do because of the reply')
   .option('--json', 'machine-readable output')
-  .action(async (requestId: string, opts: { text: string; json?: boolean }) => {
+  .action(async (requestId: string, opts: { text?: string; json?: boolean }) => {
     process.exit(await acknowledgeCommand(deps, requestId, opts))
   })
 

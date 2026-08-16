@@ -49,12 +49,15 @@ notifai replies req_example --json
 notifai close req_example --json
 ```
 
-When the request's immutable setting snapshot requires an Agent
-Acknowledgement, `send --reply`, `replies`, and `close` expose
+Every answered request is acknowledged, so the user always learns that an agent
+read their answer. `send --reply`, `replies`, and `close` expose
 `agent_acknowledgement_required`, the current `agent_acknowledgement`, and
-`acknowledgement_command` while it is still absent. A request whose snapshot
-disabled Agent Acknowledgements reports that they are not required and never
-prints a follow-up command.
+`acknowledgement_command` while it is still absent.
+
+The one account setting governs the agent's brief written reply, not the
+acknowledgement itself: when `agent_acknowledgement_text_required` is false the
+printed command carries no `--text`, and `notifai acknowledge <request_id>`
+records the receipt on its own.
 
 Anywhere that is not a terminal — a script, a CI job, an agent — `notifai`
 prints help instead of prompting, output stays uncoloured, and `--json` is
