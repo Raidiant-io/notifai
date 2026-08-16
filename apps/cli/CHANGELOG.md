@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [5.0.0](https://github.com/Raidiant-io/notifai/compare/v4.0.0...v5.0.0) (2026-08-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* `notifai send` now requires --kind. The account preference `agent_acknowledgements_enabled` is renamed to `agent_acknowledgement_text_enabled` and governs only the written reply.
+
+### Features
+
+* **cli:** report an ask registration as data, and stop init promising routing it lacks ([156159b](https://github.com/Raidiant-io/notifai/commit/156159b4d39b249a1be65ac86a9f7452ee9720d2))
+* keep a question answerable for a day, and let the user choose ([ace207e](https://github.com/Raidiant-io/notifai/commit/ace207e04cfdc3a0ccda14dffc79a882a663034c))
+* make kind required and carry attention, and always acknowledge an answer ([07e7c21](https://github.com/Raidiant-io/notifai/commit/07e7c216d52f3041e50ce5c7ec1ce4a3f8491e64))
+
+
+### Bug Fixes
+
+* clean up what the help, the README and a test comment were saying ([221ca6b](https://github.com/Raidiant-io/notifai/commit/221ca6b1d04a80cbd8473d54cd50a6024dcf6c50))
+* **cli:** retire drafts the server rejects as invalid ([4023e42](https://github.com/Raidiant-io/notifai/commit/4023e42e3aeb9f8674239ab0516ccf2527b1428c))
+* **cli:** retire drafts the server rejects as invalid ([d676726](https://github.com/Raidiant-io/notifai/commit/d6767265e4718102f7c97c6ee939073e79b038a2))
+* **cli:** stop --reply-window advertising the default it no longer has ([b9eeabc](https://github.com/Raidiant-io/notifai/commit/b9eeabcbafd9a8e84d2aa86f44b04ca4ece237f2))
+* give the detached waiter the wall clock its host already allows ([3d4b111](https://github.com/Raidiant-io/notifai/commit/3d4b111afb4d35bd8c04121deee82b849dd0ade1))
+* **hooks:** never write a Codex hooks.json Notifai does not own ([8fdd00c](https://github.com/Raidiant-io/notifai/commit/8fdd00c6018915fe2164800c5797a9c3cb92da68))
+* **hooks:** never write a Codex hooks.json Notifai does not own ([8948519](https://github.com/Raidiant-io/notifai/commit/894851942db6283ff856025e7f7d2dd86695013d))
+* **hooks:** read the duplicate-representation warning as a sentence ([e0d041f](https://github.com/Raidiant-io/notifai/commit/e0d041f729e75a4c909f41c5dfafe6602f88edeb))
+* **hooks:** read the duplicate-representation warning as a sentence ([936f068](https://github.com/Raidiant-io/notifai/commit/936f068d2587d56fc10a89a7d87c81c37ef50e2d))
+* **hooks:** report a Codex dual representation only when Notifai is in both ([f4426dc](https://github.com/Raidiant-io/notifai/commit/f4426dc6e3876ac0a75f31ce5fb81c4ec2f4719d))
+* **hooks:** report a Codex dual representation only when Notifai is in both ([2bab419](https://github.com/Raidiant-io/notifai/commit/2bab41987bf9fa251f71785b9881e3c8418be1bb))
+* **hooks:** stop rewriting the whole of a user's Codex config.toml ([e037e22](https://github.com/Raidiant-io/notifai/commit/e037e227646178a0cbc08e7a00ab47129b3b435f))
+* **hooks:** stop rewriting the whole of a user's Codex config.toml ([92ff189](https://github.com/Raidiant-io/notifai/commit/92ff1891c3f42092758af257ec3be8b68e51c0f1))
+* let a question outlive the waiter that pushed it ([de242e7](https://github.com/Raidiant-io/notifai/commit/de242e753434dda87f665de6474491320fbc7365))
+* **lock:** survive losing the rendezvous while registering ([2b5d46d](https://github.com/Raidiant-io/notifai/commit/2b5d46d5221b843fc2db5a803da561e3dbb3b7b0))
+* **lock:** survive losing the rendezvous while registering ([efb8bd6](https://github.com/Raidiant-io/notifai/commit/efb8bd6f718f9f5e7e9bda1471cb88db0a77ef4c))
+* reject an unknown --platform locally, the way send already does ([7ba7678](https://github.com/Raidiant-io/notifai/commit/7ba7678214cc3c98919ece2f533ed40f080951f3))
+* report a failed image upload like every other API failure ([be76c48](https://github.com/Raidiant-io/notifai/commit/be76c4808e6c37bb97d64b14b018b148c4887d94))
+* stop a busy session discarding the answer it was too busy to take ([13ce700](https://github.com/Raidiant-io/notifai/commit/13ce7003c393741b82886910cb51b18d0a9f1065))
+* stop a turn-ending question expiring with the waiter that pushed it ([dd2cda6](https://github.com/Raidiant-io/notifai/commit/dd2cda6a339d711bc4c6723b93ccf940207565a7))
+* stop a typed prompt erasing an outstanding acknowledgement ([ed15e18](https://github.com/Raidiant-io/notifai/commit/ed15e18fffd893ef0c5ad27bc17d4f78b0a88b6c))
+* stop several surfaces stating things that are not true ([56402b9](https://github.com/Raidiant-io/notifai/commit/56402b98b763bdce2fb75c79f8502a92968a0abb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 1.0.0 to 2.0.0
+
 ## [4.0.0](https://github.com/Raidiant-io/notifai/compare/v3.0.1...v4.0.0) (2026-08-15)
 
 
