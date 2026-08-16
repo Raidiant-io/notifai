@@ -1085,6 +1085,12 @@ describe('late answer collection', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-prompt' }))
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Hold')
+    // The obligation survives the user typing — that is the whole point of
+    // recording it — so the turn after the answer is held for it. Satisfy it
+    // the way the agent would, then the retirement proceeds.
+    expect(readSessionState('late-prompt', h.env).acknowledgement_due).toHaveLength(1)
+    h.recorder.acknowledged = new Set(['req_live'])
+
     await hookRunCommand(
       h.deps,
       'stop',
@@ -3824,5 +3830,47 @@ describe('escalation waiter delivery seam', () => {
     )
     expect(claimQuestionPush('waiter-failed-route', h.env)).toBe(true)
     releaseQuestionPush('waiter-failed-route', h.env)
+  })
+})
+
+
+describe('session state across a prompt', () => {
+  it('carries every kind of session state across a typed prompt', async () => {
+    // The prompt handler rebuilds state from named fields, so a field nobody
+    // remembered to name is erased by the user typing. That is how an
+    // acknowledgement obligation once vanished. This fails if a future field is
+    // added to SessionState and not carried across.
+    const h = harness([])
+    const before = {
+      last_prompt_at: AWAY,
+      last_stop_at: NOW - 1_000,
+      retiring: [
+        {
+          request_id: 'req_carry',
+          collapse_key: 'collapse-carry',
+          device_ids: ['dev_iphone'],
+          question: 'Carried?',
+          state: 'expired' as const,
+        },
+      ],
+      continuation: { answered_at: NOW - 2_000, count: 2 },
+      acknowledgement_due: [{ request_id: 'req_carry_ack', recorded_at: NOW }],
+      acknowledgement_blocks: 2,
+    }
+    writeSessionState('carry-all', h.env, before)
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'carry-all', cwd: h.deps.cwd }),
+    )
+
+    const after = readSessionState('carry-all', h.env)
+    for (const key of Object.keys(before) as (keyof typeof before)[]) {
+      expect(after[key], `${key} did not survive the prompt`).toBeDefined()
+    }
+    // The one field a prompt resets rather than carries.
+    expect(after.continuation?.count).toBe(0)
+    expect(after.acknowledgement_blocks).toBe(2)
   })
 })
