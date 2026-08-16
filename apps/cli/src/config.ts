@@ -1,8 +1,8 @@
+import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
-import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
 import { configHome, stateHome } from './platform.js'
 

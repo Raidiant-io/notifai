@@ -1423,7 +1423,7 @@ describe('the waiter owning one question to the end', () => {
     expect(h.io.errLines.join('\n')).toContain('expired with its continuation owner')
   })
 
-  it('charges sequential submission latency to one deadline', async () => {
+  it('charges sequential submission latency to one owner deadline, not to the answer window', async () => {
     const h = harness([reply({ text: 'Done' })])
     writeSessionState('latency', h.env, { last_prompt_at: AWAY })
     registerQuestion('latency', h.env, { question: 'First?' }, NOW)
@@ -1435,9 +1435,12 @@ describe('the waiter owning one question to the end', () => {
     const windows = h.recorder.submitted
       .filter((entry) => entry.draft.event === 'agent_question')
       .map((entry) => entry.draft.reply?.expires_in_seconds)
-    // Both windows end at the same absolute moment: the second question's is
-    // shorter by exactly the 40s the first submission spent.
-    expect(windows).toEqual([480, 440])
+    // How long the user may answer does not shrink because this owner spent
+    // part of its own budget getting the question out. Both questions stay
+    // answerable for the configured window.
+    expect(windows).toEqual([86_400, 86_400])
+    // The owner's own budget is still one shared deadline, and it is still
+    // charged for the latency: the whole pass fits inside the waiter ceiling.
     expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
   })
 

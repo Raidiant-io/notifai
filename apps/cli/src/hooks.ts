@@ -2475,16 +2475,25 @@ async function escalate(
   // its own notification — one ask never stands in for another.
   const submitted: PendingQuestion[] = []
   for (const entry of unasked) {
-    // The reply window is the question's own: whatever is left of the waiter's
-    // ceiling, granted to the server so it stops accepting answers at the same
-    // moment this owner stops listening for them.
-    const replyWindowSeconds = Math.floor((ceilingAt - ctx.now()) / 1000)
-    if (replyWindowSeconds < MIN_REPLY_WINDOW_SECONDS) {
+    // How long the answer is accepted, and how long this owner listens for it,
+    // are two different spans. They used to be one: the window was whatever
+    // remained of the waiter's ceiling, so a question asked at a turn's end
+    // stopped being answerable about eight minutes later, whatever the user
+    // had configured.
+    //
+    // That was right when the waiter was the only way an answer came back. It
+    // is not any more: a late answer is found by the next turn's poll or
+    // replayed from the journal, so this owner giving up listening says
+    // nothing about whether the user's answer is still wanted.
+    const replyWindowSeconds = ctx.config.reply_window_seconds.value
+    if (ceilingAt - ctx.now() < MIN_REPLY_WINDOW_SECONDS * 1000) {
       notes.push(
-        'too little of the waiter ceiling is left for a reply window the server would accept; leaving this question in the terminal',
+        'too little of the waiter ceiling is left to submit and confirm this question; leaving it in the terminal',
       )
       continue
     }
+    // The owner still stops listening at its own ceiling. Only the span the
+    // server accepts answers into changed.
     const ownerDeadlineAt = ceilingAt
     const questions = pendingQuestions(entry)
     let intent = entry.submission
@@ -2921,12 +2930,22 @@ export function handleSessionEnd(
 // ---------------------------------------------------------------------------
 
 /**
- * More pending questions than this means an agent is looping, not asking.
- * Related questions belong in one `ask --form` (the wire carries up to four
- * questions per notification); four separate pushes is already a lot of lock
- * screen.
+ * Registrations still waiting for their first push. More than this in one turn
+ * means an agent is looping, not asking, and related questions belong in one
+ * `ask --form` instead.
+ *
+ * Deliberately counts only unasked entries. A question already on the user's
+ * devices is waiting on a person, not on the agent, and an answer stays
+ * accepted for a day — so counting live questions here would have turned a
+ * patient user into a reason the agent could no longer ask anything.
  */
 export const MAX_PENDING_QUESTIONS = 4
+
+/**
+ * Everything this session has open at once, asked or not. The lock screen is
+ * the shared resource being protected here, not the agent's turn.
+ */
+export const MAX_LIVE_QUESTIONS = 10
 
 /**
  * A session may hold several registered questions at once: a new `ask` never
@@ -2946,11 +2965,16 @@ export function registerQuestion(
   question: PendingQuestion,
   now: number = Date.now(),
 ): void {
-  let full = false
+  let full: 'unasked' | 'live' | null = null
   updateSessionState(sessionId, env, (state) => {
     const pending = pendingList(state)
-    if (pending.length >= MAX_PENDING_QUESTIONS) {
-      full = true
+    const unasked = pending.filter((entry) => entry.request_id === undefined)
+    if (unasked.length >= MAX_PENDING_QUESTIONS) {
+      full = 'unasked'
+      return state
+    }
+    if (pending.length >= MAX_LIVE_QUESTIONS) {
+      full = 'live'
       return state
     }
     return {
@@ -2966,10 +2990,16 @@ export function registerQuestion(
       ],
     }
   })
-  if (full) {
+  if (full === 'unasked') {
     throw new Error(
       `${MAX_PENDING_QUESTIONS} questions are already waiting to be asked. ` +
         'Combine related questions into one `notifai ask --form` instead of registering more.',
+    )
+  }
+  if (full === 'live') {
+    throw new Error(
+      `${MAX_LIVE_QUESTIONS} questions from this session are already open. ` +
+        'Retire the ones you no longer need with `notifai close <request_id>` before asking another.',
     )
   }
 }
