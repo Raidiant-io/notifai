@@ -31,7 +31,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 5
+const OPENCODE_ADAPTER_VERSION = 6
 
 export function opencodePluginDir(
   global: boolean,
@@ -152,17 +152,6 @@ function runHook(event, envelope) {
   })
 }
 
-function additionalContext(stdout) {
-  if (typeof stdout !== "string" || stdout.trim() === "") return null
-  try {
-    const parsed = JSON.parse(stdout)
-    const context = parsed?.hookSpecificOutput?.additionalContext
-    return typeof context === "string" && context.length > 0 ? context : null
-  } catch {
-    return null
-  }
-}
-
 export const NotifAIPlugin = async ({ directory }) => {
   const cwd = typeof directory === "string" && directory.length > 0 ? directory : process.cwd()
 
@@ -180,23 +169,13 @@ export const NotifAIPlugin = async ({ directory }) => {
      * Presence. The user typing is the signal every harness shares, and it is
      * also what publishes the project -> session pointer \`notifai ask\` reads.
      */
-    "chat.message": async (input, output) => {
-      const stdout = await runHook("user-prompt-submit", {
+    /** Publishes the session pointer; the CLI returns no content to inject. */
+    "chat.message": async (input) => {
+      await runHook("user-prompt-submit", {
         session_id: input?.sessionID ?? input?.info?.sessionID,
         cwd,
         hook_event_name: "UserPromptSubmit",
       })
-      const context = additionalContext(stdout)
-      if (context !== null) {
-        output.parts.push({
-          id: "prt_notifai_" + Date.now(),
-          sessionID: input.sessionID,
-          messageID: output.message.id,
-          type: "text",
-          text: context,
-          synthetic: true,
-        })
-      }
     },
 
     /** Session lifecycle events are delivered through OpenCode's event bus. */
