@@ -165,11 +165,6 @@ answer is still wanted. Nothing waits on the user for a day: the asking turn
 ends immediately, the waiter gives up long before, and everything after that is
 the next turn's poll or the journal replaying at that session's next Stop.
 
-That separation is the point. The window used to be whatever remained of the
-waiter's ceiling, so a question asked at a turn's end stopped being answerable
-about eight minutes later — the owner ceasing to listen was treated as the
-answer no longer being wanted. It is not: a late answer still comes back.
-
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
 machine credential in a plaintext file rather than the OS keychain — only when

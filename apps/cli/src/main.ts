@@ -172,7 +172,8 @@ program.exitOverride((err) => {
  * or what exists. Naming it — with the nearest real command when there is one —
  * turns a dead end into one more try.
  */
-program.argument('[command]', 'a notifai command').action(async (command?: string) => {
+program.usage('[options] [command]')
+program.argument('[command]').action(async (command?: string) => {
   if (command !== undefined) {
     const names = program.commands.map((cmd) => cmd.name())
     const near = names.filter(
@@ -301,19 +302,17 @@ const send = program
   .option(
     '--image <path|url|media_id>',
     'upload or attach an image in collection order (repeatable, maximum 8)',
-    (v: string, all: string[]) => [...all, v],
-    [],
+    (v: string, all: string[] = []) => [...all, v],
   )
   .option(
     '--image-alt <text>',
     'alt text paired with --image occurrences by position (repeatable)',
-    (v: string, all: string[]) => [...all, v],
-    [],
+    (v: string, all: string[] = []) => [...all, v],
   )
   .optionsGroup(SEND_GROUP.routing)
   .option('--kind <kind>', 'what this is (required): update | done | failed | blocked — question is set by --reply')
   .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
-  .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[]) => [...all, v], [])
+  .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
   .option('--all', 'target all routable devices (overrides configured devices)')
   .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
   .option('--session-label <text>', 'human session label override (env: NOTIFAI_SESSION_LABEL)')
@@ -334,7 +333,7 @@ const send = program
   .option(
     '--reply-choice <label>',
     'with --reply, ask a closed question; repeat the flag once per answer (2-6)',
-    (v: string, all: string[]) => [...all, v], [],
+    (v: string, all: string[] = []) => [...all, v],
   )
   .option('--reply-multi', 'with --reply-choice, several answers may be selected')
   // Kept registered, and always a usage error with --reply, so the caller gets
@@ -345,7 +344,7 @@ const send = program
   .option('--level <level>', 'override saved interruption level: passive | active | time_sensitive')
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
-  .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[]) => [...all, v], [])
+  .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[] = []) => [...all, v])
   .option('--idempotency-key <key>', 'safe-retry key (default: random)')
   .option('--base-url <url>', 'developer override for the service origin (also NOTIFAI_BASE_URL)')
   .option('--json', 'print the full submission receipt as JSON')
@@ -429,7 +428,7 @@ program
   .option(
     '--choice <label>',
     'answers to offer instead of free text; repeat the flag once per answer (2-6)',
-    (v: string, all: string[]) => [...all, v], [],
+    (v: string, all: string[] = []) => [...all, v],
   )
   .option('--multi', 'with --choice, several answers may be selected')
   .option('--json', 'machine-readable output')
@@ -439,14 +438,12 @@ program
   .option(
     '--image <path|url|media_id>',
     'upload or attach an image in collection order (repeatable, maximum 8)',
-    (v: string, all: string[]) => [...all, v],
-    [],
+    (v: string, all: string[] = []) => [...all, v],
   )
   .option(
     '--image-alt <text>',
     'alt text paired with --image occurrences by position (repeatable)',
-    (v: string, all: string[]) => [...all, v],
-    [],
+    (v: string, all: string[] = []) => [...all, v],
   )
   .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
   .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
@@ -567,7 +564,7 @@ program
   .option('--all', 'lift the default limit, up to a hard cap')
   .option('--since <when>', 'only records newer than this: 10m, 2h, 1d, or an ISO 8601 instant')
   .option('--level <level>', 'minimum severity: error | info | debug (error shows only failures)')
-  .option('--event <name>', 'only this event; repeatable', (v: string, all: string[]) => [...all, v], [])
+  .option('--event <name>', 'only this event; repeatable', (v: string, all: string[] = []) => [...all, v])
   .option('--run <id>', 'everything one command invocation did')
   .option('--request <id>', 'everything about one notification request')
   .option('--session <id>', 'only this harness session')

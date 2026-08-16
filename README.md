@@ -41,7 +41,8 @@ Agents can ask for a reply, collect it directly, and send the required Agent
 Acknowledgement without any interactive prompt:
 
 ```sh
-notifai send --title "Deploy?" --body "Choose when ready." --reply
+# the question is the first line of the body, not the title
+notifai send --title "Migration 0007 is ready" --body "Deploy migration 0007 to production now?" --reply
 # after the user's reply, the CLI prints the exact follow-up command
 notifai acknowledge req_example --text "I will deploy the approved build to staging now."
 

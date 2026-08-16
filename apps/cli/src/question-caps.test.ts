@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest'
 import { MAX_LIVE_QUESTIONS, MAX_PENDING_QUESTIONS, registerQuestion } from './hooks.js'
 
 /**
- * These live in their own file rather than beside the other hook tests: those
- * share a harness whose ordering they depend on, and registering questions
- * into it perturbs them.
+ * `registerQuestion` decides how many questions one session may hold, and these
+ * exercise it directly against a bare state directory — no harness, no server,
+ * no clock. They live apart from `hooks.test.ts` because nothing here needs
+ * what that file spends its setup on.
  */
 const state = (): NodeJS.ProcessEnv => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-caps-'))
