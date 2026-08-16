@@ -132,7 +132,7 @@ export function routingHookActions(input: {
   }
 
   options.push(
-    { value: 'settings', label: 'Change presence settings', hint: 'when a question may leave this terminal' },
+    { value: 'settings', label: 'Change question settings', hint: 'when a question may leave this terminal' },
     { value: 'back', label: '← Back' },
   )
   return options

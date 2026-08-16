@@ -127,8 +127,8 @@ Other controls, when they earn their place:
 - `--device` only when the user asked for specific devices. Otherwise every
   device they registered is the right answer and you do not need to think about
   it.
-- `--event <name>` names what happened (`tests_passed`, `deploy_failed`) so the
-  user can find it later in `notifai status` and `notifai logs`.
+- `--event <name>` names what happened (`tests_passed`, `deploy_failed`); it
+  comes back in `notifai status` and rides the request for the apps to group on.
 - `--idempotency-key <key>` when you retry a send that failed or timed out.
   Reusing the key is what stops one event becoming two notifications.
 

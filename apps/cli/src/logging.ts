@@ -61,6 +61,17 @@ export const LOG_SCHEMA_VERSION = 1
 export { LOG_LEVELS, type LogLevel }
 export type RecordLevel = Exclude<LogLevel, 'off'>
 
+/**
+ * The levels a record can actually carry.
+ *
+ * `off` is a setting that stops writing, never a severity anything is written
+ * at — so offering it as a retrieval filter accepted a query that could only
+ * ever match nothing, and then blamed the result on too narrow a search.
+ */
+export const RECORD_LEVELS: readonly RecordLevel[] = LOG_LEVELS.filter(
+  (level): level is RecordLevel => level !== 'off',
+)
+
 const LEVEL_RANK: Record<LogLevel, number> = { off: 0, error: 1, info: 2, debug: 3 }
 
 /**

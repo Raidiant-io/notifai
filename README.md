@@ -76,8 +76,8 @@ current CLI support claim.
 | Approved Machine CLI: login, configuration, send, ask, doctor | Supported | Supported | Supported |
 | Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; blocking Stop continuation because no live inbox socket exists |
 | Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
-| Cursor hooks | Supported; use blocking `notifai send --kind question --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenCode hooks | Supported; use blocking `notifai send --kind question --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| Cursor hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenCode hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | Notifai Companion App | iPhone and macOS | Not yet | Not yet |
 
 “Fails closed” means Notifai keeps the accepted answer in the session journal
@@ -136,9 +136,11 @@ choose the scope explicitly: `notifai init --skills --skills-scope project` or
 
 ## The installed hooks
 
-`notifai hooks install` writes three hooks into the agent harness. After
-install you will see `UserPromptSubmit`, `Stop`, and `SessionEnd` in that
-harness's hook file. They are how a question reaches your devices and how the
+`notifai hooks install` wires three moments into the agent harness: the
+prompt the user submits, the end of the agent's turn, and the end of the
+session. How they appear depends on the harness — Claude Code and Codex name
+them in a hook file, Cursor uses its own hook shapes, and OpenCode gets a
+generated plugin. They are how a question reaches your devices and how the
 answer comes back, without the agent keeping any of that in its context.
 
 **UserPromptSubmit** (`user-prompt-submit`) runs when you send a prompt. That

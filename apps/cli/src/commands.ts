@@ -32,7 +32,6 @@ import {
 import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
-  LOG_LEVELS,
   NUMERIC_CONFIG_KEYS,
   configBounds,
   configDefaultValue,
@@ -95,6 +94,7 @@ import {
   renderRecord,
   type LogQuery,
   type Logger,
+  RECORD_LEVELS,
 } from './logging.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -2628,7 +2628,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (flags.harness === undefined) {
     const detected = detectedHarnesses(deps.cwd, deps.env)
     if (detected.length === 0) {
-      deps.io.err(`Could not tell which harness to install for — pass --harness <${HARNESSES.join('|')}>.`)
+      deps.io.err(`Could not tell which harness you mean — pass --harness <${HARNESSES.join('|')}>.`)
       return EXIT.usage
     }
     let ok = true
@@ -2918,13 +2918,6 @@ function assertOwnedRegularFile(file: string): void {
   }
 }
 
-const HARNESS_LABEL: Record<Harness, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  opencode: 'OpenCode',
-}
-
 function resolveHarness(deps: CommandDeps, requested: string | undefined): Harness | null {
   if (requested !== undefined) {
     if ((HARNESSES as readonly string[]).includes(requested)) return requested as Harness
@@ -2961,7 +2954,7 @@ async function pickHarnessesToInstall(
       'Which agent harnesses should Notifai wire here?',
       HARNESSES.map((name) => ({
         value: name,
-        label: HARNESS_LABEL[name],
+        label: HARNESS_LABELS[name],
         ...(detected.includes(name) ? { hint: 'detected on this machine' } : {}),
       })),
       detected,
@@ -3434,8 +3427,8 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
     query.since = since
   }
   if (flags.level !== undefined) {
-    if (!(LOG_LEVELS as readonly string[]).includes(flags.level)) {
-      deps.io.err(`--level takes one of: ${LOG_LEVELS.join(', ')} — not "${flags.level}".`)
+    if (!(RECORD_LEVELS as readonly string[]).includes(flags.level)) {
+      deps.io.err(`--level takes one of: ${RECORD_LEVELS.join(', ')} — not "${flags.level}".`)
       return EXIT.usage
     }
     query.level = flags.level as LogLevel
@@ -5072,7 +5065,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       name: 'hooks (detected)',
       ok: false,
       informational: true,
-      detail: `${unwired.map((harness) => HARNESS_LABEL[harness]).join(', ')} detected on this machine but not wired`,
+      detail: `${unwired.map((harness) => HARNESS_LABELS[harness]).join(', ')} detected on this machine but not wired`,
       remedy: {
         summary: 'install hooks for every detected harness',
         command: 'notifai hooks install',
