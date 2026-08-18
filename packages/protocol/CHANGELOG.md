@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [3.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v2.0.0...protocol-v3.0.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **compatibility:** the protocol lifecycle vocabulary no longer includes superseded.
+* **protocol:** Device registration no longer accepts the reply protocol integer.
+
+### Features
+
+* **compatibility:** preserve baseline delivery across client skew ([f5fe1d1](https://github.com/Raidiant-io/notifai/commit/f5fe1d1c7c5c7b1f80906d01e3b23a1061ba7f1c))
+* **protocol:** negotiate named client capabilities ([873973b](https://github.com/Raidiant-io/notifai/commit/873973b98c4d91ed585ac85b6ac8abd267573f01))
+
 ## [2.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v1.0.0...protocol-v2.0.0) (2026-08-16)
 
 

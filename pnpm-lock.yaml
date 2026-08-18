@@ -39,7 +39,7 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0
       '@raidiant/notifai-protocol':
-        specifier: 2.0.0
+        specifier: 3.0.0
         version: link:../../packages/protocol
       commander:
         specifier: ^14.0.0
