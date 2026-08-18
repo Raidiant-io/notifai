@@ -32,8 +32,6 @@ export const LIFECYCLE_END_STATES = [
   'answered_elsewhere',
   /** Nobody answered before the question stopped being live. */
   'expired',
-  /** Replaced by a newer question before any answer arrived. */
-  'superseded',
 ] as const
 export type LifecycleEndState = (typeof LIFECYCLE_END_STATES)[number]
 

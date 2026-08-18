@@ -418,14 +418,27 @@ describe('reading', () => {
     expect(records.length).toBeGreaterThan(lines(env).filter((r) => r.event === 'cli.end').length)
   })
 
-  it('skips a damaged line instead of throwing away the file', () => {
+  it('skips damaged and unknown-future lines without throwing away the file', () => {
     const env = sandbox()
     seed(env)
     // A half-written line is what a crashed process leaves behind, and a
     // reader that dies on it loses every good record around it.
     appendFileSync(activeLogPath(env), '{"v":1,"ts":"2026-0\n')
     appendFileSync(activeLogPath(env), 'not json at all\n')
-    expect(readLogRecords(env).records).toHaveLength(3)
+    appendFileSync(
+      activeLogPath(env),
+      `${JSON.stringify({
+        v: LOG_SCHEMA_VERSION + 1,
+        ts: '2026-08-18T12:00:00.000Z',
+        level: 'info',
+        event: 'future.event',
+      })}\n`,
+    )
+    expect(readLogRecords(env).records.map((record) => record.event)).toEqual([
+      'send.submitted',
+      'cli.error',
+      'ask.registered',
+    ])
   })
 
   it('reports nothing at all rather than failing when there is no log', () => {

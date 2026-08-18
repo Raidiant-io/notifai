@@ -534,6 +534,7 @@ function isRecord(parsed: unknown): parsed is LogRecord {
   return (
     typeof parsed === 'object' &&
     parsed !== null &&
+    (parsed as { v?: unknown }).v === LOG_SCHEMA_VERSION &&
     typeof (parsed as { event?: unknown }).event === 'string' &&
     typeof (parsed as { ts?: unknown }).ts === 'string'
   )

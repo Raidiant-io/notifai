@@ -44,6 +44,7 @@ export interface CredentialStoreOptions {
 }
 
 const SERVICE = 'io.notifai.cli'
+const CREDENTIAL_FORMAT = 'notifai.machine-credential.v1'
 const DPAPI_FORMAT = 'notifai.dpapi.current-user.v1'
 const DPAPI_ENTROPY = 'io.notifai.cli'
 const DPAPI_TIMEOUT_MS = 15_000
@@ -136,7 +137,7 @@ export class KeychainStore implements CredentialStore {
         '-a',
         'machine',
         '-w',
-        JSON.stringify(credential),
+        JSON.stringify(serializeCredential(credential)),
       ],
       { stdio: 'ignore' },
     )
@@ -189,7 +190,7 @@ export class FileStore implements CredentialStore {
   }
 
   save(credential: MachineCredential): void {
-    atomicWriteFileSync(this.filePath(), `${JSON.stringify(credential, null, 2)}\n`, {
+    atomicWriteFileSync(this.filePath(), `${JSON.stringify(serializeCredential(credential), null, 2)}\n`, {
       mode: 0o600,
       preserveMode: false,
       requireCurrentUserOwner: true,
@@ -251,7 +252,7 @@ export class WindowsDpapiStore implements CredentialStore {
     if (file === null) {
       throw new Error('Windows credential store path is not configured (LOCALAPPDATA is missing)')
     }
-    const blob = this.protect(Buffer.from(JSON.stringify(credential), 'utf8'))
+    const blob = this.protect(Buffer.from(JSON.stringify(serializeCredential(credential)), 'utf8'))
     atomicWriteFileSync(file, `${JSON.stringify({ format: DPAPI_FORMAT, data: blob })}\n`, {
       mode: 0o600,
       preserveMode: false,
@@ -302,6 +303,10 @@ export class WindowsDpapiStore implements CredentialStore {
   }
 }
 
+function serializeCredential(credential: MachineCredential): Record<string, string> {
+  return { format: CREDENTIAL_FORMAT, ...credential }
+}
+
 function parseCredentialJson(raw: string): MachineCredential | null {
   try {
     return parseCredential(JSON.parse(raw) as unknown)
@@ -313,6 +318,11 @@ function parseCredentialJson(raw: string): MachineCredential | null {
 function parseCredential(raw: unknown): MachineCredential | null {
   if (raw === null || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
+  const format = value['format']
+  // Unversioned credentials are the pre-epoch v1 representation. A future
+  // format is left untouched on disk/keychain and treated as unavailable;
+  // interpreting it as v1 could silently change authentication meaning.
+  if (format !== undefined && format !== CREDENTIAL_FORMAT) return null
   const machineId = value['machineId']
   const secret = value['secret']
   const baseUrl = value['baseUrl']

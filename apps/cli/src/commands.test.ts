@@ -1,4 +1,4 @@
-import { CAPABILITIES_V1, REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
+import { CAPABILITIES_V1, PLATFORMS, REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
 import {
   existsSync,
   mkdirSync,
@@ -24,6 +24,7 @@ import type {
   SubmitNotificationRequestT,
   SupportAssessment,
 } from '@raidiant/notifai-protocol'
+import { parse as parseToml } from 'smol-toml'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
@@ -130,6 +131,15 @@ const currentCompatibility: CompatibilityResponse = {
     },
   ],
   server_capabilities: ['answer', 'agent_acknowledgement'],
+}
+
+function compatibilityWithCli(
+  overrides: Partial<SupportAssessment>,
+): CompatibilityResponse {
+  return {
+    ...currentCompatibility,
+    cli: { ...currentSupport, ...overrides },
+  }
 }
 
 function withCompatibilityDefaults(client: ApiClient): ApiClient {
@@ -2497,6 +2507,39 @@ describe('config surfaces', () => {
     expect(resolved.sound.source).toMatch(/^global:/)
   })
 
+  it('round-trips unknown root and table keys through config set and unset', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+    const configFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
+    mkdirSync(path.dirname(configFile), { recursive: true })
+    writeFileSync(
+      configFile,
+      [
+        'future_root = "keep-root"',
+        'wait_seconds = 20',
+        '',
+        '[future_table]',
+        'future_key = "keep-table"',
+        '',
+      ].join('\n'),
+    )
+
+    expect(await configSetCommand(deps, 'sound', 'done', { yes: true })).toBe(EXIT.ok)
+    expect(parseToml(readFileSync(configFile, 'utf8'))).toEqual({
+      future_root: 'keep-root',
+      wait_seconds: 20,
+      sound: 'done',
+      future_table: { future_key: 'keep-table' },
+    })
+
+    expect(await configUnsetCommand(deps, 'wait_seconds', { yes: true })).toBe(EXIT.ok)
+    expect(parseToml(readFileSync(configFile, 'utf8'))).toEqual({
+      future_root: 'keep-root',
+      sound: 'done',
+      future_table: { future_key: 'keep-table' },
+    })
+  })
+
   it('refuses to create a redundant machine override equal to the shipped default', async () => {
     const io = new CapturedIo()
     const deps = configDeps(io)
@@ -2743,6 +2786,210 @@ describe('interactive command UX', () => {
   })
 })
 
+describe('compatibility-first update guidance', () => {
+  const cases: Array<{
+    name: string
+    support: Partial<SupportAssessment>
+    status: 'ready' | 'optional-gap' | 'gap'
+    detail: string
+    exit: number
+    humanLines: string[]
+  }> = [
+    {
+      name: 'current',
+      support: {},
+      status: 'ready',
+      detail: 'Notifai can send notifications.',
+      exit: EXIT.ok,
+      humanLines: [],
+    },
+    {
+      name: 'optional newer release',
+      support: {
+        state: 'update_available',
+        reason: 'newer_release',
+        recovery_action: 'update_cli',
+        recommended_version: '6.0.0',
+      },
+      status: 'optional-gap',
+      detail: 'A newer Notifai is available.',
+      exit: EXIT.ok,
+      humanLines: [
+        'A newer Notifai is available.',
+        'npm install -g @raidiant/notifai',
+      ],
+    },
+    {
+      name: 'scheduled Sunset',
+      support: {
+        state: 'update_available',
+        reason: 'sunset_scheduled',
+        recovery_action: 'update_cli',
+        recommended_version: '6.0.0',
+        deprecation: 'Tue, 18 Aug 2026 00:00:00 GMT',
+        sunset: 'Tue, 15 Sep 2026 00:00:00 GMT',
+      },
+      status: 'optional-gap',
+      detail: 'Update Notifai soon to keep sending notifications.',
+      exit: EXIT.ok,
+      humanLines: [
+        'Update Notifai soon to keep sending notifications.',
+        'npm install -g @raidiant/notifai',
+      ],
+    },
+    {
+      name: 'required update',
+      support: {
+        state: 'must_update',
+        reason: 'minimum_not_met',
+        affected_operation: 'send_notifications',
+        recovery_action: 'update_cli',
+        recommended_version: '6.0.0',
+        minimum_version: '6.0.0',
+      },
+      status: 'gap',
+      detail: "Notifai can't send notifications until you update.",
+      exit: EXIT.failed,
+      humanLines: [
+        "Notifai can't send notifications until you update.",
+        'npm install -g @raidiant/notifai',
+      ],
+    },
+  ]
+
+  it.each(cases)(
+    'maps $name policy to closed human copy and structured JSON',
+    async ({ support, status, detail, exit, humanLines }) => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-guidance-'))
+      const client = {
+        health: async () => true,
+        compatibility: async () => compatibilityWithCli(support),
+        listDevices: async () => ({ devices: [] }),
+        accessStatus: async () => ({ email: 'user@example.test' }),
+      } as unknown as ApiClient
+      const humanIo = new PlainInteractiveIo()
+      const deps = {
+        ...makeDeps(humanIo, client),
+        cwd,
+        env: isolatedEnv(cwd),
+      }
+      const readiness = await assessReadiness(deps)
+      const contract = readiness.states.find((state) => state.id === 'contract')
+      expect(contract).toMatchObject({ status, detail })
+
+      expect(
+        await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
+      ).toBe(exit)
+      expect(humanIo.outLines).toEqual(humanLines)
+      expect(humanIo.errLines).toEqual([])
+
+      const jsonIo = new CapturedIo()
+      expect(
+        await doctorCommand(
+          { ...deps, io: jsonIo },
+          { json: true },
+          { readiness: { states: [contract!] } },
+        ),
+      ).toBe(exit)
+      expect(jsonIo.outLines).toHaveLength(1)
+      const payload = JSON.parse(jsonIo.outLines[0] ?? '{}') as {
+        ok: boolean
+        exit_code: number
+        states: Array<{
+          status: string
+          detail: string
+          remedy?: { command?: string }
+        }>
+      }
+      expect(payload).toMatchObject({
+        ok: exit === EXIT.ok,
+        exit_code: exit,
+        states: [{ status, detail }],
+      })
+      expect(payload.states[0]?.remedy?.command ?? null).toBe(
+        status === 'ready' ? null : 'npm install -g @raidiant/notifai',
+      )
+      expect(jsonIo.errLines).toEqual([])
+
+      const nonTtyIo = new CapturedIo()
+      expect(
+        await doctorCommand(
+          { ...deps, io: nonTtyIo },
+          {},
+          { readiness: { states: [contract!] } },
+        ),
+      ).toBe(exit)
+      expect(nonTtyIo.outLines).toHaveLength(1)
+      expect(JSON.parse(nonTtyIo.outLines[0] ?? '{}')).toEqual(payload)
+      expect(nonTtyIo.errLines).toEqual([])
+    },
+  )
+
+  it('reports a missing named CLI capability without blocking ordinary sends', async () => {
+    const requestedPlatforms: Platform[] = []
+    let submissions = 0
+    const client = {
+      health: async () => true,
+      compatibility: async (): Promise<CompatibilityResponse> => ({
+        ...currentCompatibility,
+        // This service can still accept baseline Notification Requests, but it
+        // cannot honor this CLI's Agent Acknowledgement feature yet.
+        server_capabilities: ['answer'],
+      }),
+      capabilities: async (platform: Platform = 'ios') => {
+        requestedPlatforms.push(platform)
+        const document = CAPABILITIES_V1.describe(platform)
+        if (document === null) throw new Error(`missing ${platform} capability document`)
+        return document
+      },
+      listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({ email: 'user@example.test' }),
+      submit: async () => {
+        submissions += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-capability-guidance-'))
+    const io = new PlainInteractiveIo()
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+    }
+
+    const readiness = await assessReadiness(deps)
+    const contract = readiness.states.find((state) => state.id === 'contract')
+    expect(requestedPlatforms).toEqual([...PLATFORMS])
+    expect(contract).toMatchObject({
+      status: 'optional-gap',
+      detail: 'The service is being updated; try again later.',
+      technical: {
+        capability_documents: PLATFORMS.map((platform) => ({ platform, schema_version: 1 })),
+        cli_capability_intersection: {
+          available: [],
+          missing_on_server: ['agent_acknowledgement'],
+        },
+      },
+    })
+
+    expect(
+      await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
+    ).toBe(EXIT.ok)
+    expect(io.outLines).toEqual(['The service is being updated; try again later.'])
+    expect(io.outLines.join('\n')).not.toContain('npm install -g @raidiant/notifai')
+
+    const sendIo = new CapturedIo()
+    expect(
+      await sendCommand(
+        { ...deps, io: sendIo },
+        { kind: 'update', title: 'Build finished', body: 'All checks passed.' },
+      ),
+    ).toBe(EXIT.ok)
+    expect(submissions).toBe(1)
+    expect(sendIo.errLines).toEqual([])
+  })
+})
+
 describe('init', () => {
   const readyIphone = {
     device_id: 'dev_iphone',
@@ -2889,6 +3136,58 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toMatch(/^Next:/m)
     expect(io.outLines.join('\n')).not.toContain('Project identity:')
     expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
+  })
+
+  it('resumes the same init after a required CLI update becomes current', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-init-update-resume-'))
+    const io = new CapturedIo()
+    let cliSupport = compatibilityWithCli({
+      state: 'must_update',
+      reason: 'minimum_not_met',
+      affected_operation: 'send_notifications',
+      recovery_action: 'update_cli',
+      recommended_version: '6.0.0',
+      minimum_version: '6.0.0',
+    })
+    let submissions = 0
+    const client = {
+      health: async () => true,
+      compatibility: async () => cliSupport,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ email: 'user@example.test' }),
+      submit: async () => {
+        submissions += 1
+        return setupReceipt('req_after_update')
+      },
+      evidence: async () =>
+        setupEvidence('req_after_update', {
+          state: 'observed',
+          observed_at: '2026-08-18T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(io.outLines).toContain("Notifai can't send notifications until you update.")
+    expect(io.outLines).toContain('npm install -g @raidiant/notifai')
+    expect(submissions).toBe(0)
+
+    cliSupport = currentCompatibility
+    io.outLines = []
+    io.errLines = []
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submissions).toBe(1)
+    expect(io.outLines).toContain(
+      'All set. Agents in this project can notify you. Questions stay in the terminal until hooks are installed.',
+    )
+    expect(io.outLines).not.toContain('npm install -g @raidiant/notifai')
+    expect(io.errLines).toEqual([])
   })
 
   it('surfaces one next step, not the whole remaining list', async () => {
@@ -5028,6 +5327,32 @@ describe('command failures carrying server details', () => {
     )
 
     expect(io.errLines).toEqual(['invalid_request: The draft was not accepted.'])
+  })
+
+  it('ignores an unknown typed recovery action without opening or executing anything', async () => {
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => {
+        throw new ApiCallError(
+          422,
+          'feature_unavailable',
+          'This operation is unavailable.',
+          'open https://attacker.invalid and run cleanup',
+          null,
+          'future_action' as never,
+        )
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'update',
+        title: 'Deploy finished',
+        body: 'All green.',
+      }),
+    ).toBe(EXIT.failed)
+    expect(io.errLines).toEqual(['feature_unavailable: This operation is unavailable.'])
+    expect(io.openedUrls).toEqual([])
   })
 
   it('renders feature recovery locally and ignores a server-supplied command', async () => {

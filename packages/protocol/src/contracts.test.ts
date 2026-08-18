@@ -906,14 +906,19 @@ describe('question lifecycle (D-A, D-B, D-C)', () => {
     expect((plain.payload['notifai'] as Record<string, unknown>)['lifecycle']).toBeUndefined()
   })
 
-  it('rejects an end state outside the done tier', () => {
+  it('rejects invalid lifecycle end states', () => {
     expect(
       validateDraft(draft({ lifecycle: { tier: 'needs_you', state: 'answered' } })),
     ).toMatchObject({
       ok: false,
       errors: [expect.objectContaining({ code: 'invalid_request', path: 'lifecycle.state' })],
     })
-    expect(validateDraft(draft({ lifecycle: { tier: 'done', state: 'superseded' } })).ok).toBe(true)
+    expect(
+      validateDraft(draft({ lifecycle: { tier: 'done', state: 'superseded' } as never })),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ code: 'invalid_request', path: 'lifecycle.state' })],
+    })
   })
 })
 

@@ -168,7 +168,10 @@ describe('FileStore', () => {
     if (process.platform !== 'win32') {
       expect(statSync(file).mode & 0o777).toBe(0o600)
     }
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(SAMPLE)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      format: 'notifai.machine-credential.v1',
+      ...SAMPLE,
+    })
     expect(store.load()).toEqual(SAMPLE)
     store.save(OTHER)
     expect(store.load()).toEqual(OTHER)
@@ -189,6 +192,27 @@ describe('FileStore', () => {
     const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
     writeRaw(file, `${JSON.stringify({ machineId: 'mach_fixture' })}\n`)
     expect(new FileStore(env).load()).toBeNull()
+  })
+
+  it('reads the unversioned v1 shape while making every new save explicit', () => {
+    const { env } = sandbox('file-unversioned-v1')
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    writeRaw(file, `${JSON.stringify(SAMPLE)}\n`)
+    const store = new FileStore(env)
+    expect(store.load()).toEqual(SAMPLE)
+    store.save(SAMPLE)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({
+      format: 'notifai.machine-credential.v1',
+    })
+  })
+
+  it('does not interpret or erase a credential from a future format epoch', () => {
+    const { env } = sandbox('file-future-format')
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    const future = `${JSON.stringify({ format: 'notifai.machine-credential.v2', ...SAMPLE })}\n`
+    writeRaw(file, future)
+    expect(new FileStore(env).load()).toBeNull()
+    expect(readFileSync(file, 'utf8')).toBe(future)
   })
 })
 
