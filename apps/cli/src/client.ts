@@ -9,6 +9,9 @@ import type {
   EvidenceSnapshot,
   GetAgentAcknowledgementResponse,
   ListDevicesResponse,
+  ClientCapability,
+  CompatibilityResponse,
+  RecoveryAction,
   ListRepliesResponse,
   Platform,
   PollPairingResponse,
@@ -16,6 +19,10 @@ import type {
   PutAgentAcknowledgementResponse,
   SubmissionReceipt,
   SubmitNotificationRequestT,
+} from '@raidiant/notifai-protocol'
+import {
+  CAPABILITIES_HEADER,
+  CLI_VERSION_HEADER,
 } from '@raidiant/notifai-protocol'
 import type { Logger } from './logging.js'
 
@@ -26,6 +33,7 @@ export class ApiCallError extends Error {
     message: string,
     public nextAction: string | null = null,
     public details: unknown = null,
+    public recoveryAction: RecoveryAction | null = null,
   ) {
     super(message)
   }
@@ -67,7 +75,12 @@ export interface ApiClient {
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   accessStatus(): Promise<AccountAccessResponse>
   listDevices(): Promise<ListDevicesResponse>
-  capabilities(platform?: Platform): Promise<CapabilityDocument>
+  capabilities(
+    platform?: Platform,
+    appVersion?: string,
+    appBuild?: string,
+  ): Promise<CapabilityDocument>
+  compatibility(): Promise<CompatibilityResponse>
   submit(body: SubmitNotificationRequestT, waitSeconds: number): Promise<SubmissionReceipt>
   evidence(requestId: string): Promise<EvidenceSnapshot>
   replies(
@@ -112,6 +125,9 @@ export interface ClientOptions {
    * instantly by a status code and a duration.
    */
   logger?: Pick<Logger, 'debug' | 'error'>
+  /** Artifact identity and named jobs advertised only on authenticated traffic. */
+  cliVersion?: string | null
+  capabilities?: readonly ClientCapability[]
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
@@ -126,6 +142,14 @@ export function createClient(
   const budgetMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const now = options.now ?? Date.now
   const logger = options.logger
+  const clientHeaders: Record<string, string> = bearer
+    ? {
+        ...(options.cliVersion ? { [CLI_VERSION_HEADER]: options.cliVersion } : {}),
+        ...(options.capabilities
+          ? { [CAPABILITIES_HEADER]: options.capabilities.join(',') }
+          : {}),
+      }
+    : {}
 
   async function call<T>(
     method: string,
@@ -182,6 +206,7 @@ export function createClient(
         headers: {
           ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
           ...(bearer ? { authorization: bearer } : {}),
+          ...clientHeaders,
         },
         signal,
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -202,6 +227,7 @@ export function createClient(
         parsed?.error.message ?? `Request failed with status ${response.status}`,
         parsed?.error.next_action ?? null,
         parsed?.error.details ?? null,
+        parsed?.error.recovery_action ?? null,
       )
     }
     if (response.status === 204) return undefined as T
@@ -220,7 +246,14 @@ export function createClient(
       call('POST', `/api/v1/pairings/${pairingId}/poll`, { poll_verifier: pollVerifier }),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     listDevices: () => call('GET', '/api/v1/devices'),
-    capabilities: (platform = 'ios') => call('GET', `/api/v1/capabilities/${platform}`),
+    capabilities: (platform = 'ios', appVersion, appBuild) => {
+      const query = new URLSearchParams()
+      if (appVersion !== undefined) query.set('app_version', appVersion)
+      if (appBuild !== undefined) query.set('app_build', appBuild)
+      const suffix = query.size > 0 ? `?${query.toString()}` : ''
+      return call('GET', `/api/v1/capabilities/${platform}${suffix}`)
+    },
+    compatibility: () => call('GET', '/api/v1/compatibility'),
     submit: (body, waitSeconds) =>
       call('POST', `/api/v1/notifications?wait_seconds=${waitSeconds}`, body, waitSeconds),
     evidence: (requestId) => call('GET', `/api/v1/notifications/${requestId}`),

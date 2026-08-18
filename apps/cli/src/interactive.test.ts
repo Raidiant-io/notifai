@@ -58,7 +58,25 @@ function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
 function makeClient(): ApiClient {
   return {
     health: async () => true,
-    capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    capabilities: async (platform = 'ios') => ({ schema_version: 1, platform }),
+    compatibility: async () => ({
+      cli: {
+        state: 'current',
+        reason: 'current',
+        affected_operation: null,
+        recovery_action: null,
+        current_version: '5.0.0',
+        current_build: null,
+        recommended_version: '5.0.0',
+        recommended_build: null,
+        minimum_version: null,
+        minimum_build: null,
+        deprecation: null,
+        sunset: null,
+      },
+      platforms: [],
+      server_capabilities: ['answer', 'agent_acknowledgement'],
+    }),
     listDevices: async () => ({ devices: [] }),
     accessStatus: async () => ({ email: 'rafael@example.test' }),
   } as unknown as ApiClient

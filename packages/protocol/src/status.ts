@@ -1,3 +1,5 @@
+import type { RecoveryAction } from './compatibility.js'
+
 /**
  * Status vocabulary. The word "delivered" is intentionally absent:
  * Provider Acceptance is not evidence that a notification was displayed or
@@ -73,6 +75,8 @@ export const ERROR_CODES = [
   'no_active_plan',
   'machine_revoked',
   'no_active_devices',
+  /** Active targets exist, but none can perform the requested job. */
+  'feature_unavailable',
   'unknown_device',
   'unsupported_field',
   'payload_too_large',
@@ -103,8 +107,10 @@ export interface ApiErrorBody {
   error: {
     code: ErrorCode
     message: string
-    /** Stable machine-actionable next step, e.g. "Run `notifai login`." */
+    /** Legacy explanatory text for non-compatibility errors. Never executed. */
     next_action?: string
+    /** Closed compatibility recovery rendered from local client knowledge. */
+    recovery_action?: RecoveryAction
     details?: unknown
   }
 }

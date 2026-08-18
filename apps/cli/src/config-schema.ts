@@ -83,7 +83,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     label: 'Send questions to my devices',
     group: 'questions',
     kind: 'boolean',
-    summary: 'Whether a registered question may reach your phone and Mac at all',
+    summary: 'Whether a registered question may reach your iPhone at all',
     detail:
       'The master switch for question routing. When this is off, a question an agent registers with `notifai ask` stays in the terminal and never leaves this machine, whatever else is configured. Turn it off to stop being reached for a while without uninstalling the harness hooks.',
     example: 'true',

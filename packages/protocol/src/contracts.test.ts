@@ -64,7 +64,7 @@ describe('account preference and reply capability contracts', () => {
     expect(Value.Check(AccountPreferences, { agent_acknowledgements_enabled: true })).toBe(false)
   })
 
-  it('accepts reply protocol version 2 only', () => {
+  it('advertises named capabilities without retaining the reply protocol integer', () => {
     const installation = {
       installation_id: 'ins_abcdefghij',
       platform: 'ios',
@@ -72,12 +72,29 @@ describe('account preference and reply capability contracts', () => {
       app_version: '2.0.0',
     }
     expect(
-      Value.Check(RegisterInstallationRequest, { ...installation, reply_protocol_version: 2 }),
+      Value.Check(RegisterInstallationRequest, {
+        ...installation,
+        app_build: '42',
+        os_version: '19.0',
+        capabilities: ['answer'],
+      }),
     ).toBe(true)
-    expect(
-      Value.Check(RegisterInstallationRequest, { ...installation, reply_protocol_version: 1 }),
-    ).toBe(false)
     expect(Value.Check(RegisterInstallationRequest, installation)).toBe(true)
+    expect(
+      Value.Check(RegisterInstallationRequest, { ...installation, reply_protocol_version: 2 }),
+    ).toBe(false)
+    expect(
+      Value.Check(RegisterInstallationRequest, {
+        ...installation,
+        capabilities: ['answer', 'answer'],
+      }),
+    ).toBe(false)
+    expect(
+      Value.Check(RegisterInstallationRequest, {
+        ...installation,
+        capabilities: ['unknown'],
+      }),
+    ).toBe(false)
   })
 })
 
@@ -889,14 +906,19 @@ describe('question lifecycle (D-A, D-B, D-C)', () => {
     expect((plain.payload['notifai'] as Record<string, unknown>)['lifecycle']).toBeUndefined()
   })
 
-  it('rejects an end state outside the done tier', () => {
+  it('rejects invalid lifecycle end states', () => {
     expect(
       validateDraft(draft({ lifecycle: { tier: 'needs_you', state: 'answered' } })),
     ).toMatchObject({
       ok: false,
       errors: [expect.objectContaining({ code: 'invalid_request', path: 'lifecycle.state' })],
     })
-    expect(validateDraft(draft({ lifecycle: { tier: 'done', state: 'superseded' } })).ok).toBe(true)
+    expect(
+      validateDraft(draft({ lifecycle: { tier: 'done', state: 'superseded' } as never })),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ code: 'invalid_request', path: 'lifecycle.state' })],
+    })
   })
 })
 

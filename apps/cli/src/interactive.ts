@@ -365,7 +365,7 @@ function menuFor(readiness: Readiness): { value: Screen; label: string; hint?: s
   if (!signedIn) {
     options.push({ value: 'account', label: 'Sign in', hint: 'approve this machine in your browser' })
   } else if (!hasDevice) {
-    options.push({ value: 'devices', label: 'Add a device', hint: 'install the app on your phone or Mac' })
+    options.push({ value: 'devices', label: 'Add a device', hint: 'install the app on your iPhone' })
   } else {
     options.push({
       value: 'test',
@@ -457,8 +457,8 @@ async function devicesScreen(deps: CommandDeps): Promise<void> {
   if (devices.length === 0) {
     clack.note(
       'No devices are registered yet.\n\n' +
-        'Install the Notifai companion app on your iPhone or Mac, sign in with the\n' +
-        'same account, and allow notifications when it asks.',
+        'Install the Notifai Companion App on your iPhone, sign in with the\n' +
+        'same Account, and allow notifications when it asks.',
       'No devices',
     )
     return
@@ -733,7 +733,7 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   const row = (label: string, value: string): string => `${style.dim(label.padEnd(16))}${value}`
   clack.note(
     'When an agent registers a question, it appears in your terminal first.\n' +
-      'After the grace below, it goes to your phone and Mac as a notification\n' +
+      'After the grace below, it goes to your iPhone as a notification\n' +
       'with real answer buttons, and your answer comes back to the agent —\n' +
       'whether or not you are still at this machine.\n\n' +
       [

@@ -57,8 +57,10 @@ export interface ReadinessState {
   /** Human words for what this is, not the field name. */
   title: string
   status: StateStatus
-  /** The current condition, phrased so it reads under either renderer. */
+  /** The current condition, phrased for the human renderer. */
   detail: string
+  /** Structured diagnostics emitted only by --json / non-human surfaces. */
+  technical?: unknown
   remedy?: Remedy
 }
 

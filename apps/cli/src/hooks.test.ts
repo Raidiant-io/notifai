@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -167,7 +167,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'ios' as const,
           permission_status: 'authorized',
           registration_healthy: true,
-          reply_protocol_version: 2,
+          capabilities: ['answer'],
+          derived_status: 'working',
           last_seen_at: null,
         },
         {
@@ -176,7 +177,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'macos' as const,
           permission_status: 'authorized',
           registration_healthy: true,
-          reply_protocol_version: 2,
+          capabilities: ['answer'],
+          derived_status: 'working',
           last_seen_at: null,
         },
       ],
@@ -337,6 +339,23 @@ function harness(replies: ReplyView[] = []): Harness {
   }
 }
 
+function runFixtureGit(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+}
+
+function initializeFixtureRepository(root: string, branch = 'branch-a'): void {
+  runFixtureGit(root, 'init')
+  runFixtureGit(root, 'config', 'user.email', 'notifai-tests@example.invalid')
+  runFixtureGit(root, 'config', 'user.name', 'Notifai Tests')
+  writeFileSync(path.join(root, 'tracked.txt'), 'fixture\n')
+  runFixtureGit(root, 'add', 'tracked.txt')
+  runFixtureGit(root, 'commit', '-m', 'fixture')
+  runFixtureGit(root, 'branch', '-M', branch)
+}
+
 function stdin(payload: unknown): () => Promise<string> {
   return async () => JSON.stringify(payload)
 }
@@ -494,6 +513,26 @@ describe('the waiter wall clock', () => {
 })
 
 describe('pushing a registered question', () => {
+  it('keeps unknown future session keys through an older read-modify-write', () => {
+    const h = harness([])
+    const sessionId = 'future-session-format'
+    const file = path.join(stateDir(h.env), 'sessions', `${sanitizeSessionId(sessionId)}.json`)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      `${JSON.stringify({
+        last_prompt_at: NOW,
+        future_session_key: { nested: ['kept'] },
+      })}\n`,
+    )
+
+    registerQuestion(sessionId, h.env, { question: 'Still preserved?' }, NOW)
+
+    const rewritten = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    expect(rewritten['future_session_key']).toEqual({ nested: ['kept'] })
+    expect(rewritten['pending']).toHaveLength(1)
+  })
+
   // Found by a live Claude Code session: a spawned agent always has a
   // just-set last_prompt_at, and the routing gate once read that as the user
   // being present — so its FIRST question could never escalate, which is the
@@ -864,7 +903,7 @@ describe('terminal-first grace window', () => {
     ).toBeGreaterThanOrEqual(60)
   })
 
-  it('never pushes a question to a Companion without the current reply protocol', async () => {
+  it('never pushes a question to a Companion that did not advertise answer', async () => {
     const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
@@ -874,7 +913,7 @@ describe('terminal-first grace window', () => {
         listDevices: async () => ({
           devices: (await client.listDevices()).devices.map((device) => ({
             ...device,
-            reply_protocol_version: null,
+            capabilities: [],
           })),
         }),
       } as ApiClient
@@ -2638,6 +2677,58 @@ describe('user-prompt-submit hook', () => {
     clearSessionState('s14', h.env)
     expect(readProjectSession(project, h.env, NOW)).toBeNull()
   })
+
+  it('round-trips future project-pointer fields while publishing a session', () => {
+    const h = harness()
+    const pointer = projectSessionPointerPath(h.deps.cwd, h.env)
+    const futureEntry = {
+      format: 2,
+      session: { id: 'future-session', runtime: 'future-harness' },
+    }
+    mkdirSync(path.dirname(pointer), { recursive: true })
+    writeFileSync(
+      pointer,
+      `${JSON.stringify({
+        future_root: { retained: true },
+        sessions: [
+          {
+            session_id: 'still-running',
+            updated_at: NOW - 1,
+            harness: 'codex',
+            future_entry: { retained: true },
+          },
+          {
+            session_id: 'new-session',
+            updated_at: NOW - 2,
+            harness: 'claude-code',
+            future_current_entry: { retained: true },
+          },
+          futureEntry,
+        ],
+      })}\n`,
+    )
+
+    writeProjectSession(h.deps.cwd, h.env, 'new-session', NOW, 'claude-code')
+
+    expect(JSON.parse(readFileSync(pointer, 'utf8'))).toEqual({
+      future_root: { retained: true },
+      sessions: [
+        {
+          session_id: 'still-running',
+          updated_at: NOW - 1,
+          harness: 'codex',
+          future_entry: { retained: true },
+        },
+        futureEntry,
+        {
+          session_id: 'new-session',
+          updated_at: NOW,
+          harness: 'claude-code',
+          future_current_entry: { retained: true },
+        },
+      ],
+    })
+  })
 })
 
 describe('session-end hook', () => {
@@ -2654,6 +2745,36 @@ describe('session-end hook', () => {
     const records = readLogRecords(h.env, { limit: 10 }).records
     expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
     expect(records.at(-1)?.data).toMatchObject({ outcome: 'cleaned', queued_retirements: 0 })
+  })
+
+  it('round-trips future session-state fields when SessionEnd preserves an obligation', async () => {
+    const h = harness()
+    const sessionId = 'session-end-future-state'
+    const stateFile = path.join(
+      stateDir(h.env),
+      'sessions',
+      `${sanitizeSessionId(sessionId)}.json`,
+    )
+    const acknowledgement = {
+      request_id: 'req_future_ack',
+      recorded_at: NOW,
+      future_entry: { retained: true },
+    }
+    mkdirSync(path.dirname(stateFile), { recursive: true })
+    writeFileSync(
+      stateFile,
+      `${JSON.stringify({
+        future_root: { retained: true },
+        acknowledgement_due: [acknowledgement],
+      })}\n`,
+    )
+
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: sessionId }))
+
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toEqual({
+      future_root: { retained: true },
+      acknowledgement_due: [acknowledgement],
+    })
   })
 
   it('runs the real Codex SessionEnd cleanup before contended diagnostics and exits fail-open', async () => {
@@ -2772,6 +2893,54 @@ describe('session-end hook', () => {
     ).toEqual({ sessionId: 'still-running', harness: 'codex' })
   })
 
+  it('keeps future project-pointer data when clearing the ending session', async () => {
+    const h = harness()
+    const pointer = projectSessionPointerPath(h.deps.cwd, h.env)
+    const futureEntry = {
+      format: 2,
+      session: { id: 'future-session', runtime: 'future-harness' },
+    }
+    writeSessionState('still-running', h.env, { last_prompt_at: NOW })
+    writeSessionState('ending', h.env, { last_prompt_at: NOW })
+    mkdirSync(path.dirname(pointer), { recursive: true })
+    writeFileSync(
+      pointer,
+      `${JSON.stringify({
+        future_root: { retained: true },
+        sessions: [
+          {
+            session_id: 'still-running',
+            updated_at: NOW - 1,
+            harness: 'codex',
+            future_entry: { retained: true },
+          },
+          futureEntry,
+          { session_id: 'ending', updated_at: NOW, harness: 'claude-code' },
+        ],
+      })}\n`,
+    )
+
+    await hookRunCommand(
+      h.deps,
+      'session-end',
+      stdin({ session_id: 'ending', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+
+    expect(JSON.parse(readFileSync(pointer, 'utf8'))).toEqual({
+      future_root: { retained: true },
+      sessions: [
+        {
+          session_id: 'still-running',
+          updated_at: NOW - 1,
+          harness: 'codex',
+          future_entry: { retained: true },
+        },
+        futureEntry,
+      ],
+    })
+  })
+
   it('preserves incomplete live state and reports why it cannot retire it', async () => {
     const h = harness()
     writeSessionState('s-incomplete', h.env, {
@@ -2803,6 +2972,164 @@ describe('malformed input', () => {
 })
 
 describe('telling concurrent agents apart', () => {
+  it('uses each hook event branch while keeping one immutable session identity', async () => {
+    const h = harness([reply({ text: 'Yes' })])
+    initializeFixtureRepository(h.deps.cwd)
+    registerQuestion(
+      'session-branch-transition',
+      h.env,
+      {
+        question: 'Ship it?',
+        source: {
+          session_id: 'session-branch-transition',
+          session_label: 'Branch transition',
+          harness: 'claude-code',
+          branch: 'branch-a',
+        },
+      },
+      NOW,
+    )
+
+    runFixtureGit(h.deps.cwd, 'checkout', '-b', 'branch-b')
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'session-branch-transition', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+
+    const question = h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')
+    expect(question?.draft.source).toEqual({
+      session_id: 'session-branch-transition',
+      session_label: 'Branch transition',
+      harness: 'claude-code',
+      branch: 'branch-b',
+    })
+
+    runFixtureGit(h.deps.cwd, 'checkout', 'branch-a')
+    h.recorder.acknowledged ??= new Set()
+    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({
+        session_id: 'session-branch-transition',
+        cwd: h.deps.cwd,
+        stop_hook_active: true,
+      }),
+      'claude-code',
+    )
+
+    const retirement = h.recorder.submitted.find(
+      (entry) => entry.draft.event === 'question_retired',
+    )
+    expect(retirement?.draft.source).toEqual({
+      session_id: 'session-branch-transition',
+      session_label: 'Branch transition',
+      harness: 'claude-code',
+      branch: 'branch-a',
+    })
+  })
+
+  it('clears registration-time branch and worktree on a detached-HEAD hook event', async () => {
+    const h = harness([])
+    initializeFixtureRepository(h.deps.cwd)
+    registerQuestion(
+      'session-detached',
+      h.env,
+      {
+        question: 'Ship it?',
+        source: {
+          session_id: 'session-detached',
+          session_label: 'Detached review',
+          harness: 'claude-code',
+          branch: 'branch-a',
+          worktree: 'stale-worktree',
+        },
+      },
+      NOW,
+    )
+    runFixtureGit(h.deps.cwd, 'checkout', '--detach', 'HEAD')
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'session-detached', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+
+    const question = h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')
+    expect(question?.draft.source).toEqual({
+      session_id: 'session-detached',
+      session_label: 'Detached review',
+      harness: 'claude-code',
+    })
+  })
+
+  it('captures entry into and exit from a linked worktree on the same session', async () => {
+    const h = harness([reply({ text: 'Yes' })])
+    initializeFixtureRepository(h.deps.cwd, 'main')
+    const linked = `${h.deps.cwd}-linked`
+    runFixtureGit(h.deps.cwd, 'worktree', 'add', '-b', 'worktree-branch', linked)
+    try {
+      registerQuestion(
+        'session-worktree-transition',
+        h.env,
+        {
+          question: 'Ship it?',
+          source: {
+            session_id: 'session-worktree-transition',
+            session_label: 'Worktree transition',
+            harness: 'claude-code',
+            branch: 'main',
+          },
+        },
+        NOW,
+      )
+
+      await hookRunCommand(
+        h.deps,
+        'stop',
+        stdin({ session_id: 'session-worktree-transition', cwd: linked }),
+        'claude-code',
+      )
+      const question = h.recorder.submitted.find(
+        (entry) => entry.draft.event === 'agent_question',
+      )
+      expect(question?.draft.source).toEqual({
+        session_id: 'session-worktree-transition',
+        session_label: 'Worktree transition',
+        harness: 'claude-code',
+        branch: 'worktree-branch',
+        worktree: path.basename(linked),
+      })
+
+      h.recorder.acknowledged ??= new Set()
+      h.recorder.acknowledged.add(h.recorder.receipts[0]!)
+      await hookRunCommand(
+        h.deps,
+        'stop',
+        stdin({
+          session_id: 'session-worktree-transition',
+          cwd: h.deps.cwd,
+          stop_hook_active: true,
+        }),
+        'claude-code',
+      )
+      const retirement = h.recorder.submitted.find(
+        (entry) => entry.draft.event === 'question_retired',
+      )
+      expect(retirement?.draft.source).toEqual({
+        session_id: 'session-worktree-transition',
+        session_label: 'Worktree transition',
+        harness: 'claude-code',
+        branch: 'main',
+      })
+    } finally {
+      runFixtureGit(h.deps.cwd, 'worktree', 'remove', '--force', linked)
+    }
+  })
+
   it('stamps structured Source Context on the question it pushes', async () => {
     const h = harness([])
     registerQuestion(

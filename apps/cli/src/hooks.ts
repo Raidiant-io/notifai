@@ -38,6 +38,7 @@ import {
 import { buildDraft } from './send.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withFileLock } from './file-lock.js'
+import { inferInvocationContext } from './invocation-context.js'
 import type { Logger } from './logging.js'
 import {
   HARNESS_CAPABILITIES,
@@ -240,6 +241,22 @@ export interface PendingQuestion {
   reply_deadline_at?: number
   /** Frozen before the first network byte, so an ambiguous submit is replayable. */
   submission?: PendingSubmissionIntent
+}
+
+/** Keep immutable session grouping while replacing per-event Git location authoritatively. */
+function sourceContextAtHookEvent(
+  source: SourceContextT | undefined,
+  cwd: string | undefined,
+): SourceContextT | undefined {
+  const invocation = cwd === undefined ? null : inferInvocationContext(cwd)
+  const current: SourceContextT = {
+    ...(source?.session_id !== undefined ? { session_id: source.session_id } : {}),
+    ...(source?.session_label !== undefined ? { session_label: source.session_label } : {}),
+    ...(source?.harness !== undefined ? { harness: source.harness } : {}),
+    ...(invocation?.branch !== undefined ? { branch: invocation.branch } : {}),
+    ...(invocation?.worktree !== undefined ? { worktree: invocation.worktree } : {}),
+  }
+  return Object.keys(current).length === 0 ? undefined : current
 }
 
 interface PendingSubmissionIntent {
@@ -643,6 +660,50 @@ interface StoredProjectSessionPointer extends ProjectSessionPointer {
   updatedAt: number
 }
 
+interface StoredProjectSessionDocument {
+  root: Record<string, unknown>
+  sessions: unknown[]
+}
+
+export interface ProjectSessionPointer {
+  sessionId: string
+  harness: HookHarness
+}
+
+function storedProjectSessionPointer(candidate: unknown): StoredProjectSessionPointer | null {
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return null
+  const entry = candidate as {
+    session_id?: unknown
+    updated_at?: unknown
+    harness?: unknown
+  }
+  if (typeof entry.session_id !== 'string' || entry.session_id === '') return null
+  if (typeof entry.updated_at !== 'number') return null
+  if (!(HARNESSES as readonly unknown[]).includes(entry.harness)) return null
+  return {
+    sessionId: entry.session_id,
+    updatedAt: entry.updated_at,
+    harness: entry.harness as HookHarness,
+  }
+}
+
+function readStoredProjectSessionDocument(file: string): StoredProjectSessionDocument {
+  if (!existsSync(file)) return { root: {}, sessions: [] }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { root: {}, sessions: [] }
+    }
+    const root = parsed as Record<string, unknown>
+    return {
+      root,
+      sessions: Array.isArray(root['sessions']) ? root['sessions'] : [],
+    }
+  } catch {
+    return { root: {}, sessions: [] }
+  }
+}
+
 /** Records every live session working in a directory, for `notifai ask`. */
 export function writeProjectSession(
   cwd: string,
@@ -653,56 +714,37 @@ export function writeProjectSession(
 ): void {
   const file = projectSessionPointerPath(cwd, env)
   withFileLock(`${file}.lock`, () => {
-    const existing = readStoredProjectSessionPointers(file).filter(
-      (entry) => entry.sessionId !== sessionId && now - entry.updatedAt <= 24 * 3600 * 1000,
-    )
+    const stored = readStoredProjectSessionDocument(file)
+    const existing: unknown[] = []
+    let refreshed: Record<string, unknown> = {}
+    for (const candidate of stored.sessions) {
+      const entry = storedProjectSessionPointer(candidate)
+      if (entry?.sessionId === sessionId) {
+        refreshed = { ...refreshed, ...(candidate as Record<string, unknown>) }
+      } else if (entry === null || now - entry.updatedAt <= 24 * 3600 * 1000) {
+        existing.push(candidate)
+      }
+    }
     atomicWriteFileSync(
       file,
       `${JSON.stringify({
+        ...stored.root,
         sessions: [
-          ...existing.map((entry) => ({
-            session_id: entry.sessionId,
-            updated_at: entry.updatedAt,
-            harness: entry.harness,
-          })),
-          { session_id: sessionId, updated_at: now, harness },
+          ...existing,
+          { ...refreshed, session_id: sessionId, updated_at: now, harness },
         ],
       })}\n`,
     )
   })
 }
 
-export interface ProjectSessionPointer {
-  sessionId: string
-  harness: HookHarness
-}
-
 function readStoredProjectSessionPointers(file: string): StoredProjectSessionPointer[] {
-  if (!existsSync(file)) return []
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { sessions?: unknown }
-    if (!Array.isArray(parsed.sessions)) return []
-    return parsed.sessions.flatMap((candidate): StoredProjectSessionPointer[] => {
-      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return []
-      const entry = candidate as {
-        session_id?: unknown
-        updated_at?: unknown
-        harness?: unknown
-      }
-      if (typeof entry.session_id !== 'string' || entry.session_id === '') return []
-      if (typeof entry.updated_at !== 'number') return []
-      if (!(HARNESSES as readonly unknown[]).includes(entry.harness)) return []
-      return [
-        {
-          sessionId: entry.session_id,
-          updatedAt: entry.updated_at,
-          harness: entry.harness as HookHarness,
-        },
-      ]
-    })
-  } catch {
-    return []
-  }
+  return readStoredProjectSessionDocument(file).sessions.flatMap(
+    (candidate): StoredProjectSessionPointer[] => {
+      const entry = storedProjectSessionPointer(candidate)
+      return entry === null ? [] : [entry]
+    },
+  )
 }
 
 /**
@@ -792,21 +834,21 @@ function clearMatchingProjectSession(
 ): void {
   const file = projectSessionPointerPath(cwd, env)
   withFileLock(`${file}.lock`, () => {
-    const remaining = readStoredProjectSessionPointers(file).filter(
-      (entry) => entry.sessionId !== sessionId,
-    )
-    if (remaining.length === 0) {
+    const stored = readStoredProjectSessionDocument(file)
+    const remaining = stored.sessions.filter((candidate) => {
+      const entry = storedProjectSessionPointer(candidate)
+      return entry === null || entry.sessionId !== sessionId
+    })
+    const hasUnknownRootFields = Object.keys(stored.root).some((key) => key !== 'sessions')
+    if (remaining.length === 0 && !hasUnknownRootFields) {
       rmSync(file, { force: true })
       return
     }
     atomicWriteFileSync(
       file,
       `${JSON.stringify({
-        sessions: remaining.map((entry) => ({
-          session_id: entry.sessionId,
-          updated_at: entry.updatedAt,
-          harness: entry.harness,
-        })),
+        ...stored.root,
+        sessions: remaining,
       })}\n`,
     )
   })
@@ -1059,7 +1101,8 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
       (device) =>
         (device.platform === 'ios' || device.platform === 'macos') &&
         device.registration_healthy &&
-        device.reply_protocol_version === 2,
+        device.capabilities?.includes('answer') === true &&
+        device.derived_status !== 'must_update',
     )
     .filter((device) => configured === null || configured.includes(device.device_id))
     .map((device) => device.device_id)
@@ -1149,7 +1192,6 @@ const RETIREMENT_TITLES: Record<LifecycleEndState, string> = {
   answered: 'Answered',
   answered_elsewhere: 'Answered in the terminal',
   expired: 'Question expired',
-  superseded: 'Replaced by a newer question',
 }
 
 /**
@@ -1192,6 +1234,7 @@ export function parkForRetirement(
 function retiringQuestion(
   pending: PendingQuestion,
   state: LifecycleEndState,
+  cwd?: string,
 ): RetiringQuestion | null {
   const hasRequest = pending.request_id !== undefined
   const hasCollapse = pending.collapse_key !== undefined
@@ -1202,13 +1245,14 @@ function retiringQuestion(
       'live question state is incomplete; refusing to retire it without request, collapse, and device identifiers',
     )
   }
+  const source = sourceContextAtHookEvent(pending.source, cwd)
   return {
     request_id: pending.request_id!,
     collapse_key: pending.collapse_key!,
     device_ids: [...pending.device_ids!],
     question: pending.question,
     ...(pending.project !== undefined ? { project: pending.project } : {}),
-    ...(pending.source !== undefined ? { source: pending.source } : {}),
+    ...(source !== undefined ? { source } : {}),
     state,
   }
 }
@@ -1891,9 +1935,10 @@ function settleAcceptedAnswers(
   ctx: HookContext,
   sessionId: string,
   accepted: AcceptedAnswerDelivery,
+  cwd?: string,
 ): void {
   const retirements = accepted.answers
-    .map(({ pending }) => retiringQuestion(pending, 'answered'))
+    .map(({ pending }) => retiringQuestion(pending, 'answered', cwd))
     .filter((entry): entry is RetiringQuestion => entry !== null)
   updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
@@ -1922,7 +1967,7 @@ async function retirePendings(
   updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
     for (const entry of entries) {
-      const retirement = retiringQuestion(entry, state)
+      const retirement = retiringQuestion(entry, state, envelope.cwd)
       if (retirement !== null && !retiring.some((item) => item.request_id === retirement.request_id)) {
         retiring.push(retirement)
       }
@@ -2032,7 +2077,7 @@ export async function handleUserPromptSubmit(
     const retiring = [...(current.retiring ?? [])]
     const unasked = pendingList(current).filter((entry) => entry.request_id === undefined)
     for (const entry of pendingList(current).filter((entry) => entry.request_id !== undefined)) {
-      const retirement = retiringQuestion(entry, 'answered_elsewhere')
+      const retirement = retiringQuestion(entry, 'answered_elsewhere', envelope.cwd)
       if (
         retirement !== null &&
         !retiring.some((parked) => parked.request_id === retirement.request_id)
@@ -2188,9 +2233,16 @@ export async function runEscalationWaiter(
         accepted.delivered_at !== undefined || envelope.stop_hook_active === true
       if (!deliveryProven) {
         for (const answer of accepted.answers) reportAnswer(ctx, notes, answer, true)
-        return await deliverAcceptedAnswers(ctx, sessionId, options.route, accepted, notes)
+        return await deliverAcceptedAnswers(
+          ctx,
+          sessionId,
+          options.route,
+          accepted,
+          notes,
+          envelope.cwd,
+        )
       }
-      settleAcceptedAnswers(ctx, sessionId, accepted)
+      settleAcceptedAnswers(ctx, sessionId, accepted, envelope.cwd)
       settledAnswerThisPass = true
       state = readSessionState(sessionId, ctx.env)
       const currentAcceptedIds = new Set(
@@ -2286,6 +2338,7 @@ async function deliverAcceptedAnswers(
   route: EscalationDeliveryRoute,
   accepted: AcceptedAnswerDelivery,
   notes: string[],
+  cwd?: string,
 ): Promise<HookOutcome> {
   const { answers: answered, remaining } = accepted
   const requestIds = summarizeRequestIds(answered.map((entry) => entry.pending)).ids
@@ -2297,7 +2350,7 @@ async function deliverAcceptedAnswers(
       limit: MAX_HELD_DELIVERIES,
       request_ids: requestIds,
     })
-    settleAcceptedAnswers(ctx, sessionId, accepted)
+    settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
     notes.push(
       `no route could hand the user's answer over in ${MAX_HELD_DELIVERIES} turns; not holding it any longer`,
     )
@@ -2314,7 +2367,7 @@ async function deliverAcceptedAnswers(
     // Settle rather than journal for ever. The answer has been offered as often
     // as any working route could need, it is already in the notes of each of
     // those turns, and the questions it answered still deserve retirement.
-    settleAcceptedAnswers(ctx, sessionId, accepted)
+    settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
     notes.push(
       `the user's answer reached the ${route.kind} route ${MAX_CONTINUATION_COUNT} times without being acknowledged; not delivering it again`,
     )
@@ -2464,7 +2517,7 @@ async function handleClaimedStop(
       for (const answer of authoritative) reportAnswer(ctx, notes, answer, true)
       // Anything still unasked rides the next Stop: the agent is being resumed
       // with answers right now, and may not even need the rest afterwards.
-      return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
+      return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
     }
     const recoverableLive = live.filter(
       (entry) => !permanentFailures.has(entry.request_id!),
@@ -2611,6 +2664,7 @@ async function escalate(
     // server accepts answers into changed.
     const ownerDeadlineAt = ceilingAt
     const questions = pendingQuestions(entry)
+    const eventSource = sourceContextAtHookEvent(entry.source, envelope.cwd)
     let intent = entry.submission
     if (intent === undefined) {
       if (entry.body === undefined) {
@@ -2624,7 +2678,7 @@ async function escalate(
         questions,
         ...(entry.media !== undefined ? { media: entry.media } : {}),
         ...(entry.project !== undefined ? { project: entry.project } : {}),
-        ...(entry.source !== undefined ? { source: entry.source } : {}),
+        ...(eventSource !== undefined ? { source: eventSource } : {}),
         event: 'agent_question',
         windowSeconds: replyWindowSeconds,
         ownerDeadlineAt,
@@ -2703,7 +2757,7 @@ async function escalate(
             questions,
             ...(entry.media !== undefined ? { media: entry.media } : {}),
             ...(entry.project !== undefined ? { project: entry.project } : {}),
-            ...(entry.source !== undefined ? { source: entry.source } : {}),
+            ...(eventSource !== undefined ? { source: eventSource } : {}),
             event: 'agent_question',
             windowSeconds: replyWindowSeconds,
             ownerDeadlineAt,
@@ -2783,6 +2837,7 @@ async function escalate(
         : Date.parse(receipt.reply_expires_at)
     const live: PendingQuestion = {
       ...entry,
+      ...(intent.draft.source !== undefined ? { source: intent.draft.source } : {}),
       request_id: intent.request_id,
       collapse_key: intent.collapse_key,
       device_ids: intent.device_ids,
@@ -2802,6 +2857,7 @@ async function escalate(
         ? committedReplyDeadline
         : intent.owner_deadline_at,
     }
+    if (intent.draft.source === undefined) delete live.source
     delete live.submission
     submitted.push(live)
     // Record what is now live on the user's devices BEFORE any wait. If we
@@ -2823,7 +2879,7 @@ async function escalate(
         // The entry vanished while the submit was in flight (the user's prompt
         // wiped the queue). The delivered notification must still be retirable,
         // so park it rather than lose its only identifiers.
-        const retirement = retiringQuestion(live, 'answered_elsewhere')!
+        const retirement = retiringQuestion(live, 'answered_elsewhere', envelope.cwd)!
         const retiring = [...(current.retiring ?? [])]
         if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
           retiring.push(retirement)
@@ -2863,7 +2919,7 @@ async function escalate(
     )
     const accepted = stageAcceptedAnswers(ctx, sessionId, staleAnswers, remaining)
     for (const answer of staleAnswers) reportAnswer(ctx, notes, answer, true)
-    return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
+    return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
   }
   const waitingOn = [
     ...alreadyLive.filter(
@@ -2941,7 +2997,7 @@ async function escalate(
       )
       const accepted = stageAcceptedAnswers(ctx, sessionId, finalAnswers, remaining)
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
-      return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
+      return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
     }
     const requestIdSummary = summarizeRequestIds(waitingOn)
     ctx.log?.info('hook.answer', {
@@ -2996,7 +3052,7 @@ async function escalate(
     waitingOn.length - answered.length,
   )
   for (const answer of answered) reportAnswer(ctx, notes, answer, false)
-  return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes)
+  return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
 }
 
 // ---------------------------------------------------------------------------
@@ -3025,7 +3081,7 @@ export function handleSessionEnd(
   const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
   for (const entry of pendingList(state)) {
     try {
-      const orphan = retiringQuestion(entry, 'expired')
+      const orphan = retiringQuestion(entry, 'expired', envelope.cwd)
       if (orphan !== null) orphans.push(orphan)
     } catch (err) {
       notes.push(err instanceof Error ? err.message : String(err))
@@ -3044,14 +3100,13 @@ export function handleSessionEnd(
     )
   }
   if (state.accepted !== undefined || (state.acknowledgement_due?.length ?? 0) > 0) {
-    const preserved: SessionState = {}
-    if (state.accepted !== undefined) preserved.accepted = state.accepted
-    if (state.acknowledgement_due !== undefined && state.acknowledgement_due.length > 0) {
-      preserved.acknowledgement_due = state.acknowledgement_due
+    const preserved: SessionState = { ...state }
+    delete preserved.pending
+    delete preserved.retiring
+    delete preserved.acknowledgement_blocks
+    if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
+      delete preserved.acknowledgement_due
     }
-    if (state.last_prompt_at !== undefined) preserved.last_prompt_at = state.last_prompt_at
-    if (state.last_stop_at !== undefined) preserved.last_stop_at = state.last_stop_at
-    if (state.continuation !== undefined) preserved.continuation = state.continuation
     writeSessionState(sessionId, env, preserved)
     notes.push(
       state.accepted !== undefined

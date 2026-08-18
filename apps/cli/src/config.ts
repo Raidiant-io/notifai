@@ -1,9 +1,12 @@
-import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
+import {
+  CLI_SOUNDS,
+  INTERRUPTION_LEVELS,
+  REPLY_MAX_WINDOW_SECONDS,
+} from '@raidiant/notifai-protocol'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
-import type { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
 import { configHome, stateHome } from './platform.js'
 
 /**
@@ -133,6 +136,8 @@ export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
  * is the same discipline the numeric bounds follow.
  */
 export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> = {
+  sound: CLI_SOUNDS,
+  interruption_level: INTERRUPTION_LEVELS,
   log_level: LOG_LEVELS,
 }
 

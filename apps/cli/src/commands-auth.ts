@@ -1,0 +1,174 @@
+import { type AccountAccessResponse } from '@raidiant/notifai-protocol'
+import { sha256Hex } from '@raidiant/notifai-protocol/node'
+import { randomBytes } from 'node:crypto'
+import os from 'node:os'
+import { NetworkError } from './client.js'
+import { type FlagOverrides } from './config.js'
+import {
+  EXIT,
+  authedClient,
+  loadLoggedConfig,
+  makeClient,
+  reportError,
+  type CommandDeps,
+} from './commands-core.js'
+
+// ---------------------------------------------------------------------------
+// login / logout / auth status
+// ---------------------------------------------------------------------------
+
+export async function loginCommand(
+  deps: CommandDeps,
+  flags: { name?: string; baseUrl?: string; open?: boolean },
+): Promise<number> {
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, flags: { base_url: flags.baseUrl } as FlagOverrides })
+  const baseUrl = config.base_url.value
+  const machineName = flags.name ?? os.hostname()
+  const secret = randomBytes(32).toString('base64url')
+  const pollVerifier = randomBytes(24).toString('base64url')
+  const client = makeClient(deps, baseUrl, null)
+
+  let begin
+  try {
+    begin = await client.beginPairing({
+      machine_name: machineName,
+      credential_hash: sha256Hex(secret),
+      poll_verifier_hash: sha256Hex(pollVerifier),
+    })
+  } catch (err) {
+    return reportError(deps, err)
+  }
+
+  const interactive = deps.io.interactive === true
+  if (interactive) {
+    await deps.io.intro?.('Notifai sign in')
+    await deps.io.note?.(`Code: ${begin.code}\n${begin.approve_url}`, 'Approve this machine')
+  } else {
+    deps.io.out(`Pairing code: ${begin.code}`)
+    deps.io.out(`Approve this machine at: ${begin.approve_url}`)
+    deps.io.out('Waiting for approval…')
+  }
+  if (flags.open !== false) deps.io.openUrl(begin.approve_url)
+
+  const expiresAt = new Date(begin.expires_at).getTime()
+  const intervalMs = Math.max(begin.poll_interval_seconds, 1) * 1000
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const approvalWaitMessage = (): string => {
+    const remainingSec = Math.max(0, Math.ceil((expiresAt - now()) / 1000))
+    const minutes = Math.floor(remainingSec / 60)
+    const seconds = remainingSec % 60
+    const remaining =
+      minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`
+    return `Waiting for approval… code ${begin.code} · ${remaining} left`
+  }
+  const spinner = interactive ? await deps.io.spinner?.(approvalWaitMessage()) : null
+  while (now() < expiresAt) {
+    await sleep(intervalMs)
+    let poll
+    try {
+      poll = await client.pollPairing(begin.pairing_id, pollVerifier)
+    } catch (err) {
+      if (err instanceof NetworkError) {
+        spinner?.message(`Connection lost — retrying… code ${begin.code}`)
+        continue
+      }
+      spinner?.error('Pairing failed')
+      return reportError(deps, err)
+    }
+    if (poll.status === 'approved' && poll.machine_id) {
+      deps.store.save({ machineId: poll.machine_id, secret, baseUrl, machineName })
+      if (interactive) {
+        spinner?.stop(`Machine "${machineName}" approved`)
+        await deps.io.outro?.(`Credential stored in ${deps.store.describe()}`)
+      } else {
+        deps.io.out(`Machine "${machineName}" approved. Credential stored in ${deps.store.describe()}.`)
+      }
+      return EXIT.ok
+    }
+    if (poll.status === 'denied') {
+      spinner?.error('Pairing denied')
+      deps.io.err('Pairing was denied from the dashboard.')
+      return EXIT.auth
+    }
+    if (poll.status === 'no_active_plan') {
+      const next =
+        poll.next_action ??
+        `Open ${baseUrl.replace(/\/$/, '')}/support to request Alpha access, then retry.`
+      spinner?.error('Account has no Alpha access')
+      deps.io.err('This account has no active plan or temporary Alpha access.')
+      deps.io.err(`next: ${next}`)
+      deps.io.err('After access is granted, run `notifai login` again.')
+      return EXIT.auth
+    }
+    if (poll.status === 'expired') break
+    spinner?.message(approvalWaitMessage())
+  }
+  spinner?.error('Pairing expired')
+  deps.io.err('Pairing expired before it was approved. Run `notifai login` again.')
+  return EXIT.auth
+}
+
+export function logoutCommand(deps: CommandDeps): number {
+  deps.store.clear()
+  deps.io.out('Machine credential removed. Revoke it in the dashboard too if the machine is untrusted.')
+  return EXIT.ok
+}
+
+export function authStatusCommand(deps: CommandDeps, flags: { json?: boolean }): number {
+  const credential = deps.store.load()
+  if (flags.json) {
+    deps.io.out(
+      JSON.stringify(
+        credential
+          ? {
+              signed_in: true,
+              machine_id: credential.machineId,
+              machine_name: credential.machineName,
+              base_url: credential.baseUrl,
+              store: deps.store.describe(),
+            }
+          : { signed_in: false },
+        null,
+        2,
+      ),
+    )
+    return credential ? EXIT.ok : EXIT.auth
+  }
+  if (!credential) {
+    deps.io.err('Not signed in. Run `notifai login`.')
+    return EXIT.auth
+  }
+  deps.io.out(`Signed in as machine "${credential.machineName}" (${credential.machineId})`)
+  deps.io.out(`Server: ${credential.baseUrl}`)
+  deps.io.out(`Credential store: ${deps.store.describe()}`)
+  return EXIT.ok
+}
+
+/** Show the server's account access decision without attempting a product mutation. */
+export async function accessStatusCommand(
+  deps: CommandDeps,
+  flags: { json?: boolean },
+): Promise<number> {
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  try {
+    const access: AccountAccessResponse = await authed.client.accessStatus()
+    if (flags.json) {
+      deps.io.out(JSON.stringify(access, null, 2))
+      return access.status === 'active' ? EXIT.ok : EXIT.failed
+    }
+    if (access.status === 'no_active_plan') {
+      const supportUrl = `${authed.baseUrl.replace(/\/$/, '')}/support`
+      deps.io.out('No active plan or temporary Alpha access for this account.')
+      deps.io.out(`next: Open ${supportUrl} to request Alpha access, then retry.`)
+      return EXIT.failed
+    }
+    const expiry = access.expires_at ? ` until ${access.expires_at}` : ''
+    deps.io.out(`Access active (${access.reason})${expiry}`)
+    return EXIT.ok
+  } catch (err) {
+    return reportError(deps, err)
+  }
+}

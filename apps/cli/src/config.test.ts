@@ -177,6 +177,15 @@ describe('config precedence', () => {
     expect(config.wait_seconds.value).toBe(2)
     expect(config.wait_seconds.source).toBe('flag')
   })
+
+  it('uses the prior default when a newer CLI wrote an unknown enum value', () => {
+    const { env, cwd } = setup({
+      globalToml: 'sound = "future-sound"\ninterruption_level = "future-level"\n',
+    })
+    const config = loadConfig({ cwd, env })
+    expect(config.sound).toEqual({ value: null, source: 'default' })
+    expect(config.interruption_level).toEqual({ value: null, source: 'default' })
+  })
 })
 
 describe('draft building', () => {

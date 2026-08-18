@@ -319,7 +319,7 @@ const send = program
   .option('--collapse-key <key>', 'replace earlier notifications with the same key')
   .option('--thread-id <id>', 'group related notifications')
   .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
-  .option('--platform <platform>', 'limit optional fields to ios or macos (default: both)')
+  .option('--platform <platform>', 'limit optional fields to one supported platform')
   .optionsGroup(SEND_GROUP.reply)
   .option('--reply', 'enable the inline reply action and block for the answer')
   .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
