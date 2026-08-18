@@ -4208,11 +4208,9 @@ describe('escalation waiter delivery seam', () => {
 
 
 describe('session state across a prompt', () => {
-  it('carries every kind of session state across a typed prompt', async () => {
-    // The prompt handler rebuilds state from named fields, so a field nobody
-    // remembered to name is erased by the user typing. That is how an
-    // acknowledgement obligation once vanished. This fails if a future field is
-    // added to SessionState and not carried across.
+  it('carries known and future session state across a typed prompt', async () => {
+    // The prompt transition deliberately changes pending/retiring state and the
+    // continuation count, but fields introduced by a newer CLI remain opaque.
     const h = harness([])
     const before = {
       last_prompt_at: AWAY,
@@ -4230,7 +4228,11 @@ describe('session state across a prompt', () => {
       acknowledgement_due: [{ request_id: 'req_carry_ack', recorded_at: NOW }],
       acknowledgement_blocks: 2,
     }
-    writeSessionState('carry-all', h.env, before)
+    const futureSessionValue = { nested: ['kept'], revision: 2 }
+    writeSessionState('carry-all', h.env, {
+      ...before,
+      future_session_key: futureSessionValue,
+    } as SessionState & { future_session_key: typeof futureSessionValue })
 
     await hookRunCommand(
       h.deps,
@@ -4242,6 +4244,17 @@ describe('session state across a prompt', () => {
     for (const key of Object.keys(before) as (keyof typeof before)[]) {
       expect(after[key], `${key} did not survive the prompt`).toBeDefined()
     }
+    const persisted = JSON.parse(
+      readFileSync(
+        path.join(
+          stateDir(h.env),
+          'sessions',
+          `${sanitizeSessionId('carry-all')}.json`,
+        ),
+        'utf8',
+      ),
+    ) as Record<string, unknown>
+    expect(persisted['future_session_key']).toEqual(futureSessionValue)
     // The one field a prompt resets rather than carries.
     expect(after.continuation?.count).toBe(0)
     expect(after.acknowledgement_blocks).toBe(2)
