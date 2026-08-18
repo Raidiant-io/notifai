@@ -2085,31 +2085,24 @@ export async function handleUserPromptSubmit(
         retiring.push(retirement)
       }
     }
-    return {
-      last_prompt_at: ctx.now(),
-      ...(current.last_stop_at === undefined ? {} : { last_stop_at: current.last_stop_at }),
-      ...(unasked.length > 0 ? { pending: unasked } : {}),
-      ...(retiring.length > 0 ? { retiring } : {}),
-      ...(current.accepted === undefined ? {} : { accepted: current.accepted }),
-      // Carried across a prompt on purpose. This rewrite rebuilds the state
-      // from named fields, so anything omitted is silently erased — and an
-      // erased obligation means the user never learns their reply was read,
-      // which is the one thing acknowledgement exists to guarantee.
-      ...(current.acknowledgement_due === undefined
-        ? {}
-        : { acknowledgement_due: current.acknowledgement_due }),
-      ...(current.acknowledgement_blocks === undefined
-        ? {}
-        : { acknowledgement_blocks: current.acknowledgement_blocks }),
-      // The user typed, so whatever chain of answer-driven continuations was
-      // running, a human has taken the turn and the consecutive count starts
-      // over. Only a real prompt reaches here: the journal branch above returns
-      // first, and a wake route's injected message always arrives while its own
-      // answer is still journaled, so it can never pass for the user's presence.
-      ...(current.continuation === undefined
-        ? {}
-        : { continuation: { ...current.continuation, count: 0 } }),
+
+    // Start from the whole document so fields introduced by a newer CLI remain
+    // attached while this older writer applies the prompt transition it knows.
+    const next: SessionState = { ...current, last_prompt_at: ctx.now() }
+    if (unasked.length > 0) next.pending = unasked
+    else delete next.pending
+    if (retiring.length > 0) next.retiring = retiring
+    else delete next.retiring
+
+    // The user typed, so whatever chain of answer-driven continuations was
+    // running, a human has taken the turn and the consecutive count starts
+    // over. Only a real prompt reaches here: the journal branch above returns
+    // first, and a wake route's injected message always arrives while its own
+    // answer is still journaled, so it can never pass for the user's presence.
+    if (current.continuation !== undefined) {
+      next.continuation = { ...current.continuation, count: 0 }
     }
+    return next
   })
   // The bridge that lets a plain `notifai ask` find the hook's canonical
   // session: an agent shell command gets no hook payload, and not every
