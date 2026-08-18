@@ -167,7 +167,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'ios' as const,
           permission_status: 'authorized',
           registration_healthy: true,
-          reply_protocol_version: 2,
+          capabilities: ['answer'],
+          derived_status: 'working',
           last_seen_at: null,
         },
         {
@@ -176,7 +177,8 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           platform: 'macos' as const,
           permission_status: 'authorized',
           registration_healthy: true,
-          reply_protocol_version: 2,
+          capabilities: ['answer'],
+          derived_status: 'working',
           last_seen_at: null,
         },
       ],
@@ -864,7 +866,7 @@ describe('terminal-first grace window', () => {
     ).toBeGreaterThanOrEqual(60)
   })
 
-  it('never pushes a question to a Companion without the current reply protocol', async () => {
+  it('never pushes a question to a Companion that did not advertise answer', async () => {
     const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
@@ -874,7 +876,7 @@ describe('terminal-first grace window', () => {
         listDevices: async () => ({
           devices: (await client.listDevices()).devices.map((device) => ({
             ...device,
-            reply_protocol_version: null,
+            capabilities: [],
           })),
         }),
       } as ApiClient

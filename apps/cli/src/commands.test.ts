@@ -1,4 +1,4 @@
-import { REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
+import { CAPABILITIES_V1, REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
 import {
   existsSync,
   mkdirSync,
@@ -15,11 +15,14 @@ import { fileURLToPath } from 'node:url'
 import { AGENT_ACKNOWLEDGEMENT_MAX_LENGTH } from '@raidiant/notifai-protocol'
 import type {
   CapabilityDocument,
+  CompatibilityResponse,
   EvidenceSnapshot,
   ListRepliesResponse,
+  Platform,
   ReplyView,
   SubmissionReceipt,
   SubmitNotificationRequestT,
+  SupportAssessment,
 } from '@raidiant/notifai-protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
@@ -85,6 +88,62 @@ const RELEASE_REF = `v${
   ).version
 }`
 
+const currentSupport: SupportAssessment = {
+  state: 'current',
+  reason: 'current',
+  affected_operation: null,
+  recovery_action: null,
+  current_version: '5.0.0',
+  current_build: null,
+  recommended_version: '5.0.0',
+  recommended_build: null,
+  minimum_version: null,
+  minimum_build: null,
+  deprecation: null,
+  sunset: null,
+}
+
+const currentCompatibility: CompatibilityResponse = {
+  cli: currentSupport,
+  platforms: [
+    {
+      platform: 'ios',
+      recommended_version: null,
+      recommended_build: null,
+      minimum_receive_build: null,
+      minimum_answer_build: null,
+      deprecation: null,
+      sunset: null,
+      replacement_available: false,
+      rollout_complete: false,
+    },
+    {
+      platform: 'macos',
+      recommended_version: null,
+      recommended_build: null,
+      minimum_receive_build: null,
+      minimum_answer_build: null,
+      deprecation: null,
+      sunset: null,
+      replacement_available: false,
+      rollout_complete: false,
+    },
+  ],
+  server_capabilities: ['answer', 'agent_acknowledgement'],
+}
+
+function withCompatibilityDefaults(client: ApiClient): ApiClient {
+  return {
+    capabilities: async (platform: Platform = 'ios') => {
+      const document = CAPABILITIES_V1.describe(platform)
+      if (document === null) throw new Error(`missing ${platform} capability document`)
+      return document
+    },
+    compatibility: async () => currentCompatibility,
+    ...client,
+  } as ApiClient
+}
+
 class CapturedIo implements CommandIo {
   outLines: string[] = []
   errLines: string[] = []
@@ -105,6 +164,10 @@ class CapturedIo implements CommandIo {
   openUrl(url: string) {
     this.openedUrls.push(url)
   }
+}
+
+class PlainInteractiveIo extends CapturedIo {
+  interactive = true
 }
 
 class InteractiveIo extends CapturedIo {
@@ -234,7 +297,7 @@ function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
     },
     hookAdapterHome: path.join(testRoot, 'home'),
     cwd: os.tmpdir(),
-    clientFactory: () => client,
+    clientFactory: () => withCompatibilityDefaults(client),
   }
 }
 
@@ -1672,7 +1735,7 @@ describe('Cursor hook commands', () => {
 
   it('reports a native Cursor installation through doctor', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-doctor-'))
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const client = {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
@@ -1841,7 +1904,7 @@ describe('Codex hook representation', () => {
     const toml = writeInlineStop(cwd, 'gdh-stop')
     const json = path.join(cwd, '.codex', 'hooks.json')
     const env = isolatedEnv(cwd)
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const client = {
       health: async () => false,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
@@ -2638,7 +2701,7 @@ describe('interactive command UX', () => {
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     expect(io.intros).toEqual(['Notifai doctor'])
     expect(io.checks.some((check) => !check.ok && check.message.startsWith('This machine:'))).toBe(true)
-    expect(io.checks.some((check) => check.ok && check.message.startsWith('Protocol version:'))).toBe(true)
+    expect(io.checks.some((check) => check.message.startsWith('Notifai update:'))).toBe(false)
     expect(io.outLines).toEqual([])
 
     // Four tones, not two. A boolean has to round `optional-gap` and `unknown`
@@ -2647,7 +2710,6 @@ describe('interactive command UX', () => {
     const tone = (prefix: string): Tone | undefined =>
       io.checks.find((check) => check.message.startsWith(prefix))?.tone
     expect(tone('This machine:')).toBe('bad')
-    expect(tone('Protocol version:')).toBe('ok')
     // Never evaluated: the account cannot be checked without a credential.
     expect(tone('Account:')).toBe('pending')
     // Legitimately declined rather than broken.
@@ -2688,7 +2750,14 @@ describe('init', () => {
     platform: 'ios' as const,
     permission_status: 'authorized',
     registration_healthy: true,
-    reply_protocol_version: 2,
+    app_version: '0.1.0',
+    app_build: '42',
+    os_version: '19.0',
+    capabilities: ['answer'] as const,
+    support: currentSupport,
+    support_state: 'current' as const,
+    derived_status: 'working' as const,
+    status_message: null,
     last_seen_at: '2026-08-05T18:00:00.000Z',
   }
   const readyMac = {
@@ -3544,7 +3613,8 @@ describe('init', () => {
     expect(out).not.toContain('All set.')
     expect(out).not.toMatch(/Companion Receipt observed/i)
 
-    const doctorIo = new CapturedIo()
+    // A human doctor must render the same iPhone-readiness failure.
+    const doctorIo = new PlainInteractiveIo()
     expect(
       await doctorCommand(
         {
@@ -4234,7 +4304,7 @@ describe('asking before the hooks have ever run', () => {
 
   it('refuses a Codex question when the installed Stop definition is no longer trusted', async () => {
     const cwd = scratchDir('notifai-codex-stale-trust-')
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
@@ -4499,7 +4569,7 @@ describe('asking before the hooks have ever run', () => {
 
   it('fails doctor when another harness looks healthy but the active Claude Code session does not', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-claude-doctor-'))
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
       XDG_STATE_HOME: path.join(cwd, 'state'),
@@ -4559,7 +4629,7 @@ describe('asking before the hooks have ever run', () => {
     const localFile = personalProjectConfigPath(cwd, env)
     mkdirSync(path.dirname(localFile), { recursive: true })
     writeFileSync(localFile, 'ask_notifications = false\nask_grace_seconds = 90\n')
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
 
     await doctorCommand(deps, {})
@@ -4575,7 +4645,7 @@ describe('asking before the hooks have ever run', () => {
 
   it('keeps a freshly installed Stop definition valid when timing preferences change', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-timeout-drift-'))
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
@@ -4590,7 +4660,7 @@ describe('asking before the hooks have ever run', () => {
 
   it('names an old blocking Claude Stop handler as the reason no wake can happen', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-stale-shape-'))
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
     // Exactly what every build before the asynchronous waiter wrote: a blocking
     // handler with the old ceiling. It looks installed and it fires, but the
@@ -4640,7 +4710,7 @@ describe('asking before the hooks have ever run', () => {
   }
 
   it('reports a live Claude session as reachable without connecting to its socket', async () => {
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const socket = path.join(mkdtempSync(path.join(os.tmpdir(), 'cc-socks-')), '4242.sock')
     writeFileSync(socket, '')
     const { deps } = claudeWakeDeps(io, (pid) => ({
@@ -4666,7 +4736,7 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it('names a --bare session as the reason an answer would wait for the next turn', async () => {
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const { deps } = claudeWakeDeps(io, () => {
       throw new Error('ENOENT: no such file or directory')
     })
@@ -4704,7 +4774,7 @@ describe('asking before the hooks have ever run', () => {
 
   it('reports Codex resume readiness from its writer-lock directory alone', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-codex-wake-'))
-    const io = new CapturedIo()
+    const io = new PlainInteractiveIo()
     const env = {
       ...isolatedEnv(cwd),
       CODEX_THREAD_ID: '9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8',
@@ -4839,29 +4909,45 @@ describe('a server behind this CLI', () => {
     expect(said).not.toMatch(/older than this CLI/)
   })
 
-  it('doctor uses alpha-user wording when the server is behind the CLI', async () => {
-    const io = new CapturedIo()
+  it('keeps baseline sends available while an older server lacks compatibility metadata', async () => {
+    const io = new PlainInteractiveIo()
+    let submissions = 0
     const client = {
       health: async () => true,
-      // A server one schema version behind this build.
-      capabilities: async () => ({ schema_version: 0, platform: 'ios' }),
+      compatibility: async () => {
+        throw new ApiCallError(404, 'not_found', 'Compatibility metadata is unavailable.')
+      },
       listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({ email: 'user@example.test' }),
+      submit: async () => {
+        submissions += 1
+        return receipt
+      },
     } as unknown as ApiClient
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-skew-'))
     const deps = {
       ...makeDeps(io, client),
       cwd,
       env: { XDG_STATE_HOME: cwd, XDG_CONFIG_HOME: cwd },
-      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test store' },
     } as CommandDeps
 
     await doctorCommand(deps, {})
 
     const said = io.outLines.concat(io.errLines).join(' ')
-    // The label is the user's word for it; the detail is what must survive.
-    expect(said).toMatch(/Protocol version/)
     expect(said).toMatch(/service is being updated/)
-    expect(said).not.toMatch(/needs deploying/)
+    expect(said).not.toContain('npm install -g @raidiant/notifai')
+    expect(said).not.toMatch(/Protocol version|schema v/i)
+
+    const sendIo = new CapturedIo()
+    expect(
+      await sendCommand(makeDeps(sendIo, client), {
+        kind: 'update',
+        title: 'Build finished',
+        body: 'All checks passed.',
+      }),
+    ).toBe(EXIT.ok)
+    expect(submissions).toBe(1)
+    expect(sendIo.errLines).toEqual([])
   })
 
   it('doctor is quiet when both sides agree', async () => {
@@ -4942,6 +5028,43 @@ describe('command failures carrying server details', () => {
     )
 
     expect(io.errLines).toEqual(['invalid_request: The draft was not accepted.'])
+  })
+
+  it('renders feature recovery locally and ignores a server-supplied command', async () => {
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => {
+        throw new ApiCallError(
+          422,
+          'feature_unavailable',
+          "The selected device can't answer questions.",
+          'run an untrusted server command',
+          {
+            affected_operation: 'answer_questions',
+            missing_capabilities: ['answer'],
+            device_names: ['Old phone'],
+          },
+          'update_companion',
+        )
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'question',
+        title: 'Ship it?',
+        body: 'Should I ship this build?',
+        reply: true,
+        replyTimeout: 30,
+      }),
+    ).toBe(EXIT.failed)
+
+    expect(io.errLines).toEqual([
+      "feature_unavailable: The selected device can't answer questions.",
+      'next: Update Notifai on the named device.',
+    ])
+    expect(io.errLines.join(' ')).not.toContain('untrusted')
+    expect(io.errLines.join(' ')).not.toContain('disagree about the contract')
   })
 })
 

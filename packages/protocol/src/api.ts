@@ -16,6 +16,15 @@ import type {
   OverallState,
   EvidenceStage,
 } from './status.js'
+import {
+  CapabilityAdvertisement,
+  type AffectedOperation,
+  type ClientCapability,
+  type DeviceDerivedStatus,
+  type MachineDerivedStatus,
+  type SupportAssessment,
+  type SupportState,
+} from './compatibility.js'
 
 /** REST v1 wire contract shared by server, CLI, dashboard, and Companion App. */
 
@@ -31,9 +40,8 @@ export const DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED = true
 
 /**
  * The one account preference over Agent Acknowledgements, and it governs text
- * only. Every answered request is acknowledged, so the User always learns that
- * an agent read the answer; turning this off drops the agent's brief written
- * reply, never the receipt itself.
+ * only. It applies when the submitting CLI advertised the acknowledgement job;
+ * turning it off drops the agent's brief written reply, never the receipt itself.
  */
 export const AccountPreferences = Type.Object(
   {
@@ -145,6 +153,13 @@ export interface MachineSummary {
   approved_at: string
   revoked_at: string | null
   last_seen_at: string | null
+  cli_version: string | null
+  capabilities: ClientCapability[]
+  support: SupportAssessment
+  support_state: SupportState
+  derived_status: MachineDerivedStatus
+  /** Null while this Approved Machine can send. Optional updates never appear here. */
+  status_message: string | null
 }
 
 export interface ListMachinesResponse {
@@ -161,13 +176,23 @@ export const RegisterInstallationRequest = Type.Object(
     installation_id: Type.String({ pattern: '^ins_[A-Za-z0-9_-]{10,64}$' }),
     platform: PlatformSchema,
     display_name: Type.String({ minLength: 1, maxLength: 128 }),
+    /** Marketing version. Inventory only; capabilities remain routing authority. */
     app_version: Type.String({ minLength: 1, maxLength: 32 }),
-    /** Reply wire shape this Companion can submit; absent means notification-only. */
-    reply_protocol_version: Type.Optional(Type.Literal(2)),
+    /** Apple CFBundleVersion. Optional so an older Companion can still register. */
+    app_build: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+    os_version: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    /** Named jobs this exact installation can perform. Absent means baseline receive only. */
+    capabilities: Type.Optional(CapabilityAdvertisement),
   },
   { additionalProperties: false },
 )
 export type RegisterInstallationRequestT = Static<typeof RegisterInstallationRequest>
+
+export interface RegisterInstallationResponse {
+  device_id: string
+  /** Omitted by servers released before compatibility inventory. */
+  support?: SupportAssessment
+}
 
 export const PutRegistrationRequest = Type.Object(
   {
@@ -204,8 +229,15 @@ export interface RoutableDevice {
   platform: Platform
   permission_status: string
   registration_healthy: boolean
-  /** Null when this Companion must not be offered an answerable question. */
-  reply_protocol_version: number | null
+  app_version: string
+  app_build: string | null
+  os_version: string | null
+  capabilities: ClientCapability[]
+  support: SupportAssessment
+  support_state: SupportState
+  derived_status: DeviceDerivedStatus
+  /** Exactly one dashboard status; null means working. */
+  status_message: string | null
   last_seen_at: string | null
 }
 
@@ -243,26 +275,35 @@ export interface DeliveryOutcome {
   updated_at: string
 }
 
+export interface SubmissionWarning {
+  path: string
+  message: string
+  code?: 'capability_downgrade' | 'targets_omitted'
+  affected_operation?: AffectedOperation
+  device_ids?: string[]
+  device_names?: string[]
+  missing_capabilities?: ClientCapability[]
+}
+
 export interface SubmissionReceipt {
   request_id: string
   /** Committed reply deadline; null when this request did not ask for a reply. */
   reply_expires_at: string | null
   /**
-   * True for every request that asked for a reply, so an answered request
-   * always records that an agent read the answer.
+   * Immutable snapshot: true only when the question's submitting CLI advertised
+   * that it can perform Agent Acknowledgements.
    */
   agent_acknowledgement_required: boolean
   /**
-   * Immutable account-preference snapshot taken when a reply-enabled request is
-   * accepted: true when that acknowledgement must carry text. False for
-   * requests that did not ask for a reply.
+   * Immutable account-preference snapshot taken when an acknowledgement
+   * obligation is created: true when it must carry text. Otherwise false.
    */
   agent_acknowledgement_text_required: boolean
   /** True when idempotency returned a previously accepted request. */
   replayed: boolean
   overall: OverallState
   deliveries: DeliveryOutcome[]
-  warnings: { path: string; message: string }[]
+  warnings: SubmissionWarning[]
 }
 
 export interface EvidenceEvent {

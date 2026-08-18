@@ -228,9 +228,13 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
   ],
 }
 
-/** Platform-keyed catalog. Missing describes an intentionally unimplemented channel. */
+/**
+ * Catalog lookup for validation/help metadata. Version and build are explicit so
+ * two binaries on one marketing line may diverge; advertised capabilities, not
+ * this document, remain routing authority.
+ */
 export interface CapabilityRegistry {
-  describe(platform: Platform): CapabilityDocument | null
+  describe(platform: Platform, appVersion?: string, appBuild?: string): CapabilityDocument | null
 }
 
 export function createCapabilityRegistry(

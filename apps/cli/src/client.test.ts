@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { NetworkError, createClient } from './client.js'
+import { CAPABILITIES_HEADER, CLI_VERSION_HEADER } from '@raidiant/notifai-protocol'
+import { ApiCallError, NetworkError, createClient } from './client.js'
 
 /**
  * These run against a real socket rather than a stubbed fetch, because the
@@ -190,5 +191,93 @@ describe('a server that never answers', () => {
     const client = createClient(baseUrl, null, { timeoutMs: 500 })
 
     await expect(client.listDevices()).rejects.toBeInstanceOf(NetworkError)
+  })
+})
+
+describe('compatibility metadata transport', () => {
+  it('advertises named CLI capabilities only on authenticated traffic', async () => {
+    const seen: Array<{
+      url: string | undefined
+      cliVersion: string | string[] | undefined
+      capabilities: string | string[] | undefined
+    }> = []
+    const baseUrl = await serving((request, response) => {
+      seen.push({
+        url: request.url,
+        cliVersion: request.headers[CLI_VERSION_HEADER],
+        capabilities: request.headers[CAPABILITIES_HEADER],
+      })
+      response.setHeader('content-type', 'application/json')
+      response.end(
+        JSON.stringify({
+          schema_version: 1,
+          platform: 'macos',
+          payload_limit_bytes: 4096,
+          sounds: [],
+          interruption_levels: [],
+          fields: [],
+        }),
+      )
+    })
+    const options = {
+      cliVersion: '5.0.0',
+      capabilities: ['agent_acknowledgement'] as const,
+    }
+
+    await createClient(baseUrl, 'Bearer machine', options).capabilities('macos', '0.1.0', '42')
+    await createClient(baseUrl, null, options).capabilities('macos')
+
+    expect(seen).toEqual([
+      {
+        url: '/api/v1/capabilities/macos?app_version=0.1.0&app_build=42',
+        cliVersion: '5.0.0',
+        capabilities: 'agent_acknowledgement',
+      },
+      {
+        url: '/api/v1/capabilities/macos',
+        cliVersion: undefined,
+        capabilities: undefined,
+      },
+    ])
+  })
+
+  it('keeps recovery typed when a feature is unavailable', async () => {
+    const baseUrl = await serving((_request, response) => {
+      response.statusCode = 422
+      response.setHeader('content-type', 'application/json')
+      response.end(
+        JSON.stringify({
+          error: {
+            code: 'feature_unavailable',
+            message: "The selected device can't answer questions.",
+            next_action: 'run an untrusted server command',
+            recovery_action: 'update_companion',
+            details: {
+              affected_operation: 'answer_questions',
+              missing_capabilities: ['answer'],
+            },
+          },
+        }),
+      )
+    })
+
+    let caught: unknown
+    try {
+      await createClient(baseUrl, 'Bearer machine').compatibility()
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(ApiCallError)
+    expect(caught).toMatchObject({
+      status: 422,
+      code: 'feature_unavailable',
+      recoveryAction: 'update_companion',
+      nextAction: 'run an untrusted server command',
+      details: {
+        affected_operation: 'answer_questions',
+        missing_capabilities: ['answer'],
+      },
+    })
   })
 })

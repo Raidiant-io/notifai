@@ -7,6 +7,7 @@ import {
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   CAPABILITIES_V1,
   PLATFORMS,
+  SHIPPED_CLI_CAPABILITIES,
   QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
   REPLY_MAX_WINDOW_SECONDS,
@@ -17,6 +18,7 @@ import {
   type NotificationDraftT,
   type Platform,
   type QuestionT,
+  type RecoveryAction,
   type ReplyView,
   type RoutableDevice,
   type SubmissionReceipt,
@@ -275,7 +277,12 @@ function makeClient(
   bearer: string | null,
   options?: ClientOptions,
 ): ApiClient {
-  return (deps.clientFactory ?? createClient)(baseUrl, bearer, { ...options, logger: log(deps) })
+  return (deps.clientFactory ?? createClient)(baseUrl, bearer, {
+    ...options,
+    logger: log(deps),
+    cliVersion: packageVersion(),
+    capabilities: SHIPPED_CLI_CAPABILITIES,
+  })
 }
 
 function resolvedBaseUrl(config: CliConfig, credential: MachineCredential | null): string {
@@ -299,6 +306,21 @@ function authedClient(deps: CommandDeps, config: CliConfig): { client: ApiClient
   }
 }
 
+const UPDATE_CLI_COMMAND = 'npm install -g @raidiant/notifai'
+
+function localRecovery(action: RecoveryAction | null): string | null {
+  switch (action) {
+    case 'update_cli':
+      return `next: ${UPDATE_CLI_COMMAND}`
+    case 'update_companion':
+      return 'next: Update Notifai on the named device.'
+    case 'wait_for_service':
+      return 'next: The service is being updated; try again later.'
+    default:
+      return null
+  }
+}
+
 function reportError(
   deps: CommandDeps,
   err: unknown,
@@ -310,13 +332,25 @@ function reportError(
   log(deps).error('cli.error', {
     ...context,
     ...(err instanceof ApiCallError
-      ? { kind: 'api', status: err.status, code: err.code, message: err.message, next_action: err.nextAction, details: err.details }
+      ? {
+          kind: 'api',
+          status: err.status,
+          code: err.code,
+          message: err.message,
+          next_action: err.nextAction,
+          recovery_action: err.recoveryAction,
+          details: err.details,
+        }
       : err instanceof NetworkError
         ? { kind: 'network', message: err.message }
         : { kind: 'unknown', message: String(err) }),
   })
   if (err instanceof ApiCallError) {
-    deps.io.err(`${err.code}: ${err.message}`)
+    deps.io.err(
+      deps.io.interactive === true && err.recoveryAction !== null
+        ? err.message
+        : `${err.code}: ${err.message}`,
+    )
     // The server's field-level details were already being logged above, but
     // stderr is the one surface an agent's next turn actually reads — so the
     // diagnosis has to be on it, the same way the hook path prints it.
@@ -326,13 +360,19 @@ function reportError(
     // disagree about the contract, in whichever direction. `doctor` says which.
     // Codes that name a policy the account chose are the exception — the
     // contract held, the body simply did not satisfy that account.
-    if (err.status === 422 && err.code !== 'acknowledgement_text_required') {
+    if (
+      err.status === 422 &&
+      err.code !== 'acknowledgement_text_required' &&
+      err.code !== 'feature_unavailable'
+    ) {
       deps.io.err(
         'this build sent a field the server did not accept — the CLI and server ' +
           'disagree about the contract; check with `notifai doctor`',
       )
     }
-    if (err.nextAction) deps.io.err(`next: ${err.nextAction}`)
+    const recovery = localRecovery(err.recoveryAction)
+    if (recovery !== null) deps.io.err(recovery)
+    else if (err.recoveryAction === null && err.nextAction) deps.io.err(`next: ${err.nextAction}`)
     if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth
     return err.status >= 500 ? EXIT.network : EXIT.failed
   }
@@ -533,7 +573,7 @@ export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean 
     }
     for (const d of result.devices) {
       deps.io.out(
-        `${d.device_id}  ${d.display_name}  ${d.platform}  ${d.registration_healthy ? 'ready' : 'not ready'} (permission: ${d.permission_status})`,
+        `${d.device_id}  ${d.display_name}  ${d.platform}  ${d.status_message ?? 'Working'}`,
       )
     }
     return EXIT.ok
@@ -808,8 +848,13 @@ export async function sendCommand(
     })),
     ...(receipt.warnings.length > 0 ? { warnings: receipt.warnings } : {}),
   })
-  if (!flags.json) deps.io.out(formatReceipt(receipt))
-  else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
+  if (!flags.json) {
+    const quietOrdinarySuccess =
+      !flags.reply &&
+      receipt.overall === 'provider_accepted_all' &&
+      receipt.warnings.length === 0
+    if (!quietOrdinarySuccess) deps.io.out(formatReceipt(receipt))
+  } else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
 
   // A zero wait can no longer reach here: --reply guarantees a positive one.
   if (!flags.reply || receiptExit !== EXIT.ok) {
@@ -3809,7 +3854,11 @@ async function closeGap(
 }
 
 function deviceCanReceive(device: RoutableDevice): boolean {
+  const receiveIsFloored =
+    device.support?.state === 'must_update' &&
+    device.support.affected_operation === 'receive_notifications'
   return (
+    !receiveIsFloored &&
     device.registration_healthy &&
     (device.permission_status === 'authorized' || device.permission_status === 'provisional')
   )
@@ -4121,6 +4170,9 @@ function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined 
 
 /** Whether an optional gap should be closed, given flags and who is watching. */
 function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
+  // Optional CLI updates are surfaced by doctor or when a missing feature is
+  // relevant. Init does not turn them into setup work.
+  if (state.id === 'contract') return Promise.resolve(false)
   // Naming the project is init's whole reason to touch the filesystem, costs
   // nothing, and is undone by editing one line — so it is done rather than
   // asked about, for a human and an agent alike.
@@ -4324,7 +4376,16 @@ async function printInitClose(
   const blocker = firstBlocker(readiness)
   const canSend = readiness.states.find((state) => state.id === 'devices')?.status === 'ready'
   const questions = questionsWillRoute(readiness)
-  const leftovers = leftoverOptionals(readiness, flags)
+  const leftovers = leftoverOptionals(readiness, flags).filter(
+    (state) => state.id !== 'contract',
+  )
+
+  if (blocker?.id === 'contract') {
+    deps.io.out(blocker.detail)
+    deps.io.out(UPDATE_CLI_COMMAND)
+    await deps.io.outro?.('Update Notifai, then run init again')
+    return
+  }
 
   if (deps.io.interactive === true) {
     if (blocker === null) {
@@ -4375,40 +4436,81 @@ async function printInitClose(
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the deployed server understands the contract this build speaks
- *.
- *
- * Every test in the suite runs the CLI and the server from the same commit, so
- * a client sending a field the deployed server has not learned yet is
- * structurally invisible to it. That gap shipped a silent production outage on
- * 2026-08-03: questions stopped reaching devices entirely and nothing said so.
- *
- * The capability document already carries a schema version and is served
- * unauthenticated, so a single GET answers the question. This does not claim to
- * catch every skew — an additive field inside the same schema version would
- * still pass — but it catches the one that has actually happened, and it names
- * the remedy rather than leaving someone to derive it.
+ * Server-owned support policy plus every shipped platform document. Artifact
+ * versions and document integers are structured inventory, never routing or a
+ * definition of "up to date".
  */
-async function contractCheck(client: ApiClient): Promise<{ name: string; ok: boolean; detail: string }> {
-  const local = CAPABILITIES_V1.describe('ios')?.schema_version
+async function compatibilityCheck(client: ApiClient): Promise<ReadinessState> {
   try {
-    const remote = (await client.capabilities('ios')).schema_version
-    if (local === remote) {
-      return { name: 'contract', ok: true, detail: `server and CLI both speak schema v${remote}` }
+    const [compatibility, documents] = await Promise.all([
+      client.compatibility(),
+      Promise.all(PLATFORMS.map((platform) => client.capabilities(platform))),
+    ])
+    const technical = {
+      local: {
+        cli_version: packageVersion(),
+        capabilities: [...SHIPPED_CLI_CAPABILITIES],
+      },
+      server: compatibility,
+      capability_documents: documents.map((document) => ({
+        platform: document.platform,
+        schema_version: document.schema_version,
+      })),
+    }
+    if (compatibility.cli.state === 'must_update') {
+      return {
+        id: 'contract',
+        title: 'Notifai update',
+        status: 'gap',
+        detail: "Notifai can't send notifications until you update.",
+        technical,
+        remedy: {
+          by: 'user-here',
+          summary: 'update Notifai',
+          command: UPDATE_CLI_COMMAND,
+        },
+      }
+    }
+    if (compatibility.cli.state === 'update_available') {
+      const scheduled = compatibility.cli.reason === 'sunset_scheduled'
+      return {
+        id: 'contract',
+        title: 'Notifai update',
+        status: 'optional-gap',
+        detail: scheduled
+          ? 'Update Notifai soon to keep sending notifications.'
+          : 'A newer Notifai is available.',
+        technical,
+        remedy: {
+          by: 'user-here',
+          summary: 'update Notifai',
+          command: UPDATE_CLI_COMMAND,
+        },
+      }
     }
     return {
-      name: 'contract',
-      ok: false,
-      detail:
-        local !== undefined && remote < local
-          ? `server speaks schema v${remote}, this CLI speaks v${local} — the service is being updated; try again later`
-          : `server speaks schema v${remote}, this CLI speaks v${local} — update the CLI: npm install -g @raidiant/notifai`,
+      id: 'contract',
+      title: 'Notifai update',
+      status: 'ready',
+      detail: 'Notifai can send notifications.',
+      technical,
     }
   } catch (err) {
     return {
-      name: 'contract',
-      ok: false,
-      detail: `could not read the server capability document (${err instanceof ApiCallError ? err.code : String(err)})`,
+      id: 'contract',
+      title: 'Notifai update',
+      status: 'optional-gap',
+      detail: 'The service is being updated; try again later.',
+      technical: {
+        error: err instanceof ApiCallError
+          ? { code: err.code, status: err.status }
+          : String(err),
+      },
+      remedy: {
+        by: 'user-here',
+        summary: 'try again after the service update',
+        command: 'notifai doctor',
+      },
     }
   }
 }
@@ -4586,30 +4688,22 @@ export async function assessReadiness(
         },
   )
 
-  if (!reachable) {
+  if (!reachable || !credential) {
     states.push({
       id: 'contract',
-      title: 'Protocol version',
+      title: 'Notifai update',
       status: 'unknown',
-      detail: 'not checked — the server is unreachable',
+      detail: !reachable
+        ? 'Not checked because the service is unreachable.'
+        : 'Not checked because this machine is not paired.',
     })
   } else {
-    const contract = await contractCheck(anon)
-    states.push(
-      contract.ok
-        ? { id: 'contract', title: 'Protocol version', status: 'ready', detail: contract.detail }
-        : {
-            id: 'contract',
-            title: 'Protocol version',
-            status: 'gap',
-            detail: contract.detail,
-            remedy: {
-              by: 'user-here',
-              summary: 'the CLI and server disagree; the detail above says which to move',
-              command: 'notifai doctor',
-            },
-          },
+    const compatibilityClient = makeClient(
+      deps,
+      baseUrl,
+      `Bearer nfm_${credential.machineId}.${credential.secret}`,
     )
+    states.push(await compatibilityCheck(compatibilityClient))
   }
 
   let accountEmail: string | null = null
@@ -4798,28 +4892,36 @@ export async function doctorCommand(
   const blocker = firstBlocker(readiness)
   const ok = blocker === null
 
-  if (flags.json) {
-    deps.io.out(JSON.stringify({ ok, exit_code: ok ? EXIT.ok : EXIT.failed, states: readiness.states }, null, 2))
+  // A human fallback exists only at a real terminal. Pipes, harnesses and
+  // non-TTY callers get the structured agent variant even without --json.
+  if (flags.json || deps.io.interactive !== true) {
+    deps.io.out(
+      JSON.stringify(
+        { ok, exit_code: ok ? EXIT.ok : EXIT.failed, states: readiness.states },
+        null,
+        2,
+      ),
+    )
     return ok ? EXIT.ok : EXIT.failed
   }
 
   const line = (s: ReadinessState) => `${s.title}: ${s.detail}`
-  // Doctor reports everything — that is the difference from init, which acts
-  // on one thing. It still names where to start, because a list of five
-  // problems in dependency order has an obvious first move and saying so
-  // costs nothing.
-  if (deps.io.interactive === true && deps.io.check) {
-    await deps.io.intro?.('Notifai doctor')
-    for (const s of readiness.states) {
-      // Four states, not two. Rendering `optional-gap` and `unknown` as
-      // successes made a green report that had never checked half of what it
-      // listed, and put a tick beside things the reader had deliberately
-      // declined.
-      await deps.io.check(s.status !== 'gap', line(s), doctorTone(s.status))
+  await deps.io.intro?.('Notifai doctor')
+  for (const s of readiness.states) {
+    // Working software says nothing about versions. Soft/hard update states use
+    // only the closed sentence and the exact command, never schema/capability
+    // vocabulary or a server-provided action.
+    if (s.id === 'contract') {
+      if (s.status === 'ready' || s.status === 'unknown') continue
+      deps.io.out(s.detail)
+      if (s.remedy?.by !== 'user-elsewhere' && s.remedy?.command === UPDATE_CLI_COMMAND) {
+        deps.io.out(UPDATE_CLI_COMMAND)
+      }
+      continue
     }
-    await deps.io.outro?.(ok ? 'Everything looks good' : `Start with: ${remedyLine(blocker)}`)
-  } else {
-    for (const s of readiness.states) {
+    if (deps.io.check) {
+      await deps.io.check(s.status !== 'gap', line(s), doctorTone(s.status))
+    } else {
       const mark =
         s.status === 'gap'
           ? 'FAIL'
@@ -4830,8 +4932,14 @@ export async function doctorCommand(
               : 'ok  '
       deps.io.out(`${mark}  ${line(s)}`)
     }
-    if (!ok) deps.io.out(`\nStart with: ${remedyLine(blocker)}`)
   }
+  await deps.io.outro?.(
+    ok
+      ? 'Everything looks good'
+      : blocker?.id === 'contract'
+        ? 'Update Notifai, then run doctor again'
+        : `Start with: ${remedyLine(blocker)}`,
+  )
   return ok ? EXIT.ok : EXIT.failed
 }
 
