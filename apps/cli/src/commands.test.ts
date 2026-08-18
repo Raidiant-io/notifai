@@ -2691,6 +2691,12 @@ describe('init', () => {
     reply_protocol_version: 2,
     last_seen_at: '2026-08-05T18:00:00.000Z',
   }
+  const readyMac = {
+    ...readyIphone,
+    device_id: 'dev_mac',
+    display_name: 'Mac',
+    platform: 'macos' as const,
+  }
 
   function setupEvidence(
     requestId: string,
@@ -3197,7 +3203,7 @@ describe('init', () => {
     expect(out).toContain('Next: Your devices')
     expect(out).toContain('https://test.notifai.invalid/support')
     expect(out).toContain('sign in with the same email as this account (alpha@example.com)')
-    expect(out).toContain('install Notifai on iPhone or Mac via https://test.notifai.invalid/support')
+    expect(out).toContain('install Notifai on iPhone via https://test.notifai.invalid/support')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
@@ -3246,7 +3252,7 @@ describe('init', () => {
   })
 
   it.each([
-    ['denied', 'system settings'],
+    ['denied', 'iPhone Settings'],
     ['not_determined', 'allow its notification prompt'],
   ])('gives one permission-specific next action for %s', async (permission, expected) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), `init-permission-${permission}-`))
@@ -3271,7 +3277,7 @@ describe('init', () => {
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
-  it('waits on the supported device registry, then ends with an observed real receipt', async () => {
+  it('ignores a dormant Mac installation while waiting for an iPhone, then proves the iPhone receipt', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-bridge-'))
     const io = new InteractiveIo()
     let now = 0
@@ -3281,7 +3287,7 @@ describe('init', () => {
     const client = {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({ devices: deviceReady ? [readyIphone] : [] }),
+      listDevices: async () => ({ devices: deviceReady ? [readyIphone] : [readyMac] }),
       accessStatus: async () => ({
         status: 'active',
         reason: 'alpha_grant',
@@ -3318,6 +3324,7 @@ describe('init', () => {
     ])
     expect(io.openedUrls).toEqual(['https://test.notifai.invalid/support'])
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
+    expect(io.spinnerEvents).toContain('message:Waiting for the iPhone app to sign in and register…')
     expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
     expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
     expect(io.outLines.join('\n')).toContain(
@@ -3508,7 +3515,7 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
   })
 
-  it('treats macOS-only delivery proof as an honest non-blocking caveat', async () => {
+  it('does not treat a macOS-only installation as active-release readiness', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-macos-proof-'))
     const io = new CapturedIo()
     let submitCalls = 0
@@ -3516,7 +3523,7 @@ describe('init', () => {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({
-        devices: [{ ...readyIphone, device_id: 'dev_mac', display_name: 'Mac', platform: 'macos' }],
+        devices: [readyMac],
       }),
       submit: async () => {
         submitCalls += 1
@@ -3529,15 +3536,14 @@ describe('init', () => {
       env: isolatedEnv(cwd),
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     expect(submitCalls).toBe(0)
     const out = io.outLines.join('\n')
-    expect(out).toContain('All set.')
-    expect(out).toContain('receipt proof needs an iPhone in this release')
-    expect(out).not.toContain('Next: Delivery proof')
+    expect(out).toContain('Next: Your devices')
+    expect(out).toContain('no iPhone registered yet')
+    expect(out).not.toContain('All set.')
     expect(out).not.toMatch(/Companion Receipt observed/i)
 
-    // doctor must render the same non-blocking state (not FAIL / not a Next:).
     const doctorIo = new CapturedIo()
     expect(
       await doctorCommand(
@@ -3548,11 +3554,11 @@ describe('init', () => {
         },
         {},
       ),
-    ).toBe(EXIT.ok)
+    ).toBe(EXIT.failed)
     const doctorOut = doctorIo.outLines.join('\n')
-    expect(doctorOut).toMatch(/--\s+Delivery proof:/)
-    expect(doctorOut).toContain('receipt proof needs an iPhone')
-    expect(doctorOut).not.toMatch(/FAIL\s+Delivery proof:/)
+    expect(doctorOut).toMatch(/FAIL\s+Your devices:/)
+    expect(doctorOut).toContain('no iPhone registered yet')
+    expect(doctorOut).toContain('Delivery proof: not checked — no iPhone is ready')
   })
 
   it('stops login when the approval page reports no Alpha access', async () => {

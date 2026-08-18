@@ -65,8 +65,8 @@ For a harness that cannot resume an idle agent turn, `notifai send
 ## Agent harnesses
 
 The CLI and managed hook adapters support macOS, Linux, and Windows. Receiving
-still requires the current iPhone or macOS Companion App; native Windows and
-Linux Companion Apps are not shipped yet.
+in the current release requires the iPhone Companion App; native desktop
+Companion Apps are not shipped yet.
 
 ```sh
 notifai hooks install

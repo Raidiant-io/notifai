@@ -67,10 +67,9 @@ unless a human is demonstrably there.
 
 ## Platform support
 
-The sending CLI runs on macOS, Linux, and Windows. The Companion Apps that
-receive notifications are currently Apple-only: iPhone and macOS. Windows and
-Linux Companion Apps are later product work, not part of this repository or the
-current CLI support claim.
+The sending CLI runs on macOS, Linux, and Windows. The iPhone Companion App is
+the only receiving app in the current release. Native desktop Companion Apps are
+later product work, not part of this repository or the current CLI support claim.
 
 | Surface | macOS | Linux | Windows |
 | --- | --- | --- | --- |
@@ -79,7 +78,6 @@ current CLI support claim.
 | Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
 | Cursor hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| Notifai Companion App | iPhone and macOS | Not yet | Not yet |
 
 “Fails closed” means Notifai keeps the accepted answer in the session journal
 for the next hook rather than starting an unproven or divergent agent turn.
@@ -93,11 +91,11 @@ the reliable question path.
 
 ## Companion App installation
 
-Private Alpha Companion Apps are distributed only through controlled TestFlight
-invitations. Open the invitation on the iPhone or Mac you want to use, install
-Apple's TestFlight app, install Notifai, then open it once, sign in with the same
-account as the CLI, and allow notifications. There is no public App Store link
-or public TestFlight link for the Private Alpha.
+The iPhone Companion App is distributed only through controlled TestFlight
+invitations. Open the invitation on the iPhone you want to use, install Apple's
+TestFlight app, install Notifai, then open it once, sign in with the same Account
+as the CLI, and allow notifications. There is no public App Store link or public
+TestFlight link for the Private Alpha.
 
 ## Status
 

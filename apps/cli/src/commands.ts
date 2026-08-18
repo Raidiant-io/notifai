@@ -3658,14 +3658,14 @@ function deviceInstallRemedy(options: {
   const sameEmail = sameAccountSignInLine(options.email)
   if (options.devices.length === 0) {
     return (
-      `open the install steps at ${support} on that device (or your phone’s browser), ` +
+      `open the install steps at ${support} on your iPhone, ` +
       `install Notifai, ${sameEmail}, and allow notifications`
     )
   }
   if (options.devices.some((d) => d.permission_status === 'denied')) {
-    return 'allow notifications for Notifai in that device’s system settings'
+    return 'allow notifications for Notifai in iPhone Settings'
   }
-  return 'open Notifai on that device and allow its notification prompt'
+  return 'open Notifai on your iPhone and allow its notification prompt'
 }
 
 function setupProofPath(deps: CommandDeps): string {
@@ -3821,13 +3821,13 @@ function readyIosDevices(devices: readonly RoutableDevice[]): RoutableDevice[] {
 
 function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
   if (devices.length === 0) {
-    return 'Waiting for the companion app to sign in and register…'
+    return 'Waiting for the iPhone app to sign in and register…'
   }
   const denied = devices.find((device) => device.permission_status === 'denied')
   if (denied) return `Waiting for notifications to be allowed on ${denied.display_name}…`
   const undecided = devices.find((device) => device.permission_status === 'not_determined')
   if (undecided) return `Waiting for ${undecided.display_name} to allow the notification prompt…`
-  return 'Waiting for a companion device to become ready…'
+  return 'Waiting for an iPhone to become ready…'
 }
 
 /**
@@ -3859,9 +3859,9 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
       state.detail,
       remedy.summary,
       `Install steps (no typing): ${supportUrl}`,
-      `I will wait up to ${budgetLabel} for a companion device to become ready.`,
+      `I will wait up to ${budgetLabel} for your iPhone to become ready.`,
     ].join('\n'),
-    'Finish setup on your companion device',
+    'Finish setup on your iPhone',
   )
 
   // Open the real support page so the user never has to type the URL. Decline
@@ -3881,7 +3881,7 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   const sleep =
     deps.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
-  const spinner = await deps.io.spinner?.(`Waiting up to ${budgetLabel} for a companion device…`)
+  const spinner = await deps.io.spinner?.(`Waiting up to ${budgetLabel} for your iPhone…`)
   let lastDevices: RoutableDevice[] = []
   let deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
 
@@ -3889,13 +3889,14 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
     while (now() < deadline) {
       try {
         const response = await authed.client.listDevices()
-        lastDevices = response.devices
-        const ready = response.devices.find(deviceCanReceive)
+        const iphoneDevices = response.devices.filter((device) => device.platform === 'ios')
+        lastDevices = iphoneDevices
+        const ready = readyIosDevices(iphoneDevices)[0]
         if (ready) {
           spinner?.stop(`${ready.display_name} is ready to receive`)
           return 'closed'
         }
-        spinner?.message(deviceBridgeMessage(response.devices))
+        spinner?.message(deviceBridgeMessage(iphoneDevices))
       } catch (err) {
         if (!(err instanceof NetworkError)) {
           spinner?.error('Could not check companion readiness')
@@ -3924,10 +3925,10 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
       false,
     )
     if (!keepWaiting) {
-      deps.io.out('Stopping the wait. Device setup can continue; re-run `notifai init` when ready.')
+      deps.io.out('Stopping the wait. iPhone setup can continue; re-run `notifai init` when ready.')
       return 'pending'
     }
-    spinner?.message(`Waiting another ${budgetLabel} for a companion device…`)
+    spinner?.message(`Waiting another ${budgetLabel} for your iPhone…`)
     deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
   }
 }
@@ -4015,9 +4016,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
         device.device_id === existing?.device_id && existing.project === config.project.value,
     ) ?? candidates[0]
   if (!target) {
-    deps.io.err(
-      "Setup proof needs a receipt-capable iPhone. The current macOS notification path does not emit Companion Receipts (the app's delivery confirmation).",
-    )
+    deps.io.err('Setup proof needs a receipt-capable iPhone.')
     return 'pending'
   }
 
@@ -4669,7 +4668,8 @@ export async function assessReadiness(
     states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — sign-in failed' })
   } else {
     const devices = accountDevices
-    const ready = devices.filter(deviceCanReceive)
+    const iphoneDevices = devices.filter((device) => device.platform === 'ios')
+    const ready = readyIosDevices(iphoneDevices)
     states.push(
       ready.length > 0
         ? {
@@ -4689,15 +4689,15 @@ export async function assessReadiness(
             // permission prompt. The live bridge is /support on the
             // dashboard origin — not a placeholder, and not typed by hand.
             detail:
-              devices.length === 0
-                ? `nothing registered yet; install Notifai on iPhone or Mac via ${supportPageUrl(baseUrl)}`
-                : `${devices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
+              iphoneDevices.length === 0
+                ? `no iPhone registered yet; install Notifai on iPhone via ${supportPageUrl(baseUrl)}`
+                : `${iphoneDevices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
             remedy: {
               by: 'user-elsewhere',
               summary: deviceInstallRemedy({
                 baseUrl,
                 email: accountEmail,
-                devices,
+                devices: iphoneDevices,
               }),
             },
           },
@@ -4724,31 +4724,13 @@ async function setupProofState(
     }
   }
 
-  const ready = devices.filter(deviceCanReceive)
-  if (ready.length === 0) {
+  const ios = readyIosDevices(devices)
+  if (ios.length === 0) {
     return {
       id: 'proof',
       title: 'Delivery proof',
       status: 'unknown',
-      detail: 'not checked — no companion device is ready',
-    }
-  }
-
-  const ios = readyIosDevices(devices)
-  if (ios.length === 0) {
-    // Honest non-blocking caveat: notifications can reach the Mac; only the
-    // receipt proof path is unavailable in this release. Never emit a Next:
-    // step the user cannot satisfy, and never claim unobserved proof.
-    return {
-      id: 'proof',
-      title: 'Delivery proof',
-      status: 'optional-gap',
-      detail:
-        "unprovable in this release — notifications can reach your Mac, but the macOS path does not emit Companion Receipts (the app's delivery confirmation); receipt proof needs an iPhone",
-      remedy: {
-        by: 'user-elsewhere',
-        summary: 'receipt proof needs an iPhone in this release (notifications still reach this Mac)',
-      },
+      detail: 'not checked — no iPhone is ready',
     }
   }
 
