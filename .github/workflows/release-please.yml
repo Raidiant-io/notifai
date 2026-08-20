@@ -14,7 +14,36 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        id: release-please
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      # release-please cannot edit the root README from a package directory
+      # (`extra-files` rejects `../`), so the version markers are synced onto
+      # each release branch here. The PAT keeps required checks running on the
+      # pushed commit; the default workflow token would not trigger them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.release-please.outputs.prs_created == 'true' }}
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0
+      - name: Sync README version markers on release branches
+        if: ${{ steps.release-please.outputs.prs_created == 'true' }}
+        env:
+          PRS: ${{ steps.release-please.outputs.prs }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for branch in $(node -e 'for (const pr of JSON.parse(process.env.PRS)) console.log(pr.headBranchName)'); do
+            git checkout "$branch"
+            node scripts/sync-readme-markers.mjs
+            if git diff --quiet -- README.md; then
+              echo "markers already current on $branch"
+            else
+              git add README.md
+              git commit -m "docs(release): sync README version markers"
+              git push origin "HEAD:$branch"
+            fi
+          done

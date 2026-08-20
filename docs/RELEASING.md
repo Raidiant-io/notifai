@@ -45,19 +45,27 @@ Write for a public audience: no internal tracker IDs.
 ## Cutting a release
 
 [release-please](https://github.com/googleapis/release-please) opens and
-updates a Release PR on every push to `main`. Merging that PR is the cut:
-it bumps `package.json`, writes `CHANGELOG.md`, and creates the annotated
-tags.
+updates a Release PR per package on every push to `main`. Merging a Release
+PR is the cut for that package: it bumps `package.json`, writes
+`CHANGELOG.md`, and creates the annotated tag.
 
 - CLI tag: `v<version>` (the skill pin is `Raidiant-io/notifai#v${version}`)
 - Protocol tag: `protocol-v<version>`
 
+The PRs must stay separate (`separate-pull-requests` in
+`release-please-config.json`). The CLI tag carries no component, so
+release-please can only match a merged Release PR back to the CLI through the
+component in the PR's branch name — a combined PR has none, the match fails,
+and the merged release is never tagged.
+
 **Do not merge a Release PR unless the maintainer asked for a release.**
 The PR existing is not a release.
 
-The root `README.md` version markers are updated in the release commit.
-release-please cannot climb out of a package directory to edit them
-(`extra-files` rejects `../`).
+The root `README.md` version markers are synced onto each release branch by
+the release-please workflow via `scripts/sync-readme-markers.mjs`.
+release-please cannot edit them itself: it cannot climb out of a package
+directory (`extra-files` rejects `../`), and the README names both packages
+while its generic updater has no per-component markers.
 
 When a release changes both packages, the cut must also carry the CLI's
 `@raidiant/notifai-protocol` dependency pin forward to the protocol version
