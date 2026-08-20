@@ -313,7 +313,10 @@ const send = program
   .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
   .option('--all', 'target all routable devices (overrides configured devices)')
   .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
-  .option('--session-label <text>', 'human session label override (env: NOTIFAI_SESSION_LABEL)')
+  .option(
+    '--session-label <text>',
+    'first human session name, frozen locally (env: NOTIFAI_SESSION_LABEL)',
+  )
   .option('--event <event>', 'agent event name, e.g. tests_passed')
   .optionsGroup(SEND_GROUP.presentation)
   .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -445,7 +448,10 @@ program
   )
   .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
   .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
-  .option('--session-label <text>', 'human session label override (env: NOTIFAI_SESSION_LABEL)')
+  .option(
+    '--session-label <text>',
+    'first human session name, frozen locally (env: NOTIFAI_SESSION_LABEL)',
+  )
   .action(async (question: string | undefined, opts: {
     choice?: string[]
     multi?: boolean

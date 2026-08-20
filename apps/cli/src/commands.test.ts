@@ -500,9 +500,82 @@ describe('command contracts', () => {
       session_id: 'opaque-claude-session-42',
       harness: 'claude-code',
     })
-    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+    expect(submitted?.draft.source?.session_label).toMatch(
+      /^Claude Code session · [A-Z][a-z]{2} \d{1,2}, \d{4} \d{2}:\d{2}$/,
+    )
     expect(io.outLines.join('\n')).not.toContain('opaque-claude-session-42')
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
+  })
+
+  it('uses the trusted OpenCode session title published by its managed adapter', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-title-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        NOTIFAI_ACTIVE_HARNESS: 'opencode',
+        NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
+        NOTIFAI_ACTIVE_SESSION_LABEL: 'Semantic session names',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'The first-party title was frozen locally.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'opencode-session',
+      session_label: 'Semantic session names',
+      harness: 'opencode',
+    })
+  })
+
+  it('does not freeze or submit an OpenCode placeholder title', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-pending-'))
+    const io = new CapturedIo()
+    let submitted = false
+    const client = {
+      submit: async () => {
+        submitted = true
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        NOTIFAI_ACTIVE_HARNESS: 'opencode',
+        NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
+        NOTIFAI_ACTIVE_SESSION_LABEL_PENDING: '1',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'Wait for the semantic title before freezing a name.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.usage)
+    expect(submitted).toBe(false)
+    expect(io.errLines.join('\n')).toContain('still generating this session')
+    expect(existsSync(path.join(cwd, 'state', 'notifai', 'session-labels.json'))).toBe(false)
   })
 
   it('uploads repeatable images in order and sends only canonical media references', async () => {
@@ -653,7 +726,7 @@ describe('command contracts', () => {
       expect(grammar).not.toContain(".option('--session <")
       expect(grammar).toContain(".option('--body-file")
       expect(grammar).toContain(".option('--session-id")
-      expect(grammar).toContain(".option('--session-label")
+      expect(grammar).toContain("'--session-label <text>'")
       expect(grammar).toContain("'--image <path|url|media_id>'")
       expect(grammar).toContain("'--image-alt <text>'")
     }
@@ -4352,7 +4425,7 @@ describe('asking before the hooks have ever run', () => {
     })
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
-    ).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+    ).toMatch(/^Codex session · /)
   })
 
   it('uploads ask images before registration and freezes canonical body media', async () => {

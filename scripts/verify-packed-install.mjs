@@ -26,9 +26,8 @@
  *      instead, this run would be vouching for the wrong bytes.
  *   4. The installed bin must run: `notifai --version` has to report the
  *      packed version, and `notifai config show` has to exit 0. Startup
- *      resolves the CLI's static protocol imports (including the invocation
- *      context's `sessionLabelFromId`), so a protocol missing an export the
- *      CLI names fails both commands at module link time.
+ *      resolves the CLI's static protocol imports, so a protocol missing an
+ *      export the CLI names fails both commands at module link time.
  *
  * Needs registry access for the CLI's public dependencies; needs no
  * credentials and never publishes anything.

@@ -15,7 +15,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import {
-  sessionLabelFromId,
   type ListRepliesResponse,
   type ReplyView,
   type SubmissionReceipt,
@@ -3139,7 +3138,7 @@ describe('telling concurrent agents apart', () => {
         question: 'Ship it?',
         source: {
           session_id: 'sess-abc',
-          session_label: sessionLabelFromId('sess-abc'),
+          session_label: 'Semantic session',
           harness: 'claude-code',
         },
       },
@@ -3150,7 +3149,7 @@ describe('telling concurrent agents apart', () => {
 
     expect(h.recorder.submitted[0]?.draft.source).toEqual({
       session_id: 'sess-abc',
-      session_label: sessionLabelFromId('sess-abc'),
+      session_label: 'Semantic session',
       harness: 'claude-code',
     })
   })
@@ -3164,7 +3163,7 @@ describe('telling concurrent agents apart', () => {
         question: 'Ship it?',
         source: {
           session_id: 'sess-abc',
-          session_label: sessionLabelFromId('sess-abc'),
+          session_label: 'Semantic session',
           harness: 'claude-code',
         },
       },
@@ -3183,7 +3182,7 @@ describe('telling concurrent agents apart', () => {
     const retirement = h.recorder.submitted.find((s) => s.draft.event === 'question_retired')
     expect(retirement?.draft.source).toEqual({
       session_id: 'sess-abc',
-      session_label: sessionLabelFromId('sess-abc'),
+      session_label: 'Semantic session',
       harness: 'claude-code',
     })
   })

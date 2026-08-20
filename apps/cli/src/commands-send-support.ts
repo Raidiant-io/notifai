@@ -25,8 +25,11 @@ export function resolveDraftInvocation(
           activeHarness: {
             harness: active.harness,
             ...(active.sessionId === undefined ? {} : { sessionId: active.sessionId }),
+            ...(active.sessionLabel === undefined ? {} : { sessionLabel: active.sessionLabel }),
+            ...(active.sessionLabelPending === true ? { sessionLabelPending: true } : {}),
           },
         }),
+    now: (deps.now ?? Date.now)(),
   })
   if (!source.ok) return source
   return {

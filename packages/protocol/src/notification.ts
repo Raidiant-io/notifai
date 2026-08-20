@@ -66,12 +66,16 @@ export const Presentation = Type.Object(
   { additionalProperties: false },
 )
 
+export const SESSION_LABEL_MAX_LENGTH = 64
+
 export const SourceContext = Type.Object(
   {
     /** Opaque routing/grouping identity. Never rendered in User-facing text. */
     session_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     /** The only session string a User-facing surface may display. */
-    session_label: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+    session_label: Type.Optional(
+      Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH }),
+    ),
     /** Open harness slug, set only when authoritatively known. */
     harness: Type.Optional(
       Type.String({ minLength: 1, maxLength: 32, pattern: '^[a-z][a-z0-9-]*$' }),

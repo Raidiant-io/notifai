@@ -1,10 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
-import {
-  sessionLabelFromId,
-  type SourceContextT,
-} from '@raidiant/notifai-protocol'
+import { type SourceContextT } from '@raidiant/notifai-protocol'
 import type { Harness } from './harnesses.js'
+import { resolveSessionLabel } from './session-labels.js'
 
 export type GitCommand = (cwd: string, args: readonly string[]) => string | null
 
@@ -139,7 +137,13 @@ export interface SourceContextInput {
   invocation: InvocationContext
   sessionId?: string
   sessionLabel?: string
-  activeHarness?: { harness: Harness; sessionId?: string }
+  activeHarness?: {
+    harness: Harness
+    sessionId?: string
+    sessionLabel?: string
+    sessionLabelPending?: boolean
+  }
+  now?: number
 }
 
 export type SourceContextBuild =
@@ -161,14 +165,31 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
     return { ok: false, error: '--session-id must not be empty.' }
   }
 
-  const sessionLabel =
-    sessionId === undefined ? undefined : (explicitLabel ?? sessionLabelFromId(sessionId))
+  const activeOwnsSession =
+    sessionId !== undefined && input.activeHarness?.sessionId === sessionId
+  const harness = activeOwnsSession ? input.activeHarness?.harness : undefined
+  const label =
+    sessionId === undefined
+      ? undefined
+      : resolveSessionLabel({
+          env: input.env,
+          sessionId,
+          ...(harness === undefined ? {} : { harness }),
+          ...(explicitLabel === undefined ? {} : { explicitLabel }),
+          ...(activeOwnsSession && input.activeHarness?.sessionLabel !== undefined
+            ? { harnessLabel: input.activeHarness.sessionLabel }
+            : {}),
+          ...(activeOwnsSession && input.activeHarness?.sessionLabelPending === true
+            ? { harnessLabelPending: true }
+            : {}),
+          ...(input.now === undefined ? {} : { now: input.now }),
+        })
+  if (label !== undefined && !label.ok) return label
+
   const source: SourceContextT = {
     ...(sessionId !== undefined ? { session_id: sessionId } : {}),
-    ...(sessionLabel !== undefined ? { session_label: sessionLabel } : {}),
-    ...(sessionId !== undefined && input.activeHarness !== undefined
-      ? { harness: input.activeHarness.harness }
-      : {}),
+    ...(label !== undefined ? { session_label: label.label } : {}),
+    ...(harness !== undefined ? { harness } : {}),
     ...(input.invocation.branch !== undefined ? { branch: input.invocation.branch } : {}),
     ...(input.invocation.worktree !== undefined ? { worktree: input.invocation.worktree } : {}),
   }

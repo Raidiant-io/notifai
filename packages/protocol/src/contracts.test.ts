@@ -316,7 +316,7 @@ describe('validateDraft', () => {
       project: 'my-app',
       source: {
         session_id: 'sess_abc123',
-        session_label: 'Olive Caribou',
+        session_label: 'Semantic session names',
         harness: 'claude-code',
         branch: 'feature/context',
         worktree: 'context-worktree',
@@ -327,12 +327,25 @@ describe('validateDraft', () => {
     const notifai = envelope.payload['notifai'] as Record<string, unknown>
     expect(notifai).toMatchObject({
       session_id: 'sess_abc123',
-      session_label: 'Olive Caribou',
+      session_label: 'Semantic session names',
       harness: 'claude-code',
       branch: 'feature/context',
       worktree: 'context-worktree',
     })
     expect(notifai).not.toHaveProperty('session')
+  })
+
+  it('enforces session label bounds in the UTF-16 units used by validation', () => {
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_emoji', session_label: '😀'.repeat(32) } }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_emoji', session_label: '😀'.repeat(33) } }),
+      ),
+    ).toMatchObject({ ok: false })
   })
 
   it('rejects a display label with no session identity behind it', () => {
