@@ -1,7 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "changelog-type": "default",
-  "plugins": ["node-workspace"],
+  "separate-pull-requests": true,
+  "plugins": [{ "type": "node-workspace", "merge": false }],
   "packages": {
     "apps/cli": {
       "release-type": "node",
