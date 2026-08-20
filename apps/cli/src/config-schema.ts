@@ -199,7 +199,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'string',
     summary: 'Free text an agent reads before deciding whether to notify you',
     detail:
-      'Your own guidance, in your own words, about what is worth a notification in this project — read by agents before they send. Something like "only tell me about failures and finished deploys; never per-file progress".\n\nIt is advice to the agent, not a filter the service enforces.',
+      'Your own guidance, in your own words, about what is worth a notification in this project — read by agents before they send. Something like "only tell me about failures and finished deploys; never per-file progress".\n\nIt is advice to the agent, not a filter the service enforces. Agents follow it as your literal standing word, so an agent may write it only when you ask for a preference to be remembered — and only in your words, never its own summary.',
     unsetMeans: 'agents fall back to their default judgement',
     example: 'Only failures and completed deploys',
   },

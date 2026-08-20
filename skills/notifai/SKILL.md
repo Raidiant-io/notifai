@@ -33,7 +33,8 @@ Exit status is how you decide what to do next:
 ## Decide whether to notify
 
 Read the user's own criteria first. They outrank your judgement, and you follow
-them literally:
+them literally — which is why only their words, never an agent's summary, may
+be stored there:
 
 ```bash
 notifai config show --json
@@ -53,14 +54,23 @@ Do not notify for routine progress, for each file you touch, or for anything
 they will see in the terminal in a few seconds. Noise teaches them to ignore the
 one that mattered. Send once per event.
 
-To persist a policy the user just gave you, write it at the layer that matches
-its audience — `--local` for a personal preference in this project (stored
+An instruction about the work in hand — "let me know when you're blocked",
+"only ask me for what you can't do" — tunes this session. Follow it; it needs
+no command and never touches config.
+
+Write config only when the user asks for a preference that outlives the
+session — "always", "from now on", "remember this" — and store their words
+verbatim: the key is read back as their literal standing instruction, so your
+paraphrase must never masquerade as it. Pick the layer matching who they said
+it is for — `--local` for a personal preference in this project (stored
 outside the repository, so never touch a gitignore for it), `--project` for
-shared policy, no flag for this machine:
+policy shared with others here, no flag for this machine. `--yes` skips the
+CLI's confirmation, so it belongs only on a write whose exact value and layer
+the user already approved:
 
 ```bash
-notifai config set notify_criteria "Only when you're blocked or CI-length work finishes" --project --yes
-notifai config unset notify_criteria --project --yes
+notifai config set notify_criteria "Only when you're blocked or CI-length work finishes" --local --yes
+notifai config unset notify_criteria --local --yes
 ```
 
 ## Send
