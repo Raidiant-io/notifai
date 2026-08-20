@@ -59,6 +59,27 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
   })
 
+  it('does not replace a frozen fallback when a managed semantic title appears later', () => {
+    const { env, now } = fixture()
+    const frozen = resolveSessionLabel({
+      env,
+      now,
+      sessionId: 'claude-session-before-orca-metadata',
+      harness: 'claude-code',
+    })
+    expect(frozen.ok && frozen.source).toBe('fallback')
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'claude-session-before-orca-metadata',
+        harness: 'claude-code',
+        harnessLabel: 'Worker - semantic session implementation',
+      }),
+    ).toEqual(frozen)
+  })
+
   it('does not freeze OpenCode placeholder titles before the semantic title arrives', () => {
     const { env, now } = fixture()
     const file = path.join(stateDir(env), 'session-labels.json')

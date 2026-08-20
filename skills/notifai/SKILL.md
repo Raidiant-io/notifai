@@ -65,10 +65,11 @@ notifai config unset notify_criteria --project --yes
 
 ## Send
 
-Managed OpenCode supplies its semantic session title to Notifai. Do not add a
-session label there unless the user explicitly asked to override that title.
-Claude Code, Codex, and Cursor do not currently expose one through their ordinary
-agent hooks, so their first-request example includes the concise task name:
+Managed OpenCode and Orca-managed Claude Code sessions supply their semantic
+title to Notifai. Do not add a session label there unless the user explicitly
+asked to override that title. Outside those managed sources, Claude Code, Codex,
+and Cursor do not currently expose one through their ordinary agent hooks, so
+their first-request example includes the concise task name:
 
 ```bash
 notifai send --kind done \
@@ -139,13 +140,14 @@ Other controls, when they earn their place:
   Reusing the key is what stops one event becoming two notifications.
 
 Project and exact session identity are inferred from where you run; never pass
-`--session-id`. When the harness does not supply a semantic title — currently
-Claude Code, Codex, and Cursor — give the session a concise task name on the
-first Notification Request you create in it with `--session-label`: 2-6 words
-that say what the session is about, such as `Release candidate verification` or
-`Fix checkout retries`. Managed OpenCode supplies its own title, so omit the flag
-there unless the user explicitly requested an override. Do not use the project,
-branch, status, current result, identifier, hash, or filesystem path as the name.
+`--session-id`. Managed OpenCode and Orca-managed Claude Code sessions supply a
+semantic title, so omit `--session-label` there unless the user explicitly
+requested an override. Outside those managed sources, give Claude Code, Codex,
+and Cursor sessions a concise task name on the first Notification Request you
+create with `--session-label`: 2-6 words that say what the session is about, such
+as `Release candidate verification` or `Fix checkout retries`. Do not use the
+project, branch, status, current result, identifier, hash, or filesystem path as
+the name.
 The CLI freezes the first accepted name for that immutable session, so omit the
 flag on later sends and questions. If a prior call named the session, the frozen
 name wins rather than changing under the User.
