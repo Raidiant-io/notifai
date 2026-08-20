@@ -151,12 +151,29 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
 
 export const UPDATE_CLI_COMMAND = 'npm install -g @raidiant/notifai'
 
-function localRecovery(action: RecoveryAction | null): string | null {
+function affectedDeviceNames(details: unknown): string[] {
+  if (typeof details !== 'object' || details === null || !('device_names' in details)) return []
+  const names = (details as { device_names?: unknown }).device_names
+  if (!Array.isArray(names)) return []
+  return [...new Set(names.filter((name): name is string => typeof name === 'string' && name.trim() !== ''))]
+}
+
+function naturalList(values: readonly string[]): string {
+  if (values.length <= 1) return values[0] ?? ''
+  if (values.length === 2) return `${values[0]} and ${values[1]}`
+  return `${values.slice(0, -1).join(', ')}, and ${values.at(-1)}`
+}
+
+function localRecovery(action: RecoveryAction | null, details: unknown): string | null {
   switch (action) {
     case 'update_cli':
       return `next: ${UPDATE_CLI_COMMAND}`
-    case 'update_companion':
-      return 'next: Update Notifai on the named device.'
+    case 'update_companion': {
+      const names = affectedDeviceNames(details)
+      return names.length > 0
+        ? `next: Update Notifai on ${naturalList(names)}.`
+        : 'next: Update Notifai on the affected devices.'
+    }
     case 'wait_for_service':
       return 'next: The service is being updated; try again later.'
     default:
@@ -213,7 +230,7 @@ export function reportError(
           'disagree about the contract; check with `notifai doctor`',
       )
     }
-    const recovery = localRecovery(err.recoveryAction)
+    const recovery = localRecovery(err.recoveryAction, err.details)
     if (recovery !== null) deps.io.err(recovery)
     else if (err.recoveryAction === null && err.nextAction) deps.io.err(`next: ${err.nextAction}`)
     if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth

@@ -180,6 +180,14 @@ class PlainInteractiveIo extends CapturedIo {
   interactive = true
 }
 
+class OutroCapturedIo extends CapturedIo {
+  outros: string[] = []
+
+  async outro(message: string) {
+    this.outros.push(message)
+  }
+}
+
 class InteractiveIo extends CapturedIo {
   interactive = true
   selectAnswer: string | null = 'global'
@@ -2938,7 +2946,7 @@ describe('compatibility-first update guidance', () => {
         listDevices: async () => ({ devices: [] }),
         accessStatus: async () => ({ email: 'user@example.test' }),
       } as unknown as ApiClient
-      const humanIo = new PlainInteractiveIo()
+      const humanIo = new InteractiveIo()
       const deps = {
         ...makeDeps(humanIo, client),
         cwd,
@@ -2953,6 +2961,9 @@ describe('compatibility-first update guidance', () => {
       ).toBe(exit)
       expect(humanIo.outLines).toEqual(humanLines)
       expect(humanIo.errLines).toEqual([])
+      expect(humanIo.outros).toEqual(
+        status === 'ready' ? ['Everything looks good'] : [],
+      )
 
       const jsonIo = new CapturedIo()
       expect(
@@ -3211,7 +3222,7 @@ describe('init', () => {
 
   it('resumes the same init after a required CLI update becomes current', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-init-update-resume-'))
-    const io = new CapturedIo()
+    const io = new OutroCapturedIo()
     let cliSupport = compatibilityWithCli({
       state: 'must_update',
       reason: 'minimum_not_met',
@@ -3246,11 +3257,13 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     expect(io.outLines).toContain("Notifai can't send notifications until you update.")
     expect(io.outLines).toContain('npm install -g @raidiant/notifai')
+    expect(io.outros).toEqual([])
     expect(submissions).toBe(0)
 
     cliSupport = currentCompatibility
     io.outLines = []
     io.errLines = []
+    io.outros = []
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     expect(submissions).toBe(1)
@@ -5457,7 +5470,7 @@ describe('command failures carrying server details', () => {
 
     expect(io.errLines).toEqual([
       "feature_unavailable: The selected device can't answer questions.",
-      'next: Update Notifai on the named device.',
+      'next: Update Notifai on Old phone.',
     ])
     expect(io.errLines.join(' ')).not.toContain('untrusted')
     expect(io.errLines.join(' ')).not.toContain('disagree about the contract')
