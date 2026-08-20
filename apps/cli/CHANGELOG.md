@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [7.0.1](https://github.com/Raidiant-io/notifai/compare/v7.0.0...v7.0.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **cli:** infer Orca session titles ([a4eb4fd](https://github.com/Raidiant-io/notifai/commit/a4eb4fd91f769291ff603918bb1fa33035a31918))
+* **cli:** infer Orca session titles ([f0c7d06](https://github.com/Raidiant-io/notifai/commit/f0c7d0621ff6f5b6961d7dfaeaf12ddc6e968ada))
+* **cli:** keep update recovery local and specific ([0bf4356](https://github.com/Raidiant-io/notifai/commit/0bf4356f8ced5e5296669e3b2165f62483c4a8b9))
+* **cli:** keep update recovery local and specific ([e555d40](https://github.com/Raidiant-io/notifai/commit/e555d40d07ede4e1c0c9f45b702327d39730c51d))
+
 ## [7.0.0](https://github.com/Raidiant-io/notifai/compare/v6.0.0...v7.0.0) (2026-08-20)
 
 
