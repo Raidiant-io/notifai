@@ -672,7 +672,6 @@ async function printInitClose(
   if (blocker?.id === 'contract') {
     deps.io.out(blocker.detail)
     deps.io.out(UPDATE_CLI_COMMAND)
-    await deps.io.outro?.('Update Notifai, then run init again')
     return
   }
 

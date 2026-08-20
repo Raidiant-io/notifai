@@ -589,13 +589,14 @@ export async function doctorCommand(
       deps.io.out(`${mark}  ${line(s)}`)
     }
   }
-  await deps.io.outro?.(
-    ok
-      ? 'Everything looks good'
-      : blocker?.id === 'contract'
-        ? 'Update Notifai, then run doctor again'
-        : `Start with: ${remedyLine(blocker)}`,
+  const surfacedUpdate = readiness.states.some(
+    (state) => state.id === 'contract' && (state.status === 'gap' || state.status === 'optional-gap'),
   )
+  if (blocker !== null && blocker.id !== 'contract') {
+    await deps.io.outro?.(`Start with: ${remedyLine(blocker)}`)
+  } else if (!surfacedUpdate) {
+    await deps.io.outro?.('Everything looks good')
+  }
   return ok ? EXIT.ok : EXIT.failed
 }
 
