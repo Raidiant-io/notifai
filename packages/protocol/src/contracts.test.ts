@@ -335,6 +335,19 @@ describe('validateDraft', () => {
     expect(notifai).not.toHaveProperty('session')
   })
 
+  it('enforces session label bounds in the UTF-16 units used by validation', () => {
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_emoji', session_label: '😀'.repeat(32) } }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_emoji', session_label: '😀'.repeat(33) } }),
+      ),
+    ).toMatchObject({ ok: false })
+  })
+
   it('rejects a display label with no session identity behind it', () => {
     expect(validateDraft(draft({ source: { session_label: 'Invented Label' } }))).toMatchObject({
       ok: false,

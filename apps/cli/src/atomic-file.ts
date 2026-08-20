@@ -57,6 +57,7 @@ export function atomicWriteFileSync(
     assertSameDirectory(directory, parent)
     assertUnchangedTarget(file, target)
     renameSync(temp, file)
+    syncDirectory(directory)
   } catch (err) {
     if (handle !== undefined) closeSync(handle)
     try {
@@ -65,6 +66,17 @@ export function atomicWriteFileSync(
       // Preserve the original error; the temp may not have been created.
     }
     throw err
+  }
+}
+
+/** Persist the published directory entry where the host supports directory fsync. */
+function syncDirectory(directory: string): void {
+  if (process.platform === 'win32') return
+  const handle = openSync(directory, 'r')
+  try {
+    fsyncSync(handle)
+  } finally {
+    closeSync(handle)
   }
 }
 

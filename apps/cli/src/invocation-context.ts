@@ -137,7 +137,12 @@ export interface SourceContextInput {
   invocation: InvocationContext
   sessionId?: string
   sessionLabel?: string
-  activeHarness?: { harness: Harness; sessionId?: string; sessionLabel?: string }
+  activeHarness?: {
+    harness: Harness
+    sessionId?: string
+    sessionLabel?: string
+    sessionLabelPending?: boolean
+  }
   now?: number
 }
 
@@ -173,6 +178,9 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
           ...(explicitLabel === undefined ? {} : { explicitLabel }),
           ...(activeOwnsSession && input.activeHarness?.sessionLabel !== undefined
             ? { harnessLabel: input.activeHarness.sessionLabel }
+            : {}),
+          ...(activeOwnsSession && input.activeHarness?.sessionLabelPending === true
+            ? { harnessLabelPending: true }
             : {}),
           ...(input.now === undefined ? {} : { now: input.now }),
         })

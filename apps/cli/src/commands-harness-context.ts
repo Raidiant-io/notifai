@@ -14,6 +14,8 @@ export interface ActiveHarnessSession {
   sessionId?: string
   /** Trusted human title published by this harness's managed adapter. */
   sessionLabel?: string
+  /** The harness has only a temporary placeholder title so far. */
+  sessionLabelPending?: boolean
 }
 
 /**
@@ -29,11 +31,13 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   if (env['NOTIFAI_ACTIVE_HARNESS'] === 'opencode') {
     const sessionId = env['NOTIFAI_ACTIVE_SESSION_ID']
     const sessionLabel = env['NOTIFAI_ACTIVE_SESSION_LABEL']
+    const sessionLabelPending = env['NOTIFAI_ACTIVE_SESSION_LABEL_PENDING'] === '1'
     candidates.push({
       harness: 'opencode',
       label: 'OpenCode',
       ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
       ...(sessionLabel === undefined || sessionLabel === '' ? {} : { sessionLabel }),
+      ...(sessionLabelPending ? { sessionLabelPending: true } : {}),
     })
   }
   if (env['CLAUDECODE'] === '1') {

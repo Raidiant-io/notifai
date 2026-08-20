@@ -251,6 +251,25 @@ describe('buildSourceContext', () => {
     })
   })
 
+  it('does not freeze an OpenCode placeholder while its semantic title is pending', () => {
+    expect(
+      buildSourceContext({
+        env: stateEnv(),
+        invocation: { project: 'repo' },
+        activeHarness: {
+          harness: 'opencode',
+          sessionId: 'pending-session',
+          sessionLabelPending: true,
+        },
+        now,
+      }),
+    ).toEqual({
+      ok: false,
+      error:
+        "OpenCode is still generating this session's title; retry shortly or pass --session-label.",
+    })
+  })
+
   it('uses a stable neutral first-seen fallback instead of hashing the id into words', () => {
     const env = stateEnv()
     const sessionId = 'opaque-thread-1234567890'

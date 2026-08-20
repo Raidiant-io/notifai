@@ -544,6 +544,40 @@ describe('command contracts', () => {
     })
   })
 
+  it('does not freeze or submit an OpenCode placeholder title', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-pending-'))
+    const io = new CapturedIo()
+    let submitted = false
+    const client = {
+      submit: async () => {
+        submitted = true
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        NOTIFAI_ACTIVE_HARNESS: 'opencode',
+        NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
+        NOTIFAI_ACTIVE_SESSION_LABEL_PENDING: '1',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'Wait for the semantic title before freezing a name.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.usage)
+    expect(submitted).toBe(false)
+    expect(io.errLines.join('\n')).toContain('still generating this session')
+    expect(existsSync(path.join(cwd, 'state', 'notifai', 'session-labels.json'))).toBe(false)
+  })
+
   it('uploads repeatable images in order and sends only canonical media references', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-media-order-'))
     const first = path.join(root, 'first.png')

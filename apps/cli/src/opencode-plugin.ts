@@ -31,7 +31,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 7
+const OPENCODE_ADAPTER_VERSION = 8
 
 export function opencodePluginDir(
   global: boolean,
@@ -103,6 +103,8 @@ import { spawn } from "node:child_process"
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCODE_ADAPTER_VERSION}
+const PENDING_SESSION_TITLE =
+  /^New session(?: *- *[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]+)?Z)?$/i
 
 /**
  * Runs \`notifai hook <event>\`, feeding it the same JSON envelope the other
@@ -166,7 +168,11 @@ export const NotifAIPlugin = async ({ directory, client }) => {
           const response = await client.session.get({ path: { id: sessionID } })
           const title = response?.data?.title
           if (typeof title === "string" && title.trim().length > 0) {
-            output.env.NOTIFAI_ACTIVE_SESSION_LABEL = title
+            if (PENDING_SESSION_TITLE.test(title.trim())) {
+              output.env.NOTIFAI_ACTIVE_SESSION_LABEL_PENDING = "1"
+            } else {
+              output.env.NOTIFAI_ACTIVE_SESSION_LABEL = title
+            }
           }
         } catch {
           // Identity remains useful when this OpenCode build cannot expose a title.

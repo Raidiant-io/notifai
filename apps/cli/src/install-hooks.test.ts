@@ -843,6 +843,7 @@ describe('the OpenCode adapter', () => {
     expect(source).toContain('NOTIFAI_ACTIVE_HARNESS')
     expect(source).toContain('NOTIFAI_ACTIVE_SESSION_ID')
     expect(source).toContain('NOTIFAI_ACTIVE_SESSION_LABEL')
+    expect(source).toContain('NOTIFAI_ACTIVE_SESSION_LABEL_PENDING')
     expect(source).toContain('input?.sessionID')
     expect(source).toContain('client.session.get({ path: { id: sessionID } })')
     expect(source).toContain('response?.data?.title')
@@ -886,6 +887,44 @@ describe('the OpenCode adapter', () => {
       NOTIFAI_ACTIVE_HARNESS: 'opencode',
       NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
       NOTIFAI_ACTIVE_SESSION_LABEL: 'Semantic session names',
+    })
+  })
+
+  it('marks OpenCode placeholder titles as pending instead of publishing them', async () => {
+    const generated = (await import(
+      `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+    )) as {
+      NotifAIPlugin(input: {
+        directory: string
+        client: {
+          session: {
+            get(input: { path: { id: string } }): Promise<{ data: { title: string } }>
+          }
+        }
+      }): Promise<{
+        'shell.env'?: (
+          input: { sessionID?: string },
+          output: { env: Record<string, string> },
+        ) => Promise<void>
+      }>
+    }
+    const plugin = await generated.NotifAIPlugin({
+      directory: '/repo',
+      client: {
+        session: {
+          get: async () => ({
+            data: { title: 'New session - 2026-08-20T13:05:00.000Z' },
+          }),
+        },
+      },
+    })
+    const output = { env: {} as Record<string, string> }
+    await plugin['shell.env']?.({ sessionID: 'opencode-session' }, output)
+
+    expect(output.env).toEqual({
+      NOTIFAI_ACTIVE_HARNESS: 'opencode',
+      NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
+      NOTIFAI_ACTIVE_SESSION_LABEL_PENDING: '1',
     })
   })
 

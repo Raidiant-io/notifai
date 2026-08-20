@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -57,6 +57,50 @@ describe('semantic session labels', () => {
         harnessLabel: 'NotifAI question lifecycle',
       }),
     ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
+  })
+
+  it('does not freeze OpenCode placeholder titles before the semantic title arrives', () => {
+    const { env, now } = fixture()
+    const file = path.join(stateDir(env), 'session-labels.json')
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'opencode-pending',
+        harness: 'opencode',
+        harnessLabel: 'New session - 2026-08-20T13:05:00.000Z',
+        harnessLabelPending: true,
+      }),
+    ).toEqual({
+      ok: false,
+      error:
+        "OpenCode is still generating this session's title; retry shortly or pass --session-label.",
+    })
+    expect(existsSync(file)).toBe(false)
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'opencode-pending',
+        harness: 'opencode',
+        harnessLabel: 'Semantic session names',
+      }),
+    ).toEqual({ ok: true, label: 'Semantic session names', source: 'harness' })
+  })
+
+  it('allows an explicit task name while a native title is still pending', () => {
+    const { env, now } = fixture()
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'opencode-pending',
+        harness: 'opencode',
+        harnessLabelPending: true,
+        explicitLabel: 'Verify release candidate',
+      }),
+    ).toEqual({ ok: true, label: 'Verify release candidate', source: 'explicit' })
   })
 
   it('falls back to an honest first-seen name without exposing the session id', () => {
@@ -120,9 +164,9 @@ describe('semantic session labels', () => {
     })
   })
 
-  it('keeps native and disambiguated labels inside the wire bound', () => {
+  it('keeps astral native and disambiguated labels inside the wire bound', () => {
     const { env, now } = fixture()
-    const long = '界'.repeat(100)
+    const long = '😀'.repeat(100)
     const first = resolveSessionLabel({
       env,
       now,
@@ -137,8 +181,9 @@ describe('semantic session labels', () => {
       harness: 'opencode',
       harnessLabel: long,
     })
-    expect(first.ok && Array.from(first.label)).toHaveLength(64)
-    expect(second.ok && Array.from(second.label).length).toBeLessThanOrEqual(64)
+    expect(first.ok && first.label.length).toBeLessThanOrEqual(64)
+    expect(second.ok && second.label.length).toBeLessThanOrEqual(64)
+    expect(first.ok && first.label.endsWith('…')).toBe(true)
   })
 
   it('rejects blank and oversized explicit labels before storing them', () => {
@@ -154,6 +199,49 @@ describe('semantic session labels', () => {
     ).toEqual({
       ok: false,
       error: '--session-label (or NOTIFAI_SESSION_LABEL) must be at most 64 characters.',
+    })
+    expect(
+      resolveSessionLabel({ env, now, sessionId: 'emoji', explicitLabel: '😀'.repeat(33) }),
+    ).toEqual({
+      ok: false,
+      error: '--session-label (or NOTIFAI_SESSION_LABEL) must be at most 64 characters.',
+    })
+  })
+
+  it('rejects explicit identifiers and paths and never promotes unsafe native titles', () => {
+    const { env, now } = fixture()
+    env['HOME'] = '/Users/example'
+    const error =
+      '--session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path.'
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'ses_opaque123456',
+        explicitLabel: 'ses_opaque123456',
+      }),
+    ).toEqual({ ok: false, error })
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'safe-session',
+        explicitLabel: 'Fix /Users/example/private-client',
+      }),
+    ).toEqual({ ok: false, error })
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'native-session',
+        harness: 'opencode',
+        harnessLabel: 'Fix /Users/example/private-client',
+      }),
+    ).toEqual({
+      ok: true,
+      label: 'OpenCode session · Aug 20, 2026 14:05',
+      source: 'fallback',
     })
   })
 

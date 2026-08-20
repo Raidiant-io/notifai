@@ -48,6 +48,7 @@ export interface SessionLabelInput {
   harness?: Harness
   explicitLabel?: string
   harnessLabel?: string
+  harnessLabelPending?: boolean
   now?: number
 }
 
@@ -74,7 +75,7 @@ function storedRecord(candidate: unknown): StoredSessionLabel | null {
   if (
     typeof value.label !== 'string' ||
     value.label.length === 0 ||
-    Array.from(value.label).length > SESSION_LABEL_MAX_LENGTH ||
+    value.label.length > SESSION_LABEL_MAX_LENGTH ||
     !['explicit', 'harness', 'fallback'].includes(value.source ?? '') ||
     typeof value.first_seen_at !== 'number' ||
     !Number.isFinite(value.first_seen_at)
@@ -130,32 +131,93 @@ function normalizeWhitespace(value: string): string {
   return value.trim().replaceAll(/\s+/gu, ' ')
 }
 
+/** Match the same UTF-16 length TypeBox enforces at the wire boundary. */
 function truncate(value: string, maxLength: number): string {
-  const characters = Array.from(value)
-  if (characters.length <= maxLength) return value
-  return `${characters.slice(0, Math.max(0, maxLength - 1)).join('')}…`
+  if (value.length <= maxLength) return value
+  let prefix = value.slice(0, Math.max(0, maxLength - 1))
+  const last = prefix.charCodeAt(prefix.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) prefix = prefix.slice(0, -1)
+  return `${prefix}…`
+}
+
+const UUID_PATTERN =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/iu
+const HASH_PATTERN = /\b[0-9a-f]{12,}\b/iu
+const HARNESS_ID_PATTERN = /\b(?:ses|thread)_[A-Za-z0-9_-]{8,}\b/iu
+const FILESYSTEM_PATH_PATTERN =
+  /(?:^|[\s("'=:])(?:~[\\/]|[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|private|tmp|var|Volumes|opt|etc|usr|workspace|workspaces)(?:[\\/]|$))/u
+const OPENCODE_PENDING_TITLE =
+  /^New session(?:\s*-\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?$/iu
+
+function containsPrivatePath(value: string, env: NodeJS.ProcessEnv): boolean {
+  if (FILESYSTEM_PATH_PATTERN.test(value)) return true
+  const folded = value.toLocaleLowerCase('en-US')
+  for (const key of ['HOME', 'USERPROFILE', 'TMPDIR'] as const) {
+    const candidate = env[key]?.trim().replace(/[\\/]+$/u, '')
+    if (
+      candidate !== undefined &&
+      candidate.length > 1 &&
+      folded.includes(candidate.toLocaleLowerCase('en-US'))
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function violatesLabelPrivacy(value: string, input: SessionLabelInput): boolean {
+  const sessionId = input.sessionId.trim()
+  const exposesCurrentId =
+    sessionId.length > 0 &&
+    (value === sessionId || (sessionId.length >= 8 && value.includes(sessionId)))
+  return (
+    exposesCurrentId ||
+    UUID_PATTERN.test(value) ||
+    HASH_PATTERN.test(value) ||
+    HARNESS_ID_PATTERN.test(value) ||
+    containsPrivatePath(value, input.env)
+  )
 }
 
 function explicitCandidate(
   value: string | undefined,
+  input: SessionLabelInput,
 ): SessionLabelCandidate | { error: string } | null {
   if (value === undefined) return null
   const normalized = normalizeWhitespace(value)
   if (normalized.length === 0) {
     return { error: '--session-label (or NOTIFAI_SESSION_LABEL) must not be empty.' }
   }
-  if (Array.from(normalized).length > SESSION_LABEL_MAX_LENGTH) {
+  if (normalized.length > SESSION_LABEL_MAX_LENGTH) {
     return {
       error: `--session-label (or NOTIFAI_SESSION_LABEL) must be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
+    }
+  }
+  if (violatesLabelPrivacy(normalized, input)) {
+    return {
+      error:
+        '--session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path.',
     }
   }
   return { label: normalized, source: 'explicit' }
 }
 
-function harnessCandidate(value: string | undefined): SessionLabelCandidate | null {
+function harnessLabelIsPending(
+  value: string | undefined,
+  input: SessionLabelInput,
+): boolean {
+  if (input.harnessLabelPending === true) return true
+  if (input.harness !== 'opencode' || value === undefined) return false
+  return OPENCODE_PENDING_TITLE.test(normalizeWhitespace(value))
+}
+
+function harnessCandidate(
+  value: string | undefined,
+  input: SessionLabelInput,
+): SessionLabelCandidate | null {
   if (value === undefined) return null
   const normalized = normalizeWhitespace(value)
-  if (normalized.length === 0) return null
+  if (normalized.length === 0 || violatesLabelPrivacy(normalized, input)) return null
   return {
     label: truncate(normalized, SESSION_LABEL_MAX_LENGTH),
     source: 'harness',
@@ -181,7 +243,7 @@ function fallbackCandidate(harness: Harness | undefined, now: number): SessionLa
 }
 
 function withSuffix(base: string, suffix: string): string {
-  const room = SESSION_LABEL_MAX_LENGTH - Array.from(suffix).length
+  const room = SESSION_LABEL_MAX_LENGTH - suffix.length
   return `${truncate(base, room)}${suffix}`
 }
 
@@ -238,11 +300,19 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         return { ok: true, label: existing.label, source: existing.source }
       }
 
-      const explicit = explicitCandidate(input.explicitLabel)
+      const explicit = explicitCandidate(input.explicitLabel, input)
       if (explicit !== null && 'error' in explicit) {
         return { ok: false, error: explicit.error }
       }
-      const native = harnessCandidate(input.harnessLabel)
+      const nativePending = harnessLabelIsPending(input.harnessLabel, input)
+      const native = nativePending ? null : harnessCandidate(input.harnessLabel, input)
+      if (explicit === null && nativePending) {
+        return {
+          ok: false,
+          error:
+            "OpenCode is still generating this session's title; retry shortly or pass --session-label.",
+        }
+      }
       const candidate: SessionLabelCandidate =
         explicit ?? native ?? fallbackCandidate(input.harness, now)
       const used = new Set(
