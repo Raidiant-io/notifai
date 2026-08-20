@@ -1,5 +1,7 @@
+import { mkdtempSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { sessionLabelFromId } from '@raidiant/notifai-protocol'
 import {
   buildSourceContext,
   inferInvocationContext,
@@ -11,6 +13,13 @@ import {
 
 function fixtureGit(values: Record<string, string | null>): GitCommand {
   return (_cwd, args) => values[args.join(' ')] ?? null
+}
+
+function stateEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    XDG_STATE_HOME: mkdtempSync(path.join(os.tmpdir(), 'notifai-source-context-')),
+    ...overrides,
+  }
 }
 
 describe('projectSlugFrom', () => {
@@ -155,17 +164,19 @@ describe('truncateContext', () => {
 
 describe('buildSourceContext', () => {
   const invocation = { project: 'repo', branch: 'main', worktree: 'topic' }
+  const now = new Date(2026, 7, 20, 14, 5).getTime()
 
   it('applies flag, environment, then inferred precedence per session field', () => {
     const built = buildSourceContext({
-      env: {
+      env: stateEnv({
         NOTIFAI_SESSION_ID: 'env-id',
         NOTIFAI_SESSION_LABEL: 'Environment Label',
-      },
+      }),
       invocation,
       sessionId: 'flag-id',
       sessionLabel: 'Flag Label',
-      activeHarness: { harness: 'claude-code', sessionId: 'inferred-id' },
+      activeHarness: { harness: 'claude-code', sessionId: 'flag-id' },
+      now,
     })
     expect(built).toEqual({
       ok: true,
@@ -182,12 +193,13 @@ describe('buildSourceContext', () => {
   it('uses environment values ahead of an inferred exact session', () => {
     expect(
       buildSourceContext({
-        env: {
+        env: stateEnv({
           NOTIFAI_SESSION_ID: 'env-id',
           NOTIFAI_SESSION_LABEL: 'Environment Label',
-        },
+        }),
         invocation: { project: 'repo' },
-        activeHarness: { harness: 'codex', sessionId: 'inferred-id' },
+        activeHarness: { harness: 'codex', sessionId: 'env-id' },
+        now,
       }),
     ).toEqual({
       ok: true,
@@ -199,32 +211,98 @@ describe('buildSourceContext', () => {
     })
   })
 
-  it('generates a stable non-identifying label for an inferred exact session', () => {
-    const sessionId = 'opaque-thread-1234567890'
+  it('uses and freezes a trusted harness-native title', () => {
+    const env = stateEnv()
+    const sessionId = 'opencode-thread'
     expect(
       buildSourceContext({
-        env: {},
+        env,
         invocation: { project: 'repo', branch: 'main' },
-        activeHarness: { harness: 'opencode', sessionId },
+        activeHarness: {
+          harness: 'opencode',
+          sessionId,
+          sessionLabel: 'Semantic session names',
+        },
+        now,
       }),
     ).toEqual({
       ok: true,
       source: {
         session_id: sessionId,
-        session_label: sessionLabelFromId(sessionId),
+        session_label: 'Semantic session names',
         harness: 'opencode',
         branch: 'main',
       },
     })
-    expect(sessionLabelFromId(sessionId)).not.toContain('1234567890')
+    expect(
+      buildSourceContext({
+        env,
+        invocation: { project: 'repo' },
+        activeHarness: { harness: 'opencode', sessionId, sessionLabel: 'Changed title' },
+        now: now + 1_000,
+      }),
+    ).toEqual({
+      ok: true,
+      source: {
+        session_id: sessionId,
+        session_label: 'Semantic session names',
+        harness: 'opencode',
+      },
+    })
+  })
+
+  it('uses a stable neutral first-seen fallback instead of hashing the id into words', () => {
+    const env = stateEnv()
+    const sessionId = 'opaque-thread-1234567890'
+    const expected = {
+      ok: true,
+      source: {
+        session_id: sessionId,
+        session_label: 'OpenCode session · Aug 20, 2026 14:05',
+        harness: 'opencode' as const,
+        branch: 'main',
+      },
+    }
+    expect(
+      buildSourceContext({
+        env,
+        invocation: { project: 'repo', branch: 'main' },
+        activeHarness: { harness: 'opencode', sessionId },
+        now,
+      }),
+    ).toEqual(expected)
+    expect(expected.source.session_label).not.toContain('1234567890')
+  })
+
+  it('does not borrow harness identity or title for an explicit different session id', () => {
+    expect(
+      buildSourceContext({
+        env: stateEnv(),
+        invocation: { project: 'repo' },
+        sessionId: 'other-session',
+        activeHarness: {
+          harness: 'claude-code',
+          sessionId: 'current-session',
+          sessionLabel: 'Current work',
+        },
+        now,
+      }),
+    ).toEqual({
+      ok: true,
+      source: {
+        session_id: 'other-session',
+        session_label: 'Agent session · Aug 20, 2026 14:05',
+      },
+    })
   })
 
   it('does not emit a harness or label when no exact session id is available', () => {
     expect(
       buildSourceContext({
-        env: {},
+        env: stateEnv(),
         invocation: { project: 'repo', branch: 'main' },
         activeHarness: { harness: 'cursor' },
+        now,
       }),
     ).toEqual({ ok: true, source: { branch: 'main' } })
   })
@@ -232,8 +310,9 @@ describe('buildSourceContext', () => {
   it('ignores the deleted NOTIFAI_SESSION variable', () => {
     expect(
       buildSourceContext({
-        env: { NOTIFAI_SESSION: 'legacy-id' },
+        env: stateEnv({ NOTIFAI_SESSION: 'legacy-id' }),
         invocation: { project: 'repo' },
+        now,
       }),
     ).toEqual({ ok: true })
   })
@@ -241,9 +320,10 @@ describe('buildSourceContext', () => {
   it('rejects a display label without an exact session id', () => {
     expect(
       buildSourceContext({
-        env: {},
+        env: stateEnv(),
         invocation: { project: 'repo' },
         sessionLabel: 'Unbound Label',
+        now,
       }),
     ).toEqual({
       ok: false,

@@ -1,7 +1,6 @@
 export * from './status.js'
 export * from './lifecycle.js'
 export * from './content.js'
-export * from './source-context.js'
 export * from './notification.js'
 export * from './compatibility.js'
 export * from './capabilities.js'

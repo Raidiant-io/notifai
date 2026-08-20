@@ -838,11 +838,55 @@ describe('the OpenCode adapter', () => {
     expect(source).not.toContain('synthetic: true')
   })
 
-  it('injects an exact active-harness and session marker into OpenCode shells', () => {
+  it('injects exact identity and the first-party OpenCode title into agent shells', () => {
     expect(source).toContain('"shell.env"')
     expect(source).toContain('NOTIFAI_ACTIVE_HARNESS')
     expect(source).toContain('NOTIFAI_ACTIVE_SESSION_ID')
+    expect(source).toContain('NOTIFAI_ACTIVE_SESSION_LABEL')
     expect(source).toContain('input?.sessionID')
+    expect(source).toContain('client.session.get({ path: { id: sessionID } })')
+    expect(source).toContain('response?.data?.title')
+  })
+
+  it('executes the generated adapter and publishes the SDK session title', async () => {
+    let requested = ''
+    const generated = (await import(
+      `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+    )) as {
+      NotifAIPlugin(input: {
+        directory: string
+        client: {
+          session: {
+            get(input: { path: { id: string } }): Promise<{ data: { title: string } }>
+          }
+        }
+      }): Promise<{
+        'shell.env'?: (
+          input: { sessionID?: string },
+          output: { env: Record<string, string> },
+        ) => Promise<void>
+      }>
+    }
+    const plugin = await generated.NotifAIPlugin({
+      directory: '/repo',
+      client: {
+        session: {
+          get: async ({ path: request }) => {
+            requested = request.id
+            return { data: { title: 'Semantic session names' } }
+          },
+        },
+      },
+    })
+    const output = { env: {} as Record<string, string> }
+    await plugin['shell.env']?.({ sessionID: 'opencode-session' }, output)
+
+    expect(requested).toBe('opencode-session')
+    expect(output.env).toMatchObject({
+      NOTIFAI_ACTIVE_HARNESS: 'opencode',
+      NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
+      NOTIFAI_ACTIVE_SESSION_LABEL: 'Semantic session names',
+    })
   })
 
   it('carries the ownership marker so a second checkout replaces it', () => {

@@ -316,7 +316,7 @@ describe('validateDraft', () => {
       project: 'my-app',
       source: {
         session_id: 'sess_abc123',
-        session_label: 'Olive Caribou',
+        session_label: 'Semantic session names',
         harness: 'claude-code',
         branch: 'feature/context',
         worktree: 'context-worktree',
@@ -327,7 +327,7 @@ describe('validateDraft', () => {
     const notifai = envelope.payload['notifai'] as Record<string, unknown>
     expect(notifai).toMatchObject({
       session_id: 'sess_abc123',
-      session_label: 'Olive Caribou',
+      session_label: 'Semantic session names',
       harness: 'claude-code',
       branch: 'feature/context',
       worktree: 'context-worktree',

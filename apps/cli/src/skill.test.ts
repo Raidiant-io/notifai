@@ -97,6 +97,16 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/never\s+put the kind or the project in it/i)
   })
 
+  it('names each immutable session once without asking the agent for its id', () => {
+    const send = section('## Send')
+    expect(send).toContain('--session-label')
+    expect(send).toMatch(/first Notification\s+Request/i)
+    expect(send).toMatch(/2-6 words/i)
+    expect(send).toMatch(/freezes the first accepted name/i)
+    expect(send).toMatch(/omit the\s+flag on later sends and questions/i)
+    expect(send).toMatch(/never pass\s+`--session-id`/i)
+  })
+
   it('separates how long the command waits from how long an answer is accepted', () => {
     const ask = section('## Ask a question')
     expect(ask).toContain('--reply-timeout')

@@ -31,7 +31,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 6
+const OPENCODE_ADAPTER_VERSION = 7
 
 export function opencodePluginDir(
   global: boolean,
@@ -152,16 +152,25 @@ function runHook(event, envelope) {
   })
 }
 
-export const NotifAIPlugin = async ({ directory }) => {
+export const NotifAIPlugin = async ({ directory, client }) => {
   const cwd = typeof directory === "string" && directory.length > 0 ? directory : process.cwd()
 
   return {
-    /** Exact active-harness identity for shell commands such as \`notifai ask\`. */
+    /** Exact active-harness identity and first-party title for agent shell commands. */
     "shell.env": async (input, output) => {
       output.env.NOTIFAI_ACTIVE_HARNESS = "opencode"
       const sessionID = input?.sessionID
       if (typeof sessionID === "string" && sessionID.length > 0) {
         output.env.NOTIFAI_ACTIVE_SESSION_ID = sessionID
+        try {
+          const response = await client.session.get({ path: { id: sessionID } })
+          const title = response?.data?.title
+          if (typeof title === "string" && title.trim().length > 0) {
+            output.env.NOTIFAI_ACTIVE_SESSION_LABEL = title
+          }
+        } catch {
+          // Identity remains useful when this OpenCode build cannot expose a title.
+        }
       }
     },
 

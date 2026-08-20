@@ -67,6 +67,7 @@ notifai config unset notify_criteria --project --yes
 
 ```bash
 notifai send --kind done \
+  --session-label "Release candidate verification" \
   --title "All 42 tests passed" \
   --body "Suite finished in 3m 10s. Next: review the release candidate."
 ```
@@ -132,8 +133,15 @@ Other controls, when they earn their place:
 - `--idempotency-key <key>` when you retry a send that failed or timed out.
   Reusing the key is what stops one event becoming two notifications.
 
-Project and session identity are inferred from where you run; do not override
-them.
+Project and exact session identity are inferred from where you run; never pass
+`--session-id`. Give the session a concise task name on the first Notification
+Request you create in it with `--session-label`: 2-6 words that say what the
+session is about, such as `Release candidate verification` or `Fix checkout
+retries`. Do not use the project, branch, status, or current result as the name.
+The CLI freezes the first accepted name for that immutable session, so omit the
+flag on later sends and questions. If the harness already supplied a title, or a
+prior call named the session, the frozen name wins rather than changing under
+the User.
 
 ## Ask a question
 

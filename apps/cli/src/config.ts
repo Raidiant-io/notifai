@@ -188,9 +188,9 @@ export function globalConfigPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * Machine-local mutable state: presence markers, pending questions, and
- * session config overrides. Separate from the config dir because none of it is
- * user-authored and none of it should ever be synced or committed.
+ * Machine-local mutable state: presence markers, pending questions, frozen
+ * session names, and session config overrides. Separate from the config dir
+ * because none of it should ever be synced or committed.
  */
 export function stateDir(
   env: NodeJS.ProcessEnv = process.env,
