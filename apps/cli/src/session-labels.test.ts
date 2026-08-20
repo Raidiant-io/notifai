@@ -103,7 +103,7 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'Verify release candidate', source: 'explicit' })
   })
 
-  it('falls back to an honest first-seen name without exposing the session id', () => {
+  it('falls back to a stable generated name without exposing the session id', () => {
     const { env, now } = fixture()
     const resolved = resolveSessionLabel({
       env,
@@ -113,12 +113,40 @@ describe('semantic session labels', () => {
     })
     expect(resolved).toEqual({
       ok: true,
-      label: 'Codex session · Aug 20, 2026 14:05',
+      label: 'Ivory Koala',
       source: 'fallback',
     })
 
     const stored = readFileSync(path.join(stateDir(env), 'session-labels.json'), 'utf8')
     expect(stored).not.toContain('opaque-thread-1234567890')
+  })
+
+  it('migrates a frozen date fallback without reopening semantic precedence', () => {
+    const { env, now } = fixture()
+    const file = path.join(stateDir(env), 'session-labels.json')
+    expect(
+      resolveSessionLabel({ env, now, sessionId: 'opaque-thread-1234567890', harness: 'codex' }),
+    ).toEqual({ ok: true, label: 'Ivory Koala', source: 'fallback' })
+
+    const store = JSON.parse(readFileSync(file, 'utf8')) as {
+      sessions: Record<string, { label: string }>
+    }
+    const key = Object.keys(store.sessions)[0]
+    const record = key === undefined ? undefined : store.sessions[key]
+    if (record === undefined) throw new Error('expected one stored session')
+    record.label = 'Codex session · Aug 20, 2026 14:05'
+    writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`)
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'opaque-thread-1234567890',
+        harness: 'codex',
+        explicitLabel: 'Late semantic override',
+      }),
+    ).toEqual({ ok: true, label: 'Ivory Koala', source: 'fallback' })
+    expect(readFileSync(file, 'utf8')).not.toContain('Codex session ·')
   })
 
   it('disambiguates repeated semantic titles without changing session identity', () => {
@@ -148,18 +176,23 @@ describe('semantic session labels', () => {
     ])
   })
 
-  it('adds only an ordinal when neutral fallback labels collide', () => {
+  it('adds only an ordinal when generated fallback labels collide', () => {
     const { env, now } = fixture()
-    const first = resolveSessionLabel({ env, now, sessionId: 'first', harness: 'codex' })
-    const second = resolveSessionLabel({ env, now, sessionId: 'second', harness: 'codex' })
+    const first = resolveSessionLabel({ env, now, sessionId: 'collision-8', harness: 'codex' })
+    const second = resolveSessionLabel({
+      env,
+      now,
+      sessionId: 'collision-112',
+      harness: 'codex',
+    })
     expect(first).toEqual({
       ok: true,
-      label: 'Codex session · Aug 20, 2026 14:05',
+      label: 'Winter Dolphin',
       source: 'fallback',
     })
     expect(second).toEqual({
       ok: true,
-      label: 'Codex session · Aug 20, 2026 14:05 · 2',
+      label: 'Winter Dolphin · 2',
       source: 'fallback',
     })
   })
@@ -240,7 +273,7 @@ describe('semantic session labels', () => {
       }),
     ).toEqual({
       ok: true,
-      label: 'OpenCode session · Aug 20, 2026 14:05',
+      label: 'Violet Crane',
       source: 'fallback',
     })
   })

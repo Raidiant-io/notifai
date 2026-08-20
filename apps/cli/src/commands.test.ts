@@ -500,9 +500,7 @@ describe('command contracts', () => {
       session_id: 'opaque-claude-session-42',
       harness: 'claude-code',
     })
-    expect(submitted?.draft.source?.session_label).toMatch(
-      /^Claude Code session · [A-Z][a-z]{2} \d{1,2}, \d{4} \d{2}:\d{2}$/,
-    )
+    expect(submitted?.draft.source?.session_label).toBe('Rapid Antelope')
     expect(io.outLines.join('\n')).not.toContain('opaque-claude-session-42')
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
   })
@@ -4425,7 +4423,7 @@ describe('asking before the hooks have ever run', () => {
     })
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
-    ).toMatch(/^Codex session · /)
+    ).toBe('Gentle Salmon')
   })
 
   it('uploads ask images before registration and freezes canonical body media', async () => {
