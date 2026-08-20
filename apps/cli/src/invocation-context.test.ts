@@ -270,14 +270,14 @@ describe('buildSourceContext', () => {
     })
   })
 
-  it('uses a stable neutral first-seen fallback instead of hashing the id into words', () => {
+  it('uses a stable generated fallback when no semantic name exists', () => {
     const env = stateEnv()
     const sessionId = 'opaque-thread-1234567890'
     const expected = {
       ok: true,
       source: {
         session_id: sessionId,
-        session_label: 'OpenCode session · Aug 20, 2026 14:05',
+        session_label: 'Ivory Koala',
         harness: 'opencode' as const,
         branch: 'main',
       },
@@ -310,7 +310,7 @@ describe('buildSourceContext', () => {
       ok: true,
       source: {
         session_id: 'other-session',
-        session_label: 'Agent session · Aug 20, 2026 14:05',
+        session_label: 'Golden Lynx',
       },
     })
   })

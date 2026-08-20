@@ -5,6 +5,7 @@ import { SESSION_LABEL_MAX_LENGTH } from '@raidiant/notifai-protocol'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
+import { generatedSessionLabel } from './generated-session-label.js'
 import { HARNESS_LABELS, type Harness } from './harnesses.js'
 
 const STORE_VERSION = 1
@@ -234,12 +235,17 @@ export function formatSessionFirstSeen(now: number): string {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-function fallbackCandidate(harness: Harness | undefined, now: number): SessionLabelCandidate {
-  const owner = harness === undefined ? 'Agent' : HARNESS_LABELS[harness]
+function fallbackCandidate(sessionId: string): SessionLabelCandidate {
   return {
-    label: `${owner} session · ${formatSessionFirstSeen(now)}`,
+    label: generatedSessionLabel(sessionId),
     source: 'fallback',
   }
+}
+
+function isLegacyDateFallback(record: StoredSessionLabel): boolean {
+  if (record.source !== 'fallback') return false
+  const owner = record.harness === undefined ? 'Agent' : HARNESS_LABELS[record.harness]
+  return record.label.startsWith(`${owner} session · `)
 }
 
 function withSuffix(base: string, suffix: string): string {
@@ -284,7 +290,7 @@ function uniqueLabel(
  * Freeze the first accepted human name for one immutable session.
  *
  * Explicit agent/User input wins, then a title supplied by a trusted harness
- * adapter, then a neutral first-seen label. Later sends reuse the frozen value
+ * adapter, then a generated fallback. Later sends reuse the frozen value
  * even when their branch, worktree, title candidate, or notification changes.
  */
 export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResolution {
@@ -297,7 +303,24 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
       const store = readStore(file)
       const existing = store.sessions[key]
       if (existing !== undefined) {
-        return { ok: true, label: existing.label, source: existing.source }
+        if (!isLegacyDateFallback(existing)) {
+          return { ok: true, label: existing.label, source: existing.source }
+        }
+        const used = new Set(
+          Object.entries(store.sessions)
+            .filter(([storedKey]) => storedKey !== key)
+            .map(([, record]) => collisionKey(record.label)),
+        )
+        const label = uniqueLabel(
+          generatedSessionLabel(input.sessionId),
+          'fallback',
+          input.harness ?? existing.harness,
+          now,
+          used,
+        )
+        store.sessions[key] = { ...existing, label }
+        writeStore(file, store)
+        return { ok: true, label, source: existing.source }
       }
 
       const explicit = explicitCandidate(input.explicitLabel, input)
@@ -314,7 +337,7 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         }
       }
       const candidate: SessionLabelCandidate =
-        explicit ?? native ?? fallbackCandidate(input.harness, now)
+        explicit ?? native ?? fallbackCandidate(input.sessionId)
       const used = new Set(
         Object.values(store.sessions).map((record) => collisionKey(record.label)),
       )
