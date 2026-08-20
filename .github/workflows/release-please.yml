@@ -19,16 +19,23 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # release-please cannot edit the root README from a package directory
-      # (`extra-files` rejects `../`), so the version markers are synced onto
-      # each release branch here. The PAT keeps required checks running on the
-      # pushed commit; the default workflow token would not trigger them.
+      # release-please leaves two things behind on every release branch: the
+      # root README version markers (it cannot edit files outside a package
+      # directory — `extra-files` rejects `../`) and `pnpm-lock.yaml` (it bumps
+      # the CLI's protocol pin in package.json only, which fails CI with
+      # ERR_PNPM_OUTDATED_LOCKFILE). Both are repaired here. The PAT keeps
+      # required checks running on the pushed commit; the default workflow
+      # token would not trigger them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           fetch-depth: 0
-      - name: Sync README version markers on release branches
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        if: ${{ steps.release-please.outputs.prs_created == 'true' }}
+        with:
+          version: 10.34.5
+      - name: Sync README markers and lockfile on release branches
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         env:
           PRS: ${{ steps.release-please.outputs.prs }}
@@ -39,11 +46,12 @@ jobs:
           for branch in $(node -e 'for (const pr of JSON.parse(process.env.PRS)) console.log(pr.headBranchName)'); do
             git checkout "$branch"
             node scripts/sync-readme-markers.mjs
-            if git diff --quiet -- README.md; then
-              echo "markers already current on $branch"
+            pnpm install --lockfile-only
+            if git diff --quiet -- README.md pnpm-lock.yaml; then
+              echo "release branch $branch already consistent"
             else
-              git add README.md
-              git commit -m "docs(release): sync README version markers"
+              git add README.md pnpm-lock.yaml
+              git commit -m "chore(release): sync README markers and lockfile"
               git push origin "HEAD:$branch"
             fi
           done

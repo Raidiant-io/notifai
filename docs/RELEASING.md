@@ -61,11 +61,14 @@ and the merged release is never tagged.
 **Do not merge a Release PR unless the maintainer asked for a release.**
 The PR existing is not a release.
 
-The root `README.md` version markers are synced onto each release branch by
-the release-please workflow via `scripts/sync-readme-markers.mjs`.
-release-please cannot edit them itself: it cannot climb out of a package
-directory (`extra-files` rejects `../`), and the README names both packages
-while its generic updater has no per-component markers.
+The release-please workflow repairs each release branch after release-please
+updates it: it syncs the root `README.md` version markers via
+`scripts/sync-readme-markers.mjs` and refreshes `pnpm-lock.yaml` with
+`pnpm install --lockfile-only`. release-please cannot do either itself: it
+cannot climb out of a package directory (`extra-files` rejects `../`), the
+README names both packages while its generic updater has no per-component
+markers, and a bumped protocol pin in `package.json` never reaches the
+lockfile.
 
 When a release changes both packages, the cut must also carry the CLI's
 `@raidiant/notifai-protocol` dependency pin forward to the protocol version
