@@ -13,6 +13,7 @@ import type { CredentialStore, MachineCredential } from './credentials.js'
 import { type HookAdapterTarget } from './hook-adapter.js'
 import { logConfigResolved, logSettingsFrom, nullLogger, type Logger } from './logging.js'
 import type { NativeSkills } from './native-skills.js'
+import type { OrcaSessionTitleLookup } from './orca-session-title.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
 
@@ -81,6 +82,8 @@ export interface CommandDeps {
   codexSourcePid?: number
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
+  /** Test seam for Orca's exact-worktree semantic title lookup. */
+  orcaSessionTitle?: OrcaSessionTitleLookup
   /**
    * The local record of what this invocation did. Optional so a test fake need
    * not carry one; `log(deps)` supplies a logger that records nothing.

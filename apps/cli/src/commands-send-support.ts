@@ -4,9 +4,32 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { isRetryableReplyPollError, type ApiClient } from './client.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
+import { readOrcaSessionTitle } from './orca-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
 import { EXIT, reportError, type CommandDeps } from './commands-core.js'
 import type { ActiveHarnessSession } from './commands-harness-context.js'
+
+function managedSessionTitle(
+  deps: CommandDeps,
+  flags: Pick<SendFlags, 'sessionLabel'>,
+  active: ActiveHarnessSession | null,
+): string | undefined {
+  if (active?.sessionLabel !== undefined) return active.sessionLabel
+  if (
+    active?.harness !== 'claude-code' ||
+    active.sessionId === undefined ||
+    active.sessionId !== deps.env['CLAUDE_CODE_SESSION_ID'] ||
+    flags.sessionLabel !== undefined ||
+    deps.env['NOTIFAI_SESSION_LABEL'] !== undefined
+  ) {
+    return undefined
+  }
+  try {
+    return (deps.orcaSessionTitle ?? readOrcaSessionTitle)(deps.env)
+  } catch {
+    return undefined
+  }
+}
 
 export function resolveDraftInvocation(
   deps: CommandDeps,
@@ -14,6 +37,7 @@ export function resolveDraftInvocation(
   active: ActiveHarnessSession | null,
 ): { ok: true; invocation: DraftInvocation } | { ok: false; error: string } {
   const inferred = inferInvocationContext(deps.cwd)
+  const sessionTitle = managedSessionTitle(deps, flags, active)
   const source = buildSourceContext({
     env: deps.env,
     invocation: inferred,
@@ -25,7 +49,7 @@ export function resolveDraftInvocation(
           activeHarness: {
             harness: active.harness,
             ...(active.sessionId === undefined ? {} : { sessionId: active.sessionId }),
-            ...(active.sessionLabel === undefined ? {} : { sessionLabel: active.sessionLabel }),
+            ...(sessionTitle === undefined ? {} : { sessionLabel: sessionTitle }),
             ...(active.sessionLabelPending === true ? { sessionLabelPending: true } : {}),
           },
         }),

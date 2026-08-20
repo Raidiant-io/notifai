@@ -513,6 +513,86 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
   })
 
+  it('uses the exact Orca worktree title for an active Claude session send', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-claude-title-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const worktreeId = `repo-123::${cwd}`
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'orca-claude-session',
+      TERM_PROGRAM: 'Orca',
+      ORCA_WORKTREE_ID: worktreeId,
+    }
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env,
+      orcaSessionTitle: (lookupEnv: NodeJS.ProcessEnv) => {
+        expect(lookupEnv['ORCA_WORKTREE_ID']).toBe(worktreeId)
+        return 'Worker - semantic session implementation'
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'The Orca worktree title was frozen locally.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'orca-claude-session',
+      session_label: 'Worker - semantic session implementation',
+      harness: 'claude-code',
+    })
+  })
+
+  it('falls back safely when Orca returns a private path as its title', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-private-title-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CLAUDECODE: '1',
+        CLAUDE_CODE_SESSION_ID: 'orca-private-title-session',
+        TERM_PROGRAM: 'Orca',
+        ORCA_WORKTREE_ID: `repo-123::${cwd}`,
+      },
+      orcaSessionTitle: () => '/private/untrusted/worktree',
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'Unsafe metadata must never become a visible name.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+    expect(submitted?.draft.source?.session_label).not.toContain('/private/')
+  })
+
   it('uses the trusted OpenCode session title published by its managed adapter', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-title-'))
     const io = new CapturedIo()
@@ -4566,6 +4646,39 @@ describe('asking before the hooks have ever run', () => {
       source: { session_id: 'claude-current', harness: 'claude-code' },
     })
     expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
+  })
+
+  it('registers an Orca-managed Claude question under the semantic worktree title', () => {
+    const cwd = scratchDir('notifai-orca-claude-ask-')
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'orca-claude-question',
+      TERM_PROGRAM: 'Orca',
+      ORCA_WORKTREE_ID: `repo-123::${cwd}`,
+    }
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      now: () => 42,
+      orcaSessionTitle: () => 'Worker - semantic session implementation',
+    }
+
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('orca-claude-question', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'orca-claude-question', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship the semantic resolver?', {})).toBe(EXIT.ok)
+    expect(readSessionState('orca-claude-question', env).pending?.[0]?.source).toMatchObject({
+      session_id: 'orca-claude-question',
+      session_label: 'Worker - semantic session implementation',
+      harness: 'claude-code',
+    })
   })
 
   it('judges the fired check against the active harness, not a global installation of another', async () => {
