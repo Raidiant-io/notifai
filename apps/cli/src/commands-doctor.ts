@@ -48,7 +48,7 @@ import {
   resolvedBaseUrl,
   type CommandDeps,
 } from './commands-core.js'
-import { deviceInstallRemedy, readyIosDevices, supportPageUrl } from './commands-devices.js'
+import { deviceInstallRemedy, readyCompanionDevices, supportPageUrl } from './commands-devices.js'
 import {
   activeHarnessSession,
   claudeSessionPid,
@@ -418,15 +418,17 @@ export async function assessReadiness(
     states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — sign-in failed' })
   } else {
     const devices = accountDevices
-    const iphoneDevices = devices.filter((device) => device.platform === 'ios')
-    const ready = readyIosDevices(iphoneDevices)
+    const companionDevices = devices.filter(
+      (device) => device.platform === 'ios' || device.platform === 'android',
+    )
+    const ready = readyCompanionDevices(companionDevices)
     states.push(
       ready.length > 0
         ? {
             id: 'devices',
             title: 'Your devices',
             status: 'ready',
-            detail: `${ready.map((d) => d.display_name).join(', ')} ready to receive`,
+            detail: `${ready.map((d) => `${d.display_name} (${d.platform})`).join(', ')} ready to receive`,
           }
         : {
             id: 'devices',
@@ -439,15 +441,15 @@ export async function assessReadiness(
             // permission prompt. The live bridge is /support on the
             // dashboard origin — not a placeholder, and not typed by hand.
             detail:
-              iphoneDevices.length === 0
-                ? `no iPhone registered yet; install Notifai on iPhone via ${supportPageUrl(baseUrl)}`
-                : `${iphoneDevices.map((d) => `${d.display_name} (${d.permission_status})`).join(', ')} — registered but not able to receive`,
+              companionDevices.length === 0
+                ? `no active Companion device registered yet; install Notifai via ${supportPageUrl(baseUrl)}`
+                : `${companionDevices.map((d) => `${d.display_name} (${d.platform}, ${d.permission_status})`).join(', ')} — registered but not able to receive`,
             remedy: {
               by: 'user-elsewhere',
               summary: deviceInstallRemedy({
                 baseUrl,
                 email: accountEmail,
-                devices: iphoneDevices,
+                devices: companionDevices,
               }),
             },
           },
@@ -474,18 +476,21 @@ async function setupProofState(
     }
   }
 
-  const ios = readyIosDevices(devices)
-  if (ios.length === 0) {
+  const companions = readyCompanionDevices(devices)
+  if (companions.length === 0) {
     return {
       id: 'proof',
       title: 'Delivery proof',
       status: 'unknown',
-      detail: 'not checked — no iPhone is ready',
+      detail: 'not checked — no iPhone or Android Companion App is ready',
     }
   }
 
   const proof = readSetupProof(deps)
-  const target = proof === null ? null : ios.find((device) => device.device_id === proof.device_id)
+  const target =
+    proof === null
+      ? null
+      : companions.find((device) => device.device_id === proof.device_id)
   if (proof === null || proof.project !== config.project.value || target === undefined) {
     return {
       id: 'proof',

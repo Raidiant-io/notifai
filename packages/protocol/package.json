@@ -46,7 +46,9 @@
     "notifai",
     "protocol",
     "typebox",
-    "notifications"
+    "notifications",
+    "android",
+    "fcm"
   ],
   "files": [
     "dist",

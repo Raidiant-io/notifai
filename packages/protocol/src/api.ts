@@ -4,7 +4,6 @@ import {
   NOTIFICATION_IMAGE_MAX_BYTES,
   NotificationMediaTypeSchema,
   PlatformSchema,
-  ProviderSchema,
   REPLY_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
   type NotificationMediaType,
@@ -178,7 +177,7 @@ export const RegisterInstallationRequest = Type.Object(
     display_name: Type.String({ minLength: 1, maxLength: 128 }),
     /** Marketing version. Inventory only; capabilities remain routing authority. */
     app_version: Type.String({ minLength: 1, maxLength: 32 }),
-    /** Apple CFBundleVersion. Optional so an older Companion can still register. */
+    /** Platform build identifier. Inventory only; capabilities remain routing authority. */
     app_build: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
     os_version: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     /** Named jobs this exact installation can perform. Absent means baseline receive only. */
@@ -194,15 +193,30 @@ export interface RegisterInstallationResponse {
   support?: SupportAssessment
 }
 
-export const PutRegistrationRequest = Type.Object(
+export const ApnsRegistrationRequest = Type.Object(
   {
-    provider: ProviderSchema,
+    provider: Type.Literal('apns'),
     environment: Type.Union([Type.Literal('development'), Type.Literal('production')]),
-    /** Hex APNs device token as handed to the companion app. */
+    /** Hex APNs device token as handed to the Companion App. */
     token: Type.String({ pattern: '^[a-f0-9]{32,512}$' }),
   },
   { additionalProperties: false },
 )
+
+export const FcmRegistrationRequest = Type.Object(
+  {
+    provider: Type.Literal('fcm'),
+    /** Opaque Firebase Installation ID supplied by the current Android registration path. */
+    fid: Type.String({ minLength: 1, maxLength: 512 }),
+  },
+  { additionalProperties: false },
+)
+
+/** Provider-specific registration shapes; FCM deliberately has no environment field. */
+export const PutRegistrationRequest = Type.Union([
+  ApnsRegistrationRequest,
+  FcmRegistrationRequest,
+])
 export type PutRegistrationRequestT = Static<typeof PutRegistrationRequest>
 
 export interface PutRegistrationResponse {
@@ -392,10 +406,9 @@ export const SubmitReplyRequest = Type.Object(
      */
     answers: Type.Array(ReplyAnswer, { minItems: 1, maxItems: REPLY_MAX_QUESTIONS }),
     /**
-     * Which surface the user actually answered from. Two iOS
-     * routes converge here — the custom text action and the system
-     * message-style field, which arrives as a SiriKit intent — and a third is
-     * the in-app composer. They looked identical once stored, so a regression
+     * Which surface the user actually answered from. Native iOS actions,
+     * Android RemoteInput, and each Companion App's in-app composer converge
+     * here. They looked identical once stored, so a regression
      * in one of them was indistinguishable from a regression in another
      * without device logs.
      *
@@ -417,7 +430,9 @@ export const REPLY_SOURCES = [
   'intent',
   /** The notification content extension's answer buttons. */
   'choice',
-  /** The companion app's own detail-view composer or picker. */
+  /** Android's native RemoteInput free-text action. */
+  'remote_input',
+  /** The Companion App's own detail-view composer or picker. */
   'app',
 ] as const
 

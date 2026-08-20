@@ -67,9 +67,18 @@ unless a human is demonstrably there.
 
 ## Platform support
 
-The sending CLI runs on macOS, Linux, and Windows. The iPhone Companion App is
-the only receiving app in the current release. Native desktop Companion Apps are
-later product work, not part of this repository or the current CLI support claim.
+The sending CLI runs on macOS, Linux, and Windows. The first public Companion
+App release remains iPhone-only. The public protocol and CLI also model Android
+as a first-class, pre-public external-test surface (`android:fcm`), including
+capability inspection, Device Installation filtering, authoring, and offline
+validation. That active test lane does not make Android part of the first public
+Companion App release.
+
+Android support starts at Android 6/API 23 and requires Google Play services:
+a physical supported device has the Google Play Store, while emulators use a
+Google APIs image. There is no non-GMS compatibility promise and no Google Play
+production release. Native Mac receiving remains explicitly deferred and is not
+part of the current public support claim.
 
 | Surface | macOS | Linux | Windows |
 | --- | --- | --- | --- |
@@ -96,6 +105,13 @@ invitations. Open the invitation on the iPhone you want to use, install Apple's
 TestFlight app, install Notifai, then open it once, sign in with the same Account
 as the CLI, and allow notifications. There is no public App Store link or public
 TestFlight link for the Private Alpha.
+
+The pre-public Android external-test lane is distributed only to invited testers
+through Firebase App Distribution as a consistently signed APK. Testers install
+it on a compatible Google Play services device, open it, sign in with the same
+Account, and allow notifications. There is no public Firebase invitation and no
+Google Play listing; access to this lane is controlled separately from Notifai
+Account access.
 
 ## Status
 

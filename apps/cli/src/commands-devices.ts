@@ -13,17 +13,33 @@ import {
 // devices / capabilities
 // ---------------------------------------------------------------------------
 
-export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
+export async function devicesCommand(
+  deps: CommandDeps,
+  flags: { json?: boolean; platform?: string },
+): Promise<number> {
+  if (flags.platform !== undefined && !(PLATFORMS as readonly string[]).includes(flags.platform)) {
+    deps.io.err(`Unknown platform "${flags.platform}" — use ${PLATFORMS.join(' or ')}.`)
+    return EXIT.usage
+  }
+  const platform = flags.platform as Platform | undefined
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
     const result = await authed.client.listDevices()
+    const devices =
+      platform === undefined
+        ? result.devices
+        : result.devices.filter((device) => device.platform === platform)
     if (flags.json) {
-      deps.io.out(JSON.stringify(result, null, 2))
+      deps.io.out(JSON.stringify({ ...result, devices }, null, 2))
       return EXIT.ok
     }
-    if (result.devices.length === 0) {
+    if (devices.length === 0) {
+      if (platform !== undefined) {
+        deps.io.out(`No ${platform} devices registered.`)
+        return EXIT.ok
+      }
       const supportUrl = supportPageUrl(authed.baseUrl)
       let email: string | null = null
       try {
@@ -36,7 +52,7 @@ export async function devicesCommand(deps: CommandDeps, flags: { json?: boolean 
       )
       return EXIT.ok
     }
-    for (const d of result.devices) {
+    for (const d of devices) {
       deps.io.out(
         `${d.device_id}  ${d.display_name}  ${d.platform}  ${d.status_message ?? 'Working'}`,
       )
@@ -124,14 +140,14 @@ export function deviceInstallRemedy(options: {
   const sameEmail = sameAccountSignInLine(options.email)
   if (options.devices.length === 0) {
     return (
-      `open the install steps at ${support} on your iPhone, ` +
+      `open the Companion App install steps at ${support} on a supported device, ` +
       `install Notifai, ${sameEmail}, and allow notifications`
     )
   }
   if (options.devices.some((d) => d.permission_status === 'denied')) {
-    return 'allow notifications for Notifai in iPhone Settings'
+    return "allow notifications for Notifai in the device's Settings"
   }
-  return 'open Notifai on your iPhone and allow its notification prompt'
+  return 'open Notifai on the device and allow its notification prompt'
 }
 
 export function deviceCanReceive(device: RoutableDevice): boolean {
@@ -145,6 +161,9 @@ export function deviceCanReceive(device: RoutableDevice): boolean {
   )
 }
 
-export function readyIosDevices(devices: readonly RoutableDevice[]): RoutableDevice[] {
-  return devices.filter((device) => device.platform === 'ios' && deviceCanReceive(device))
+export function readyCompanionDevices(devices: readonly RoutableDevice[]): RoutableDevice[] {
+  return devices.filter(
+    (device) =>
+      (device.platform === 'ios' || device.platform === 'android') && deviceCanReceive(device),
+  )
 }

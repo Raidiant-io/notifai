@@ -5,14 +5,14 @@ import { LIFECYCLE_END_STATES, LIFECYCLE_TIERS } from './lifecycle.js'
 /**
  * The common Notification Request envelope, schema_version 1.
  *
- * The public contract never exposes raw APNs JSON. Provider-owned keys
- * (topic, push type, mutable-content, expiration, provider request ID) are
+ * The public contract never exposes raw provider submission JSON. Provider-owned
+ * routing keys, authorization, expiry syntax, and request identifiers remain
  * renderer/implementation concerns and are deliberately absent here.
  */
 
 export const NOTIFICATION_SCHEMA_VERSION = 1
 
-/** APNs collapse identifiers are limited by encoded size, not JavaScript characters. */
+/** Cross-provider collapse identifiers are limited by encoded size, not JavaScript characters. */
 export const COLLAPSE_KEY_MAX_BYTES = 64
 
 /** Fixed identifiers registered by the iOS Companion App for inline replies. */
@@ -25,7 +25,7 @@ export const REPLY_CATEGORY_ID = 'notifai.reply'
 export const REPLY_CHOICE_CATEGORY_ID = 'notifai.reply.choice'
 export const REPLY_ACTION_ID = 'notifai.reply.text'
 export const REPLY_MAX_LENGTH = 4000
-/** Apple notification image-attachment ceiling, shared by intake and capabilities. */
+/** Companion image-attachment ceiling, shared by intake and capabilities. */
 export const NOTIFICATION_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 export const NOTIFICATION_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif'] as const
 export type NotificationMediaType = (typeof NOTIFICATION_MEDIA_TYPES)[number]
@@ -34,12 +34,16 @@ export const NotificationMediaTypeSchema = Type.Union(
 )
 
 /** Device platforms known to the public contract. Delivery support is registry-owned. */
-export const PLATFORMS = ['ios', 'macos'] as const
+export const PLATFORMS = ['ios', 'macos', 'android'] as const
 export type Platform = (typeof PLATFORMS)[number]
 export const PlatformSchema = Type.Union(PLATFORMS.map((platform) => Type.Literal(platform)))
 
+/** Apple platforms that share the APNs envelope contract. */
+export const APPLE_PLATFORMS = ['ios', 'macos'] as const
+export type ApplePlatform = (typeof APPLE_PLATFORMS)[number]
+
 /** Push providers known to the public contract. Platform routing chooses the adapter. */
-export const PROVIDERS = ['apns'] as const
+export const PROVIDERS = ['apns', 'fcm'] as const
 export type Provider = (typeof PROVIDERS)[number]
 export const ProviderSchema = Type.Union(PROVIDERS.map((provider) => Type.Literal(provider)))
 
@@ -179,14 +183,20 @@ export const ReplyRequest = Type.Object(
   { additionalProperties: false },
 )
 
+/** Product-owned semantic sound names shared by current Companion Apps. */
+export const SEMANTIC_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
 /** Semantic sound names shipped by the iOS Companion App. */
-export const IOS_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
+export const IOS_SOUNDS = SEMANTIC_SOUNDS
 /** Semantic sound names shipped by the macOS Companion App. */
-export const MACOS_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
+export const MACOS_SOUNDS = SEMANTIC_SOUNDS
+/** Semantic sound names shipped by the Android Companion App. */
+export const ANDROID_SOUNDS = SEMANTIC_SOUNDS
 /** A semantic sound name a Companion App can play. */
 export type IosSound = (typeof IOS_SOUNDS)[number]
+export type MacosSound = (typeof MACOS_SOUNDS)[number]
+export type AndroidSound = (typeof ANDROID_SOUNDS)[number]
 /** CLI spelling adds `none` for the contract's explicit silent (`null`) value. */
-export const CLI_SOUNDS = [...IOS_SOUNDS, 'none'] as const
+export const CLI_SOUNDS = [...SEMANTIC_SOUNDS, 'none'] as const
 
 export const INTERRUPTION_LEVELS = ['passive', 'active', 'time_sensitive'] as const
 
@@ -231,6 +241,25 @@ export const MacosOptions = Type.Object(
       Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()]),
     ),
     /** Namespaced custom data delivered under the `notifai` key. */
+    custom_data: Type.Optional(
+      Type.Record(Type.String({ pattern: '^[a-z][a-z0-9_]{0,63}$' }), Type.String({ maxLength: 512 }), {
+        maxProperties: 16,
+      }),
+    ),
+  },
+  { additionalProperties: false },
+)
+
+/** Android options the first native Companion App actually honors. */
+export const AndroidOptions = Type.Object(
+  {
+    /** A product-owned semantic channel sound, or null for the quiet channel. */
+    sound: Type.Optional(
+      Type.Union([...ANDROID_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()]),
+    ),
+    /** Explicit notification group key; final grouping remains Android/OEM-owned. */
+    thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
+    /** Namespaced, size-bounded custom data inside the application-owned FCM envelope. */
     custom_data: Type.Optional(
       Type.Record(Type.String({ pattern: '^[a-z][a-z0-9_]{0,63}$' }), Type.String({ maxLength: 512 }), {
         maxProperties: 16,
@@ -327,7 +356,11 @@ export const NotificationDraft = Type.Object(
     reply: Type.Optional(ReplyRequest),
     platform: Type.Optional(
       Type.Object(
-        { ios: Type.Optional(IosOptions), macos: Type.Optional(MacosOptions) },
+        {
+          ios: Type.Optional(IosOptions),
+          macos: Type.Optional(MacosOptions),
+          android: Type.Optional(AndroidOptions),
+        },
         { additionalProperties: false },
       ),
     ),
@@ -341,6 +374,7 @@ export type DeliveryPolicyT = Static<typeof DeliveryPolicy>
 export type ReplyRequestT = Static<typeof ReplyRequest>
 export type IosOptionsT = Static<typeof IosOptions>
 export type MacosOptionsT = Static<typeof MacosOptions>
+export type AndroidOptionsT = Static<typeof AndroidOptions>
 export type NotificationDraftT = Static<typeof NotificationDraft>
 
 export function defaultDeliveryPolicy(): DeliveryPolicyT {

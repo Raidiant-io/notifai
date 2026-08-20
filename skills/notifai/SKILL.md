@@ -137,10 +137,12 @@ Other controls, when they earn their place:
   `--image-alt` paired by position; `media:1`…`media:8` reference them from the
   body. Check `notifai capabilities --platform <platform>` when an image is the
   message rather than decoration.
-- `--sound` overrides the kind's sound; `--level` sets how insistently it
-  arrives. Both belong to the user — pass one only when they asked for that
-  behaviour on this send. `time_sensitive` is accepted but does not currently
-  break through Focus; `notifai capabilities` is what a platform honours.
+- `--sound` overrides the kind's semantic sound on current Companion Apps.
+  `--level` is Apple-only and cannot be used with `--platform android`; Android
+  attention is owned by kind, product channels, and the user's device settings.
+  Both controls belong to the user — pass one only when they asked for that
+  behaviour on this send. `time_sensitive` does not currently break through
+  Focus; `notifai capabilities --platform <platform>` is the exact contract.
 - `--device` only when the user asked for specific devices. Otherwise every
   device they registered is the right answer and you do not need to think about
   it.

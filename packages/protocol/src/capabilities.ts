@@ -2,6 +2,7 @@ import { Value } from '@sinclair/typebox/value'
 import {
   NotificationDraft,
   type NotificationDraftT,
+  ANDROID_SOUNDS,
   IOS_SOUNDS,
   MACOS_SOUNDS,
   INTERRUPTION_LEVELS,
@@ -9,10 +10,12 @@ import {
   COLLAPSE_KEY_MAX_BYTES,
   MEDIA_MAX_ITEMS,
   NOTIFICATION_IMAGE_MAX_BYTES,
+  type ApplePlatform,
   type Platform,
 } from './notification.js'
 import { BANNER_EXCERPT_MAX_LENGTH, BODY_MAX_LENGTH } from './content.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
+import { buildFcmDataEnvelope } from './fcm.js'
 
 /**
  * Capability Catalog contract. Unsupported fields must produce
@@ -228,6 +231,118 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
   ],
 }
 
+/** Android 6+ with Google Play services, using an application-owned FCM data envelope. */
+export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
+  schema_version: 1,
+  platform: 'android',
+  payload_limit_bytes: 4096,
+  sounds: [...ANDROID_SOUNDS],
+  interruption_levels: [],
+  fields: [
+    { path: 'presentation.title', status: 'supported' },
+    {
+      path: 'presentation.body',
+      status: 'supported',
+      constraints: {
+        max_length: BODY_MAX_LENGTH,
+        format: 'markdown',
+        banner: 'plain-text excerpt',
+        excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+        full_body: 'in app',
+      },
+    },
+    { path: 'presentation.subtitle', status: 'supported' },
+    {
+      path: 'source',
+      status: 'supported',
+      reason: 'session_id is machine-only and never displayed; session_label is the human session name.',
+    },
+    {
+      path: 'reply',
+      status: 'supported',
+      constraints: {
+        free_text: 'native RemoteInput on API 24+; in-app composer on API 23',
+        closed_and_multi_question: 'in app',
+        max_length: REPLY_MAX_LENGTH,
+      },
+    },
+    {
+      path: 'presentation.media',
+      status: 'downgraded',
+      constraints: {
+        max_items: MEDIA_MAX_ITEMS,
+        max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
+        media_types: ['jpeg', 'png', 'gif'],
+        initial_banner: 'plain-text excerpt',
+        representative: 'may update later',
+        full_collection: 'in app',
+      },
+      reason:
+        'Android posts the text notification first; a representative image may update it later and the full ordered collection remains in the app.',
+    },
+    {
+      path: 'platform.android.sound',
+      status: 'supported',
+      constraints: {
+        allowed: [...ANDROID_SOUNDS, null],
+        delivery: 'product-owned channels subject to User settings',
+      },
+    },
+    {
+      path: 'platform.android.thread_id',
+      status: 'downgraded',
+      reason:
+        'Android maps thread_id to a notification group, but final grouping and presentation vary by OS version and device manufacturer.',
+    },
+    {
+      path: 'platform.android.custom_data',
+      status: 'supported',
+      constraints: { max_keys: 16, max_value_length: 512, namespace: 'notifai' },
+    },
+    {
+      path: 'platform.android.badge',
+      status: 'unsupported',
+      reason: 'Portable launcher badge counts are unsupported in the first Android Companion App.',
+    },
+    {
+      path: 'platform.android.category',
+      status: 'unsupported',
+      reason: 'Caller-selected raw notification channels and categories are unsupported.',
+    },
+    {
+      path: 'platform.android.interruption_level',
+      status: 'unsupported',
+      reason:
+        'Caller-selected interruption levels are unsupported; kind, product-owned channels, and User channel settings own attention.',
+    },
+    {
+      path: 'platform.android.relevance_score',
+      status: 'unsupported',
+      reason: 'Apple relevance scores have no Android contract.',
+    },
+    {
+      path: 'platform.android.target_content_id',
+      status: 'unsupported',
+      reason: 'Apple target-content identifiers have no Android contract.',
+    },
+    {
+      path: 'icon',
+      status: 'unsupported',
+      reason: 'The Android Companion App owns one fixed monochrome small icon.',
+    },
+    {
+      path: 'sound_file',
+      status: 'unsupported',
+      reason: 'Arbitrary sound files are unsupported; sounds come from product-owned channels.',
+    },
+    {
+      path: 'localization',
+      status: 'unsupported',
+      reason: 'The first Android Companion App ships no caller-addressable localization catalogs.',
+    },
+  ],
+}
+
 /**
  * Catalog lookup for validation/help metadata. Version and build are explicit so
  * two binaries on one marketing line may diverge; advertised capabilities, not
@@ -248,8 +363,12 @@ export function createCapabilityRegistry(
   }
 }
 
-/** V1 publishes both APNs-backed companion surfaces. */
-export const CAPABILITY_DOCUMENTS_V1 = [IOS_CAPABILITIES_V1, MACOS_CAPABILITIES_V1] as const
+/** V1 publishes the client-visible contract for every current Companion surface. */
+export const CAPABILITY_DOCUMENTS_V1 = [
+  IOS_CAPABILITIES_V1,
+  MACOS_CAPABILITIES_V1,
+  ANDROID_CAPABILITIES_V1,
+] as const
 export const CAPABILITIES_V1 = createCapabilityRegistry(CAPABILITY_DOCUMENTS_V1)
 
 export interface ValidationIssue {
@@ -409,12 +528,27 @@ export function validateDraft(
   }
 
   for (const document of documents) {
-    const options = typed.platform?.[document.platform]
-    if (options?.category !== undefined && options.category !== null) {
-      errors.push({
-        code: 'unsupported_field',
-        path: `platform.${document.platform}.category`,
-        message: findReason(document, `platform.${document.platform}.category`),
+    if (document.platform !== 'android') {
+      const options = typed.platform?.[document.platform]
+      if (options?.category !== undefined && options.category !== null) {
+        errors.push({
+          code: 'unsupported_field',
+          path: `platform.${document.platform}.category`,
+          message: findReason(document, `platform.${document.platform}.category`),
+        })
+      }
+    }
+
+    if (
+      document.platform === 'android' &&
+      typed.reply !== undefined &&
+      (typed.reply.questions.length > 1 ||
+        typed.reply.questions.some((question) => question.choices !== undefined))
+    ) {
+      warnings.push({
+        path: 'reply',
+        message:
+          'Android presents closed-choice and multi-question replies in the Companion App rather than as native banner choices.',
       })
     }
 
@@ -437,15 +571,16 @@ export function validateDraft(
       }
     }
 
-    const estimated = estimateApnsPayloadBytes(typed, document.platform)
+    const estimated = estimatePayloadBytes(typed, document.platform)
     if (estimated > document.payload_limit_bytes) {
+      const provider = document.platform === 'android' ? 'FCM' : 'APNs'
       errors.push({
         code: 'payload_too_large',
         path: documents.length === 1 ? 'presentation' : `platform.${document.platform}`,
         message:
           documents.length === 1
-            ? `Estimated APNs payload is ${estimated} bytes; the limit is ${document.payload_limit_bytes}.`
-            : `Estimated ${document.platform} APNs payload is ${estimated} bytes; the limit is ${document.payload_limit_bytes}.`,
+            ? `Estimated ${provider} payload is ${estimated} bytes; the limit is ${document.payload_limit_bytes}.`
+            : `Estimated ${document.platform} ${provider} payload is ${estimated} bytes; the limit is ${document.payload_limit_bytes}.`,
       })
     }
   }
@@ -467,29 +602,43 @@ function draftValueAtPath(draft: NotificationDraftT, path: string): unknown {
   return value
 }
 
+function estimatePayloadBytes(draft: NotificationDraftT, platform: Platform): number {
+  return platform === 'android'
+    ? estimateFcmPayloadBytes(draft)
+    : estimateApnsPayloadBytes(draft, platform)
+}
+
+const ESTIMATED_ENVELOPE_IDS = {
+  requestId: 'req_00000000000000000000000000',
+  deliveryId: 'del_00000000000000000000000000',
+  // Fixed width by construction (a truncated HMAC), so a placeholder reserves
+  // exactly the room the real token will take.
+  receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+} as const
+const ESTIMATED_MEDIA_URL = 'https://x.invalid/'.padEnd(500, 'a')
+const ESTIMATED_PROJECT_IDENTITY = {
+  name: 'n'.padEnd(128, 'n'),
+  imageUrl: 'https://x.invalid/'.padEnd(500, 'a'),
+} as const
+
 /**
  * Conservative byte accounting for the exact APNs envelope. A fixed-length
  * signed media URL keeps pre-flight validation safe before a real URL exists.
  */
-export function estimateApnsPayloadBytes(draft: NotificationDraftT, platform: Platform = 'ios'): number {
+export function estimateApnsPayloadBytes(
+  draft: NotificationDraftT,
+  platform: ApplePlatform = 'ios',
+): number {
   const envelope = buildApnsEnvelope(
     draft,
-    {
-      requestId: 'req_00000000000000000000000000',
-      deliveryId: 'del_00000000000000000000000000',
-      // Fixed width by construction (a truncated HMAC), so a placeholder
-      // reserves exactly the room the real token will take.
-      receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
-    },
+    ESTIMATED_ENVELOPE_IDS,
     platform === 'ios' && draft.presentation.media !== undefined
-      ? 'https://x.invalid/'.padEnd(500, 'a')
+      ? ESTIMATED_MEDIA_URL
       : null,
     platform,
-    // A project may resolve to a sender name and signed avatar URL at
-    // dispatch; reserve worst-case room so acceptance implies deliverability.
-    draft.project !== undefined
-      ? { name: 'n'.padEnd(128, 'n'), imageUrl: 'https://x.invalid/'.padEnd(500, 'a') }
-      : null,
+    // A project may resolve to a sender name and signed avatar URL at dispatch;
+    // reserve worst-case room so acceptance implies deliverability.
+    draft.project !== undefined ? ESTIMATED_PROJECT_IDENTITY : null,
     // ISO-8601 instants are fixed width, so any date reserves the real room.
     draft.reply !== undefined ? new Date(0) : null,
     // Retirement answer context is server-derived and absent from authored drafts.
@@ -498,8 +647,23 @@ export function estimateApnsPayloadBytes(draft: NotificationDraftT, platform: Pl
     // true is the longer JSON representation and therefore the safe estimate.
     draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,
     // Done-tier syncs may announce acknowledgement availability. The timestamp
-    // is fixed width and text is deliberately absent from APNs.
+    // is fixed width and text is deliberately absent from push envelopes.
     draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0) } : null,
   )
   return new TextEncoder().encode(JSON.stringify(envelope.payload)).length
+}
+
+/** Conservative byte accounting for the exact FCM data map rendered for Android. */
+export function estimateFcmPayloadBytes(draft: NotificationDraftT): number {
+  const envelope = buildFcmDataEnvelope(
+    draft,
+    ESTIMATED_ENVELOPE_IDS,
+    draft.presentation.media !== undefined ? ESTIMATED_MEDIA_URL : null,
+    draft.project !== undefined ? ESTIMATED_PROJECT_IDENTITY : null,
+    draft.reply !== undefined ? new Date(0) : null,
+    null,
+    draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,
+    draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0) } : null,
+  )
+  return new TextEncoder().encode(JSON.stringify(envelope.data)).length
 }

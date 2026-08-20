@@ -165,6 +165,9 @@ export async function sendCommand(
     for (const issue of validation.errors) deps.io.err(`${issue.path}: ${issue.message}`)
     return EXIT.usage
   }
+  for (const warning of validation.warnings) {
+    deps.io.err(`Heads up (${warning.path}): ${warning.message}`)
+  }
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&

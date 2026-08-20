@@ -23,7 +23,7 @@ import {
   reportError,
   type CommandDeps,
 } from './commands-core.js'
-import { readyIosDevices, supportPageUrl } from './commands-devices.js'
+import { readyCompanionDevices, supportPageUrl } from './commands-devices.js'
 import { assessReadiness, remedyLine } from './commands-doctor.js'
 import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hooks.js'
 import { observedCompanionReceipt, readSetupProof, writeSetupProof } from './commands-setup-proof.js'
@@ -55,7 +55,7 @@ export interface InitFlags {
 }
 
 
-/** Long enough for a first TestFlight install; keep-waiting extends another budget. */
+/** Long enough for a first controlled Companion install; keep-waiting extends another budget. */
 const DEVICE_BRIDGE_TIMEOUT_MS = 10 * 60 * 1000
 const DEVICE_BRIDGE_POLL_MS = 2_000
 const PROOF_TIMEOUT_MS = 30_000
@@ -159,20 +159,21 @@ async function closeGap(
 
 function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
   if (devices.length === 0) {
-    return 'Waiting for the iPhone app to sign in and register…'
+    return 'Waiting for a Companion App to sign in and register…'
   }
   const denied = devices.find((device) => device.permission_status === 'denied')
   if (denied) return `Waiting for notifications to be allowed on ${denied.display_name}…`
   const undecided = devices.find((device) => device.permission_status === 'not_determined')
   if (undecided) return `Waiting for ${undecided.display_name} to allow the notification prompt…`
-  return 'Waiting for an iPhone to become ready…'
+  return 'Waiting for a Companion device to become ready…'
 }
 
 /**
  * Observe the supported Device Installation path while the user finishes the
- * app-side work. The live bridge is the dashboard `/support` page (TestFlight
- * steps). Interactive runs offer to open it so the user never types the URL;
- * non-interactive/agent paths only print plain text and never wait on a prompt.
+ * app-side work. The live bridge is the dashboard `/support` page (controlled
+ * Companion installation steps). Interactive runs offer to open it so the user
+ * never types the URL; non-interactive/agent paths only print plain text and
+ * never wait on a prompt.
  *
  * The wait budget is stated up front. On expiry we say the *timer* expired —
  * not the setup — and offer another budget when a human is present. Agents
@@ -197,9 +198,9 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
       state.detail,
       remedy.summary,
       `Install steps (no typing): ${supportUrl}`,
-      `I will wait up to ${budgetLabel} for your iPhone to become ready.`,
+      `I will wait up to ${budgetLabel} for a Companion device to become ready.`,
     ].join('\n'),
-    'Finish setup on your iPhone',
+    'Finish setup on your Companion device',
   )
 
   // Open the real support page so the user never has to type the URL. Decline
@@ -219,7 +220,9 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   const sleep =
     deps.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
-  const spinner = await deps.io.spinner?.(`Waiting up to ${budgetLabel} for your iPhone…`)
+  const spinner = await deps.io.spinner?.(
+    `Waiting up to ${budgetLabel} for a Companion device…`,
+  )
   let lastDevices: RoutableDevice[] = []
   let deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
 
@@ -227,14 +230,16 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
     while (now() < deadline) {
       try {
         const response = await authed.client.listDevices()
-        const iphoneDevices = response.devices.filter((device) => device.platform === 'ios')
-        lastDevices = iphoneDevices
-        const ready = readyIosDevices(iphoneDevices)[0]
+        const companionDevices = response.devices.filter(
+          (device) => device.platform === 'ios' || device.platform === 'android',
+        )
+        lastDevices = companionDevices
+        const ready = readyCompanionDevices(companionDevices)[0]
         if (ready) {
           spinner?.stop(`${ready.display_name} is ready to receive`)
           return 'closed'
         }
-        spinner?.message(deviceBridgeMessage(iphoneDevices))
+        spinner?.message(deviceBridgeMessage(companionDevices))
       } catch (err) {
         if (!(err instanceof NetworkError)) {
           spinner?.error('Could not check companion readiness')
@@ -263,10 +268,12 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
       false,
     )
     if (!keepWaiting) {
-      deps.io.out('Stopping the wait. iPhone setup can continue; re-run `notifai init` when ready.')
+      deps.io.out(
+        'Stopping the wait. Companion setup can continue; re-run `notifai init` when ready.',
+      )
       return 'pending'
     }
-    spinner?.message(`Waiting another ${budgetLabel} for your iPhone…`)
+    spinner?.message(`Waiting another ${budgetLabel} for a Companion device…`)
     deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
   }
 }
@@ -284,10 +291,12 @@ function setupProofDraft(
         : `This real notification completed setup verification for ${project}.`,
     event: 'setup_verified',
     kind: 'update',
-    platform: 'ios',
+    platform: device.platform,
     device: [device.device_id],
     sound: 'none',
-    level: 'passive',
+    // Android has no caller-selected interruption level. Explicit null keeps an
+    // Apple preference in config from leaking into this Android-only proof.
+    level: device.platform === 'ios' ? 'passive' : null,
     collapseKey: 'notifai-setup-verification',
   })
 }
@@ -331,8 +340,8 @@ async function submitSetupProof(
 
 /**
  * Send or resume one real setup probe, then wait for a Companion Receipt.
- * Provider Acceptance is intentionally insufficient: it proves APNs accepted
- * the push, not that a companion process received it.
+ * Provider Acceptance is intentionally insufficient: it proves a push provider
+ * accepted the request, not that a companion process received it.
  */
 async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
@@ -346,7 +355,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     reportError(deps, err)
     return 'failed'
   }
-  const candidates = readyIosDevices(devices)
+  const candidates = readyCompanionDevices(devices)
   const existing = readSetupProof(deps)
   const target =
     candidates.find(
@@ -354,7 +363,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
         device.device_id === existing?.device_id && existing.project === config.project.value,
     ) ?? candidates[0]
   if (!target) {
-    deps.io.err('Setup proof needs a receipt-capable iPhone.')
+    deps.io.err('Setup proof needs a receipt-capable iPhone or Android Companion App.')
     return 'pending'
   }
 

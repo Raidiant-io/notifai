@@ -4,8 +4,8 @@ import {
   effectiveKind,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
+  type ApplePlatform,
   type NotificationDraftT,
-  type Platform,
 } from './notification.js'
 
 export interface ApnsEnvelope {
@@ -39,7 +39,7 @@ export interface ReplyMetadata {
 
 /** Metadata for a silent sync emitted after an Agent Acknowledgement exists. */
 export interface AgentAcknowledgementSync {
-  /** Creation time of the persisted acknowledgement; its text never enters APNs. */
+  /** Creation time of the persisted acknowledgement; its text never enters a push envelope. */
   createdAt: Date
 }
 
@@ -57,7 +57,7 @@ export function buildApnsEnvelope(
   draft: NotificationDraftT,
   ids: EnvelopeIds,
   mediaUrl: string | null,
-  platform: Platform = 'ios',
+  platform: ApplePlatform = 'ios',
   projectIdentity: ProjectIdentity | null = null,
   /** Service-owned close time of this request's reply window. */
   replyExpiresAt: Date | null = null,
@@ -143,7 +143,7 @@ function notifaiKey(
   mediaUrl: string | null,
   projectIdentity: ProjectIdentity | null,
   replyExpiresAt: Date | null,
-  options?: NonNullable<NotificationDraftT['platform']>[Platform],
+  options?: NonNullable<NotificationDraftT['platform']>[ApplePlatform],
   retirementAnswerContext?: RetirementAnswerContext | null,
   replyMetadata?: ReplyMetadata | null,
   agentAcknowledgementSync?: AgentAcknowledgementSync | null,
