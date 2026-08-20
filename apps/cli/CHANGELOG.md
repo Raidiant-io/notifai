@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [7.0.2](https://github.com/Raidiant-io/notifai/compare/v7.0.1...v7.0.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* stop a session instruction becoming persisted notify_criteria ([457d519](https://github.com/Raidiant-io/notifai/commit/457d519998230f7dd5623124305992e41048843f))
+* stop a session instruction becoming persisted notify_criteria ([05cda30](https://github.com/Raidiant-io/notifai/commit/05cda30cbc81e35d81ba603b256312b3383ac49d))
+
 ## [7.0.1](https://github.com/Raidiant-io/notifai/compare/v7.0.0...v7.0.1) (2026-08-20)
 
 

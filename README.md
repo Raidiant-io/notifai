@@ -100,7 +100,7 @@ TestFlight link for the Private Alpha.
 ## Status
 
 Notifai is published under Apache-2.0. The current packages are
-`@raidiant/notifai` <!--x-release-please-start-notifai-->7.0.1<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->4.0.0<!--x-release-please-end-->; their
+`@raidiant/notifai` <!--x-release-please-start-notifai-->7.0.2<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->4.0.0<!--x-release-please-end-->; their
 versions advance independently. Released clients keep ordinary notification
 workflows during the documented compatibility window; newer work is negotiated
 as named capabilities instead of making every version mismatch a product-wide
@@ -130,8 +130,8 @@ installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. `notifai init --skills`
 delegates to the native `npx skills` flow, which lets a human choose project or
 global scope and owns placement, links, provenance, and updates. The skill is
-from the immutable public tag `v<!--x-release-please-start-notifai-->7.0.1<!--x-release-please-end-->`; the underlying installer source is
-`Raidiant-io/notifai#v<!--x-release-please-start-notifai-->7.0.1<!--x-release-please-end-->` (`#` selects a Git ref). For unattended use,
+from the immutable public tag `v<!--x-release-please-start-notifai-->7.0.2<!--x-release-please-end-->`; the underlying installer source is
+`Raidiant-io/notifai#v<!--x-release-please-start-notifai-->7.0.2<!--x-release-please-end-->` (`#` selects a Git ref). For unattended use,
 choose the scope explicitly: `notifai init --skills --skills-scope project` or
 `notifai init --skills --skills-scope global`.
 
