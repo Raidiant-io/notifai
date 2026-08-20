@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [7.0.0](https://github.com/Raidiant-io/notifai/compare/v6.0.0...v7.0.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove the sessionLabelFromId protocol export.
+
+### Features
+
+* use semantic session names ([4920cd3](https://github.com/Raidiant-io/notifai/commit/4920cd35acfdc101455d52e8502fe50df3845e79))
+
+
+### Bug Fixes
+
+* **cli:** harden frozen session labels ([cbb619f](https://github.com/Raidiant-io/notifai/commit/cbb619ff3e4a361ff0544c27b3d8b6101c9ecdda))
+* **cli:** restore generated session fallbacks ([e508e09](https://github.com/Raidiant-io/notifai/commit/e508e09b686b53e327de0e15be26e562f19cf8bf))
+* **cli:** restore generated session fallbacks ([74212e8](https://github.com/Raidiant-io/notifai/commit/74212e865cbb5af152399f691fc46a4713bacfdf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 3.0.0 to 4.0.0
+
 ## [6.0.0](https://github.com/Raidiant-io/notifai/compare/v5.0.0...v6.0.0) (2026-08-18)
 
 
