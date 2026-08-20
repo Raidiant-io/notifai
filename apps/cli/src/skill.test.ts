@@ -60,6 +60,18 @@ describe('Notifai agent skill', () => {
     expect(decide).toBeLessThan(compose)
   })
 
+  it('keeps session instructions out of config and agent paraphrase out of criteria', () => {
+    // The rule this pins: a conversational instruction is followed, not
+    // persisted, and criteria are stored in the user's words verbatim. An
+    // agent once turned "guide me when you need me" into a persisted
+    // notify_criteria in its own wording, silently via --yes.
+    const decide = section('## Decide whether to notify')
+    expect(decide).toMatch(/never touches config/i)
+    expect(decide).toMatch(/words\s+verbatim/i)
+    expect(decide).toMatch(/paraphrase must never masquerade/i)
+    expect(decide).toMatch(/`--yes` skips the\s+CLI's confirmation/i)
+  })
+
   it('names every notification kind the CLI accepts', () => {
     for (const kind of NOTIFICATION_KINDS) {
       expect(skill).toContain(`\`${kind}\``)
