@@ -23,7 +23,6 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 ### Bug Fixes
 
 * **cli:** harden frozen session labels ([cbb619f](https://github.com/Raidiant-io/notifai/commit/cbb619ff3e4a361ff0544c27b3d8b6101c9ecdda))
-* **cli:** restore generated session fallbacks ([e508e09](https://github.com/Raidiant-io/notifai/commit/e508e09b686b53e327de0e15be26e562f19cf8bf))
 * **cli:** restore generated session fallbacks ([74212e8](https://github.com/Raidiant-io/notifai/commit/74212e865cbb5af152399f691fc46a4713bacfdf))
 
 
