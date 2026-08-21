@@ -333,11 +333,11 @@ const send = program
     (v: string) => Number(v),
   )
   .option(
-    '--reply-choice <label>',
+    '--choice <label>',
     'with --reply, ask a closed question; repeat the flag once per answer (2-6)',
     (v: string, all: string[] = []) => [...all, v],
   )
-  .option('--reply-multi', 'with --reply-choice, several answers may be selected')
+  .option('--multi', 'with --choice, several answers may be selected')
   // Kept registered, and always a usage error with --reply, so the caller gets
   // a message pointing at `ask` instead of "unknown option".
   .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
@@ -360,7 +360,7 @@ const send = program
     const noBlock = opts['block'] === false
     const sendOpts = { ...opts }
     // Commander collectors default to []; an empty list means "not passed".
-    for (const key of ['replyChoice', 'image', 'imageAlt']) {
+    for (const key of ['choice', 'image', 'imageAlt']) {
       if (Array.isArray(sendOpts[key]) && sendOpts[key].length === 0) delete sendOpts[key]
     }
     delete sendOpts['block']

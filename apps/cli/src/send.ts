@@ -65,9 +65,9 @@ export interface SendFlags {
    * Answer labels; turns the reply into a closed question. One flag occurrence
    * per label, always — a label is a label, whatever characters it contains.
    */
-  replyChoice?: string[]
+  choice?: string[]
   /** The user may select several of the offered answers. */
-  replyMulti?: boolean
+  multi?: boolean
   /**
    * A full question set, overriding the single question the flags describe.
    * Not a user-facing flag: `ask --form` and the hooks build it.
@@ -264,15 +264,15 @@ export function buildDraft(
 
   // Ids are derived from labels so an agent writing a one-liner does not have
   // to invent them, but they stay the stable thing it branches on afterwards.
-  const choices = parseChoices(flags.replyChoice)
+  const choices = parseChoices(flags.choice)
   if (choices === 'invalid') {
     return {
       ok: false,
-      error: REPLY_CHOICE_USAGE,
+      error: CHOICE_USAGE,
     }
   }
-  if (flags.replyMulti && choices === null && flags.questions === undefined) {
-    return { ok: false, error: '--reply-multi needs answers to select between; add --reply-choice.' }
+  if (flags.multi && choices === null && flags.questions === undefined) {
+    return { ok: false, error: '--multi needs answers to select between; add --choice.' }
   }
   // A single reply question is the first readable block of the canonical body.
   // Context may follow after a blank line without changing what the user answers.
@@ -333,7 +333,7 @@ export function buildDraft(
                 id: 'q1',
                 text: derivedQuestion,
                 ...(choices !== null ? { choices } : {}),
-                ...(flags.replyMulti ? { multi: true } : {}),
+                ...(flags.multi ? { multi: true } : {}),
               },
             ],
           },
@@ -399,18 +399,9 @@ export function parseChoices(
 }
 
 /** Message shared by every surface that accepts choice labels. */
-/** `ask` spells this flag `--choice`. */
 export const CHOICE_USAGE =
   'Offer 2-6 answers, one --choice flag per answer, unique once slugified — ' +
   'e.g. --choice "Yes, ship it" --choice "Not yet".'
-
-/**
- * `send` spells the same flag `--reply-choice`, and a remedy that names the
- * other command's flag reproduces the error it is trying to fix.
- */
-export const REPLY_CHOICE_USAGE =
-  'Offer 2-6 answers, one --reply-choice flag per answer, unique once slugified — ' +
-  'e.g. --reply-choice "Yes, ship it" --reply-choice "Not yet".'
 
 export function slugify(label: string): string {
   return label

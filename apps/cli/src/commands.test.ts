@@ -1086,7 +1086,7 @@ describe('command contracts', () => {
 
     expect(await sendCommand(makeDeps(io, client), flags)).toBe(EXIT.ok)
     expect(io.errLines).toEqual([
-      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --reply-choice) so it can be answered from the notification.',
+      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --choice) so it can be answered from the notification.',
     ])
   })
 
@@ -1108,7 +1108,7 @@ describe('command contracts', () => {
     expect(io.errLines).toEqual([])
   })
 
-  it('rejects --reply-choice without the --reply action it configures', async () => {
+  it('rejects --choice without the --reply action it configures', async () => {
     const io = new CapturedIo()
     let submitCalls = 0
     const client = {
@@ -1122,12 +1122,12 @@ describe('command contracts', () => {
       await sendCommand(makeDeps(io, client), { kind: 'update',
         title: 'Deploy?',
         body: 'Choose when ready.',
-        replyChoice: ['Now', 'Later'],
+        choice: ['Now', 'Later'],
       }),
     ).toBe(EXIT.usage)
     expect(submitCalls).toBe(0)
     expect(io.errLines).toEqual([
-      'Use --reply with --reply-timeout, --reply-window, --reply-choice, or --no-block.',
+      'Use --reply with --reply-timeout, --reply-window, --choice, or --no-block.',
     ])
   })
 
@@ -5831,7 +5831,7 @@ describe('command failures carrying server details', () => {
 })
 
 describe('question sets', () => {
-  it('maps --reply-multi into the single question', async () => {
+  it('maps --multi into the single question', async () => {
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
     const client = {
@@ -5848,8 +5848,8 @@ describe('question sets', () => {
         body: 'Which fronts?',
         reply: true,
         replyTimeout: 30,
-        replyChoice: ['CLI', 'Server', 'Apps'],
-        replyMulti: true,
+        choice: ['CLI', 'Server', 'Apps'],
+        multi: true,
       }),
     ).toBe(EXIT.ok)
     expect(submitted?.draft.reply?.questions?.[0]).toMatchObject({
