@@ -75,11 +75,11 @@ notifai config unset notify_criteria --local --yes
 
 ## Send
 
-Managed OpenCode and Orca-managed Claude Code sessions supply their semantic
-title to Notifai. Do not add a session label there unless the user explicitly
-asked to override that title. Outside those managed sources, Claude Code, Codex,
-and Cursor do not currently expose one through their ordinary agent hooks, so
-their first-request example includes the concise task name:
+Managed OpenCode sessions and sessions in an Orca-managed worktree supply
+their semantic title to Notifai. Do not add a session label there unless the
+user explicitly asked to override that title. No other harness exposes one
+through its ordinary agent hooks, so the first-request example includes the
+concise task name:
 
 ```bash
 notifai send --kind done \
@@ -155,17 +155,18 @@ Other controls, when they earn their place:
   becoming two notifications.
 
 Project and exact session identity are inferred from where you run; never pass
-`--session-id`. Managed OpenCode and Orca-managed Claude Code sessions supply a
-semantic title, so omit `--session-label` there unless the user explicitly
-requested an override. Outside those managed sources, give Claude Code, Codex,
-and Cursor sessions a concise task name on the first Notification Request you
-create with `--session-label`: 2-6 words that say what the session is about, such
-as `Release candidate verification` or `Fix checkout retries`. Do not use the
+`--session-id`. Where a managed semantic title exists, omit `--session-label`
+unless the user explicitly requested an override. Everywhere else, give the
+session a concise task name on the first Notification Request you create with
+`--session-label`: 2-6 words that say what the session is about, such as
+`Release candidate verification` or `Fix checkout retries`. Do not use the
 project, branch, status, current result, identifier, hash, or filesystem path as
 the name.
-The CLI freezes the first accepted name for that immutable session, so omit the
-flag on later sends and questions. If a prior call named the session, the frozen
-name wins rather than changing under the User.
+The CLI freezes the first semantic name for that immutable session, so omit the
+flag on later sends and questions; a frozen name wins rather than changing under
+the User. Only a generated fallback name — the two-word stand-in used when
+nobody named the session — is replaced by a later `--session-label`, so a
+missed first send is still recoverable.
 
 ## Ask a question
 

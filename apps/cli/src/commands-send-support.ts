@@ -15,10 +15,12 @@ function managedSessionTitle(
   active: ActiveHarnessSession | null,
 ): string | undefined {
   if (active?.sessionLabel !== undefined) return active.sessionLabel
+  // The Orca worktree title names the workspace, not one harness: every
+  // harness session Orca starts inside that worktree inherits the same
+  // environment selector, so any active session with an identity to label
+  // may use it. An explicit label still wins without paying for the lookup.
   if (
-    active?.harness !== 'claude-code' ||
-    active.sessionId === undefined ||
-    active.sessionId !== deps.env['CLAUDE_CODE_SESSION_ID'] ||
+    active?.sessionId === undefined ||
     flags.sessionLabel !== undefined ||
     deps.env['NOTIFAI_SESSION_LABEL'] !== undefined
   ) {
