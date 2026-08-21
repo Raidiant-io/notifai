@@ -736,6 +736,48 @@ describe('command contracts', () => {
     })
   })
 
+  it('uses the exact Orca worktree title for an active Codex session send', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-codex-title-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const worktreeId = `repo-123::${cwd}`
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_THREAD_ID: 'orca-codex-thread',
+        TERM_PROGRAM: 'Orca',
+        ORCA_WORKTREE_ID: worktreeId,
+      },
+      orcaSessionTitle: (lookupEnv: NodeJS.ProcessEnv) => {
+        expect(lookupEnv['ORCA_WORKTREE_ID']).toBe(worktreeId)
+        return 'Worker - semantic session implementation'
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'The worktree title belongs to every harness Orca starts in it.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'orca-codex-thread',
+      session_label: 'Worker - semantic session implementation',
+      harness: 'codex',
+    })
+  })
+
   it('falls back safely when Orca returns a private path as its title', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-private-title-'))
     const io = new CapturedIo()

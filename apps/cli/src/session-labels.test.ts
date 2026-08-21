@@ -59,7 +59,7 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
   })
 
-  it('does not replace a frozen fallback when a managed semantic title appears later', () => {
+  it('replaces a frozen generated fallback when a managed semantic title appears later', () => {
     const { env, now } = fixture()
     const frozen = resolveSessionLabel({
       env,
@@ -77,6 +77,82 @@ describe('semantic session labels', () => {
         harness: 'claude-code',
         harnessLabel: 'Worker - semantic session implementation',
       }),
+    ).toEqual({
+      ok: true,
+      label: 'Worker - semantic session implementation',
+      source: 'harness',
+    })
+  })
+
+  it('replaces a frozen generated fallback with a later explicit task name, once', () => {
+    const { env, now } = fixture()
+    const frozen = resolveSessionLabel({ env, now, sessionId: 'late-named', harness: 'codex' })
+    expect(frozen.ok && frozen.source).toBe('fallback')
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'late-named',
+        harness: 'codex',
+        explicitLabel: 'Fix checkout retries',
+      }),
+    ).toEqual({ ok: true, label: 'Fix checkout retries', source: 'explicit' })
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 2_000,
+        sessionId: 'late-named',
+        harness: 'codex',
+        explicitLabel: 'A different later name',
+      }),
+    ).toEqual({ ok: true, label: 'Fix checkout retries', source: 'explicit' })
+  })
+
+  it('disambiguates an upgraded name against every other stored session', () => {
+    const { env, now } = fixture()
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'other-session',
+        harness: 'codex',
+        explicitLabel: 'Release preparation',
+      }),
+    ).toEqual({ ok: true, label: 'Release preparation', source: 'explicit' })
+    const frozen = resolveSessionLabel({ env, now, sessionId: 'upgraded', harness: 'codex' })
+    expect(frozen.ok && frozen.source).toBe('fallback')
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'upgraded',
+        harness: 'codex',
+        explicitLabel: 'Release preparation',
+      }),
+    ).toEqual({ ok: true, label: 'Release preparation · Codex', source: 'explicit' })
+  })
+
+  it('rejects an invalid explicit name instead of silently keeping the fallback', () => {
+    const { env, now } = fixture()
+    const frozen = resolveSessionLabel({ env, now, sessionId: 'still-fallback', harness: 'codex' })
+    expect(frozen.ok && frozen.source).toBe('fallback')
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'still-fallback',
+        harness: 'codex',
+        explicitLabel: 'x'.repeat(65),
+      }),
+    ).toEqual({
+      ok: false,
+      error: '--session-label (or NOTIFAI_SESSION_LABEL) must be at most 64 characters.',
+    })
+    expect(
+      resolveSessionLabel({ env, now: now + 2_000, sessionId: 'still-fallback', harness: 'codex' }),
     ).toEqual(frozen)
   })
 
@@ -142,7 +218,7 @@ describe('semantic session labels', () => {
     expect(stored).not.toContain('opaque-thread-1234567890')
   })
 
-  it('migrates a frozen date fallback without reopening semantic precedence', () => {
+  it('migrates a frozen date fallback when no semantic candidate exists', () => {
     const { env, now } = fixture()
     const file = path.join(stateDir(env), 'session-labels.json')
     expect(
@@ -164,10 +240,19 @@ describe('semantic session labels', () => {
         now: now + 1_000,
         sessionId: 'opaque-thread-1234567890',
         harness: 'codex',
-        explicitLabel: 'Late semantic override',
       }),
     ).toEqual({ ok: true, label: 'Ivory Koala', source: 'fallback' })
     expect(readFileSync(file, 'utf8')).not.toContain('Codex session ·')
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 2_000,
+        sessionId: 'opaque-thread-1234567890',
+        harness: 'codex',
+        explicitLabel: 'Late semantic override',
+      }),
+    ).toEqual({ ok: true, label: 'Late semantic override', source: 'explicit' })
   })
 
   it('disambiguates repeated semantic titles without changing session identity', () => {

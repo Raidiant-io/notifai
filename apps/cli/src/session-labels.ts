@@ -290,8 +290,11 @@ function uniqueLabel(
  * Freeze the first accepted human name for one immutable session.
  *
  * Explicit agent/User input wins, then a title supplied by a trusted harness
- * adapter, then a generated fallback. Later sends reuse the frozen value
- * even when their branch, worktree, title candidate, or notification changes.
+ * adapter, then a generated fallback. A frozen generated fallback is the one
+ * exception to permanence: it names nothing, so the first semantic candidate
+ * to arrive later — explicit first, then a trusted harness title — replaces
+ * it once. Semantic names then stay frozen even when their branch, worktree,
+ * title candidate, or notification changes.
  */
 export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResolution {
   const now = input.now ?? Date.now()
@@ -303,14 +306,39 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
       const store = readStore(file)
       const existing = store.sessions[key]
       if (existing !== undefined) {
-        if (!isLegacyDateFallback(existing)) {
-          return { ok: true, label: existing.label, source: existing.source }
-        }
         const used = new Set(
           Object.entries(store.sessions)
             .filter(([storedKey]) => storedKey !== key)
             .map(([, record]) => collisionKey(record.label)),
         )
+        if (existing.source === 'fallback') {
+          const explicit = explicitCandidate(input.explicitLabel, input)
+          if (explicit !== null && 'error' in explicit) {
+            return { ok: false, error: explicit.error }
+          }
+          const native = harnessLabelIsPending(input.harnessLabel, input)
+            ? null
+            : harnessCandidate(input.harnessLabel, input)
+          const upgrade = explicit ?? native
+          if (upgrade !== null) {
+            const label = uniqueLabel(upgrade.label, upgrade.source, input.harness, now, used)
+            store.sessions[key] = {
+              label,
+              source: upgrade.source,
+              first_seen_at: existing.first_seen_at,
+              ...(input.harness === undefined
+                ? existing.harness === undefined
+                  ? {}
+                  : { harness: existing.harness }
+                : { harness: input.harness }),
+            }
+            writeStore(file, store)
+            return { ok: true, label, source: upgrade.source }
+          }
+        }
+        if (!isLegacyDateFallback(existing)) {
+          return { ok: true, label: existing.label, source: existing.source }
+        }
         const label = uniqueLabel(
           generatedSessionLabel(input.sessionId),
           'fallback',
