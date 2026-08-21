@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.0.0](https://github.com/Raidiant-io/notifai/compare/v7.0.2...v8.0.0) (2026-08-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `send --reply --json` prints a single `reply_result` object with the receipt embedded; the standalone receipt line is gone. The `--no-block` flag is removed.
+* **cli:** send no longer accepts --reply-choice or --reply-multi; use --choice and --multi.
+
+### Features
+
+* add Android protocol and CLI support ([cccc3d1](https://github.com/Raidiant-io/notifai/commit/cccc3d185cbac499651709dbd34d61fd847e9570))
+* add Android protocol and CLI support ([faf2e23](https://github.com/Raidiant-io/notifai/commit/faf2e234b393a2edfbad60cb50c1da18025309fd))
+* **cli:** one reply_result object from send --reply --json ([928a980](https://github.com/Raidiant-io/notifai/commit/928a9804e05605a6a6b1cb9098c356ccef678080))
+* **cli:** replace generated fallback session names with later semantic ones ([66bd4a7](https://github.com/Raidiant-io/notifai/commit/66bd4a76bc947283d9dd3c4a807afc4b380c1d0c))
+* **cli:** replace generated fallback session names with later semantic ones ([52fe546](https://github.com/Raidiant-io/notifai/commit/52fe54690f51ef17fab0c1d69da440a29332f6a9))
+* **cli:** spell send's question flags --choice/--multi like ask ([5437816](https://github.com/Raidiant-io/notifai/commit/54378163994866f2239f033605bcf0041dce40fb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 4.0.0 to 4.1.0
+
 ## [7.0.2](https://github.com/Raidiant-io/notifai/compare/v7.0.1...v7.0.2) (2026-08-20)
 
 
