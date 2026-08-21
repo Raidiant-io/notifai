@@ -46,7 +46,6 @@ export async function sendCommand(
     wait?: number
     noWait?: boolean
     replyTimeout?: number
-    noBlock?: boolean
     idempotencyKey?: string
     baseUrl?: string
   },
@@ -75,9 +74,9 @@ export async function sendCommand(
   }
   if (
     !flags.reply &&
-    (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || flags.noBlock || hasChoice)
+    (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || hasChoice)
   ) {
-    deps.io.err('Use --reply with --reply-timeout, --reply-window, --choice, or --no-block.')
+    deps.io.err('Use --reply with --reply-timeout, --reply-window, or --choice.')
     return EXIT.usage
   }
   const replyTimeout = flags.replyTimeout ?? 900
@@ -91,13 +90,10 @@ export async function sendCommand(
   // request id. So the user gets a real button, taps it, and nothing happens —
   // worse than a banner that never asked, because it spends their attention
   // and their trust in the channel.
-  //
-  // Both spellings of "do not wait" are rejected, because the defect is the
-  // zero wait and not the flag that produced it.
-  if (flags.reply && (flags.noBlock || replyTimeout === 0)) {
+  if (flags.reply && replyTimeout === 0) {
     deps.io.err(
       'A question needs someone to hear the answer, so --reply cannot be combined ' +
-        'with --no-block or --reply-timeout 0.\n' +
+        'with --reply-timeout 0.\n' +
         'To ask and end the turn, use `notifai ask` — the turn-end hook returns the answer.\n' +
         'To announce finished work, drop --reply and its choices.',
     )
@@ -223,23 +219,14 @@ export async function sendCommand(
       receipt.overall === 'provider_accepted_all' &&
       receipt.warnings.length === 0
     if (!quietOrdinarySuccess) deps.io.out(formatReceipt(receipt))
-  } else if (flags.reply) deps.io.out(JSON.stringify({ type: 'receipt', receipt }))
+  }
 
   // A zero wait can no longer reach here: --reply guarantees a positive one.
   if (!flags.reply || receiptExit !== EXIT.ok) {
     if (flags.json) {
       deps.io.out(
         flags.reply
-          ? JSON.stringify({
-              type: 'reply_result',
-              request_id: receipt.request_id,
-              replies: [],
-              agent_acknowledgement_required: receipt.agent_acknowledgement_required,
-              agent_acknowledgement_text_required: receipt.agent_acknowledgement_text_required,
-              agent_acknowledgement: null,
-              acknowledgement_command: null,
-              degraded: false,
-            })
+          ? JSON.stringify(unansweredReplyResultJson(receipt, false))
           : JSON.stringify(receipt, null, 2),
       )
     }
@@ -256,7 +243,7 @@ export async function sendCommand(
     recordReplies(deps, receipt.request_id, result.response.replies)
     if (flags.json) {
       deps.io.out(
-        JSON.stringify(replyResultJson(result.response, result.degraded)),
+        JSON.stringify(replyResultJson(result.response, result.degraded, receipt)),
       )
     } else if (result.response.replies.length > 0) {
       printReplies(deps, result.response.replies)
@@ -285,9 +272,9 @@ export async function sendCommand(
     }
     return result.timedOut ? EXIT.noReply : EXIT.ok
   } catch (err) {
-    // Receipt already printed; a wait fault must not read as "send failed".
-    // Permanent poll errors (auth, closed window, not found) still surface, but
-    // always name the durable request and point at recovery.
+    // The send already succeeded durably; a wait fault must not read as "send
+    // failed". Permanent poll errors (auth, closed window, not found) still
+    // surface, but always name the durable request and point at recovery.
     if (err instanceof ApiCallError || err instanceof NetworkError) {
       log(deps).error('cli.error', {
         kind: err instanceof ApiCallError ? 'api' : 'network',
@@ -300,6 +287,9 @@ export async function sendCommand(
         `notifai: reply wait failed for ${receipt.request_id} (${err instanceof ApiCallError ? err.code : 'network'}: ${err.message}). ` +
           `Delivery and Companion Receipt are independent — check with \`notifai status ${receipt.request_id}\` and retry with \`notifai replies ${receipt.request_id}\`.`,
       )
+      // JSON callers still get their one object: the durable receipt, no
+      // replies, and `degraded: true` — "could not find out", not "no answer".
+      if (flags.json) deps.io.out(JSON.stringify(unansweredReplyResultJson(receipt, true)))
       if (err instanceof ApiCallError) {
         if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth
         return err.status >= 500 || err.status === 429 || err.status === 408
@@ -480,9 +470,19 @@ function isNonNegativeInteger(value: number): boolean {
 }
 
 
-function replyResultJson(response: ListRepliesResponse, degraded: boolean): object {
+/**
+ * The one JSON object `send --reply --json` prints, whatever happens after the
+ * durable submit. Embedding the receipt keeps stdout a single parseable line;
+ * `replies` (from a wait) omits it because there is no submission to report.
+ */
+function replyResultJson(
+  response: ListRepliesResponse,
+  degraded: boolean,
+  receipt?: SubmissionReceipt,
+): object {
   return {
     type: 'reply_result',
+    ...(receipt !== undefined ? { receipt } : {}),
     request_id: response.request_id,
     reply_expires_at: response.reply_expires_at,
     replies: response.replies,
@@ -496,6 +496,25 @@ function replyResultJson(response: ListRepliesResponse, degraded: boolean): obje
       response.agent_acknowledgement,
       response.replies.length > 0,
     ),
+    degraded,
+  }
+}
+
+/**
+ * The reply_result for a reply send that has no answer to report — a receipt
+ * failure, or a wait that faulted. Same shape, same single line; `degraded`
+ * distinguishes "the wait could not find out" from "delivery already failed".
+ */
+function unansweredReplyResultJson(receipt: SubmissionReceipt, degraded: boolean): object {
+  return {
+    type: 'reply_result',
+    receipt,
+    request_id: receipt.request_id,
+    replies: [],
+    agent_acknowledgement_required: receipt.agent_acknowledgement_required,
+    agent_acknowledgement_text_required: receipt.agent_acknowledgement_text_required,
+    agent_acknowledgement: null,
+    acknowledgement_command: null,
     degraded,
   }
 }

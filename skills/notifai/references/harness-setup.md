@@ -43,8 +43,9 @@ Installed definitions call one stable user-level adapter at
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
 package-manager, CLI-version, checkout, XDG directory, and Notifai preference
 changes. Stop definitions differ by harness: Claude Code's runs asynchronously
-with an explicit timeout above the longest wait, Codex's uses the host timeout
-default; prompt-submit and session-end retain fixed short limits on both.
+with an explicit timeout above the longest wait (POSIX hosts only — on Windows
+it blocks like the others), Codex's uses the host timeout default;
+prompt-submit and session-end retain fixed short limits on both.
 Migrating an older Codex definition requires one unavoidable `/hooks` approval;
 later upgrades must not require another.
 

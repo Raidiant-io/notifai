@@ -1022,7 +1022,7 @@ describe('command contracts', () => {
   })
 
   it('keeps only the current public notification-authoring flags', () => {
-    const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('./program.ts', import.meta.url), 'utf8')
     expect(source).not.toContain(".option('--badge")
     expect(source).not.toContain(".option('--relevance")
     expect(source).not.toContain(".option('--target-content-id")
@@ -1042,33 +1042,6 @@ describe('command contracts', () => {
     expect(source).toContain('Kind is required, and it selects the sound')
     expect(source).not.toContain('it never chooses banner sound or interruption level')
     expect(source).not.toContain('Kind profiles apply automatically')
-  })
-
-  it('rejects a question nobody will wait for', async () => {
-    // --reply asks; --no-block declares nothing will wait. The answer would be
-    // captured server-side and then reachable only by hand, so the user taps a
-    // real button and nothing happens — worse than never asking, because it
-    // spends their attention and their trust in the channel.
-    const io = new CapturedIo()
-    let submitCalls = 0
-    const client = {
-      submit: async () => {
-        submitCalls += 1
-        return receipt
-      },
-    } as unknown as ApiClient
-
-    expect(
-      await sendCommand(makeDeps(io, client), {
-        title: 'Question',
-        body: 'Deploy?',
-        reply: true,
-        replyWindow: 3_600,
-        noBlock: true,
-      }),
-    ).toBe(EXIT.usage)
-    expect(submitCalls).toBe(0)
-    expect(io.errLines.join('\n')).toContain('notifai ask')
   })
 
   it('maps reply flags into the draft and waits for the answer', async () => {
@@ -1169,7 +1142,7 @@ describe('command contracts', () => {
     ).toBe(EXIT.usage)
     expect(submitCalls).toBe(0)
     expect(io.errLines).toEqual([
-      'Use --reply with --reply-timeout, --reply-window, --choice, or --no-block.',
+      'Use --reply with --reply-timeout, --reply-window, or --choice.',
     ])
   })
 
@@ -1369,13 +1342,14 @@ describe('command contracts', () => {
     })
   })
 
-  it('prints an NDJSON receipt before waiting and a result record on exit 3', async () => {
+  it('prints one combined reply_result object on exit 3, nothing before the wait', async () => {
     const io = new CapturedIo()
     let now = 0
     const client = {
       submit: async () => receipt,
       replies: async (_requestId: string, options: { waitSeconds: number }) => {
-        expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({ type: 'receipt', receipt })
+        // Nothing on stdout mid-wait: the single object arrives at the end.
+        expect(io.outLines).toHaveLength(0)
         now += options.waitSeconds * 1_000
         return replyResponse()
       },
@@ -1391,11 +1365,12 @@ describe('command contracts', () => {
         json: true,
       }),
     ).toBe(EXIT.noReply)
-    expect(io.outLines).toHaveLength(2)
+    expect(io.outLines).toHaveLength(1)
     // `degraded` is part of the shape on every reply wait, not only when it is
     // true: an agent must be able to read it without knowing it might be absent.
-    expect(JSON.parse(io.outLines[1] ?? '{}')).toEqual({
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
       type: 'reply_result',
+      receipt,
       request_id: receipt.request_id,
       reply_expires_at: '2026-08-02T18:00:00.000Z',
       replies: [],
@@ -1410,7 +1385,7 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain(`notifai close ${receipt.request_id}`)
   })
 
-  it('prints the receipt and reply result as two NDJSON records when answered', async () => {
+  it('prints one combined reply_result object with the receipt when answered', async () => {
     const io = new CapturedIo()
     const client = {
       submit: async () => receipt,
@@ -1426,10 +1401,10 @@ describe('command contracts', () => {
         json: true,
       }),
     ).toBe(EXIT.ok)
-    expect(io.outLines).toHaveLength(2)
-    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({ type: 'receipt', receipt })
-    expect(JSON.parse(io.outLines[1] ?? '{}')).toEqual({
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
       type: 'reply_result',
+      receipt,
       request_id: receipt.request_id,
       reply_expires_at: '2026-08-02T18:00:00.000Z',
       replies: [reply],
@@ -1439,6 +1414,41 @@ describe('command contracts', () => {
       acknowledgement_command: `notifai acknowledge ${receipt.request_id} --text <text>`,
       degraded: false,
     })
+  })
+
+  it('still prints the one reply_result object when the wait itself faults', async () => {
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => receipt,
+      replies: async () => {
+        throw new ApiCallError(404, 'not_found', 'no such request')
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        title: 'Question',
+        body: 'Deploy?',
+        reply: true,
+        replyTimeout: 10,
+        json: true,
+      }),
+    ).toBe(EXIT.failed)
+    expect(io.outLines).toHaveLength(1)
+    // The send is durable even though the wait failed; `degraded: true` says
+    // "could not find out", not "no answer".
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
+      type: 'reply_result',
+      receipt,
+      request_id: receipt.request_id,
+      replies: [],
+      agent_acknowledgement_required: true,
+      agent_acknowledgement_text_required: true,
+      agent_acknowledgement: null,
+      acknowledgement_command: null,
+      degraded: true,
+    })
+    expect(io.errLines.join('\n')).toContain('reply wait failed')
   })
 
   it('acknowledges non-interactively, trims text, emits JSON, and logs request identity', async () => {
@@ -4669,7 +4679,8 @@ describe('an outage is not an answer', () => {
       json: true,
     })
 
-    const payload = JSON.parse(io.outLines[1] ?? '{}') as { degraded: boolean }
+    expect(io.outLines).toHaveLength(1)
+    const payload = JSON.parse(io.outLines[0] ?? '{}') as { degraded: boolean }
     expect(payload.degraded).toBe(true)
   })
 
