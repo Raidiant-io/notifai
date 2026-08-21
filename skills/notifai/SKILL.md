@@ -24,11 +24,11 @@ Exit status is how you decide what to do next:
 | exit | meaning | what to do |
 | --- | --- | --- |
 | 0 | it worked | carry on |
-| 1 | it failed; stderr names the code | act on that — only a timed-out `send` is worth retrying, reusing `--idempotency-key` |
+| 1 | it failed; stderr names the code | act on that — a bare retry fails the same way |
 | 2 | usage *or* setup; stderr names what to fix | fix that. For `ask` this is usually routing or sign-in, not a flag |
 | 3 | no answer yet | not a failure — collect it later |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
-| 5 | network | retry |
+| 5 | network | retry; for `send`, reuse the same `--idempotency-key` so one event cannot become two |
 
 ## Decide whether to notify
 
@@ -137,19 +137,22 @@ Other controls, when they earn their place:
   `--image-alt` paired by position; `media:1`…`media:8` reference them from the
   body. Check `notifai capabilities --platform <platform>` when an image is the
   message rather than decoration.
-- `--sound` overrides the kind's semantic sound on current Companion Apps.
+- `--sound` overrides the saved `sound` preference and the kind's semantic
+  sound on current Companion Apps.
   `--level` is Apple-only and cannot be used with `--platform android`; Android
   attention is owned by kind, product channels, and the user's device settings.
   Both controls belong to the user — pass one only when they asked for that
   behaviour on this send. `time_sensitive` does not currently break through
   Focus; `notifai capabilities --platform <platform>` is the exact contract.
-- `--device` only when the user asked for specific devices. Otherwise every
-  device they registered is the right answer and you do not need to think about
-  it.
-- `--event <name>` names what happened (`tests_passed`, `deploy_failed`); it
-  comes back in `notifai status` and rides the request for the apps to group on.
-- `--idempotency-key <key>` when you retry a send that failed or timed out.
-  Reusing the key is what stops one event becoming two notifications.
+- `--device` only when the user asked for specific devices on this send.
+  Otherwise every registered device is the right answer, narrowed by the
+  `devices` config key when the user saved one; `--all` overrides the
+  narrowing. `notifai devices --json` lists ids and readiness.
+- `--event <name>` names what happened (`tests_passed`, `deploy_failed`); it is
+  recorded with the request and comes back in `notifai status`.
+- `--idempotency-key <key>` when you rerun a send whose outcome you never saw —
+  a network failure or a killed shell. Reusing the key is what stops one event
+  becoming two notifications.
 
 Project and exact session identity are inferred from where you run; never pass
 `--session-id`. Managed OpenCode and Orca-managed Claude Code sessions supply a
@@ -176,10 +179,9 @@ always possible, whatever buttons you offered.
 `send --reply`, it is the *first line of the body* — the title is not the
 question — and context follows after a blank line.
 
-There are two ways to ask, and the difference is who waits. The same question
-surface appears in both, but the flags are spelled differently: on `send` they
-carry a `--reply-` prefix (`--reply-choice`, `--reply-multi`), on `ask` they do
-not (`--choice`, `--multi`).
+There are two ways to ask, and the difference is who waits. The question flags
+are the same on both: `--choice` once per answer, `--multi` when several may
+genuinely be combined.
 
 ### Wait for the answer now
 
@@ -191,7 +193,7 @@ notifai send --reply \
   --body "Deploy migration 0007 to production now?
 
 Staging is green. Production has 40k rows in the affected table." \
-  --reply-choice "Deploy now" --reply-choice "Hold" \
+  --choice "Deploy now" --choice "Hold" \
   --reply-timeout 900
 ```
 
@@ -206,9 +208,8 @@ notifai replies <request_id>          # the answer, whenever it landed
 notifai close <request_id>            # retire a question that stopped mattering
 ```
 
-`send --reply --json` is the one command that prints two JSON objects, one per
-line — the receipt, then the answer. Read the last line. Everything else that
-takes `--json` prints a single object.
+`send --reply --json` prints two JSON objects, one per line — the receipt, then
+the answer. Read the last line.
 
 Exit code 3 means no answer yet — not a delivery failure. On exit 0 the answer
 comes back on stdout and you act on it in the same command.
@@ -262,7 +263,9 @@ Keep independent questions as separate `ask` calls — each is answerable on its
 own, and a new question never cancels an earlier one.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
-turned question routing off for this scope. Tell them, and use the terminal.
+turned question routing off for this scope. Tell them; use the terminal, or a
+blocking `send --reply` — which that setting does not gate — when an answer
+cannot wait for their return.
 
 ## When the answer arrives
 
@@ -318,7 +321,8 @@ notifai doctor --json # then confirm, and branch on whatever is still open
 ```
 
 Branch on the diagnosis, never paste it at the user. A nonzero exit is a gap to
-close, not permission to work around.
+close, not permission to work around — and exit 0 alone does not prove `ask`
+can route: the named checks in the harness reference below decide that.
 
 Only these need a human, and you ask for them together in one structured
 question rather than a drip:
@@ -362,6 +366,9 @@ notifai logs --level error       # only what failed
 notifai logs --request <id>      # everything about one notification
 notifai logs --since 10m --json  # JSONL on stdout, for parsing
 ```
+
+An empty record can mean `log_level` is `off` — check it before concluding a
+hook never ran.
 
 `hook.gate` records carry a fixed `reason` — `notifications-off`,
 `claimed-elsewhere`, `no-question`, `no-session`, `answered`,
