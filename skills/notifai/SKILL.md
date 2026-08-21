@@ -209,8 +209,8 @@ notifai replies <request_id>          # the answer, whenever it landed
 notifai close <request_id>            # retire a question that stopped mattering
 ```
 
-`send --reply --json` prints two JSON objects, one per line — the receipt, then
-the answer. Read the last line.
+`send --reply --json` prints one JSON object: the reply result, with the
+delivery receipt embedded under `receipt`.
 
 Exit code 3 means no answer yet — not a delivery failure. On exit 0 the answer
 comes back on stdout and you act on it in the same command.

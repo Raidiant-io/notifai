@@ -2850,7 +2850,7 @@ describe('session-end hook', () => {
         'the real Codex hook did not reach contended diagnostics before its deadline',
       )
 
-      // Reaching the second bakery ticket proves main.ts preAction did not write
+      // Reaching the second bakery ticket proves program.ts preAction did not write
       // first. Every durable cleanup must already be visible while diagnostics
       // are still blocked behind the live holder.
       expect(existsSync(stateFile)).toBe(false)

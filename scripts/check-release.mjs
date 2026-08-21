@@ -124,8 +124,8 @@ for (const entry of packages) {
 }
 
 const cli = packages[0].manifest
-const cliSource = readFileSync(path.join(root, 'apps/cli/src/main.ts'), 'utf8')
-requireValue(!/\.version\(\s*['"]\d/.test(cliSource), 'CLI version must not be hardcoded in src/main.ts')
+const cliSource = readFileSync(path.join(root, 'apps/cli/src/program.ts'), 'utf8')
+requireValue(!/\.version\(\s*['"]\d/.test(cliSource), 'CLI version must not be hardcoded in src/program.ts')
 
 /**
  * Ask the built artifact what it thinks it is, rather than grepping for a
