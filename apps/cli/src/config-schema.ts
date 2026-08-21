@@ -83,7 +83,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     label: 'Send questions to my devices',
     group: 'questions',
     kind: 'boolean',
-    summary: 'Whether a registered question may reach your iPhone at all',
+    summary: 'Whether a registered question may reach your Companion devices at all',
     detail:
       'The master switch for question routing. When this is off, a question an agent registers with `notifai ask` stays in the terminal and never leaves this machine, whatever else is configured. Turn it off to stop being reached for a while without uninstalling the harness hooks.',
     example: 'true',
@@ -137,10 +137,10 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       active: 'wakes the screen and plays the sound',
       time_sensitive: 'marks the notification urgent; Focus breakthrough is not available yet',
     },
-    summary: 'Set how insistently notifications from here arrive',
+    summary: 'Set how insistently notifications reach Apple devices',
     detail:
-      'How hard a notification tries to reach you, in the operating system\'s terms. Setting this pins one level for everything sent from here; kind chooses the sound, never this.\n\nLeave this unset to omit the field and let the destination use its normal behavior. `time_sensitive` is accepted and marks the notification urgent, but Focus breakthrough is not available yet — run `notifai capabilities` for what a platform actually honours.',
-    unsetMeans: 'not specified; the destination uses its normal behavior',
+      'Apple interruption level controls how hard a notification tries to reach you in the operating system\'s terms. Setting this pins one Apple-only level for sends from here; kind chooses the sound, never this. Android does not accept caller-selected interruption levels: its product-owned channels and your device settings own attention.\n\nLeave this unset to omit the field and let each destination use its normal behavior. `time_sensitive` is accepted on Apple platforms and marks the notification urgent, but Focus breakthrough is not available yet — run `notifai capabilities --platform <platform>` for the exact contract.',
+    unsetMeans: 'not specified; each destination uses its normal behavior',
   },
   devices: {
     label: 'Default devices',
@@ -217,7 +217,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     },
     summary: 'How much this machine records about what it did',
     detail:
-      'Notifai keeps a local record of what it did — every command, every notification, and in particular every decision a harness hook made about whether a question could leave the terminal. Hooks run headless, so without this there is no account of them at all: `notifai logs` is how an agent finds out afterwards why a question never reached your phone.\n\nThe log never leaves this machine. It is not uploaded, and nothing sends it anywhere.\n\n`debug` also records which config layer won and the detail of each request, which is what to turn on when something is behaving in a way the ordinary log does not explain.',
+      'Notifai keeps a local record of what it did — every command, every notification, and in particular every decision a harness hook made about whether a question could leave the terminal. Hooks run headless, so without this there is no account of them at all: `notifai logs` is how an agent finds out afterwards why a question never reached your device.\n\nThe log never leaves this machine. It is not uploaded, and nothing sends it anywhere.\n\n`debug` also records which config layer won and the detail of each request, which is what to turn on when something is behaving in a way the ordinary log does not explain.',
     example: 'info',
   },
   log_max_bytes: {

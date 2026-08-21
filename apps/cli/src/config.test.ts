@@ -201,7 +201,11 @@ describe('draft building', () => {
       targets: { mode: 'all' },
       delivery: { ttl_seconds: 86400, collapse_key: null },
       // An unlabelled draft is ordinary news, and news has a sound.
-      platform: { ios: { sound: 'default' }, macos: { sound: 'default' } },
+      platform: {
+        ios: { sound: 'default' },
+        macos: { sound: 'default' },
+        android: { sound: 'default' },
+      },
     })
   })
 
@@ -218,6 +222,7 @@ describe('draft building', () => {
     const build = buildDraft(config, { title: 'T', body: 'B', ...flags })
     if (!build.ok) throw new Error(build.error)
     expect(build.draft.platform?.ios?.sound).toBe(sound)
+    expect(build.draft.platform?.android?.sound).toBe(sound)
     expect(build.draft.platform?.ios?.interruption_level).toBeUndefined()
   })
 
@@ -239,6 +244,7 @@ describe('draft building', () => {
       sound: 'alert',
       interruption_level: 'active',
     })
+    expect(configured.draft.platform?.android).toEqual({ sound: 'alert' })
 
     const explicit = buildDraft(config, {
       title: 'T',
@@ -252,6 +258,7 @@ describe('draft building', () => {
       sound: null,
       interruption_level: 'time_sensitive',
     })
+    expect(explicit.draft.platform?.android).toEqual({ sound: null })
   })
 
   it('keeps a question answerable for a day by default', () => {
@@ -453,6 +460,10 @@ describe('draft building', () => {
       custom_data: { run_id: '42', branch: 'main' },
     })
     expect(build.draft.platform?.macos).toEqual(build.draft.platform?.ios)
+    expect(build.draft.platform?.android).toEqual({
+      sound: null,
+      custom_data: { run_id: '42', branch: 'main' },
+    })
   })
 
   it('maps optional fields into the selected macOS platform slot', () => {
@@ -476,6 +487,50 @@ describe('draft building', () => {
         interruption_level: 'passive',
         custom_data: { run_id: '42' },
       },
+    })
+  })
+
+  it('maps supported optional fields into the selected Android platform slot', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, {
+      title: 'T',
+      body: 'B',
+      platform: 'android',
+      sound: 'none',
+      threadId: 'mobile-builds',
+      data: ['run_id=42'],
+    })
+    if (!build.ok) throw new Error(build.error)
+
+    expect(build.platform).toBe('android')
+    expect(build.draft.platform).toEqual({
+      android: {
+        sound: null,
+        thread_id: 'mobile-builds',
+        custom_data: { run_id: '42' },
+      },
+    })
+  })
+
+  it('rejects explicit or configured interruption levels for Android', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    expect(
+      buildDraft(config, {
+        title: 'T',
+        body: 'B',
+        platform: 'android',
+        level: 'active',
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Android does not support caller-selected interruption levels'),
+    })
+
+    const configuredCase = setup({ projectToml: 'interruption_level = "passive"\n' })
+    const configured = loadConfig({ cwd: configuredCase.cwd, env: configuredCase.env })
+    expect(buildDraft(configured, { title: 'T', body: 'B', platform: 'android' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('unset the configured interruption_level'),
     })
   })
 

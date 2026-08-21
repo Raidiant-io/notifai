@@ -651,8 +651,9 @@ function claimPath(sessionId: string, env: NodeJS.ProcessEnv): string {
 /**
  * A question is stored so a later hook can push it, and it reaches us from a
  * shell command, so its size is whatever the agent typed. The push itself is
- * bounded by the 4096-byte APNs envelope; this bounds what sits on disk in the
- * meantime, and keeps one runaway agent from writing megabytes per session.
+ * bounded by the current 4096-byte push-provider envelopes; this bounds what
+ * sits on disk in the meantime, and keeps one runaway agent from writing
+ * megabytes per session.
  */
 const MAX_STORED_QUESTION_CHARS = 2000
 
@@ -1089,17 +1090,16 @@ function permanentReplyFailureNote(failures: Map<string, string>): string | null
   return `reply polling stopped after a permanent server rejection (${details}); the affected question will be retired before its continuation owner exits`
 }
 
-/**
- * Healthy companion devices that implement replies. Both the iOS app and the
- * macOS app register reply categories and submit answers directly.
- */
+/** Healthy Companion devices that advertise the current answer job. */
 async function answerableDevices(ctx: HookContext): Promise<string[]> {
   const configured = ctx.config.devices.value
   const { devices } = await ctx.client.listDevices()
   return devices
     .filter(
       (device) =>
-        (device.platform === 'ios' || device.platform === 'macos') &&
+        (device.platform === 'ios' ||
+          device.platform === 'macos' ||
+          device.platform === 'android') &&
         device.registration_healthy &&
         device.capabilities?.includes('answer') === true &&
         device.derived_status !== 'must_update',

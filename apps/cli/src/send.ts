@@ -6,6 +6,7 @@ import {
   NOTIFICATION_SCHEMA_VERSION,
   QUESTION_TEXT_MAX_LENGTH,
   bannerExcerpt,
+  type AndroidOptionsT,
   type IosOptionsT,
   type LifecycleT,
   type MacosOptionsT,
@@ -44,7 +45,8 @@ export interface SendFlags {
   collapseKey?: string
   sound?: string
   threadId?: string
-  level?: string
+  /** Apple interruption level; null is reserved for internal callers that must suppress config. */
+  level?: string | null
   data?: string[]
   /** Ready media ids in author-supplied order. Commands resolve paths and URLs first. */
   image?: string[]
@@ -200,7 +202,8 @@ export function buildDraft(
       error: `Unknown sound "${sound}" — supported: ${CLI_SOUNDS.map((value) => `"${value}"`).join(', ')}.`,
     }
   }
-  const level = flags.level ?? config.interruption_level.value
+  const level =
+    flags.level !== undefined ? flags.level : config.interruption_level.value
   if (
     level !== null &&
     level !== undefined &&
@@ -208,15 +211,30 @@ export function buildDraft(
   ) {
     return { ok: false, error: `Unknown interruption level "${level}".` }
   }
-
-  const options: IosOptionsT & MacosOptionsT = {}
-  if (sound === 'none') options.sound = null
-  else if (sound !== null && sound !== undefined) {
-    options.sound = sound as Exclude<(typeof CLI_SOUNDS)[number], 'none'>
+  if (platform === 'android' && level !== null && level !== undefined) {
+    return {
+      ok: false,
+      error:
+        'Android does not support caller-selected interruption levels. Remove --level or unset the configured interruption_level; kind, notification channels, and device settings own attention on Android.',
+    }
   }
-  if (flags.threadId !== undefined) options.thread_id = flags.threadId
+
+  const appleOptions: IosOptionsT & MacosOptionsT = {}
+  const androidOptions: AndroidOptionsT = {}
+  if (sound === 'none') {
+    appleOptions.sound = null
+    androidOptions.sound = null
+  } else if (sound !== null && sound !== undefined) {
+    const semanticSound = sound as Exclude<(typeof CLI_SOUNDS)[number], 'none'>
+    appleOptions.sound = semanticSound
+    androidOptions.sound = semanticSound
+  }
+  if (flags.threadId !== undefined) {
+    appleOptions.thread_id = flags.threadId
+    androidOptions.thread_id = flags.threadId
+  }
   if (level !== null && level !== undefined) {
-    options.interruption_level = level as (typeof INTERRUPTION_LEVELS)[number]
+    appleOptions.interruption_level = level as (typeof INTERRUPTION_LEVELS)[number]
   }
   if (flags.data?.length) {
     const data: Record<string, string> = {}
@@ -225,7 +243,8 @@ export function buildDraft(
       if (eq <= 0) return { ok: false, error: `--data expects key=value, got "${pair}".` }
       data[pair.slice(0, eq)] = pair.slice(eq + 1)
     }
-    options.custom_data = data
+    appleOptions.custom_data = data
+    androidOptions.custom_data = data
   }
 
   const ttl = flags.ttl ?? config.ttl_seconds.value
@@ -271,6 +290,23 @@ export function buildDraft(
     }
   }
 
+  const hasAppleOptions = Object.keys(appleOptions).length > 0
+  const hasAndroidOptions = Object.keys(androidOptions).length > 0
+  let platformOptions: NonNullable<NotificationDraftT['platform']> | undefined
+  if (flags.platform === undefined) {
+    if (hasAppleOptions || hasAndroidOptions) {
+      platformOptions = {
+        ...(hasAppleOptions ? { ios: appleOptions, macos: appleOptions } : {}),
+        ...(hasAndroidOptions ? { android: androidOptions } : {}),
+      }
+    }
+  } else if (platform === 'android') {
+    if (hasAndroidOptions) platformOptions = { android: androidOptions }
+  } else if (hasAppleOptions) {
+    platformOptions =
+      platform === 'ios' ? { ios: appleOptions } : { macos: appleOptions }
+  }
+
   const draft: NotificationDraftT = {
     schema_version: NOTIFICATION_SCHEMA_VERSION,
     ...(flags.event !== undefined ? { event: flags.event } : {}),
@@ -303,13 +339,7 @@ export function buildDraft(
           },
         }
       : {}),
-    ...(Object.keys(options).length > 0
-      ? flags.platform === undefined
-        ? { platform: { ios: options, macos: options } }
-        : platform === 'ios'
-          ? { platform: { ios: options } }
-          : { platform: { macos: options } }
-      : {}),
+    ...(platformOptions !== undefined ? { platform: platformOptions } : {}),
   }
   return { ok: true, draft, platform }
 }

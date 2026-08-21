@@ -157,7 +157,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
   return {
     beginPairing: notUsed,
     pollPairing: notUsed,
-    // Both current companion apps register reply categories.
+    // Current reply-capable Companion fixtures.
     listDevices: async () => ({
       devices: [
         {
@@ -553,6 +553,38 @@ describe('pushing a registered question', () => {
     })
     // A pushed question is a question, and a question has an attention tone.
     expect(h.recorder.submitted[0]?.draft.platform?.ios?.sound).toBe('attention')
+  })
+
+  it('routes a registered question to an answer-capable Android installation', async () => {
+    const h = harness([reply({ text: 'Yes' })])
+    const client = {
+      ...fakeClient(h.recorder, [reply({ text: 'Yes' })]),
+      listDevices: async () => ({
+        devices: [
+          {
+            device_id: 'dev_android',
+            display_name: 'Pixel',
+            platform: 'android' as const,
+            permission_status: 'authorized',
+            registration_healthy: true,
+            capabilities: ['answer'],
+            derived_status: 'working',
+            last_seen_at: null,
+          },
+        ],
+      }),
+    } as ApiClient
+    const deps = { ...h.deps, clientFactory: () => client }
+    writeSessionState('android-answer', h.env, { last_prompt_at: AWAY })
+    registerQuestion('android-answer', h.env, { question: 'Ship it?' }, NOW)
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: 'android-answer' }))
+
+    expect(h.recorder.submitted[0]?.draft.targets).toEqual({
+      mode: 'selected',
+      device_ids: ['dev_android'],
+    })
+    expect(h.recorder.submitted[0]?.draft.platform?.android?.sound).toBe('attention')
   })
 
   it('keeps sparse alt text paired with its original media item', async () => {

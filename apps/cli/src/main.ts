@@ -271,8 +271,9 @@ program
   .helpGroup(GROUP.daily)
   .summary('List your devices and whether they can receive')
   .description('List registered devices and their delivery readiness')
+  .option('--platform <platform>', 'show only devices on one supported platform')
   .option('--json', 'machine-readable output')
-  .action(async (opts: { json?: boolean }) => {
+  .action(async (opts: { json?: boolean; platform?: string }) => {
     process.exit(await devicesCommand(deps, opts))
   })
 
@@ -342,7 +343,10 @@ const send = program
   .option('--no-block', 'rejected with --reply; use `notifai ask` to ask and end the turn')
   .optionsGroup(SEND_GROUP.advanced)
   .option('--sound <sound>', 'override saved sound: default | done | attention | alert | none')
-  .option('--level <level>', 'override saved interruption level: passive | active | time_sensitive')
+  .option(
+    '--level <level>',
+    'Apple-only interruption level: passive | active | time_sensitive (unsupported with --platform android)',
+  )
   .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
   .option('--no-wait', 'return immediately after acceptance')
   .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[] = []) => [...all, v])
@@ -382,7 +386,7 @@ const send = program
 
 send.addHelpText(
   'after',
-  `\nKind is required, and it selects the sound the notification arrives with: done rings the completion chime, failed the most insistent tone, blocked and question a distinct attention tone, update the standard one.\nAn explicit --sound or --level, and the user's saved preference, both outrank that default.\n`,
+  `\nKind is required, and it selects the sound the notification arrives with: done rings the completion chime, failed the most insistent tone, blocked and question a distinct attention tone, update the standard one.\nAn explicit --sound or saved sound preference outranks that default. --level is Apple-only; Android attention is owned by kind, product channels, and device settings.\n`,
  )
 
 program

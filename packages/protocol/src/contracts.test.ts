@@ -3,16 +3,22 @@ import { Value } from '@sinclair/typebox/value'
 import {
   AccountPreferences,
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
+  ANDROID_CAPABILITIES_V1,
   BODY_MAX_LENGTH,
   CAPABILITIES_V1,
   DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
   defaultDeliveryPolicy,
   effectiveKind,
   estimateApnsPayloadBytes,
+  estimateFcmPayloadBytes,
   IOS_CAPABILITIES_V1,
   MACOS_CAPABILITIES_V1,
+  PLATFORMS,
+  PROVIDERS,
+  PutRegistrationRequest,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
+  REPLY_SOURCES,
   RegisterInstallationRequest,
   summarizeOverall,
   SubmitFeedbackRequest,
@@ -26,6 +32,7 @@ import {
   type SubmissionReceipt,
 } from './index.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
+import { buildFcmDataEnvelope } from './fcm.js'
 
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
   return {
@@ -95,6 +102,47 @@ describe('account preference and reply capability contracts', () => {
         capabilities: ['unknown'],
       }),
     ).toBe(false)
+  })
+})
+
+describe('platform and provider vocabulary', () => {
+  it('publishes Android and FCM as client-visible contract values', () => {
+    expect(PLATFORMS).toEqual(['ios', 'macos', 'android'])
+    expect(PROVIDERS).toEqual(['apns', 'fcm'])
+    expect(REPLY_SOURCES).toContain('remote_input')
+
+    expect(
+      Value.Check(RegisterInstallationRequest, {
+        installation_id: 'ins_android123',
+        platform: 'android',
+        display_name: 'Pixel',
+        app_version: '1.0.0',
+        app_build: '42',
+        os_version: '16',
+        capabilities: ['answer'],
+      }),
+    ).toBe(true)
+  })
+
+  it('keeps APNs and FCM registration shapes provider-specific', () => {
+    const apns = {
+      provider: 'apns',
+      environment: 'production',
+      token: 'ab'.repeat(32),
+    }
+    const fcm = { provider: 'fcm', fid: 'opaque-firebase-installation-id' }
+
+    expect(Value.Check(PutRegistrationRequest, apns)).toBe(true)
+    expect(Value.Check(PutRegistrationRequest, fcm)).toBe(true)
+    expect(Value.Check(PutRegistrationRequest, { provider: 'apns', token: apns.token })).toBe(false)
+    expect(
+      Value.Check(PutRegistrationRequest, {
+        ...fcm,
+        environment: 'production',
+      }),
+    ).toBe(false)
+    expect(Value.Check(PutRegistrationRequest, { ...fcm, token: apns.token })).toBe(false)
+    expect(Value.Check(PutRegistrationRequest, { provider: 'fcm' })).toBe(false)
   })
 })
 
@@ -673,9 +721,10 @@ describe('validateDraft', () => {
     expect(validateDraft(legacy, IOS_CAPABILITIES_V1).ok).toBe(false)
   })
 
-  it('describes the supported iOS and macOS capability contracts', () => {
+  it('describes the iOS, macOS, and Android capability contracts', () => {
     expect(CAPABILITIES_V1.describe('ios')?.platform).toBe('ios')
     expect(CAPABILITIES_V1.describe('macos')).toBe(MACOS_CAPABILITIES_V1)
+    expect(CAPABILITIES_V1.describe('android')).toBe(ANDROID_CAPABILITIES_V1)
     expect(MACOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
@@ -686,6 +735,26 @@ describe('validateDraft', () => {
         expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.category', status: 'unsupported' }),
         expect.objectContaining({ path: 'sound_file', status: 'unsupported' }),
+      ]),
+    )
+    expect(ANDROID_CAPABILITIES_V1).toMatchObject({
+      platform: 'android',
+      payload_limit_bytes: 4096,
+      interruption_levels: [],
+    })
+    expect(ANDROID_CAPABILITIES_V1.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
+        expect.objectContaining({ path: 'presentation.body', status: 'supported' }),
+        expect.objectContaining({ path: 'reply', status: 'supported' }),
+        expect.objectContaining({ path: 'platform.android.sound', status: 'supported' }),
+        expect.objectContaining({ path: 'platform.android.thread_id', status: 'downgraded' }),
+        expect.objectContaining({ path: 'platform.android.badge', status: 'unsupported' }),
+        expect.objectContaining({
+          path: 'platform.android.interruption_level',
+          status: 'unsupported',
+        }),
+        expect.objectContaining({ path: 'localization', status: 'unsupported' }),
       ]),
     )
   })
@@ -710,6 +779,52 @@ describe('validateDraft', () => {
       ],
     })
     expect(validateDraft(withMedia, IOS_CAPABILITIES_V1).warnings).toEqual([])
+  })
+
+  it('reports Android native-surface downgrades without rejecting supported in-app behavior', () => {
+    const androidDraft = draft({
+      presentation: {
+        title: 'Choose',
+        body: 'Choose a deployment target.',
+        media: [{ media_id: 'med_graph' }],
+      },
+      reply: {
+        expires_in_seconds: 3600,
+        questions: [
+          {
+            id: 'target',
+            text: 'Deploy where?',
+            choices: [
+              { id: 'staging', label: 'Staging' },
+              { id: 'production', label: 'Production' },
+            ],
+          },
+        ],
+      },
+      platform: { android: { thread_id: 'deployments' } },
+    })
+
+    expect(validateDraft(androidDraft, ANDROID_CAPABILITIES_V1)).toMatchObject({
+      ok: true,
+      errors: [],
+      warnings: expect.arrayContaining([
+        expect.objectContaining({
+          path: 'reply',
+          message: expect.stringContaining('Companion App'),
+        }),
+        expect.objectContaining({
+          path: 'presentation.media',
+          message: expect.stringContaining('text notification first'),
+        }),
+        expect.objectContaining({
+          path: 'platform.android.thread_id',
+          message: expect.stringContaining('device manufacturer'),
+        }),
+      ]),
+    })
+    expect(validateDraft(draft({ reply: freeTextReply() }), ANDROID_CAPABILITIES_V1).warnings).toEqual(
+      [],
+    )
   })
 
   it('warns when a target requests Time Sensitive behavior without the capability', () => {
@@ -774,6 +889,101 @@ describe('validateDraft', () => {
     expect(estimateApnsPayloadBytes(withMedia)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
     )
+  })
+
+  it('serializes the application-owned Android envelope once inside FCM data', () => {
+    const androidDraft = draft({
+      event: 'tests_passed',
+      kind: 'done',
+      project: 'my-app',
+      source: {
+        session_id: 'sess_example',
+        session_label: 'Amber Falcon',
+        harness: 'codex',
+        branch: 'feature/android',
+        worktree: 'android-worktree',
+      },
+      presentation: {
+        title: 'All checks passed',
+        subtitle: 'Android lane',
+        body: '**All checks passed.**\n\nSee the attached graph.',
+        media: [{ media_id: 'med_example', alt: 'Build graph' }],
+      },
+      delivery: { ttl_seconds: 3600, collapse_key: 'android-builds' },
+      reply: freeTextReply(),
+      platform: {
+        android: {
+          sound: 'done',
+          thread_id: 'builds',
+          custom_data: { run_id: '42' },
+        },
+      },
+    })
+    const envelope = buildFcmDataEnvelope(
+      androidDraft,
+      {
+        requestId: 'req_00000000000000000000000000',
+        deliveryId: 'del_00000000000000000000000000',
+        receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+      },
+      'https://x.invalid/'.padEnd(500, 'a'),
+      {
+        name: 'n'.padEnd(128, 'n'),
+        imageUrl: 'https://x.invalid/'.padEnd(500, 'a'),
+      },
+      new Date(0),
+      null,
+      { agentAcknowledgementRequired: true },
+      null,
+    )
+    const applicationEnvelope = JSON.parse(envelope.data.notifai) as Record<string, unknown>
+
+    expect(envelope.priority).toBe('HIGH')
+    expect(envelope.data).toEqual({ notifai: JSON.stringify(applicationEnvelope) })
+    expect(applicationEnvelope).toMatchObject({
+      schema_version: 1,
+      request_id: 'req_00000000000000000000000000',
+      delivery_id: 'del_00000000000000000000000000',
+      kind: 'question',
+      title: 'All checks passed',
+      banner_excerpt: 'All checks passed.\nSee the attached graph.',
+      collapse_key: 'android-builds',
+      sound: 'done',
+      thread_id: 'builds',
+      custom_data: { run_id: '42' },
+      media_count: 1,
+      has_full_body: true,
+    })
+    expect(estimateFcmPayloadBytes(androidDraft)).toBe(
+      new TextEncoder().encode(JSON.stringify(envelope.data)).length,
+    )
+  })
+
+  it('rejects an Android data map above the FCM payload ceiling', () => {
+    const oversized = draft({
+      presentation: {
+        title: 'T'.repeat(512),
+        subtitle: 'S'.repeat(512),
+        body: 'B'.repeat(2048),
+      },
+      platform: {
+        android: {
+          custom_data: Object.fromEntries(
+            Array.from({ length: 16 }, (_, index) => [`key_${index}`, 'v'.repeat(512)]),
+          ),
+        },
+      },
+    })
+
+    expect(validateDraft(oversized, ANDROID_CAPABILITIES_V1)).toMatchObject({
+      ok: false,
+      errors: [
+        expect.objectContaining({
+          code: 'payload_too_large',
+          message: expect.stringContaining('FCM payload'),
+        }),
+      ],
+    })
   })
 
   it('keeps maximum acknowledgement metadata estimation equal to rendering', () => {

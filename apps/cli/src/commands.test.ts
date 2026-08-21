@@ -42,6 +42,7 @@ import {
   configUnsetCommand,
   contradictingAnswer,
   describeHookFailure,
+  devicesCommand,
   doctorCommand,
   EXIT,
   hooksInstallCommand,
@@ -120,6 +121,17 @@ const currentCompatibility: CompatibilityResponse = {
     },
     {
       platform: 'macos',
+      recommended_version: null,
+      recommended_build: null,
+      minimum_receive_build: null,
+      minimum_answer_build: null,
+      deprecation: null,
+      sunset: null,
+      replacement_available: false,
+      rollout_complete: false,
+    },
+    {
+      platform: 'android',
       recommended_version: null,
       recommended_build: null,
       minimum_receive_build: null,
@@ -453,6 +465,93 @@ describe('command contracts', () => {
     expect(io.outLines[0]).toBe('macos capability contract v1 (payload limit 4096 bytes)')
   })
 
+  it('passes the selected Android platform through to the capability client', async () => {
+    const io = new CapturedIo()
+    let requestedPlatform: string | undefined
+    const document = CAPABILITIES_V1.describe('android')!
+    const client = {
+      capabilities: async (platform?: string) => {
+        requestedPlatform = platform
+        return document
+      },
+    } as unknown as ApiClient
+
+    expect(await capabilitiesCommand(makeDeps(io, client), { platform: 'android' })).toBe(
+      EXIT.ok,
+    )
+    expect(requestedPlatform).toBe('android')
+    expect(io.outLines[0]).toBe(
+      'android capability contract v1 (payload limit 4096 bytes)',
+    )
+  })
+
+  it('filters Device Installations by Android in human and JSON output', async () => {
+    const devices = [
+      {
+        device_id: 'dev_ios',
+        display_name: 'iPhone',
+        platform: 'ios' as const,
+        permission_status: 'authorized',
+        registration_healthy: true,
+        app_version: '1.0.0',
+        app_build: '1',
+        os_version: '19',
+        capabilities: ['answer'] as const,
+        support: currentSupport,
+        support_state: 'current' as const,
+        derived_status: 'working' as const,
+        status_message: null,
+        last_seen_at: null,
+      },
+      {
+        device_id: 'dev_android',
+        display_name: 'Pixel',
+        platform: 'android' as const,
+        permission_status: 'authorized',
+        registration_healthy: true,
+        app_version: '1.0.0',
+        app_build: '2',
+        os_version: '16',
+        capabilities: ['answer'] as const,
+        support: currentSupport,
+        support_state: 'current' as const,
+        derived_status: 'working' as const,
+        status_message: null,
+        last_seen_at: null,
+      },
+    ]
+    const client = { listDevices: async () => ({ devices }) } as unknown as ApiClient
+
+    const human = new CapturedIo()
+    expect(
+      await devicesCommand(makeDeps(human, client), { platform: 'android' }),
+    ).toBe(EXIT.ok)
+    expect(human.outLines).toEqual(['dev_android  Pixel  android  Working'])
+
+    const json = new CapturedIo()
+    expect(
+      await devicesCommand(makeDeps(json, client), { platform: 'android', json: true }),
+    ).toBe(EXIT.ok)
+    expect(JSON.parse(json.outLines[0]!)['devices']).toEqual([devices[1]])
+  })
+
+  it('rejects an unknown Device Installation platform filter locally', async () => {
+    const io = new CapturedIo()
+    let calls = 0
+    const client = {
+      listDevices: async () => {
+        calls += 1
+        return { devices: [] }
+      },
+    } as unknown as ApiClient
+
+    expect(await devicesCommand(makeDeps(io, client), { platform: 'linux' })).toBe(
+      EXIT.usage,
+    )
+    expect(calls).toBe(0)
+    expect(io.errLines.join('\n')).toContain('ios or macos or android')
+  })
+
   it('rejects an invalid draft before calling submit', async () => {
     const io = new CapturedIo()
     let submitCalls = 0
@@ -472,6 +571,86 @@ describe('command contracts', () => {
     ).toBe(EXIT.usage)
     expect(submitCalls).toBe(0)
     expect(io.errLines.join('\n')).toContain('project')
+  })
+
+  it('authors and validates an Android-specific Notification Request', async () => {
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'done',
+        title: 'Android build finished',
+        body: 'All checks passed.',
+        platform: 'android',
+        sound: 'none',
+        data: ['run_id=42'],
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.platform).toEqual({
+      android: { sound: null, custom_data: { run_id: '42' } },
+    })
+    expect(io.errLines).toEqual([])
+  })
+
+  it('prints Android downgrade warnings before submitting', async () => {
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'update',
+        title: 'Android evidence',
+        body: 'See the attached result.',
+        platform: 'android',
+        image: ['med_result'],
+        threadId: 'android-results',
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitCalls).toBe(1)
+    expect(io.errLines).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('presentation.media'),
+        expect.stringContaining('platform.android.thread_id'),
+      ]),
+    )
+  })
+
+  it('rejects an Android interruption level before submission', async () => {
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'update',
+        title: 'Android update',
+        body: 'Ready.',
+        platform: 'android',
+        level: 'active',
+      }),
+    ).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines.join('\n')).toContain(
+      'Android does not support caller-selected interruption levels',
+    )
   })
 
   it('infers Project and exact Claude Source Context without printing the opaque id', async () => {
@@ -3175,11 +3354,18 @@ describe('init', () => {
     display_name: 'Mac',
     platform: 'macos' as const,
   }
+  const readyAndroid = {
+    ...readyIphone,
+    device_id: 'dev_android',
+    display_name: 'Pixel',
+    platform: 'android' as const,
+    os_version: '16',
+  }
 
   function setupEvidence(
     requestId: string,
     companionReceipt: EvidenceSnapshot['deliveries'][number]['companion_receipt'],
-    device = readyIphone,
+    device: typeof readyIphone | typeof readyAndroid = readyIphone,
   ): EvidenceSnapshot {
     return {
       request_id: requestId,
@@ -3215,15 +3401,18 @@ describe('init', () => {
     }
   }
 
-  function setupReceipt(requestId = 'req_setup'): SubmissionReceipt {
+  function setupReceipt(
+    requestId = 'req_setup',
+    device: typeof readyIphone | typeof readyAndroid = readyIphone,
+  ): SubmissionReceipt {
     return {
       ...receipt,
       request_id: requestId,
       deliveries: [
         {
           ...receipt.deliveries[0]!,
-          device_id: readyIphone.device_id,
-          device_name: readyIphone.display_name,
+          device_id: device.device_id,
+          device_name: device.display_name,
         },
       ],
     }
@@ -3735,7 +3924,9 @@ describe('init', () => {
     expect(out).toContain('Next: Your devices')
     expect(out).toContain('https://test.notifai.invalid/support')
     expect(out).toContain('sign in with the same email as this account (alpha@example.com)')
-    expect(out).toContain('install Notifai on iPhone via https://test.notifai.invalid/support')
+    expect(out).toContain(
+      'no active Companion device registered yet; install Notifai via https://test.notifai.invalid/support',
+    )
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
@@ -3784,7 +3975,7 @@ describe('init', () => {
   })
 
   it.each([
-    ['denied', 'iPhone Settings'],
+    ['denied', "the device's Settings"],
     ['not_determined', 'allow its notification prompt'],
   ])('gives one permission-specific next action for %s', async (permission, expected) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), `init-permission-${permission}-`))
@@ -3804,12 +3995,12 @@ describe('init', () => {
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
-    expect(out).toContain(`iPhone (${permission})`)
+    expect(out).toContain(`iPhone (ios, ${permission})`)
     expect(out).toContain(expected)
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
-  it('ignores a dormant Mac installation while waiting for an iPhone, then proves the iPhone receipt', async () => {
+  it('ignores a dormant Mac installation while waiting for an active Companion, then proves the iPhone receipt', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-bridge-'))
     const io = new InteractiveIo()
     let now = 0
@@ -3856,7 +4047,9 @@ describe('init', () => {
     ])
     expect(io.openedUrls).toEqual(['https://test.notifai.invalid/support'])
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
-    expect(io.spinnerEvents).toContain('message:Waiting for the iPhone app to sign in and register…')
+    expect(io.spinnerEvents).toContain(
+      'message:Waiting for a Companion App to sign in and register…',
+    )
     expect(io.spinnerEvents).toContain('stop:iPhone is ready to receive')
     expect(io.spinnerEvents).toContain('stop:Receipt observed from iPhone')
     expect(io.outLines.join('\n')).toContain(
@@ -4047,6 +4240,51 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
   })
 
+  it('treats Android as active Companion readiness and sends a platform-correct proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-android-proof-'))
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(
+      path.join(cwd, '.notifai', 'config.toml'),
+      'project = "android-project"\ninterruption_level = "passive"\n',
+    )
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | null = null
+    const client = {
+      health: async () => true,
+      listDevices: async () => ({ devices: [readyAndroid] }),
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return setupReceipt('req_android_setup', readyAndroid)
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(
+          requestId,
+          {
+            state: 'observed',
+            observed_at: '2026-08-05T18:00:02.000Z',
+            latency_ms: 1_000,
+          },
+          readyAndroid,
+        ),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitted?.draft.targets).toEqual({
+      mode: 'selected',
+      device_ids: [readyAndroid.device_id],
+    })
+    expect(submitted?.draft.platform).toEqual({ android: { sound: null } })
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from Pixel.",
+    )
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
   it('does not treat a macOS-only installation as active-release readiness', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-macos-proof-'))
     const io = new CapturedIo()
@@ -4072,11 +4310,11 @@ describe('init', () => {
     expect(submitCalls).toBe(0)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('no iPhone registered yet')
+    expect(out).toContain('no active Companion device registered yet')
     expect(out).not.toContain('All set.')
     expect(out).not.toMatch(/Companion Receipt observed/i)
 
-    // A human doctor must render the same iPhone-readiness failure.
+    // A human doctor must render the same active-Companion readiness failure.
     const doctorIo = new PlainInteractiveIo()
     expect(
       await doctorCommand(
@@ -4090,8 +4328,10 @@ describe('init', () => {
     ).toBe(EXIT.failed)
     const doctorOut = doctorIo.outLines.join('\n')
     expect(doctorOut).toMatch(/FAIL\s+Your devices:/)
-    expect(doctorOut).toContain('no iPhone registered yet')
-    expect(doctorOut).toContain('Delivery proof: not checked — no iPhone is ready')
+    expect(doctorOut).toContain('no active Companion device registered yet')
+    expect(doctorOut).toContain(
+      'Delivery proof: not checked — no iPhone or Android Companion App is ready',
+    )
   })
 
   it('stops login when the approval page reports no Alpha access', async () => {
