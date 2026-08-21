@@ -51,9 +51,9 @@ export async function sendCommand(
     baseUrl?: string
   },
 ): Promise<number> {
-  const hasReplyChoice = Array.isArray(flags.replyChoice)
-    ? flags.replyChoice.length > 0
-    : flags.replyChoice !== undefined
+  const hasChoice = Array.isArray(flags.choice)
+    ? flags.choice.length > 0
+    : flags.choice !== undefined
   if (flags.reply && flags.kind !== undefined && flags.kind !== 'question') {
     deps.io.err(`--kind ${flags.kind} cannot be combined with --reply; a reply request is a question.`)
     return EXIT.usage
@@ -75,9 +75,9 @@ export async function sendCommand(
   }
   if (
     !flags.reply &&
-    (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || flags.noBlock || hasReplyChoice)
+    (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || flags.noBlock || hasChoice)
   ) {
-    deps.io.err('Use --reply with --reply-timeout, --reply-window, --reply-choice, or --no-block.')
+    deps.io.err('Use --reply with --reply-timeout, --reply-window, --choice, or --no-block.')
     return EXIT.usage
   }
   const replyTimeout = flags.replyTimeout ?? 900
@@ -174,7 +174,7 @@ export async function sendCommand(
     (flags.title.trim().endsWith('?') || flags.body.trim().endsWith('?'))
   ) {
     deps.io.err(
-      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --reply-choice) so it can be answered from the notification.',
+      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --choice) so it can be answered from the notification.',
     )
   }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
