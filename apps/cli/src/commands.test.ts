@@ -4861,7 +4861,7 @@ describe('asking before the hooks have ever run', () => {
     const pending = readSessionState('codex-media-thread', env).pending?.[0]
     expect(uploaded).toEqual(['med_ask_1', 'med_ask_2'])
     expect(pending?.body).toBe(
-      'Which visual should I use?\n\nCompare ![first](media:med_ask_1) with ![second](media:med_ask_2).',
+      'Compare ![first](media:med_ask_1) with ![second](media:med_ask_2).',
     )
     expect(pending?.media).toEqual([
       { media_id: 'med_ask_1', alt: 'First option' },
@@ -5936,7 +5936,10 @@ describe('question sets', () => {
     expect(submitted?.draft.reply?.questions[0]?.text).toBe('Which environment?')
   })
 
-  it('composes one question before optional Markdown context', () => {
+  it('keeps the question out of a body that carries context', () => {
+    // The question already travels as the title and as structured questions;
+    // repeating it in the body showed it twice on the lock screen and the
+    // reply screen.
     expect(
       buildQuestions(
         { body: '## Why\nThe release window closes today.' },
@@ -5944,12 +5947,28 @@ describe('question sets', () => {
       ),
     ).toMatchObject({
       ok: true,
-      body: 'Which environment?\n\n## Why\nThe release window closes today.',
+      body: '## Why\nThe release window closes today.',
       questions: [{ text: 'Which environment?' }],
     })
   })
 
-  it('composes numbered form questions before form context', () => {
+  it('lets the question stand in for the body only when there is no context', () => {
+    expect(buildQuestions({}, 'Which environment?')).toMatchObject({
+      ok: true,
+      body: 'Which environment?',
+    })
+    expect(
+      buildQuestions(
+        { form: JSON.stringify({ questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }] }) },
+        undefined,
+      ),
+    ).toMatchObject({
+      ok: true,
+      body: '1. Deploy where?\n2. What should I monitor?',
+    })
+  })
+
+  it('keeps form questions out of a body that carries form context', () => {
     expect(
       buildQuestions(
         {
@@ -5962,8 +5981,7 @@ describe('question sets', () => {
       ),
     ).toMatchObject({
       ok: true,
-      body:
-        '1. Deploy where?\n2. What should I monitor?\n\n## Context\nTraffic is elevated.',
+      body: '## Context\nTraffic is elevated.',
     })
   })
 
