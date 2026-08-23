@@ -13,6 +13,9 @@ import {
   configUnsetCommand,
   devicesCommand,
   doctorCommand,
+  guidanceSetCommand,
+  guidanceShowCommand,
+  guidanceUnsetCommand,
   hookDefersDiagnosticsUntilAfterCleanup,
   hookRunCommand,
   hooksInstallCommand,
@@ -90,6 +93,9 @@ const defaultRunners = {
   configExplain: configExplainCommand,
   configSet: configSetCommand,
   configUnset: configUnsetCommand,
+  guidanceShow: guidanceShowCommand,
+  guidanceSet: guidanceSetCommand,
+  guidanceUnset: guidanceUnsetCommand,
   /**
    * Dynamic so that the prompt library, the banner and the whole interactive
    * tree cost nothing to the paths that never draw them — `send`, `ask`, and
@@ -638,6 +644,78 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         opts: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
       ) => {
         exit(await runners.configUnset(deps, key, opts))
+      },
+    )
+
+  const guidance = program
+    .command('guidance')
+    .description('How notifications are written: the shipped guidance and your overrides, per topic')
+    .summary('Show or change how notifications are written')
+    .helpGroup(GROUP.daily)
+  guidance
+    .command('show', { isDefault: true })
+    .description('Print the effective guidance, every topic under the layer that supplied it')
+    .option('--json', 'machine-readable output')
+    .action((opts: { json?: boolean }) => {
+      exit(runners.guidanceShow(deps, opts))
+    })
+  guidance
+    .command('set <topic> [text]')
+    .description(
+      'Write one guidance topic in your words; it replaces the shipped topic of the same name for that scope ' +
+        '(choose a layer interactively; unattended defaults machine-global and requires --yes)',
+    )
+    .option('--file <path>', 'read the guidance text from a file (use - for stdin)')
+    .option('--project', 'write to the shared .notifai/guidance/ instead')
+    .option('--local', 'write a personal project preference on this machine (not in the repo)')
+    .option('--yes', 'skip the confirmation gate')
+    .action(
+      async (
+        topic: string,
+        text: string | undefined,
+        opts: { file?: string; project?: boolean; local?: boolean; yes?: boolean },
+      ) => {
+        let content = text
+        if (typeof opts.file === 'string') {
+          if (content !== undefined) {
+            deps.io.err('Pass either the text or --file, not both.')
+            exit(2)
+            return
+          }
+          try {
+            content = readFileSync(opts.file === '-' ? 0 : opts.file, 'utf8')
+          } catch (err) {
+            deps.io.err(`Could not read ${opts.file}: ${String(err)}`)
+            exit(2)
+            return
+          }
+        }
+        if (content === undefined) {
+          deps.io.err('Pass the guidance text, or --file <path|-> to read it.')
+          exit(2)
+          return
+        }
+        exit(
+          await runners.guidanceSet(deps, topic, content, {
+            project: opts.project,
+            local: opts.local,
+            yes: opts.yes,
+          }),
+        )
+      },
+    )
+  guidance
+    .command('unset <topic>')
+    .description(
+      'Remove a guidance override so the next layer or the shipped topic applies ' +
+        '(choose a layer interactively; unattended defaults machine-global and requires --yes)',
+    )
+    .option('--project', 'remove from the shared .notifai/guidance/ instead')
+    .option('--local', 'remove a personal project preference stored on this machine')
+    .option('--yes', 'skip the confirmation gate')
+    .action(
+      async (topic: string, opts: { project?: boolean; local?: boolean; yes?: boolean }) => {
+        exit(await runners.guidanceUnset(deps, topic, opts))
       },
     )
 

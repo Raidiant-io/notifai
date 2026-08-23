@@ -41,7 +41,7 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
   {
     id: 'project',
     title: 'This project',
-    blurb: 'How work in this directory identifies itself, and the house rules agents read before notifying.',
+    blurb: 'How work in this directory identifies itself. House rules for agents live in `notifai guidance`.',
   },
   {
     id: 'diagnostics',
@@ -193,17 +193,6 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unsetMeans: 'inferred from Git or the current directory',
     example: 'my-app',
   },
-  notify_criteria: {
-    label: 'House rules for agents',
-    group: 'project',
-    kind: 'string',
-    summary: 'Free text an agent reads before deciding whether to notify you',
-    detail:
-      'Your own guidance, in your own words, about what is worth a notification in this project — read by agents before they send. Something like "only tell me about failures and finished deploys; never per-file progress".\n\nIt is advice to the agent, not a filter the service enforces. Agents follow it as your literal standing word, so an agent may write it only when you ask for a preference to be remembered — and only in your words, never its own summary.',
-    unsetMeans: 'agents fall back to their default judgement',
-    example: 'Only failures and completed deploys',
-  },
-
   log_level: {
     label: 'Log level',
     group: 'diagnostics',

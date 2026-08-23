@@ -61,8 +61,6 @@ export interface CliConfig {
   interruption_level: ResolvedValue<CliInterruptionLevel | null>
   /** Project identifier stamped on sends; typically set in .notifai/config.toml. */
   project: ResolvedValue<string | null>
-  /** Free-text notification criteria agents consult before sending. */
-  notify_criteria: ResolvedValue<string | null>
   /** Whether a registered agent question may reach companion devices at all. */
   ask_notifications: ResolvedValue<boolean>
   /**
@@ -105,7 +103,6 @@ export const CONFIG_KEYS = [
   'sound',
   'interruption_level',
   'project',
-  'notify_criteria',
   'ask_notifications',
   'ask_grace_seconds',
   'reply_window_seconds',
@@ -152,7 +149,6 @@ const DEFAULTS = {
   sound: null,
   interruption_level: null,
   project: null,
-  notify_criteria: null,
   // Installing the hooks is the opt-in; these exist to switch the behaviour
   // back off for a project or a session without uninstalling anything.
   ask_notifications: true,
@@ -427,7 +423,6 @@ export function loadConfig(options: {
     sound: resolve('sound'),
     interruption_level: resolve('interruption_level'),
     project: resolve('project'),
-    notify_criteria: resolve('notify_criteria'),
     ask_notifications: resolve('ask_notifications'),
     ask_grace_seconds: resolve('ask_grace_seconds'),
     reply_window_seconds: resolve('reply_window_seconds'),
