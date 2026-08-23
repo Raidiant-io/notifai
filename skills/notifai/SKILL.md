@@ -32,45 +32,41 @@ Exit status is how you decide what to do next:
 
 ## Decide whether to notify
 
-Read the user's own criteria first. They outrank your judgement, and you follow
-them literally — which is why only their words, never an agent's summary, may
-be stored there:
+Read the guidance first, once per session, before your first send:
 
 ```bash
-notifai config show --json
+notifai guidance
 ```
 
-Every key comes back as `{ value, source, summary }`. `notify_criteria` is the
-user's standing instruction about what is worth interrupting them for. Quote
-values as they are — never flatten one into "the defaults apply".
+It prints every topic — `when-to-notify`, `titles`, `bodies`, `questions`,
+`acknowledgements` — under a comment naming the layer that supplied it. A
+topic from a user layer is the user's standing word: it outranks the shipped
+default and your judgement, and you follow it literally — which is why only
+their words, never an agent's summary, may be stored there. `when-to-notify`
+decides whether this is worth a notification at all; the writing topics own
+the words you send.
 
-When they have set none, notify when:
-
-- long-running work finished, succeeded, or failed
-- you are blocked on something only the user can give
-- a finding or an error needs attention soon
-
-Do not notify for routine progress, for each file you touch, or for anything
-they will see in the terminal in a few seconds. Noise teaches them to ignore the
-one that mattered. Send once per event.
+Settings — routing, devices, sounds — are config, not guidance:
+`notifai config show --json` returns every key as `{ value, source, summary }`.
+Quote values as they are — never flatten one into "the defaults apply".
 
 An instruction about the work in hand — "let me know when you're blocked",
 "only ask me for what you can't do" — tunes this session. Follow it; it needs
-no command and never touches config.
+no command and never touches config or guidance.
 
-Write config only when the user asks for a preference that outlives the
-session — "always", "from now on", "remember this" — and store their words
-verbatim: the key is read back as their literal standing instruction, so your
-paraphrase must never masquerade as it. Pick the layer matching who they said
-it is for — `--local` for a personal preference in this project (stored
-outside the repository, so never touch a gitignore for it), `--project` for
-policy shared with others here, no flag for this machine. `--yes` skips the
-CLI's confirmation, so it belongs only on a write whose exact value and layer
-the user already approved:
+Write guidance (or a config key) only when the user asks for a preference that
+outlives the session — "always", "from now on", "remember this" — and store
+their words verbatim: a topic is read back as their literal standing
+instruction, so your paraphrase must never masquerade as it. Pick the layer
+matching who they said it is for — `--local` for a personal preference in this
+project (stored outside the repository, so never touch a gitignore for it),
+`--project` for policy shared with others here, no flag for this machine.
+`--yes` skips the CLI's confirmation, so it belongs only on a write whose
+exact value and layer the user already approved:
 
 ```bash
-notifai config set notify_criteria "Only when you're blocked or CI-length work finishes" --local --yes
-notifai config unset notify_criteria --local --yes
+notifai guidance set when-to-notify "Only when you're blocked or CI-length work finishes" --local --yes
+notifai guidance unset when-to-notify --local --yes
 ```
 
 ## Send
@@ -83,9 +79,9 @@ concise task name:
 
 ```bash
 notifai send --kind done \
-  --session-label "Release candidate verification" \
-  --title "All 42 tests passed" \
-  --body "Suite finished in 3m 10s. Next: review the release candidate."
+  --session-label "Account creation" \
+  --title "Users can now create accounts" \
+  --body "Sign-up, email verification, and login work end to end on staging. Next: password reset, unless you want something else first."
 ```
 
 `--kind` is required, and it is the most consequential word you choose:
@@ -101,26 +97,21 @@ notifai send --kind done \
 Because kind decides how insistently the notification lands, **declare the kind
 that is true**. Calling a failure `done` does not soften it, it hides it.
 
-Write for a glance:
+The words come from the guidance — `titles` and `bodies` own what a title,
+body, and summary line carry. The shape on the wire:
 
-- **Title** — the specific substance, understandable alone, around 40
-  characters: `All 42 tests passed`, `Migration 0007 failed`, `Checkout is
-  blocked by tax setup`. Never put the kind or the project in it; both travel
-  on their own. `Task complete`, `Build failed` and `Need input` all fail the
-  same way — they send the user back to the terminal to find out what actually
-  happened.
-- **Body** — one canonical Markdown body carrying the next fact they would ask
-  for: the result, the count, the duration, the error, what happens next when
-  there is a next. Lead with the most useful sentence; the banner excerpt is
-  taken from the top of it.
-- **`--subtitle`** — one short line between title and body. Use it when the body
+- **Title** — stands alone; the kind and the project travel as their own
+  fields, never in it.
+- **Body** — one canonical Markdown body; the banner excerpt is taken from the
+  top of it.
+- **`--subtitle`** — one short line between title and body, for when the body
   is long enough that its first line is not a fair summary of what is inside.
 
 ```bash
 notifai send --kind failed \
-  --title "Migration 0007 failed" \
-  --subtitle "Rolled back cleanly; production is untouched" \
-  --body-file ./migration-report.md
+  --title "The pricing page isn't live" \
+  --subtitle "Deploy failed; rolled back, the old page still shows" \
+  --body-file ./deploy-report.md
 ```
 
 Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
@@ -190,11 +181,11 @@ When the current command cannot continue without the answer:
 
 ```bash
 notifai send --reply \
-  --title "Migration 0007 is ready" \
-  --body "Deploy migration 0007 to production now?
+  --title "Schema change ready to deploy" \
+  --body "Deploy the schema change to production now?
 
-Staging is green. Production has 40k rows in the affected table." \
-  --choice "Deploy now" --choice "Hold" \
+It touches live order data; staging is green." \
+  --choice "Deploy now" --choice "Wait for off-peak" \
   --reply-timeout 900
 ```
 

@@ -47,6 +47,11 @@ export {
   configShowCommand,
   configUnsetCommand,
 } from './commands-config.js'
+export {
+  guidanceSetCommand,
+  guidanceShowCommand,
+  guidanceUnsetCommand,
+} from './commands-guidance.js'
 export { logsCommand, parseSince, type LogsFlags } from './commands-logs.js'
 export { SKILLS_SOURCE } from './commands-skill.js'
 export {

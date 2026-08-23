@@ -1,0 +1,268 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import type { CommandDeps } from './commands-core.js'
+import {
+  guidanceSetCommand,
+  guidanceShowCommand,
+  guidanceUnsetCommand,
+} from './commands-guidance.js'
+import { SHIPPED_GUIDANCE, shippedGuidanceTopic } from './guidance-content.js'
+import {
+  GUIDANCE_TOPIC_MAX_BYTES,
+  personalProjectGuidanceDir,
+  resolveGuidance,
+} from './guidance.js'
+
+const tmp = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-'))
+afterAll(() => rmSync(tmp, { recursive: true, force: true }))
+
+function setup(options: {
+  global?: Record<string, string>
+  project?: Record<string, string>
+  projectLocal?: Record<string, string>
+} = {}) {
+  const home = path.join(tmp, `case-${Math.random().toString(36).slice(2)}`)
+  const cwd = path.join(home, 'repo', 'nested')
+  mkdirSync(cwd, { recursive: true })
+  const env = { XDG_CONFIG_HOME: home, XDG_STATE_HOME: path.join(home, 'state') } as NodeJS.ProcessEnv
+  const write = (dir: string, files: Record<string, string>) => {
+    mkdirSync(dir, { recursive: true })
+    for (const [name, content] of Object.entries(files)) writeFileSync(path.join(dir, name), content)
+  }
+  if (options.global !== undefined) write(path.join(home, 'notifai', 'guidance'), options.global)
+  if (options.project !== undefined) write(path.join(home, 'repo', '.notifai', 'guidance'), options.project)
+  if (options.projectLocal !== undefined) write(personalProjectGuidanceDir(cwd, env), options.projectLocal)
+  return { env, cwd, home }
+}
+
+// ---------------------------------------------------------------------------
+// The shipped content: the contract clauses that used to live in SKILL.md.
+// Like skill.test.ts, these assert what the guidance has to teach, not the
+// sentences it teaches it in.
+// ---------------------------------------------------------------------------
+
+describe('shipped guidance content', () => {
+  it('ships the five topics in reading order', () => {
+    expect(SHIPPED_GUIDANCE.map((topic) => topic.name)).toEqual([
+      'when-to-notify',
+      'titles',
+      'bodies',
+      'questions',
+      'acknowledgements',
+    ])
+    for (const topic of SHIPPED_GUIDANCE) {
+      expect(topic.content, topic.name).toMatch(/^# /)
+      expect(topic.summary, topic.name).not.toBe('')
+    }
+  })
+
+  it('teaches when to notify and when not to, one notification per event', () => {
+    const content = shippedGuidanceTopic('when-to-notify')!.content
+    expect(content).toMatch(/finished — succeeded or failed/i)
+    expect(content).toMatch(/blocked on something only they can give/i)
+    expect(content).toMatch(/needs their attention soon/i)
+    expect(content).toMatch(/routine progress/i)
+    expect(content).toMatch(/terminal within seconds/i)
+    expect(content).toMatch(/one notification per event/i)
+  })
+
+  it('teaches outcome-altitude titles that stand alone, without kind or project', () => {
+    const content = shippedGuidanceTopic('titles')!.content
+    expect(content).toMatch(/hired the outcome, not the pipeline/i)
+    expect(content).toMatch(/understandable alone/i)
+    expect(content).toMatch(/40\s*characters/i)
+    expect(content).toMatch(/never put the kind or the project in it/i)
+    // Both example lists survive: good models the altitude, bad names the traps.
+    expect(content).toMatch(/machinery/i)
+    expect(content).toContain('Task complete')
+  })
+
+  it('teaches the leading sentence, user-facing detail only, and channel neutrality', () => {
+    const content = shippedGuidanceTopic('bodies')!.content
+    expect(content).toMatch(/first sentence is what the lock screen shows/i)
+    expect(content).toMatch(/never how many tests ran/i)
+    expect(content).toMatch(/channel-neutral/i)
+    expect(content).toMatch(/summary line only when/i)
+  })
+
+  it('teaches questions answerable alone, with meaningful choices and no route', () => {
+    const content = shippedGuidanceTopic('questions')!.content
+    expect(content).toMatch(/answerable from the notification alone/i)
+    expect(content).toMatch(/closed choices/i)
+    expect(content).toMatch(/never name where the answer must arrive/i)
+  })
+
+  it('teaches acknowledgements that name the concrete work and only that', () => {
+    const content = shippedGuidanceTopic('acknowledgements')!.content
+    expect(content).toMatch(/concrete work the reply sets in motion/i)
+    expect(content).toMatch(/only\s+work you will actually do/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Resolution across layers
+// ---------------------------------------------------------------------------
+
+describe('guidance layers', () => {
+  it('serves the shipped defaults when no layer overrides them', () => {
+    const { env, cwd } = setup()
+    const resolved = resolveGuidance({ cwd, env })
+    expect(resolved.map((topic) => topic.name)).toEqual(SHIPPED_GUIDANCE.map((topic) => topic.name))
+    for (const topic of resolved) expect(topic.source).toBe('default')
+  })
+
+  it('lets a layer replace one topic and orders project-local over project over global', () => {
+    const { env, cwd } = setup({
+      global: { 'titles.md': 'global titles\n', 'bodies.md': 'global bodies\n' },
+      project: { 'titles.md': 'project titles\n' },
+      projectLocal: { 'titles.md': 'personal titles\n' },
+    })
+    const resolved = resolveGuidance({ cwd, env })
+    const byName = new Map(resolved.map((topic) => [topic.name, topic]))
+    expect(byName.get('titles')).toMatchObject({
+      content: 'personal titles\n',
+      source: expect.stringMatching(/^project-local:/),
+    })
+    expect(byName.get('bodies')).toMatchObject({
+      content: 'global bodies\n',
+      source: expect.stringMatching(/^global:/),
+    })
+    // A replaced topic keeps its place in reading order.
+    expect(resolved.map((topic) => topic.name)).toEqual(SHIPPED_GUIDANCE.map((topic) => topic.name))
+    // Untouched topics still come from the ship.
+    expect(byName.get('when-to-notify')!.source).toBe('default')
+  })
+
+  it('appends user topics that match no shipped name, in name order', () => {
+    const { env, cwd } = setup({
+      project: { 'house-rules.md': 'always name the branch\n', 'deploys.md': 'deploy rules\n' },
+    })
+    const names = resolveGuidance({ cwd, env }).map((topic) => topic.name)
+    expect(names.slice(SHIPPED_GUIDANCE.length)).toEqual(['deploys', 'house-rules'])
+  })
+
+  it('drops files that are not topics and empty overrides', () => {
+    const { env, cwd } = setup({
+      project: {
+        'notes.txt': 'not markdown\n',
+        'Bad Name.md': 'invalid topic name\n',
+        'titles.md': '   \n',
+      },
+    })
+    const resolved = resolveGuidance({ cwd, env })
+    expect(resolved.map((topic) => topic.name)).toEqual(SHIPPED_GUIDANCE.map((topic) => topic.name))
+    // The empty override does not win; the shipped topic still applies.
+    expect(resolved.find((topic) => topic.name === 'titles')!.source).toBe('default')
+  })
+
+  it('truncates an oversized topic instead of reading it whole into context', () => {
+    const { env, cwd } = setup({
+      project: { 'titles.md': `start-${'x'.repeat(GUIDANCE_TOPIC_MAX_BYTES)}` },
+    })
+    const titles = resolveGuidance({ cwd, env }).find((topic) => topic.name === 'titles')!
+    expect(titles.content.length).toBeLessThan(GUIDANCE_TOPIC_MAX_BYTES + 200)
+    expect(titles.content).toMatch(/\[Truncated:/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+interface CapturedIo {
+  out: string[]
+  err: string[]
+}
+
+function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
+  const captured: CapturedIo = { out: [], err: [] }
+  const deps = {
+    io: {
+      out: (line: string) => captured.out.push(line),
+      err: (line: string) => captured.err.push(line),
+      confirm: async () => confirmAnswer,
+      openUrl: () => {},
+    },
+    store: {
+      load: () => null,
+      save: () => {},
+      clear: () => {},
+      describe: () => 'test credential store',
+    },
+    env,
+    cwd,
+  } as unknown as CommandDeps
+  return { deps, captured }
+}
+
+describe('guidance commands', () => {
+  it('shows every topic under a provenance comment', () => {
+    const { env, cwd } = setup({ project: { 'titles.md': 'my titles\n' } })
+    const { deps, captured } = makeDeps(env, cwd)
+    expect(guidanceShowCommand(deps, {})).toBe(0)
+    const output = captured.out.join('\n')
+    expect(output).toMatch(/<!-- when-to-notify · shipped default -->/)
+    expect(output).toMatch(/<!-- titles · this project \(shared\) · .*titles\.md -->/)
+    expect(output).toContain('my titles')
+  })
+
+  it('emits machine-readable topics with name, source, summary, and content', () => {
+    const { env, cwd } = setup()
+    const { deps, captured } = makeDeps(env, cwd)
+    expect(guidanceShowCommand(deps, { json: true })).toBe(0)
+    const topics = JSON.parse(captured.out.join('\n')) as { name: string; source: string }[]
+    expect(topics.map((topic) => topic.name)).toEqual(SHIPPED_GUIDANCE.map((topic) => topic.name))
+    expect(topics.every((topic) => topic.source === 'default')).toBe(true)
+  })
+
+  it('writes a topic to the chosen layer and resolution picks it up', async () => {
+    const { env, cwd, home } = setup()
+    const { deps } = makeDeps(env, cwd)
+    const code = await guidanceSetCommand(deps, 'titles', 'Prefix titles with 🚀', {
+      project: true,
+      yes: true,
+    })
+    expect(code).toBe(0)
+    const file = path.join(cwd, '.notifai', 'guidance', 'titles.md')
+    expect(readFileSync(file, 'utf8')).toBe('Prefix titles with 🚀\n')
+    expect(resolveGuidance({ cwd, env })).toContainEqual(
+      expect.objectContaining({ name: 'titles', content: 'Prefix titles with 🚀\n' }),
+    )
+    expect(home).toBeTruthy()
+  })
+
+  it('holds the confirmation gate: no --yes and no consent means no write', async () => {
+    const { env, cwd } = setup()
+    const { deps, captured } = makeDeps(env, cwd, false)
+    const code = await guidanceSetCommand(deps, 'titles', 'in my own words', {})
+    expect(code).toBe(2)
+    expect(captured.err.join('\n')).toMatch(/not confirmed/i)
+    expect(resolveGuidance({ cwd, env }).find((topic) => topic.name === 'titles')!.source).toBe(
+      'default',
+    )
+  })
+
+  it('rejects a name that is not a topic and rejects an oversized write', async () => {
+    const { env, cwd } = setup()
+    const { deps, captured } = makeDeps(env, cwd)
+    expect(await guidanceSetCommand(deps, 'Not A Topic', 'text', { yes: true })).toBe(2)
+    expect(captured.err.join('\n')).toMatch(/not a topic name/i)
+    expect(
+      await guidanceSetCommand(deps, 'titles', 'x'.repeat(GUIDANCE_TOPIC_MAX_BYTES + 1), {
+        yes: true,
+      }),
+    ).toBe(2)
+  })
+
+  it('unsets an override so the inherited guidance applies again', async () => {
+    const { env, cwd } = setup({ project: { 'titles.md': 'override\n' } })
+    const { deps } = makeDeps(env, cwd)
+    expect(await guidanceUnsetCommand(deps, 'titles', { project: true, yes: true })).toBe(0)
+    expect(existsSync(path.join(cwd, '..', '.notifai', 'guidance', 'titles.md'))).toBe(false)
+    expect(resolveGuidance({ cwd, env }).find((topic) => topic.name === 'titles')!.source).toBe(
+      'default',
+    )
+  })
+})

@@ -60,16 +60,28 @@ describe('Notifai agent skill', () => {
     expect(decide).toBeLessThan(compose)
   })
 
-  it('keeps session instructions out of config and agent paraphrase out of criteria', () => {
+  it('keeps session instructions out of config and agent paraphrase out of guidance', () => {
     // The rule this pins: a conversational instruction is followed, not
-    // persisted, and criteria are stored in the user's words verbatim. An
-    // agent once turned "guide me when you need me" into a persisted
-    // notify_criteria in its own wording, silently via --yes.
+    // persisted, and persisted guidance holds the user's words verbatim. An
+    // agent once turned "guide me when you need me" into a persisted standing
+    // instruction in its own wording, silently via --yes.
     const decide = section('## Decide whether to notify')
     expect(decide).toMatch(/never touches config/i)
     expect(decide).toMatch(/words\s+verbatim/i)
     expect(decide).toMatch(/paraphrase must never masquerade/i)
     expect(decide).toMatch(/`--yes` skips the\s+CLI's confirmation/i)
+  })
+
+  it('sends the agent to the resolved guidance before it writes anything', () => {
+    // The writing guidance itself lives in `notifai guidance` (shipped topics,
+    // user-overridable per layer); the skill's job is to make reading it the
+    // first step and user layers authoritative.
+    const decide = section('## Decide whether to notify')
+    expect(decide).toContain('notifai guidance')
+    for (const topic of ['when-to-notify', 'titles', 'bodies', 'questions', 'acknowledgements']) {
+      expect(decide).toContain(`\`${topic}\``)
+    }
+    expect(decide).toMatch(/outranks the shipped\s+default and your judgement/i)
   })
 
   it('names every notification kind the CLI accepts', () => {
@@ -106,7 +118,7 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/one canonical Markdown body/i)
     expect(send).toContain('media:1')
     // Type and project are structured fields, never title text.
-    expect(send).toMatch(/never\s+put the kind or the project in it/i)
+    expect(send).toMatch(/kind and the project travel as their own\s+fields, never in it/i)
   })
 
   it('names each immutable session once without asking the agent for its id', () => {
@@ -235,6 +247,7 @@ describe('Notifai agent skill', () => {
       'notifai doctor',
       'notifai init',
       'notifai config show',
+      'notifai guidance',
       'notifai logs',
       'notifai status',
     ]) {
