@@ -460,7 +460,13 @@ interface AskFormQuestion {
 
 export interface BuiltQuestions {
   questions: QuestionT[]
-  /** Canonical Markdown body: question block first, optional context second. */
+  /**
+   * Canonical Markdown body. The question already travels as the notification
+   * title and as structured questions, so the body carries only the context —
+   * repeating the question there put it on the lock screen and the reply
+   * screen twice. Only when there is no context does the question text stand
+   * in, because the wire requires a body.
+   */
   body: string
 }
 
@@ -524,14 +530,13 @@ export function buildQuestions(
       questions.push(built.question)
     }
     const context = flags.body ?? (record['body'] as string | undefined)
-    const questionBlock = questions.map((entry, index) => `${index + 1}. ${entry.text}`).join('\n')
     return {
       ok: true,
       questions,
       body:
         context !== undefined && context.trim() !== ''
-          ? `${questionBlock}\n\n${context}`
-          : questionBlock,
+          ? context
+          : questions.map((entry, index) => `${index + 1}. ${entry.text}`).join('\n'),
     }
   }
 
@@ -544,10 +549,7 @@ export function buildQuestions(
   return {
     ok: true,
     questions: [built.question],
-    body:
-      context !== undefined && context.trim() !== ''
-        ? `${built.question.text}\n\n${context}`
-        : built.question.text,
+    body: context !== undefined && context.trim() !== '' ? context : built.question.text,
   }
 }
 

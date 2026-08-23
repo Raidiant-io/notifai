@@ -2355,9 +2355,9 @@ describe('ask registration', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
     const draft = h.recorder.submitted[0]?.draft
     expect(draft?.presentation.title).toBe('Deploy where?')
-    expect(draft?.presentation.body).toBe(
-      '1. Deploy where?\n2. Anything to watch?\n\n## Context\nThe long story.',
-    )
+    // The questions travel structured and the first one is the title; the
+    // body carries only the context so nothing renders twice.
+    expect(draft?.presentation.body).toBe('## Context\nThe long story.')
     expect(draft?.reply?.questions).toEqual([
       {
         id: 'deploy-where',
