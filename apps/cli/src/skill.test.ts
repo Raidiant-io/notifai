@@ -126,15 +126,26 @@ describe('Notifai agent skill', () => {
     expect(send).toContain('--session-label')
     expect(send).toMatch(/first Notification\s+Request/i)
     expect(send).toMatch(/2-6 words/i)
-    expect(send).toMatch(/Managed OpenCode sessions and sessions in an Orca-managed worktree/i)
-    expect(send).toMatch(/omit `--session-label`/i)
-    expect(send).toMatch(/Everywhere else/i)
-    expect(send).toMatch(/freezes the first semantic name/i)
-    expect(send).toMatch(/omit the\s+flag on later sends and questions/i)
+    // The rule is unconditional: the environment's name wins, so the flag is
+    // safe everywhere and the agent never branches on where it is running.
+    expect(send).toMatch(/safe in every environment/i)
+    expect(send).toMatch(/name the\s+environment supplies wins/i)
+    expect(send).toMatch(/freezes one semantic name/i)
+    expect(send).toMatch(/omit the flag on later sends and\s+questions/i)
     // The one exception to permanence: garbage names are recoverable.
-    expect(send).toMatch(/generated fallback name[\s\S]*replaced by a later\s+`--session-label`/i)
+    expect(send).toMatch(/generated fallback name[\s\S]*replaced by a later\s+semantic name/i)
     expect(send).toMatch(/never pass\s+`--session-id`/i)
-    expect(send).toMatch(/identifier, hash, or filesystem path/i)
+    expect(send).toMatch(/identifier, hash, or\s+filesystem path/i)
+  })
+
+  it('never teaches by enumerating environments the CLI can detect itself', () => {
+    // "What if we had 24 different plugins, are we gonna list them all?" —
+    // guidance states one rule; the mechanism owns environment detection.
+    // Harness names may appear only in setup/routing material, where the
+    // harness IS the subject.
+    for (const heading of ['## Decide whether to notify', '## Send', '## Ask a question', '## When the answer arrives']) {
+      expect(section(heading), heading).not.toMatch(/OpenCode|Orca|Cursor|Codex/)
+    }
   })
 
   it('separates how long the command waits from how long an answer is accepted', () => {
