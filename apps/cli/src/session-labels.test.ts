@@ -46,6 +46,38 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'Semantic session names', source: 'explicit' })
   })
 
+  it('prefers the environment-supplied title over an explicit label, making the flag safe everywhere', () => {
+    // An agent must never need to know which environments name their own
+    // sessions: where one does, the explicit label is simply not used.
+    const { env, now } = fixture()
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'managed-session',
+        harness: 'opencode',
+        harnessLabel: 'NotifAI question lifecycle',
+        explicitLabel: 'Agent-chosen name',
+      }),
+    ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
+  })
+
+  it('upgrades a frozen fallback to the environment title even when an explicit label rides along', () => {
+    const { env, now } = fixture()
+    const frozen = resolveSessionLabel({ env, now, sessionId: 'late-title' })
+    expect(frozen).toMatchObject({ ok: true, source: 'fallback' })
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1,
+        sessionId: 'late-title',
+        harness: 'opencode',
+        harnessLabel: 'Worktree semantic title',
+        explicitLabel: 'Agent-chosen name',
+      }),
+    ).toEqual({ ok: true, label: 'Worktree semantic title', source: 'harness' })
+  })
+
   it('uses a trusted harness title when no explicit task label exists', () => {
     const { env, now } = fixture()
     expect(

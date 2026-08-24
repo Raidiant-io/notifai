@@ -71,11 +71,10 @@ notifai guidance unset when-to-notify --local --yes
 
 ## Send
 
-Managed OpenCode sessions and sessions in an Orca-managed worktree supply
-their semantic title to Notifai. Do not add a session label there unless the
-user explicitly asked to override that title. No other harness exposes one
-through its ordinary agent hooks, so the first-request example includes the
-concise task name:
+Name the session on the first Notification Request you create. The flag is
+safe in every environment: where the session already has a name — some
+environments supply one — that name wins and yours is simply not used, so you
+never need to know which kind of session you are in:
 
 ```bash
 notifai send --kind done \
@@ -128,13 +127,11 @@ Other controls, when they earn their place:
   `--image-alt` paired by position; `media:1`…`media:8` reference them from the
   body. Check `notifai capabilities --platform <platform>` when an image is the
   message rather than decoration.
-- `--sound` overrides the saved `sound` preference and the kind's semantic
-  sound on current Companion Apps.
-  `--level` is Apple-only and cannot be used with `--platform android`; Android
-  attention is owned by kind, product channels, and the user's device settings.
-  Both controls belong to the user — pass one only when they asked for that
-  behaviour on this send. `time_sensitive` does not currently break through
-  Focus; `notifai capabilities --platform <platform>` is the exact contract.
+- `--sound` and `--level` are attention overrides that belong to the user —
+  pass one only when they asked for that behaviour on this send. What each
+  destination honours is not yours to memorize:
+  `notifai capabilities --platform <platform>` is the exact contract, and the
+  CLI rejects and explains a combination a destination cannot carry.
 - `--device` only when the user asked for specific devices on this send.
   Otherwise every registered device is the right answer, narrowed by the
   `devices` config key when the user saved one; `--all` overrides the
@@ -146,18 +143,16 @@ Other controls, when they earn their place:
   becoming two notifications.
 
 Project and exact session identity are inferred from where you run; never pass
-`--session-id`. Where a managed semantic title exists, omit `--session-label`
-unless the user explicitly requested an override. Everywhere else, give the
-session a concise task name on the first Notification Request you create with
-`--session-label`: 2-6 words that say what the session is about, such as
-`Release candidate verification` or `Fix checkout retries`. Do not use the
-project, branch, status, current result, identifier, hash, or filesystem path as
-the name.
-The CLI freezes the first semantic name for that immutable session, so omit the
-flag on later sends and questions; a frozen name wins rather than changing under
-the User. Only a generated fallback name — the two-word stand-in used when
-nobody named the session — is replaced by a later `--session-label`, so a
-missed first send is still recoverable.
+`--session-id`. `--session-label` is 2-6 words that say what the session is
+about, such as `Release candidate verification` or `Fix checkout retries` —
+never the project, branch, status, current result, identifier, hash, or
+filesystem path.
+The CLI freezes one semantic name per immutable session — a name the
+environment supplies wins, then yours — so omit the flag on later sends and
+questions; a frozen name wins rather than changing under the User. Only a
+generated fallback name — the two-word stand-in used when nobody named the
+session — is replaced by a later semantic name, so a missed first send is
+still recoverable.
 
 ## Ask a question
 
