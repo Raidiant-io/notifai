@@ -30,9 +30,11 @@ import {
 } from './hook-adapter.js'
 import {
   clearAcknowledgementObligation,
+  dropPendingQuestion,
   handleSessionEnd,
   handleStop,
   handleUserPromptSubmit,
+  parkForRetirement,
   parseHookInput,
   pruneAbandonedSessions,
   readMatchingProjectSessionPointer,
@@ -40,9 +42,11 @@ import {
   readSessionState,
   registerQuestion,
   waiterCeilingSeconds,
+  withdrawUnpushedQuestions,
   type EscalationDeliveryRoute,
   type HookContext,
   type HookHarness,
+  type PendingQuestion,
 } from './hooks.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -1137,14 +1141,28 @@ export async function acknowledgeCommand(
 /** Retire a question so a late answer is rejected rather than silently lost. */
 export async function closeCommand(
   deps: CommandDeps,
-  requestId: string,
-  flags: { json?: boolean } = {},
+  requestId: string | undefined,
+  flags: { json?: boolean; pending?: boolean } = {},
 ): Promise<number> {
+  if (flags.pending === true && requestId !== undefined) {
+    deps.io.err('Pass a request id or --pending, not both.')
+    return EXIT.usage
+  }
+  if (flags.pending !== true && requestId === undefined) {
+    deps.io.err('Pass a request id or --pending.')
+    return EXIT.usage
+  }
+
+  if (flags.pending === true) {
+    return closePendingQuestions(deps, flags.json === true)
+  }
+
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    const response = await authed.client.closeReplies(requestId)
+    const response = await authed.client.closeReplies(requestId!)
+    forgetClosedQuestion(deps, requestId!)
     if (flags.json) {
       deps.io.out(
         JSON.stringify(
@@ -1169,6 +1187,101 @@ export async function closeCommand(
     return EXIT.ok
   } catch (err) {
     return reportError(deps, err)
+  }
+}
+
+/**
+ * Retire this session's outstanding questions, including registrations the
+ * Stop hook has not pushed yet. Unpushed entries only exist locally: dropping
+ * them is the whole retirement. Live ones still need their reply window closed.
+ */
+async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<number> {
+  const now = (deps.now ?? Date.now)()
+  const sessionId = readProjectSession(deps.cwd, deps.env, now)
+  if (sessionId === null) {
+    deps.io.err('No active session pointer is available in this directory.')
+    return EXIT.noReply
+  }
+  const pending = readSessionState(sessionId, deps.env).pending ?? []
+  if (pending.length === 0) {
+    if (json) {
+      deps.io.out(
+        JSON.stringify({ session_id: sessionId, withdrawn: [], closed: [] }, null, 2),
+      )
+    } else {
+      deps.io.err(`Session ${sessionId} has no registered question pending.`)
+    }
+    return EXIT.noReply
+  }
+
+  const withdrawn = withdrawUnpushedQuestions(sessionId, deps.env)
+  const live = (readSessionState(sessionId, deps.env).pending ?? []).filter(
+    (entry): entry is PendingQuestion & { request_id: string } =>
+      entry.request_id !== undefined,
+  )
+
+  const closed: string[] = []
+  if (live.length > 0) {
+    const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+    const authed = authedClient(deps, config)
+    if (!authed) return EXIT.auth
+    for (const entry of live) {
+      try {
+        await authed.client.closeReplies(entry.request_id)
+        parkClosedQuestion(sessionId, deps.env, entry)
+        dropPendingQuestion(sessionId, deps.env, entry)
+        closed.push(entry.request_id)
+      } catch (err) {
+        return reportError(deps, err, { operation: 'close', request_id: entry.request_id })
+      }
+    }
+  }
+
+  const output = {
+    session_id: sessionId,
+    withdrawn: withdrawn.map((entry) => ({
+      question: entry.question,
+      ...(entry.question_id === undefined ? {} : { question_id: entry.question_id }),
+    })),
+    closed,
+  }
+  if (json) deps.io.out(JSON.stringify(output, null, 2))
+  else {
+    if (withdrawn.length > 0) {
+      deps.io.out(
+        withdrawn.length === 1
+          ? 'Withdrew 1 unpushed question so a later Stop will not send it.'
+          : `Withdrew ${withdrawn.length} unpushed questions so a later Stop will not send them.`,
+      )
+    }
+    for (const requestId of closed) {
+      deps.io.out(`Closed the reply window for ${requestId}.`)
+    }
+  }
+  return EXIT.ok
+}
+
+function forgetClosedQuestion(deps: CommandDeps, requestId: string): void {
+  const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
+  if (sessionId === null) return
+  const entry = (readSessionState(sessionId, deps.env).pending ?? []).find(
+    (candidate) => candidate.request_id === requestId,
+  )
+  if (entry === undefined) return
+  parkClosedQuestion(sessionId, deps.env, entry)
+  dropPendingQuestion(sessionId, deps.env, entry)
+}
+
+function parkClosedQuestion(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  entry: PendingQuestion,
+): void {
+  try {
+    parkForRetirement(sessionId, env, entry, 'expired')
+  } catch {
+    // Incomplete identifiers cannot be retired on a device; dropping the
+    // local record is still the right way to stop a later Stop from waiting.
   }
 }
 

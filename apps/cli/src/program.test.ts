@@ -199,4 +199,22 @@ describe('program argv parsing', () => {
     await parse(['logs', '--event', 'send.submitted'], { logs })
     expect(seen).toMatchObject({ event: ['send.submitted'] })
   })
+
+  it('passes close --pending without inventing a request id', async () => {
+    let seenId: string | undefined
+    let seenFlags: Record<string, unknown> | undefined
+    const close = (async (_deps, requestId, flags) => {
+      seenId = requestId
+      seenFlags = flags as Record<string, unknown>
+      return 0
+    }) as ProgramRunners['close']
+
+    await parse(['close', '--pending', '--json'], { close })
+    expect(seenId).toBeUndefined()
+    expect(seenFlags).toEqual({ pending: true, json: true })
+
+    await parse(['close', 'req_abc'], { close })
+    expect(seenId).toBe('req_abc')
+    expect(seenFlags).toEqual({})
+  })
 })

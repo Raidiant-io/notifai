@@ -512,12 +512,15 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     })
 
   program
-    .command('close <request_id>')
+    .command('close [request_id]')
     .helpGroup(GROUP.agent)
     .summary('Retire a question so late answers are rejected')
-    .description('Retire a question so late answers are rejected rather than lost')
+    .description(
+      'Retire a question so late answers are rejected rather than lost. Pass --pending to withdraw this session\'s outstanding registrations, including ones the turn-end hook has not pushed yet.',
+    )
+    .option('--pending', 'retire this session\'s outstanding questions, including ones not yet pushed')
     .option('--json', 'machine-readable output')
-    .action(async (requestId: string, opts: { json?: boolean }) => {
+    .action(async (requestId: string | undefined, opts: { json?: boolean; pending?: boolean }) => {
       exit(await runners.close(deps, requestId, opts))
     })
 

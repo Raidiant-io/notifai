@@ -1719,6 +1719,80 @@ describe('command contracts', () => {
     })
   })
 
+  it('close --pending withdraws an unpushed registration so a later Stop cannot send it', async () => {
+    const io = new CapturedIo()
+    const client = {
+      closeReplies: async () => {
+        throw new Error('unpushed questions must not call the server')
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-unpushed-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeSessionState('close-unpushed', deps.env, {
+      pending: [{ question: 'Ship it?', question_id: 'q_local' }],
+    })
+    writeProjectSession(root, deps.env, 'close-unpushed', Date.now(), 'codex')
+
+    expect(await closeCommand(deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
+      session_id: 'close-unpushed',
+      withdrawn: [{ question: 'Ship it?', question_id: 'q_local' }],
+      closed: [],
+    })
+    expect(readSessionState('close-unpushed', deps.env).pending).toBeUndefined()
+  })
+
+  it('close --pending closes live questions and leaves nothing for a later Stop to push', async () => {
+    const io = new CapturedIo()
+    const closed: string[] = []
+    const client = {
+      closeReplies: async (requestId: string) => {
+        closed.push(requestId)
+        return replyResponse([])
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-pending-mix-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeSessionState('close-mix', deps.env, {
+      pending: [
+        { question: 'Unpushed?', question_id: 'q_local' },
+        {
+          question: 'Already on a device?',
+          request_id: receipt.request_id,
+          collapse_key: 'question-live',
+          device_ids: ['dev_iphone'],
+        },
+      ],
+    })
+    writeProjectSession(root, deps.env, 'close-mix', Date.now(), 'codex')
+
+    expect(await closeCommand(deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
+    expect(closed).toEqual([receipt.request_id])
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toMatchObject({
+      session_id: 'close-mix',
+      withdrawn: [{ question: 'Unpushed?', question_id: 'q_local' }],
+      closed: [receipt.request_id],
+    })
+    expect(readSessionState('close-mix', deps.env).pending).toBeUndefined()
+  })
+
+  it('close requires a request id or --pending', async () => {
+    const io = new CapturedIo()
+    const client = {} as unknown as ApiClient
+    expect(await closeCommand(makeDeps(io, client), undefined, {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('Pass a request id or --pending.')
+  })
+
   it('passes the replies cursor and prints replies for later retrieval', async () => {
     const io = new CapturedIo()
     let requested: { waitSeconds: number; afterSeq: number } | undefined
