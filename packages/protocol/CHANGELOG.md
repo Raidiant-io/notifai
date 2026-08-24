@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [4.1.0](https://github.com/Raidiant-io/notifai/compare/protocol-v4.0.0...protocol-v4.1.0) (2026-08-24)
+
+
+### Features
+
+* add Android protocol and CLI support ([cccc3d1](https://github.com/Raidiant-io/notifai/commit/cccc3d185cbac499651709dbd34d61fd847e9570))
+* add Android protocol and CLI support ([faf2e23](https://github.com/Raidiant-io/notifai/commit/faf2e234b393a2edfbad60cb50c1da18025309fd))
+
 ## [4.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v3.0.0...protocol-v4.0.0) (2026-08-20)
 
 
