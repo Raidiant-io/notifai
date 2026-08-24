@@ -239,6 +239,15 @@ export interface PendingQuestion {
   device_ids?: string[]
   /** Absolute end of the server reply window and its local continuation owner. */
   reply_deadline_at?: number
+  /**
+   * When this Stop owner stops listening for a direct wake. Distinct from
+   * `reply_deadline_at`: the server may still accept an answer for a day after
+   * this owner has returned. A later Stop that treats the reply window as a
+   * fresh waiter ceiling monopolizes the claim and skips newly registered
+   * questions. Absent on state written before this field existed — treated as
+   * already spent, because that is the shape a degraded waiter left behind.
+   */
+  owner_deadline_at?: number
   /** Frozen before the first network byte, so an ambiguous submit is replayable. */
   submission?: PendingSubmissionIntent
 }
@@ -1579,7 +1588,7 @@ function isTerminalDraftRejection(err: ApiCallError): boolean {
   return err.status === 422 || (err.status === 400 && err.code === 'invalid_request')
 }
 
-function dropPendingQuestion(
+export function dropPendingQuestion(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   entry: PendingQuestion,
@@ -1591,6 +1600,29 @@ function dropPendingQuestion(
     else delete next.pending
     return next
   })
+}
+
+/**
+ * Drop registrations that never reached a device, so a later Stop cannot push
+ * them. A retirement push would be noise: there is nothing on any device to
+ * withdraw. Returns the withdrawn entries in registration order.
+ */
+export function withdrawUnpushedQuestions(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+): PendingQuestion[] {
+  let withdrawn: PendingQuestion[] = []
+  updateSessionState(sessionId, env, (current) => {
+    const pending = pendingList(current)
+    withdrawn = pending.filter((entry) => entry.request_id === undefined)
+    if (withdrawn.length === 0) return current
+    const remaining = pending.filter((entry) => entry.request_id !== undefined)
+    const next: SessionState = { ...current }
+    if (remaining.length > 0) next.pending = remaining
+    else delete next.pending
+    return next
+  })
+  return withdrawn
 }
 
 function clearFrozenSubmission(
@@ -2428,6 +2460,11 @@ async function deliverAcceptedAnswers(
   return outcome
 }
 
+/** True while this Stop owner is still allowed a direct-wake wait. */
+function ownerLeaseActive(entry: PendingQuestion, now: number): boolean {
+  return entry.owner_deadline_at !== undefined && entry.owner_deadline_at > now
+}
+
 /** The complete per-session Stop decision, after this process owns the claim. */
 async function handleClaimedStop(
   ctx: HookContext,
@@ -2515,26 +2552,44 @@ async function handleClaimedStop(
     const recoverableLive = live.filter(
       (entry) => !permanentFailures.has(entry.request_id!),
     )
-    liveToEscalate = recoverableLive
+    // A spent owner has already used its waiter ceiling. Passing those
+    // questions back into `escalate` starts a fresh ceiling, holds the
+    // per-session claim for another 3300s, and is why a later `ask` never
+    // reached a device after a degraded waiter (the next Stop never ran, or
+    // ran as claimed-elsewhere). Late answers still ride the short poll above
+    // and every later turn. Independent questions whose lease is still running
+    // keep their successor wait.
+    const stillOwned = recoverableLive.filter((entry) => ownerLeaseActive(entry, ctx.now()))
+    liveToEscalate = stillOwned
     if (unasked.length === 0) {
       if (recoverableLive.length === 0) return { notes }
-      // A previous answer may have resumed the model while independent
-      // questions remain. The next Stop is their successor owner: keep waiting
-      // to the original absolute deadline instead of polling for four seconds
-      // and abandoning them.
+      if (stillOwned.length === 0) {
+        const requestIdSummary = summarizeRequestIds(recoverableLive)
+        ctx.log?.info('hook.answer', {
+          answered: false,
+          stage: 'queued',
+          request_ids: requestIdSummary.ids,
+          owner_spent: true,
+        })
+        notes.push(
+          `${recoverableLive.length} question${recoverableLive.length === 1 ? ' is' : 's are'} still answerable; the previous waiter already used its ceiling, so a later turn will collect a late answer rather than waiting again`,
+        )
+        return { notes }
+      }
       return await escalate(
         ctx,
         envelope,
         sessionId,
         [],
-        recoverableLive,
+        stillOwned,
         notes,
         hardDeadlineAt,
         route,
       )
     }
     // Questions registered after the earlier push still owe the user their
-    // notification; fall through and escalate just those.
+    // notification; fall through and escalate just those, plus any live
+    // question whose owner lease is still running.
   }
 
   // A Stop answer may immediately produce a legitimate follow-up question.
@@ -2841,14 +2896,14 @@ async function escalate(
       // stale about eight minutes later and retired, so the answer given over
       // lunch met a closed question.
       //
-      // Both consumers of this field already clamp to the owner's own ceiling
-      // (`Math.min(hardDeadlineAt, …)` when deriving the ceiling, and
-      // `Math.min(ceilingAt, …)` when deriving the wait), so recording the
-      // real expiry here lengthens what the user gets without lengthening what
-      // this process waits.
+      // The reply window is how long the server accepts an answer. This
+      // process still clamps its own wait to `hardDeadlineAt`. Recording the
+      // owner lease separately is what stops the *next* Stop from treating
+      // the remaining window as a fresh waiter ceiling.
       reply_deadline_at: Number.isFinite(committedReplyDeadline)
         ? committedReplyDeadline
         : intent.owner_deadline_at,
+      owner_deadline_at: intent.owner_deadline_at,
     }
     if (intent.draft.source === undefined) delete live.source
     delete live.submission
@@ -3001,10 +3056,10 @@ async function escalate(
       permanent_failures: waited.permanentFailures.size,
       waited_seconds: timeoutSeconds,
     })
-    if (waited.permanentFailures.size === 0) {
+    if (waited.permanentFailures.size === 0 && confirmedSilent.length > 0) {
       notes.push(
         waited.degraded
-          ? 'could not reach the server before the owner deadline; the question was retired so no answer can be lost later'
+          ? 'could not reach the server before the owner deadline; expired questions were retired so no answer can be lost later'
           : 'no answer in time; the question expired with its continuation owner',
       )
     }
@@ -3194,7 +3249,7 @@ export function registerQuestion(
   if (full === 'live') {
     throw new Error(
       `${MAX_LIVE_QUESTIONS} questions from this session are already open. ` +
-        'Retire the ones you no longer need with `notifai close <request_id>` before asking another.',
+        'Retire the ones you no longer need with `notifai close <request_id>` or `notifai close --pending` before asking another.',
     )
   }
 }

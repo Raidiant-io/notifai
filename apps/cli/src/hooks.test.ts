@@ -1554,6 +1554,115 @@ describe('the waiter owning one question to the end', () => {
     expect(readSessionState('successor', h.env).pending).toBeUndefined()
     expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(2)
   })
+
+  it('does not start another waiter for a live question whose owner lease is already spent', async () => {
+    const h = harness([])
+    h.recorder.replyExpiresAt = new Date(NOW + 86_400_000).toISOString()
+    writeSessionState('spent-owner', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Old question?',
+          asked_at: NOW - 3_300_000,
+          request_id: 'req_old',
+          collapse_key: 'question-old',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 86_400_000,
+          owner_deadline_at: NOW - 1,
+        },
+      ],
+    })
+
+    const started = h.deps.now?.() ?? NOW
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'spent-owner' }))
+
+    expect(h.deps.now?.()).toBeLessThan(started + 30_000)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(0)
+    expect(readSessionState('spent-owner', h.env).pending?.[0]?.request_id).toBe('req_old')
+    expect(h.io.errLines.join('\n')).toContain('previous waiter already used its ceiling')
+  })
+
+  it('does not re-arm a live question written before owner leases were persisted', async () => {
+    const h = harness([])
+    h.recorder.replyExpiresAt = new Date(NOW + 86_400_000).toISOString()
+    writeSessionState('legacy-spent', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Degraded waiter leftover?',
+          asked_at: NOW - 3_300_000,
+          request_id: 'req_ATU4_legacy',
+          collapse_key: 'question-legacy',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 86_400_000,
+        },
+      ],
+    })
+
+    const started = h.deps.now?.() ?? NOW
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'legacy-spent' }))
+
+    expect(h.deps.now?.()).toBeLessThan(started + 30_000)
+    expect(readSessionState('legacy-spent', h.env).pending?.[0]?.request_id).toBe(
+      'req_ATU4_legacy',
+    )
+  })
+
+  it('pushes a newly registered question on the next Stop after a spent waiter', async () => {
+    const h = harness([])
+    h.recorder.replyExpiresAt = new Date(NOW + 86_400_000).toISOString()
+    writeSessionState('after-degraded', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Earlier question?',
+          asked_at: NOW - 3_300_000,
+          request_id: 'req_earlier',
+          collapse_key: 'question-earlier',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 86_400_000,
+        },
+      ],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'after-degraded' }))
+    registerQuestion('after-degraded', h.env, { question: 'New question?' }, h.deps.now?.())
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'after-degraded' }))
+
+    const questions = h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')
+    expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['New question?'])
+    expect(readSessionState('after-degraded', h.env).pending?.map((entry) => entry.question)).toEqual(
+      ['Earlier question?', 'New question?'],
+    )
+  })
+
+  it('still waits out a live owner lease for an independent answer', async () => {
+    const h = harness([])
+    const answerAt = NOW + 10_000
+    h.recorder.repliesFor = (requestId) =>
+      requestId === 'req_live' && (h.deps.now?.() ?? 0) >= answerAt
+        ? [reply({ text: 'Later' })]
+        : []
+    writeSessionState('lease', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Still waiting?',
+          asked_at: NOW,
+          request_id: 'req_live',
+          collapse_key: 'question-live',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 86_400_000,
+          owner_deadline_at: NOW + 60_000,
+        },
+      ],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'lease' }))
+
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Later')
+    expect(h.deps.now?.()).toBeGreaterThanOrEqual(answerAt)
+  })
 })
 
 describe('Cursor stop output', () => {

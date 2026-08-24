@@ -189,6 +189,10 @@ describe('Notifai agent skill', () => {
     expect(skill).toContain('notifai replies --pending')
   })
 
+  it('teaches retirement of a registration that has not been pushed yet', () => {
+    expect(skill).toContain('notifai close --pending')
+  })
+
   it('makes the agent the operator and the human only the human', () => {
     const setup = section('## Set Notifai up')
     expect(setup).toMatch(/never tell the\s+user to run a command you could have run/i)

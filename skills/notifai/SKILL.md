@@ -192,7 +192,8 @@ deliberate way to stop waiting and pick the answer up later:
 
 ```bash
 notifai replies <request_id>          # the answer, whenever it landed
-notifai close <request_id>            # retire a question that stopped mattering
+notifai close <request_id>            # retire a pushed question that stopped mattering
+notifai close --pending               # retire this session's outstanding questions, including ones not yet pushed
 ```
 
 `send --reply --json` prints one JSON object: the reply result, with the
@@ -247,7 +248,9 @@ together:
 ```
 
 Keep independent questions as separate `ask` calls — each is answerable on its
-own, and a new question never cancels an earlier one.
+own, and a new question never cancels an earlier one. If a registered question
+no longer needs an answer — including one the turn-end hook has not pushed yet
+— retire it with `notifai close --pending`. Retirement is silent.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
