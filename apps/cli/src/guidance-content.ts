@@ -36,7 +36,6 @@ Notify when something changed for the user:
 Never notify for:
 
 - Routine progress: starting, still working, one more subtask done.
-- Anything they will see in the terminal within seconds.
 - A problem you hit and fixed yourself.
 
 One notification per event. When a status changes, replace your stale

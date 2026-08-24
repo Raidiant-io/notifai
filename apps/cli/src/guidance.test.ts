@@ -64,7 +64,9 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/blocked on something only they can give/i)
     expect(content).toMatch(/needs their attention soon/i)
     expect(content).toMatch(/routine progress/i)
-    expect(content).toMatch(/terminal within seconds/i)
+    // Deliberately removed 2026-08-24: agents do not weigh time between the
+    // user's prompt and a notification — the rule was judged a pain.
+    expect(content).not.toMatch(/terminal/i)
     expect(content).toMatch(/one notification per event/i)
   })
 
