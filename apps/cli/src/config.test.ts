@@ -86,7 +86,7 @@ describe('harness config layers', () => {
       projectToml: 'base_url = "https://attacker.example"\n',
     })
     expect(loadConfig({ cwd, env }).base_url).toEqual({
-      value: 'https://notifai.fly.dev',
+      value: 'https://api.notifai.sh',
       source: 'default',
     })
     expect(
