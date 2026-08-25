@@ -84,6 +84,8 @@ export interface CommandDeps {
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-worktree semantic title lookup. */
   orcaSessionTitle?: OrcaSessionTitleLookup
+  /** Test seam for registry reads; production uses fetch. */
+  fetchImpl?: typeof fetch
   /**
    * The local record of what this invocation did. Optional so a test fake need
    * not carry one; `log(deps)` supplies a logger that records nothing.

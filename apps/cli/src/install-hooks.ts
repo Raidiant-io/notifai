@@ -2,7 +2,10 @@ import {
   existsSync,
   lstatSync,
   readFileSync,
+  readdirSync,
   realpathSync,
+  rmdirSync,
+  rmSync,
   statSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -999,7 +1002,11 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
     if (removed) replaced.push(event)
     if (foreign.length > 0) hooks[event] = foreign
   }
-  return { document: { ...existing, hooks }, added: [], replaced, removed: [] }
+  const remaining = Object.keys(hooks).length > 0 ? hooks : undefined
+  const document = { ...existing }
+  if (remaining === undefined) delete document.hooks
+  else document.hooks = remaining
+  return { document, added: [], replaced, removed: [] }
 }
 
 /**
@@ -1016,9 +1023,54 @@ export function applyPlan(file: string, document: SettingsDocument | CursorSetti
   const body = isTomlSettingsPath(file)
     ? tomlBody(file, document as SettingsDocument)
     : `${JSON.stringify(document, null, 2)}\n`
+  if (
+    (path.basename(file) === 'hooks.json' && isEmptyJsonDocument(body)) ||
+    (isTomlSettingsPath(file) && body.trim() === '')
+  ) {
+    if (existsSync(file)) rmSync(file, { force: true })
+    return
+  }
+  if (existsSync(file)) {
+    try {
+      if (readOwnedRegularFile(file) === body) return
+    } catch {
+      // A file we cannot re-read still needs the replacement below.
+    }
+  }
   atomicWriteFileSync(file, body, {
     requireCurrentUserOwner: true,
   })
+}
+
+function isEmptyJsonDocument(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).length === 0
+  } catch {
+    return false
+  }
+}
+
+/** Delete an emptied Codex hooks.json and a now-empty layer directory. */
+export function cleanupEmptiedCodexLayer(paths: CodexLayerPaths): void {
+  if (existsSync(paths.hooksJson)) {
+    try {
+      const document = loadSettings(paths.hooksJson)
+      const keys = Object.keys(document)
+      const hooksEmpty = document.hooks === undefined || Object.keys(document.hooks).length === 0
+      if (keys.every((key) => key === 'hooks') && hooksEmpty) {
+        rmSync(paths.hooksJson, { force: true })
+      }
+    } catch {
+      // Leave a file uninstall could not parse; the caller already reported it.
+    }
+  }
+  if (!existsSync(paths.dir)) return
+  try {
+    if (readdirSync(paths.dir).length === 0) rmdirSync(paths.dir)
+  } catch {
+    // A concurrently replaced directory is not ours to fight.
+  }
 }
 
 /**

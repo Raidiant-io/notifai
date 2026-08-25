@@ -80,6 +80,34 @@ export interface SendFlags {
    * questions and their retirements ride the wire as what they are.
    */
   lifecycle?: LifecycleT
+  /**
+   * Allow the two-character sequence backslash-n to be sent as visible text.
+   * Without this, a likely accidental escaped newline is refused.
+   */
+  literalBackslashN?: boolean
+}
+
+/** A backslash-n pair that was not itself escaped as a literal backslash. */
+const ACCIDENTAL_ESCAPED_NEWLINE = /(?:^|[^\\])\\n/
+
+export function hasAccidentalEscapedNewlines(body: string): boolean {
+  return ACCIDENTAL_ESCAPED_NEWLINE.test(body)
+}
+
+export function accidentalEscapedNewlineMessage(): string {
+  return [
+    'This body contains the two-character sequence \\n, which is sent literally and shows as \\n on the device.',
+    'To send a real line break, pass a multiline --body or --body-file -.',
+    'If you meant the visible characters \\n, pass --literal-backslash-n.',
+  ].join('\n')
+}
+
+export function rejectAccidentalEscapedNewlines(
+  body: string | undefined,
+  allowLiteral: boolean | undefined,
+): string | null {
+  if (allowLiteral === true || body === undefined) return null
+  return hasAccidentalEscapedNewlines(body) ? accidentalEscapedNewlineMessage() : null
 }
 
 export type DraftBuild =

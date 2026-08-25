@@ -66,6 +66,40 @@ export function observedCompanionReceipt(
   deviceId: string,
 ): { delivery: EvidenceSnapshot['deliveries'][number]; observedAt: string } | null {
   const delivery = snapshot.deliveries.find((candidate) => candidate.device_id === deviceId)
-  const receipt = delivery?.events.find((event) => event.stage === 'companion_received')
-  return delivery && receipt ? { delivery, observedAt: receipt.occurred_at } : null
+  if (!delivery) return null
+  if (delivery.companion_receipt.state === 'observed' && delivery.companion_receipt.observed_at) {
+    return { delivery, observedAt: delivery.companion_receipt.observed_at }
+  }
+  const receipt = delivery.events.find((event) => event.stage === 'companion_received')
+  return receipt ? { delivery, observedAt: receipt.occurred_at } : null
+}
+
+/** Replace an unknown setup proof after this age; recent in-flight proofs stay. */
+export const SETUP_PROOF_STALE_MS = 24 * 60 * 60 * 1000
+
+export function setupProofIsStale(proof: SetupProofRecord, now: number): boolean {
+  const started = Date.parse(proof.started_at)
+  return Number.isFinite(started) && now - started > SETUP_PROOF_STALE_MS
+}
+
+/**
+ * Persist ordinary send/status Companion Receipts as the project's delivery
+ * proof so doctor does not demand a second verification request.
+ */
+export function recordObservedDeliveryProof(
+  deps: CommandDeps,
+  snapshot: EvidenceSnapshot,
+  project: string | null,
+): boolean {
+  for (const delivery of snapshot.deliveries) {
+    const observed = observedCompanionReceipt(snapshot, delivery.device_id)
+    if (observed === null) continue
+    return writeSetupProof(deps, {
+      request_id: snapshot.request_id,
+      device_id: delivery.device_id,
+      project,
+      started_at: observed.observedAt,
+    })
+  }
+  return false
 }

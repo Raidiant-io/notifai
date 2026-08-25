@@ -307,6 +307,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .requiredOption('--title <title>', 'brief title whose substance is immediately understandable')
     .option('--body <markdown>', 'canonical Markdown body')
     .option('--body-file <path>', 'read the canonical Markdown body from a file (use - for stdin)')
+    .option(
+      '--literal-backslash-n',
+      'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
+    )
     .option('--subtitle <subtitle>', 'a plain-text line between the title and body')
     .option(
       '--image <path|url|media_id>',
@@ -447,6 +451,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable output')
     .option('--body <markdown>', 'optional Markdown context appended after the question block')
     .option('--body-file <path>', 'read optional Markdown context from a file (use - for stdin)')
+    .option(
+      '--literal-backslash-n',
+      'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
+    )
     .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin)')
     .option(
       '--image <path|url|media_id>',
@@ -470,6 +478,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       json?: boolean
       body?: string
       bodyFile?: string
+      literalBackslashN?: boolean
       form?: string
       image?: string[]
       imageAlt?: string[]
@@ -511,6 +520,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
         ...(opts.sessionLabel !== undefined ? { sessionLabel: opts.sessionLabel } : {}),
         ...(opts.json === true ? { json: true } : {}),
+        ...(opts.literalBackslashN === true ? { literalBackslashN: true } : {}),
       }
       exit(await runners.ask(deps, question, flags))
     })
