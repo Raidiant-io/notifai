@@ -5,7 +5,8 @@
  * The two release-please tags can arrive seconds apart. A run may publish a
  * package only when that package's exact version tag already points at the
  * checked-out commit; the CLI additionally waits for its exact protocol
- * dependency to be published or planned in this run.
+ * dependency to be verified or planned for publish and verification in this
+ * run. Registry existence alone is not release evidence.
  */
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
@@ -17,7 +18,7 @@ import { repositoryRoot } from './cross-platform.mjs'
 const CLI_NAME = '@raidiant/notifai'
 const PROTOCOL_NAME = '@raidiant/notifai-protocol'
 
-export function planPublish({ head, refName, packages, tagCommits, published }) {
+export function planPublish({ head, refName, packages, tagCommits, published, verified }) {
   const trigger = packages.find((entry) => entry.tag === refName)
   if (trigger === undefined || tagCommits.get(refName) !== head) {
     throw new Error('the triggering tag must name a package version at the checked-out commit')
@@ -38,12 +39,22 @@ export function planPublish({ head, refName, packages, tagCommits, published }) 
   if (cli === undefined || protocol === undefined) throw new Error('publishable package set is incomplete')
   if (plan.get(CLI_NAME)?.publish) {
     const protocolReady =
-      published.has(`${PROTOCOL_NAME}@${protocol.version}`) || plan.get(PROTOCOL_NAME)?.publish === true
+      verified.has(`${PROTOCOL_NAME}@${protocol.version}`) || plan.get(PROTOCOL_NAME)?.publish === true
     if (!protocolReady) {
-      throw new Error(`the CLI cannot publish before ${PROTOCOL_NAME}@${protocol.version}`)
+      throw new Error(`the CLI cannot publish before ${PROTOCOL_NAME}@${protocol.version} is verified`)
     }
   }
   return plan
+}
+
+export function existingProtocolNeedsVerification({ head, packages, tagCommits, published }) {
+  const cli = packages.find((entry) => entry.name === CLI_NAME)
+  const protocol = packages.find((entry) => entry.name === PROTOCOL_NAME)
+  if (cli === undefined || protocol === undefined) throw new Error('publishable package set is incomplete')
+
+  const cliWillPublish =
+    !published.has(`${CLI_NAME}@${cli.version}`) && tagCommits.get(cli.tag) === head
+  return cliWillPublish && published.has(`${PROTOCOL_NAME}@${protocol.version}`)
 }
 
 async function registryVersions(packages) {
@@ -86,12 +97,24 @@ async function main() {
     encoding: 'utf8',
   }).trim()
   const tagCommits = new Map(packages.map((entry) => [entry.tag, commitForTag(entry.tag)]))
+  const published = await registryVersions(packages)
+  const verified = new Set()
+  if (existingProtocolNeedsVerification({ head, packages, tagCommits, published })) {
+    execFileSync(
+      process.execPath,
+      [path.join(repositoryRoot, 'scripts/verify-published.mjs'), PROTOCOL_NAME],
+      { cwd: repositoryRoot, stdio: 'inherit' },
+    )
+    verified.add(`${PROTOCOL_NAME}@${protocol.version}`)
+  }
+
   const plan = planPublish({
     head,
     refName: process.env.GITHUB_REF_NAME ?? '',
     packages,
     tagCommits,
-    published: await registryVersions(packages),
+    published,
+    verified,
   })
 
   const outputs = [

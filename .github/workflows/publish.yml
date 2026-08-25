@@ -34,8 +34,7 @@ jobs:
           cache: pnpm
 
       - name: Require an npm CLI with trusted-publishing support
-        run: |
-          node -e 'const { execFileSync } = require("node:child_process"); const [major, minor] = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim().split(".").map(Number); if (major < 11 || (major === 11 && minor < 5)) process.exit(1)'
+        run: node scripts/check-npm-trusted-publishing.mjs
 
       - run: pnpm install --frozen-lockfile
 

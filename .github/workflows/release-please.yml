@@ -44,11 +44,13 @@ jobs:
         with:
           token: ${{ steps.release-app-token.outputs.token }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         with:
           version: 10.34.5
       - name: Sync README markers and lockfile on release branches
+        id: sync-release-branches
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         env:
           PRS: ${{ steps.release-please.outputs.prs }}
@@ -56,6 +58,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          changed_branches=()
           for branch in $(node -e 'for (const pr of JSON.parse(process.env.PRS)) console.log(pr.headBranchName)'); do
             git checkout "$branch"
             node scripts/sync-readme-markers.mjs
@@ -65,6 +68,22 @@ jobs:
             else
               git add README.md pnpm-lock.yaml
               git commit -m "chore(release): sync README markers and lockfile"
-              git push origin "HEAD:$branch"
+              changed_branches+=("$branch")
             fi
+          done
+          printf 'branches=%s\n' "${changed_branches[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Push repaired release branches with the App identity
+        if: ${{ steps.sync-release-branches.outputs.branches != '' }}
+        env:
+          BRANCHES: ${{ steps.sync-release-branches.outputs.branches }}
+          RELEASE_APP_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          authorization=$(printf 'x-access-token:%s' "$RELEASE_APP_TOKEN" | base64 | tr -d '\n')
+          for branch in $BRANCHES; do
+            GIT_CONFIG_COUNT=1 \
+              GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization" \
+              git push --no-verify origin "refs/heads/$branch:refs/heads/$branch"
           done
