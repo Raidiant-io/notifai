@@ -42,44 +42,67 @@ commitlint. CI runs it on the pushed or PR range.
 
 Write for a public audience: no internal tracker IDs.
 
+Pull requests are squash-merged. Give every PR a Conventional Commit title;
+CI lints it because GitHub uses it as the squash commit subject. This keeps
+`main` linear and gives release-please one authoritative commit per change
+instead of both a merge commit and the commits it contains.
+
 ## Cutting a release
 
 [release-please](https://github.com/googleapis/release-please) opens and
-updates a Release PR per package on every push to `main`. Merging a Release
-PR is the cut for that package: it bumps `package.json`, writes
-`CHANGELOG.md`, and creates the annotated tag.
+updates one combined Release PR on every push to `main`. This is a repository
+choice, not a release-please requirement: `separate-pull-requests: false` and
+the `node-workspace` plugin's default merge behavior keep both candidate
+releases in one branch while still calculating their versions independently.
+
+The combined PR is required here because the packed CLI must depend on the
+exact protocol version released beside it. Separate candidates can each be
+internally plausible while neither is installable: one can pin an unpublished
+protocol version and the other can leave the CLI pinned to the old version.
+`pnpm check:packed` installs both tarballs outside the workspace and enforces
+the exact-pair invariant that workspace linking otherwise hides.
+
+The release workflow then repairs the generated branch after release-please
+updates it:
+
+- `scripts/sync-readme-markers.mjs` updates the root README's CLI and protocol
+  version markers.
+- `pnpm install --lockfile-only` records the bumped manifests and protocol pin
+  in `pnpm-lock.yaml`.
+
+release-please cannot perform those repository-wide repairs itself. Its
+`extra-files` updater cannot address `../` from a package, the README contains
+component-specific markers, and a manifest bump does not regenerate a pnpm
+lockfile. Wait for the repair commit and all required checks, including
+`pnpm check:packed`, before considering the Release PR ready.
+
+**Do not merge a Release PR unless the maintainer asked for a release.** An
+open or green Release PR is only a candidate. Once authorized, squash-merge
+the combined PR. The next workflow run creates every applicable tag from that
+same merged commit:
 
 - CLI tag: `v<version>` (the skill pin is `Raidiant-io/notifai#v${version}`)
 - Protocol tag: `protocol-v<version>`
-
-The PRs must stay separate (`separate-pull-requests` in
-`release-please-config.json`). The CLI tag carries no component, so
-release-please can only match a merged Release PR back to the CLI through the
-component in the PR's branch name — a combined PR has none, the match fails,
-and the merged release is never tagged.
-
-**Do not merge a Release PR unless the maintainer asked for a release.**
-The PR existing is not a release.
-
-The release-please workflow repairs each release branch after release-please
-updates it: it syncs the root `README.md` version markers via
-`scripts/sync-readme-markers.mjs` and refreshes `pnpm-lock.yaml` with
-`pnpm install --lockfile-only`. release-please cannot do either itself: it
-cannot climb out of a package directory (`extra-files` rejects `../`), the
-README names both packages while its generic updater has no per-component
-markers, and a bumped protocol pin in `package.json` never reaches the
-lockfile.
-
-When a release changes both packages, the cut must also carry the CLI's
-`@raidiant/notifai-protocol` dependency pin forward to the protocol version
-being released. The workspace always links the local protocol, so a stale pin
-passes every workspace gate and crashes every clean registry install at
-startup. `pnpm check:packed` exists to catch exactly this: it installs the
-packed tarballs in an isolated directory using their packed dependency
-metadata and runs the installed bin. Run it before publishing; CI runs it on
-every push.
 
 release-please does not publish to npm. After the tags exist, and only when
 the maintainer asked: publish the packages that changed, then
 `pnpm check:published` — it verifies both the compiled files and the
 resolution-shaping manifest metadata against the registry.
+
+The workflow action is pinned to v4.4.1, which runs release-please 17.3.0;
+`release-please-config.json` pins its schema to the same version. Upgrade the
+action and schema together as maintenance work, never during a release.
+
+## Changelog and breaking-release policy
+
+Squash-only history makes future generated changelog entries clean. Do not
+rewrite changelogs, tags, or npm versions that were already published. If an
+open Release PR still contains duplicates from earlier merge commits, it may
+be deduplicated immediately before an authorized cut; that does not authorize
+merging it.
+
+Breaking changes still use `type!:` or a `BREAKING CHANGE:` footer and still
+produce a major release. When practical, let related breaking changes
+accumulate in the Release PR and cut them together. Batching changes reduces
+avoidable major-version churn without weakening SemVer or misclassifying a
+break.

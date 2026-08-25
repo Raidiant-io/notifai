@@ -55,6 +55,12 @@ fix(protocol): reject an empty question set
 `pnpm check:commit` lints the last commit. Point `core.hooksPath` at
 `scripts/githooks` so the `commit-msg` hook runs commitlint.
 
+Use a Conventional Commit for the pull request title too. CI validates the
+title because GitHub squash-merges every pull request and uses that title as
+the commit subject on `main`. Branch commits remain conventional and pass the
+existing commit-range check; the single squash commit is the public history
+and the input to release-please.
+
 ## What makes a change easy to accept
 
 **Say why, not what.** The diff already shows what changed. Comments and
