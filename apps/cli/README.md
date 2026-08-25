@@ -12,19 +12,23 @@ npm install -g @raidiant/notifai
 notifai init
 ```
 
-If you do not want a global bin, `npx --yes @raidiant/notifai@<version>` is
-supported. Pin the version. `hooks install` then writes that same pinned npx
-invocation into the harness adapter. This is slower than a real install and
-is not the default path.
+The `notifai` command is always a machine-wide install. Setup scope (this
+project vs this machine) does not change that. If you do not want a global
+bin, `npx --yes @raidiant/notifai@<version>` is supported. Pin the version.
+`hooks install` then writes that same pinned npx invocation into the harness
+adapter. This is slower than a real install and is not the default path.
 
 `init` walks the setup one step at a time and tells you the single next
 thing to do. Run it again after each step; it works out what remains.
 
-When `--skills` is selected at a human terminal, `init` runs the native
-`npx skills` flow so that flow can ask whether the skill belongs to the
-project or the machine. An unattended caller must select one explicitly:
-`notifai init --skills --skills-scope project` or
-`notifai init --skills --skills-scope global`.
+At a human terminal, `init` asks once whether this setup is for this project
+or for every project on this machine. That answer is skill, hooks, and
+config together. Pairing, devices, and credentials stay on this machine
+either way. An unattended caller passes the same choice as a flag:
+`notifai init --setup-scope project` or `notifai init --setup-scope global`.
+`--skills-scope` is an alias of that flag when `--skills` is set. Shared
+project config may live in the repo; personal project preferences live under
+the user config directory and never require a `.gitignore` edit.
 
 ## Telling you something happened
 

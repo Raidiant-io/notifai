@@ -113,6 +113,16 @@ describe('program argv parsing', () => {
     expect(seen).not.toHaveProperty('wait')
   })
 
+  it('maps init --setup-scope onto the command flags', async () => {
+    let seen: Record<string, unknown> | undefined
+    const { exitCode } = await parse(
+      ['init', '--skills', '--setup-scope', 'global', '--no-hooks'],
+      { init: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['init'] },
+    )
+    expect(exitCode).toBe(0)
+    expect(seen).toMatchObject({ skills: true, setupScope: 'global', hooks: false })
+  })
+
   it('disentangles --no-wait and --wait from their shared commander flag', async () => {
     const capture = (sink: Record<string, unknown>[]): ProgramRunners['send'] =>
       (async (_deps, flags) => (sink.push(flags as Record<string, unknown>), 0)) as ProgramRunners['send']

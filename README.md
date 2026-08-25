@@ -143,13 +143,15 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 
 The Notifai agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates project configuration,
-sign-in, optional harness hooks, and device readiness. `notifai init --skills`
-delegates to the native `npx skills` flow, which lets a human choose project or
-global scope and owns placement, links, provenance, and updates. The skill is
+sign-in, optional harness hooks, and device readiness. At a human terminal it
+asks once whether this setup is for this project or for this machine; that
+answer drives skill, hooks, and config together. `notifai init --skills`
+delegates placement to the native `npx skills` flow using that chosen scope.
+The `notifai` CLI binary is always a global install (`npm install -g
+@raidiant/notifai`); setup scope does not change it. The skill is
 from the immutable public tag `v<!--x-release-please-start-notifai-->8.0.0<!--x-release-please-end-->`; the underlying installer source is
 `Raidiant-io/notifai#v<!--x-release-please-start-notifai-->8.0.0<!--x-release-please-end-->` (`#` selects a Git ref). For unattended use,
-choose the scope explicitly: `notifai init --skills --skills-scope project` or
-`notifai init --skills --skills-scope global`.
+pass `--setup-scope project` or `--setup-scope global`.
 
 ## The installed hooks
 

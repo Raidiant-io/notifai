@@ -4291,18 +4291,22 @@ describe('init', () => {
     } as unknown as ApiClient
     const nativeSkills: NativeSkills = {
       add: async () => 0,
+      remove: async () => 0,
       list: async (scope) => ({
-        skills: [
-          {
-            name: 'notifai',
-            scope,
-            path: path.join(cwd, '.agents', 'skills', 'notifai'),
-            source: 'Raidiant-io/notifai',
-            sourceType: 'github',
-            sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-            ref: RELEASE_REF,
-          },
-        ],
+        skills:
+          scope === 'project'
+            ? [
+                {
+                  name: 'notifai',
+                  scope,
+                  path: path.join(cwd, '.agents', 'skills', 'notifai'),
+                  source: 'Raidiant-io/notifai',
+                  sourceType: 'github',
+                  sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
+                  ref: RELEASE_REF,
+                },
+              ]
+            : [],
       }),
     }
     const readiness = await assessReadiness(
@@ -4328,9 +4332,10 @@ describe('init', () => {
       const calls: SkillScope[] = []
       const nativeSkills: NativeSkills = {
         add: async () => 0,
+        remove: async () => 0,
         list: async (selected) => {
           calls.push(selected)
-          return { skills: [managedSkill(selected, cwd)] }
+          return { skills: selected === scope ? [managedSkill(selected, cwd)] : [] }
         },
       }
 
@@ -4342,7 +4347,7 @@ describe('init', () => {
         status: 'ready',
         detail: `installed from ${SKILLS_SOURCE} in the ${scope} scope`,
       })
-      expect(calls).toEqual([scope])
+      expect(calls).toEqual(['project', 'global'])
     },
   )
 
@@ -4358,8 +4363,12 @@ describe('init', () => {
       } as unknown as ApiClient
       const nativeSkills: NativeSkills = {
         add: async () => 0,
+        remove: async () => 0,
         list: async (selected) => ({
-          skills: [{ ...managedSkill(selected, cwd), source: null, sourceType: null, ref: null }],
+          skills:
+            selected === scope
+              ? [{ ...managedSkill(selected, cwd), source: null, sourceType: null, ref: null }]
+              : [],
         }),
       }
 
@@ -4374,6 +4383,192 @@ describe('init', () => {
     },
   )
 
+  it('reports a duplicate notifai skill across project and global scope', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-skill-duplicate-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      remove: async () => 0,
+      list: async (scope) => ({
+        skills: [
+          {
+            ...managedSkill(scope, cwd),
+            ref: scope === 'project' ? RELEASE_REF : 'v0.2.1',
+            path:
+              scope === 'project'
+                ? path.join(cwd, '.agents', 'skills', 'notifai')
+                : path.join(cwd, 'home', '.agents', 'skills', 'notifai'),
+          },
+        ],
+      }),
+    }
+
+    const readiness = await assessReadiness({ ...makeDeps(io, client), cwd, nativeSkills })
+    const skill = readiness.states.find((state) => state.id === 'skill')
+    expect(skill).toMatchObject({
+      status: 'gap',
+      detail: `project (${RELEASE_REF}) and global (v0.2.1) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
+      technical: {
+        project: {
+          ref: RELEASE_REF,
+          path: path.join(cwd, '.agents', 'skills', 'notifai'),
+          current: true,
+        },
+        global: {
+          ref: 'v0.2.1',
+          path: path.join(cwd, 'home', '.agents', 'skills', 'notifai'),
+          current: false,
+        },
+        resolution: 'both-listed',
+      },
+    })
+
+    expect(await doctorCommand({ ...makeDeps(io, client), cwd, nativeSkills }, { json: true })).toBe(
+      EXIT.failed,
+    )
+    const payload = JSON.parse(io.outLines[0] ?? '{}') as {
+      ok: boolean
+      states: Array<{ id: string; status: string; detail: string }>
+    }
+    expect(payload.ok).toBe(false)
+    expect(payload.states.find((state) => state.id === 'skill')).toMatchObject({
+      status: 'gap',
+      detail: expect.stringContaining('harness lists both'),
+    })
+  })
+
+  it('does not treat a current pin as ready when a stale duplicate is also installed', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-skill-shadow-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      remove: async () => 0,
+      list: async (scope) => ({
+        skills: [
+          {
+            ...managedSkill(scope, cwd),
+            ref: scope === 'global' ? RELEASE_REF : 'v0.2.1',
+          },
+        ],
+      }),
+    }
+
+    const readiness = await assessReadiness(
+      { ...makeDeps(io, client), cwd, nativeSkills },
+      { skillScope: 'global' },
+    )
+    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+      status: 'gap',
+      detail: `project (v0.2.1) and global (${RELEASE_REF}) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
+    })
+  })
+
+  it('uninstalls the other skill scope before installing the chosen one', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-prevented-'))
+    const io = new CapturedIo()
+    const removed: SkillScope[] = []
+    const added: Array<SkillScope | undefined> = []
+    let globalPresent = true
+    const nativeSkills: NativeSkills = {
+      add: async (options) => {
+        added.push(options.scope)
+        return 0
+      },
+      remove: async (options) => {
+        removed.push(options.scope)
+        if (options.scope === 'global') globalPresent = false
+        return 0
+      },
+      list: async (scope) => ({
+        skills: scope === 'global' && globalPresent ? [{ ...managedSkill('global', cwd), ref: 'v0.2.1' }] : [],
+      }),
+    }
+
+    expect(
+      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
+        skills: true,
+        setupScope: 'project',
+        hooks: false,
+      }),
+    ).toBe(EXIT.ok)
+    expect(removed).toEqual(['global'])
+    expect(added).toEqual(['project'])
+  })
+
+  it('clears a pre-existing skill duplicate by keeping the chosen setup scope', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-clear-'))
+    const io = new CapturedIo()
+    const removed: SkillScope[] = []
+    const present = new Set<SkillScope>(['project', 'global'])
+    const nativeSkills: NativeSkills = {
+      add: async (options) => {
+        if (options.scope !== undefined) present.add(options.scope)
+        return 0
+      },
+      remove: async (options) => {
+        removed.push(options.scope)
+        present.delete(options.scope)
+        return 0
+      },
+      list: async (scope) => ({
+        skills: present.has(scope)
+          ? [
+              {
+                ...managedSkill(scope, cwd),
+                ref: scope === 'project' ? RELEASE_REF : 'v0.2.1',
+              },
+            ]
+          : [],
+      }),
+    }
+
+    expect(
+      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
+        skills: true,
+        setupScope: 'project',
+        hooks: false,
+      }),
+    ).toBe(EXIT.ok)
+    expect(removed).toEqual(['global'])
+    expect([...present]).toEqual(['project'])
+  })
+
+  it('updates the existing skill scope instead of adding a second copy', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-update-existing-'))
+    const io = new InteractiveIo()
+    const received: Array<SkillScope | undefined> = []
+    const installed = true
+    const nativeSkills: NativeSkills = {
+      add: async (options) => {
+        received.push(options.scope)
+        return 0
+      },
+      remove: async () => 0,
+      list: async (scope) => ({
+        skills: installed && scope === 'global' ? [{ ...managedSkill('global', cwd), ref: 'v0.2.1' }] : [],
+      }),
+    }
+
+    expect(
+      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
+        skills: true,
+        hooks: false,
+      }),
+    ).toBe(EXIT.ok)
+    expect(received).toEqual(['global'])
+    expect(io.outLines.join('\n')).toContain('global scope')
+  })
+
   it('requires an explicit skill scope before unattended installation', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-scope-required-'))
     const io = new CapturedIo()
@@ -4383,6 +4578,7 @@ describe('init', () => {
         addCalls += 1
         return 0
       },
+      remove: async () => 0,
       list: async () => ({ skills: [] }),
     }
 
@@ -4390,7 +4586,7 @@ describe('init', () => {
       EXIT.usage,
     )
     expect(addCalls).toBe(0)
-    expect(io.errLines.join('\n')).toContain('--skills-scope project')
+    expect(io.errLines.join('\n')).toContain('--setup-scope project')
   })
 
   it('rejects an invalid unattended skill scope instead of guessing', async () => {
@@ -4418,6 +4614,7 @@ describe('init', () => {
           installed = true
           return 0
         },
+        remove: async () => 0,
         list: async (selected) => ({
           skills: installed && selected === scope ? [managedSkill(scope, cwd)] : [],
         }),
@@ -4434,25 +4631,80 @@ describe('init', () => {
     },
   )
 
-  it('lets the native interactive flow choose scope and resumes after cancellation', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-cancelled-'))
+  it('asks one setup-scope question and passes that scope to the native installer', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-setup-scope-ask-'))
     const io = new InteractiveIo()
+    io.selectAnswer = 'project'
     const calls: { submit: number } = { submit: 0 }
-    let receivedScope: SkillScope | undefined = 'global'
+    let receivedScope: SkillScope | undefined
     const nativeSkills: NativeSkills = {
       add: async (options) => {
         receivedScope = options.scope
         return 0
       },
+      remove: async () => 0,
       list: async () => ({ skills: [] }),
     }
 
     expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(
       EXIT.ok,
     )
-    expect(receivedScope).toBeUndefined()
+    expect(io.prompts[0]).toContain('this project only, or to every project on this machine')
+    expect(receivedScope).toBe('project')
     expect(calls.submit).toBe(1)
     expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('accepts --setup-scope as the unattended skill, hooks, and config scope', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-setup-scope-flag-'))
+    const io = new CapturedIo()
+    let receivedScope: SkillScope | undefined
+    const nativeSkills: NativeSkills = {
+      add: async (options) => {
+        receivedScope = options.scope
+        return 0
+      },
+      remove: async () => 0,
+      list: async (scope) => ({
+        skills: receivedScope === scope ? [managedSkill(scope, cwd)] : [],
+      }),
+    }
+
+    expect(
+      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
+        skills: true,
+        setupScope: 'project',
+        hooks: false,
+      }),
+    ).toBe(EXIT.ok)
+    expect(receivedScope).toBe('project')
+    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(true)
+  })
+
+  it('stamps project identity outside the repo when setup-scope is global', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-setup-scope-global-config-'))
+    const io = new CapturedIo()
+    const deps: CommandDeps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: isolatedEnv(cwd),
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+
+    expect(await initCommand(deps, { setupScope: 'global', skills: false, hooks: false })).toBe(EXIT.failed)
+    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
+    expect(readFileSync(personalProjectConfigPath(cwd, deps.env), 'utf8')).toMatch(/project = "/)
+  })
+
+  it('rejects disagreeing --setup-scope and --skills-scope', async () => {
+    const io = new CapturedIo()
+    expect(
+      await initCommand(
+        { ...makeDeps(io, {} as ApiClient), cwd: mkdtempSync(path.join(os.tmpdir(), 'init-scope-conflict-')) },
+        { skills: true, setupScope: 'project', skillsScope: 'global' },
+      ),
+    ).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('disagree')
   })
 
   it('installs every detected project harness when --hooks is set', async () => {
@@ -4463,6 +4715,7 @@ describe('init', () => {
     const calls = { submit: 0 }
     const nativeSkills: NativeSkills = {
       add: async () => 0,
+      remove: async () => 0,
       list: async () => ({ skills: [] }),
     }
     const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
@@ -4487,6 +4740,7 @@ describe('init', () => {
     const calls = { submit: 0 }
     const nativeSkills: NativeSkills = {
       add: async () => 0,
+      remove: async () => 0,
       list: async () => ({ skills: [] }),
     }
     const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
@@ -4504,6 +4758,7 @@ describe('init', () => {
     const calls: { submit: number } = { submit: 0 }
     const nativeSkills: NativeSkills = {
       add: async () => 1,
+      remove: async () => 0,
       list: async () => ({ skills: [] }),
     }
 
@@ -4644,6 +4899,7 @@ describe('init', () => {
       nativeSkills: {
         list: async () => ({ skills: [] }),
         add: async () => 0,
+        remove: async () => 0,
       } satisfies NativeSkills,
     }
 
@@ -5242,6 +5498,54 @@ describe('readiness assessment cost', () => {
       detail: `installed from ${SKILLS_SOURCE} in the project scope`,
     })
   })
+
+  it('detects a lock-file duplicate across project and global scope', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-duplicate-'))
+    const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
+    writeFileSync(
+      path.join(cwd, 'skills-lock.json'),
+      `${JSON.stringify({
+        skills: {
+          notifai: {
+            source: 'Raidiant-io/notifai',
+            sourceType: 'github',
+            ref: RELEASE_REF,
+          },
+        },
+      })}\n`,
+    )
+    mkdirSync(path.join(env.XDG_STATE_HOME!, 'skills'), { recursive: true })
+    writeFileSync(
+      path.join(env.XDG_STATE_HOME!, 'skills', '.skill-lock.json'),
+      `${JSON.stringify({
+        skills: {
+          notifai: {
+            source: 'Raidiant-io/notifai',
+            sourceType: 'github',
+            ref: 'v0.2.1',
+          },
+        },
+      })}\n`,
+    )
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+
+    const readiness = await assessReadiness({
+      ...makeDeps(io, client),
+      cwd,
+      env,
+      nativeSkills: realNativeSkills,
+    })
+    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+      status: 'gap',
+      detail: `project (${RELEASE_REF}) and global (v0.2.1) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
+      technical: { resolution: 'both-listed' },
+    })
+  })
 })
 
 describe('an outage is not an answer', () => {
@@ -5784,6 +6088,7 @@ describe('asking before the hooks have ever run', () => {
     } as unknown as ApiClient
     const nativeSkills: NativeSkills = {
       add: async () => 0,
+      remove: async () => 0,
       list: async (scope) => ({
         skills:
           scope === 'global'

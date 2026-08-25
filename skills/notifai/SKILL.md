@@ -326,8 +326,9 @@ Ask for these human-only steps together in one structured question:
 
 - approving this machine in the browser (after **you** started `notifai login`)
 - installing the companion app, signing in, and allowing notifications
-- whether they want questions routed back to you, and whether setup applies to
-  this project or this machine
+- whether they want questions routed back to you
+
+Unattended: `notifai init --setup-scope project|global`.
 
 Never emulate them or claim an unlisted harness.
 

@@ -38,9 +38,18 @@ export interface SkillsAddOptions {
   env: NodeJS.ProcessEnv
 }
 
+export interface SkillsRemoveOptions {
+  skill: string
+  scope: SkillScope
+  cwd: string
+  env: NodeJS.ProcessEnv
+}
+
 export interface NativeSkills {
   /** Launch the native interactive `npx skills add` flow. */
   add(options: SkillsAddOptions): Promise<number>
+  /** Uninstall one installer-managed skill in one scope. */
+  remove(options: SkillsRemoveOptions): Promise<number>
   /** Read installer-managed inventory from lock files. Does not spawn npx. */
   list(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): Promise<SkillsListResult>
 }
@@ -126,10 +135,22 @@ export function skillsAddArgv(options: SkillsAddOptions): string[] {
   return args
 }
 
+/** argv for uninstalling one skill in one installer scope. */
+export function skillsRemoveArgv(options: SkillsRemoveOptions): string[] {
+  const args = ['-y', SKILLS_INSTALLER_SPEC, 'remove', options.skill]
+  if (options.scope === 'global') args.push('--global')
+  args.push('--yes')
+  return args
+}
+
 /** The only process/filesystem adapter Notifai needs for the external installer. */
 export const nativeSkills: NativeSkills = {
   async add(options) {
     return run(skillsAddArgv(options), { cwd: options.cwd, env: options.env })
+  },
+
+  async remove(options) {
+    return run(skillsRemoveArgv(options), { cwd: options.cwd, env: options.env })
   },
 
   async list(scope, cwd, env) {

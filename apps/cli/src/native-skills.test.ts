@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SKILLS_INSTALLER_SPEC, nativeSkills, skillsAddArgv } from './native-skills.js'
+import { SKILLS_INSTALLER_SPEC, nativeSkills, skillsAddArgv, skillsRemoveArgv } from './native-skills.js'
 
 function writeLock(file: string, ref: string): void {
   mkdirSync(path.dirname(file), { recursive: true })
@@ -40,6 +40,25 @@ describe('skillsAddArgv', () => {
       'notifai',
     ])
     expect(argv).not.toContain('skills')
+  })
+
+  it('uninstalls one skill in the named scope without a prompt', () => {
+    expect(
+      skillsRemoveArgv({
+        skill: 'notifai',
+        scope: 'project',
+        cwd: '/tmp',
+        env: {},
+      }),
+    ).toEqual(['-y', SKILLS_INSTALLER_SPEC, 'remove', 'notifai', '--yes'])
+    expect(
+      skillsRemoveArgv({
+        skill: 'notifai',
+        scope: 'global',
+        cwd: '/tmp',
+        env: {},
+      }),
+    ).toEqual(['-y', SKILLS_INSTALLER_SPEC, 'remove', 'notifai', '--global', '--yes'])
   })
 })
 
