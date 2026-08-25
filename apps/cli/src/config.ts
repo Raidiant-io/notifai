@@ -139,7 +139,7 @@ export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> =
 }
 
 /** Compiled service origin. Not a user-facing setting; login may override with `--base-url` or `NOTIFAI_BASE_URL`. */
-export const DEFAULT_BASE_URL = 'https://notifai.fly.dev'
+export const DEFAULT_BASE_URL = 'https://api.notifai.sh'
 
 const DEFAULTS = {
   wait_seconds: 10,
