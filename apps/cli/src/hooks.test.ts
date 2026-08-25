@@ -50,6 +50,7 @@ import {
   MAX_CONTINUATION_COUNT,
   MAX_HELD_DELIVERIES,
   orphanRetirements,
+  pendingAnsweredByPrompt,
   pruneAbandonedSessions,
   releaseQuestionPush,
   readMatchingProjectSessionPointer,
@@ -127,6 +128,8 @@ interface Recorder {
   closed: string[]
   /** Simulates an offline machine; retirement has to survive one. */
   failSubmits?: boolean
+  /** Simulates an unreachable close fence so retirement stays queued. */
+  failCloses?: boolean
   /** Runs while an agent_question submit is in flight, before onSubmitted. */
   beforeQuestionSubmit?: () => void
   /** Lets race tests hold every replies call until all contenders are polling. */
@@ -250,6 +253,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
       }) satisfies ListRepliesResponse
     },
     closeReplies: async (requestId) => {
+      if (recorder.failCloses === true) throw new Error('offline')
       recorder.closed.push(requestId)
       return {
         request_id: requestId,
@@ -1170,14 +1174,10 @@ describe('late answer collection', () => {
       stdin({ session_id: 'late-prompt', stop_hook_active: true }),
     )
 
-    const retirement = h.recorder.submitted.find(
-      (entry) => entry.draft.event === 'question_retired',
-    )?.draft
-    expect(retirement?.lifecycle).toMatchObject({
-      state: 'answered',
-      retires_request_id: 'req_live',
-    })
-    expect(retirement?.lifecycle?.state).not.toBe('answered_elsewhere')
+    expect(h.recorder.closed).toContain('req_live')
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
     expect(readSessionState('late-prompt', h.env).pending).toBeUndefined()
     expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
   })
@@ -1496,7 +1496,7 @@ describe('the waiter owning one question to the end', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'deadline' }))
 
-    expect(h.deps.now?.()).toBe(NOW + 60_000)
+    expect(h.deps.now?.()).toBe(NOW + 57_000)
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(readSessionState('deadline', h.env).pending).toBeUndefined()
     expect(h.io.errLines.join('\n')).toContain('expired with its continuation owner')
@@ -1697,14 +1697,9 @@ describe('Cursor stop output', () => {
  * questions piling up on a phone teach the user to ignore the surface.
  */
 describe('question queueing and retirement debt', () => {
-  /** The lifecycle state of each retirement push the recorder captured. */
-  function retirements(h: Harness): { state: unknown; retires: unknown }[] {
-    return h.recorder.submitted
-      .filter((s) => s.draft.event === 'question_retired')
-      .map((s) => ({
-        state: s.draft.lifecycle?.state,
-        retires: s.draft.lifecycle?.retires_request_id,
-      }))
+  /** Request ids whose close fence proved retirement. */
+  function retirements(h: Harness): string[] {
+    return h.recorder.closed
   }
 
   function seedLive(h: Harness, sessionId: string, requestId = 'req_live'): void {
@@ -1744,13 +1739,17 @@ describe('question queueing and retirement debt', () => {
 
     // Offline when the user returns: the wipe parks the retirement, the
     // drain fails, and it must not forget what it was for.
-    h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup2' }))
+    h.recorder.failCloses = true
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'sup2', prompt: 'done' }),
+    )
     expect(readSessionState('sup2', h.env).retiring).toHaveLength(1)
 
-    h.recorder.failSubmits = false
+    h.recorder.failCloses = false
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup2' }))
-    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
+    expect(retirements(h)).toContain(first)
     expect(readSessionState('sup2', h.env).retiring).toEqual([])
   })
 
@@ -1770,16 +1769,22 @@ describe('question queueing and retirement debt', () => {
     const configDir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
     mkdirSync(configDir, { recursive: true })
     writeFileSync(path.join(configDir, 'config.toml'), 'devices = ["dev_iphone"]\n')
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup-targets' }))
-
-    const retirement = h.recorder.submitted.find(
-      (submission) => submission.draft.event === 'question_retired',
+    h.recorder.failCloses = true
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'sup-targets', prompt: 'done' }),
     )
-    expect(retirement?.draft.lifecycle?.retires_request_id).toBe('req_live')
-    expect(retirement?.draft.targets).toEqual({
-      mode: 'selected',
-      device_ids: ['dev_iphone', 'dev_mac'],
-    })
+
+    expect(readSessionState('sup-targets', h.env).retiring).toEqual([
+      expect.objectContaining({
+        request_id: 'req_live',
+        device_ids: ['dev_iphone', 'dev_mac'],
+      }),
+    ])
+    expect(
+      h.recorder.submitted.filter((submission) => submission.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('sweeps a queued retirement even on a turn continuing from an answer', async () => {
@@ -1790,14 +1795,18 @@ describe('question queueing and retirement debt', () => {
     seedLive(h, 'sup3')
     const first = 'req_live'
 
-    h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup3' }))
+    h.recorder.failCloses = true
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'sup3', prompt: 'done' }),
+    )
     expect(readSessionState('sup3', h.env).retiring).toHaveLength(1)
-    h.recorder.failSubmits = false
+    h.recorder.failCloses = false
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'sup3', stop_hook_active: true }))
 
-    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
+    expect(retirements(h)).toContain(first)
     expect(readSessionState('sup3', h.env).retiring).toEqual([])
   })
 
@@ -1810,13 +1819,21 @@ describe('question queueing and retirement debt', () => {
 
     // The first return is offline: the wipe parks, the drain fails, and the
     // next prompt must still find the debt.
-    h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup4' }))
-    h.recorder.failSubmits = false
+    h.recorder.failCloses = true
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'sup4', prompt: 'done' }),
+    )
+    h.recorder.failCloses = false
 
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'sup4' }))
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'sup4', prompt: 'ok' }),
+    )
 
-    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
+    expect(retirements(h)).toContain(first)
     expect(readSessionState('sup4', h.env).retiring).toEqual([])
   })
 
@@ -2068,13 +2085,10 @@ describe('several questions in flight', () => {
     )
     expect(h.io.outLines).toEqual([])
     expect(readSessionState('answer-handoff', h.env).accepted).toBeUndefined()
+    expect(h.recorder.closed).toContain('req_existing')
     expect(
-      h.recorder.submitted.find(
-        (entry) =>
-          entry.draft.event === 'question_retired' &&
-          entry.draft.lifecycle?.retires_request_id === 'req_existing',
-      )?.draft.lifecycle?.state,
-    ).toBe('answered')
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('blocks Stop with the exact command until a required Agent Acknowledgement is recorded', async () => {
@@ -2270,13 +2284,8 @@ describe('several questions in flight', () => {
 })
 
 describe('a question that outlives its session', () => {
-  function retirements(h: Harness): { state: unknown; retires: unknown }[] {
-    return h.recorder.submitted
-      .filter((s) => s.draft.event === 'question_retired')
-      .map((s) => ({
-        state: s.draft.lifecycle?.state,
-        retires: s.draft.lifecycle?.retires_request_id,
-      }))
+  function retirements(h: Harness): string[] {
+    return h.recorder.closed
   }
 
   /** State a still-owned request can have when SessionEnd races its Stop. */
@@ -2307,7 +2316,7 @@ describe('a question that outlives its session', () => {
     // A different session's next hook holds a client and inherits the debt.
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'next1' }))
     expect(h.recorder.closed).toContain(first)
-    expect(retirements(h)).toContainEqual({ state: 'expired', retires: first })
+    expect(retirements(h)).toContain(first)
   })
 
   it('carries parked retirements across SessionEnd too', async () => {
@@ -2316,13 +2325,17 @@ describe('a question that outlives its session', () => {
 
     // Died while offline: the user came back, the wipe parked the
     // retirement, and the drain could not send it.
-    h.recorder.failSubmits = true
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'dead2' }))
-    h.recorder.failSubmits = false
+    h.recorder.failCloses = true
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'dead2', prompt: 'done' }),
+    )
+    h.recorder.failCloses = false
 
     await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead2' }))
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next2' }))
-    expect(retirements(h)).toContainEqual({ state: 'answered_elsewhere', retires: first })
+    expect(retirements(h)).toContain(first)
   })
 
   it('keeps the debt when the drain fails, and drops entries past the TTL', async () => {
@@ -2331,16 +2344,16 @@ describe('a question that outlives its session', () => {
     await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'dead3' }))
 
     // Still offline: the queue must survive a failed drain.
-    h.recorder.failSubmits = true
+    h.recorder.failCloses = true
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next3' }))
-    h.recorder.failSubmits = false
+    h.recorder.failCloses = false
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next3' }))
-    expect(retirements(h)).toContainEqual({ state: 'expired', retires: first })
+    expect(retirements(h)).toContain(first)
 
     // And a second drain does not send it twice.
-    const count = retirements(h).filter((r) => r.retires === first).length
+    const count = retirements(h).filter((id) => id === first).length
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'next3' }))
-    expect(retirements(h).filter((r) => r.retires === first)).toHaveLength(count)
+    expect(retirements(h).filter((id) => id === first)).toHaveLength(count)
   })
 
   it('gives up on an orphan that outlived the longest answerable window', async () => {
@@ -3013,7 +3026,7 @@ describe('user-prompt-submit hook', () => {
     expect(h.io.errLines.join('\n')).toMatch(/not paired|credential/i)
   })
 
-  it('preserves a delivered question through a second ask and the prompt transition', async () => {
+  it('preserves a delivered question through a second ask and an unrelated prompt', async () => {
     const h = harness([])
     const live = {
       question: 'Ship it?',
@@ -3024,10 +3037,6 @@ describe('user-prompt-submit hook', () => {
     }
     writeSessionState('transition', h.env, { last_prompt_at: AWAY, pending: [live] })
 
-    // A second plain `ask` resolves through the project pointer and joins the
-    // queue behind the live question — it must not touch it. The next prompt
-    // then resets presence before another Stop can run — the transition that
-    // used to erase the retirement debt.
     registerQuestion('transition', h.env, { question: 'Deploy it?' })
     const queued = readSessionState('transition', h.env)
     expect(queued.retiring ?? []).toEqual([])
@@ -3036,35 +3045,22 @@ describe('user-prompt-submit hook', () => {
     await hookRunCommand(
       h.deps,
       'user-prompt-submit',
-      stdin({ session_id: 'transition', cwd: h.deps.cwd }),
+      stdin({
+        session_id: 'transition',
+        cwd: h.deps.cwd,
+        prompt: 'keep going on the billing work',
+      }),
       'claude-code',
     )
 
-    // The delivered question retires truthfully. The never-delivered second
-    // one must remain queued: if Codex skipped Stop, erasing it here loses the
-    // only copy before it ever reached a device.
-    const retirement = h.recorder.submitted.find(
-      (submission) => submission.draft.event === 'question_retired',
-    )?.draft
-    expect(retirement?.delivery.collapse_key).toBe(live.collapse_key)
-    expect(retirement?.lifecycle).toEqual({
-      tier: 'done',
-      state: 'answered_elsewhere',
-      retires_request_id: live.request_id,
-    })
-    expect(retirement?.targets).toEqual({
-      mode: 'selected',
-      device_ids: ['dev_iphone', 'dev_mac'],
-    })
+    expect(h.recorder.closed).toEqual([])
     expect(
       h.recorder.submitted.filter((s) => s.draft.event === 'question_retired'),
-    ).toHaveLength(1)
+    ).toHaveLength(0)
     expect(readSessionState('transition', h.env).pending?.map((entry) => entry.question)).toEqual([
+      'Ship it?',
       'Deploy it?',
     ])
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'transition', cwd: h.deps.cwd }))
-    expect(readSessionState('transition', h.env).pending).toBeUndefined()
   })
 
   it('retires a real timed-out Stop before a later prompt can accept an answer', async () => {
@@ -3074,14 +3070,14 @@ describe('user-prompt-submit hook', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 's11' }))
     expect(readSessionState('s11', h.env).pending).toBeUndefined()
-    const retirementCount = h.recorder.submitted.filter(
-      (entry) => entry.draft.event === 'question_retired',
-    ).length
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
 
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's11', cwd: '/repo' }))
 
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired')).toHaveLength(retirementCount + 1)
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('marks the retirement done/answered_elsewhere so it ships silently', async () => {
@@ -3100,16 +3096,16 @@ describe('user-prompt-submit hook', () => {
       }],
     })
 
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's15', cwd: '/repo' }))
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 's15', cwd: '/repo', prompt: 'done' }),
+    )
 
-    const retirement = h.recorder.submitted.at(-1)?.draft
-    expect(retirement?.lifecycle).toEqual({
-      tier: 'done',
-      state: 'answered_elsewhere',
-      // The history-entry correlation id: companions key entries by request
-      // id and never persisted the collapse key.
-      retires_request_id: 'req_live',
-    })
+    expect(h.recorder.closed).toContain('req_live')
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('retires as done/answered when the answer came from a device', async () => {
@@ -3125,12 +3121,71 @@ describe('user-prompt-submit hook', () => {
       stdin({ session_id: 's16', stop_hook_active: true }),
     )
 
-    const retirement = h.recorder.submitted.find((s) => s.draft.event === 'question_retired')
-    expect(retirement?.draft.lifecycle).toEqual({
-      tier: 'done',
-      state: 'answered',
-      retires_request_id: h.recorder.receipts[0],
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
+  })
+
+  it('retires only the outstanding question a prompt uniquely answers', async () => {
+    const h = harness([])
+    writeSessionState('prompt-match', h.env, {
+      last_prompt_at: AWAY,
+      pending: [
+        {
+          question: 'Ship it?',
+          questions: [
+            {
+              id: 'q1',
+              text: 'Ship it?',
+              choices: [
+                { id: 'ship', label: 'Ship it' },
+                { id: 'wait', label: 'Wait' },
+              ],
+            },
+          ],
+          request_id: 'req_live',
+          collapse_key: 'collapse-live',
+          device_ids: ['dev_iphone'],
+          reply_deadline_at: NOW + 60_000,
+        },
+      ],
     })
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-match', prompt: 'Ship it' }),
+    )
+
+    expect(h.recorder.closed).toContain('req_live')
+    expect(readSessionState('prompt-match', h.env).pending).toBeUndefined()
+  })
+
+  it('leaves an unrelated prompt’s live question open for the reply window', async () => {
+    const h = harness([])
+    writeSessionState('prompt-unrelated', h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Ship it?',
+        request_id: 'req_live',
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 60_000,
+      }],
+    })
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({
+        session_id: 'prompt-unrelated',
+        prompt: 'continue investigating the billing failure on staging',
+      }),
+    )
+
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState('prompt-unrelated', h.env).pending?.[0]?.request_id).toBe('req_live')
   })
 
   it('publishes a session pointer so a plain `notifai ask` can find itself', async () => {
@@ -3208,6 +3263,83 @@ describe('user-prompt-submit hook', () => {
         },
       ],
     })
+  })
+})
+
+describe('reconciling a conversation answer', () => {
+  it('matches a unique closed choice and a lone short confirmation', () => {
+    const choiceQuestion: PendingQuestion = {
+      question: 'Ship it?',
+      questions: [
+        {
+          id: 'q1',
+          text: 'Ship it?',
+          choices: [
+            { id: 'ship', label: 'Ship it' },
+            { id: 'wait', label: 'Wait' },
+          ],
+        },
+      ],
+    }
+    const freeText: PendingQuestion = { question: 'Create the key?' }
+    expect(pendingAnsweredByPrompt('Ship it', [choiceQuestion]).map((entry) => entry.question)).toEqual([
+      'Ship it?',
+    ])
+    expect(pendingAnsweredByPrompt('done', [freeText])).toEqual([freeText])
+    expect(pendingAnsweredByPrompt('done', [choiceQuestion, freeText])).toEqual([])
+    expect(pendingAnsweredByPrompt('keep going on the billing work', [freeText])).toEqual([])
+  })
+
+  it('does not push a conversation-answered question after a newer one is registered', async () => {
+    const h = harness([])
+    writeSessionState('stale-then-new', h.env, { last_prompt_at: AWAY })
+    registerQuestion('stale-then-new', h.env, { question: 'Create the Apple IAP key?' })
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'stale-then-new', prompt: 'done' }),
+    )
+    expect(readSessionState('stale-then-new', h.env).pending).toBeUndefined()
+
+    registerQuestion('stale-then-new', h.env, { question: 'Which ASN endpoint?' })
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'stale-then-new' }))
+
+    const questions = h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')
+    expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['Which ASN endpoint?'])
+  })
+
+  it('reserves a close-fence budget when the owner deadline is nearly now', async () => {
+    const h = harness([])
+    const dir = path.join(h.env['XDG_CONFIG_HOME'] as string, 'notifai')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'config.toml'), 'ask_grace_seconds = 0\n')
+    writeSessionState('near-zero', h.env, {
+      last_prompt_at: AWAY,
+      pending: [{
+        question: 'Ship it?',
+        asked_at: NOW - 60_000,
+        request_id: 'req_live',
+        collapse_key: 'collapse-live',
+        device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 4_001,
+        owner_deadline_at: NOW + 4_001,
+      }],
+    })
+
+    await hookRunCommand(
+      { ...h.deps, logger: createLogger({ env: h.env, cmd: 'hook stop' }) },
+      'stop',
+      stdin({ session_id: 'near-zero', cwd: h.deps.cwd }),
+    )
+
+    expect(h.recorder.closed).toContain('req_live')
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
+    expect(h.deps.now?.()).toBeLessThan(NOW + 10_000)
+    const records = readLogRecords(h.env, { event: ['hook.retirement'] }).records
+    expect(records.some((record) => record.data?.['proven'] === true)).toBe(true)
   })
 })
 
@@ -3500,15 +3632,10 @@ describe('telling concurrent agents apart', () => {
       'claude-code',
     )
 
-    const retirement = h.recorder.submitted.find(
-      (entry) => entry.draft.event === 'question_retired',
-    )
-    expect(retirement?.draft.source).toEqual({
-      session_id: 'session-branch-transition',
-      session_label: 'Branch transition',
-      harness: 'claude-code',
-      branch: 'branch-a',
-    })
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('clears registration-time branch and worktree on a detached-HEAD hook event', async () => {
@@ -3596,15 +3723,10 @@ describe('telling concurrent agents apart', () => {
         }),
         'claude-code',
       )
-      const retirement = h.recorder.submitted.find(
-        (entry) => entry.draft.event === 'question_retired',
-      )
-      expect(retirement?.draft.source).toEqual({
-        session_id: 'session-worktree-transition',
-        session_label: 'Worktree transition',
-        harness: 'claude-code',
-        branch: 'main',
-      })
+      expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+      expect(
+        h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      ).toHaveLength(0)
     } finally {
       runFixtureGit(h.deps.cwd, 'worktree', 'remove', '--force', linked)
     }
@@ -3660,12 +3782,10 @@ describe('telling concurrent agents apart', () => {
       stdin({ session_id: 'sess-abc', stop_hook_active: true }),
     )
 
-    const retirement = h.recorder.submitted.find((s) => s.draft.event === 'question_retired')
-    expect(retirement?.draft.source).toEqual({
-      session_id: 'sess-abc',
-      session_label: 'Semantic session',
-      harness: 'claude-code',
-    })
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('preserves a human session label without displaying the opaque id', async () => {
@@ -3843,7 +3963,7 @@ describe('durable state writes', () => {
     expect(readFileSync(queueTarget, 'utf8')).toBe('[]\n')
   })
 
-  it('persists each successful retirement before a later corrupt entry interrupts the drain', async () => {
+  it('persists each successful retirement before a later close failure interrupts the drain', async () => {
     const h = harness()
     writeSessionState('partial-drain', h.env, {
       retiring: [
@@ -3857,24 +3977,30 @@ describe('durable state writes', () => {
         {
           request_id: 'req_bad',
           collapse_key: 'collapse-bad',
-          device_ids: [],
+          device_ids: ['dev_iphone'],
           question: 'Second?',
           state: 'expired',
         },
       ],
     })
+    const base = h.deps.clientFactory!('https://test.notifai.invalid', 'Bearer x')
     const ctx = {
-      client: h.deps.clientFactory('https://test.notifai.invalid', 'Bearer x'),
+      client: {
+        ...base,
+        closeReplies: async (requestId: string) => {
+          if (requestId === 'req_bad') throw new Error('offline')
+          return base.closeReplies(requestId)
+        },
+      },
       config: loadConfig({ cwd: h.deps.cwd, env: h.env }),
     }
 
-    await expect(drainRetirements(ctx, 'partial-drain', h.env)).rejects.toThrow(
-      /missing its device identifiers/,
-    )
+    await drainRetirements(ctx, 'partial-drain', h.env)
 
     expect(readSessionState('partial-drain', h.env).retiring?.map((entry) => entry.request_id)).toEqual([
       'req_bad',
     ])
+    expect(h.recorder.closed).toEqual(['req_good'])
   })
 })
 
@@ -4197,14 +4323,10 @@ describe('Claude Code Stop wake route', () => {
     expect(wake.sent).toHaveLength(1)
     expect(wake.resumed).toEqual([])
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
-    // Settled, not merely dropped: the answered question is retired truthfully.
+    expect(h.recorder.closed).toContain('req_existing')
     expect(
-      h.recorder.submitted.find(
-        (entry) =>
-          entry.draft.event === 'question_retired' &&
-          entry.draft.lifecycle?.retires_request_id === 'req_existing',
-      )?.draft.lifecycle?.state,
-    ).toBe('answered')
+      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+    ).toHaveLength(0)
   })
 
   it('applies the continuation cap to a woken turn that never sets stop_hook_active', async () => {

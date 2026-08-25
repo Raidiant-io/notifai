@@ -846,8 +846,9 @@ function recordRegisteredQuestion(
   draft: NotificationDraftT,
   json = false,
 ): number {
+  let questionId: string
   try {
-    registerQuestion(
+    questionId = registerQuestion(
       sessionId,
       deps.env,
       {
@@ -868,6 +869,7 @@ function recordRegisteredQuestion(
   log(deps).info('ask.registered', {
     ok: true,
     session: sessionId,
+    question_id: questionId,
     questions: built.questions.length,
     text_chars: built.questions[0]!.text.length,
     choices: built.questions[0]!.choices?.length ?? 0,
@@ -882,12 +884,14 @@ function recordRegisteredQuestion(
       JSON.stringify(
         {
           registered: true,
+          question_id: questionId,
           questions: built.questions.map((entry) => ({
             id: entry.id,
             text: entry.text,
             ...(entry.choices === undefined ? {} : { choices: entry.choices }),
             ...(entry.multi === true ? { multi: true } : {}),
           })),
+          close: `notifai close ${questionId}`,
           next: {
             end_turn: true,
             in_this_turn:
@@ -896,6 +900,7 @@ function recordRegisteredQuestion(
               'Never say where the answer must arrive; it returns by whatever route the harness supports.',
             on_answer:
               'Acknowledge it, then resume the committed work without asking the user to confirm again.',
+            answered_outside_notifai: `If they answer in the conversation instead, run \`notifai close ${questionId}\` before ending the turn so a later Stop will not send this question.`,
           },
         },
         null,
@@ -915,8 +920,8 @@ function recordRegisteredQuestion(
   }
   deps.io.out(
     built.questions.length > 1
-      ? `${built.questions.length} questions registered as one form. Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
-      : 'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
+      ? `${built.questions.length} questions registered as one form (${questionId}). Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
+      : `Question registered (${questionId}). Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.`,
   )
   deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
   for (const [index, entry] of built.questions.entries()) {
@@ -941,6 +946,9 @@ function recordRegisteredQuestion(
   )
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
+  )
+  deps.io.out(
+    `If they answer in this conversation instead, retire it with \`notifai close ${questionId}\` so a later Stop will not send it.`,
   )
   return EXIT.ok
 }
@@ -1376,6 +1384,9 @@ export async function closeCommand(
     return closePendingQuestions(deps, flags.json === true)
   }
 
+  const local = await closeLocalQuestion(deps, requestId!, flags.json === true)
+  if (local !== null) return local
+
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
@@ -1478,6 +1489,81 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     }
   }
   return EXIT.ok
+}
+
+/**
+ * Close one outstanding question by the stable id `notifai ask` returned, or
+ * by a request id already on a device. Unpushed entries only exist locally.
+ * Returns null when this directory's session has no matching registration, so
+ * the caller can still close a live request id against the service.
+ */
+async function closeLocalQuestion(
+  deps: CommandDeps,
+  id: string,
+  json: boolean,
+): Promise<number | null> {
+  const now = (deps.now ?? Date.now)()
+  const sessionId = readProjectSession(deps.cwd, deps.env, now)
+  if (sessionId === null) return null
+  const entry = (readSessionState(sessionId, deps.env).pending ?? []).find(
+    (candidate) => candidate.question_id === id || candidate.request_id === id,
+  )
+  if (entry === undefined) return null
+
+  if (entry.request_id === undefined) {
+    dropPendingQuestion(sessionId, deps.env, entry)
+    const output = {
+      session_id: sessionId,
+      withdrawn: [
+        {
+          question: entry.question,
+          ...(entry.question_id === undefined ? {} : { question_id: entry.question_id }),
+        },
+      ],
+      closed: [] as string[],
+    }
+    if (json) deps.io.out(JSON.stringify(output, null, 2))
+    else {
+      deps.io.out(
+        `Withdrew unpushed question ${entry.question_id ?? id} so a later Stop will not send it.`,
+      )
+    }
+    return EXIT.ok
+  }
+
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  try {
+    const response = await authed.client.closeReplies(entry.request_id)
+    parkClosedQuestion(sessionId, deps.env, entry)
+    dropPendingQuestion(sessionId, deps.env, entry)
+    if (json) {
+      deps.io.out(
+        JSON.stringify(
+          {
+            ...response,
+            question_id: entry.question_id,
+            acknowledgement_command: acknowledgementCommand(
+              response.request_id,
+              response.agent_acknowledgement_required,
+              response.agent_acknowledgement_text_required,
+              response.agent_acknowledgement,
+              response.replies.length > 0,
+            ),
+          },
+          null,
+          2,
+        ),
+      )
+    } else {
+      deps.io.out(`Closed the reply window for ${entry.request_id}.`)
+      if (response.replies.length > 0) printAcknowledgementStatus(deps, response)
+    }
+    return EXIT.ok
+  } catch (err) {
+    return reportError(deps, err, { operation: 'close', request_id: entry.request_id })
+  }
 }
 
 function forgetClosedQuestion(deps: CommandDeps, requestId: string): void {
