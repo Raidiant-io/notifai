@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Decide which packages a tag-triggered trusted-publishing run may publish.
+ * Decide which packages a tag-bound trusted-publishing run may publish.
  *
  * The two release-please tags can arrive seconds apart. A run may publish a
  * package only when that package's exact version tag already points at the

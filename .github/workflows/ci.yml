@@ -5,15 +5,44 @@ on:
     branches: [main]
     tags: ['v*', 'protocol-v*']
   pull_request:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact commit SHA that this run must check
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  dispatch-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Reject a stale workflow dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "The dispatched ref no longer resolves to expected_sha" >&2
+            exit 1
+          fi
+
   # Prove the public sending surface on every supported desktop OS and at both
   # ends of the Node range. Windows and macOS run the release package check too:
   # it executes the platform's real package-manager shims and inspects pnpm pack.
   platform:
+    needs: dispatch-integrity
+    if: ${{ always() }}
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +51,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      - name: Fail when dispatch integrity did not succeed
+        if: needs.dispatch-integrity.result != 'success'
+        shell: bash
+        run: |
+          echo "Dispatch integrity did not succeed; refusing to skip this required check" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -76,9 +112,17 @@ jobs:
   # beside it — workspace linking hides that from every other job. Needs
   # registry access for the CLI's public dependencies; needs no credentials.
   packed-install:
+    needs: dispatch-integrity
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Fail when dispatch integrity did not succeed
+        if: needs.dispatch-integrity.result != 'success'
+        run: |
+          echo "Dispatch integrity did not succeed; refusing to skip this check" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -98,9 +142,19 @@ jobs:
 
   # Platform-independent policy gates run once on the Node ceiling.
   gates:
+    needs: [dispatch-integrity, packed-install]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Fail when a required dependency did not succeed
+        if: >-
+          needs.dispatch-integrity.result != 'success' ||
+          needs.packed-install.result != 'success'
+        run: |
+          echo "A required dependency did not succeed; refusing to skip this required check" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -125,9 +179,17 @@ jobs:
       - run: pnpm check:boundary
 
   secret-history:
+    needs: dispatch-integrity
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Fail when dispatch integrity did not succeed
+        if: needs.dispatch-integrity.result != 'success'
+        run: |
+          echo "Dispatch integrity did not succeed; refusing to skip this required check" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -151,10 +213,21 @@ jobs:
       - run: node scripts/check-secrets.mjs
 
   commits:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: dispatch-integrity
+    if: >-
+      always() &&
+      (github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Fail when dispatch integrity did not succeed
+        if: needs.dispatch-integrity.result != 'success'
+        run: |
+          echo "Dispatch integrity did not succeed; refusing to skip this required check" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -184,6 +257,9 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             pnpm exec commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            base=$(git merge-base origin/main HEAD)
+            pnpm exec commitlint --from "$base" --to HEAD --verbose
           elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
             pnpm check:commit
           else
@@ -191,10 +267,17 @@ jobs:
           fi
 
   dependency-review:
-    if: github.event_name == 'pull_request'
+    needs: dispatch-integrity
+    if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Fail when dispatch integrity did not succeed
+        if: needs.dispatch-integrity.result != 'success'
+        run: |
+          echo "Dispatch integrity did not succeed; refusing to skip this check" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

@@ -73,8 +73,21 @@ updates it:
 release-please cannot perform those repository-wide repairs itself. Its
 `extra-files` updater cannot address `../` from a package, the README contains
 component-specific markers, and a manifest bump does not regenerate a pnpm
-lockfile. Wait for the repair commit and all required checks, including
-`pnpm check:packed`, before considering the Release PR ready.
+lockfile. The repository-scoped `GITHUB_TOKEN` does not recursively start
+workflows when it pushes the repair commit, so a separate no-checkout job uses
+the official `workflow_dispatch` API to start `ci.yml` at the repaired branch.
+Both the dispatch response and CI verify the exact expected commit SHA. Wait
+for those required checks, including `pnpm check:packed`, before considering
+the Release PR ready.
+
+GitHub documents one narrower exception to the recursion rule: when
+`GITHUB_TOKEN` creates or updates a pull request, its `pull_request` event can
+create runs in an approval-required state. This release path does not depend on
+those runs. The repair push still cannot recurse; the dispatch job creates one
+explicit `workflow_dispatch` run at the repaired SHA; and `ci.yml` has only
+`contents: read`, so it cannot dispatch another workflow, update the PR, or
+push another commit. `release-please.yml` itself listens only to pushes on
+`main`, so CI dispatched on a release branch cannot re-enter release automation.
 
 **Do not merge a Release PR unless the maintainer asked for a release.** An
 open or green Release PR is only a candidate. Once authorized, squash-merge
@@ -84,9 +97,11 @@ same merged commit:
 - CLI tag: `v<version>` (the skill pin is `Raidiant-io/notifai#v${version}`)
 - Protocol tag: `protocol-v<version>`
 
-release-please does not publish to npm. After the tags exist, and only when
-the maintainer asked, the tag-triggered `publish.yml` workflow waits at the
-protected `npm-release` environment. A maintainer approves that deployment;
+release-please does not publish to npm. Tags created with `GITHUB_TOKEN` do not
+start tag-push workflows, so the no-checkout dispatch job starts `publish.yml`
+once per created tag and binds the run to release-please's exact tag SHA. Only
+when the maintainer asked, the workflow waits at the protected `npm-release`
+environment. A maintainer approves that deployment;
 the workflow then validates a clean tag checkout, checks the packed install,
 publishes through npm trusted publishing with provenance, and verifies the
 registry bytes and resolution-shaping metadata. Protocol publishes before a
@@ -97,25 +112,53 @@ The workflow action is pinned to v4.4.1, which runs release-please 17.3.0;
 `release-please-config.json` pins its schema to the same version. Upgrade the
 action and schema together as maintenance work, never during a release.
 
+## Release automation identity and permission envelope
+
+Release automation uses only GitHub's ephemeral
+[`GITHUB_TOKEN`](https://docs.github.com/en/actions/concepts/security/github_token).
+GitHub mints it per job, limits it to this repository, and expires it when the
+job ends. There is no separately managed release token, App registration,
+private key, client identifier, or installation identifier.
+
+The exact non-secret permission envelope is:
+
+| Job | Permission | Why |
+| --- | --- | --- |
+| `release-please` | `contents: write` | Create and update release branches, push the repository-wide repair commit, and create the exact release tags and GitHub Releases after an authorized Release PR merge. |
+| `release-please` | `pull-requests: write` | Create and update the combined Release PR. |
+| `dispatch` | `actions: write` | Call the official workflow-dispatch endpoint and read back each created run to verify its `head_sha`. |
+
+Job-level permissions make every unlisted permission `none`. The `dispatch`
+job has no checkout and no contents or pull-request access; the write-capable
+release token is not retained by checkout (`persist-credentials: false`). CI
+has only `contents: read`. The protected npm job has only `contents: read` and
+`id-token: write` for trusted publishing.
+
+This design follows GitHub's documented
+[`GITHUB_TOKEN` recursion rule](https://docs.github.com/en/actions/concepts/security/github_token),
+the [`workflow_dispatch` endpoint](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event),
+and [least-privilege job permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idpermissions).
+It deliberately does not use `repository_dispatch`, which would provide no
+ref-bound `github.sha` for the target workflow to verify.
+
 ## One-time provider setup
 
-The checked-in workflows are fail-closed until a repository maintainer has
-completed both provider-side setup groups. No token value or provider
-identifier belongs in a tracked file, issue, log, or support message.
+The checked-in publication workflow is fail-closed until a repository
+maintainer has completed the provider-side setup below. No token value or
+provider identifier belongs in a tracked file, issue, log, or support message.
 
-For the release-please write identity, an owner of `Raidiant-io/notifai` must:
+In GitHub repository **Settings → Actions → General → Workflow permissions**,
+enable **Allow GitHub Actions to create and approve pull requests** and save.
+GitHub documents that this setting controls whether `GITHUB_TOKEN` can create
+pull requests. Keep the default workflow permission read-only; each job grants
+only its explicit envelope above.
 
-1. Create a GitHub App with only repository **Contents: read and write** and
-   **Pull requests: read and write** permissions, no organization permissions,
-   and install it for the single `Raidiant-io/notifai` repository.
-2. Put the App client identifier in the repository Actions variable
-   `RELEASE_APP_CLIENT_ID` and its private key in the repository Actions secret
-   `RELEASE_APP_PRIVATE_KEY`. The workflow further restricts every minted token
-   to the current repository and those two permissions.
-3. After one release-please run proves the App path creates and updates the
-   Release PR and its repair commit triggers required checks, remove the legacy
-   `RELEASE_PLEASE_TOKEN` secret. Do not remove it before that proof; do not put
-   it back into the workflow.
+If GitHub refuses that repository change because the organization disallows
+it, an organization owner must first open **Raidiant-io Settings → Actions →
+General → Workflow permissions**, enable **Allow GitHub Actions to create and
+approve pull requests**, and save. A repository owner must then repeat the
+repository-level step above. Do not broaden the organization's or repository's
+default `GITHUB_TOKEN` permission from read-only.
 
 For npm trusted publishing, a maintainer of both npm packages must:
 
