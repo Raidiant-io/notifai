@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Reach the user on their devices through Notifai when work finishes, fails, blocks, or needs a decision they alone can make. Use for sending a notification from an agent, asking the user a question and resuming when they answer, and setting Notifai up or working out why a notification or an answer did not arrive.
+description: Use proactively in every agent session, even when the user does not mention Notifai. Read the user's notification guidance first, then use Notifai when work finishes, fails, blocks, needs attention, or needs a decision; also use it for setup and delivery or reply diagnosis.
 ---
 
 # Notifai
@@ -32,7 +32,10 @@ Exit status is how you decide what to do next:
 
 ## Decide whether to notify
 
-Read the guidance first, once per session, before your first send:
+On the first task turn of every session, read the guidance before deciding
+whether any Agent Event is worth a Notification Request. Do this proactively
+even when the user did not mention Notifai; do not wait until you already plan
+to send. Read it once per session:
 
 ```bash
 notifai guidance
@@ -74,7 +77,9 @@ notifai guidance unset when-to-notify --local --yes
 Name the session on the first Notification Request you create. The flag is
 safe in every environment: where the session already has a name — some
 environments supply one — that name wins and yours is simply not used, so you
-never need to know which kind of session you are in:
+never need to know which kind of session you are in. If the CLI cannot identify
+an exact session, it omits session context instead of failing the Notification
+Request:
 
 ```bash
 notifai send --kind done \

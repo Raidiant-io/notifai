@@ -128,8 +128,8 @@ export function hookDefersDiagnosticsUntilAfterCleanup(
 
 /**
  * Runs one harness hook. Contract with every harness: hook JSON arrives on
- * stdin, the decision (if any) goes to stdout, diagnostics go to stderr, and
- * exit 0 with no stdout means "no decision — carry on as normal".
+ * stdin, harness output (if any) goes to stdout, diagnostics go to stderr, and
+ * exit 0 with no stdout means "no decision or added context — carry on as normal".
  *
  * Every failure path in here must reach that no-decision state. A hook that
  * throws, or that blocks past the harness's timeout, degrades the agent for a
@@ -341,9 +341,9 @@ export async function hookRunCommand(
     const notes = outcome.notes.filter((note) => !/^(?:late )?answer from /.test(note))
     logger.info('hook.end', {
       hook: event,
-      // A hook that returns stdout has taken over the turn; one that does not
-      // has handed the terminal back. That distinction is the whole contract.
-      decided: outcome.stdout !== undefined,
+      // Stop stdout takes over the turn. UserPromptSubmit stdout may instead
+      // add context to the user's own turn, which is explicitly non-decisive.
+      decided: outcome.decided ?? outcome.stdout !== undefined,
       ...(notes.length === 0 ? {} : { notes }),
       ...outcome.log,
     })

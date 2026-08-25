@@ -155,12 +155,6 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
   const sessionId =
     input.sessionId ?? input.env['NOTIFAI_SESSION_ID'] ?? input.activeHarness?.sessionId
   const explicitLabel = input.sessionLabel ?? input.env['NOTIFAI_SESSION_LABEL']
-  if (explicitLabel !== undefined && (sessionId === undefined || sessionId === '')) {
-    return {
-      ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact session id.',
-    }
-  }
   if (sessionId === '') {
     return { ok: false, error: '--session-id must not be empty.' }
   }

@@ -336,7 +336,7 @@ describe('buildSourceContext', () => {
     ).toEqual({ ok: true })
   })
 
-  it('rejects a display label without an exact session id', () => {
+  it('omits an unbindable display label instead of failing the send', () => {
     expect(
       buildSourceContext({
         env: stateEnv(),
@@ -344,9 +344,6 @@ describe('buildSourceContext', () => {
         sessionLabel: 'Unbound Label',
         now,
       }),
-    ).toEqual({
-      ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact session id.',
-    })
+    ).toEqual({ ok: true })
   })
 })

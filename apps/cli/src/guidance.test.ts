@@ -60,13 +60,17 @@ describe('shipped guidance content', () => {
 
   it('teaches when to notify and when not to, one notification per event', () => {
     const content = shippedGuidanceTopic('when-to-notify')!.content
-    expect(content).toMatch(/finished — succeeded or failed/i)
+    expect(content).toMatch(/substantial autonomous work finished — succeeded or failed/i)
+    expect(content).toMatch(/multiple meaningful[\s\S]{0,120}steps/i)
+    expect(content).toMatch(/requested audit or diagnosis[\s\S]{0,180}clean/i)
+    expect(content).toMatch(/completion .* outcome, not routine progress/i)
     expect(content).toMatch(/blocked on something only they can give/i)
     expect(content).toMatch(/needs their attention soon/i)
     expect(content).toMatch(/routine progress/i)
     // Deliberately removed 2026-08-24: agents do not weigh time between the
     // user's prompt and a notification — the rule was judged a pain.
     expect(content).not.toMatch(/terminal/i)
+    expect(content).not.toMatch(/time since/i)
     expect(content).toMatch(/one notification per event/i)
   })
 

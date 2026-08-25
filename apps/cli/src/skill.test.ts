@@ -23,6 +23,7 @@ import { GATE_REASONS } from './hooks.js'
 
 const skillPath = new URL('../../../skills/notifai/SKILL.md', import.meta.url)
 const skill = readFileSync(skillPath, 'utf8')
+const description = skill.match(/^description:\s*(.+)$/m)?.[1] ?? ''
 const harnessReference = readFileSync(
   new URL('../../../skills/notifai/references/harness-setup.md', import.meta.url),
   'utf8',
@@ -46,6 +47,20 @@ const section = (heading: string): string => {
 }
 
 describe('Notifai agent skill', () => {
+  it('routes proactively in ordinary sessions without waiting for the user to name Notifai', () => {
+    // The frontmatter description is the only skill text available during
+    // automatic selection. If the ordinary-session trigger lives only in the
+    // body, agents doing unrelated work never load it and therefore never see
+    // the completion rule.
+    expect(description).toMatch(/every agent session/i)
+    expect(description).toMatch(/even when the user does not mention Notifai/i)
+    expect(description).toMatch(/guidance/i)
+
+    const decide = section('## Decide whether to notify')
+    expect(decide).toMatch(/first task turn of every session/i)
+    expect(decide).toMatch(/before deciding\s+whether[\s\S]{0,100}Notification Request/i)
+  })
+
   it('fits inside the budget a skill is actually read within', () => {
     // Long skills are truncated in exactly the long sessions that need them.
     // The old skill sat at ~4,800 tokens; this ceiling keeps a working margin.
@@ -129,6 +144,7 @@ describe('Notifai agent skill', () => {
     // The rule is unconditional: the environment's name wins, so the flag is
     // safe everywhere and the agent never branches on where it is running.
     expect(send).toMatch(/safe in every environment/i)
+    expect(send).toMatch(/cannot identify\s+an exact session[\s\S]{0,120}omits session context/i)
     expect(send).toMatch(/name the\s+environment supplies wins/i)
     expect(send).toMatch(/freezes one semantic name/i)
     expect(send).toMatch(/omit the flag on later sends and\s+questions/i)

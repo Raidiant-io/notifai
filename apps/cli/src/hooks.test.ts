@@ -2608,6 +2608,39 @@ describe('ask registration', () => {
 })
 
 describe('user-prompt-submit hook', () => {
+  it('injects the proactive Notifai skill instruction only on the first prompt of a session', async () => {
+    const h = harness()
+
+    for (const hookHarness of ['claude-code', 'codex'] as const) {
+      const sessionId = `proactive-guidance-${hookHarness}`
+      await hookRunCommand(
+        h.deps,
+        'user-prompt-submit',
+        stdin({ session_id: sessionId }),
+        hookHarness,
+      )
+
+      const first = JSON.parse(h.io.outLines.at(-1)!) as {
+        hookSpecificOutput?: { hookEventName?: string; additionalContext?: string }
+      }
+      expect(first.hookSpecificOutput).toMatchObject({
+        hookEventName: 'UserPromptSubmit',
+      })
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/use the Notifai skill/i)
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/`notifai guidance`/i)
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/did not mention Notifai/i)
+
+      const outputCount = h.io.outLines.length
+      await hookRunCommand(
+        h.deps,
+        'user-prompt-submit',
+        stdin({ session_id: sessionId }),
+        hookHarness,
+      )
+      expect(h.io.outLines).toHaveLength(outputCount)
+    }
+  })
+
   it('records presence', async () => {
     const h = harness()
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's10' }))
