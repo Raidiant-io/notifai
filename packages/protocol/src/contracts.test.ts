@@ -5,6 +5,7 @@ import {
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
   ANDROID_CAPABILITIES_V1,
   BODY_MAX_LENGTH,
+  BeginPairingRequest,
   CAPABILITIES_V1,
   DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
   defaultDeliveryPolicy,
@@ -14,6 +15,7 @@ import {
   IOS_CAPABILITIES_V1,
   MACOS_CAPABILITIES_V1,
   PLATFORMS,
+  PairingProofRequest,
   PROVIDERS,
   PutRegistrationRequest,
   REPLY_CATEGORY_ID,
@@ -48,6 +50,42 @@ function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT 
 function freeTextReply(expiresInSeconds = 86400): NotificationDraftT['reply'] {
   return { expires_in_seconds: expiresInSeconds, questions: [{ id: 'q', text: 'Your call?' }] }
 }
+
+describe('pairing ownership proof contract', () => {
+  const begin = {
+    machine_name: 'workstation',
+    credential_hash: 'a'.repeat(64),
+    poll_verifier_hash: 'b'.repeat(64),
+    confirmation_hash: 'c'.repeat(64),
+  }
+  const proof = {
+    code: 'KWQ-58C',
+    confirmation_secret: 'd'.repeat(43),
+  }
+
+  it('requires a distinct confirmation verifier when pairing begins', () => {
+    expect(Value.Check(BeginPairingRequest, begin)).toBe(true)
+    expect(
+      Value.Check(BeginPairingRequest, {
+        machine_name: begin.machine_name,
+        credential_hash: begin.credential_hash,
+        poll_verifier_hash: begin.poll_verifier_hash,
+      }),
+    ).toBe(false)
+    expect(Value.Check(BeginPairingRequest, { ...begin, confirmation_hash: 'c'.repeat(63) })).toBe(
+      false,
+    )
+  })
+
+  it('requires the canonical short code and full one-time secret on every dashboard action', () => {
+    expect(Value.Check(PairingProofRequest, proof)).toBe(true)
+    expect(Value.Check(PairingProofRequest, { code: proof.code })).toBe(false)
+    expect(Value.Check(PairingProofRequest, { ...proof, code: 'OIQ-01I' })).toBe(false)
+    expect(
+      Value.Check(PairingProofRequest, { ...proof, confirmation_secret: 'd'.repeat(42) }),
+    ).toBe(false)
+  })
+})
 
 describe('account preference and reply capability contracts', () => {
   it('defines an explicit default-true account preference and a closed update shape', () => {

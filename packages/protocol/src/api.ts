@@ -105,6 +105,8 @@ export const BeginPairingRequest = Type.Object(
     credential_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     /** SHA-256 hex of the one-time poll verifier; proves the poller began this pairing. */
     poll_verifier_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+    /** SHA-256 hex of the one-time browser confirmation secret. */
+    confirmation_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
   },
   { additionalProperties: false },
 )
@@ -124,6 +126,20 @@ export const PollPairingRequest = Type.Object(
   { additionalProperties: false },
 )
 export type PollPairingRequestT = Static<typeof PollPairingRequest>
+
+/**
+ * Proof carried by every authenticated dashboard pairing operation. The
+ * short code is human-checkable; the high-entropy secret is transported only
+ * in the approval URL fragment and is never sent by a browser GET.
+ */
+export const PairingProofRequest = Type.Object(
+  {
+    code: Type.String({ pattern: '^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{3}-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{3}$' }),
+    confirmation_secret: Type.String({ pattern: '^[A-Za-z0-9_-]{43}$' }),
+  },
+  { additionalProperties: false },
+)
+export type PairingProofRequestT = Static<typeof PairingProofRequest>
 
 export interface PollPairingResponse {
   /**
