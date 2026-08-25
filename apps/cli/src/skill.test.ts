@@ -57,8 +57,20 @@ describe('Notifai agent skill', () => {
     expect(description).toMatch(/guidance/i)
 
     const decide = section('## Decide whether to notify')
-    expect(decide).toMatch(/first task turn of every session/i)
-    expect(decide).toMatch(/before deciding\s+whether[\s\S]{0,100}Notification Request/i)
+    expect(decide).toMatch(/every session's first task turn/i)
+    expect(decide).toMatch(/read guidance before judging an Agent\s+Event/i)
+    expect(decide).toMatch(/parent owns User-visible Notification Requests/i)
+    expect(decide).toMatch(/unless\s+it explicitly delegates/i)
+    expect(decide).toMatch(/workers[\s\S]{0,100}do not send independently/i)
+  })
+
+  it('preserves the original Agent Event across setup and ambiguous delivery', () => {
+    expect(skill).toMatch(
+      /interrupted or killed `send`[\s\S]*`send\.attempt`[\s\S]*session,\s+title length, kind, and time/i,
+    )
+    expect(skill).toMatch(/unambiguous match[\s\S]*otherwise report ambiguous delivery without retrying/i)
+    expect(skill).toMatch(/`no_active_devices`[\s\S]*repeat the original send/i)
+    expect(skill).toMatch(/verification Notification[\s\S]*does not deliver the original Agent Event/i)
   })
 
   it('fits inside the budget a skill is actually read within', () => {
@@ -150,10 +162,9 @@ describe('Notifai agent skill', () => {
     expect(send).toContain('--session-label')
     expect(send).toMatch(/first Notification\s+Request/i)
     expect(send).toMatch(/2-6 words/i)
-    // The rule is unconditional: the environment's name wins, so the flag is
-    // safe everywhere and the agent never branches on where it is running.
-    expect(send).toMatch(/safe in every environment/i)
-    expect(send).toMatch(/cannot identify\s+an exact session[\s\S]{0,120}omits session context/i)
+    expect(send).toMatch(/only when the current\s+environment exposes an exact session/i)
+    expect(send).toMatch(/without an exact session[\s\S]{0,160}usage\s+error/i)
+    expect(send).toMatch(/omit `--session-label`/i)
     expect(send).toMatch(/name the\s+environment supplies wins/i)
     expect(send).toMatch(/freezes one semantic name/i)
     expect(send).toMatch(/omit the flag on later sends and\s+questions/i)

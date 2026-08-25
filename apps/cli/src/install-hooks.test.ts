@@ -20,6 +20,7 @@ import {
   opencodePluginSource,
   opencodePluginTarget,
 } from './opencode-plugin.js'
+import { SESSION_ACTIVATION_CONTEXT } from './session-activation.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -27,6 +28,7 @@ import {
   applyPlan,
   detectHarness,
   detectedHarnesses,
+  buildCursorHookConfig,
   buildHookConfig,
   codexLayerDir,
   codexProjectRoot,
@@ -85,6 +87,33 @@ describe('choice labels', () => {
 })
 
 describe('hook config', () => {
+  it('activates Notifai at the session lifecycle seam for every native hook adapter', () => {
+    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
+    const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
+    const cursor = buildCursorHookConfig({ adapterPath: ADAPTER, harness: 'cursor' })
+
+    expect(claude['SessionStart']?.[0]?.hooks[0]).toMatchObject({
+      command: hookCommand(ADAPTER, 'session-start', 'claude-code'),
+    })
+    expect(codex['SessionStart']?.[0]?.hooks[0]).toMatchObject({
+      command: hookCommand(ADAPTER, 'session-start', 'codex'),
+    })
+    expect(cursor['sessionStart']?.[0]).toMatchObject({
+      command: hookCommand(ADAPTER, 'session-start', 'cursor'),
+    })
+    expect(claude['SubagentStart']?.[0]?.hooks[0]).toMatchObject({
+      command: hookCommand(ADAPTER, 'subagent-start', 'claude-code'),
+    })
+    expect(codex['SubagentStart']?.[0]?.hooks[0]).toMatchObject({
+      command: hookCommand(ADAPTER, 'subagent-start', 'codex'),
+    })
+    expect(cursor['subagentStart']).toBeUndefined()
+    expect(cursor['stop']?.[0]).toMatchObject({
+      command: hookCommand(ADAPTER, 'activation-stop', 'cursor'),
+      loop_limit: 1,
+    })
+  })
+
   it('invokes one stable adapter so a sparse hook PATH still works', () => {
     expect(hookCommand(ADAPTER, 'stop')).toBe(`'${ADAPTER}' hook stop --owner notifai`)
   })
@@ -101,7 +130,7 @@ describe('hook config', () => {
     const config = buildHookConfig({ adapterPath: ADAPTER })
     expect(config['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
     expect(config['Stop']?.[0]?.hooks[0]?.async).toBeUndefined()
-    // Claude Code caps UserPromptSubmit at 30s; Codex gives SessionEnd 1-3s.
+    // Claude Code defaults UserPromptSubmit to 30s; Codex gives SessionEnd 1-3s.
     expect(config['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
     expect(config['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
   })
@@ -174,7 +203,7 @@ describe('hook config', () => {
       SCRIPT,
     )
 
-    for (const event of ['UserPromptSubmit', 'Stop', 'SessionEnd']) {
+    for (const event of ['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']) {
       const groups = migrated.document.hooks?.[event] ?? []
       expect(groups.flatMap((group) => group.hooks)).toHaveLength(1)
     }
@@ -182,7 +211,13 @@ describe('hook config', () => {
       timeout: 3600,
       async: true,
     })
-    expect(migrated.replaced.sort()).toEqual(['SessionEnd', 'Stop', 'UserPromptSubmit'])
+    expect(migrated.replaced.sort()).toEqual([
+      'SessionEnd',
+      'SessionStart',
+      'Stop',
+      'SubagentStart',
+      'UserPromptSubmit',
+    ])
   })
 })
 
@@ -272,13 +307,7 @@ describe('settings locations', () => {
     expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
   })
 
-  /**
-   * A `hooks.json` nobody has proven is Notifai's is not Notifai's to write.
-   * Joining it would avoid Codex's dual-representation warning, but a hook
-   * entry carries no owner, so the file may belong to a tool that regenerates
-   * it wholesale and would drop our handlers without a word.
-   */
-  it('writes config.toml rather than joining a hooks.json that is not ours', () => {
+  it('joins the only populated hook representation without special-casing its owner', () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
     const layer = path.join(repo, '.codex')
     mkdirSync(layer, { recursive: true })
@@ -291,6 +320,20 @@ describe('settings locations', () => {
         Stop: [{ hooks: [{ type: 'command', command: 'gdh-stop' }] }],
       },
     })
+
+    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'hooks.json'))
+  })
+
+  it('keeps inline hooks when config.toml is the only populated representation', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-toml-'))
+    const layer = path.join(repo, '.codex')
+    mkdirSync(layer, { recursive: true })
+    writeFileSync(
+      path.join(layer, 'config.toml'),
+      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
+        '\n',
+      ),
+    )
 
     expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'config.toml'))
   })
@@ -640,7 +683,9 @@ describe('finding what is installed', () => {
     expect(problems[0]).toContain(path.join(layer, 'hooks.json'))
     expect(problems[0]).toContain(path.join(layer, 'config.toml'))
     expect(problems[0]).toMatch(/Stop/)
-    expect(problems[0]).toMatch(/notifies twice per turn for UserPromptSubmit, Stop, SessionEnd/)
+    expect(problems[0]).toMatch(
+      /notifies twice per turn for SessionStart, SubagentStart, UserPromptSubmit, Stop, SessionEnd/,
+    )
     expect(problems[0]).toMatch(/notifai hooks uninstall --harness codex/)
     expect(problems[0]).not.toMatch(/--global/)
   })
@@ -692,7 +737,9 @@ describe('finding what is installed', () => {
     expect(claude).toBeDefined()
     expect(claude?.handlers.map((h) => h.event).sort()).toEqual([
       'SessionEnd',
+      'SessionStart',
       'Stop',
+      'SubagentStart',
       'UserPromptSubmit',
     ])
     expect(claude?.handlers.every((h) => h.groupIndex === 0 && h.handlerIndex === 0)).toBe(true)
@@ -725,17 +772,23 @@ describe('finding what is installed', () => {
     )
 
     const stale = codexTrustProblems(installations, env)
-    expect(stale).toHaveLength(3)
+    expect(stale).toHaveLength(5)
     expect(stale).toEqual(expect.arrayContaining([expect.stringMatching(/Stop.*changed.*\/hooks/i)]))
 
     writeFileSync(
       trustFile,
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\n`,
     )
-    expect(codexTrustProblems(installations, env)).toEqual([
-      expect.stringMatching(/UserPromptSubmit.*not trusted.*\/hooks/i),
-      expect.stringMatching(/SessionEnd.*not trusted.*\/hooks/i),
-    ])
+    const untrusted = codexTrustProblems(installations, env)
+    expect(untrusted).toHaveLength(4)
+    expect(untrusted).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/SessionStart.*not trusted.*\/hooks/i),
+        expect.stringMatching(/SubagentStart.*not trusted.*\/hooks/i),
+        expect.stringMatching(/UserPromptSubmit.*not trusted.*\/hooks/i),
+        expect.stringMatching(/SessionEnd.*not trusted.*\/hooks/i),
+      ]),
+    )
 
     writeFileSync(
       trustFile,
@@ -826,6 +879,34 @@ describe('the OpenCode adapter', () => {
     expect(source).toContain('event?.type === "session.deleted"')
     expect(source).toContain('event?.properties?.info?.id')
     expect(source).not.toContain('"permission.ask"')
+  })
+
+  it('adds session activation through OpenCode system context without setup or network', async () => {
+    expect(source).toContain('"experimental.chat.system.transform"')
+    const generated = (await import(
+      `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+    )) as {
+      NotifAIPlugin(input: { directory: string; client: object }): Promise<{
+        'experimental.chat.system.transform'?: (
+          input: object,
+          output: { system: string[] },
+        ) => Promise<void>
+      }>
+    }
+    const plugin = await generated.NotifAIPlugin({ directory: '/repo', client: {} })
+    const output = { system: ['existing context'] }
+
+    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_1' }, output)
+
+    expect(output.system).toEqual([`existing context\n\n${SESSION_ACTIVATION_CONTEXT}`])
+
+    const internal = { system: ['internal agent-generation context'] }
+    await plugin['experimental.chat.system.transform']?.({}, internal)
+    expect(internal.system).toEqual(['internal agent-generation context'])
+
+    const empty = { system: [] as string[] }
+    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_2' }, empty)
+    expect(empty.system).toEqual([SESSION_ACTIVATION_CONTEXT])
   })
 
   it('publishes the session pointer on a user message without injecting content', () => {

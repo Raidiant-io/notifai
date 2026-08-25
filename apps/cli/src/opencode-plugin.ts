@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 import { configHome } from './install-hooks.js'
+import { SESSION_ACTIVATION_CONTEXT } from './session-activation.js'
 
 /**
  * The OpenCode adapter.
@@ -31,7 +32,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 8
+const OPENCODE_ADAPTER_VERSION = 10
 
 export function opencodePluginDir(
   global: boolean,
@@ -103,6 +104,7 @@ import { spawn } from "node:child_process"
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCODE_ADAPTER_VERSION}
+const SESSION_ACTIVATION_CONTEXT = ${JSON.stringify(SESSION_ACTIVATION_CONTEXT)}
 const PENDING_SESSION_TITLE =
   /^New session(?: *- *[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]+)?Z)?$/i
 
@@ -158,6 +160,17 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   const cwd = typeof directory === "string" && directory.length > 0 ? directory : process.cwd()
 
   return {
+    /** Model-visible activation, independent of CLI setup and delivery state. */
+    "experimental.chat.system.transform": async (input, output) => {
+      const sessionID = input?.sessionID
+      if (typeof sessionID !== "string" || sessionID.length === 0) return
+      if (output.system.length === 0) {
+        output.system.push(SESSION_ACTIVATION_CONTEXT)
+      } else {
+        output.system[0] = output.system[0] + "\\n\\n" + SESSION_ACTIVATION_CONTEXT
+      }
+    },
+
     /** Exact active-harness identity and first-party title for agent shell commands. */
     "shell.env": async (input, output) => {
       output.env.NOTIFAI_ACTIVE_HARNESS = "opencode"

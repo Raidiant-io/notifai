@@ -58,7 +58,12 @@ import {
   type ActiveHarnessSession,
 } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
-import { HOOK_EVENTS, activeQuestionRouteProblems, hookActivationAdvice } from './commands-hooks.js'
+import {
+  HOOK_EVENTS,
+  activeQuestionRouteProblems,
+  hookActivationAdvice,
+  requiredHookEvents,
+} from './commands-hooks.js'
 import { observedCompanionReceipt, readSetupProof } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 
@@ -886,13 +891,25 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       })
       .map((h) => `${h.event} -> ${handlerEvent(h.command)} in ${i.file}`),
   )
+  const missing = installations.flatMap((installation) => {
+    const required = requiredHookEvents(installation.harness)
+    const installed = new Set(
+      installation.handlers
+        .map((handler) => handlerEvent(handler.command))
+        .filter((event): event is string => event !== null),
+    )
+    const absent = required.filter((event) => !installed.has(event))
+    return absent.length === 0
+      ? []
+      : [`${installation.file} is missing ${absent.join(', ')}`]
+  })
   checks.push({
     name: 'hooks (stale)',
-    ok: stale.length === 0,
+    ok: stale.length === 0 && missing.length === 0,
     detail:
-      stale.length === 0
-        ? 'every installed handler names an event this build serves'
-        : `${stale.join('; ')} — rerun \`notifai hooks install\` to drop ${stale.length === 1 ? 'it' : 'them'}`,
+      stale.length === 0 && missing.length === 0
+        ? 'every installed handler names an event this build serves, and every required lifecycle handler is present'
+        : `${[...stale, ...missing].join('; ')} — rerun \`notifai hooks install\` to refresh the complete lifecycle set`,
   })
 
   const adapterProblems = installations.flatMap((installation) =>
@@ -947,7 +964,10 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   // Project and global definitions for one harness both fire. Stable adapter
   // identity deliberately makes their command bytes equal, so comparing
   // command targets would now hide this duplicate rather than diagnose it.
-  // Different harnesses remain independent: only the active one runs.
+  // Cursor is the exception to harness independence because it may also load
+  // Claude's user hook file. The shared adapter detects Cursor's hook-only
+  // environment and makes that compatibility copy a no-op; the native Cursor
+  // definition remains the single routing owner.
   const duplicated = [...new Set(installations.map((i) => i.harness))]
     .map((harness) => ({
       harness,

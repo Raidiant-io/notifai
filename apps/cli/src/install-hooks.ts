@@ -43,8 +43,7 @@ const OPENCODE_EVENTS = [
  * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`.
  * We default a hook-empty layer to inline config and preserve whichever single
  * representation a populated layer already uses. Notifai lives in one of them,
- * never both — a layer whose other file holds someone else's hooks is that
- * other tool's arrangement, and stays untouched.
+ * never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -251,14 +250,37 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   const { adapterPath } = options
   const commandOptions = commandOptionsFrom(options)
   return {
+    SessionStart: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: hookCommand(adapterPath, 'session-start', options.harness, commandOptions),
+            // Activation is local context only: no config, credentials, or network.
+            timeout: 5,
+          },
+        ],
+      },
+    ],
+    SubagentStart: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: hookCommand(adapterPath, 'subagent-start', options.harness, commandOptions),
+            timeout: 5,
+          },
+        ],
+      },
+    ],
     UserPromptSubmit: [
       {
         hooks: [
           {
             type: 'command',
             command: hookCommand(adapterPath, 'user-prompt-submit', options.harness, commandOptions),
-            // Claude Code caps UserPromptSubmit at 30s; stay well inside it so
-            // a slow network can never delay the user's own prompt.
+            // Claude Code defaults UserPromptSubmit to 30s. Choose a shorter
+            // explicit budget so a slow network cannot delay the user's prompt.
             timeout: 15,
           },
         ],
@@ -299,13 +321,30 @@ interface CursorSettingsDocument {
 export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
   const commandOptions = commandOptionsFrom(options)
   return {
+    sessionStart: [
+      {
+        command: hookCommand(options.adapterPath, 'session-start', 'cursor', commandOptions),
+        // Activation only emits local context and must not depend on setup.
+        timeout: 5,
+      },
+    ],
     beforeSubmitPrompt: [
       {
-        command: hookCommand(options.adapterPath, 'user-prompt-submit', 'cursor', commandOptions),
+        command: hookCommand(
+          options.adapterPath,
+          'user-prompt-submit',
+          'cursor',
+          commandOptions,
+        ),
         timeout: 15,
       },
     ],
     stop: [
+      {
+        command: hookCommand(options.adapterPath, 'activation-stop', 'cursor', commandOptions),
+        timeout: 5,
+        loop_limit: 1,
+      },
       {
         command: hookCommand(options.adapterPath, 'stop', 'cursor', commandOptions),
         timeout: BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -527,24 +566,15 @@ export interface CodexLayerInspection {
 }
 
 /**
- * Where Notifai writes in this Codex layer: wherever Notifai already is, and
- * inline `config.toml` otherwise.
+ * Where Notifai writes in this Codex layer: wherever Notifai already is, then
+ * whichever single hook representation the layer already uses, and inline
+ * `config.toml` for a hook-empty or already-mixed layer.
  *
  * Codex supports `hooks.json` and inline `[hooks]` side by side, loads both,
- * and runs every matching handler. The tempting rule is to join whichever
- * representation the layer already uses, so Notifai never adds Codex's "prefer
- * one representation per layer" startup warning. Notifai must not do that,
- * because a hook entry carries no marker saying who owns it: a `hooks.json`
- * full of foreign handlers may be one a person wrote by hand or one a tool
- * regenerates wholesale, and those two look identical from here. Appending to
- * the second kind gets Notifai's handlers deleted the next time that tool
- * rewrites its file — silently, on a product whose entire job is reaching
- * someone who is not at the keyboard to notice it stopped.
- *
- * So Notifai only ever writes a file it owns. The warning it may cause is
- * Codex accurately reporting that two handler sets merge and all of them fire;
- * it is noise, and `codexCoexistenceNotes` explains it. That trade is
- * deliberate: visible noise over silent non-delivery.
+ * and runs every matching handler. Reusing the one populated representation is
+ * the generic layer contract: it avoids creating Codex's dual-representation
+ * warning and, for a managed layer, writes through the same authority that
+ * persists the layer rather than a sibling file it may regenerate away.
  *
  * Staying put where Notifai already is also keeps reinstalls idempotent and
  * preserves the `[hooks.state]` trust hash, which Codex keys by file path and
@@ -559,7 +589,13 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
   const ourJsonEvents = ourHandlerEvents(jsonDocument)
   const ourTomlEvents = ourHandlerEvents(tomlDocument)
   const writeTarget =
-    ourJsonEvents.length > 0 && ourTomlEvents.length === 0 ? paths.hooksJson : paths.configToml
+    ourJsonEvents.length > 0 && ourTomlEvents.length === 0
+      ? paths.hooksJson
+      : ourTomlEvents.length > 0
+        ? paths.configToml
+        : jsonEvents.length > 0 && tomlEvents.length === 0
+          ? paths.hooksJson
+          : paths.configToml
   return {
     paths,
     jsonEvents,
@@ -812,7 +848,7 @@ function isOurCommand(command: string, scriptPath: string): boolean {
 
 /** Cleanup-only recognition for unmistakable pre-marker Notifai commands. */
 function isLegacyNotifaiCommand(command: string): boolean {
-  const hook = `['"]?\\s+hook (?:user-prompt-submit|stop|session-end)\\b`
+  const hook = `['"]?\\s+hook (?:session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\\b`
   return (
     new RegExp(`(?:^|[\\s'"])notifai(?:\\.cmd)?${hook}`).test(command) ||
     new RegExp(
@@ -1243,7 +1279,7 @@ export function codexTrustProblems(
  * evidence that it has (and is itself worth reporting).
  */
 function isNotifaiCommand(command: string): boolean {
-  return / hook (user-prompt-submit|stop|session-end)\b/.test(command)
+  return / hook (session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\b/.test(command)
 }
 
 /** Every place either harness would read a Notifai handler from. */

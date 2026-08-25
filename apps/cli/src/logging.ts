@@ -90,6 +90,8 @@ export const LOG_EVENTS = [
   'config.resolved',
   /** One HTTP call to the service: method, path, status, duration. */
   'http.call',
+  /** A send crossed its ambiguous network boundary with this retry identity. */
+  'send.attempt',
   /** A notification was accepted by the service. */
   'send.submitted',
   /** What became of it per device. */

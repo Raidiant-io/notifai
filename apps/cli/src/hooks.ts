@@ -69,6 +69,8 @@ export interface HookEnvelope {
   session_id?: string
   cwd?: string
   hook_event_name?: string
+  /** How a harness lifecycle began: startup, resume, clear, compact, or fork. */
+  source?: string
   /** Set by the harness when this Stop follows a previous Stop continuation. */
   stop_hook_active?: boolean
   /** Cursor's stable per-conversation identifier. */
@@ -77,13 +79,20 @@ export interface HookEnvelope {
   workspace_roots?: string[]
   /** Cursor increments this after each stop-hook automatic follow-up. */
   loop_count?: number
+  /** Cursor Stop completion state; cancellation must not auto-follow. */
+  status?: string
 }
 
 export interface SessionState {
+  /** Model-visible proactive context already emitted for this harness session. */
+  activation_context_emitted_at?: number
+  /** Harness process that received it; a resumed session has a new owner. */
+  activation_context_owner_pid?: number
+  /** Cursor's documented session context path is lossy; bounded first-Stop fallback journal. */
+  cursor_activation_claimed_at?: number
+  cursor_activation_confirmed_at?: number
   /** Epoch ms of the user's last prompt in this session — our presence signal. */
   last_prompt_at?: number
-  /** Epoch ms when the first-turn proactive Notifai context was emitted. */
-  proactive_guidance_at?: number
   /** Epoch ms of the last observed Stop hook, distinct from prompt routing. */
   last_stop_at?: number
   /**
@@ -471,6 +480,108 @@ function updateSessionState(
   return withFileLock(`${file}.lock`, () => {
     const next = update(readSessionState(sessionId, env))
     writeSessionStateUnlocked(file, next)
+    return next
+  })
+}
+
+/** Record a lifecycle activation so the first-prompt compatibility path stays silent. */
+export function markSessionActivation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+  ownerPid: number,
+): void {
+  updateSessionState(sessionId, env, (current) => ({
+    ...current,
+    activation_context_emitted_at: now,
+    activation_context_owner_pid: ownerPid,
+  }))
+}
+
+/**
+ * Atomically own first-prompt activation only when no lifecycle hook did.
+ *
+ * Some managed hosts preserve UserPromptSubmit while regenerating away newer
+ * SessionStart definitions. This is a compatibility seam, not the primary
+ * lifecycle: one session gets at most one model-visible activation from it.
+ */
+export function claimPromptActivation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+  ownerPid: number,
+): boolean {
+  let claimed = false
+  updateSessionState(sessionId, env, (current) => {
+    if (
+      current.activation_context_emitted_at !== undefined &&
+      current.activation_context_owner_pid === ownerPid
+    ) {
+      return current
+    }
+    claimed = true
+    return {
+      ...current,
+      activation_context_emitted_at: now,
+      activation_context_owner_pid: ownerPid,
+    }
+  })
+  return claimed
+}
+
+/** Atomically claim Cursor's first-Stop activation fallback once per conversation. */
+export function claimCursorStopActivation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+): boolean {
+  const claimGuardMs = 30_000
+  let claimed = false
+  updateSessionState(sessionId, env, (current) => {
+    if (current.cursor_activation_confirmed_at !== undefined) return current
+    if (
+      current.cursor_activation_claimed_at !== undefined &&
+      now - current.cursor_activation_claimed_at < claimGuardMs
+    ) {
+      return current
+    }
+    claimed = true
+    return { ...current, cursor_activation_claimed_at: now }
+  })
+  return claimed
+}
+
+/** Cursor's loop_count proves the previous Stop follow-up reached the host. */
+export function confirmCursorStopActivation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+): boolean {
+  let owned = false
+  updateSessionState(sessionId, env, (current) => {
+    if (current.cursor_activation_confirmed_at !== undefined) {
+      owned = true
+      return current
+    }
+    if (current.cursor_activation_claimed_at === undefined) return current
+    owned = true
+    return { ...current, cursor_activation_confirmed_at: now }
+  })
+  return owned
+}
+
+/** A fresh/cleared Cursor lifecycle makes its next Stop the fallback owner again. */
+export function resetCursorStopActivation(sessionId: string, env: NodeJS.ProcessEnv): void {
+  updateSessionState(sessionId, env, (current) => {
+    if (
+      current.cursor_activation_claimed_at === undefined &&
+      current.cursor_activation_confirmed_at === undefined
+    ) {
+      return current
+    }
+    const next = { ...current }
+    delete next.cursor_activation_claimed_at
+    delete next.cursor_activation_confirmed_at
     return next
   })
 }
@@ -2027,25 +2138,6 @@ async function retirePendings(
 // UserPromptSubmit — the user is at the keyboard
 // ---------------------------------------------------------------------------
 
-const PROACTIVE_NOTIFAI_CONTEXT =
-  'Use the Notifai skill now and run `notifai guidance` before doing this task. ' +
-  'Do this proactively even though the user did not mention Notifai. ' +
-  'Follow the resolved guidance when deciding whether later Agent Events deserve a Notification Request; never notify routine progress.'
-
-function proactivePromptOutcome(notes: string[], inject: boolean): HookOutcome {
-  if (!inject) return { notes }
-  return {
-    notes,
-    decided: false,
-    stdout: JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: PROACTIVE_NOTIFAI_CONTEXT,
-      },
-    }),
-  }
-}
-
 /**
  * Records presence and retires anything still asking on companion devices. This is the
  * "answered in the terminal" case from the original design: we cannot tell
@@ -2061,19 +2153,10 @@ export async function handleUserPromptSubmit(
   if (!sessionId) return { notes }
 
   const state = readSessionState(sessionId, ctx.env)
-  // Claude Code and Codex both accept the same UserPromptSubmit context
-  // envelope. Emitting it once makes skill evaluation deterministic without
-  // turning every later user prompt into repeated instructions. Cursor and
-  // OpenCode have different hook-output contracts, so their existing skill
-  // discovery path remains unchanged here.
-  const injectProactiveGuidance =
-    state.proactive_guidance_at === undefined &&
-    (ctx.harness === 'claude-code' || ctx.harness === 'codex')
   if (state.accepted !== undefined) {
     updateSessionState(sessionId, ctx.env, (current) => ({
       ...current,
       last_prompt_at: ctx.now(),
-      ...(injectProactiveGuidance ? { proactive_guidance_at: ctx.now() } : {}),
     }))
     if (envelope.cwd !== undefined && ctx.harness !== undefined) {
       writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
@@ -2083,7 +2166,7 @@ export async function handleUserPromptSubmit(
         ? 'a device answer is safely journaled; the next Stop will deliver it'
         : 'a device answer has already been delivered; the next Stop will close it out',
     )
-    return proactivePromptOutcome(notes, injectProactiveGuidance)
+    return { notes }
   }
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
   let lateAnswers: AnsweredPending[] = []
@@ -2155,7 +2238,6 @@ export async function handleUserPromptSubmit(
     const next: SessionState = {
       ...current,
       last_prompt_at: ctx.now(),
-      ...(injectProactiveGuidance ? { proactive_guidance_at: ctx.now() } : {}),
     }
     if (unasked.length > 0) next.pending = unasked
     else delete next.pending
@@ -2184,7 +2266,7 @@ export async function handleUserPromptSubmit(
     // model. Keep the journal and let the next Stop use its acknowledged
     // continuation channel instead of recreating the crash-before-stdout gap.
     notes.push('the late device answer will continue the agent at this turn’s Stop')
-    return proactivePromptOutcome(notes, injectProactiveGuidance)
+    return { notes }
   }
   const retired = await drainRetirements(ctx, sessionId, ctx.env)
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
@@ -2192,7 +2274,7 @@ export async function handleUserPromptSubmit(
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
-  return proactivePromptOutcome(notes, injectProactiveGuidance)
+  return { notes }
 }
 
 // ---------------------------------------------------------------------------

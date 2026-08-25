@@ -1,25 +1,19 @@
 ---
 name: notifai
-description: Use proactively in every agent session, even when the user does not mention Notifai. Read the user's notification guidance first, then use Notifai when work finishes, fails, blocks, needs attention, or needs a decision; also use it for setup and delivery or reply diagnosis.
+description: Proactively use Notifai in every agent session, even when the user does not mention Notifai. Read guidance first; use it for finished, failed, blocked, attention, decisions, setup, and delivery/reply diagnosis.
 ---
 
 # Notifai
 
-The user is not watching the terminal. Notifai is how you reach them, and how
-their answer reaches you.
+Use `notifai`; never hand-roll HTTP, hooks, or polling. It owns routing,
+retries, and delivery evidence.
 
-Always go through the `notifai` CLI. Never hand-roll its HTTP calls, its hook
-files, or its reply polling — the CLI is where the routing, the retries, and the
-proof of delivery live.
+If missing: `npm install -g @raidiant/notifai`. Use pinned
+`npx --yes @raidiant/notifai@<version>` only if the user refuses a global
+binary — never as the first suggestion.
 
-If `notifai` is not on PATH, install it: `npm install -g @raidiant/notifai`.
-Only if the user refuses a global binary, use
-`npx --yes @raidiant/notifai@<version>` pinned to the version they accepted.
-Never unpinned, and never as the first suggestion.
-
-`notifai <command> --help` is the authoritative list of flags; where this file
-and the CLI disagree, the CLI is right. Add `--json` to anything you parse.
-Exit status is how you decide what to do next:
+`notifai <command> --help` is the authoritative list. Use `--json` for parsed output.
+Branch on exit status:
 
 | exit | meaning | what to do |
 | --- | --- | --- |
@@ -30,16 +24,21 @@ Exit status is how you decide what to do next:
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
 | 5 | network | retry; for `send`, reuse the same `--idempotency-key` so one event cannot become two |
 
+After an interrupted or killed `send`, match one `send.attempt` by session,
+title length, kind, and time in `notifai logs --json`. Reuse its key only for
+an unambiguous match; otherwise report ambiguous delivery without retrying.
+
 ## Decide whether to notify
 
-On the first task turn of every session, read the guidance before deciding
-whether any Agent Event is worth a Notification Request. Do this proactively
-even when the user did not mention Notifai; do not wait until you already plan
-to send. Read it once per session:
+On every session's first task turn, read guidance before judging an Agent
+Event. Do this even when the user did not mention Notifai; read it once:
 
 ```bash
 notifai guidance
 ```
+
+The parent owns User-visible Notification Requests unless it explicitly delegates
+ownership. Workers report Agent Events; they do not send independently.
 
 It prints every topic — `when-to-notify`, `titles`, `bodies`, `questions`,
 `acknowledgements` — under a comment naming the layer that supplied it. A
@@ -74,12 +73,12 @@ notifai guidance unset when-to-notify --local --yes
 
 ## Send
 
-Name the session on the first Notification Request you create. The flag is
-safe in every environment: where the session already has a name — some
-environments supply one — that name wins and yours is simply not used, so you
-never need to know which kind of session you are in. If the CLI cannot identify
-an exact session, it omits session context instead of failing the Notification
-Request:
+Name the session on the first Notification Request only when the current
+environment exposes an exact session; supported harnesses provide it to the
+CLI automatically. A `--session-label` without an exact session is a usage
+error because silently discarding a parsed flag is never safe. When no exact
+session is available, omit `--session-label` and let the Notification Request
+carry only project context:
 
 ```bash
 notifai send --kind done \
@@ -319,25 +318,25 @@ notifai init          # the idempotent coordinator: run this first
 notifai doctor --json # then confirm, and branch on whatever is still open
 ```
 
-Branch on the diagnosis, never paste it at the user. A nonzero exit is a gap to
-close, not permission to work around — and exit 0 alone does not prove `ask`
-can route: the named checks in the harness reference below decide that.
+Branch on diagnosis; a nonzero exit is a gap to close, never to bypass. Exit 0
+alone does not prove `ask` routing; the harness reference names those checks.
 
-Only these need a human, and you ask for them together in one structured
-question rather than a drip:
+Ask for these human-only steps together in one structured question:
 
 - approving this machine in the browser (after **you** started `notifai login`)
 - installing the companion app, signing in, and allowing notifications
 - whether they want questions routed back to you, and whether setup applies to
   this project or this machine
 
-Never emulate those steps, and never claim support for a harness the CLI does
-not list.
+Never emulate them or claim an unlisted harness.
 
 Exit code 4 means this machine is not signed in. When sign-in looks fine but
 nothing sends, `notifai auth status --json` and `notifai auth access --json`
 separate a pairing problem from an account without an active plan — report which
 one it is instead of calling it a delivery failure.
+
+On `no_active_devices`, run `notifai init`, close its gap, then repeat the original send
+with its printed key. A verification Notification does not deliver the original Agent Event.
 
 Question routing needs a harness hook installed, and `ask` refuses to register a
 question it cannot route back to you — the diagnosis names what to fix. The

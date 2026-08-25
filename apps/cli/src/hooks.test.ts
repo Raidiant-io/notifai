@@ -2607,16 +2607,17 @@ describe('ask registration', () => {
   })
 })
 
-describe('user-prompt-submit hook', () => {
-  it('injects the proactive Notifai skill instruction only on the first prompt of a session', async () => {
+describe('session-start hook', () => {
+  it('adds proactive Notifai context before setup or machine authentication exists', async () => {
     const h = harness()
+    h.deps.store.load = () => null
 
     for (const hookHarness of ['claude-code', 'codex'] as const) {
-      const sessionId = `proactive-guidance-${hookHarness}`
+      h.io.outLines = []
       await hookRunCommand(
         h.deps,
-        'user-prompt-submit',
-        stdin({ session_id: sessionId }),
+        'session-start',
+        stdin({ session_id: `proactive-guidance-${hookHarness}`, source: 'startup' }),
         hookHarness,
       )
 
@@ -2624,21 +2625,327 @@ describe('user-prompt-submit hook', () => {
         hookSpecificOutput?: { hookEventName?: string; additionalContext?: string }
       }
       expect(first.hookSpecificOutput).toMatchObject({
-        hookEventName: 'UserPromptSubmit',
+        hookEventName: 'SessionStart',
       })
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(/use the Notifai skill/i)
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(/`notifai guidance`/i)
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(/did not mention Notifai/i)
-
-      const outputCount = h.io.outLines.length
-      await hookRunCommand(
-        h.deps,
-        'user-prompt-submit',
-        stdin({ session_id: sessionId }),
-        hookHarness,
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/Notifai.*session/i)
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(
+        /before beginning task work.*use the Notifai skill.*run `notifai guidance`/i,
       )
-      expect(h.io.outLines).toHaveLength(outputCount)
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/`notifai guidance`/i)
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/did not mention/i)
+      expect(h.io.errLines.join('\n')).not.toMatch(/not paired/i)
     }
+  })
+
+  it('uses each supported lifecycle output contract and gives workers deterministic ownership', async () => {
+    const h = harness()
+    h.deps.store.load = () => null
+
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ conversation_id: 'cursor-session', workspace_roots: [h.deps.cwd] }),
+      'cursor',
+    )
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
+      additional_context: expect.stringMatching(/Notifai.*session/i),
+    })
+
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'subagent-start',
+      stdin({ session_id: 'subagent-session' }),
+      'claude-code',
+    )
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'SubagentStart',
+        additionalContext: expect.stringMatching(
+          /parent owns.*unless it explicitly delegates.*workers.*do not send independently/i,
+        ),
+      },
+    })
+  })
+
+  it('uses Cursor native Stop follow-up once when its SessionStart context is lossy', async () => {
+    const h = harness()
+    h.deps.store.load = () => null
+    const input = stdin({
+      conversation_id: 'cursor-activation',
+      workspace_roots: [h.deps.cwd],
+      loop_count: 0,
+    })
+
+    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
+      followup_message: expect.stringMatching(/before finalizing.*turn that just ended.*notifai guidance/i),
+    })
+
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'activation-stop',
+      stdin({
+        conversation_id: 'cursor-activation',
+        workspace_roots: [h.deps.cwd],
+        loop_count: 1,
+      }),
+      'cursor',
+    )
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('cursor-activation', h.env).cursor_activation_confirmed_at).toBe(NOW)
+
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ conversation_id: 'cursor-activation', workspace_roots: [h.deps.cwd] }),
+      'cursor',
+    )
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+  })
+
+  it('does not let Cursor activation override cancellation or a live question continuation', async () => {
+    const h = harness()
+    const base = {
+      conversation_id: 'cursor-coexistence',
+      workspace_roots: [h.deps.cwd],
+      loop_count: 0,
+    }
+
+    await hookRunCommand(
+      h.deps,
+      'activation-stop',
+      stdin({ ...base, status: 'aborted' }),
+      'cursor',
+    )
+    expect(h.io.outLines).toEqual([])
+
+    registerQuestion('cursor-coexistence', h.env, { question: 'Choose a path?' })
+    await hookRunCommand(
+      h.deps,
+      'activation-stop',
+      stdin({ ...base, status: 'completed' }),
+      'cursor',
+    )
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('cursor-coexistence', h.env).cursor_activation_claimed_at).toBeUndefined()
+
+    await hookRunCommand(
+      h.deps,
+      'activation-stop',
+      stdin({ ...base, status: 'completed', loop_count: 1 }),
+      'cursor',
+    )
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('cursor-coexistence', h.env).cursor_activation_confirmed_at).toBeUndefined()
+  })
+
+  it('retries an unconfirmed Cursor activation claim after the crash guard expires', async () => {
+    const h = harness()
+    const input = stdin({
+      conversation_id: 'cursor-activation-retry',
+      workspace_roots: [h.deps.cwd],
+      status: 'completed',
+      loop_count: 0,
+    })
+
+    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
+    expect(h.io.outLines).toEqual([])
+
+    h.advanceClock(30_001)
+    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+  })
+
+  it('fails closed without a Cursor conversation id and still activates after an errored turn', async () => {
+    const h = harness()
+
+    await hookRunCommand(
+      h.deps,
+      'activation-stop',
+      stdin({ workspace_roots: [h.deps.cwd], status: 'completed', loop_count: 0 }),
+      'cursor',
+    )
+    expect(h.io.outLines).toEqual([])
+
+    await hookRunCommand(
+      h.deps,
+      'activation-stop',
+      stdin({
+        conversation_id: 'cursor-error-activation',
+        workspace_roots: [h.deps.cwd],
+        status: 'error',
+        loop_count: 0,
+      }),
+      'cursor',
+    )
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+  })
+
+  it('makes a Claude compatibility copy inside Cursor a no-op', async () => {
+    const h = harness()
+    h.deps.env['CURSOR_PROJECT_DIR'] = h.deps.cwd
+
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ session_id: 'cursor-compat-copy', source: 'startup' }),
+      'claude-code',
+    )
+
+    expect(h.io.outLines).toEqual([])
+  })
+})
+
+describe('user-prompt-submit hook', () => {
+  it('activates once as a compatibility fallback when SessionStart was absent', async () => {
+    const h = harness()
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'presence-only' }),
+      'claude-code',
+    )
+
+    expect(h.io.outLines).toHaveLength(1)
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: expect.stringMatching(/Notifai.*session/i),
+      },
+    })
+    expect(readSessionState('presence-only', h.env).last_prompt_at).toBe(NOW)
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'presence-only' }),
+      'claude-code',
+    )
+    expect(h.io.outLines).toHaveLength(1)
+  })
+
+  it('stays silent when SessionStart already delivered activation', async () => {
+    const h = harness()
+    h.deps.codexSourcePid = 4242
+
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ session_id: 'lifecycle-owned' }),
+      'codex',
+    )
+    h.io.outLines = []
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'lifecycle-owned' }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('reactivates a resumed session owned by a new harness process', async () => {
+    const h = harness()
+    h.deps.codexSourcePid = 4242
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ session_id: 'resumed-owner' }),
+      'codex',
+    )
+    h.io.outLines = []
+    h.deps.codexSourcePid = 4343
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'resumed-owner' }),
+      'codex',
+    )
+
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
+    })
+  })
+
+  it('uses the adapter-propagated harness owner across per-hook CLI processes', async () => {
+    const h = harness()
+    h.env['NOTIFAI_HOOK_SOURCE_PID'] = '5252'
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'adapter-owned' }),
+      'codex',
+    )
+    h.io.outLines = []
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'adapter-owned' }),
+      'codex',
+    )
+    expect(h.io.outLines).toEqual([])
+
+    h.env['NOTIFAI_HOOK_SOURCE_PID'] = '5353'
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'adapter-owned' }),
+      'codex',
+    )
+    expect(h.io.outLines).toHaveLength(1)
+  })
+
+  it('does not let a worker lifecycle suppress parent prompt activation', async () => {
+    const h = harness()
+    h.deps.codexSourcePid = 4242
+    await hookRunCommand(
+      h.deps,
+      'subagent-start',
+      stdin({ session_id: 'shared-parent-worker' }),
+      'codex',
+    )
+    h.io.outLines = []
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'shared-parent-worker' }),
+      'codex',
+    )
+
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
+    })
+  })
+
+  it('activates before config and authentication readiness', async () => {
+    const h = harness()
+    h.deps.cwd = path.join(h.deps.cwd, 'missing-project')
+    h.deps.store.load = () => null
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'first-run', cwd: h.deps.cwd }),
+      'codex',
+    )
+
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
+    })
   })
 
   it('records presence', async () => {

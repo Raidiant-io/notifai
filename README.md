@@ -153,18 +153,36 @@ choose the scope explicitly: `notifai init --skills --skills-scope project` or
 
 ## The installed hooks
 
-`notifai hooks install` wires three moments into the agent harness: the
-prompt the user submits, the end of the agent's turn, and the end of the
-session. How they appear depends on the harness — Claude Code and Codex name
+`notifai hooks install` wires session activation, the prompt the user submits,
+the end of the agent's turn, and the end of the session into the agent harness.
+How they appear depends on the harness — Claude Code and Codex name
 them in a hook file, Cursor uses its own hook shapes, and OpenCode gets a
 generated plugin. They are how a question reaches your devices and how the
 answer comes back, without the agent keeping any of that in its context.
 
+**SessionStart** (`session-start`) and, where the host supports context there,
+**SubagentStart** (`subagent-start`) add the small model-visible activation context that makes agents evaluate
+Notifai proactively. They are local-only and run before project setup,
+authentication, Device Installations, or network access, so those missing
+prerequisites cannot make activation disappear. OpenCode adds the same context
+through its system-context transform. Cursor currently drops the context it
+accepts at SessionStart, so after the first completed turn Notifai uses one
+bounded native Stop follow-up: Cursor shows a synthetic follow-up turn, the
+agent reads guidance and evaluates the just-finished Agent Event, and the next
+Stop confirms that activation arrived. Cancelled turns do not trigger that
+follow-up; errored turns do, because failure is itself an Agent Event. A live
+question continuation takes priority. Delegated
+Cursor work stays under the parent session's explicit notification ownership
+rather than pretending the worker received context its host cannot deliver.
+
 **UserPromptSubmit** (`user-prompt-submit`) runs when you send a prompt. That
 is the proof you are at the keyboard, so Notifai retires any question still
 waiting on your devices and remembers this session for later `notifai ask`
-calls. It has to run here: only this moment can tell that you were present for
-this turn.
+calls. On a managed host that retained an older hook set without SessionStart,
+the first prompt also provides one compatibility activation for that harness
+process; a healthy lifecycle install remains SessionStart-driven. It has to run
+here for presence: only this moment can tell that you were present for this
+turn.
 
 **Stop** (`stop`) runs when the agent turn ends. If the agent registered a
 question with `notifai ask`, this is when that question can leave for your

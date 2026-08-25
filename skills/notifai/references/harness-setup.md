@@ -68,20 +68,32 @@ Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 
 ## Activation by harness
 
-- **Claude Code:** project hook files reload without a restart. Send one new
-  prompt so the hook publishes the session pointer, then run `notifai doctor`.
-- **Codex:** run `notifai hooks install --harness codex`, end one harmless turn,
-  send one new prompt, then run `notifai doctor`. If `hooks-trust` fails,
-  open `/hooks` in Codex and approve or enable the Notifai handlers. Codex
-  resolves project hooks from the main
-  repository. In a linked worktree, the installer writes the shared file to
+- **Claude Code:** run the installer if needed, start one fresh session, send
+  one prompt, then run `notifai doctor`. An already-running session cannot
+  receive newly installed `SessionStart` context. If a managed host retained
+  only an older UserPromptSubmit definition, the first prompt supplies one
+  compatibility activation for that harness process; this does not make the
+  lifecycle installation current.
+- **Codex:** run `notifai hooks install --harness codex`. If `hooks-trust`
+  fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
+  Then start one fresh session, send one prompt, and run `notifai doctor`. Codex
+  uses the same bounded first-prompt compatibility activation when a managed
+  host retained UserPromptSubmit but omitted SessionStart; `hooks-stale` still
+  diagnoses that lifecycle installation until the host persists the current
+  definitions. Codex resolves project hooks from the main repository. In a
+  linked worktree, the installer writes the shared file to
   the main checkout and creates the project-layer `.codex` directory in the
   current worktree; run it once in each new worktree.
-- **Cursor:** its stop hook can return a native follow-up, but the agent shell
-  does not expose the exact conversation id needed to prove which concurrent
-  session invoked `notifai ask`. Asynchronous ask therefore fails closed. Use
-  blocking `notifai send --reply` for questions.
-- **OpenCode:** restart after installation because plugins load at startup.
+- **Cursor:** start one fresh conversation, send one prompt, and let the first
+  completed or errored turn finish. Cursor's `SessionStart` context is currently
+  lossy, so one visible synthetic follow-up activates Notifai through its native
+  Stop contract; cancellation does not trigger it, and a live question
+  continuation takes priority. Then run `notifai doctor`. The agent shell does
+  not expose the exact conversation id needed to prove which concurrent session
+  invoked `notifai ask`, so asynchronous ask fails closed. Use blocking
+  `notifai send --reply` for questions.
+- **OpenCode:** restart after installation because plugins load at startup,
+  then start one fresh session, send one prompt, and run `notifai doctor`.
   Notifai owns its generated plugin file and will not overwrite a foreign one.
   OpenCode has no locally proven exactly-once continuation after `session.idle`,
   so `notifai ask` fails closed instead of accepting an answer into a void.
@@ -122,8 +134,8 @@ it.
 
 ## Bounded recovery
 
-Follow the exact `notifai doctor` diagnostic. Common recovery is one install or
-restart, one new prompt, and one new doctor check. Stop if the current pointer
+Follow the exact `notifai doctor` diagnostic. Common recovery is one repair,
+one fresh activation, and one new doctor check. Stop if the current pointer
 belongs to another active session or if the hook still has not fired; ask the
 user or coordinator instead of retrying indefinitely.
 
