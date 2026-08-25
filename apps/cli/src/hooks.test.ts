@@ -218,7 +218,7 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
     health: async () => true,
     submit: async (body) => {
       if (recorder.failSubmits === true) throw new Error('offline')
-      if (body.draft.event === 'agent_question') recorder.beforeQuestionSubmit?.()
+      if (body.draft.reply !== undefined) recorder.beforeQuestionSubmit?.()
       recorder.submitted.push(body)
       submissions += 1
       const requestId = body.request_id ?? `req_hook_${submissions}`
@@ -871,7 +871,7 @@ describe('terminal-first grace window', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present1' }))
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(1)
     expect(submittedAt).toBe(NOW)
   })
 
@@ -904,7 +904,7 @@ describe('terminal-first grace window', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'present3' }))
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(1)
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
   })
 
@@ -933,7 +933,7 @@ describe('terminal-first grace window', () => {
     expect(h.deps.now?.()).toBeGreaterThanOrEqual(NOW + 360_000)
     expect(h.deps.now?.()).toBeLessThan(NOW + 361_000)
     expect(
-      h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')?.draft.reply
+      h.recorder.submitted.find((entry) => entry.draft.reply !== undefined)?.draft.reply
         ?.expires_in_seconds,
     ).toBeGreaterThanOrEqual(60)
   })
@@ -1042,7 +1042,7 @@ describe('nagging guards', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n1' }))
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n1' }))
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(1)
   })
 
   it('respects the harness recursion guard', async () => {
@@ -1070,7 +1070,7 @@ describe('nagging guards', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3', stop_hook_active: true }))
 
-    const questions = h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')
+    const questions = h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)
     expect(questions.map((entry) => entry.draft.presentation.body)).toEqual([
       'First question?',
       'Follow-up question?',
@@ -1127,7 +1127,7 @@ describe('late answer collection', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'late-stop' }))
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(0)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(0)
     expect(h.recorder.closed).toContain('req_live')
     expect(readSessionState('late-stop', h.env).pending).toBeUndefined()
     expect(h.io.outLines).toHaveLength(1)
@@ -1176,7 +1176,7 @@ describe('late answer collection', () => {
 
     expect(h.recorder.closed).toContain('req_live')
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
     expect(readSessionState('late-prompt', h.env).pending).toBeUndefined()
     expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
@@ -1191,10 +1191,10 @@ describe('OpenCode answer continuation', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'open1' }), 'opencode')
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(0)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(0)
     expect(h.recorder.closed).toEqual([])
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
     expect(readSessionState('open1', h.env).pending).toBeUndefined()
     expect(h.io.outLines).toEqual([])
@@ -1268,7 +1268,7 @@ describe('the waiter owning one question to the end', () => {
       return {
         ...client,
         submit: async (body: SubmitNotificationRequestT) => {
-          if (body.draft.event !== 'agent_question') return client.submit(body, 0)
+          if (body.draft.reply === undefined) return client.submit(body, 0)
           acceptedRequestId = body.request_id
           h.recorder.submitted.push(body)
           h.recorder.receipts.push(body.request_id!)
@@ -1512,7 +1512,7 @@ describe('the waiter owning one question to the end', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'latency' }))
 
     const windows = h.recorder.submitted
-      .filter((entry) => entry.draft.event === 'agent_question')
+      .filter((entry) => entry.draft.reply !== undefined)
       .map((entry) => entry.draft.reply?.expires_in_seconds)
     // How long the user may answer does not shrink because this owner spent
     // part of its own budget getting the question out. Both questions stay
@@ -1552,7 +1552,7 @@ describe('the waiter owning one question to the end', () => {
 
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Second answer')
     expect(readSessionState('successor', h.env).pending).toBeUndefined()
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(2)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(2)
   })
 
   it('does not start another waiter for a live question whose owner lease is already spent', async () => {
@@ -1577,7 +1577,7 @@ describe('the waiter owning one question to the end', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'spent-owner' }))
 
     expect(h.deps.now?.()).toBeLessThan(started + 30_000)
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toHaveLength(0)
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toHaveLength(0)
     expect(readSessionState('spent-owner', h.env).pending?.[0]?.request_id).toBe('req_old')
     expect(h.io.errLines.join('\n')).toContain('previous waiter already used its ceiling')
   })
@@ -1629,7 +1629,7 @@ describe('the waiter owning one question to the end', () => {
     registerQuestion('after-degraded', h.env, { question: 'New question?' }, h.deps.now?.())
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'after-degraded' }))
 
-    const questions = h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')
+    const questions = h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)
     expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['New question?'])
     expect(readSessionState('after-degraded', h.env).pending?.map((entry) => entry.question)).toEqual(
       ['Earlier question?', 'New question?'],
@@ -1783,7 +1783,7 @@ describe('question queueing and retirement debt', () => {
       }),
     ])
     expect(
-      h.recorder.submitted.filter((submission) => submission.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((submission) => submission.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -1867,7 +1867,7 @@ describe('several questions in flight', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi1' }))
 
-    const questions = h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')
+    const questions = h.recorder.submitted.filter((s) => s.draft.reply !== undefined)
     expect(questions.map((s) => s.draft.presentation.body)).toEqual(['Ship it?', 'Deploy where?'])
     // Each is its own notification with its own collapse key — one ask never
     // stands in for, or replaces, another.
@@ -1911,7 +1911,7 @@ describe('several questions in flight', () => {
       'codex',
     )
 
-    expect(h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')).toHaveLength(1)
+    expect(h.recorder.submitted.filter((s) => s.draft.reply !== undefined)).toHaveLength(1)
     expect(readSessionState('codex-form', h.env).pending).toBeUndefined()
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(h.io.errLines.join('\n')).toMatch(/expired with its continuation owner/)
@@ -1945,7 +1945,7 @@ describe('several questions in flight', () => {
 
     // Submit recorded the durable id before any wait; a 500 must not erase it
     // mid-flight, and recovery must still surface the late answer.
-    const questions = h.recorder.submitted.filter((s) => s.draft.event === 'agent_question')
+    const questions = h.recorder.submitted.filter((s) => s.draft.reply !== undefined)
     expect(questions).toHaveLength(1)
     expect(h.recorder.receipts[0]).toMatch(/^req_[A-Za-z0-9_-]{22,24}$/)
     expect(polls).toBeGreaterThanOrEqual(3)
@@ -2087,7 +2087,7 @@ describe('several questions in flight', () => {
     expect(readSessionState('answer-handoff', h.env).accepted).toBeUndefined()
     expect(h.recorder.closed).toContain('req_existing')
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -2278,7 +2278,7 @@ describe('several questions in flight', () => {
     expect(followup.reason).toContain('Staging')
     expect(readSessionState('multi3', h.env).pending).toBeUndefined()
     expect(
-      h.recorder.submitted.filter((s) => s.draft.event === 'agent_question'),
+      h.recorder.submitted.filter((s) => s.draft.reply !== undefined),
     ).toHaveLength(2)
   })
 })
@@ -3055,7 +3055,7 @@ describe('user-prompt-submit hook', () => {
 
     expect(h.recorder.closed).toEqual([])
     expect(
-      h.recorder.submitted.filter((s) => s.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((s) => s.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
     expect(readSessionState('transition', h.env).pending?.map((entry) => entry.question)).toEqual([
       'Ship it?',
@@ -3076,7 +3076,7 @@ describe('user-prompt-submit hook', () => {
 
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -3104,7 +3104,7 @@ describe('user-prompt-submit hook', () => {
 
     expect(h.recorder.closed).toContain('req_live')
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -3123,7 +3123,7 @@ describe('user-prompt-submit hook', () => {
 
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -3305,7 +3305,7 @@ describe('reconciling a conversation answer', () => {
     registerQuestion('stale-then-new', h.env, { question: 'Which ASN endpoint?' })
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'stale-then-new' }))
 
-    const questions = h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')
+    const questions = h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)
     expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['Which ASN endpoint?'])
   })
 
@@ -3335,7 +3335,7 @@ describe('reconciling a conversation answer', () => {
 
     expect(h.recorder.closed).toContain('req_live')
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
     expect(h.deps.now?.()).toBeLessThan(NOW + 10_000)
     const records = readLogRecords(h.env, { event: ['hook.retirement'] }).records
@@ -3610,7 +3610,7 @@ describe('telling concurrent agents apart', () => {
       'claude-code',
     )
 
-    const question = h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')
+    const question = h.recorder.submitted.find((entry) => entry.draft.reply !== undefined)
     expect(question?.draft.source).toEqual({
       session_id: 'session-branch-transition',
       session_label: 'Branch transition',
@@ -3634,7 +3634,7 @@ describe('telling concurrent agents apart', () => {
 
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -3665,7 +3665,7 @@ describe('telling concurrent agents apart', () => {
       'claude-code',
     )
 
-    const question = h.recorder.submitted.find((entry) => entry.draft.event === 'agent_question')
+    const question = h.recorder.submitted.find((entry) => entry.draft.reply !== undefined)
     expect(question?.draft.source).toEqual({
       session_id: 'session-detached',
       session_label: 'Detached review',
@@ -3701,7 +3701,7 @@ describe('telling concurrent agents apart', () => {
         'claude-code',
       )
       const question = h.recorder.submitted.find(
-        (entry) => entry.draft.event === 'agent_question',
+        (entry) => entry.draft.reply !== undefined,
       )
       expect(question?.draft.source).toEqual({
         session_id: 'session-worktree-transition',
@@ -3725,7 +3725,7 @@ describe('telling concurrent agents apart', () => {
       )
       expect(h.recorder.closed).toContain(h.recorder.receipts[0])
       expect(
-        h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+        h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
       ).toHaveLength(0)
     } finally {
       runFixtureGit(h.deps.cwd, 'worktree', 'remove', '--force', linked)
@@ -3784,7 +3784,7 @@ describe('telling concurrent agents apart', () => {
 
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -4325,7 +4325,7 @@ describe('Claude Code Stop wake route', () => {
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
     expect(h.recorder.closed).toContain('req_existing')
     expect(
-      h.recorder.submitted.filter((entry) => entry.draft.event === 'question_retired'),
+      h.recorder.submitted.filter((entry) => entry.draft.lifecycle?.retires_request_id !== undefined),
     ).toHaveLength(0)
   })
 
@@ -4354,7 +4354,7 @@ describe('Claude Code Stop wake route', () => {
       'claude-code',
     )
 
-    expect(h.recorder.submitted.filter((entry) => entry.draft.event === 'agent_question')).toEqual(
+    expect(h.recorder.submitted.filter((entry) => entry.draft.reply !== undefined)).toEqual(
       [],
     )
     expect(readSessionState('claude-route', h.env).pending?.[0]?.question).toBe('And after that?')

@@ -331,7 +331,6 @@ function setupProofDraft(
       project === null
         ? 'This real notification completed setup verification.'
         : `This real notification completed setup verification for ${project}.`,
-    event: 'setup_verified',
     kind: 'update',
     platform: device.platform,
     device: [device.device_id],

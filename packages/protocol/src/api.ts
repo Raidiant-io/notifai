@@ -341,7 +341,6 @@ export interface CompanionReceiptEvidence {
 
 export interface EvidenceSnapshot {
   request_id: string
-  event: string | null
   accepted_at: string
   overall: OverallState
   deliveries: (DeliveryOutcome & {

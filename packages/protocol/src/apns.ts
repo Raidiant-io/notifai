@@ -154,7 +154,6 @@ function notifaiKey(
     request_id: ids.requestId,
     delivery_id: ids.deliveryId,
     ...(ids.receiptToken != null ? { receipt_token: ids.receiptToken } : {}),
-    ...(draft.event !== undefined ? { event: draft.event } : {}),
     ...(kind !== DEFAULT_NOTIFICATION_KIND ? { kind } : {}),
     ...(draft.lifecycle !== undefined ? { lifecycle: draft.lifecycle } : {}),
     ...(draft.lifecycle?.tier === 'done' && draft.lifecycle.retires_request_id !== undefined

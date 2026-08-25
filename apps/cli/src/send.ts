@@ -31,7 +31,6 @@ export interface SendFlags {
   /** The one canonical Markdown body. */
   body: string
   subtitle?: string
-  event?: string
   /** What this notification is; absent means update. */
   kind?: string
   project?: string
@@ -337,7 +336,6 @@ export function buildDraft(
 
   const draft: NotificationDraftT = {
     schema_version: NOTIFICATION_SCHEMA_VERSION,
-    ...(flags.event !== undefined ? { event: flags.event } : {}),
     ...(flags.kind !== undefined
       ? { kind: flags.kind as (typeof NOTIFICATION_KINDS)[number] }
       : {}),
