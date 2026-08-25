@@ -17,6 +17,17 @@ import {
 // login / logout / auth status
 // ---------------------------------------------------------------------------
 
+/**
+ * Keep the one-time confirmation secret out of the HTTP request that opens
+ * the dashboard. URL fragments are browser-local and are not sent by GET,
+ * prefetchers, referrers, or link scanners.
+ */
+export function pairingApprovalUrl(approveUrl: string, confirmationSecret: string): string {
+  const url = new URL(approveUrl)
+  url.hash = new URLSearchParams({ confirmation_secret: confirmationSecret }).toString()
+  return url.toString()
+}
+
 export async function loginCommand(
   deps: CommandDeps,
   flags: { name?: string; baseUrl?: string; open?: boolean },
@@ -26,6 +37,7 @@ export async function loginCommand(
   const machineName = flags.name ?? os.hostname()
   const secret = randomBytes(32).toString('base64url')
   const pollVerifier = randomBytes(24).toString('base64url')
+  const confirmationSecret = randomBytes(32).toString('base64url')
   const client = makeClient(deps, baseUrl, null)
 
   let begin
@@ -34,21 +46,23 @@ export async function loginCommand(
       machine_name: machineName,
       credential_hash: sha256Hex(secret),
       poll_verifier_hash: sha256Hex(pollVerifier),
+      confirmation_hash: sha256Hex(confirmationSecret),
     })
   } catch (err) {
     return reportError(deps, err)
   }
+  const approveUrl = pairingApprovalUrl(begin.approve_url, confirmationSecret)
 
   const interactive = deps.io.interactive === true
   if (interactive) {
     await deps.io.intro?.('Notifai sign in')
-    await deps.io.note?.(`Code: ${begin.code}\n${begin.approve_url}`, 'Approve this machine')
+    await deps.io.note?.(`Code: ${begin.code}\n${approveUrl}`, 'Approve this machine')
   } else {
     deps.io.out(`Pairing code: ${begin.code}`)
-    deps.io.out(`Approve this machine at: ${begin.approve_url}`)
+    deps.io.out(`Approve this machine at: ${approveUrl}`)
     deps.io.out('Waiting for approval…')
   }
-  if (flags.open !== false) deps.io.openUrl(begin.approve_url)
+  if (flags.open !== false) deps.io.openUrl(approveUrl)
 
   const expiresAt = new Date(begin.expires_at).getTime()
   const intervalMs = Math.max(begin.poll_interval_seconds, 1) * 1000

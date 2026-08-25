@@ -71,6 +71,7 @@ export interface ApiClient {
     machine_name: string
     credential_hash: string
     poll_verifier_hash: string
+    confirmation_hash: string
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   accessStatus(): Promise<AccountAccessResponse>

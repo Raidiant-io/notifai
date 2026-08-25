@@ -2263,15 +2263,19 @@ describe('credential origin pinning', () => {
   it('lets unsigned-in login target an origin override', async () => {
     const io = new CapturedIo()
     const seen: { baseUrl: string; bearer: string | null }[] = []
+    let beginBody: Parameters<ApiClient['beginPairing']>[0] | null = null
     let now = 0
     const client = {
-      beginPairing: async () => ({
-        pairing_id: 'pair_test',
-        code: 'ABCD-EFGH',
-        approve_url: 'https://selfhost.example/pair/ABCD-EFGH',
-        expires_at: new Date(10_000).toISOString(),
-        poll_interval_seconds: 1,
-      }),
+      beginPairing: async (body: Parameters<ApiClient['beginPairing']>[0]) => {
+        beginBody = body
+        return {
+          pairing_id: 'pair_test',
+          code: 'ABCD-EFGH',
+          approve_url: 'https://selfhost.example/pair/ABCD-EFGH',
+          expires_at: new Date(10_000).toISOString(),
+          poll_interval_seconds: 1,
+        }
+      },
       pollPairing: async () => ({ status: 'approved', machine_id: 'mac_new' }),
     } as unknown as ApiClient
     const saved: { baseUrl?: string } = {}
@@ -2300,6 +2304,15 @@ describe('credential origin pinning', () => {
     )
     expect(seen[0]).toEqual({ baseUrl: 'https://selfhost.example', bearer: null })
     expect(saved.baseUrl).toBe('https://selfhost.example')
+    expect(beginBody).toMatchObject({
+      machine_name: expect.any(String),
+      credential_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      poll_verifier_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      confirmation_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+    expect(io.outLines[1]).toMatch(
+      /^Approve this machine at: https:\/\/selfhost\.example\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
+    )
   })
 
   it('stops login when the approving account has no product access', async () => {
@@ -3608,7 +3621,9 @@ describe('interactive command UX', () => {
     expect(io.notes).toEqual([
       {
         title: 'Approve this machine',
-        message: 'Code: ABCD-EFGH\nhttps://test.notifai.invalid/pair/ABCD-EFGH',
+        message: expect.stringMatching(
+          /^Code: ABCD-EFGH\nhttps:\/\/test\.notifai\.invalid\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
+        ),
       },
     ])
     expect(io.spinnerEvents).toEqual([
@@ -3644,7 +3659,9 @@ describe('interactive command UX', () => {
     expect(await loginCommand(deps, { open: false })).toBe(EXIT.ok)
     expect(io.outLines.slice(0, 3)).toEqual([
       'Pairing code: ABCD-EFGH',
-      'Approve this machine at: https://test.notifai.invalid/pair/ABCD-EFGH',
+      expect.stringMatching(
+        /^Approve this machine at: https:\/\/test\.notifai\.invalid\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
+      ),
       'Waiting for approval…',
     ])
   })
