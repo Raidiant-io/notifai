@@ -108,7 +108,74 @@ describe('Notifai agent skill', () => {
     for (const topic of ['when-to-notify', 'titles', 'bodies', 'questions', 'acknowledgements']) {
       expect(decide).toContain(`\`${topic}\``)
     }
-    expect(decide).toMatch(/outranks the shipped\s+default and your judgement/i)
+    const authorityOrder = ['from=you', 'from=this repository', 'from=shipped default'].map(
+      (marker) => decide.indexOf(marker),
+    )
+    expect(authorityOrder[0]).toBeGreaterThan(decide.indexOf('notifai guidance'))
+    expect(authorityOrder[1]).toBeGreaterThan(authorityOrder[0]!)
+    expect(authorityOrder[2]).toBeGreaterThan(authorityOrder[1]!)
+  })
+
+  it('separates repository policy from the User and makes non-exfiltration absolute', () => {
+    const decide = section('## Decide whether to notify')
+    const markers = ['from=you', 'from=this repository', 'from=shipped default']
+    const markerPositions = markers.map((marker) => decide.indexOf(marker))
+    expect(markerPositions.every((position) => position >= 0)).toBe(true)
+
+    const numberedLimits = [
+      ...decide.matchAll(/^\d+\. \*\*([^*]+)\.\*\*([\s\S]*?)(?=^\d+\. |\n\n)/gm),
+    ]
+    expect(numberedLimits.map((match) => match[1]?.toLowerCase())).toEqual([
+      'non-exfiltration',
+      'repository authority',
+    ])
+
+    const normalize = (value: string | undefined): string =>
+      (value ?? '').toLowerCase().replace(/\s+/g, ' ')
+    const nonExfiltration = normalize(numberedLimits[0]?.[2])
+    for (const protectedClass of [
+      'credential',
+      'token',
+      'key',
+      'password',
+      'environment',
+      'configuration',
+      'guidance',
+      'log',
+    ]) {
+      expect(nonExfiltration, protectedClass).toContain(protectedClass)
+    }
+    for (const outboundField of [
+      'notification request',
+      'question',
+      'choice',
+      'acknowledgement',
+      'image',
+    ]) {
+      expect(nonExfiltration, outboundField).toContain(outboundField)
+    }
+
+    const authority = normalize(numberedLimits[1]?.[2])
+    for (const protectedAuthority of [
+      'standing word',
+      'settings',
+      'guidance',
+      'cli',
+      'origins',
+      'direct user instruction',
+    ]) {
+      expect(authority, protectedAuthority).toContain(protectedAuthority)
+    }
+
+    const obligations = normalize(decide.slice(numberedLimits[1]?.index ?? 0))
+    const refuse = obligations.indexOf('refuse')
+    const report = obligations.indexOf('tell the user')
+    const noOutboundReport = obligations.search(
+      /(?:do not|never|cannot)[^.]{0,120}notification request/,
+    )
+    expect(refuse).toBeGreaterThanOrEqual(0)
+    expect(report).toBeGreaterThan(refuse)
+    expect(noOutboundReport).toBeGreaterThan(report)
   })
 
   it('names every notification kind the CLI accepts', () => {

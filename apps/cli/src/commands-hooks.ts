@@ -969,7 +969,7 @@ async function uploadAskMedia(
       mediaIds.push(image)
       continue
     }
-    const uploaded = await uploadImage(deps, authed.client, image)
+    const uploaded = await uploadImage(deps, authed.client, image, config.media_origins.value)
     if (!uploaded.ok) {
       if (uploaded.error !== null) deps.io.err(uploaded.error)
       return uploaded.exit

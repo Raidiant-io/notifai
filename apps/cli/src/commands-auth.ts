@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import os from 'node:os'
 import { NetworkError } from './client.js'
 import { type FlagOverrides } from './config.js'
+import { checkApproveUrl } from './url-policy.js'
 import {
   EXIT,
   authedClient,
@@ -52,6 +53,20 @@ export async function loginCommand(
     return reportError(deps, err)
   }
   const approveUrl = pairingApprovalUrl(begin.approve_url, confirmationSecret)
+
+  // The approval URL is the server's choice, and this machine is about to put
+  // it in front of the user's browser. A compromised or misconfigured service
+  // must not be able to aim that anywhere it likes, so the pairing stops here
+  // rather than showing a link the user would reasonably trust.
+  const approvable = checkApproveUrl(begin.approve_url, baseUrl, config.approve_origins.value)
+  if (!approvable.ok) {
+    deps.io.err(`Pairing stopped: ${approvable.reason}`)
+    deps.io.err(
+      'next: If you self-host with the dashboard on its own origin, allow it with ' +
+        '`notifai config set approve_origins <origin>` and run `notifai login` again.',
+    )
+    return EXIT.auth
+  }
 
   const interactive = deps.io.interactive === true
   if (interactive) {

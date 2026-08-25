@@ -1,4 +1,15 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  type Dirent,
+} from 'node:fs'
 import path from 'node:path'
 import { globalConfigDir, personalProjectIdentity } from './config.js'
 import { SHIPPED_GUIDANCE } from './guidance-content.js'
@@ -14,6 +25,16 @@ import { SHIPPED_GUIDANCE } from './guidance-content.js'
  * not annotate it — and a file whose name matches no shipped topic is purely
  * additive house rules. There is no session layer: an instruction given in
  * conversation tunes the session by being followed, not persisted.
+ *
+ * Two of those layers are the User's own word and one is not. `global` and
+ * `project-local` live under the User's config home: only they can write
+ * there. `project` is `.notifai/guidance` inside the repository, so it
+ * arrives with a clone and is written by whoever wrote the repository —
+ * which may be nobody the User has ever met. It remains authoritative about
+ * *how this project's notifications should read*, because shared house rules
+ * are the feature; it is never the User speaking. `authority` carries that
+ * distinction to every reader so a cloned repository cannot borrow the
+ * User's voice.
  */
 
 export type GuidanceSource =
@@ -22,12 +43,28 @@ export type GuidanceSource =
   | `global:${string}`
   | 'default'
 
+/**
+ * Who is speaking in a topic.
+ *
+ * - `user` — the User's own standing word, from a location only they can write.
+ * - `repository` — this checkout's shared house rules; committed content, and
+ *   therefore untrusted input that speaks for the project, not the User.
+ * - `shipped` — the default that applies when nobody said otherwise.
+ */
+export type GuidanceAuthority = 'user' | 'repository' | 'shipped'
+
 export interface ResolvedGuidanceTopic {
   name: string
   source: GuidanceSource
+  authority: GuidanceAuthority
   /** One line for lists; user-authored topics describe themselves by content. */
   summary: string
   content: string
+}
+
+export function guidanceAuthority(source: GuidanceSource): GuidanceAuthority {
+  if (source === 'default') return 'shipped'
+  return source.startsWith('project:') ? 'repository' : 'user'
 }
 
 /**
@@ -47,12 +84,29 @@ export function globalGuidanceDir(env: NodeJS.ProcessEnv = process.env): string 
   return path.join(globalConfigDir(env), 'guidance')
 }
 
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate)
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+}
+
 /** Walk up from cwd looking for `.notifai/guidance` (shared, committed). */
 export function findProjectGuidanceDir(startDir: string): string | null {
   let dir = path.resolve(startDir)
   for (;;) {
     const candidate = path.join(dir, '.notifai', 'guidance')
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) {
+      try {
+        // A clone may contain symlinks. Repository guidance may read only
+        // regular content rooted in that repository; it must never turn a
+        // local private file into model context by pointing outside the tree.
+        const candidateStat = lstatSync(candidate)
+        const repositoryRoot = realpathSync(dir)
+        const resolved = realpathSync(candidate)
+        if (candidateStat.isDirectory() && isWithin(repositoryRoot, resolved)) return candidate
+      } catch {
+        // An unreadable or unstable candidate is not guidance. Keep walking.
+      }
+    }
     const parent = path.dirname(dir)
     if (parent === dir) return null
     dir = parent
@@ -74,33 +128,47 @@ export function personalProjectGuidanceDir(
 function topicsInDir(dir: string): Map<string, string> {
   const topics = new Map<string, string>()
   if (!existsSync(dir)) return topics
-  let entries: string[]
+  let entries: Dirent[]
   try {
-    entries = readdirSync(dir)
+    if (!lstatSync(dir).isDirectory()) return topics
+    entries = readdirSync(dir, { withFileTypes: true })
   } catch {
     return topics
   }
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith('.md')) continue
-    const name = entry.slice(0, -'.md'.length)
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    // In particular, refuse symlinks. A committed link to a User-owned file
+    // must not make that file part of repository guidance output.
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+    const name = entry.name.slice(0, -'.md'.length)
     if (!GUIDANCE_TOPIC_PATTERN.test(name)) continue
-    topics.set(name, path.join(dir, entry))
+    topics.set(name, path.join(dir, entry.name))
   }
   return topics
 }
 
 function readTopicFile(filePath: string): string | null {
-  let content: string
+  let descriptor: number | null = null
   try {
-    content = readFileSync(filePath, 'utf8')
+    descriptor = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    if (!fstatSync(descriptor).isFile()) return null
+    const bytes = Buffer.alloc(GUIDANCE_TOPIC_MAX_BYTES + 1)
+    let offset = 0
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset)
+      if (count === 0) break
+      offset += count
+    }
+    const truncated = offset > GUIDANCE_TOPIC_MAX_BYTES
+    const content = bytes.subarray(0, Math.min(offset, GUIDANCE_TOPIC_MAX_BYTES)).toString('utf8')
+    if (content.trim() === '') return null
+    return truncated
+      ? `${content}\n\n[Truncated: this guidance file exceeds ${GUIDANCE_TOPIC_MAX_BYTES} bytes.]\n`
+      : content
   } catch {
     return null
+  } finally {
+    if (descriptor !== null) closeSync(descriptor)
   }
-  if (content.trim() === '') return null
-  if (content.length > GUIDANCE_TOPIC_MAX_BYTES) {
-    return `${content.slice(0, GUIDANCE_TOPIC_MAX_BYTES)}\n\n[Truncated: this guidance file exceeds ${GUIDANCE_TOPIC_MAX_BYTES} bytes.]\n`
-  }
-  return content
 }
 
 /**
@@ -135,15 +203,29 @@ export function resolveGuidance(options: {
     const override = winners.get(topic.name)
     winners.delete(topic.name)
     return override === undefined
-      ? { name: topic.name, source: 'default', summary: topic.summary, content: topic.content }
-      : { name: topic.name, source: override.source, summary: topic.summary, content: override.content }
+      ? {
+          name: topic.name,
+          source: 'default' as const,
+          authority: 'shipped' as const,
+          summary: topic.summary,
+          content: topic.content,
+        }
+      : {
+          name: topic.name,
+          source: override.source,
+          authority: guidanceAuthority(override.source),
+          summary: topic.summary,
+          content: override.content,
+        }
   })
   for (const name of [...winners.keys()].sort()) {
     const extra = winners.get(name)!
+    const authority = guidanceAuthority(extra.source)
     resolved.push({
       name,
       source: extra.source,
-      summary: 'User-added guidance',
+      authority,
+      summary: authority === 'repository' ? 'Project house rules' : 'User-added guidance',
       content: extra.content,
     })
   }

@@ -8,7 +8,11 @@ import {
   guidanceShowCommand,
   guidanceUnsetCommand,
 } from './commands-guidance.js'
-import { SHIPPED_GUIDANCE, shippedGuidanceTopic } from './guidance-content.js'
+import {
+  GUIDANCE_TRUST_PREAMBLE,
+  SHIPPED_GUIDANCE,
+  shippedGuidanceTopic,
+} from './guidance-content.js'
 import {
   GUIDANCE_TOPIC_MAX_BYTES,
   personalProjectGuidanceDir,
@@ -216,23 +220,32 @@ function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
 }
 
 describe('guidance commands', () => {
-  it('shows every topic under a provenance comment', () => {
+  it('shows every topic under a marker naming who supplied it', () => {
     const { env, cwd } = setup({ project: { 'titles.md': 'my titles\n' } })
     const { deps, captured } = makeDeps(env, cwd)
     expect(guidanceShowCommand(deps, {})).toBe(0)
     const output = captured.out.join('\n')
-    expect(output).toMatch(/<!-- when-to-notify · shipped default -->/)
-    expect(output).toMatch(/<!-- titles · this project \(shared\) · .*titles\.md -->/)
+    expect(output).toMatch(/<!-- notifai:guidance topic=when-to-notify from=shipped default -->/)
+    expect(output).toMatch(
+      /<!-- notifai:guidance topic=titles from=this repository file=.*titles\.md -->/,
+    )
     expect(output).toContain('my titles')
   })
 
-  it('emits machine-readable topics with name, source, summary, and content', () => {
+  it('emits machine-readable topics with name, source, authority, summary, and content', () => {
     const { env, cwd } = setup()
     const { deps, captured } = makeDeps(env, cwd)
     expect(guidanceShowCommand(deps, { json: true })).toBe(0)
-    const topics = JSON.parse(captured.out.join('\n')) as { name: string; source: string }[]
-    expect(topics.map((topic) => topic.name)).toEqual(SHIPPED_GUIDANCE.map((topic) => topic.name))
-    expect(topics.every((topic) => topic.source === 'default')).toBe(true)
+    const parsed = JSON.parse(captured.out.join('\n')) as {
+      trust: string
+      topics: { name: string; source: string; authority: string }[]
+    }
+    expect(parsed.topics.map((topic) => topic.name)).toEqual(
+      SHIPPED_GUIDANCE.map((topic) => topic.name),
+    )
+    expect(parsed.topics.every((topic) => topic.source === 'default')).toBe(true)
+    expect(parsed.topics.every((topic) => topic.authority === 'shipped')).toBe(true)
+    expect(parsed.trust).toBe(GUIDANCE_TRUST_PREAMBLE)
   })
 
   it('writes a topic to the chosen layer and resolution picks it up', async () => {

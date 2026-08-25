@@ -2322,7 +2322,7 @@ describe('credential origin pinning', () => {
       beginPairing: async () => ({
         pairing_id: 'pair_test',
         code: 'ABCD-EFGH',
-        approve_url: 'https://test.notifai.invalid/pair/ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
         expires_at: new Date(10_000).toISOString(),
         poll_interval_seconds: 1,
       }),
@@ -3591,7 +3591,7 @@ describe('interactive command UX', () => {
       beginPairing: async () => ({
         pairing_id: 'pair_test',
         code: 'ABCD-EFGH',
-        approve_url: 'https://test.notifai.invalid/pair/ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
         expires_at: new Date(10_000).toISOString(),
         poll_interval_seconds: 1,
       }),
@@ -3622,7 +3622,7 @@ describe('interactive command UX', () => {
       {
         title: 'Approve this machine',
         message: expect.stringMatching(
-          /^Code: ABCD-EFGH\nhttps:\/\/test\.notifai\.invalid\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
+          /^Code: ABCD-EFGH\nhttps:\/\/app\.notifai\.sh\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
         ),
       },
     ])
@@ -3642,7 +3642,7 @@ describe('interactive command UX', () => {
       beginPairing: async () => ({
         pairing_id: 'pair_test',
         code: 'ABCD-EFGH',
-        approve_url: 'https://test.notifai.invalid/pair/ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
         expires_at: new Date(10_000).toISOString(),
         poll_interval_seconds: 1,
       }),
@@ -3660,7 +3660,7 @@ describe('interactive command UX', () => {
     expect(io.outLines.slice(0, 3)).toEqual([
       'Pairing code: ABCD-EFGH',
       expect.stringMatching(
-        /^Approve this machine at: https:\/\/test\.notifai\.invalid\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
+        /^Approve this machine at: https:\/\/app\.notifai\.sh\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
       ),
       'Waiting for approval…',
     ])

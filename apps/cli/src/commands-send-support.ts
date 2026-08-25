@@ -3,6 +3,7 @@ import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { isRetryableReplyPollError, type ApiClient } from './client.js'
+import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
 import { readOrcaSessionTitle } from './orca-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
@@ -247,13 +248,28 @@ export async function readCappedBytes(
   return out
 }
 
-/** `--image` accepts a media id, a local file path, or an http(s) URL. */
-export async function uploadImage(deps: CommandDeps, client: ApiClient, source: string): Promise<UploadResult> {
+/**
+ * `--image` accepts a media id, a local file path, or an http(s) URL.
+ *
+ * A remote URL is fetched under the media URL policy (`url-policy.ts`):
+ * public HTTPS by default, every redirect hop re-validated, and non-public
+ * destinations only through the User's `media_origins` — never a
+ * repository's. `--image` values routinely arrive from an agent that read
+ * them in a working tree, so the URL is hostile input until proven otherwise.
+ */
+export async function uploadImage(
+  deps: CommandDeps,
+  client: ApiClient,
+  source: string,
+  allowOrigins: readonly string[] = [],
+): Promise<UploadResult> {
   let bytes: Uint8Array
   let mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | undefined
   if (/^https?:\/\//.test(source)) {
     try {
-      const response = await fetch(source)
+      const fetched = await fetchMediaUrl(source, { allowOrigins }, deps.fetchImpl)
+      if (!fetched.ok) return { ok: false, error: fetched.reason, exit: EXIT.usage }
+      const response = fetched.response
       if (!response.ok) return { ok: false, error: `Could not fetch ${source} (${response.status}).`, exit: EXIT.usage }
       const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? ''
       mediaType = (['image/jpeg', 'image/png', 'image/gif'] as const).find((t) => t === contentType)

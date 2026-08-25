@@ -13,6 +13,8 @@ import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
   NUMERIC_CONFIG_KEYS,
+  ORIGIN_LIST_CONFIG_KEYS,
+  USER_OWNED_CONFIG_KEYS,
   configBounds,
   configDefaultValue,
   findProjectConfigPath,
@@ -21,6 +23,7 @@ import {
   sessionConfigPath,
   type ConfigKey,
 } from './config.js'
+import { normalizeOrigin } from './url-policy.js'
 import { renderConfigExplain, renderConfigList, renderConfigPlain } from './ui/config-view.js'
 import { EXIT, loadLoggedConfig, type CommandDeps } from './commands-core.js'
 
@@ -190,10 +193,28 @@ export async function configSetCommand(
     deps.io.err(`${key} takes one of: ${info.choices.join(', ')} — not "${rawValue}".`)
     return EXIT.usage
   }
-  if (key === 'devices') value = rawValue.split(',').map((s) => s.trim()).filter(Boolean)
+  if (info.kind === 'list') value = rawValue.split(',').map((s) => s.trim()).filter(Boolean)
+  if (ORIGIN_LIST_CONFIG_KEYS.includes(configKey)) {
+    const origins = (value as string[]).map((entry) => normalizeOrigin(entry))
+    const rejected = (value as string[]).filter((_, index) => origins[index] === null)
+    if (rejected.length > 0) {
+      deps.io.err(
+        `${key} entries must be bare http(s) origins like "https://host" or "http://host:8080" — not ${rejected.map((entry) => `"${entry}"`).join(', ')}.`,
+      )
+      return EXIT.usage
+    }
+    value = origins
+  }
 
   const target = await configMutationTarget(deps, flags)
   if (target === null) return EXIT.usage
+  if (target.layer === 'project' && USER_OWNED_CONFIG_KEYS.includes(configKey)) {
+    deps.io.err(
+      `${key} widens which origins this machine trusts, so it is never read from the repository's shared config — a cloned repository must not be able to set it.`,
+    )
+    deps.io.err('Store it on this machine (no flag) or for this project personally (--local).')
+    return EXIT.usage
+  }
   if (target.layer === 'global' && Object.is(value, configDefaultValue(configKey))) {
     deps.io.err(`${key} is already the shipped default (${JSON.stringify(value)}).`)
     deps.io.err(
