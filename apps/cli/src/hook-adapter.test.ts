@@ -263,7 +263,7 @@ describe('Windows hook adapter', () => {
     }
     expect(hookAdapterSource(target, 'posix')).toBe(`#!/bin/sh
 # notifai managed hook adapter
-# adapter-version: 2
+# adapter-version: 1
 # target-exec-json: "/usr/local/bin/node"
 # target-script-json: "/opt/notifai/dist/main.js"
 set -eu

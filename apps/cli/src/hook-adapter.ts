@@ -13,7 +13,7 @@ import { withTargetFileLock } from './file-lock.js'
 
 const ADAPTER_MARKER = '# notifai managed hook adapter'
 const WIN32_ADAPTER_MARKER = '// notifai managed hook adapter'
-const ADAPTER_VERSION = 2
+const ADAPTER_VERSION = 1
 
 export type HookHostPlatform = 'posix' | 'win32'
 
