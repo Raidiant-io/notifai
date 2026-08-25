@@ -212,6 +212,21 @@ export function hookAdapterSource(
     : posixHookAdapterSource(target)
 }
 
+/**
+ * Two rungs, and the difference between them is the whole safety argument.
+ *
+ * The registered runtime is a resolved path, so every node version manager
+ * makes it version-scoped: a Homebrew upgrade renames its Cellar directory, an
+ * nvm version gets pruned, and the pinned interpreter stops existing. The npm
+ * shim this adapter wraps already survives that — `main.ts` starts with
+ * `#!/usr/bin/env node` — so pinning the interpreter here was stricter than the
+ * binary it stands in front of, and the strictness bought nothing.
+ *
+ * So PATH may supply the *interpreter*, and never the *code*: both rungs keep
+ * the registered script path, and no rung resolves `notifai` from PATH. Which
+ * Notifai build a trusted hook definition runs stays a property of the
+ * installation, not of whatever environment the harness happens to hand us.
+ */
 function posixHookAdapterSource(target: HookAdapterTarget): string {
   if (isNpxAdapterTarget(target)) {
     return `#!/bin/sh
@@ -231,6 +246,10 @@ if [ -x "$registered_exec" ] && [ -f "$registered_npm_cli" ]; then
   exec "$registered_exec" "$registered_npm_cli" exec --yes --package "$registered_spec" -- notifai "$@"
 fi
 
+if [ -f "$registered_npm_cli" ] && command -v node >/dev/null 2>&1; then
+  exec node "$registered_npm_cli" exec --yes --package "$registered_spec" -- notifai "$@"
+fi
+
 printf '%s\n' 'Notifai hook adapter target is stale; run notifai hooks install.' >&2
 exit 127
 `
@@ -247,6 +266,10 @@ registered_script=${quote(target.scriptPath)}
 
 if [ -x "$registered_exec" ] && [ -f "$registered_script" ]; then
   exec "$registered_exec" "$registered_script" "$@"
+fi
+
+if [ -f "$registered_script" ] && command -v node >/dev/null 2>&1; then
+  exec node "$registered_script" "$@"
 fi
 
 printf '%s\n' 'Notifai hook adapter target is stale; run notifai hooks install.' >&2
@@ -288,8 +311,12 @@ function isFile(file) {
   }
 }
 
-if (isFile(registeredExec) && isFile(registeredCompanion)) {
-  const result = spawnSync(registeredExec, ${argv}, {
+// The pinned runtime is preferred; the runtime already executing this shim is
+// the fallback. Only the interpreter is allowed to move — the code stays pinned.
+const runtime = isFile(registeredExec) ? registeredExec : process.execPath;
+
+if (isFile(registeredCompanion)) {
+  const result = spawnSync(runtime, ${argv}, {
     stdio: "inherit",
     windowsHide: true,
   });
