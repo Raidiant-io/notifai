@@ -191,7 +191,7 @@ export async function sendCommand(
   log(deps).info('send.submitted', {
     request_id: receipt.request_id,
     kind: flags.reply ? 'question' : (flags.kind ?? 'update'),
-    title: flags.title,
+    title_chars: flags.title.length,
     overall: receipt.overall,
     replayed: receipt.replayed,
     agent_acknowledgement_required: receipt.agent_acknowledgement_required,
@@ -527,8 +527,8 @@ function recordReplies(deps: CommandDeps, requestId: string, replies: readonly R
       request_id: requestId,
       sequence: reply.seq,
       device: reply.device_name,
-      text: reply.text,
-      answers: reply.answers,
+      text_chars: reply.text.length,
+      answers_count: reply.answers?.length ?? 0,
       source: reply.source,
     })
   }

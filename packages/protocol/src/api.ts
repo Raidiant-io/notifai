@@ -126,15 +126,8 @@ export const PollPairingRequest = Type.Object(
 export type PollPairingRequestT = Static<typeof PollPairingRequest>
 
 export interface PollPairingResponse {
-  /**
-   * `no_active_plan` is set when a signed-in account without product access
-   * opened the approval page: the CLI should stop polling and surface the
-   * same next step the browser already showed.
-   */
-  status: 'pending' | 'approved' | 'expired' | 'denied' | 'no_active_plan'
+  status: 'pending' | 'approved' | 'expired' | 'denied'
   machine_id?: string
-  /** Present when status is `no_active_plan`; a concrete path to request access. */
-  next_action?: string
 }
 
 export interface PairingDetailsResponse {

@@ -91,6 +91,7 @@ import {
 import {
   EXIT,
   authedClient,
+  diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
   log,
   makeClient,
@@ -279,11 +280,7 @@ export async function hookRunCommand(
     // repository can commit `.notifai/config.toml`, and honouring a base_url
     // from it would hand this machine's bearer token to whatever host it names.
     const baseUrl = credential.baseUrl
-    if (resolved.base_url.source !== 'default' && resolved.base_url.value !== baseUrl) {
-      deps.io.err(
-        `notifai: ignoring base_url from ${resolved.base_url.source}; hooks only talk to ${baseUrl}`,
-      )
-    }
+    diagnoseIgnoredOriginOverride(deps.io, resolved, credential)
     // UserPromptSubmit runs in front of the user's own prompt under a 15s
     // harness ceiling and can make two calls, so each gets a small slice of it;
     // Stop is allowed to block and keeps the ordinary budget.
@@ -654,7 +651,7 @@ function recordRegisteredQuestion(
     ok: true,
     session: sessionId,
     questions: built.questions.length,
-    text: built.questions[0]!.text,
+    text_chars: built.questions[0]!.text.length,
     choices: built.questions[0]!.choices?.length ?? 0,
     media: draft.presentation.media?.length ?? 0,
   })
@@ -1099,7 +1096,6 @@ export async function acknowledgeCommand(
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   logger.info('acknowledgement.attempted', {
     request_id: requestId,
-    text,
     characters: text.length,
   })
   const authed = authedClient(deps, config)
@@ -1118,7 +1114,7 @@ export async function acknowledgeCommand(
     logger.info('acknowledgement.outcome', {
       request_id: requestId,
       outcome: result.status,
-      text: result.agent_acknowledgement.text,
+      text_chars: result.agent_acknowledgement.text.length,
       created_at: result.agent_acknowledgement.created_at,
       agent_acknowledgement_required: true,
     })

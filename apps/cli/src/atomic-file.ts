@@ -19,6 +19,12 @@ export interface AtomicWriteOptions {
   preserveMode?: boolean
   /** Reject a target owned by another user instead of replacing it. */
   requireCurrentUserOwner?: boolean
+  /**
+   * POSIX directory mode applied to the parent. Defaults to 0o700 when
+   * `requireCurrentUserOwner` is set so credential and config dirs match the
+   * hook-adapter and log directories.
+   */
+  directoryMode?: number
 }
 
 /**
@@ -34,8 +40,12 @@ export function atomicWriteFileSync(
   options: AtomicWriteOptions = {},
 ): void {
   const directory = path.dirname(file)
-  mkdirSync(directory, { recursive: true })
-  const parent = safeDirectory(directory, options.requireCurrentUserOwner ?? false)
+  const requireCurrentUserOwner = options.requireCurrentUserOwner ?? false
+  const directoryMode = options.directoryMode ?? (requireCurrentUserOwner ? 0o700 : undefined)
+  const parent = ensureDirectory(directory, {
+    requireCurrentUserOwner,
+    ...(directoryMode === undefined ? {} : { mode: directoryMode }),
+  })
   const target = targetMetadata(
     file,
     options.mode ?? 0o600,
@@ -67,6 +77,30 @@ export function atomicWriteFileSync(
     }
     throw err
   }
+}
+
+/**
+ * Create (or tighten) a directory that must not be world-readable.
+ *
+ * `mkdir` mode applies only to a newly created leaf, so an existing 0755
+ * credential directory would otherwise stay world-listable. POSIX chmod of
+ * the leaf is the matching repair; Windows has no equivalent mode bits.
+ */
+export function ensurePrivateDirectory(directory: string): void {
+  ensureDirectory(directory, { mode: 0o700, requireCurrentUserOwner: false })
+}
+
+function ensureDirectory(
+  directory: string,
+  options: { mode?: number; requireCurrentUserOwner: boolean },
+): { dev: number; ino: number } {
+  if (options.mode === undefined) mkdirSync(directory, { recursive: true })
+  else mkdirSync(directory, { recursive: true, mode: options.mode })
+  const parent = safeDirectory(directory, options.requireCurrentUserOwner)
+  if (options.mode !== undefined && process.platform !== 'win32') {
+    chmodSync(directory, options.mode)
+  }
+  return parent
 }
 
 /** Persist the published directory entry where the host supports directory fsync. */

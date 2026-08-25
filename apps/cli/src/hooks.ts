@@ -1534,7 +1534,7 @@ function reportAnswer(
     ...(late ? { late: true } : {}),
     request_id: answered.pending.request_id,
     device: answered.reply.device_name,
-    text: answered.reply.text,
+    text_chars: answered.reply.text.length,
   })
   notes.push(`${late ? 'late ' : ''}answer from ${answered.reply.device_name}: ${answered.reply.text}`)
 }
@@ -2912,7 +2912,7 @@ async function escalate(
         request_id: intent.request_id,
         devices: intent.device_ids.length,
         questions: questions.length,
-        text: questions[0]!.text,
+        text_chars: questions[0]!.text.length,
       })
     }
     const committedReplyDeadline =

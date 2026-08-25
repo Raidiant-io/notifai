@@ -3,6 +3,14 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { accountHome, npxLaunch } from './platform.js'
 
+/**
+ * Exact reviewed version of the external `skills` installer.
+ *
+ * The GitHub skill source stays the immutable CLI version tag. The installer
+ * program that fetches it must not float on `latest`.
+ */
+export const SKILLS_INSTALLER_SPEC = 'skills@1.5.23'
+
 /** The two scopes offered by the skills installer. */
 export type SkillScope = 'project' | 'global'
 
@@ -108,15 +116,20 @@ function run(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): 
   })
 }
 
+/** argv for `npx`, including the pinned installer spec. */
+export function skillsAddArgv(options: SkillsAddOptions): string[] {
+  const args = ['-y', SKILLS_INSTALLER_SPEC, 'add', options.source, '--skill', options.skill]
+  if (options.scope === 'global') args.push('--global')
+  // An explicit scope is the unattended contract. Native `--yes` keeps all
+  // remaining installer prompts non-interactive after the scope is chosen.
+  if (options.scope !== undefined) args.push('--yes')
+  return args
+}
+
 /** The only process/filesystem adapter Notifai needs for the external installer. */
 export const nativeSkills: NativeSkills = {
   async add(options) {
-    const args = ['-y', 'skills', 'add', options.source, '--skill', options.skill]
-    if (options.scope === 'global') args.push('--global')
-    // An explicit scope is the unattended contract. Native `--yes` keeps all
-    // remaining installer prompts non-interactive after the scope is chosen.
-    if (options.scope !== undefined) args.push('--yes')
-    return run(args, { cwd: options.cwd, env: options.env })
+    return run(skillsAddArgv(options), { cwd: options.cwd, env: options.env })
   },
 
   async list(scope, cwd, env) {

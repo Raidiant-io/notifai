@@ -35,6 +35,7 @@ import type { Platform } from '@raidiant/notifai-protocol'
 import type { SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 import { readStdinWithTimeout } from './hook-input.js'
+import { argvFlagNames } from './logging.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -149,7 +150,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       if (!deferDiagnostics) {
         logger?.debug('cli.start', {
           version: version(),
-          argv: process.argv.slice(2),
+          flags: argvFlagNames(process.argv.slice(2)),
           cwd: process.cwd(),
         })
       }
@@ -240,7 +241,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .summary('Sign in and pair this machine')
     .description('Pair this machine with your Notifai account via browser approval')
     .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')
-    .option('--base-url <url>', 'developer override for the service origin (also NOTIFAI_BASE_URL)')
+    .option('--base-url <url>', 'pairing override for the service origin (also NOTIFAI_BASE_URL)')
     .option('--no-open', 'do not open the approval page in a browser')
     .action(async (opts: { name?: string; baseUrl?: string; open?: boolean }) => {
       exit(await runners.login(deps, opts))
@@ -357,7 +358,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--no-wait', 'return immediately after acceptance')
     .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--idempotency-key <key>', 'safe-retry key (default: random)')
-    .option('--base-url <url>', 'developer override for the service origin (also NOTIFAI_BASE_URL)')
+    .option(
+      '--base-url <url>',
+      'pairing override for the service origin; ignored when this machine is already paired (also NOTIFAI_BASE_URL)',
+    )
     .option('--json', 'print the full submission receipt as JSON')
     .action(async (opts: Record<string, unknown>) => {
       // commander maps --no-wait onto the same "wait" flag; disentangle.

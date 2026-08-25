@@ -209,6 +209,7 @@ export function createClient(
           ...clientHeaders,
         },
         signal,
+        ...(bearer ? { redirect: 'error' as const } : {}),
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       })
     } catch (err) {
@@ -243,7 +244,9 @@ export function createClient(
   return {
     beginPairing: (body) => call('POST', '/api/v1/pairings', body),
     pollPairing: (pairingId, pollVerifier) =>
-      call('POST', `/api/v1/pairings/${pairingId}/poll`, { poll_verifier: pollVerifier }),
+      call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/poll`, {
+        poll_verifier: pollVerifier,
+      }),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     listDevices: () => call('GET', '/api/v1/devices'),
     capabilities: (platform = 'ios', appVersion, appBuild) => {
@@ -251,12 +254,12 @@ export function createClient(
       if (appVersion !== undefined) query.set('app_version', appVersion)
       if (appBuild !== undefined) query.set('app_build', appBuild)
       const suffix = query.size > 0 ? `?${query.toString()}` : ''
-      return call('GET', `/api/v1/capabilities/${platform}${suffix}`)
+      return call('GET', `/api/v1/capabilities/${encodeURIComponent(platform)}${suffix}`)
     },
     compatibility: () => call('GET', '/api/v1/compatibility'),
     submit: (body, waitSeconds) =>
       call('POST', `/api/v1/notifications?wait_seconds=${waitSeconds}`, body, waitSeconds),
-    evidence: (requestId) => call('GET', `/api/v1/notifications/${requestId}`),
+    evidence: (requestId) => call('GET', `/api/v1/notifications/${encodeURIComponent(requestId)}`),
     replies: (requestId, { waitSeconds, afterSeq }) =>
       call(
         'GET',

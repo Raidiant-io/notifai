@@ -2,7 +2,7 @@
 import { realIo, type CommandDeps } from './commands.js'
 import { defaultCredentialStore } from './credentials.js'
 import { nativeSkills } from './native-skills.js'
-import { bootstrapLogger } from './logging.js'
+import { argvFlagNames, bootstrapLogger } from './logging.js'
 import { buildProgram } from './program.js'
 
 /**
@@ -24,24 +24,12 @@ const deps: CommandDeps = {
   logger,
 }
 
-/**
- * Which flags were passed, without their values.
- *
- * The flag names answer nearly every question worth asking of an invocation —
- * was `--reply` set, was `--all` — while the values are notification content
- * and user text that has no business being recorded merely because a command
- * ran. Values are available under `log_level = debug`, which is a deliberate act.
- */
-function flagNames(argv: readonly string[]): string[] {
-  return argv.filter((token) => token.startsWith('--'))
-}
-
 const startedAt = Date.now()
 process.on('exit', (code) => {
   logger.info('cli.end', {
     exit: code,
     duration_ms: Date.now() - startedAt,
-    flags: flagNames(process.argv.slice(2)),
+    flags: argvFlagNames(process.argv.slice(2)),
   })
 })
 

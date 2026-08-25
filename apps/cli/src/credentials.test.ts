@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -204,6 +205,27 @@ describe('FileStore', () => {
     expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({
       format: 'notifai.machine-credential.v1',
     })
+  })
+
+  it('creates the credential directory mode 0700 on POSIX', () => {
+    if (process.platform === 'win32') return
+    const { env } = sandbox('file-dir-mode')
+    const store = new FileStore(env, { platform: 'linux' })
+    store.save(SAMPLE)
+    const dir = path.join(env.XDG_CONFIG_HOME!, 'notifai')
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+  })
+
+  it('tightens an existing world-readable credential directory on POSIX', () => {
+    if (process.platform === 'win32') return
+    const { env } = sandbox('file-dir-chmod')
+    const dir = path.join(env.XDG_CONFIG_HOME!, 'notifai')
+    mkdirSync(dir, { recursive: true, mode: 0o755 })
+    chmodSync(dir, 0o755)
+    expect(statSync(dir).mode & 0o777).toBe(0o755)
+    const store = new FileStore(env, { platform: 'linux' })
+    store.save(SAMPLE)
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
   })
 
   it('does not interpret or erase a credential from a future format epoch', () => {
