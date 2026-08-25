@@ -175,6 +175,15 @@ export async function sendCommand(
   }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
   const idempotencyKey = flags.idempotencyKey ?? `cli-${randomBytes(12).toString('base64url')}`
+  // Persist the retry identity before entering the ambiguous network boundary.
+  // If the process is killed after the server accepts but before a response,
+  // this is the only durable way to reconstruct the same Agent Event key.
+  log(deps).info('send.attempt', {
+    idempotency_key: idempotencyKey,
+    kind: flags.reply ? 'question' : (flags.kind ?? 'update'),
+    title: flags.title,
+    session_id: source.invocation.source?.session_id ?? null,
+  })
   let receipt: SubmissionReceipt
   try {
     receipt = await authed.client.submit(
@@ -182,7 +191,20 @@ export async function sendCommand(
       waitSeconds,
     )
   } catch (err) {
-    return reportError(deps, err)
+    const exit = reportError(deps, err)
+    if (exit === EXIT.network) {
+      deps.io.err(
+        'The server may have accepted this Notification Request before the connection failed. ' +
+          `Retry the same send with \`--idempotency-key ${idempotencyKey}\` so this Agent Event cannot create a duplicate.`,
+      )
+    }
+    if (err instanceof ApiCallError && err.code === 'no_active_devices') {
+      deps.io.err(
+        'After setup succeeds, repeat this original Notification Request with ' +
+          `\`--idempotency-key ${idempotencyKey}\`; the setup verification request does not replace this Agent Event.`,
+      )
+    }
+    return exit
   }
   const receiptExit = receiptExitCode(receipt)
   // The single most useful line in the log: it ties the local invocation to

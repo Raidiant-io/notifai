@@ -13,7 +13,7 @@ import { withTargetFileLock } from './file-lock.js'
 
 const ADAPTER_MARKER = '# notifai managed hook adapter'
 const WIN32_ADAPTER_MARKER = '// notifai managed hook adapter'
-const ADAPTER_VERSION = 1
+const ADAPTER_VERSION = 2
 
 export type HookHostPlatform = 'posix' | 'win32'
 
@@ -238,6 +238,9 @@ ${ADAPTER_MARKER}
 # target-spec-json: ${JSON.stringify(target.spec)}
 set -eu
 
+NOTIFAI_HOOK_SOURCE_PID=$PPID
+export NOTIFAI_HOOK_SOURCE_PID
+
 registered_exec=${quote(target.execPath)}
 registered_npm_cli=${quote(target.npmCli)}
 registered_spec=${quote(target.spec)}
@@ -260,6 +263,9 @@ ${ADAPTER_MARKER}
 # target-exec-json: ${JSON.stringify(target.execPath)}
 # target-script-json: ${JSON.stringify(target.scriptPath)}
 set -eu
+
+NOTIFAI_HOOK_SOURCE_PID=$PPID
+export NOTIFAI_HOOK_SOURCE_PID
 
 registered_exec=${quote(target.execPath)}
 registered_script=${quote(target.scriptPath)}
@@ -319,6 +325,7 @@ if (isFile(registeredCompanion)) {
   const result = spawnSync(runtime, ${argv}, {
     stdio: "inherit",
     windowsHide: true,
+    env: { ...process.env, NOTIFAI_HOOK_SOURCE_PID: String(process.ppid) },
   });
   if (result.error) {
     process.stderr.write("Notifai hook adapter target is stale; run notifai hooks install.\\n");

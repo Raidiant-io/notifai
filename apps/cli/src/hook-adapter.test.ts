@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   hookAdapterPath,
@@ -27,6 +28,35 @@ function isolated(): { root: string; homeDir: string } {
 }
 
 describe('stable hook adapter', () => {
+  it('delivers session activation through the installed adapter before setup exists', () => {
+    const { root, homeDir } = isolated()
+    const scriptPath = fileURLToPath(new URL('../dist/main.js', import.meta.url))
+    const installed = installHookAdapter({ execPath: process.execPath, scriptPath }, homeDir)
+    const run = spawnSync(
+      installed.path,
+      ['hook', 'session-start', '--owner', 'notifai', '--harness', 'codex'],
+      {
+        encoding: 'utf8',
+        input: JSON.stringify({ session_id: 'adapter-session', cwd: root, source: 'startup' }),
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          XDG_CONFIG_HOME: path.join(root, 'config'),
+          XDG_STATE_HOME: path.join(root, 'state'),
+        },
+      },
+    )
+
+    expect(run.status).toBe(0)
+    expect(run.stderr).toBe('')
+    expect(JSON.parse(run.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: expect.stringMatching(/Notifai.*session/i),
+      },
+    })
+  })
+
   it('executes paths with spaces, quotes, and shell syntax without evaluating them', () => {
     const { root, homeDir } = isolated()
     const odd = path.join(root, "odd ' $(touch should-not-run)")
@@ -120,6 +150,36 @@ describe('stable hook adapter', () => {
     expect(inspected.target && isNpxAdapterTarget(inspected.target) ? inspected.target.spec : null).toBe(
       '@raidiant/notifai@0.5.1',
     )
+  })
+
+  it('carries the stable POSIX harness parent through direct and npx targets', () => {
+    const { root, homeDir } = isolated()
+    const direct = path.join(root, 'direct.js')
+    const npmCli = path.join(root, 'npm-cli.js')
+    const source = 'process.stdout.write(process.env.NOTIFAI_HOOK_SOURCE_PID ?? "missing")\n'
+    writeFileSync(direct, source)
+    writeFileSync(npmCli, source)
+
+    const directAdapter = installHookAdapter(
+      { execPath: process.execPath, scriptPath: direct },
+      homeDir,
+    )
+    const directRun = spawnSync(directAdapter.path, [], { encoding: 'utf8' })
+    const npxAdapter = installHookAdapter(
+      {
+        kind: 'npx',
+        execPath: process.execPath,
+        npmCli,
+        spec: '@raidiant/notifai@0.5.1',
+      },
+      homeDir,
+    )
+    const npxRun = spawnSync(npxAdapter.path, [], { encoding: 'utf8' })
+
+    expect(directRun.status).toBe(0)
+    expect(npxRun.status).toBe(0)
+    expect(directRun.stdout).toBe(String(process.pid))
+    expect(npxRun.stdout).toBe(String(process.pid))
   })
 
   it('uses a fixed home-relative pathname with no XDG input surface', () => {
@@ -263,10 +323,13 @@ describe('Windows hook adapter', () => {
     }
     expect(hookAdapterSource(target, 'posix')).toBe(`#!/bin/sh
 # notifai managed hook adapter
-# adapter-version: 1
+# adapter-version: 2
 # target-exec-json: "/usr/local/bin/node"
 # target-script-json: "/opt/notifai/dist/main.js"
 set -eu
+
+NOTIFAI_HOOK_SOURCE_PID=$PPID
+export NOTIFAI_HOOK_SOURCE_PID
 
 registered_exec='/usr/local/bin/node'
 registered_script='/opt/notifai/dist/main.js'
@@ -325,6 +388,25 @@ exit 127
     expect(() =>
       installHookAdapter({ execPath: runtime, scriptPath: script }, homeDir, 'win32'),
     ).not.toThrow()
+  })
+
+  it('carries the stable Windows harness parent into each CLI process', () => {
+    const { root, homeDir } = isolated()
+    const script = path.join(root, 'source-pid.js')
+    writeFileSync(
+      script,
+      'process.stdout.write(process.env.NOTIFAI_HOOK_SOURCE_PID ?? "missing")\n',
+    )
+    const installed = installHookAdapter(
+      { execPath: process.execPath, scriptPath: script },
+      homeDir,
+      'win32',
+    )
+
+    const run = spawnSync(process.execPath, [installed.path], { encoding: 'utf8' })
+
+    expect(run.status).toBe(0)
+    expect(run.stdout).toBe(String(process.pid))
   })
 
   it('does not treat 0666 as a protection or health failure', () => {

@@ -171,7 +171,7 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
     // trace: it returns before any request is made, so without this the log
     // shows an exit code and no cause.
     log(deps).error('cli.error', { kind: 'auth', message: 'not signed in', store: deps.store.describe() })
-    deps.io.err('Not signed in. Run `notifai login` first.')
+    deps.io.err('Not signed in. Run `notifai init`; it will coordinate machine login and device setup.')
     return null
   }
   diagnoseIgnoredOriginOverride(deps.io, config, credential)
@@ -263,7 +263,10 @@ export function reportError(
           'disagree about the contract; check with `notifai doctor`',
       )
     }
-    const recovery = localRecovery(err.recoveryAction, err.details)
+    const recovery =
+      err.code === 'no_active_devices'
+        ? 'next: Run `notifai init` to connect an active Companion App; it will complete machine setup and identify any human-only device step.'
+        : localRecovery(err.recoveryAction, err.details)
     if (recovery !== null) deps.io.err(recovery)
     else if (err.recoveryAction === null && err.nextAction) deps.io.err(`next: ${err.nextAction}`)
     if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth

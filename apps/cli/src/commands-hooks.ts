@@ -30,16 +30,21 @@ import {
 } from './hook-adapter.js'
 import {
   clearAcknowledgementObligation,
+  claimPromptActivation,
+  claimCursorStopActivation,
+  confirmCursorStopActivation,
   dropPendingQuestion,
   handleSessionEnd,
   handleStop,
   handleUserPromptSubmit,
+  markSessionActivation,
   parkForRetirement,
   parseHookInput,
   pruneAbandonedSessions,
   readMatchingProjectSessionPointer,
   readProjectSession,
   readSessionState,
+  resetCursorStopActivation,
   registerQuestion,
   waiterCeilingSeconds,
   withdrawUnpushedQuestions,
@@ -81,6 +86,10 @@ import { logConfigResolved, logSettingsFrom } from './logging.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
 import {
+  cursorStopActivationOutput,
+  sessionActivationOutput,
+} from './session-activation.js'
+import {
   CHOICE_USAGE,
   buildDraft,
   parseChoices,
@@ -117,8 +126,23 @@ import {
 // hook / ask / close — harness integration
 // ---------------------------------------------------------------------------
 
-export const HOOK_EVENTS = ['user-prompt-submit', 'stop', 'session-end'] as const
+export const HOOK_EVENTS = [
+  'session-start',
+  'subagent-start',
+  'activation-stop',
+  'user-prompt-submit',
+  'stop',
+  'session-end',
+] as const
 export type HookEvent = (typeof HOOK_EVENTS)[number]
+
+/** Lifecycle handlers one installed harness must carry in this CLI build. */
+export function requiredHookEvents(harness: Harness): readonly HookEvent[] {
+  if (harness === 'opencode') return []
+  return harness === 'cursor'
+    ? ['session-start', 'activation-stop', 'user-prompt-submit', 'stop', 'session-end']
+    : ['session-start', 'subagent-start', 'user-prompt-submit', 'stop', 'session-end']
+}
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
 export function hookDefersDiagnosticsUntilAfterCleanup(
@@ -171,6 +195,21 @@ export async function hookRunCommand(
       ? { status: err.status, code: err.code, message: err.message, details: err.details }
       : { message: err instanceof Error ? err.message : String(err) }
 
+  // Cursor may load ~/.claude/settings.json in addition to its own native
+  // hooks. Cursor guarantees CURSOR_PROJECT_DIR to hook processes, so a Claude
+  // compatibility copy becomes a no-op and the native Cursor definition is
+  // the single owner. Real Claude hooks do not receive that hook-only marker.
+  if (harness === 'claude-code' && deps.env['CURSOR_PROJECT_DIR']) {
+    start({ outcome: 'cursor-compatibility-copy-skipped' })
+    logger.info('hook.end', {
+      hook: event,
+      outcome: 'ignored',
+      reason: 'cursor-native-handler-owns-event',
+      decided: false,
+    })
+    return EXIT.ok
+  }
+
   let raw: string
   try {
     raw = await readStdin()
@@ -214,6 +253,172 @@ export async function hookRunCommand(
   const cwd = envelope.cwd ?? deps.cwd
   const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
   logger.bind({ session: envelope.session_id ?? null })
+  const declaredSourcePid = declaredHookSourcePid(deps)
+  const activationOwnerPid =
+    harness === 'claude-code'
+      ? (deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env))
+      : harness === 'codex'
+        ? (deps.codexSourcePid ?? declaredSourcePid ?? process.ppid)
+        : undefined
+
+  // Session activation is local model context, not authenticated routing. It
+  // must survive the exact first-run states it exists to repair: no config,
+  // no credential, no Companion device, and no network.
+  if (event === 'session-start' || event === 'subagent-start') {
+    start({ cwd, source: envelope.source ?? null })
+    if (event === 'session-start' && harness === 'cursor' && envelope.session_id !== undefined) {
+      try {
+        resetCursorStopActivation(envelope.session_id, deps.env)
+      } catch (err) {
+        logger.error('hook.end', {
+          hook: event,
+          outcome: 'reset-failed',
+          ...failureData(err),
+        })
+      }
+    }
+    const stdout = sessionActivationOutput(
+      harness,
+      event === 'session-start' ? 'SessionStart' : 'SubagentStart',
+    )
+    if (stdout !== undefined) deps.io.out(stdout)
+    if (
+      stdout !== undefined &&
+      event === 'session-start' &&
+      activationOwnerPid !== undefined &&
+      envelope.session_id !== undefined
+    ) {
+      try {
+        // Write stdout first. If the process dies between these operations a
+        // later prompt may duplicate context, but it cannot suppress context
+        // that the host never received.
+        markSessionActivation(envelope.session_id, deps.env, now(), activationOwnerPid)
+      } catch (err) {
+        logger.error('hook.end', {
+          hook: event,
+          outcome: 'mark-failed',
+          reason: 'activation-state-failed',
+          ...failureData(err),
+        })
+      }
+    }
+    logger.info('hook.end', {
+      hook: event,
+      outcome: stdout === undefined ? 'unsupported-harness' : 'context-added',
+      decided: false,
+    })
+    return EXIT.ok
+  }
+
+  // SessionStart is the preferred model-visible activation seam. A few
+  // managed hosts regenerate older hook definitions that retain
+  // UserPromptSubmit but omit newer lifecycle events. Claim the first prompt
+  // once per exact session as a compatibility fallback, before config/auth/
+  // device/network work, and stay silent when SessionStart already ran.
+  let promptActivationStdout: string | undefined
+  if (
+    event === 'user-prompt-submit' &&
+    (harness === 'claude-code' || harness === 'codex') &&
+    activationOwnerPid !== undefined &&
+    envelope.session_id !== undefined
+  ) {
+    try {
+      if (claimPromptActivation(envelope.session_id, deps.env, now(), activationOwnerPid)) {
+        promptActivationStdout = sessionActivationOutput(harness, 'UserPromptSubmit')
+        if (promptActivationStdout !== undefined) deps.io.out(promptActivationStdout)
+      }
+    } catch (err) {
+      logger.error('hook.end', {
+        hook: event,
+        outcome: 'claim-failed',
+        reason: 'activation-state-failed',
+        ...failureData(err),
+      })
+    }
+  }
+
+  // Cursor has a confirmed host bug in which sessionStart.additional_context
+  // is accepted but never reaches the model. A native Stop follow-up is the
+  // host's guaranteed model-visible channel. Claim it once per conversation,
+  // before config/auth/network, and leave the ordinary Stop handler separate
+  // so question delivery is never displaced by activation.
+  if (event === 'activation-stop') {
+    start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+    if (harness !== 'cursor') {
+      logger.info('hook.end', { hook: event, outcome: 'unsupported-harness', decided: false })
+      return EXIT.ok
+    }
+    if (envelope.status === 'aborted') {
+      logger.info('hook.end', {
+        hook: event,
+        outcome: 'ignored',
+        reason: `turn-${envelope.status}`,
+        decided: false,
+      })
+      return EXIT.ok
+    }
+    if (envelope.session_id === undefined) {
+      logger.info('hook.end', {
+        hook: event,
+        outcome: 'ignored',
+        reason: 'missing-conversation-id',
+        decided: false,
+      })
+      return EXIT.ok
+    }
+    if (
+      envelope.session_id !== undefined &&
+      typeof envelope.loop_count === 'number' &&
+      envelope.loop_count > 0
+    ) {
+      let activationOwned = false
+      try {
+        activationOwned = confirmCursorStopActivation(envelope.session_id, deps.env, now())
+      } catch (err) {
+        logger.error('hook.end', {
+          hook: event,
+          outcome: 'confirm-failed',
+          ...failureData(err),
+        })
+      }
+      if (activationOwned) {
+        logger.info('hook.end', { hook: event, outcome: 'confirmed', decided: false })
+        return EXIT.ok
+      }
+    }
+    const cursorState = readSessionState(envelope.session_id, deps.env)
+    if (
+      (cursorState.pending?.length ?? 0) > 0 ||
+        cursorState.accepted !== undefined ||
+        (cursorState.acknowledgement_due?.length ?? 0) > 0
+    ) {
+      logger.info('hook.end', {
+        hook: event,
+        outcome: 'deferred',
+        reason: 'question-continuation-owns-stop',
+        decided: false,
+      })
+      return EXIT.ok
+    }
+    let claimed = false
+    try {
+      claimed = claimCursorStopActivation(envelope.session_id, deps.env, now())
+    } catch (err) {
+      logger.error('hook.end', {
+        hook: event,
+        outcome: 'claim-failed',
+        ...failureData(err),
+      })
+    }
+    logger.info('hook.end', {
+      hook: event,
+      outcome: claimed ? 'followup-added' : 'already-activated',
+      decided: claimed,
+    })
+    if (claimed) deps.io.out(cursorStopActivationOutput())
+    return EXIT.ok
+  }
+
   let config: CliConfig | null = null
   let configFailure: unknown
   try {
@@ -235,6 +440,7 @@ export async function hookRunCommand(
         hook: event,
         outcome: 'failed',
         reason: 'config-failed',
+        ...(promptActivationStdout === undefined ? {} : { activation: 'context-added' }),
         ...failureData(err),
       })
       for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
@@ -341,6 +547,7 @@ export async function hookRunCommand(
       // Stop stdout takes over the turn. UserPromptSubmit stdout may instead
       // add context to the user's own turn, which is explicitly non-decisive.
       decided: outcome.decided ?? outcome.stdout !== undefined,
+      ...(promptActivationStdout === undefined ? {} : { activation: 'context-added' }),
       ...(notes.length === 0 ? {} : { notes }),
       ...outcome.log,
     })
@@ -380,12 +587,13 @@ function stopWakeRoute(
   cwd: string,
 ): EscalationDeliveryRoute | undefined {
   if (sessionId === undefined) return undefined
+  const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {
     if ((deps.hookPlatform ?? process.platform) === 'win32') return undefined
     return claudeWakeRoute({
       sessionId,
       cwd,
-      sourcePid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
+      sourcePid: deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env),
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
     })
   }
@@ -393,12 +601,18 @@ function stopWakeRoute(
     return codexWakeRoute({
       threadId: sessionId,
       cwd,
-      sourcePid: deps.codexSourcePid ?? process.ppid,
+      sourcePid: deps.codexSourcePid ?? declaredSourcePid ?? process.ppid,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
     })
   }
   return undefined
+}
+
+/** Stable harness parent propagated by the managed adapter across child tools. */
+function declaredHookSourcePid(deps: CommandDeps): number | undefined {
+  const value = Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])
+  return Number.isInteger(value) && value > 0 ? value : undefined
 }
 
 
@@ -1029,14 +1243,14 @@ export function hookActivationAdvice(installations: Installation[]): string {
       (installation) => installation.harness === 'claude-code' && !installation.global,
     )
   ) {
-    advice.push('Claude Code: send one new prompt; project hook files reload without a restart')
+    advice.push('Claude Code: start one fresh session, send one prompt, then run `notifai doctor`')
   }
   if (
     installations.some(
       (installation) => installation.harness === 'claude-code' && installation.global,
     )
   ) {
-    advice.push('Claude Code global hooks: send one prompt; start a new session only if it does not fire')
+    advice.push('Claude Code global hooks: start one fresh session, send one prompt, then run `notifai doctor`')
   }
   if (
     installations.some(
@@ -1044,7 +1258,7 @@ export function hookActivationAdvice(installations: Installation[]): string {
     )
   ) {
     advice.push(
-      'Cursor: send one prompt, then run `notifai doctor`; start a new session only if it still has not fired',
+      'Cursor: start one fresh conversation, send one prompt, finish its first turn, then run `notifai doctor`',
     )
   }
   if (
@@ -1052,11 +1266,11 @@ export function hookActivationAdvice(installations: Installation[]): string {
       (installation) => installation.harness === 'cursor' && installation.global,
     )
   ) {
-    advice.push('Cursor global hooks: send one prompt; start a new session only if it does not fire')
+    advice.push('Cursor global hooks: start one fresh conversation, send one prompt, finish its first turn, then run `notifai doctor`')
   }
   if (harnesses.has('codex')) {
     advice.push(
-      'Codex: send one prompt, then run `notifai doctor`; start a new session only if it still has not fired',
+      'Codex: approve the Notifai handlers in `/hooks` if asked, start one fresh session, send one prompt, then run `notifai doctor`',
     )
   }
   if (harnesses.has('opencode')) {
@@ -1329,12 +1543,20 @@ function resolveHookAdapterTarget(deps: CommandDeps, flags: HooksInstallFlags): 
 
 function printHooksInstallClose(deps: CommandDeps, harness: Harness, file: string): void {
   const label = HARNESS_LABELS[harness]
+  const activation =
+    harness === 'codex'
+      ? 'Approve the Notifai handlers in `/hooks` if Codex asks, then start one fresh Codex session, send one prompt, and run `notifai doctor`.'
+      : harness === 'cursor'
+        ? 'Start one fresh Cursor conversation, send one prompt, finish its first turn, then run `notifai doctor`.'
+        : harness === 'opencode'
+          ? 'Restart OpenCode, start one fresh session, send one prompt, then run `notifai doctor`.'
+          : `Start one fresh ${label} session, send one prompt, then run \`notifai doctor\`.`
   if (deps.io.interactive === true && deps.io.note) {
-    void deps.io.note(`${file}\nSend one ${label} prompt, then run \`notifai doctor\`.`, `${label} hooks installed`)
+    void deps.io.note(`${file}\n${activation}`, `${label} hooks installed`)
     return
   }
   deps.io.out(`Installed ${harness} hooks in ${file}`)
-  deps.io.out(`Send one ${label} prompt, then check \`notifai doctor\`.`)
+  deps.io.out(activation)
 }
 
 export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
@@ -1370,7 +1592,26 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   )
   const otherScope = existing.filter((installation) => installation.global !== wantGlobal)
   if (!wantGlobal && otherScope.some((installation) => installation.global)) {
-    const globalFile = otherScope.find((installation) => installation.global)?.file
+    const globalInstallations = otherScope.filter((installation) => installation.global)
+    const globalInstallation = globalInstallations[0]
+    const installedEvents = new Set(
+      globalInstallation?.handlers
+        .map((handler) => handlerEvent(handler.command))
+        .filter((event): event is HookEvent =>
+          event !== null && (HOOK_EVENTS as readonly string[]).includes(event),
+        ) ?? [],
+    )
+    if (
+      globalInstallations.length !== 1 ||
+      globalInstallations.some((installation) => (installation.problems?.length ?? 0) > 0) ||
+      globalInstallations.some(
+        (installation) => stopShapeProblems(installation, deps.hookPlatform).length > 0,
+      ) ||
+      !requiredHookEvents(harness).every((event) => installedEvents.has(event))
+    ) {
+      return hooksInstallCommand(deps, { ...flags, global: true, harness })
+    }
+    const globalFile = globalInstallation?.file
     deps.io.out(
       `${HARNESS_LABELS[harness]} hooks already cover this machine (${globalFile}). This project does not need its own copy. To wire only this project: notifai hooks uninstall --harness ${harness} --global && notifai hooks install --harness ${harness}`,
     )
@@ -1446,7 +1687,22 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     installed =
       codexPaths === null
         ? withTargetFileLock(settingsTarget, () => installInto(settingsTarget))
-        : withCodexLayerTransaction(codexPaths, (inspection) => installInto(inspection.writeTarget))
+        : withCodexLayerTransaction(codexPaths, (inspection) => {
+            const staleTarget =
+              inspection.writeTarget === inspection.paths.hooksJson
+                ? inspection.paths.configToml
+                : inspection.paths.hooksJson
+            const staleEvents =
+              staleTarget === inspection.paths.hooksJson
+                ? inspection.ourJsonEvents
+                : inspection.ourTomlEvents
+            if (staleEvents.length > 0) {
+              const staleDocument = loadSettings(staleTarget)
+              const stripped = removeHooks(staleDocument, scriptPath)
+              if (stripped.replaced.length > 0) applyPlan(staleTarget, stripped.document)
+            }
+            return installInto(inspection.writeTarget)
+          })
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
@@ -1482,7 +1738,12 @@ function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { comm
   if (!Array.isArray(groups)) return []
   return groups
     .flatMap((group) => group.hooks ?? [])
-    .filter((handler) => !/ hook (user-prompt-submit|stop|session-end)\b/.test(handler.command))
+    .filter(
+      (handler) =>
+        !/ hook (session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\b/.test(
+          handler.command,
+        ),
+    )
 }
 
 /**
