@@ -165,7 +165,7 @@ still recoverable.
 A question must be answerable from the notification itself. Keep it under 240
 characters and let the reasoning follow it. Offer 2-6 closed choices when you
 can, one flag per choice — commas inside a label are literal. A typed answer is
-always possible, whatever buttons you offered.
+always possible; choices are not collapsed-banner buttons.
 
 **Where the question text comes from differs between the two commands.** With
 `ask`, it is the positional argument and `--body` is context. With
