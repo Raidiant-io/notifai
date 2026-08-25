@@ -91,6 +91,16 @@ export async function loginCommand(
       deps.io.err('Pairing was denied from the dashboard.')
       return EXIT.auth
     }
+    if (poll.status === 'no_active_plan') {
+      const next =
+        poll.next_action ??
+        `Open ${baseUrl.replace(/\/$/, '')}/support to request Alpha access, then retry.`
+      spinner?.error('Account has no Alpha access')
+      deps.io.err('This account has no active plan or temporary Alpha access.')
+      deps.io.err(`next: ${next}`)
+      deps.io.err('After access is granted, run `notifai login` again.')
+      return EXIT.auth
+    }
     if (poll.status === 'expired') break
     spinner?.message(approvalWaitMessage())
   }

@@ -319,7 +319,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       (v: string, all: string[] = []) => [...all, v],
     )
     .optionsGroup(SEND_GROUP.routing)
-    .option('--kind <kind>', 'what this is (required): update | done | failed | blocked — question is set by --reply')
+    .option('--kind <kind>', 'what this is (required): update | done | failed | blocked (no User reply would resume it) — question is set by --reply')
     .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
     .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--all', 'target all routable devices (overrides configured devices)')

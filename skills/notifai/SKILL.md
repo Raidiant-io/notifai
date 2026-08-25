@@ -95,11 +95,15 @@ notifai send --kind done \
 | `update` | ordinary news | standard tone |
 | `done` | work finished successfully | completion chime |
 | `failed` | work reached a terminal failure | most insistent tone |
-| `blocked` | cannot proceed until something outside changes | attention tone |
+| `blocked` | no User reply would resume the work | attention tone |
 | `question` | set for you by `--reply` and by `ask` — never pass it | attention tone |
 
 Because kind decides how insistently the notification lands, **declare the kind
 that is true**. Calling a failure `done` does not soften it, it hides it.
+
+Work needs a User response to continue? Ask an answerable question — even if
+blocked. Use one-way blocked only when no User reply would resume the work.
+Reporting ready is a response.
 
 The words come from the guidance — `titles` and `bodies` own what a title,
 body, and summary line carry. The shape on the wire:
