@@ -1,14 +1,46 @@
 name: publish
 
 on:
-  push:
-    tags: ['v*', 'protocol-v*']
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact tagged commit SHA that this run must publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  dispatch-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Reject a stale or non-tag dispatch
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "The dispatched tag no longer resolves to expected_sha" >&2
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/v*|refs/tags/protocol-v*) ;;
+            *)
+              echo "publish.yml accepts only release tags" >&2
+              exit 1
+              ;;
+          esac
+
   npm:
+    needs: dispatch-integrity
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm-release

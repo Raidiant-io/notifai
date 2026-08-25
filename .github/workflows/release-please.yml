@@ -4,45 +4,41 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-
 jobs:
   release-please:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_refs: ${{ steps.sync-release-branches.outputs.release_refs }}
+      releases_created: ${{ steps.release-please.outputs.releases_created }}
+      cli_release_created: ${{ steps.release-please.outputs['apps/cli--release_created'] }}
+      cli_tag: ${{ steps.release-please.outputs['apps/cli--tag_name'] }}
+      cli_sha: ${{ steps.release-please.outputs['apps/cli--sha'] }}
+      protocol_release_created: ${{ steps.release-please.outputs['packages/protocol--release_created'] }}
+      protocol_tag: ${{ steps.release-please.outputs['packages/protocol--tag_name'] }}
+      protocol_sha: ${{ steps.release-please.outputs['packages/protocol--sha'] }}
     steps:
-      # The installation and token are both narrowed to this repository. The
-      # App itself needs only Contents and Pull requests read/write; no user,
-      # organization, package, administration, or other repository access.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        id: release-app-token
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-          permission-pull-requests: write
       # v4.4.1 bundles release-please 17.3.0. The config schema is pinned to
       # that executable version; evaluate action upgrades as separate changes.
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         id: release-please
         with:
-          token: ${{ steps.release-app-token.outputs.token }}
+          token: ${{ github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       # release-please leaves two things behind on every release branch: the
       # root README version markers (it cannot edit files outside a package
       # directory — `extra-files` rejects `../`) and `pnpm-lock.yaml` (it bumps
       # the CLI's protocol pin in package.json only, which fails CI with
-      # ERR_PNPM_OUTDATED_LOCKFILE). Both are repaired here. The repository-
-      # scoped App token keeps required checks running on the pushed commit;
-      # the default workflow token would not trigger them.
+      # ERR_PNPM_OUTDATED_LOCKFILE). Both are repaired here. GITHUB_TOKEN push
+      # events do not start more workflows, so the dispatch job below starts CI
+      # explicitly at each exact repaired head.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         with:
-          token: ${{ steps.release-app-token.outputs.token }}
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
@@ -54,12 +50,13 @@ jobs:
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         env:
           PRS: ${{ steps.release-please.outputs.prs }}
+          RELEASE_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          changed_branches=()
-          for branch in $(node -e 'for (const pr of JSON.parse(process.env.PRS)) console.log(pr.headBranchName)'); do
+          release_refs='[]'
+          while IFS= read -r branch; do
             git checkout "$branch"
             node scripts/sync-readme-markers.mjs
             pnpm install --lockfile-only
@@ -68,22 +65,95 @@ jobs:
             else
               git add README.md pnpm-lock.yaml
               git commit -m "chore(release): sync README markers and lockfile"
-              changed_branches+=("$branch")
+              authorization=$(printf 'x-access-token:%s' "$RELEASE_TOKEN" | base64 | tr -d '\n')
+              GIT_CONFIG_COUNT=1 \
+                GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+                GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization" \
+                git push --no-verify origin "refs/heads/$branch:refs/heads/$branch"
             fi
-          done
-          printf 'branches=%s\n' "${changed_branches[*]}" >> "$GITHUB_OUTPUT"
+            head_sha=$(git rev-parse HEAD)
+            release_refs=$(node -e '
+              const refs = JSON.parse(process.argv[1])
+              refs.push({ref: process.argv[2], sha: process.argv[3]})
+              process.stdout.write(JSON.stringify(refs))
+            ' "$release_refs" "$branch" "$head_sha")
+          done < <(node -e '
+            for (const pr of JSON.parse(process.env.PRS)) {
+              console.log(pr.headBranchName)
+            }
+          ')
+          printf 'release_refs=%s\n' "$release_refs" >> "$GITHUB_OUTPUT"
 
-      - name: Push repaired release branches with the App identity
-        if: ${{ steps.sync-release-branches.outputs.branches != '' }}
+  dispatch:
+    needs: release-please
+    if: >-
+      needs.release-please.result == 'success' &&
+      (needs.release-please.outputs.release_refs != '' ||
+      needs.release-please.outputs.releases_created == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch workflows at exact release refs
         env:
-          BRANCHES: ${{ steps.sync-release-branches.outputs.branches }}
-          RELEASE_APP_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REFS: ${{ needs.release-please.outputs.release_refs }}
+          CLI_RELEASE_CREATED: ${{ needs.release-please.outputs.cli_release_created }}
+          CLI_TAG: ${{ needs.release-please.outputs.cli_tag }}
+          CLI_SHA: ${{ needs.release-please.outputs.cli_sha }}
+          PROTOCOL_RELEASE_CREATED: ${{ needs.release-please.outputs.protocol_release_created }}
+          PROTOCOL_TAG: ${{ needs.release-please.outputs.protocol_tag }}
+          PROTOCOL_SHA: ${{ needs.release-please.outputs.protocol_sha }}
         run: |
           set -euo pipefail
-          authorization=$(printf 'x-access-token:%s' "$RELEASE_APP_TOKEN" | base64 | tr -d '\n')
-          for branch in $BRANCHES; do
-            GIT_CONFIG_COUNT=1 \
-              GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization" \
-              git push --no-verify origin "refs/heads/$branch:refs/heads/$branch"
-          done
+
+          dispatch_workflow() {
+            local workflow=$1
+            local ref=$2
+            local expected_sha=$3
+            local response
+            local run_url
+            local returned_sha
+
+            response=$(node -e '
+              process.stdout.write(JSON.stringify({
+                ref: process.argv[1],
+                inputs: {expected_sha: process.argv[2]},
+              }))
+            ' "$ref" "$expected_sha" | gh api \
+              --method POST \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" \
+              --input -)
+            run_url=$(node -e '
+              const response = JSON.parse(process.argv[1])
+              if (typeof response.run_url !== "string") process.exit(1)
+              process.stdout.write(response.run_url)
+            ' "$response")
+            returned_sha=$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "$run_url" --jq .head_sha)
+            if [ "$returned_sha" != "$expected_sha" ]; then
+              echo "Ref $ref advanced before $workflow was bound to the expected commit" >&2
+              exit 1
+            fi
+          }
+
+          while IFS=$'\t' read -r ref sha; do
+            [ -n "$ref" ] || continue
+            dispatch_workflow ci.yml "$ref" "$sha"
+          done < <(node -e '
+            for (const entry of JSON.parse(process.env.RELEASE_REFS || "[]")) {
+              console.log(entry.ref + "\t" + entry.sha)
+            }
+          ')
+
+          if [ "$PROTOCOL_RELEASE_CREATED" = "true" ]; then
+            dispatch_workflow publish.yml "$PROTOCOL_TAG" "$PROTOCOL_SHA"
+          fi
+          if [ "$CLI_RELEASE_CREATED" = "true" ]; then
+            dispatch_workflow publish.yml "$CLI_TAG" "$CLI_SHA"
+          fi
