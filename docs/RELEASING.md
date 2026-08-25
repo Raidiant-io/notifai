@@ -85,13 +85,58 @@ same merged commit:
 - Protocol tag: `protocol-v<version>`
 
 release-please does not publish to npm. After the tags exist, and only when
-the maintainer asked: publish the packages that changed, then
-`pnpm check:published` — it verifies both the compiled files and the
-resolution-shaping manifest metadata against the registry.
+the maintainer asked, the tag-triggered `publish.yml` workflow waits at the
+protected `npm-release` environment. A maintainer approves that deployment;
+the workflow then validates a clean tag checkout, checks the packed install,
+publishes through npm trusted publishing with provenance, and verifies the
+registry bytes and resolution-shaping metadata. Protocol publishes before a
+CLI that pins it exactly. Concurrent tag runs are serialized and publication
+is idempotent: an already-published version is verified, never republished.
 
 The workflow action is pinned to v4.4.1, which runs release-please 17.3.0;
 `release-please-config.json` pins its schema to the same version. Upgrade the
 action and schema together as maintenance work, never during a release.
+
+## One-time provider setup
+
+The checked-in workflows are fail-closed until a repository maintainer has
+completed both provider-side setup groups. No token value or provider
+identifier belongs in a tracked file, issue, log, or support message.
+
+For the release-please write identity, an owner of `Raidiant-io/notifai` must:
+
+1. Create a GitHub App with only repository **Contents: read and write** and
+   **Pull requests: read and write** permissions, no organization permissions,
+   and install it for the single `Raidiant-io/notifai` repository.
+2. Put the App client identifier in the repository Actions variable
+   `RELEASE_APP_CLIENT_ID` and its private key in the repository Actions secret
+   `RELEASE_APP_PRIVATE_KEY`. The workflow further restricts every minted token
+   to the current repository and those two permissions.
+3. After one release-please run proves the App path creates and updates the
+   Release PR and its repair commit triggers required checks, remove the legacy
+   `RELEASE_PLEASE_TOKEN` secret. Do not remove it before that proof; do not put
+   it back into the workflow.
+
+For npm trusted publishing, a maintainer of both npm packages must:
+
+1. In GitHub repository Settings → Environments, create `npm-release`, add the
+   maintainer as a required reviewer, and restrict deployments to the release
+   tag patterns `v*` and `protocol-v*`.
+2. On npmjs.com, open each package's Settings → Trusted Publisher, choose
+   **GitHub Actions**, and enter organization `Raidiant-io`, repository
+   `notifai`, workflow filename `publish.yml`, environment `npm-release`, and
+   allowed action **npm publish** only. Each package needs its own configuration.
+3. Approve and observe the first tag run. It must publish with provenance and
+   finish the package-specific published-artifact verification before this path
+   is considered live.
+4. Only after both packages have passed that proof, open each package's
+   Settings → Publishing access and disallow token-based publishing. Trusted
+   publishing continues to work with short-lived OIDC credentials.
+
+npm requires GitHub-hosted runners, Node 22.14 or newer, npm 11.5.1 or newer,
+and `id-token: write`. `publish.yml` uses Node 24, checks the npm floor before
+doing release work, and grants the OIDC permission only to the protected
+publish job.
 
 ## Changelog and breaking-release policy
 
