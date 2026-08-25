@@ -5,7 +5,7 @@ Send native phone notifications from agents and local programs.
 An agent working while you are away has no way to reach you, so it either
 guesses or sits blocked in a terminal nobody is watching. `notifai` gives
 it a way to tell you something finished, and a way to ask you a question
-and get your answer back — as a banner on your phone, with buttons.
+and get your answer back as a banner on your phone.
 
 ```sh
 npm install -g @raidiant/notifai
@@ -51,8 +51,8 @@ notifai ask "Deploy the migration to production?" --choice Yes --choice No
 ```
 
 The agent registers the question, ends its turn, and your answer comes
-back on its next turn. On iPhone the choices are buttons on the banner
-itself.
+back on its next turn. On iPhone, press and hold the collapsed banner to
+answer; the choices appear on the expanded card, not on the lock screen.
 
 By default a question reaches your devices when the agent turn ends, whether or
 not you are at the keyboard (`ask_grace_seconds = 0`). Set a positive grace

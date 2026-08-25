@@ -77,7 +77,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
         default_window_seconds: 86400,
       },
       reason:
-        'Inline reply through the notification category; the button and placeholder text are fixed by the app.',
+        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded card after press-and-hold; the collapsed banner names that gesture and never shows choice labels.',
     },
     {
       path: 'presentation.media',
