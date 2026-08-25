@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [5.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v4.1.0...protocol-v5.0.0) (2026-08-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** begin-pairing requests must include confirmation_hash, and dashboard pairing actions require the full code and confirmation secret.
+* notification drafts and evidence snapshots no longer carry an `event` field.
+
+### Features
+
+* **protocol:** require proof for pairing actions ([#69](https://github.com/Raidiant-io/notifai/issues/69)) ([ad3d5dc](https://github.com/Raidiant-io/notifai/commit/ad3d5dc593ae7248abb487a0574b5af9ada99506))
+* remove send --event and the protocol event field ([#67](https://github.com/Raidiant-io/notifai/issues/67)) ([7dde05f](https://github.com/Raidiant-io/notifai/commit/7dde05f6161fc3474a637c71abe47d54aacf50a9))
+
+
+### Bug Fixes
+
+* **cli:** pin signed-in origin and redact sensitive local logs ([#59](https://github.com/Raidiant-io/notifai/issues/59)) ([7dffafb](https://github.com/Raidiant-io/notifai/commit/7dffafb1e2ebbc307adb99ab9638e8ad3787e776))
+* make user-resumable blockers answerable ([#62](https://github.com/Raidiant-io/notifai/issues/62)) ([22e78b5](https://github.com/Raidiant-io/notifai/commit/22e78b5b66c7a1eb2a39ca78675e21a1e82459a9))
+* name press-and-hold on closed-choice iPhone banners ([#68](https://github.com/Raidiant-io/notifai/issues/68)) ([419c7f8](https://github.com/Raidiant-io/notifai/commit/419c7f8d389889662fad45f516fd0cef33c3e344))
+
 ## [4.1.0](https://github.com/Raidiant-io/notifai/compare/protocol-v4.0.0...protocol-v4.1.0) (2026-08-24)
 
 

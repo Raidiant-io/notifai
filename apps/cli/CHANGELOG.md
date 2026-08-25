@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.0.0](https://github.com/Raidiant-io/notifai/compare/v8.0.0...v9.0.0) (2026-08-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** publishing now requires a verified protocol release before the CLI is published, and npm >= 11.5.1.
+* **cli:** `notifai send --event` is removed.
+* remote media and approval URLs must satisfy the stated trust policy; hosts outside it require an explicit User-owned origins exception.
+* **protocol:** begin-pairing requests must include confirmation_hash, and dashboard pairing actions require the full code and confirmation secret.
+* notification drafts and evidence snapshots no longer carry an `event` field.
+
+### Features
+
+* **cli:** ask one project-or-machine setup scope ([#66](https://github.com/Raidiant-io/notifai/issues/66)) ([bedc0ea](https://github.com/Raidiant-io/notifai/commit/bedc0ea82aa428b2fe63dd03cf8092d0d813bc6d))
+* hold hostile repository input to a stated trust policy ([#70](https://github.com/Raidiant-io/notifai/issues/70)) ([1568768](https://github.com/Raidiant-io/notifai/commit/15687686eed3f74f5f0f6d4d8a9e49b50de4bebc))
+* **protocol:** require proof for pairing actions ([#69](https://github.com/Raidiant-io/notifai/issues/69)) ([ad3d5dc](https://github.com/Raidiant-io/notifai/commit/ad3d5dc593ae7248abb487a0574b5af9ada99506))
+* remove send --event and the protocol event field ([#67](https://github.com/Raidiant-io/notifai/issues/67)) ([7dde05f](https://github.com/Raidiant-io/notifai/commit/7dde05f6161fc3474a637c71abe47d54aacf50a9))
+
+
+### Bug Fixes
+
+* **cli:** default the service origin to https://api.notifai.sh ([#60](https://github.com/Raidiant-io/notifai/issues/60)) ([8063d20](https://github.com/Raidiant-io/notifai/commit/8063d2040caaa1c09fe7cdb2f5f7302f86221bad))
+* **cli:** drop the terminal-timing rule from when-to-notify guidance ([0c1ed8e](https://github.com/Raidiant-io/notifai/commit/0c1ed8e40fe4470ebcab49d13663c704cf6056ed))
+* **cli:** keep machine credentials out of argv and harden trusted publishing ([#71](https://github.com/Raidiant-io/notifai/issues/71)) ([a03d85c](https://github.com/Raidiant-io/notifai/commit/a03d85ccba6fc36d378168feeb5297103065e62e))
+* **cli:** keep the bin runnable and harden doctor, send, and Codex hooks ([#64](https://github.com/Raidiant-io/notifai/issues/64)) ([d7f2d7b](https://github.com/Raidiant-io/notifai/commit/d7f2d7b612d27e426c328284e2f72d0723b0ae43))
+* **cli:** pin signed-in origin and redact sensitive local logs ([#59](https://github.com/Raidiant-io/notifai/issues/59)) ([7dffafb](https://github.com/Raidiant-io/notifai/commit/7dffafb1e2ebbc307adb99ab9638e8ad3787e776))
+* **cli:** restore question pushes after a spent Stop waiter ([89f6d76](https://github.com/Raidiant-io/notifai/commit/89f6d76e6569190cbd04120f922ecf284a89798c))
+* harden proactive Notifai activation ([#63](https://github.com/Raidiant-io/notifai/issues/63)) ([e486d22](https://github.com/Raidiant-io/notifai/commit/e486d224a5261ba039ba26494a9fdf8b74711817))
+* **hooks:** retire questions without reserved client events ([#65](https://github.com/Raidiant-io/notifai/issues/65)) ([154fd11](https://github.com/Raidiant-io/notifai/commit/154fd1116d7a5b79aeabc8cb1b897262e6953d9c))
+* **hooks:** survive a node upgrade that moves the pinned runtime ([#61](https://github.com/Raidiant-io/notifai/issues/61)) ([0c19acb](https://github.com/Raidiant-io/notifai/commit/0c19acb62d42d3ae95ebe489e56839a5a3ad4ec4))
+* make user-resumable blockers answerable ([#62](https://github.com/Raidiant-io/notifai/issues/62)) ([22e78b5](https://github.com/Raidiant-io/notifai/commit/22e78b5b66c7a1eb2a39ca78675e21a1e82459a9))
+* name press-and-hold on closed-choice iPhone banners ([#68](https://github.com/Raidiant-io/notifai/issues/68)) ([419c7f8](https://github.com/Raidiant-io/notifai/commit/419c7f8d389889662fad45f516fd0cef33c3e344))
+* trigger Notifai guidance consistently ([#58](https://github.com/Raidiant-io/notifai/issues/58)) ([ddf1f94](https://github.com/Raidiant-io/notifai/commit/ddf1f94db6a282b081302e03cd17b204d0231ed1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 4.1.0 to 5.0.0
+
 ## [8.0.0](https://github.com/Raidiant-io/notifai/compare/v7.0.2...v8.0.0) (2026-08-24)
 
 
