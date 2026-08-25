@@ -121,7 +121,10 @@ do not. `--json` emits the same result with an explicit `exit_code`.
 Everything useful is possible non-interactively, so an agent never
 reaches a prompt and hangs.
 
-Source, issues and the security policy:
+Source, issues and the public/private boundary policy:
 <https://github.com/Raidiant-io/notifai>
+
+The URL, self-host exception, guidance-authority and non-exfiltration policy is
+documented in [`docs/TRUST.md`](https://github.com/Raidiant-io/notifai/blob/main/docs/TRUST.md).
 
 Apache-2.0.

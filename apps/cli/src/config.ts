@@ -8,6 +8,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { configHome, stateHome } from './platform.js'
+import { normalizeOrigin } from './url-policy.js'
 
 /**
  * Layered configuration with provenance. Most specific wins:
@@ -93,6 +94,17 @@ export interface CliConfig {
   reply_window_seconds: ResolvedValue<number>
   /** Log files kept in total, the active one included. */
   log_max_files: ResolvedValue<number>
+  /**
+   * Extra origins remote `--image` URLs may use beyond the default public
+   * HTTPS policy — the self-host and intranet escape hatch. User-owned: the
+   * repository layer cannot supply it (see `USER_OWNED_CONFIG_KEYS`).
+   */
+  media_origins: ResolvedValue<string[]>
+  /**
+   * Extra dashboard origins a pairing approval URL may open, for self-hosts
+   * whose dashboard lives on a different origin than the API. User-owned.
+   */
+  approve_origins: ResolvedValue<string[]>
 }
 
 export const CONFIG_KEYS = [
@@ -109,8 +121,22 @@ export const CONFIG_KEYS = [
   'log_level',
   'log_max_bytes',
   'log_max_files',
+  'media_origins',
+  'approve_origins',
 ] as const
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
+
+/**
+ * Keys only the User may set. The shared `.notifai/config.toml` arrives with
+ * a clone, so for most keys an unwanted value is at worst a clamped nuisance —
+ * but these keys widen which network destinations this machine will touch,
+ * and a hostile repository must not be able to widen them. Resolution skips
+ * the repository layer for them entirely.
+ */
+export const USER_OWNED_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
+
+/** Keys whose TOML value must be a list of normalized http(s) origins. */
+export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
 export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications']
@@ -165,6 +191,11 @@ const DEFAULTS = {
   // agent traffic and small enough that nobody has to think about it.
   log_max_bytes: 2_000_000,
   log_max_files: 3,
+  // Empty by default: remote images use public HTTPS and pairing approval
+  // uses the canonical dashboard, the pairing origin, or loopback. Entries
+  // here are the User widening that, never a repository.
+  media_origins: [],
+  approve_origins: [],
 } satisfies Record<ConfigKey, unknown>
 
 /** The shipped value beneath every user-controlled configuration layer. */
@@ -330,6 +361,13 @@ function coerce(key: ConfigKey, value: unknown): unknown | undefined {
     return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)))
   }
   if (BOOLEAN_CONFIG_KEYS.includes(key)) return typeof value === 'boolean' ? value : undefined
+  if (ORIGIN_LIST_CONFIG_KEYS.includes(key)) {
+    // A trust rule is all-or-nothing: one malformed entry drops the whole
+    // value rather than silently enforcing a subset of what was written.
+    if (!Array.isArray(value)) return undefined
+    const origins = value.map((entry) => (typeof entry === 'string' ? normalizeOrigin(entry) : null))
+    return origins.every((origin): origin is string => origin !== null) ? origins : undefined
+  }
   const allowed = ENUM_CONFIG_VALUES[key]
   if (allowed !== undefined) {
     return typeof value === 'string' && allowed.includes(value) ? value : undefined
@@ -399,11 +437,14 @@ export function loadConfig(options: {
   const sessionRaw = sessionPath && existsSync(sessionPath) ? readTomlFile(sessionPath) : {}
 
   function resolve<K extends ConfigKey>(key: K): ResolvedValue<never> {
+    // The shared project file arrives with a clone, so keys that widen
+    // network trust never read from it — whatever a repository writes there.
+    const repositoryLayerReadable = !USER_OWNED_CONFIG_KEYS.includes(key)
     const layers: [unknown, ConfigSource][] = [
       [(flags as Record<string, unknown>)[key], 'flag'],
       [sessionPath ? sessionRaw[key] : undefined, `session:${sessionPath ?? ''}`],
       [projectLocalPath ? projectLocalRaw[key] : undefined, `project-local:${projectLocalPath ?? ''}`],
-      [projectPath ? projectRaw[key] : undefined, `project:${projectPath ?? ''}`],
+      [projectPath && repositoryLayerReadable ? projectRaw[key] : undefined, `project:${projectPath ?? ''}`],
       [globalRaw[key], `global:${globalPath}`],
     ]
     for (const [raw, source] of layers) {
@@ -430,5 +471,7 @@ export function loadConfig(options: {
     log_level: resolve('log_level'),
     log_max_bytes: resolve('log_max_bytes'),
     log_max_files: resolve('log_max_files'),
+    media_origins: resolve('media_origins'),
+    approve_origins: resolve('approve_origins'),
   }
 }

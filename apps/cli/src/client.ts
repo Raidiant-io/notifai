@@ -301,9 +301,18 @@ export function createClient(
           // Media can be large, so this gets its own allowance rather than the
           // per-request budget — but still a finite one.
           signal: AbortSignal.timeout(Math.max(budgetMs, 60_000)),
+          // The grant names one exact destination and carries signed headers.
+          // A redirect would replay both against an origin the server never
+          // granted, so it is refused rather than followed.
+          redirect: 'manual',
         })
       } catch (err) {
         throw new NetworkError(`Upload failed: ${String(err)}`)
+      }
+      if (response.status >= 300 && response.status < 400) {
+        throw new NetworkError(
+          `Upload redirect is refused, not followed: the grant's headers are signed for one exact destination`,
+        )
       }
       if (!response.ok) {
         throw new NetworkError(`Upload rejected with status ${response.status}`)

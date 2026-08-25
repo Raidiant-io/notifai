@@ -243,6 +243,38 @@ describe('a server that never answers', () => {
     ])
   })
 
+  it('refuses a signed upload redirect without replaying its headers or finalizing', async () => {
+    let followed = false
+    let finalized = false
+    const baseUrl = await serving((request, response) => {
+      if (request.url === '/signed-upload') {
+        response.statusCode = 302
+        response.setHeader('location', `${baseUrl}/stolen`)
+        response.end()
+        return
+      }
+      if (request.url === '/stolen') followed = true
+      if (request.url === '/api/v1/media/med_1/finalize') finalized = true
+      response.statusCode = 200
+      response.end()
+    })
+    const client = createClient(baseUrl, 'Bearer machine')
+
+    await expect(
+      client.uploadMedia(
+        {
+          media_id: 'med_1',
+          upload_url: `${baseUrl}/signed-upload`,
+          upload_headers: { authorization: 'Signed secret' },
+          expires_at: '2026-08-14T12:00:00.000Z',
+        },
+        new Uint8Array([1, 2, 3, 4]),
+      ),
+    ).rejects.toThrow(/redirect is refused/i)
+    expect(followed).toBe(false)
+    expect(finalized).toBe(false)
+  })
+
   it('treats a truncated body as a transport failure, not a crash', async () => {
     // A body that stops mid-JSON used to escape as a raw parse error outside
     // the retry path, so nothing backed off and retried it.
