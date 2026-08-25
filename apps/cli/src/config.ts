@@ -138,7 +138,7 @@ export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> =
   log_level: LOG_LEVELS,
 }
 
-/** Compiled service origin. Not a user-facing setting; override with `--base-url` or `NOTIFAI_BASE_URL`. */
+/** Compiled service origin. Not a user-facing setting; login may override with `--base-url` or `NOTIFAI_BASE_URL`. */
 export const DEFAULT_BASE_URL = 'https://notifai.fly.dev'
 
 const DEFAULTS = {
@@ -360,8 +360,9 @@ export interface FlagOverrides {
 }
 
 /**
- * Service origin is not a user setting. Flag and env are developer/self-host
- * overrides; signed-in traffic still pins to the credential origin elsewhere.
+ * Service origin is not a user setting. Flag and env are pairing/self-host
+ * overrides for unsigned-in traffic (login). Signed-in traffic always uses
+ * the origin stored with the Machine Credential.
  */
 function resolveServiceUrl(
   flags: FlagOverrides,

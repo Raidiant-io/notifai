@@ -40,9 +40,11 @@ import {
 } from './readiness.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
+import type { MachineCredential } from './credentials.js'
 import {
   EXIT,
   UPDATE_CLI_COMMAND,
+  diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
   makeClient,
   resolvedBaseUrl,
@@ -236,10 +238,14 @@ function remoteStatesFrom(previous: Readiness): {
   return { credential, server, contract, auth, devices, proof }
 }
 
-function remoteInvalidatedByConfig(previous: Readiness, config: CliConfig): boolean {
-  if (config.base_url.source === 'default') return false
+function remoteInvalidatedByConfig(
+  previous: Readiness,
+  config: CliConfig,
+  credential: MachineCredential | null,
+): boolean {
+  const origin = resolvedBaseUrl(config, credential)
   const server = previous.states.find((state) => state.id === 'server')
-  return server === undefined || !server.detail.includes(config.base_url.value)
+  return server === undefined || !server.detail.includes(origin)
 }
 
 /**
@@ -260,6 +266,8 @@ export async function assessReadiness(
   } = {},
 ): Promise<Readiness> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const credential = deps.store.load()
+  if (credential) diagnoseIgnoredOriginOverride(deps.io, config, credential)
   const previous = options.previous
   const refresh = options.refresh
   if (previous !== undefined && refresh !== undefined && refresh.length === 0) return previous
@@ -268,7 +276,7 @@ export async function assessReadiness(
     previous !== undefined &&
     refresh !== undefined &&
     !refresh.includes('remote') &&
-    !remoteInvalidatedByConfig(previous, config)
+    !remoteInvalidatedByConfig(previous, config, credential)
   if (reuseRemote) {
     const reused = remoteStatesFrom(previous)
     if (reused !== null) {
@@ -294,7 +302,6 @@ export async function assessReadiness(
 
   states.push(projectReadiness(deps, config))
 
-  const credential = deps.store.load()
   states.push(
     credential
       ? {

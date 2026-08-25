@@ -11,7 +11,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
-import type { SkillScope } from './native-skills.js'
+import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
 import { firstBlocker, type Readiness, type ReadinessRefresh, type ReadinessState } from './readiness.js'
 import { buildDraft, formatReceipt } from './send.js'
 import { loginCommand } from './commands-auth.js'
@@ -143,7 +143,7 @@ async function closeGap(
     if (code !== 0) {
       deps.io.err('Skill installation failed — run it manually with:')
       deps.io.err(
-        `  npx skills add ${SKILLS_SOURCE} --skill notifai${
+        `  npx -y ${SKILLS_INSTALLER_SPEC} add ${SKILLS_SOURCE} --skill notifai${
           flags.skillsScope === 'global' ? ' --global' : ''
         }${flags.skillsScope === undefined ? '' : ' --yes'}`,
       )

@@ -7,6 +7,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
+import { ensurePrivateDirectory } from './atomic-file.js'
 import { acceptedValues, configInfo } from './config-schema.js'
 import {
   BOOLEAN_CONFIG_KEYS,
@@ -213,7 +214,8 @@ export async function configSetCommand(
     ? (parseToml(readFileSync(target.path, 'utf8')) as Record<string, unknown>)
     : {}
   existing[key] = value
-  mkdirSync(path.dirname(target.path), { recursive: true })
+  if (target.layer === 'project') mkdirSync(path.dirname(target.path), { recursive: true })
+  else ensurePrivateDirectory(path.dirname(target.path))
   writeFileSync(target.path, `${stringifyToml(existing)}\n`)
   deps.io.out(`Wrote ${key} to ${target.path}`)
   return EXIT.ok

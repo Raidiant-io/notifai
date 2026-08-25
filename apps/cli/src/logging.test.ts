@@ -14,6 +14,7 @@ import {
   LOG_SCHEMA_VERSION,
   activeLogPath,
   archiveLogPaths,
+  argvFlagNames,
   createLogger,
   logsDiskUsage,
   nullLogger,
@@ -182,9 +183,71 @@ describe('redaction', () => {
   })
 
   it('truncates a long string instead of carrying it whole', () => {
-    const shaped = shape({ body: 'x'.repeat(1000) }) as { body: string }
-    expect(shaped.body.length).toBeLessThan(500)
-    expect(shaped.body).toContain('+600 chars')
+    const shaped = shape({ detail: 'x'.repeat(1000) }) as { detail: string }
+    expect(shaped.detail.length).toBeLessThan(500)
+    expect(shaped.detail).toContain('+600 chars')
+  })
+
+  it('never persists notification content, answers, or raw argv at debug', () => {
+    const env = sandbox()
+    const logger = createLogger({ env, settings: { level: 'debug' } })
+    logger.debug('cli.start', {
+      argv: ['send', '--title', 'SECRET_TITLE', '--body', 'SECRET_BODY'],
+      title: 'SECRET_TITLE',
+      body: 'SECRET_BODY',
+      question: 'SECRET_QUESTION',
+      text: 'SECRET_REPLY',
+      answers: ['SECRET_ANSWER'],
+      choices: ['SECRET_CHOICE'],
+    })
+
+    const raw = readFileSync(activeLogPath(env), 'utf8')
+    expect(raw).not.toContain('SECRET_TITLE')
+    expect(raw).not.toContain('SECRET_BODY')
+    expect(raw).not.toContain('SECRET_QUESTION')
+    expect(raw).not.toContain('SECRET_REPLY')
+    expect(raw).not.toContain('SECRET_ANSWER')
+    expect(raw).not.toContain('SECRET_CHOICE')
+    const record = JSON.parse(raw) as LogRecord
+    expect(record.data).toMatchObject({
+      title_chars: 'SECRET_TITLE'.length,
+      body_chars: 'SECRET_BODY'.length,
+      question_chars: 'SECRET_QUESTION'.length,
+      text_chars: 'SECRET_REPLY'.length,
+      answers_count: 1,
+      choices_count: 1,
+      argv_count: 5,
+      flags: ['--title', '--body'],
+    })
+    expect(record.data).not.toHaveProperty('argv')
+    expect(record.data).not.toHaveProperty('title')
+  })
+
+  it('strips inline --name=value assignments so notification content is never logged', () => {
+    const inlineTitle = 'private title words'
+    const inlineBody = 'private body words'
+    expect(
+      argvFlagNames(['send', `--title=${inlineTitle}`, `--body=${inlineBody}`, '--reply', '--']),
+    ).toEqual(['--title', '--body', '--reply'])
+
+    const env = sandbox()
+    const logger = createLogger({ env, settings: { level: 'debug' } })
+    logger.debug('cli.start', {
+      argv: ['send', `--title=${inlineTitle}`, `--body=${inlineBody}`, 'plain'],
+    })
+
+    const raw = readFileSync(activeLogPath(env), 'utf8')
+    expect(raw).not.toContain(inlineTitle)
+    expect(raw).not.toContain(inlineBody)
+    expect(shape({ argv: ['send', `--title=${inlineTitle}`, '--choice=yes'] })).toEqual({
+      flags: ['--title', '--choice'],
+      argv_count: 3,
+    })
+    const record = JSON.parse(raw) as LogRecord
+    expect(record.data).toMatchObject({
+      flags: ['--title', '--body'],
+      argv_count: 4,
+    })
   })
 
   it('refuses to recurse for ever into a cyclic object', () => {

@@ -736,7 +736,7 @@ describe('what the hook leaves behind', () => {
     )
 
     const raw = readFileSync(activeLogPath(h.env), 'utf8')
-    expect(raw.match(/Allow exactly once/g)).toHaveLength(1)
+    expect(raw).not.toContain('Allow exactly once')
     const answerRecords = readLogRecords(h.env, { event: ['hook.answer'] }).records
     expect(answerRecords.map((record) => record.data?.['stage'])).toEqual([
       'queued',

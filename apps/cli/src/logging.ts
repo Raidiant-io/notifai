@@ -80,7 +80,7 @@ const LEVEL_RANK: Record<LogLevel, number> = { off: 0, error: 1, info: 2, debug:
  * existing one, and keep each event answering exactly one question.
  */
 export const LOG_EVENTS = [
-  /** A CLI invocation began: which command, which arguments, which version. */
+  /** A CLI invocation began: which command, which flag names, which version. */
   'cli.start',
   /** It ended: exit code and how long it took. */
   'cli.end',
@@ -155,6 +155,10 @@ const MAX_DEPTH = 4
  */
 const SECRET_KEY_PATTERN = /secret|token|password|authorization|credential|verifier|api[_-]?key/i
 const MACHINE_TOKEN_PATTERN = /nfm_[A-Za-z0-9._-]{6,}/g
+/** Notification and question content: persist length, never the words. */
+const CONTENT_STRING_KEYS = new Set(['title', 'subtitle', 'body', 'text', 'question'])
+/** Choice labels, reply answers, and raw argv: persist counts, never values. */
+const CONTENT_LIST_KEYS = new Set(['answers', 'choices', 'argv'])
 
 export const REDACTED = '[redacted]'
 
@@ -208,6 +212,22 @@ function redactString(value: string): string {
 }
 
 /**
+ * Flag names only — argv values are notification content and user text.
+ *
+ * `--title=SECRET` must become `--title`. Filtering on a `--` prefix is not
+ * enough: inline assignment would otherwise persist the value.
+ */
+export function argvFlagNames(argv: readonly string[]): string[] {
+  const names: string[] = []
+  for (const token of argv) {
+    if (!token.startsWith('--') || token === '--') continue
+    const eq = token.indexOf('=')
+    names.push(eq === -1 ? token : token.slice(0, eq))
+  }
+  return names
+}
+
+/**
  * Shape a value for the record: drop what must never be written, truncate what
  * would flood a reader, and refuse to recurse for ever into a cyclic object.
  */
@@ -226,7 +246,26 @@ export function shape(value: unknown, depth = 0): unknown {
     const out: Record<string, unknown> = {}
     for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
       if (nested === undefined) continue
-      out[key] = SECRET_KEY_PATTERN.test(key) ? REDACTED : shape(nested, depth + 1)
+      if (SECRET_KEY_PATTERN.test(key)) {
+        out[key] = REDACTED
+        continue
+      }
+      if (CONTENT_STRING_KEYS.has(key) && typeof nested === 'string') {
+        out[`${key}_chars`] = nested.length
+        continue
+      }
+      if (key === 'argv' && Array.isArray(nested)) {
+        out.flags = argvFlagNames(
+          nested.filter((token): token is string => typeof token === 'string'),
+        )
+        out.argv_count = nested.length
+        continue
+      }
+      if (CONTENT_LIST_KEYS.has(key) && Array.isArray(nested)) {
+        out[`${key}_count`] = nested.length
+        continue
+      }
+      out[key] = shape(nested, depth + 1)
     }
     return out
   }

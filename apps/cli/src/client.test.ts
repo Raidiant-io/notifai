@@ -81,6 +81,69 @@ describe('a server that never answers', () => {
     expect(result.replies).toEqual([])
   })
 
+  it('encodes pairing and evidence path segments', async () => {
+    const seen: string[] = []
+    const baseUrl = await serving((request, response) => {
+      seen.push(`${request.method} ${request.url}`)
+      response.setHeader('content-type', 'application/json')
+      if (request.url?.includes('/poll')) {
+        response.end(JSON.stringify({ status: 'pending' }))
+        return
+      }
+      response.end(
+        JSON.stringify({
+          request_id: 'req/encoded',
+          overall: 'accepted',
+          deliveries: [],
+          warnings: [],
+        }),
+      )
+    })
+    const client = createClient(baseUrl, 'Bearer test')
+
+    await client.pollPairing('pair/id', 'verifier')
+    await client.evidence('req/encoded')
+
+    expect(seen).toEqual([
+      'POST /api/v1/pairings/pair%2Fid/poll',
+      'GET /api/v1/notifications/req%2Fencoded',
+    ])
+  })
+
+  it('refuses redirects on bearer-authenticated calls', async () => {
+    let followed = false
+    const baseUrl = await serving((request, response) => {
+      if (request.url === '/api/v1/devices') {
+        response.statusCode = 302
+        response.setHeader('location', '/stolen')
+        response.end()
+        return
+      }
+      followed = true
+      response.end('stolen')
+    })
+
+    await expect(createClient(baseUrl, 'Bearer secret').listDevices()).rejects.toBeInstanceOf(
+      NetworkError,
+    )
+    expect(followed).toBe(false)
+  })
+
+  it('still follows redirects when the call has no bearer', async () => {
+    const baseUrl = await serving((request, response) => {
+      if (request.url === '/healthz') {
+        response.statusCode = 302
+        response.setHeader('location', '/healthz-ok')
+        response.end()
+        return
+      }
+      response.setHeader('content-type', 'application/json')
+      response.end('{}')
+    })
+
+    await expect(createClient(baseUrl, null).health()).resolves.toBe(true)
+  })
+
   it('puts and fetches Agent Acknowledgements on the encoded request path', async () => {
     const seen: { method?: string; url?: string; body?: unknown }[] = []
     const baseUrl = await serving((request, response) => {

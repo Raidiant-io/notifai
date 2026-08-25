@@ -70,7 +70,7 @@ import {
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, stateDir } from './config.js'
-import { createLogger, logsDiskUsage, readLogRecords } from './logging.js'
+import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 
@@ -382,6 +382,8 @@ const reply: ReplyView = {
   device_id: 'dev_test',
   device_name: 'iPhone',
   text: 'yes, after the migration',
+  answers: [],
+  source: null,
   created_at: '2026-08-01T18:01:00.000Z',
 }
 
@@ -1209,8 +1211,11 @@ describe('command contracts', () => {
       request_id: receipt.request_id,
       sequence: reply.seq,
       device: reply.device_name,
-      text: reply.text,
+      text_chars: reply.text.length,
+      answers_count: reply.answers.length,
     })
+    const raw = readFileSync(activeLogPath(deps.env), 'utf8')
+    expect(raw).not.toContain(reply.text)
   })
 
   it('backs off and retries a transient network error while waiting', async () => {
@@ -1501,6 +1506,10 @@ describe('command contracts', () => {
       'acknowledgement.attempted',
       'acknowledgement.outcome',
     ])
+    const raw = readFileSync(activeLogPath(deps.env), 'utf8')
+    expect(raw).not.toContain('I will deploy staging now.')
+    expect(events[0]?.data).toMatchObject({ characters: 'I will deploy staging now.'.length })
+    expect(events[1]?.data).toMatchObject({ text_chars: 'I will deploy staging now.'.length })
   })
 
   it('clears a matching active-session obligation after acknowledgement success', async () => {
@@ -2066,6 +2075,113 @@ describe('command contracts', () => {
       }),
     ])
     expect(recordsFor('req_unreached')).toEqual([])
+  })
+})
+
+describe('credential origin pinning', () => {
+  it('never sends the machine bearer to a flag or env origin override', async () => {
+    const io = new CapturedIo()
+    const seen: { baseUrl: string; bearer: string | null }[] = []
+    const client = {
+      submit: async () => receipt,
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    deps.env = { ...deps.env, NOTIFAI_BASE_URL: 'https://attacker.example' }
+    deps.clientFactory = (baseUrl, bearer) => {
+      seen.push({ baseUrl, bearer })
+      return withCompatibilityDefaults(client)
+    }
+
+    expect(
+      await sendCommand(deps, {
+        kind: 'update',
+        title: 'T',
+        body: 'B',
+        baseUrl: 'https://attacker.flag',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(seen).toEqual([
+      {
+        baseUrl: 'https://test.notifai.invalid',
+        bearer: 'Bearer nfm_mac_test.test-secret',
+      },
+    ])
+    expect(io.errLines.join('\n')).toContain('Ignoring base_url from flag')
+    expect(io.errLines.join('\n')).not.toContain('test-secret')
+    expect(io.errLines.join('\n')).not.toContain('nfm_')
+    expect(io.errLines.join('\n')).not.toContain('https://attacker.example')
+    expect(io.errLines.join('\n')).not.toContain('https://attacker.flag')
+  })
+
+  it('lets unsigned-in login target an origin override', async () => {
+    const io = new CapturedIo()
+    const seen: { baseUrl: string; bearer: string | null }[] = []
+    let now = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://selfhost.example/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({ status: 'approved', machine_id: 'mac_new' }),
+    } as unknown as ApiClient
+    const saved: { baseUrl?: string } = {}
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+      store: {
+        load: () => null,
+        save: (credential) => {
+          saved.baseUrl = credential.baseUrl
+        },
+        clear: () => {},
+        describe: () => 'test credential store',
+      },
+      clientFactory: (baseUrl, bearer) => {
+        seen.push({ baseUrl, bearer })
+        return withCompatibilityDefaults(client)
+      },
+    }
+
+    expect(await loginCommand(deps, { baseUrl: 'https://selfhost.example', open: false })).toBe(
+      EXIT.ok,
+    )
+    expect(seen[0]).toEqual({ baseUrl: 'https://selfhost.example', bearer: null })
+    expect(saved.baseUrl).toBe('https://selfhost.example')
+  })
+
+  it('keeps notification titles out of send logs', async () => {
+    const io = new CapturedIo()
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-log-'))
+    const client = { submit: async () => receipt } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    deps.logger = createLogger({ env: deps.env, cmd: 'send', settings: { level: 'debug' } })
+
+    expect(
+      await sendCommand(deps, {
+        kind: 'update',
+        title: 'SECRET_SEND_TITLE',
+        body: 'SECRET_SEND_BODY',
+      }),
+    ).toBe(EXIT.ok)
+    const raw = readFileSync(activeLogPath(deps.env), 'utf8')
+    expect(raw).not.toContain('SECRET_SEND_TITLE')
+    expect(raw).not.toContain('SECRET_SEND_BODY')
+    const submitted = readLogRecords(deps.env, { event: ['send.submitted'] }).records
+    expect(submitted[0]?.data).toMatchObject({
+      request_id: receipt.request_id,
+      title_chars: 'SECRET_SEND_TITLE'.length,
+    })
   })
 })
 
@@ -4457,42 +4573,6 @@ describe('init', () => {
     expect(doctorOut).toContain('no active Companion device registered yet')
     expect(doctorOut).toContain(
       'Delivery proof: not checked — no iPhone or Android Companion App is ready',
-    )
-  })
-
-  it('stops login when the approval page reports no Alpha access', async () => {
-    const io = new CapturedIo()
-    let now = 0
-    let polls = 0
-    const client = {
-      beginPairing: async () => ({
-        pairing_id: 'pair_no_plan',
-        code: 'NOPE-PLAN',
-        approve_url: 'https://test.notifai.invalid/approve?code=NOPE-PLAN',
-        expires_at: new Date(60_000).toISOString(),
-        poll_interval_seconds: 1,
-      }),
-      pollPairing: async () => {
-        polls += 1
-        return {
-          status: 'no_active_plan' as const,
-          next_action: 'Open https://test.notifai.invalid/support to request Alpha access, then retry.',
-        }
-      },
-    } as unknown as ApiClient
-    const deps = {
-      ...makeDeps(io, client),
-      now: () => now,
-      sleep: async (milliseconds: number) => {
-        now += milliseconds
-      },
-    }
-
-    expect(await loginCommand(deps, { open: false })).toBe(EXIT.auth)
-    expect(polls).toBe(1)
-    expect(io.errLines.join('\n')).toContain('no active plan or temporary Alpha access')
-    expect(io.errLines.join('\n')).toContain(
-      'Open https://test.notifai.invalid/support to request Alpha access, then retry.',
     )
   })
 

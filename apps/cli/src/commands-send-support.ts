@@ -1,4 +1,4 @@
-import { type ListRepliesResponse } from '@raidiant/notifai-protocol'
+import { NOTIFICATION_IMAGE_MAX_BYTES, type ListRepliesResponse } from '@raidiant/notifai-protocol'
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -209,6 +209,44 @@ type UploadResult =
   /** `error: null` means `reportError` already said it; do not print it twice. */
   | { ok: false; error: string | null; exit: number }
 
+/**
+ * Read a remote image without buffering more than the server will accept.
+ *
+ * Content-Length is an early refusal, not trust: a lying header still hits
+ * the byte cap while the body is read. Supported schemes stay http and https.
+ */
+export async function readCappedBytes(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array | 'too-large'> {
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) return 'too-large'
+  const reader = response.body?.getReader()
+  if (reader === undefined) {
+    const buf = new Uint8Array(await response.arrayBuffer())
+    return buf.byteLength > maxBytes ? 'too-large' : buf
+  }
+  const chunks: Uint8Array[] = []
+  let received = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    received += value.byteLength
+    if (received > maxBytes) {
+      await reader.cancel()
+      return 'too-large'
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(received)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
+}
+
 /** `--image` accepts a media id, a local file path, or an http(s) URL. */
 export async function uploadImage(deps: CommandDeps, client: ApiClient, source: string): Promise<UploadResult> {
   let bytes: Uint8Array
@@ -219,7 +257,15 @@ export async function uploadImage(deps: CommandDeps, client: ApiClient, source: 
       if (!response.ok) return { ok: false, error: `Could not fetch ${source} (${response.status}).`, exit: EXIT.usage }
       const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? ''
       mediaType = (['image/jpeg', 'image/png', 'image/gif'] as const).find((t) => t === contentType)
-      bytes = new Uint8Array(await response.arrayBuffer())
+      const downloaded = await readCappedBytes(response, NOTIFICATION_IMAGE_MAX_BYTES)
+      if (downloaded === 'too-large') {
+        return {
+          ok: false,
+          error: `Remote image exceeds the ${NOTIFICATION_IMAGE_MAX_BYTES} byte media limit.`,
+          exit: EXIT.usage,
+        }
+      }
+      bytes = downloaded
     } catch (err) {
       return { ok: false, error: `Could not fetch ${source}: ${String(err)}`, exit: EXIT.network }
     }

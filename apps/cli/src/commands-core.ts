@@ -132,7 +132,36 @@ export function makeClient(
 }
 
 export function resolvedBaseUrl(config: CliConfig, credential: MachineCredential | null): string {
-  return config.base_url.source === 'default' && credential ? credential.baseUrl : config.base_url.value
+  return credential ? credential.baseUrl : config.base_url.value
+}
+
+/**
+ * Whether a flag or env origin would send signed-in traffic somewhere other
+ * than the origin stored with this machine's credential.
+ *
+ * Login still honours those overrides: pairing has no credential to pin to.
+ * Returning the source (not the override URL, and never the bearer) is what
+ * lets callers diagnose the ignore without leaking either.
+ */
+export function ignoredOriginOverride(
+  config: CliConfig,
+  credential: MachineCredential,
+): CliConfig['base_url']['source'] | null {
+  if (config.base_url.source === 'default') return null
+  if (config.base_url.value === credential.baseUrl) return null
+  return config.base_url.source
+}
+
+export function diagnoseIgnoredOriginOverride(
+  io: Pick<CommandIo, 'err'>,
+  config: CliConfig,
+  credential: MachineCredential,
+): void {
+  const source = ignoredOriginOverride(config, credential)
+  if (source === null) return
+  io.err(
+    `Ignoring base_url from ${source}; authenticated traffic uses the origin stored with this machine's credential. Run \`notifai login\` to pair with a different origin.`,
+  )
 }
 
 export function authedClient(deps: CommandDeps, config: CliConfig): { client: ApiClient; baseUrl: string } | null {
@@ -145,6 +174,7 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
     deps.io.err('Not signed in. Run `notifai login` first.')
     return null
   }
+  diagnoseIgnoredOriginOverride(deps.io, config, credential)
   const baseUrl = resolvedBaseUrl(config, credential)
   return {
     client: makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`),
