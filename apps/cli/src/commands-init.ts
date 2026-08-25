@@ -8,8 +8,9 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
+import { ensurePrivateDirectory } from './atomic-file.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import { type CliConfig } from './config.js'
+import { personalProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
 import { firstBlocker, type Readiness, type ReadinessRefresh, type ReadinessState } from './readiness.js'
@@ -32,7 +33,7 @@ import {
   setupProofIsStale,
   writeSetupProof,
 } from './commands-setup-proof.js'
-import { SKILLS_SOURCE } from './commands-skill.js'
+import { listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
 
 // ---------------------------------------------------------------------------
 // init
@@ -44,6 +45,9 @@ export function projectSlugFrom(name: string): string {
   return inferredProjectSlugFrom(name) ?? 'project'
 }
 
+/** Project checkout vs this machine. Drives skill, hooks, and config together. */
+export type SetupScope = SkillScope
+
 export interface InitFlags {
   projectId?: string
   /**
@@ -53,7 +57,13 @@ export interface InitFlags {
    * never spawn npx against the network by default.
    */
   skills?: boolean
-  /** Scope selected by an unattended caller; humans choose inside npx skills. */
+  /**
+   * One setup-scope for skill, hooks, and config. The unattended answer to
+   * init's single project-vs-machine question. Pairing, devices, and the CLI
+   * binary are not this flag.
+   */
+  setupScope?: SetupScope
+  /** Alias of `--setup-scope` when installing the skill unattended. */
   skillsScope?: SkillScope
   /** Same tri-state, for the harness hooks. */
   hooks?: boolean
@@ -102,12 +112,17 @@ async function closeGap(
   flags: InitFlags,
 ): Promise<GapCloseResult> {
   if (state.id === 'project') {
-    const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
+    const slug = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
+    const configPath =
+      flags.setupScope === 'global'
+        ? personalProjectConfigPath(deps.cwd, deps.env)
+        : path.join(deps.cwd, '.notifai', 'config.toml')
     const existing = existsSync(configPath)
       ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
       : {}
-    existing['project'] = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
-    mkdirSync(path.dirname(configPath), { recursive: true })
+    existing['project'] = slug
+    if (flags.setupScope === 'global') ensurePrivateDirectory(path.dirname(configPath))
+    else mkdirSync(path.dirname(configPath), { recursive: true })
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
     return 'closed'
   }
@@ -116,8 +131,9 @@ async function closeGap(
     const harnesses = await pickHarnessesToInstall(deps)
     if (harnesses === null || harnesses.length === 0) return 'failed'
     let ok = true
+    const hookFlags = flags.setupScope === 'global' ? { global: true as const } : {}
     for (const harness of harnesses) {
-      if (hooksInstallCommand(deps, { harness }) !== EXIT.ok) ok = false
+      if (hooksInstallCommand(deps, { harness, ...hookFlags }) !== EXIT.ok) ok = false
     }
     return ok ? 'closed' : 'failed'
   }
@@ -135,22 +151,43 @@ async function closeGap(
       )
       return 'failed'
     }
-    const scopeText = flags.skillsScope === undefined ? 'the scope you choose' : `${flags.skillsScope} scope`
-    deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${scopeText})...`)
-    const addOptions = {
+    const installScope = flags.setupScope ?? flags.skillsScope
+    if (installScope === undefined) {
+      deps.io.err(
+        'Skill installation refused — choose a setup scope: `notifai init --skills --setup-scope project` or `... global`.',
+      )
+      return 'failed'
+    }
+    const { installed } = await listScopedNotifaiSkills(deps)
+    const extras = installed.filter((skill) => skill.scope !== installScope)
+    for (const extra of extras) {
+      const code = await deps.nativeSkills.remove({
+        skill: 'notifai',
+        scope: extra.scope,
+        cwd: deps.cwd,
+        env: deps.env,
+      })
+      if (code !== 0) {
+        deps.io.err(
+          `Skill installation refused — could not uninstall the ${extra.scope} copy (${extra.ref ?? 'unknown pin'}), so installing ${installScope} would leave both active.`,
+        )
+        return 'failed'
+      }
+    }
+    deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${installScope} scope)...`)
+    const code = await deps.nativeSkills.add({
       source: SKILLS_SOURCE,
       skill: 'notifai',
       cwd: deps.cwd,
       env: deps.env,
-      ...(flags.skillsScope === undefined ? {} : { scope: flags.skillsScope }),
-    }
-    const code = await deps.nativeSkills.add(addOptions)
+      scope: installScope,
+    })
     if (code !== 0) {
       deps.io.err('Skill installation failed — run it manually with:')
       deps.io.err(
         `  npx -y ${SKILLS_INSTALLER_SPEC} add ${SKILLS_SOURCE} --skill notifai${
-          flags.skillsScope === 'global' ? ' --global' : ''
-        }${flags.skillsScope === undefined ? '' : ' --yes'}`,
+          installScope === 'global' ? ' --global' : ''
+        } --yes`,
       )
     }
     return code === 0 ? 'closed' : 'failed'
@@ -524,32 +561,76 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
  * and a revoked credential are the same code path arriving at different
  * states rather than four branches to enumerate.
  */
-export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
-  if (
-    flags.skillsScope !== undefined &&
-    flags.skillsScope !== 'project' &&
-    flags.skillsScope !== 'global'
-  ) {
+function isSetupScope(value: string | undefined): value is SetupScope {
+  return value === 'project' || value === 'global'
+}
+
+async function resolveSetupScope(
+  deps: CommandDeps,
+  flags: InitFlags,
+): Promise<SetupScope | undefined | 'usage'> {
+  if (flags.setupScope !== undefined && !isSetupScope(flags.setupScope)) {
+    deps.io.err('Invalid setup scope. Choose `project` or `global`.')
+    return 'usage'
+  }
+  if (flags.skillsScope !== undefined && !isSetupScope(flags.skillsScope)) {
     deps.io.err('Invalid skill scope. Choose `project` or `global`.')
-    return EXIT.usage
+    return 'usage'
+  }
+  if (
+    flags.setupScope !== undefined &&
+    flags.skillsScope !== undefined &&
+    flags.setupScope !== flags.skillsScope
+  ) {
+    deps.io.err('`--setup-scope` and `--skills-scope` disagree. Pass one, or pass the same value twice.')
+    return 'usage'
   }
   if (flags.skillsScope !== undefined && flags.skills !== true) {
-    deps.io.err('`--skills-scope` requires `--skills`. Choose project or global in the native installer.')
-    return EXIT.usage
+    deps.io.err('`--skills-scope` requires `--skills`. Use `--setup-scope` to choose project or machine for the whole setup.')
+    return 'usage'
   }
-  if (
-    flags.skills === true &&
-    deps.io.interactive !== true &&
-    flags.skillsScope === undefined
-  ) {
-    deps.io.err(
-      'Unattended skill setup requires an explicit scope: `notifai init --skills --skills-scope project` or `... global`.',
+  const fromFlags = flags.setupScope ?? flags.skillsScope
+  if (fromFlags !== undefined) return fromFlags
+  if (flags.skills === false && flags.hooks === false) return undefined
+  if (deps.io.interactive === true && deps.io.select) {
+    const selected = await deps.io.select(
+      'Should this Notifai setup apply to this project only, or to every project on this machine?',
+      [
+        {
+          value: 'project',
+          label: 'This project',
+          hint: 'skill, hooks, and shared config stay in this checkout',
+        },
+        {
+          value: 'global',
+          label: 'This machine',
+          hint: 'skill and hooks follow you into every repo',
+        },
+      ],
     )
-    return EXIT.usage
+    if (selected === 'project' || selected === 'global') return selected
+    deps.io.err('No setup scope selected. Pass `--setup-scope project` or `--setup-scope global`.')
+    return 'usage'
+  }
+  if (flags.skills === true) {
+    deps.io.err(
+      'Unattended skill setup requires an explicit scope: `notifai init --skills --setup-scope project` or `... global`.',
+    )
+    return 'usage'
+  }
+  return undefined
+}
+
+export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
+  const setupScope = await resolveSetupScope(deps, flags)
+  if (setupScope === 'usage') return EXIT.usage
+  const resolved: InitFlags = {
+    ...flags,
+    ...(setupScope === undefined ? {} : { setupScope, skillsScope: flags.skillsScope ?? setupScope }),
   }
   await deps.io.intro?.('Notifai setup')
 
-  const skillOpts = flags.skillsScope === undefined ? {} : { skillScope: flags.skillsScope }
+  const skillOpts = resolved.setupScope === undefined ? {} : { skillScope: resolved.setupScope }
   let readiness = await assessReadiness(deps, skillOpts)
   const reassess = (refresh?: readonly ReadinessRefresh[]) =>
     assessReadiness(deps, {
@@ -581,9 +662,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (state.status === 'optional-gap') {
-        if (remedy.by !== 'cli' || !(await wantsOptional(deps, state, flags))) continue
+        if (remedy.by !== 'cli' || !(await wantsOptional(deps, state, resolved))) continue
         attempted.add(state.id)
-        const result = await closeGap(deps, state, flags)
+        const result = await closeGap(deps, state, resolved)
         if (result === 'failed') failed = true
         if (result === 'failed' && state.status === 'optional-gap') {
           readiness = await reassess(refreshAfterClose(state.id))
@@ -601,7 +682,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
       if (remedy.by === 'cli') {
         attempted.add(state.id)
-        const result = await closeGap(deps, state, flags)
+        const result = await closeGap(deps, state, resolved)
         if (result === 'failed') failed = true
         if (result !== 'closed') {
           stop = true
@@ -656,7 +737,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     if (stop || !advanced) break
   }
 
-  await printInitClose(deps, readiness, flags)
+  await printInitClose(deps, readiness, resolved)
   const blocker = firstBlocker(readiness)
   if (blocker === null) return failed ? EXIT.failed : EXIT.ok
   return failed || deps.io.interactive !== true ? EXIT.failed : EXIT.ok

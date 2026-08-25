@@ -58,6 +58,7 @@ export {
   initCommand,
   projectSlugFrom,
   type InitFlags,
+  type SetupScope,
 } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
 export { realIo } from './commands-io.js'

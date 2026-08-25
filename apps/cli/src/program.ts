@@ -218,12 +218,24 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
     .option('--skills', 'install/update the agent skill from its pinned public release')
     .option('--no-skills', 'suppress the optional agent-skill status line')
-    .option('--skills-scope <scope>', 'unattended skill scope: project or global')
+    .option(
+      '--setup-scope <scope>',
+      'unattended setup scope: project or global (skill, hooks, and config). The CLI binary is always a global install',
+    )
+    .option('--skills-scope <scope>', 'unattended skill scope; same values as --setup-scope')
     .option('--hooks', 'install harness hooks for registered-question routing')
     .option('--no-hooks', 'skip the hooks without being asked')
-    .action(async (opts: { projectId?: string; skills?: boolean; skillsScope?: SkillScope; hooks?: boolean }) => {
-      exit(await runners.init(deps, opts))
-    })
+    .action(
+      async (opts: {
+        projectId?: string
+        skills?: boolean
+        setupScope?: SkillScope
+        skillsScope?: SkillScope
+        hooks?: boolean
+      }) => {
+        exit(await runners.init(deps, opts))
+      },
+    )
 
   program
     .command('doctor')

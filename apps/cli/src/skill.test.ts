@@ -238,6 +238,7 @@ describe('Notifai agent skill', () => {
     expect(setup).toMatch(/companion/i)
     expect(setup).toContain('notifai doctor --json')
     expect(setup).toContain('notifai init')
+    expect(setup).toContain('--setup-scope')
   })
 
   it('offers npx only as a pinned fallback behind a real install', () => {

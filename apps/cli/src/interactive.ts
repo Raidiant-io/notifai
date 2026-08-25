@@ -701,7 +701,7 @@ async function chooseLayer(): Promise<'global' | 'project' | 'local' | null> {
     options: [
       { value: 'global', label: 'This machine', hint: 'every project you work on here' },
       { value: 'project', label: 'This project, shared', hint: '.notifai/config.toml — commit it' },
-      { value: 'local', label: 'This project, just me', hint: 'config.local.toml — keep it gitignored' },
+      { value: 'local', label: 'This project, just me', hint: 'stored on this machine, not in the repo' },
     ],
     initialValue: 'global',
   })
