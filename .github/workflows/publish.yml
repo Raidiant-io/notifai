@@ -1,0 +1,74 @@
+name: publish
+
+on:
+  push:
+    tags: ['v*', 'protocol-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm-release
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Require an npm CLI with trusted-publishing support
+        run: |
+          node -e 'const { execFileSync } = require("node:child_process"); const [major, minor] = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim().split(".").map(Number); if (major < 11 || (major === 11 && minor < 5)) process.exit(1)'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify the clean release checkout
+        run: |
+          pnpm check:boundary:self-test
+          pnpm check:boundary
+          pnpm build
+          pnpm -r test
+          pnpm lint
+          pnpm -r typecheck
+          pnpm check:release
+          pnpm check:packed
+
+      - name: Plan idempotent package publication
+        id: plan
+        run: node scripts/plan-publish.mjs
+
+      # Protocol must reach the registry before a CLI that pins it exactly.
+      - name: Publish protocol with OIDC provenance
+        if: ${{ steps.plan.outputs.publish_protocol == 'true' }}
+        working-directory: packages/protocol
+        run: npm publish --access public --provenance
+
+      - name: Verify published protocol bytes and metadata
+        if: ${{ steps.plan.outputs.verify_protocol == 'true' }}
+        run: node scripts/verify-published.mjs @raidiant/notifai-protocol
+
+      - name: Publish CLI with OIDC provenance
+        if: ${{ steps.plan.outputs.publish_cli == 'true' }}
+        working-directory: apps/cli
+        run: npm publish --access public --provenance
+
+      - name: Verify published CLI bytes and metadata
+        if: ${{ steps.plan.outputs.verify_cli == 'true' }}
+        run: node scripts/verify-published.mjs @raidiant/notifai
