@@ -115,6 +115,15 @@ describe('Notifai agent skill', () => {
     expect(skill).not.toMatch(/kind never chooses/i)
   })
 
+  it('routes a blocker through a question whenever the User response resumes the work', () => {
+    // `blocked` and `question` are mutually exclusive on the wire. The skill
+    // must teach the selection boundary or an imperative such as "unlock it"
+    // becomes an unanswerable one-way notification.
+    const selection = `${section('## Send')}\n${section('## Ask a question')}`
+    expect(selection).toMatch(/work needs a User response[\s\S]{0,160}answerable\s+question/i)
+    expect(selection).toMatch(/one-way blocked[\s\S]{0,160}no\s+User\s+reply\s+would\s+resume/i)
+  })
+
   it('keeps every send example valid against the CLI it documents', () => {
     const sends = shellExamples.filter((line) => line.startsWith('notifai send'))
     expect(sends.length).toBeGreaterThan(0)

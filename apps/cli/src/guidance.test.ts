@@ -64,7 +64,8 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/multiple meaningful[\s\S]{0,120}steps/i)
     expect(content).toMatch(/requested audit or diagnosis[\s\S]{0,180}clean/i)
     expect(content).toMatch(/completion .* outcome, not routine progress/i)
-    expect(content).toMatch(/blocked on something only they can give/i)
+    expect(content).toMatch(/work cannot proceed/i)
+    expect(content).toMatch(/ask an answerable question/i)
     expect(content).toMatch(/needs their attention soon/i)
     expect(content).toMatch(/routine progress/i)
     // Deliberately removed 2026-08-24: agents do not weigh time between the
@@ -72,6 +73,18 @@ describe('shipped guidance content', () => {
     expect(content).not.toMatch(/terminal/i)
     expect(content).not.toMatch(/time since/i)
     expect(content).toMatch(/one notification per event/i)
+  })
+
+  it('makes User-resumable blockers answerable and reserves one-way blocked sends for the rest', () => {
+    // Regression: an imperative unlock request sent as `blocked` lets the User
+    // do the work but provides no reply path to report readiness.
+    const content = [
+      shippedGuidanceTopic('when-to-notify')!.content,
+      shippedGuidanceTopic('bodies')!.content,
+      shippedGuidanceTopic('questions')!.content,
+    ].join('\n')
+    expect(content).toMatch(/work needs a User response[\s\S]{0,120}answerable\s+question/i)
+    expect(content).toMatch(/one-way blocked[\s\S]{0,120}no\s+User\s+reply\s+would\s+resume/i)
   })
 
   it('teaches outcome-altitude titles that stand alone, without kind or project', () => {

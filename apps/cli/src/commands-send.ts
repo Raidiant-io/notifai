@@ -63,7 +63,7 @@ export async function sendCommand(
   if (!flags.reply && flags.kind === undefined) {
     deps.io.err(
       '--kind is required: say what this notification is. ' +
-        'update (news) · done (finished) · failed (terminal failure) · blocked (cannot proceed). ' +
+        'update (news) · done (finished) · failed (terminal failure) · blocked (cannot proceed; no User reply would resume it). ' +
         '--reply makes it a question without --kind.',
     )
     return EXIT.usage

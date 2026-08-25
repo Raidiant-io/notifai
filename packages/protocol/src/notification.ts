@@ -297,7 +297,7 @@ export const NOTIFICATION_KINDS = [
   'done',
   /** Work reached a terminal unsuccessful outcome. */
   'failed',
-  /** Work cannot proceed until an external dependency or decision changes. */
+  /** Work cannot proceed, and no User reply would resume it. */
   'blocked',
 ] as const
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]

@@ -31,8 +31,9 @@ Notify when something changed for the user:
 - Substantial autonomous work finished — succeeded or failed. Work is
   substantial when it required multiple meaningful investigation, editing,
   build, test, deployment, or coordination steps.
-- You are blocked on something only they can give: a key, an approval, a
-  decision.
+- Work cannot proceed: ask an answerable question when continuing needs a User
+  response; send a one-way blocked notification only when no User reply would
+  resume the work.
 - You found something that needs their attention soon.
 
 Never notify for:
@@ -60,7 +61,7 @@ Good:
 
 - \`Users can now create accounts\` — the capability, not the process behind it
 - \`Password reset emails aren't sending\` — the failure as the user experiences it
-- \`Refund flow needs your Stripe key\` — what is stuck and what unblocks it
+- \`Refund rollout awaits provider recovery\` — what is stuck, not machinery
 - \`Found why checkout was flaky\` — the finding they were waiting on
 - \`3 orders didn't import and need review\` — a count that earns its place
   because acting on it is theirs to do
@@ -100,10 +101,10 @@ Work failed:
 
 Blocked:
 
-> The refund flow is built and working against the test environment. Going
-> live needs the Stripe key that only you can issue.
+> The refund flow is built, but the production rollout is waiting for the
+> payment provider to recover. I am monitoring it and will resume automatically.
 >
-> That's the last open item — everything else is done.
+> There is nothing for you to answer; I will confirm when it is live.
 
 Bad bodies: a build report (\`42/42 green, coverage 87%, rebased onto main\`)
 where the news is "users can now create accounts"; the journey ("first I
@@ -118,6 +119,11 @@ failure report.
 
 const QUESTIONS = `# Questions
 
+When work needs a User response before it can continue, ask an answerable
+question. A one-way blocked Notification Request is only for work that no User
+reply would resume. If the User must act and then tell you it is ready, that
+readiness is an answer — ask for it.
+
 A question is answerable from the notification alone, in the user's terms, not
 the machinery's. One askable sentence; reasoning and stakes follow as context.
 Offer closed choices whose wording carries its own consequence.
@@ -128,6 +134,8 @@ Good:
   wait for off-peak?\` with choices \`Deploy now\` / \`Wait for off-peak\`
 - \`The API key in .env.example is live. Revoke it now, or wait until the
   replacement is provisioned?\` with \`Revoke now\` / \`Wait for the new key\`
+- \`Is the test device unlocked and ready for the install?\` with
+  \`Ready — install now\` / \`Not yet — wait\`
 
 Bad:
 
