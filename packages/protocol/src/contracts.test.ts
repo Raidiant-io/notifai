@@ -7,6 +7,7 @@ import {
   BODY_MAX_LENGTH,
   BeginPairingRequest,
   CAPABILITIES_V1,
+  CLOSED_CHOICE_BANNER_AFFORDANCE,
   DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
   defaultDeliveryPolicy,
   effectiveKind,
@@ -33,7 +34,7 @@ import {
   type PutAgentAcknowledgementResponse,
   type SubmissionReceipt,
 } from './index.js'
-import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
+import { buildApnsEnvelope, collapsedChoiceAlert, RECEIPT_TOKEN_LENGTH } from './apns.js'
 import { buildFcmDataEnvelope } from './fcm.js'
 
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
@@ -681,6 +682,74 @@ describe('validateDraft', () => {
     expect((formEnvelope.payload['aps'] as Record<string, unknown>)['category']).toBe(
       REPLY_CHOICE_CATEGORY_ID,
     )
+  })
+
+  it('puts a press-and-hold affordance on the collapsed closed-choice banner, never the labels', () => {
+    const ids = { requestId: 'req_x', deliveryId: 'del_x' }
+    const secretLabel = 'Revoke the leaked production key'
+    const questions = [
+      {
+        id: 'key',
+        text: 'The API key in .env.example is live. What now?',
+        choices: [
+          { id: 'revoke', label: secretLabel },
+          { id: 'wait', label: 'Wait for the replacement' },
+        ],
+      },
+    ]
+    const questionBody = 'The API key in .env.example is live. What now?'
+    const question = draft({
+      presentation: { title: 'API key is live', body: questionBody },
+      reply: { expires_in_seconds: 3600, questions },
+    })
+
+    const envelope = buildApnsEnvelope(question, ids, null, 'ios')
+    const alert = (envelope.payload['aps'] as Record<string, unknown>)['alert'] as Record<
+      string,
+      unknown
+    >
+    expect(alert).toEqual({
+      title: 'API key is live',
+      subtitle: CLOSED_CHOICE_BANNER_AFFORDANCE,
+      body: questionBody,
+    })
+    expect(JSON.stringify(alert)).not.toContain(secretLabel)
+    expect(JSON.stringify(alert)).not.toContain('Wait for the replacement')
+    expect((envelope.payload['notifai'] as Record<string, unknown>)['questions']).toEqual(questions)
+
+    const macos = buildApnsEnvelope(question, ids, null, 'macos')
+    const macosAlert = (macos.payload['aps'] as Record<string, unknown>)['alert'] as Record<
+      string,
+      unknown
+    >
+    expect(macosAlert.subtitle).toBeUndefined()
+    expect(JSON.stringify(macosAlert)).not.toContain(CLOSED_CHOICE_BANNER_AFFORDANCE)
+
+    const fcm = JSON.parse(buildFcmDataEnvelope(question, ids, null).data.notifai) as Record<
+      string,
+      unknown
+    >
+    expect(JSON.stringify(fcm)).not.toContain(CLOSED_CHOICE_BANNER_AFFORDANCE)
+
+    const withSubtitle = draft({
+      presentation: {
+        title: 'API key is live',
+        subtitle: 'It is in the example file',
+        body: questionBody,
+      },
+      reply: { expires_in_seconds: 3600, questions },
+    })
+    const subtitled = collapsedChoiceAlert(withSubtitle, 'ios')
+    expect(subtitled.subtitle).toBe('It is in the example file')
+    expect(subtitled.body).toBe(`${questionBody}\n${CLOSED_CHOICE_BANNER_AFFORDANCE}`)
+    expect(JSON.stringify(subtitled)).not.toContain(secretLabel)
+
+    const freeText = buildApnsEnvelope(draft({ reply: freeTextReply() }), ids, null)
+    const freeTextAlert = (freeText.payload['aps'] as Record<string, unknown>)['alert'] as Record<
+      string,
+      unknown
+    >
+    expect(JSON.stringify(freeTextAlert)).not.toContain(CLOSED_CHOICE_BANNER_AFFORDANCE)
   })
 
   it('rejects question sets that cannot be answered unambiguously', () => {

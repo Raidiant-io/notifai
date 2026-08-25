@@ -191,6 +191,12 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/exit code 3/i)
   })
 
+  it('teaches that closed choices appear after pressing and holding', () => {
+    const ask = section('## Ask a question')
+    expect(ask).toMatch(/closed choices appear after pressing and holding the\s+notification/i)
+    expect(skill).not.toMatch(/choices are buttons on the banner/i)
+  })
+
   it('makes registration the middle of the asking turn, not the end', () => {
     const ask = section('## Ask a question')
     expect(ask).toMatch(/registering is not the end of the turn/i)

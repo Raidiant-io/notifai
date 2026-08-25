@@ -1,5 +1,6 @@
 import { bannerExcerpt } from './content.js'
 import {
+  CLOSED_CHOICE_BANNER_AFFORDANCE,
   DEFAULT_NOTIFICATION_KIND,
   effectiveKind,
   REPLY_CATEGORY_ID,
@@ -52,6 +53,43 @@ export interface RetirementAnswerContext {
 /** Encoded width of the per-Delivery receipt token. */
 export const RECEIPT_TOKEN_LENGTH = 22
 
+function replyUsesCard(draft: NotificationDraftT): boolean {
+  if (draft.reply === undefined) return false
+  const [first] = draft.reply.questions
+  return draft.reply.questions.length > 1 || first?.choices !== undefined
+}
+
+/**
+ * Visible collapsed-banner fields. Closed-choice iPhone notifications add a
+ * press-and-hold hint so the answering card is discoverable; choice labels
+ * stay off this surface.
+ */
+export function collapsedChoiceAlert(
+  draft: NotificationDraftT,
+  platform: ApplePlatform = 'ios',
+): { title: string; subtitle?: string; body: string } {
+  const excerpt = bannerExcerpt(draft.presentation.body)
+  const subtitle = draft.presentation.subtitle
+  const alert: { title: string; subtitle?: string; body: string } = {
+    title: draft.presentation.title,
+    ...(subtitle !== undefined ? { subtitle } : {}),
+    body: excerpt,
+  }
+  if (platform !== 'ios' || !replyUsesCard(draft)) return alert
+
+  const alreadyVisible = [alert.title, alert.subtitle ?? '', alert.body].some((value) =>
+    value.includes(CLOSED_CHOICE_BANNER_AFFORDANCE),
+  )
+  if (alreadyVisible) return alert
+
+  if (alert.subtitle === undefined) {
+    alert.subtitle = CLOSED_CHOICE_BANNER_AFFORDANCE
+    return alert
+  }
+  alert.body = `${excerpt}\n${CLOSED_CHOICE_BANNER_AFFORDANCE}`
+  return alert
+}
+
 /** Pure APNs payload assembly shared by rendering and client-side size estimation. */
 export function buildApnsEnvelope(
   draft: NotificationDraftT,
@@ -88,11 +126,7 @@ export function buildApnsEnvelope(
   }
 
   const aps: Record<string, unknown> = {
-    alert: {
-      title: draft.presentation.title,
-      ...(draft.presentation.subtitle !== undefined ? { subtitle: draft.presentation.subtitle } : {}),
-      body: bannerExcerpt(draft.presentation.body),
-    },
+    alert: collapsedChoiceAlert(draft, platform),
   }
   if (options?.sound !== null) {
     const sound = options?.sound ?? 'default'
@@ -108,9 +142,7 @@ export function buildApnsEnvelope(
     aps['target-content-id'] = options.target_content_id
   }
   if (draft.reply !== undefined) {
-    const [first] = draft.reply.questions
-    const usesCard = draft.reply.questions.length > 1 || first?.choices !== undefined
-    aps['category'] = usesCard ? REPLY_CHOICE_CATEGORY_ID : REPLY_CATEGORY_ID
+    aps['category'] = replyUsesCard(draft) ? REPLY_CHOICE_CATEGORY_ID : REPLY_CATEGORY_ID
   }
   // Every alert reaches the Notification Service Extension so closed-app
   // history capture does not depend on the presence of media or Project identity.

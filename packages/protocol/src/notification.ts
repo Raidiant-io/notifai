@@ -23,6 +23,12 @@ export const REPLY_CATEGORY_ID = 'notifai.reply'
  * typed-answer path.
  */
 export const REPLY_CHOICE_CATEGORY_ID = 'notifai.reply.choice'
+/**
+ * Collapsed-banner copy for closed-choice iPhone notifications. iOS never
+ * renders category actions until press-and-hold; this is the discoverability
+ * hint. It must never include choice labels or extra request content.
+ */
+export const CLOSED_CHOICE_BANNER_AFFORDANCE = 'Press and hold to answer'
 export const REPLY_ACTION_ID = 'notifai.reply.text'
 export const REPLY_MAX_LENGTH = 4000
 /** Companion image-attachment ceiling, shared by intake and capabilities. */
