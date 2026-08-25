@@ -81,6 +81,8 @@ export interface HookEnvelope {
   loop_count?: number
   /** Cursor Stop completion state; cancellation must not auto-follow. */
   status?: string
+  /** The prompt the user just submitted, when the harness includes it. */
+  prompt?: string
 }
 
 export interface SessionState {
@@ -338,6 +340,14 @@ export function waiterCeilingSeconds(detached: boolean): number {
  * server go on taking an answer after the waiter that owns it has returned.
  */
 export const MIN_REPLY_WINDOW_SECONDS = 60
+
+/**
+ * HTTP budget reserved for the waiter's final reply fetch and close fence.
+ * Taken from the owner deadline rather than added after it, so the hook does
+ * not block past its ceiling. A near-zero remainder used to produce a
+ * misleading 0s timeout and an unproven retirement.
+ */
+export const FINALIZATION_NETWORK_BUDGET_SECONDS = 3
 
 /**
  * The terminal-first wait: the question sits in the terminal for
@@ -1161,6 +1171,10 @@ async function waitForAnyReply(
   let firstPoll = true
   const permanentFailures = new Map<string, string>()
 
+  if (timeoutSeconds <= 0 || deadline <= ctx.now()) {
+    return { byRequest: new Map(), degraded: false, permanentFailures }
+  }
+
   for (;;) {
     const remainingMs = Math.max(0, deadline - ctx.now())
     if (!firstPoll && remainingMs === 0) {
@@ -1237,7 +1251,7 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
  * `notifai ask` supersedes the previous question and it is a plain command with
  * no hook payload, no idle probe and nothing to sleep for.
  */
-export type RetireDeps = Pick<HookContext, 'client' | 'config'>
+export type RetireDeps = Pick<HookContext, 'client' | 'config'> & Pick<Partial<HookContext>, 'log'>
 
 /**
  * Close is a server-side serialization fence: a successful response contains
@@ -1262,60 +1276,22 @@ async function closeQuietly(ctx: RetireDeps, requestId: string): Promise<void> {
 }
 
 /**
- * Retire the question on every device it reached. A state change is not news
- * (D-B): the retirement rides as a background state sync — no alert, no
- * sound — carrying the shared collapse key so the companion removes the
- * delivered question and marks it done. If the app cannot run, the stale
- * question simply waits until next open, which beats a tombstone banner
- * announcing what the user just did.
+ * Close the reply window so the server can mint the retirement push. Client
+ * submissions cannot carry `question_retired`; that event is reserved for
+ * server-origin state syncs.
  */
-async function retire(
+async function proveRetirement(
   ctx: RetireDeps,
-  collapseKey: string,
-  title: string,
-  body: string,
-  endState: LifecycleEndState,
-  retiresRequestId: string,
-  devices?: string[],
-  project?: string | undefined,
-  source?: SourceContextT | undefined,
+  requestId: string,
 ): Promise<boolean> {
-  const build = buildDraft(
-    ctx.config,
-    {
-      title,
-      body,
-      event: 'question_retired',
-      lifecycle: { tier: 'done', state: endState, retires_request_id: retiresRequestId },
-      ...(project !== undefined ? { project } : {}),
-      ...(devices !== undefined && devices.length > 0 ? { device: devices } : {}),
-      collapseKey,
-      level: 'passive',
-    },
-    source === undefined ? {} : { source },
-  )
-  if (!build.ok) return false
-  try {
-    await ctx.client.submit(
-      { idempotency_key: `retire-${randomBytes(12).toString('base64url')}`, draft: build.draft },
-      0,
-    )
-    return true
-  } catch {
-    // Same reasoning as closeQuietly: the window is already closed server-side.
-    return false
-  }
-}
-
-/**
- * The title a retirement carries. It is never rendered as a banner — the push
- * is `content-available` only — but it is what a companion with no matching
- * history entry has to fall back on, and it is what shows in server-side logs.
- */
-const RETIREMENT_TITLES: Record<LifecycleEndState, string> = {
-  answered: 'Answered',
-  answered_elsewhere: 'Answered in the terminal',
-  expired: 'Question expired',
+  const response = await finalizeReplies(ctx, requestId)
+  const proven = response !== null
+  ctx.log?.info('hook.retirement', {
+    request_id: requestId,
+    attempted: true,
+    proven,
+  })
+  return proven
 }
 
 /**
@@ -1381,13 +1357,42 @@ function retiringQuestion(
   }
 }
 
-function retirementDeviceIds(entry: RetiringQuestion): string[] {
-  if (!Array.isArray(entry.device_ids) || entry.device_ids.length === 0) {
-    throw new Error(
-      `retirement for ${entry.request_id} is missing its device identifiers; refusing to re-resolve routing`,
-    )
-  }
-  return entry.device_ids
+const SHORT_CONFIRMATIONS = new Set(['done', 'yes', 'y', 'no', 'n', 'ok', 'okay'])
+
+function normalizePrompt(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function pendingChoiceLabels(pending: PendingQuestion): string[] {
+  const fromQuestions = (pending.questions ?? []).flatMap((question) =>
+    (question.choices ?? []).flatMap((choice) => [choice.label, choice.id]),
+  )
+  return fromQuestions.map(normalizePrompt).filter((label) => label.length > 0)
+}
+
+function pendingHasMatchingChoice(pending: PendingQuestion, normalizedPrompt: string): boolean {
+  return pendingChoiceLabels(pending).includes(normalizedPrompt)
+}
+
+/**
+ * Which outstanding questions this prompt plausibly answers.
+ *
+ * A unique closed-choice match is enough. A short confirmation such as "done"
+ * matches only when exactly one question is outstanding. Long unrelated
+ * prompts leave every question open for the reply window.
+ */
+export function pendingAnsweredByPrompt(
+  prompt: string | undefined,
+  pending: readonly PendingQuestion[],
+): PendingQuestion[] {
+  const normalized = normalizePrompt(prompt ?? '')
+  if (normalized.length === 0 || pending.length === 0) return []
+
+  const labelled = pending.filter((entry) => pendingHasMatchingChoice(entry, normalized))
+  if (labelled.length === 1) return labelled
+  if (labelled.length > 1) return []
+  if (pending.length === 1 && SHORT_CONFIRMATIONS.has(normalized)) return [...pending]
+  return []
 }
 
 /**
@@ -1405,19 +1410,8 @@ export async function drainRetirements(
 
   const retired: string[] = []
   for (const entry of queue) {
-    await closeQuietly(ctx, entry.request_id)
-    const sent = await retire(
-      ctx,
-      entry.collapse_key,
-      RETIREMENT_TITLES[entry.state],
-      entry.question,
-      entry.state,
-      entry.request_id,
-      retirementDeviceIds(entry),
-      entry.project,
-      entry.source,
-    )
-    if (sent) {
+    const proven = await proveRetirement(ctx, entry.request_id)
+    if (proven) {
       retired.push(entry.request_id)
       // Persist each success before touching the next entry. A later corrupt
       // record or interrupted process must not resurrect work already done.
@@ -1504,19 +1498,8 @@ export async function drainOrphanRetirements(
       )
       continue
     }
-    await closeQuietly(ctx, entry.request_id)
-    const sent = await retire(
-      ctx,
-      entry.collapse_key,
-      RETIREMENT_TITLES[entry.state],
-      entry.question,
-      entry.state,
-      entry.request_id,
-      retirementDeviceIds(entry),
-      entry.project,
-      entry.source,
-    )
-    if (sent) {
+    const proven = await proveRetirement(ctx, entry.request_id)
+    if (proven) {
       done.push(entry.request_id)
       updateOrphanQueue(env, (current) =>
         current.filter((candidate) => candidate.request_id !== entry.request_id),
@@ -1608,10 +1591,15 @@ async function finalizePendings(
   pending: PendingQuestion[],
 ): Promise<FinalizedPending[]> {
   return Promise.all(
-    pending.map(async (entry) => ({
-      pending: entry,
-      response: await finalizeReplies(ctx, entry.request_id!),
-    })),
+    pending.map(async (entry) => {
+      const response = await finalizeReplies(ctx, entry.request_id!)
+      ctx.log?.info('hook.retirement', {
+        request_id: entry.request_id,
+        attempted: true,
+        proven: response !== null,
+      })
+      return { pending: entry, response }
+    }),
   )
 }
 
@@ -2139,10 +2127,9 @@ async function retirePendings(
 // ---------------------------------------------------------------------------
 
 /**
- * Records presence and retires anything still asking on companion devices. This is the
- * "answered in the terminal" case from the original design: we cannot tell
- * whether the new prompt answers the question, but we do not need to — the
- * user being here is what makes the notification noise.
+ * Records presence. Retires a live question only when this prompt plausibly
+ * answers it. Typing in the terminal is not by itself a resolution: the User
+ * may be answering a different question on a device.
  */
 export async function handleUserPromptSubmit(
   ctx: HookContext,
@@ -2217,13 +2204,26 @@ export async function handleUserPromptSubmit(
     const permanentFailure = permanentReplyFailureNote(permanentFailures)
     if (permanentFailure !== null) notes.push(permanentFailure)
   }
+  const matched = pendingAnsweredByPrompt(envelope.prompt, pendingList(state))
+  for (const entry of matched) {
+    ctx.log?.info('hook.retirement', {
+      request_id: entry.request_id,
+      question_id: entry.question_id,
+      reason: 'prompt-matched',
+      attempted: entry.request_id !== undefined,
+      proven: false,
+    })
+  }
   // Park before dropping `pending`. If the process dies between these writes,
   // the next hook sees both copies and dedupes them; the old order could die in
   // the gap after erasing the only request/collapse/device identifiers.
   updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
-    const unasked = pendingList(current).filter((entry) => entry.request_id === undefined)
-    for (const entry of pendingList(current).filter((entry) => entry.request_id !== undefined)) {
+    const matchedNow = pendingAnsweredByPrompt(envelope.prompt, pendingList(current))
+    const unmatched = pendingList(current).filter(
+      (entry) => !matchedNow.some((item) => isSamePending(item, entry)),
+    )
+    for (const entry of matchedNow.filter((item) => item.request_id !== undefined)) {
       const retirement = retiringQuestion(entry, 'answered_elsewhere', envelope.cwd)
       if (
         retirement !== null &&
@@ -2232,6 +2232,9 @@ export async function handleUserPromptSubmit(
         retiring.push(retirement)
       }
     }
+    const unasked = unmatched.filter((entry) => entry.request_id === undefined)
+    const stillLive = unmatched.filter((entry) => entry.request_id !== undefined)
+    const remaining = [...stillLive, ...unasked]
 
     // Start from the whole document so fields introduced by a newer CLI remain
     // attached while this older writer applies the prompt transition it knows.
@@ -2239,7 +2242,7 @@ export async function handleUserPromptSubmit(
       ...current,
       last_prompt_at: ctx.now(),
     }
-    if (unasked.length > 0) next.pending = unasked
+    if (remaining.length > 0) next.pending = remaining
     else delete next.pending
     if (retiring.length > 0) next.retiring = retiring
     else delete next.retiring
@@ -3100,7 +3103,8 @@ async function escalate(
     ceilingAt,
     Math.max(...waitingOn.map((entry) => entry.reply_deadline_at!)),
   )
-  const timeoutSeconds = Math.max(0, Math.ceil((ownerDeadline - ctx.now()) / 1000))
+  const waitUntil = ownerDeadline - FINALIZATION_NETWORK_BUDGET_SECONDS * 1000
+  const timeoutSeconds = Math.max(0, Math.ceil((waitUntil - ctx.now()) / 1000))
   const waited = await waitForAnyReply(
     ctx,
     waitingOn.map((entry) => entry.request_id!),
@@ -3128,7 +3132,7 @@ async function escalate(
     const expired = waitingOn.filter(
       (entry) =>
         entry.reply_deadline_at === undefined ||
-        entry.reply_deadline_at <= ctx.now() ||
+        entry.reply_deadline_at <= ownerDeadline ||
         // A permanent rejection is the server saying this question can never be
         // answered, whatever its window says. Leaving it open would strand a
         // dead question on the user's devices.
@@ -3332,8 +3336,9 @@ export function registerQuestion(
   env: NodeJS.ProcessEnv,
   question: PendingQuestion,
   now: number = Date.now(),
-): void {
+): string {
   let full: 'unasked' | 'live' | null = null
+  const questionId = question.question_id ?? `q_${randomBytes(12).toString('base64url')}`
   updateSessionState(sessionId, env, (state) => {
     const pending = pendingList(state)
     const unasked = pending.filter((entry) => entry.request_id === undefined)
@@ -3350,9 +3355,9 @@ export function registerQuestion(
       pending: [
         ...pending,
         {
-          question_id: `q_${randomBytes(12).toString('base64url')}`,
           asked_at: now,
           ...question,
+          question_id: questionId,
           question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
         },
       ],
@@ -3367,9 +3372,10 @@ export function registerQuestion(
   if (full === 'live') {
     throw new Error(
       `${MAX_LIVE_QUESTIONS} questions from this session are already open. ` +
-        'Retire the ones you no longer need with `notifai close <request_id>` or `notifai close --pending` before asking another.',
+        'Retire the ones you no longer need with `notifai close <question_id>` or `notifai close --pending` before asking another.',
     )
   }
+  return questionId
 }
 
 /** Parses hook JSON from stdin, tolerating an empty or malformed body. */

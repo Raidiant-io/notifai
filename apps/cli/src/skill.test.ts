@@ -227,6 +227,8 @@ describe('Notifai agent skill', () => {
 
   it('teaches retirement of a registration that has not been pushed yet', () => {
     expect(skill).toContain('notifai close --pending')
+    expect(skill).toContain('question_id')
+    expect(skill).toMatch(/answer\s+in the conversation/i)
   })
 
   it('makes the agent the operator and the human only the human', () => {

@@ -1868,6 +1868,39 @@ describe('command contracts', () => {
     expect(readSessionState('close-unpushed', deps.env).pending).toBeUndefined()
   })
 
+  it('close withdraws one unpushed question by the ask id', async () => {
+    const io = new CapturedIo()
+    const client = {
+      closeReplies: async () => {
+        throw new Error('unpushed questions must not call the server')
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-one-unpushed-'))
+    deps.cwd = root
+    deps.env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeSessionState('close-one', deps.env, {
+      pending: [
+        { question: 'Ship it?', question_id: 'q_local' },
+        { question: 'Keep this?', question_id: 'q_keep' },
+      ],
+    })
+    writeProjectSession(root, deps.env, 'close-one', Date.now(), 'codex')
+
+    expect(await closeCommand(deps, 'q_local', { json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
+      session_id: 'close-one',
+      withdrawn: [{ question: 'Ship it?', question_id: 'q_local' }],
+      closed: [],
+    })
+    expect(readSessionState('close-one', deps.env).pending?.map((entry) => entry.question_id)).toEqual([
+      'q_keep',
+    ])
+  })
+
   it('close --pending closes live questions and leaves nothing for a later Stop to push', async () => {
     const io = new CapturedIo()
     const closed: string[] = []
@@ -1992,8 +2025,9 @@ describe('command contracts', () => {
     writeProjectSession(root, deps.env, 'pending-multi', Date.now(), 'codex')
 
     expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.ok)
-    expect(io.outLines[0]).toBe('pending request req_first')
-    expect(io.outLines[1]).toContain('yes, after the migration')
+    expect(io.outLines[0]).toBe('unpushed question: Not yet asked?')
+    expect(io.outLines.join('\n')).toContain('pending request req_first')
+    expect(io.outLines.join('\n')).toContain('yes, after the migration')
     expect(io.outLines.join('\n')).toContain('req_second')
   })
 
@@ -5408,9 +5442,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(io.outLines).toContain(
-      'Question registered. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.',
-    )
+    expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
       harness: 'codex',

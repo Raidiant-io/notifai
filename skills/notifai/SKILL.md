@@ -200,7 +200,7 @@ deliberate way to stop waiting and pick the answer up later:
 
 ```bash
 notifai replies <request_id>          # the answer, whenever it landed
-notifai close <request_id>            # retire a pushed question that stopped mattering
+notifai close <request_id|question_id> # retire one question, including an unpushed ask id
 notifai close --pending               # retire this session's outstanding questions, including ones not yet pushed
 ```
 
@@ -220,7 +220,7 @@ notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
 
-Add `--json` to get the questions back with the choice ids you will branch on.
+Add `--json` for choice ids and the ask `question_id`.
 
 **Registering is not the end of the turn.** In that same turn, ask the question
 in the conversation and say what each answer will make you do:
@@ -257,8 +257,9 @@ together:
 
 Keep independent questions as separate `ask` calls — each is answerable on its
 own, and a new question never cancels an earlier one. If a registered question
-no longer needs an answer — including one the turn-end hook has not pushed yet
-— retire it with `notifai close --pending`. Retirement is silent.
+no longer needs an answer — including one Stop has not pushed yet — retire it
+with `notifai close <question_id>` or `notifai close --pending`. If they answer
+in the conversation, close it in that same turn so Stop cannot send it later.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
@@ -282,8 +283,8 @@ notifai replies --pending --json
 ```
 
 **Acknowledge before you resume.** The user needs to know their reply was read.
-Notifai tells you the exact command; run it once per answered request, before
-any of the work it unblocks:
+Notifai tells you the exact command; run it once per answered request that
+arrived through Notifai, before any of the work it unblocks:
 
 ```bash
 notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report the health checks."

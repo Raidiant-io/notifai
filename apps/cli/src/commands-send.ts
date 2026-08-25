@@ -392,19 +392,52 @@ export async function repliesCommand(
     // Every delivered question in the session's queue, in registration order —
     // an agent may have several outstanding at once.
     const state = readSessionState(sessionId, deps.env)
-    requestIds = (Array.isArray(state.pending) ? state.pending : [])
+    const pending = Array.isArray(state.pending) ? state.pending : []
+    requestIds = pending
       .map((entry) => entry.request_id)
       .filter((id): id is string => id !== undefined)
+    const unsent = pending.filter((entry) => entry.request_id === undefined)
     if (requestIds.length === 0) {
       // `--json` is a promise about stdout, and an empty result is still a
       // result: a caller that asked for machine-readable output must not have
       // to parse an English sentence to learn there was nothing pending.
       if (flags.json === true) {
-        deps.io.out(JSON.stringify({ session_id: sessionId, pending: [], replies: [] }, null, 2))
+        deps.io.out(
+          JSON.stringify(
+            {
+              session_id: sessionId,
+              pending: unsent.map((entry) => ({
+                question: entry.question,
+                ...(entry.question_id === undefined ? {} : { question_id: entry.question_id }),
+              })),
+              replies: [],
+            },
+            null,
+            2,
+          ),
+        )
+      } else if (unsent.length > 0) {
+        for (const entry of unsent) {
+          deps.io.out(
+            entry.question_id === undefined
+              ? `unpushed question: ${entry.question}`
+              : `unpushed question ${entry.question_id}: ${entry.question}`,
+          )
+        }
+        deps.io.out('Retire one with `notifai close <question_id>` so a later Stop will not send it.')
       } else {
         deps.io.err(`Session ${sessionId} has no pushed question pending.`)
       }
-      return EXIT.noReply
+      return unsent.length > 0 ? EXIT.ok : EXIT.noReply
+    }
+    if (unsent.length > 0 && flags.json !== true) {
+      for (const entry of unsent) {
+        deps.io.out(
+          entry.question_id === undefined
+            ? `unpushed question: ${entry.question}`
+            : `unpushed question ${entry.question_id}: ${entry.question}`,
+        )
+      }
     }
   }
   if (requestIds.length === 0) {

@@ -110,6 +110,8 @@ export const LOG_EVENTS = [
   'hook.gate',
   /** A question reached the user's devices. */
   'hook.pushed',
+  /** A retirement close was attempted, and whether the server proved it. */
+  'hook.retirement',
   /** The hook handed an answer back to the agent. */
   'hook.answer',
   /** The hook finished, with or without a decision. */
