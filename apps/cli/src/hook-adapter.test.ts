@@ -202,6 +202,32 @@ describe('stable hook adapter', () => {
     ])
   })
 
+  it('keeps working when a node upgrade moved the pinned runtime but left the CLI', () => {
+    const { root, homeDir } = isolated()
+    const bin = path.join(root, 'fallback-bin')
+    mkdirSync(bin, { recursive: true })
+    const pathNode = path.join(bin, 'node')
+    writeFileSync(pathNode, '#!/bin/sh\nprintf "ran %s" "$1"\n')
+    chmodSync(pathNode, 0o700)
+    const pinnedNode = path.join(root, 'pinned-node')
+    const cli = path.join(root, 'cli.js')
+    writeFileSync(pinnedNode, '#!/bin/sh\n')
+    chmodSync(pinnedNode, 0o700)
+    writeFileSync(cli, '')
+    const installed = installHookAdapter({ execPath: pinnedNode, scriptPath: cli }, homeDir)
+    // What `brew upgrade node` and `nvm uninstall` both do: the interpreter
+    // moves, the installed CLI does not.
+    rmSync(pinnedNode)
+
+    const run = spawnSync(installed.path, ['hook', 'stop'], {
+      encoding: 'utf8',
+      env: { PATH: bin },
+    })
+
+    expect(run.status).toBe(0)
+    expect(run.stdout).toBe(`ran ${cli}`)
+  })
+
   it('fails closed instead of executing an unregistered PATH target after the registered target vanished', () => {
     const { root, homeDir } = isolated()
     const bin = path.join(root, 'new-bin')
@@ -237,7 +263,7 @@ describe('Windows hook adapter', () => {
     }
     expect(hookAdapterSource(target, 'posix')).toBe(`#!/bin/sh
 # notifai managed hook adapter
-# adapter-version: 1
+# adapter-version: 2
 # target-exec-json: "/usr/local/bin/node"
 # target-script-json: "/opt/notifai/dist/main.js"
 set -eu
@@ -247,6 +273,10 @@ registered_script='/opt/notifai/dist/main.js'
 
 if [ -x "$registered_exec" ] && [ -f "$registered_script" ]; then
   exec "$registered_exec" "$registered_script" "$@"
+fi
+
+if [ -f "$registered_script" ] && command -v node >/dev/null 2>&1; then
+  exec node "$registered_script" "$@"
 fi
 
 printf '%s
