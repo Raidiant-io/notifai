@@ -191,9 +191,9 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/exit code 3/i)
   })
 
-  it('does not promise that closed choices appear as collapsed-banner buttons', () => {
+  it('teaches that closed choices appear after pressing and holding', () => {
     const ask = section('## Ask a question')
-    expect(ask).toMatch(/not collapsed-banner buttons/i)
+    expect(ask).toMatch(/closed choices appear after pressing and holding the\s+notification/i)
     expect(skill).not.toMatch(/choices are buttons on the banner/i)
   })
 
