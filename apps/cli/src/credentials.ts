@@ -49,6 +49,7 @@ const DPAPI_FORMAT = 'notifai.dpapi.current-user.v1'
 const DPAPI_ENTROPY = 'io.notifai.cli'
 const DPAPI_TIMEOUT_MS = 15_000
 const DPAPI_FILE = 'credentials.dpapi'
+const KEYCHAIN_TIMEOUT_MS = 15_000
 
 const PROTECT_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -109,8 +110,21 @@ export const defaultProcessRunner: ProcessRunner = {
   },
 }
 
-/** macOS Keychain via the `security` CLI — no native addons (proposal concern). */
+/**
+ * macOS Keychain via the first-party `security` Security.framework client.
+ *
+ * `security add-generic-password -w <value>` puts the value in process argv.
+ * Interactive mode instead parses a command from stdin, so the credential
+ * crosses the helper boundary only through the pipe. `-X` keeps arbitrary
+ * serialized bytes out of the command parser's quoting rules.
+ */
 export class KeychainStore implements CredentialStore {
+  private readonly run: ProcessRunner
+
+  constructor(options: CredentialStoreOptions = {}) {
+    this.run = options.run ?? defaultProcessRunner
+  }
+
   load(): MachineCredential | null {
     try {
       const raw = execFileSync(
@@ -127,20 +141,20 @@ export class KeychainStore implements CredentialStore {
   }
 
   save(credential: MachineCredential): void {
-    execFileSync(
-      'security',
-      [
-        'add-generic-password',
-        '-U',
-        '-s',
-        SERVICE,
-        '-a',
-        'machine',
-        '-w',
-        JSON.stringify(serializeCredential(credential)),
-      ],
-      { stdio: 'ignore' },
+    const serialized = Buffer.from(JSON.stringify(serializeCredential(credential)), 'utf8')
+    const command = Buffer.from(
+      `add-generic-password -U -s ${SERVICE} -a machine -X ${serialized.toString('hex')}\n`,
+      'ascii',
     )
+    const result = this.run.run({
+      command: 'security',
+      args: ['-q', '-i'],
+      input: command,
+      timeoutMs: KEYCHAIN_TIMEOUT_MS,
+    })
+    if (result.status !== 0) {
+      throw new Error('macOS Keychain credential save failed')
+    }
   }
 
   clear(): void {
@@ -381,6 +395,6 @@ export function defaultCredentialStore(
     options.keychainAvailable !== undefined
       ? options.keychainAvailable
       : platform === 'darwin' && keychainProbeSucceeds()
-  if (keychain) return new KeychainStore()
+  if (keychain) return new KeychainStore(options)
   return new FileStore(env, { platform })
 }

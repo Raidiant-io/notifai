@@ -14,6 +14,7 @@ import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   FileStore,
+  KeychainStore,
   WindowsDpapiStore,
   defaultCredentialStore,
   windowsDpapiOperation,
@@ -107,9 +108,10 @@ function mockDpapi(options: { failProtect?: boolean; failUnprotect?: boolean } =
 function assertNoSecretInArgs(calls: RunCommandSpec[]): void {
   for (const call of calls) {
     const argv = [call.command, ...call.args].join('\0')
-    expect(argv).not.toContain(SAMPLE.secret)
-    expect(argv).not.toContain(OTHER.secret)
-    expect(argv).not.toContain(SAMPLE.machineId)
+    for (const credential of [SAMPLE, OTHER]) {
+      for (const value of Object.values(credential)) expect(argv).not.toContain(value)
+      expect(argv).not.toContain(JSON.stringify(credential))
+    }
     expect(argv).not.toContain('machineId')
   }
 }
@@ -235,6 +237,50 @@ describe('FileStore', () => {
     writeRaw(file, future)
     expect(new FileStore(env).load()).toBeNull()
     expect(readFileSync(file, 'utf8')).toBe(future)
+  })
+})
+
+describe('KeychainStore', () => {
+  it('sends the serialized credential through stdin and never process argv', () => {
+    const calls: RunCommandSpec[] = []
+    const runner: ProcessRunner = {
+      run(spec) {
+        calls.push(spec)
+        return { status: 0, stdout: Buffer.alloc(0) }
+      },
+    }
+    const store = new KeychainStore({ run: runner })
+    store.save(SAMPLE)
+    store.save(OTHER)
+
+    expect(calls).toHaveLength(2)
+    for (const [index, call] of calls.entries()) {
+      expect(call.command).toBe('security')
+      expect(call.args).toEqual(['-q', '-i'])
+      expect(call.timeoutMs).toBe(15_000)
+      expect(call.input.toString('ascii')).toMatch(
+        /^add-generic-password -U -s io\.notifai\.cli -a machine -X [0-9a-f]+\n$/,
+      )
+      const encoded = call.input.toString('ascii').match(/-X ([0-9a-f]+)\n$/)?.[1]
+      expect(encoded).toBeDefined()
+      expect(JSON.parse(Buffer.from(encoded!, 'hex').toString('utf8'))).toEqual({
+        format: 'notifai.machine-credential.v1',
+        ...(index === 0 ? SAMPLE : OTHER),
+      })
+      expect(call.input.toString('utf8')).not.toContain(index === 0 ? SAMPLE.secret : OTHER.secret)
+    }
+    assertNoSecretInArgs(calls)
+  })
+
+  it('fails closed when the Keychain helper rejects the write', () => {
+    const runner: ProcessRunner = {
+      run() {
+        return { status: 1, stdout: Buffer.alloc(0) }
+      },
+    }
+    expect(() => new KeychainStore({ run: runner }).save(SAMPLE)).toThrow(
+      /Keychain credential save failed/,
+    )
   })
 })
 
