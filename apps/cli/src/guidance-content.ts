@@ -28,7 +28,9 @@ const WHEN_TO_NOTIFY = `# When to notify
 
 Notify when something changed for the user:
 
-- Long-running work finished — succeeded or failed.
+- Substantial autonomous work finished — succeeded or failed. Work is
+  substantial when it required multiple meaningful investigation, editing,
+  build, test, deployment, or coordination steps.
 - You are blocked on something only they can give: a key, an approval, a
   decision.
 - You found something that needs their attention soon.
@@ -37,6 +39,11 @@ Never notify for:
 
 - Routine progress: starting, still working, one more subtask done.
 - A problem you hit and fixed yourself.
+
+Completion of substantial work is an outcome, not routine progress.
+A requested audit or diagnosis that resolves the user's uncertainty through
+several distinct checks counts as substantial even when the result is clean
+and needs no further action.
 
 One notification per event. When a status changes, replace your stale
 notification rather than stacking a new one.

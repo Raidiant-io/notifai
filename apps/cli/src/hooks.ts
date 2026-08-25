@@ -82,6 +82,8 @@ export interface HookEnvelope {
 export interface SessionState {
   /** Epoch ms of the user's last prompt in this session — our presence signal. */
   last_prompt_at?: number
+  /** Epoch ms when the first-turn proactive Notifai context was emitted. */
+  proactive_guidance_at?: number
   /** Epoch ms of the last observed Stop hook, distinct from prompt routing. */
   last_stop_at?: number
   /**
@@ -357,8 +359,10 @@ async function awaitTerminalFirstWindow(
 }
 
 export interface HookOutcome {
-  /** Written to stdout verbatim — the harness parses this as the decision. */
+  /** Written to stdout verbatim — the harness parses this as output. */
   stdout?: string
+  /** Whether stdout takes over the turn, rather than adding prompt context. */
+  decided?: boolean
   /** Diagnostics; harnesses surface hook stderr in the transcript. */
   notes: string[]
   /** Structured lifecycle detail that belongs on hook.end without user text. */
@@ -2023,6 +2027,25 @@ async function retirePendings(
 // UserPromptSubmit — the user is at the keyboard
 // ---------------------------------------------------------------------------
 
+const PROACTIVE_NOTIFAI_CONTEXT =
+  'Use the Notifai skill now and run `notifai guidance` before doing this task. ' +
+  'Do this proactively even though the user did not mention Notifai. ' +
+  'Follow the resolved guidance when deciding whether later Agent Events deserve a Notification Request; never notify routine progress.'
+
+function proactivePromptOutcome(notes: string[], inject: boolean): HookOutcome {
+  if (!inject) return { notes }
+  return {
+    notes,
+    decided: false,
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: PROACTIVE_NOTIFAI_CONTEXT,
+      },
+    }),
+  }
+}
+
 /**
  * Records presence and retires anything still asking on companion devices. This is the
  * "answered in the terminal" case from the original design: we cannot tell
@@ -2038,10 +2061,19 @@ export async function handleUserPromptSubmit(
   if (!sessionId) return { notes }
 
   const state = readSessionState(sessionId, ctx.env)
+  // Claude Code and Codex both accept the same UserPromptSubmit context
+  // envelope. Emitting it once makes skill evaluation deterministic without
+  // turning every later user prompt into repeated instructions. Cursor and
+  // OpenCode have different hook-output contracts, so their existing skill
+  // discovery path remains unchanged here.
+  const injectProactiveGuidance =
+    state.proactive_guidance_at === undefined &&
+    (ctx.harness === 'claude-code' || ctx.harness === 'codex')
   if (state.accepted !== undefined) {
     updateSessionState(sessionId, ctx.env, (current) => ({
       ...current,
       last_prompt_at: ctx.now(),
+      ...(injectProactiveGuidance ? { proactive_guidance_at: ctx.now() } : {}),
     }))
     if (envelope.cwd !== undefined && ctx.harness !== undefined) {
       writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
@@ -2051,7 +2083,7 @@ export async function handleUserPromptSubmit(
         ? 'a device answer is safely journaled; the next Stop will deliver it'
         : 'a device answer has already been delivered; the next Stop will close it out',
     )
-    return { notes }
+    return proactivePromptOutcome(notes, injectProactiveGuidance)
   }
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
   let lateAnswers: AnsweredPending[] = []
@@ -2120,7 +2152,11 @@ export async function handleUserPromptSubmit(
 
     // Start from the whole document so fields introduced by a newer CLI remain
     // attached while this older writer applies the prompt transition it knows.
-    const next: SessionState = { ...current, last_prompt_at: ctx.now() }
+    const next: SessionState = {
+      ...current,
+      last_prompt_at: ctx.now(),
+      ...(injectProactiveGuidance ? { proactive_guidance_at: ctx.now() } : {}),
+    }
     if (unasked.length > 0) next.pending = unasked
     else delete next.pending
     if (retiring.length > 0) next.retiring = retiring
@@ -2148,7 +2184,7 @@ export async function handleUserPromptSubmit(
     // model. Keep the journal and let the next Stop use its acknowledged
     // continuation channel instead of recreating the crash-before-stdout gap.
     notes.push('the late device answer will continue the agent at this turn’s Stop')
-    return { notes }
+    return proactivePromptOutcome(notes, injectProactiveGuidance)
   }
   const retired = await drainRetirements(ctx, sessionId, ctx.env)
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
@@ -2156,7 +2192,7 @@ export async function handleUserPromptSubmit(
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
-  return { notes }
+  return proactivePromptOutcome(notes, injectProactiveGuidance)
 }
 
 // ---------------------------------------------------------------------------
