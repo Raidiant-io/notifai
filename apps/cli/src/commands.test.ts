@@ -2156,6 +2156,38 @@ describe('credential origin pinning', () => {
     expect(saved.baseUrl).toBe('https://selfhost.example')
   })
 
+  it('stops login when the approving account has no product access', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://test.notifai.invalid/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({
+        status: 'no_active_plan',
+        next_action: 'Ask the account owner for Alpha access.',
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    expect(await loginCommand(deps, { open: false })).toBe(EXIT.auth)
+    expect(io.errLines).toEqual([
+      'This account has no active plan or temporary Alpha access.',
+      'next: Ask the account owner for Alpha access.',
+      'After access is granted, run `notifai login` again.',
+    ])
+  })
+
   it('keeps notification titles out of send logs', async () => {
     const io = new CapturedIo()
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-log-'))
