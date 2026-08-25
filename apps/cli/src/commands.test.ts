@@ -63,6 +63,7 @@ import {
 import {
   applyPlan,
   buildHookConfig,
+  hookCommand,
   codexHookIdentityHash,
   codexTrustKey,
   findInstallations,
@@ -72,9 +73,15 @@ import {
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, stateDir } from './config.js'
+import { SETUP_PROOF_STALE_MS, writeSetupProof } from './commands-setup-proof.js'
+import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
+
+afterEach(() => {
+  resetLatestPublishedCliVersionForTest()
+})
 
 /**
  * The release tag this build pins the agent skill to.
@@ -330,6 +337,7 @@ function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
     hookAdapterHome: path.join(testRoot, 'home'),
     cwd: os.tmpdir(),
     clientFactory: () => withCompatibilityDefaults(client),
+    fetchImpl: async () => new Response('{}', { status: 503 }),
   }
 }
 
@@ -2319,6 +2327,30 @@ describe('credential origin pinning', () => {
       title_chars: 'SECRET_SEND_TITLE'.length,
     })
   })
+
+  it('refuses a shell-escaped backslash-n body unless the literal flag is set', async () => {
+    const io = new CapturedIo()
+    expect(
+      await sendCommand(makeDeps(io, {} as ApiClient), {
+        kind: 'update',
+        title: 'Escaped',
+        body: 'line1\\nline2',
+      }),
+    ).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('--body-file -')
+    expect(io.errLines.join('\n')).toContain('--literal-backslash-n')
+
+    io.errLines = []
+    const client = { submit: async () => receipt } as unknown as ApiClient
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'update',
+        title: 'Escaped',
+        body: 'line1\\nline2',
+        literalBackslashN: true,
+      }),
+    ).toBe(EXIT.ok)
+  })
 })
 
 describe('delivery evidence status', () => {
@@ -2422,6 +2454,53 @@ describe('delivery evidence status', () => {
     expect(said).toContain('OS presentation: not observed by Notifai')
     expect(said).toContain('Reply received: yes')
     expect(said).toContain('answers are on the server')
+  })
+
+  it('treats an ordinary status Companion Receipt as doctor delivery proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-status-proof-'))
+    const evidence = snapshot({
+      state: 'observed',
+      observed_at: '2026-08-05T13:17:17.000Z',
+      latency_ms: 1_000,
+    })
+    const device = {
+      device_id: evidence.deliveries[0]!.device_id,
+      display_name: 'iPhone',
+      platform: 'ios' as const,
+      permission_status: 'authorized',
+      registration_healthy: true,
+      app_version: '0.1.0',
+      app_build: '42',
+      os_version: '19.0',
+      capabilities: ['answer'] as const,
+      support: currentSupport,
+      support_state: 'current' as const,
+      derived_status: 'working' as const,
+      status_message: null,
+      last_seen_at: '2026-08-05T18:00:00.000Z',
+    }
+    const client = {
+      health: async () => true,
+      listDevices: async () => ({ devices: [device] }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'proof@example.com',
+      }),
+      evidence: async () => evidence,
+    } as unknown as ApiClient
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    expect(await statusCommand(deps, evidence.request_id, { json: true })).toBe(EXIT.ok)
+
+    const doctorIo = new CapturedIo()
+    expect(await doctorCommand({ ...deps, io: doctorIo }, { json: true })).toBe(EXIT.ok)
+    const report = JSON.parse(doctorIo.outLines.join('\n')) as {
+      states: { id: string; status: string }[]
+    }
+    expect(report.states.find((state) => state.id === 'proof')).toMatchObject({ status: 'ready' })
   })
 })
 
@@ -2611,6 +2690,50 @@ describe('Codex hook representation', () => {
 
     expect(readFileSync(toml, 'utf8')).toBe(before)
     expect(io.outLines.join('\n')).toContain('No Notifai hooks found')
+  })
+
+  it('leaves config.toml byte-identical on a no-op reinstall', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-noop-install-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    const toml = path.join(cwd, '.codex', 'config.toml')
+    const before = readFileSync(toml, 'utf8')
+    io.outLines = []
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(readFileSync(toml, 'utf8')).toBe(before)
+  })
+
+  it('deletes an emptied hooks.json instead of leaving an empty residue', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-empty-json-'))
+    const layer = path.join(cwd, '.codex')
+    const json = path.join(layer, 'hooks.json')
+    mkdirSync(layer, { recursive: true })
+    applyPlan(json, {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: hookCommand(scriptPath, 'stop', 'codex') }] }],
+      },
+    })
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    expect(hooksUninstallCommand(deps, { harness: 'codex', scriptPath })).toBe(EXIT.ok)
+    expect(existsSync(json)).toBe(false)
+  })
+
+  it('global install does not leave a dead project .codex after uninstalling that layer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-global-migrate-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(existsSync(path.join(cwd, '.codex'))).toBe(true)
+    expect(hooksInstallCommand(deps, { harness: 'codex', global: true, execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
+    const leftover = existsSync(path.join(cwd, '.codex'))
+      ? readdirSync(path.join(cwd, '.codex'))
+      : []
+    expect(leftover.every((name) => name !== 'hooks.json')).toBe(true)
   })
 
   /**
@@ -3628,6 +3751,26 @@ describe('interactive command UX', () => {
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
     expect(io.intros).toEqual([])
     expect(io.checks).toEqual([])
+  })
+
+  it('consults npm latest from an interactive doctor without failing the run', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-registry-'))
+    const io = new InteractiveIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+      fetchImpl: async () => new Response(JSON.stringify({ latest: '99.0.0' }), { status: 200 }),
+    }
+
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines).toContain('A newer Notifai is available.')
+    expect(io.outLines).toContain('npm install -g @raidiant/notifai')
   })
 })
 
@@ -4719,6 +4862,52 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     expect(submitCalls).toBe(2)
     expect(io.outLines.join('\n')).toContain('saved proof had expired; sent replacement req_replacement')
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('replaces a stale unknown setup proof instead of rechecking it forever', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-stale-'))
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt('req_fresh')
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(
+          requestId,
+          requestId === 'req_fresh'
+            ? {
+                state: 'observed',
+                observed_at: '2026-08-25T00:00:02.000Z',
+                latency_ms: 1_000,
+              }
+            : { state: 'unknown', observed_at: null, latency_ms: null },
+        ),
+    } as unknown as ApiClient
+    const now = Date.parse('2026-08-25T00:00:00.000Z')
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "stale-proof"\n')
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => now,
+    }
+    writeSetupProof(deps, {
+      request_id: 'req_old',
+      device_id: readyIphone.device_id,
+      project: 'stale-proof',
+      started_at: new Date(now - SETUP_PROOF_STALE_MS - 1).toISOString(),
+    })
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitCalls).toBe(1)
+    expect(io.outLines.join('\n')).toContain('older than 24h without a Companion Receipt')
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 

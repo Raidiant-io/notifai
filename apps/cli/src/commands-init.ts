@@ -26,7 +26,12 @@ import {
 import { readyCompanionDevices, supportPageUrl } from './commands-devices.js'
 import { assessReadiness, remedyLine } from './commands-doctor.js'
 import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hooks.js'
-import { observedCompanionReceipt, readSetupProof, writeSetupProof } from './commands-setup-proof.js'
+import {
+  observedCompanionReceipt,
+  readSetupProof,
+  setupProofIsStale,
+  writeSetupProof,
+} from './commands-setup-proof.js'
 import { SKILLS_SOURCE } from './commands-skill.js'
 
 // ---------------------------------------------------------------------------
@@ -371,6 +376,22 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     existing?.device_id === target.device_id && existing.project === config.project.value
       ? existing
       : null
+  const nowMs = (deps.now ?? Date.now)()
+  if (proof !== null && setupProofIsStale(proof, nowMs)) {
+    let keepStale = false
+    try {
+      const snapshot = await authed.client.evidence(proof.request_id)
+      keepStale = observedCompanionReceipt(snapshot, proof.device_id) !== null
+    } catch {
+      keepStale = false
+    }
+    if (!keepStale) {
+      deps.io.out(
+        `The saved proof ${proof.request_id} is older than 24h without a Companion Receipt; sending a replacement.`,
+      )
+      proof = null
+    }
+  }
   if (proof === null) {
     const receipt = await submitSetupProof(deps, authed.client, config, target)
     if (receipt === null) return 'failed'

@@ -64,7 +64,19 @@ import {
   hookActivationAdvice,
   requiredHookEvents,
 } from './commands-hooks.js'
-import { observedCompanionReceipt, readSetupProof } from './commands-setup-proof.js'
+import { cliBinReadiness } from './cli-bin.js'
+import {
+  latestPublishedCliVersion,
+  newerPublishedCli,
+  shouldConsultCliRegistry,
+  thisCliVersion,
+} from './cli-release.js'
+import {
+  SETUP_PROOF_STALE_MS,
+  observedCompanionReceipt,
+  readSetupProof,
+  setupProofIsStale,
+} from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 
 // ---------------------------------------------------------------------------
@@ -268,6 +280,7 @@ export async function assessReadiness(
     skillScope?: SkillScope
     previous?: Readiness
     refresh?: readonly ReadinessRefresh[]
+    json?: boolean
   } = {},
 ): Promise<Readiness> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
@@ -287,6 +300,7 @@ export async function assessReadiness(
     if (reused !== null) {
       return {
         states: [
+          cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform),
           projectReadiness(deps, config),
           reused.credential,
           reused.server,
@@ -305,6 +319,7 @@ export async function assessReadiness(
   let accountClient: ApiClient | null = null
   let accountDevices: RoutableDevice[] | null = null
 
+  states.push(cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform))
   states.push(projectReadiness(deps, config))
 
   states.push(
@@ -469,8 +484,37 @@ export async function assessReadiness(
   }
 
   states.push(await setupProofState(deps, config, accountClient, accountDevices))
+  await applyRegistryRecommendation(deps, options.json === true, states)
 
   return { states }
+}
+
+async function applyRegistryRecommendation(
+  deps: CommandDeps,
+  json: boolean,
+  states: ReadinessState[],
+): Promise<void> {
+  if (
+    !shouldConsultCliRegistry({
+      ...(deps.io.interactive === undefined ? {} : { interactive: deps.io.interactive }),
+      json,
+      env: deps.env,
+    })
+  ) {
+    return
+  }
+  const latest = await latestPublishedCliVersion(deps.fetchImpl)
+  const newer = newerPublishedCli(thisCliVersion(), latest)
+  if (newer === null) return
+  const contract = states.find((state) => state.id === 'contract')
+  if (contract === undefined || contract.status === 'gap') return
+  contract.status = 'optional-gap'
+  contract.detail = 'A newer Notifai is available.'
+  contract.remedy = {
+    by: 'user-here',
+    summary: 'update Notifai',
+    command: UPDATE_CLI_COMMAND,
+  }
 }
 
 async function setupProofState(
@@ -530,6 +574,20 @@ async function setupProofState(
         detail: `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name} at ${observed.observedAt} (${proof.request_id})`,
       }
     }
+    const now = (deps.now ?? Date.now)()
+    if (setupProofIsStale(proof, now)) {
+      return {
+        id: 'proof',
+        title: 'Delivery proof',
+        status: 'gap',
+        detail: `${proof.request_id} is older than ${SETUP_PROOF_STALE_MS / 36e5}h with no Companion Receipt; init will send a replacement`,
+        remedy: {
+          by: 'cli',
+          summary: 'replace the stale verification notification',
+          command: 'notifai init',
+        },
+      }
+    }
     return {
       id: 'proof',
       title: 'Delivery proof',
@@ -561,7 +619,8 @@ export async function doctorCommand(
   flags: { json?: boolean },
   options: { readiness?: Readiness } = {},
 ): Promise<number> {
-  const readiness = options.readiness ?? (await assessReadiness(deps))
+  const readiness =
+    options.readiness ?? (await assessReadiness(deps, flags.json === true ? { json: true } : {}))
   const blocker = firstBlocker(readiness)
   const ok = blocker === null
 

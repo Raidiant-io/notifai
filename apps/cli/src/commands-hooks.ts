@@ -59,6 +59,7 @@ import {
   applyPlan,
   buildCursorHookConfig,
   buildHookConfig,
+  cleanupEmptiedCodexLayer,
   codexCoexistenceNotes,
   codexHomeNote,
   codexLayerDir,
@@ -85,6 +86,7 @@ import {
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
+import { rejectAccidentalEscapedNewlines } from './send.js'
 import {
   cursorStopActivationOutput,
   sessionActivationOutput,
@@ -657,6 +659,8 @@ export interface AskFlags {
   multi?: boolean
   /** Optional Markdown context appended after the question block. */
   body?: string
+  /** Allow visible backslash-n sequences in `--body`. */
+  literalBackslashN?: boolean
   /** Raw JSON for a multi-question form; replaces the positional question. */
   form?: string
   image?: string[]
@@ -985,6 +989,11 @@ export function askCommand(
   // Validate before route discovery. A malformed question belongs to the
   // caller and should not be hidden behind whichever harness setup issue
   // happens to exist on this machine.
+  const escapedBody = rejectAccidentalEscapedNewlines(flags.body, flags.literalBackslashN)
+  if (escapedBody !== null) {
+    deps.io.err(escapedBody)
+    return EXIT.usage
+  }
   const built = buildQuestions(flags, question)
   if (!built.ok) {
     deps.io.err(built.error)
@@ -1873,7 +1882,11 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     result =
       codexPaths === null
         ? removeInstalledHooks()
-        : withCodexLayerTransaction(codexPaths, removeInstalledHooks)
+        : withCodexLayerTransaction(codexPaths, (inspection) => {
+            const stripped = removeInstalledHooks()
+            cleanupEmptiedCodexLayer(inspection.paths)
+            return stripped
+          })
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed

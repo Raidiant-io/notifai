@@ -154,6 +154,13 @@ async function main() {
 
     const pinFailure = protocolPinFailure(cliManifest, protocolManifest.version)
     if (pinFailure !== null) fail(pinFailure)
+    if (process.platform !== 'win32') {
+      const packedBin = path.join(packedCli, 'dist/main.js')
+      const packedMode = statSync(packedBin).mode & 0o111
+      if (packedMode === 0) {
+        fail(`packed dist/main.js is not executable (mode ${(statSync(packedBin).mode & 0o777).toString(8)})`)
+      }
+    }
     console.log(
       `Pin verified: packed ${CLI_NAME}@${cliManifest.version} depends on ${PROTOCOL_NAME}@${protocolManifest.version}.`,
     )

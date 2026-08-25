@@ -1,4 +1,5 @@
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -1342,5 +1343,42 @@ describe('writing config.toml around what is already there', () => {
     const after = readFileSync(file, 'utf8')
     expect(after).toContain('[[hooks.Stop]]')
     expect(after).not.toContain('hooks = {}')
+  })
+
+  it('is a no-op when the serialized document already matches the file', () => {
+    const layer = layerFor('notifai-toml-noop-')
+    const file = path.join(layer, 'config.toml')
+    writeFileSync(file, '# keep me\nmodel = "gpt-5.6"\n')
+    applyPlan(file, { ...loadSettings(file), hooks: ours() })
+    const once = readFileSync(file, 'utf8')
+    applyPlan(file, { ...loadSettings(file), hooks: ours() })
+    expect(readFileSync(file, 'utf8')).toBe(once)
+  })
+})
+
+describe('emptied Codex representations', () => {
+  it('deletes an empty JSON hooks file instead of writing {}', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-empty-json-'))
+    const file = path.join(repo, 'hooks.json')
+    applyPlan(file, { hooks: ours() })
+    expect(existsSync(file)).toBe(true)
+    const stripped = removeHooks(loadSettings(file), SCRIPT)
+    applyPlan(file, stripped.document)
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('keeps a trust-only TOML file and drops empty event tables', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-trust-only-'))
+    const file = path.join(repo, 'config.toml')
+    writeFileSync(
+      file,
+      `model = "gpt-5.6"\n\n[hooks.state."${file}:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+    )
+    const stripped = removeHooks(loadSettings(file), SCRIPT)
+    applyPlan(file, stripped.document)
+    const after = readFileSync(file, 'utf8')
+    expect(after).toContain('model = "gpt-5.6"')
+    expect(after).toContain('trusted_hash')
+    expect(after).not.toContain('[[hooks.Stop]]')
   })
 })

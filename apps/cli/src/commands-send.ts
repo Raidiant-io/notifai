@@ -14,9 +14,11 @@ import {
   buildDraft,
   formatReceipt,
   receiptExitCode,
+  rejectAccidentalEscapedNewlines,
   validateMediaInputs,
   type SendFlags,
 } from './send.js'
+import { recordObservedDeliveryProof } from './commands-setup-proof.js'
 import {
   EXIT,
   authedClient,
@@ -109,6 +111,11 @@ export async function sendCommand(
     deps.io.err(
       `--reply-window must be an integer from ${MIN_REPLY_WINDOW_SECONDS} to ${REPLY_MAX_WINDOW_SECONDS} seconds.`,
     )
+    return EXIT.usage
+  }
+  const escapedBody = rejectAccidentalEscapedNewlines(flags.body, flags.literalBackslashN)
+  if (escapedBody !== null) {
+    deps.io.err(escapedBody)
     return EXIT.usage
   }
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
@@ -609,6 +616,7 @@ export async function statusCommand(
   if (!authed) return EXIT.auth
   try {
     const snapshot = await authed.client.evidence(requestId)
+    recordObservedDeliveryProof(deps, snapshot, config.project.value)
     if (flags.json) {
       deps.io.out(JSON.stringify(snapshot, null, 2))
       return EXIT.ok
