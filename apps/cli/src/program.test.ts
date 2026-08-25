@@ -82,7 +82,6 @@ describe('program argv parsing', () => {
         '--multi',
         '--reply',
         '--reply-timeout', '30',
-        '--event', 'tests_passed',
       ],
       { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
     )
@@ -95,7 +94,6 @@ describe('program argv parsing', () => {
       multi: true,
       reply: true,
       replyTimeout: 30,
-      event: 'tests_passed',
       noWait: false,
     })
   })
@@ -199,6 +197,15 @@ describe('program argv parsing', () => {
     expect(exitCode).toBe(2)
     expect(deps.errLines.join('\n')).toContain('Unknown command "sendd"')
     expect(deps.errLines.join('\n')).toContain('send')
+  })
+
+  it('rejects send --event now that the public event field is gone', async () => {
+    const { exitCode, deps } = await parse(
+      ['send', '--kind', 'done', '--title', 'T', '--body', 'B', '--event', 'tests_passed'],
+      { send: (async () => 0) as ProgramRunners['send'] },
+    )
+    expect(exitCode).toBe(2)
+    expect(deps.errLines).toHaveLength(0)
   })
 
   it('drops the empty --event collector for logs', async () => {

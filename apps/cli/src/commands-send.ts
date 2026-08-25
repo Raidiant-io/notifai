@@ -654,7 +654,7 @@ export async function statusCommand(
       deps.io.out(JSON.stringify(snapshot, null, 2))
       return EXIT.ok
     }
-    deps.io.out(`request ${snapshot.request_id} (${snapshot.event ?? 'no event'}) — ${snapshot.overall}`)
+    deps.io.out(`request ${snapshot.request_id} — ${snapshot.overall}`)
     let anyReplyReceived = false
     for (const d of snapshot.deliveries) {
       deps.io.out(`  ${d.device_name}:`)

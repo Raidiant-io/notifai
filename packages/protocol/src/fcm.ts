@@ -47,7 +47,6 @@ export function buildFcmDataEnvelope(
     ...(draft.presentation.subtitle !== undefined
       ? { subtitle: draft.presentation.subtitle }
       : {}),
-    ...(draft.event !== undefined ? { event: draft.event } : {}),
     // Android always receives the effective value because it selects the
     // product-owned channel even when the author omitted the default kind.
     kind,

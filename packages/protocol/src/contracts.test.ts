@@ -37,7 +37,6 @@ import { buildFcmDataEnvelope } from './fcm.js'
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
   return {
     schema_version: 1,
-    event: 'work-completed',
     presentation: { title: 'Build finished', body: 'All checks passed.' },
     targets: { mode: 'all' },
     delivery: defaultDeliveryPolicy(),
@@ -853,7 +852,6 @@ describe('validateDraft', () => {
 
   it('uses the same APNs envelope rules for estimation and rendering', () => {
     const withMedia = draft({
-      event: 'tests_passed',
       source: {
         session_id: 'sess_example',
         session_label: 'Amber Falcon',
@@ -893,7 +891,6 @@ describe('validateDraft', () => {
 
   it('serializes the application-owned Android envelope once inside FCM data', () => {
     const androidDraft = draft({
-      event: 'tests_passed',
       kind: 'done',
       project: 'my-app',
       source: {
@@ -988,7 +985,6 @@ describe('validateDraft', () => {
 
   it('keeps maximum acknowledgement metadata estimation equal to rendering', () => {
     const maximum = draft({
-      event: 'x'.repeat(128),
       presentation: {
         title: 'T'.repeat(512),
         subtitle: 'S'.repeat(512),
@@ -1064,7 +1060,6 @@ describe('validateDraft', () => {
 describe('question lifecycle (D-A, D-B, D-C)', () => {
   it('renders a done draft as a silent background state sync', () => {
     const retirement = draft({
-      event: 'question_retired',
       lifecycle: { tier: 'done', state: 'answered', retires_request_id: 'req_original' },
       delivery: { ttl_seconds: 60, collapse_key: 'notifai-hook-q1' },
       // Presentation options that would be visible must not survive into the

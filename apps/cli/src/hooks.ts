@@ -1085,7 +1085,6 @@ async function prepareQuestionSubmission(
     media?: MediaItemT[] | undefined
     project?: string | undefined
     source?: SourceContextT | undefined
-    event: string
     /** How long the server keeps accepting an answer. */
     windowSeconds: number
     /** Absolute owner deadline persisted before submit. */
@@ -1104,7 +1103,6 @@ async function prepareQuestionSubmission(
     {
       title: options.title,
       body: options.body,
-      event: options.event,
       lifecycle: { tier: 'needs_you' },
       ...(options.project !== undefined ? { project: options.project } : {}),
       ...(options.media !== undefined ? { media: options.media } : {}),
@@ -2848,7 +2846,6 @@ async function escalate(
         ...(entry.media !== undefined ? { media: entry.media } : {}),
         ...(entry.project !== undefined ? { project: entry.project } : {}),
         ...(eventSource !== undefined ? { source: eventSource } : {}),
-        event: 'agent_question',
         windowSeconds: replyWindowSeconds,
         ownerDeadlineAt,
       })
@@ -2927,7 +2924,6 @@ async function escalate(
             ...(entry.media !== undefined ? { media: entry.media } : {}),
             ...(entry.project !== undefined ? { project: entry.project } : {}),
             ...(eventSource !== undefined ? { source: eventSource } : {}),
-            event: 'agent_question',
             windowSeconds: replyWindowSeconds,
             ownerDeadlineAt,
           })

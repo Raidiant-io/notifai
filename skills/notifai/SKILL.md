@@ -144,8 +144,6 @@ Other controls, when they earn their place:
   Otherwise every registered device is the right answer, narrowed by the
   `devices` config key when the user saved one; `--all` overrides the
   narrowing. `notifai devices --json` lists ids and readiness.
-- `--event <name>` names what happened (`tests_passed`, `deploy_failed`); it is
-  recorded with the request and comes back in `notifai status`.
 - `--idempotency-key <key>` when you rerun a send whose outcome you never saw —
   a network failure or a killed shell. Reusing the key is what stops one event
   becoming two notifications.

@@ -2393,7 +2393,6 @@ describe('delivery evidence status', () => {
   ): EvidenceSnapshot {
     return {
       request_id: 'req_status_test',
-      event: 'tests_passed',
       accepted_at: '2026-08-05T13:05:48.000Z',
       overall: 'provider_accepted_all',
       deliveries: [
@@ -4053,7 +4052,6 @@ describe('init', () => {
   ): EvidenceSnapshot {
     return {
       request_id: requestId,
-      event: 'setup_verified',
       accepted_at: '2026-08-05T18:00:00.000Z',
       overall: 'provider_accepted_all',
       deliveries: [
@@ -4997,7 +4995,7 @@ describe('init', () => {
     )
     expect(io.outLines.join('\n')).toContain('All set.')
     expect(submitCalls).toBe(1)
-    expect(submittedDraft?.draft.event).toBe('setup_verified')
+    expect(submittedDraft?.draft).not.toHaveProperty('event')
     expect(submittedDraft?.draft.targets).toEqual({ mode: 'selected', device_ids: ['dev_iphone'] })
 
     io.outLines = []

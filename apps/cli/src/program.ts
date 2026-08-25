@@ -344,7 +344,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--session-label <text>',
       'first human session name, frozen locally (env: NOTIFAI_SESSION_LABEL)',
     )
-    .option('--event <event>', 'agent event name, e.g. tests_passed')
     .optionsGroup(SEND_GROUP.presentation)
     .option('--collapse-key <key>', 'replace earlier notifications with the same key')
     .option('--thread-id <id>', 'group related notifications')

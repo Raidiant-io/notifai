@@ -340,8 +340,6 @@ export function defaultSoundForKind(kind: NotificationKind): IosSound {
 export const NotificationDraft = Type.Object(
   {
     schema_version: Type.Literal(NOTIFICATION_SCHEMA_VERSION),
-    /** The user-chosen Agent Event name; free-form, no closed taxonomy. */
-    event: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     /** What this notification is. Absent means `update`. */
     kind: Type.Optional(Type.Union(NOTIFICATION_KINDS.map((kind) => Type.Literal(kind)))),
     /** What this notification wants from the user. Absent means `new`. */
