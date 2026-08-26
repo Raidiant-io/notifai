@@ -89,6 +89,17 @@ package release, tag, and SHA outputs. A skipped or mismatched release therefore
 fails the release job, which prevents the dispatch job from turning the skip
 into a green workflow.
 
+Before merge, the required `commits` check also validates the Release PR's
+GitHub title, body, and manifest delta through
+`scripts/verify-release-pr-metadata.mjs`. This is the metadata release-please
+reads after merge; editing only the eventual squash commit message cannot repair
+an incompatible Release PR. In the combined no-root configuration, a lone
+componentless release entry is rejected because release-please 17.3.0 treats it
+as a standalone component branch and cannot correlate the branch back to the
+configured package. Component-named single-package candidates and parseable
+combined candidates remain valid. Keep the generated Release PR metadata
+unchanged; if this check rejects a candidate, do not merge it.
+
 GitHub documents one narrower exception to the recursion rule: when
 `GITHUB_TOKEN` creates or updates a pull request, its `pull_request` event can
 create runs in an approval-required state. This release path does not depend on

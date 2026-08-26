@@ -79,6 +79,17 @@ test('release automation has no separately managed write credential', () => {
   assert.match(release, /persist-credentials: false/)
 })
 
+test('the required commits job checks release PR metadata before merge', () => {
+  assert.match(
+    ci,
+    /- name: Verify release pull request metadata\n        if: github\.event_name == 'pull_request'\n        run: node scripts\/verify-release-pr-metadata\.mjs "\$GITHUB_EVENT_PATH"/,
+  )
+  assert.match(
+    release,
+    /run: node scripts\/verify-release-please-output\.mjs "\$\{\{ github\.event\.before \}\}"/,
+  )
+})
+
 test('write permissions are separated between release and dispatch jobs', () => {
   assert.match(
     release,

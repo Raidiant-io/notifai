@@ -252,6 +252,10 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint --verbose
 
+      - name: Verify release pull request metadata
+        if: github.event_name == 'pull_request'
+        run: node scripts/verify-release-pr-metadata.mjs "$GITHUB_EVENT_PATH"
+
       - name: Lint commit messages
         shell: bash
         run: |
