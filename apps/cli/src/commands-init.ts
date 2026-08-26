@@ -13,7 +13,14 @@ import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { personalProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
-import { firstBlocker, readinessJson, type Readiness, type ReadinessRefresh, type ReadinessState } from './readiness.js'
+import {
+  firstBlocker,
+  questionRoutingReady,
+  readinessJson,
+  type Readiness,
+  type ReadinessRefresh,
+  type ReadinessState,
+} from './readiness.js'
 import { buildDraft, formatReceipt } from './send.js'
 import { loginCommand } from './commands-auth.js'
 import {
@@ -116,6 +123,7 @@ async function closeGap(
   flags: InitFlags,
 ): Promise<GapCloseResult> {
   if (state.id === 'project') {
+    if (flags.setupScope === undefined) return 'failed'
     const slug = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
     const configPath =
       flags.setupScope === 'global'
@@ -137,7 +145,7 @@ async function closeGap(
     let ok = true
     const hookFlags = flags.setupScope === 'global' ? { global: true as const } : {}
     for (const harness of harnesses) {
-      if (hooksInstallCommand(deps, { harness, ...hookFlags }) !== EXIT.ok) ok = false
+      if (hooksInstallCommand(deps, { harness, ...hookFlags, narrate: false }) !== EXIT.ok) ok = false
     }
     return ok ? 'closed' : 'failed'
   }
@@ -619,9 +627,9 @@ async function resolveSetupScope(
     deps.io.err('No setup scope selected. Pass `--setup-scope project` or `--setup-scope global`.')
     return 'usage'
   }
-  if (flags.skills === true) {
+  if (flags.skills === true || flags.hooks === true) {
     deps.io.err(
-      'Unattended skill setup requires an explicit scope: `notifai init --skills --setup-scope project` or `... global`.',
+      'Unattended setup changes require an explicit scope: pass `--setup-scope project` or `--setup-scope global`.',
     )
     return 'usage'
   }
@@ -683,6 +691,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
       if (state.status === 'optional-gap') {
         if (remedy.by !== 'cli' || !(await wantsOptional(workingDeps, state, resolved))) continue
+        if (resolved.setupScope === undefined && state.id === 'project') {
+          stop = true
+          break
+        }
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
@@ -701,6 +713,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (remedy.by === 'cli') {
+        if (resolved.setupScope === undefined && state.id === 'project') {
+          stop = true
+          break
+        }
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
@@ -783,12 +799,6 @@ function printOptionalLeftovers(deps: CommandDeps, leftovers: readonly Readiness
   }
 }
 
-function questionsWillRoute(readiness: Readiness): boolean {
-  const hooks = readiness.states.find((state) => state.id === 'hooks')
-  const settings = readiness.states.find((state) => state.id === 'question-routing-settings')
-  return hooks?.status === 'ready' && settings?.status !== 'gap'
-}
-
 async function printInitClose(
   deps: CommandDeps,
   readiness: Readiness,
@@ -796,7 +806,7 @@ async function printInitClose(
 ): Promise<void> {
   const blocker = firstBlocker(readiness)
   const canSend = readiness.states.find((state) => state.id === 'devices')?.status === 'ready'
-  const questions = questionsWillRoute(readiness)
+  const questions = questionRoutingReady(readiness)
   const leftovers = leftoverOptionals(readiness, flags).filter(
     (state) => state.id !== 'contract',
   )
@@ -813,14 +823,14 @@ async function printInitClose(
         canSend ? 'You can send notifications.' : 'You are signed in.',
         questions
           ? 'Questions will reach your devices.'
-          : 'Questions stay in the terminal until hooks are installed.',
+          : 'Questions are terminal-only until Question Routing is ready.',
       ]
       await deps.io.note?.(lines.join('\n'), 'Ready')
       printOptionalLeftovers(deps, leftovers)
       deps.io.out(
       questions
         ? 'All set. Agents in this project can notify you and ask you questions.'
-        : 'All set. Agents in this project can notify you. Questions stay in the terminal until hooks are installed.',
+        : 'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.',
     )
       await deps.io.outro?.('All set ✨')
       return
@@ -840,7 +850,7 @@ async function printInitClose(
     deps.io.out(
       questions
         ? 'All set. Agents in this project can notify you and ask you questions.'
-        : 'All set. Agents in this project can notify you. Questions stay in the terminal until hooks are installed.',
+        : 'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.',
     )
     return
   }

@@ -4202,7 +4202,7 @@ describe('init', () => {
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(await initCommand(deps, { setupScope: 'project' })).toBe(EXIT.failed)
     const configPath = path.join(cwd, '.notifai', 'config.toml')
     expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
     // Safe by default: without an explicit --skills opt-in, init only writes
@@ -4211,7 +4211,7 @@ describe('init', () => {
     expect(io.outLines.join('\n')).not.toContain('All set.')
 
     io.outLines = []
-    expect(await initCommand(deps, { skills: false })).toBe(EXIT.failed)
+    expect(await initCommand(deps, { setupScope: 'project', skills: false })).toBe(EXIT.failed)
     // Idempotent: the second run re-derives the same slug and does not reprint
     // doctor's ready-state dump.
     expect(io.outLines.join('\n')).toMatch(/^Next:/m)
@@ -4253,7 +4253,13 @@ describe('init', () => {
       env: isolatedEnv(cwd),
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.failed)
     expect(io.outLines).toContain("Notifai can't send notifications until you update.")
     expect(io.outLines).toContain('npm install -g @raidiant/notifai')
     expect(io.outros).toEqual([])
@@ -4264,10 +4270,16 @@ describe('init', () => {
     io.errLines = []
     io.outros = []
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.ok)
     expect(submissions).toBe(1)
     expect(io.outLines).toContain(
-      'All set. Agents in this project can notify you. Questions stay in the terminal until hooks are installed.',
+      'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.',
     )
     expect(io.outLines).not.toContain('npm install -g @raidiant/notifai')
     expect(io.errLines).toEqual([])
@@ -4302,22 +4314,31 @@ describe('init', () => {
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
-    expect(await initCommand(deps, { projectId: 'Custom Name', skills: false })).toBe(EXIT.failed)
+    expect(
+      await initCommand(deps, {
+        projectId: 'Custom Name',
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.failed)
     expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain(
       'project = "custom-name"',
     )
   })
 
-  it('run unattended, names the optional steps instead of running or asking about them', async () => {
-    // An agent's init must not reach for npx or a prompt.
+  it('does not let an unattended readiness pass silently choose project scope', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.failed)
-    const out = io.outLines.join('\n')
-    expect(out).not.toContain('Installing the notifai agent skill')
-    // Never prompted, and never assumed into a change it did not request.
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
+    const result = JSON.parse(io.outLines[0] ?? '{}') as {
+      states: Array<{ id: string; status: string }>
+    }
+    expect(result.states.find((state) => state.id === 'project')).toMatchObject({
+      status: 'optional-gap',
+    })
     expect(io.errLines).toEqual([])
   })
 
@@ -4765,7 +4786,7 @@ describe('init', () => {
       list: async () => ({ skills: [] }),
     }
     const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
-    await initCommand(deps, { hooks: true, skills: false })
+    await initCommand(deps, { hooks: true, setupScope: 'project', skills: false })
     const wired = findInstallations(cwd, deps.env, deps.hookAdapterHome).map(
       (installation) => installation.harness,
     )
@@ -4773,8 +4794,9 @@ describe('init', () => {
     expect(existsSync(path.join(cwd, '.claude', 'settings.local.json'))).toBe(true)
     expect(existsSync(path.join(cwd, '.codex', 'hooks.json'))).toBe(false)
     expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(true)
-    expect(io.outLines.join('\n')).toContain('Installed claude-code hooks')
-    expect(io.outLines.join('\n')).toContain('Installed codex hooks')
+    expect(io.outLines.join('\n')).not.toContain('Installed claude-code hooks')
+    expect(io.outLines.join('\n')).not.toContain('Installed codex hooks')
+    expect(io.outLines.join('\n')).toContain('Next: Codex hook trust')
   })
 
   it('lets a human keep a subset of the detected harnesses', async () => {
@@ -4825,7 +4847,7 @@ describe('init', () => {
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(await initCommand(deps, { setupScope: 'project' })).toBe(EXIT.failed)
     expect(io.outLines.join('\n')).toContain('notifai login')
   })
 
@@ -4854,7 +4876,7 @@ describe('init', () => {
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(await initCommand(deps, { setupScope: 'project' })).toBe(EXIT.failed)
     expect(asked.some((q) => q.includes('Sign in'))).toBe(false)
     const out = io.outLines.join('\n')
     expect(out).toContain('Opening your browser to approve this machine — Ctrl-C to stop.')
@@ -4949,7 +4971,7 @@ describe('init', () => {
       } satisfies NativeSkills,
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.ok)
+    expect(await initCommand(deps, { setupScope: 'project' })).toBe(EXIT.ok)
     expect(asked).toEqual(expect.arrayContaining([expect.stringMatching(/hooks/)]))
     expect(asked).toEqual(expect.arrayContaining([expect.stringMatching(/skill/)]))
     const out = io.outLines.join('\n')
@@ -5026,7 +5048,13 @@ describe('init', () => {
       },
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.ok)
     expect(io.prompts).toEqual([
       'Open install instructions in your browser?',
       'Wait here while you finish that on your device?',
@@ -5049,7 +5077,13 @@ describe('init', () => {
     io.outLines = []
     io.prompts = []
     io.openedUrls = []
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.ok)
     expect(submitCalls).toBe(1)
     expect(io.prompts).toEqual([])
     expect(io.outLines.join('\n')).toContain('All set.')
@@ -5094,7 +5128,13 @@ describe('init', () => {
       },
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.ok)
     expect(io.errLines.join('\n')).toContain('wait timer expired')
     expect(io.errLines.join('\n')).toMatch(/setup is not finished, only this wait/)
     expect(io.prompts.some((q) => q.includes('Keep waiting'))).toBe(true)
@@ -5130,7 +5170,13 @@ describe('init', () => {
       env: isolatedEnv(cwd),
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
     expect(out).toContain('https://test.notifai.invalid/support')
@@ -5178,7 +5224,13 @@ describe('init', () => {
       },
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(
+      await initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).toBe(EXIT.failed)
     expect(submitCalls).toBe(1)
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
     expect(io.outLines.join('\n')).toContain('Provider accepted the notification')
@@ -5266,7 +5318,13 @@ describe('init', () => {
       env: { ...isolatedEnv(cwd), XDG_STATE_HOME: '/dev/null' },
     }
 
-    await expect(initCommand(deps, { hooks: false, skills: false })).resolves.toBe(EXIT.failed)
+    await expect(
+      initCommand(deps, {
+        hooks: false,
+        setupScope: 'project',
+        skills: false,
+      }),
+    ).resolves.toBe(EXIT.failed)
     expect(submitCalls).toBe(1)
     expect(io.errLines.join('\n')).toContain('Could not save setup proof req_unwritable')
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
@@ -5418,7 +5476,12 @@ describe('init', () => {
         env: { ...isolatedEnv(cwd), XDG_CONFIG_HOME: stateRoot, XDG_STATE_HOME: stateRoot },
       }
       expect(
-        await initCommand(deps, { projectId: 'shared-project', hooks: false, skills: false }),
+        await initCommand(deps, {
+          projectId: 'shared-project',
+          hooks: false,
+          setupScope: 'project',
+          skills: false,
+        }),
       ).toBe(EXIT.ok)
     }
 
@@ -5500,7 +5563,7 @@ describe('readiness assessment cost', () => {
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(await initCommand(deps, { setupScope: 'project' })).toBe(EXIT.failed)
     expect(healthCalls).toBe(1)
     expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain('project =')
   })
