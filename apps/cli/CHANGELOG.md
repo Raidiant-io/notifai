@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.1.0](https://github.com/Raidiant-io/notifai/compare/v9.0.0...v9.1.0) (2026-08-26)
+
+
+### Features
+
+* **cli:** remove mechanical agent ceremony ([#73](https://github.com/Raidiant-io/notifai/issues/73)) ([989f0d0](https://github.com/Raidiant-io/notifai/commit/989f0d05634605d7b411819050a743a19a25b1d8))
+
 ## [9.0.0](https://github.com/Raidiant-io/notifai/compare/v8.0.0...v9.0.0) (2026-08-25)
 
 
