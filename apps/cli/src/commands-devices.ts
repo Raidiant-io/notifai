@@ -121,7 +121,11 @@ export async function capabilitiesCommand(
 }
 
 export function supportPageUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/$/, '')}/support`
+  const normalized = baseUrl.replace(/\/+$/, '')
+  if (normalized === 'https://api.notifai.sh' || normalized === 'https://notifai.fly.dev') {
+    return 'https://app.notifai.sh/support'
+  }
+  return `${normalized}/support`
 }
 
 /** Same-account line for the device hop; prefers the real email when known. */
