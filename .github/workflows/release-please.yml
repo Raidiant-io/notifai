@@ -37,10 +37,23 @@ jobs:
       # events do not start more workflows, so the dispatch job below starts CI
       # explicitly at each exact repaired head.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The combined manifest has no root package, so a group title pattern
+      # cannot safely carry one component/version. Instead, make an advanced
+      # manifest with missing or mismatched release outputs fail this job.
+      - name: Require every expected package release
+        env:
+          CURRENT_SHA: ${{ github.sha }}
+          RELEASES_CREATED: ${{ steps.release-please.outputs.releases_created }}
+          CLI_RELEASE_CREATED: ${{ steps.release-please.outputs['apps/cli--release_created'] }}
+          CLI_TAG: ${{ steps.release-please.outputs['apps/cli--tag_name'] }}
+          CLI_SHA: ${{ steps.release-please.outputs['apps/cli--sha'] }}
+          PROTOCOL_RELEASE_CREATED: ${{ steps.release-please.outputs['packages/protocol--release_created'] }}
+          PROTOCOL_TAG: ${{ steps.release-please.outputs['packages/protocol--tag_name'] }}
+          PROTOCOL_SHA: ${{ steps.release-please.outputs['packages/protocol--sha'] }}
+        run: node scripts/verify-release-please-output.mjs "${{ github.event.before }}"
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         with:

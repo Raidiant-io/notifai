@@ -27,7 +27,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { execCommand, repositoryRoot } from './cross-platform.mjs'
+import {repositoryRoot} from './cross-platform.mjs'
+import {lookupPublishedTarball} from './npm-registry.mjs'
 
 const root = repositoryRoot
 const failures = []
@@ -99,9 +100,7 @@ for (const entry of selected) {
 
   let tarballUrl
   try {
-    tarballUrl = execCommand('npm', ['view', label, 'dist.tarball'], {
-      encoding: 'utf8',
-    }).trim()
+    tarballUrl = await lookupPublishedTarball(label)
   } catch (error) {
     failures.push(`${label}: not published, or npm view failed (${String(error)})`)
     continue

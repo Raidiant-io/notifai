@@ -80,6 +80,15 @@ Both the dispatch response and CI verify the exact expected commit SHA. Wait
 for those required checks, including `pnpm check:packed`, before considering
 the Release PR ready.
 
+The combined manifest deliberately has no root (`.`) package. Do not add a
+`group-pull-request-title-pattern` that references `${component}` or
+`${version}`: release-please sources those values from the root candidate, so
+both are empty here and the generated title is malformed. The workflow instead
+compares every manifest version change on `main` with the action's exact
+package release, tag, and SHA outputs. A skipped or mismatched release therefore
+fails the release job, which prevents the dispatch job from turning the skip
+into a green workflow.
+
 GitHub documents one narrower exception to the recursion rule: when
 `GITHUB_TOKEN` creates or updates a pull request, its `pull_request` event can
 create runs in an approval-required state. This release path does not depend on
@@ -107,6 +116,9 @@ publishes through npm trusted publishing with provenance, and verifies the
 registry bytes and resolution-shaping metadata. Protocol publishes before a
 CLI that pins it exactly. Concurrent tag runs are serialized and publication
 is idempotent: an already-published version is verified, never republished.
+The verifier retries only a registry `E404` five times with exponential
+backoff (15 seconds total); other failures remain immediate, and a version that
+never appears still fails after the bounded attempt ceiling.
 
 The workflow action is pinned to v4.4.1, which runs release-please 17.3.0;
 `release-please-config.json` pins its schema to the same version. Upgrade the
