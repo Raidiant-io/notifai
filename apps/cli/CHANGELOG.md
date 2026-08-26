@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.2.0](https://github.com/Raidiant-io/notifai/compare/v9.1.0...v9.2.0) (2026-08-26)
+
+
+### Features
+
+* **cli:** make notification ownership worker-aware ([#76](https://github.com/Raidiant-io/notifai/issues/76)) ([d45bab4](https://github.com/Raidiant-io/notifai/commit/d45bab407b95ef2bf764e73eb7b5c095fbdb7d81))
+
 ## [9.1.0](https://github.com/Raidiant-io/notifai/compare/v9.0.0...v9.1.0) (2026-08-26)
 
 
