@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.2.1](https://github.com/Raidiant-io/notifai/compare/v9.2.0...v9.2.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **cli:** repair setup and mobile onboarding ([9c39e95](https://github.com/Raidiant-io/notifai/commit/9c39e95371c7f476dd69d7c87d73130369734532))
+
 ## [9.2.0](https://github.com/Raidiant-io/notifai/compare/v9.1.0...v9.2.0) (2026-08-26)
 
 
