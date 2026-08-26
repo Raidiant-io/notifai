@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import test from 'node:test'
 import {parse} from 'yaml'
+import {verifyReleasePleaseOutput} from './verify-release-please-output.mjs'
 
 function readWorkflowText(path, read = readFileSync) {
   return read(path, 'utf8').replace(/\r\n?/g, '\n')
@@ -11,6 +12,7 @@ const release = readWorkflowText('.github/workflows/release-please.yml')
 const ci = readWorkflowText('.github/workflows/ci.yml')
 const publish = readWorkflowText('.github/workflows/publish.yml')
 const ciWorkflow = parse(ci)
+const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
 
 const requiredChecks = [
   {name: 'commits', job: ciWorkflow.jobs.commits},
@@ -173,4 +175,69 @@ test('each created release tag dispatches protected publication at its exact SHA
   assert.match(publish, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
   assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/)
   assert.match(publish, /environment: npm-release/)
+})
+
+test('the rootless combined manifest does not use an empty group title template', () => {
+  assert.equal(releaseConfig.packages['.'], undefined)
+  assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)
+  assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/protocol'])
+})
+
+test('single-package releases are verified at their exact tags and dispatched', () => {
+  const sha = 'a'.repeat(40)
+  const cli = verifyReleasePleaseOutput({
+    before: {'apps/cli': '9.0.0', 'packages/protocol': '5.0.0'},
+    after: {'apps/cli': '9.1.0', 'packages/protocol': '5.0.0'},
+    config: releaseConfig,
+    sha,
+    outputs: {
+      releasesCreated: 'true',
+      packages: {
+        'apps/cli': {created: 'true', tag: 'v9.1.0', sha},
+      },
+    },
+  })
+  const protocol = verifyReleasePleaseOutput({
+    before: {'apps/cli': '9.1.0', 'packages/protocol': '4.1.0'},
+    after: {'apps/cli': '9.1.0', 'packages/protocol': '5.0.0'},
+    config: releaseConfig,
+    sha,
+    outputs: {
+      releasesCreated: 'true',
+      packages: {
+        'packages/protocol': {created: 'true', tag: 'protocol-v5.0.0', sha},
+      },
+    },
+  })
+
+  assert.deepEqual(cli, [
+    {path: 'apps/cli', before: '9.0.0', version: '9.1.0', tag: 'v9.1.0'},
+  ])
+  assert.deepEqual(protocol, [
+    {
+      path: 'packages/protocol',
+      before: '4.1.0',
+      version: '5.0.0',
+      tag: 'protocol-v5.0.0',
+    },
+  ])
+  assert.match(release, /cli_release_created: \$\{\{ steps\.release-please\.outputs\['apps\/cli--release_created'\] \}\}/)
+  assert.match(release, /protocol_release_created: \$\{\{ steps\.release-please\.outputs\['packages\/protocol--release_created'\] \}\}/)
+  assert.match(release, /if \[ "\$CLI_RELEASE_CREATED" = "true" \]; then\n            dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/)
+  assert.match(release, /if \[ "\$PROTOCOL_RELEASE_CREATED" = "true" \]; then\n            dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/)
+})
+
+test('an expected release with no release-please output fails loudly', () => {
+  assert.throws(
+    () => verifyReleasePleaseOutput({
+      before: {'apps/cli': '9.0.0', 'packages/protocol': '5.0.0'},
+      after: {'apps/cli': '9.1.0', 'packages/protocol': '5.0.0'},
+      config: releaseConfig,
+      sha: 'a'.repeat(40),
+      outputs: {releasesCreated: 'false', packages: {}},
+    }),
+    /release manifest advanced apps\/cli, but release-please reported no release/,
+  )
+  assert.match(release, /- name: Require every expected package release/)
+  assert.match(release, /run: node scripts\/verify-release-please-output\.mjs "\$\{\{ github\.event\.before \}\}"/)
 })
