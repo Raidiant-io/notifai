@@ -1592,6 +1592,8 @@ function parkClosedQuestion(
 export interface HooksInstallFlags {
   harness?: string
   global?: boolean
+  /** Init owns the final setup result and suppresses per-harness close narration. */
+  narrate?: boolean
   /** Test seam; production resolves the running CLI. */
   execPath?: string
   scriptPath?: string
@@ -1706,9 +1708,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       return hooksInstallCommand(deps, { ...flags, global: true, harness })
     }
     const globalFile = globalInstallation?.file
-    deps.io.out(
-      `${HARNESS_LABELS[harness]} hooks already cover this machine (${globalFile}). This project does not need its own copy. To wire only this project: notifai hooks uninstall --harness ${harness} --global && notifai hooks install --harness ${harness}`,
-    )
+    if (flags.narrate !== false) {
+      deps.io.out(
+        `${HARNESS_LABELS[harness]} hooks already cover this machine (${globalFile}). This project does not need its own copy. To wire only this project: notifai hooks uninstall --harness ${harness} --global && notifai hooks install --harness ${harness}`,
+      )
+    }
     return EXIT.ok
   }
   if (wantGlobal && otherScope.some((installation) => !installation.global)) {
@@ -1731,6 +1735,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       timeoutSeconds: BLOCKING_STOP_TIMEOUT_SECONDS,
       platform: hookPlatform,
       nodePath,
+      ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
     })
   }
 
@@ -1755,7 +1760,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       deps.io.err(String(err))
       return EXIT.failed
     }
-    printHooksInstallClose(deps, harness, settingsTarget)
+    if (flags.narrate !== false) printHooksInstallClose(deps, harness, settingsTarget)
     return EXIT.ok
   }
 
@@ -1806,7 +1811,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     const layer = flags.global ? null : codexLayerDir(deps.cwd)
     if (layer !== null) mkdirSync(layer, { recursive: true })
   }
-  printHooksInstallClose(deps, harness, installed.file)
+  if (flags.narrate !== false) printHooksInstallClose(deps, harness, installed.file)
   if (installed.foreignStopCount > 0) {
     deps.io.out(
       "This layer already has a Stop handler. Codex runs every matching handler, so Notifai's Stop and the existing one will both fire.",
@@ -1853,6 +1858,7 @@ function installOpencodePlugin(
     timeoutSeconds: number
     platform?: NodeJS.Platform
     nodePath?: string
+    narrate?: boolean
   },
 ): number {
   try {
@@ -1874,7 +1880,7 @@ function installOpencodePlugin(
     deps.io.err(String(err))
     return EXIT.failed
   }
-  printHooksInstallClose(deps, 'opencode', file)
+  if (options.narrate !== false) printHooksInstallClose(deps, 'opencode', file)
   return EXIT.ok
 }
 

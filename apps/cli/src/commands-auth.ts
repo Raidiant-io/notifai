@@ -13,6 +13,7 @@ import {
   reportError,
   type CommandDeps,
 } from './commands-core.js'
+import { supportPageUrl } from './commands-devices.js'
 
 // ---------------------------------------------------------------------------
 // login / logout / auth status
@@ -123,7 +124,7 @@ export async function loginCommand(
     if (poll.status === 'no_active_plan') {
       const next =
         poll.next_action ??
-        `Open ${baseUrl.replace(/\/$/, '')}/support to request Alpha access, then retry.`
+        `Open ${supportPageUrl(baseUrl)} to request Alpha access, then retry.`
       spinner?.error('Account has no Alpha access')
       deps.io.err('This account has no active plan or temporary Alpha access.')
       deps.io.err(`next: ${next}`)
@@ -189,7 +190,7 @@ export async function accessStatusCommand(
       return access.status === 'active' ? EXIT.ok : EXIT.failed
     }
     if (access.status === 'no_active_plan') {
-      const supportUrl = `${authed.baseUrl.replace(/\/$/, '')}/support`
+      const supportUrl = supportPageUrl(authed.baseUrl)
       deps.io.out('No active plan or temporary Alpha access for this account.')
       deps.io.out(`next: Open ${supportUrl} to request Alpha access, then retry.`)
       return EXIT.failed

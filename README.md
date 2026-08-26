@@ -24,13 +24,15 @@ depends on private code. `docs/BOUNDARY.md` states the policy and
 
 ## Using it
 
-Run `notifai` with no arguments at a terminal to open the interactive app:
-status at a glance, a test notification, your devices, and every setting with
-an explanation of what it does and where its current value came from.
+Install the CLI once, then let `init` coordinate the setup. Run `notifai` with
+no arguments later to open the interactive app: status at a glance, a test
+notification, your devices, and every setting with an explanation of what it
+does and where its current value came from.
 
 ```sh
+npm install -g @raidiant/notifai
+notifai init                 # one setup flow; safe to resume
 notifai                      # the interactive app
-notifai init                 # set this project up, step by step
 notifai config show          # every setting, explained
 notifai config explain <key> # one setting, in full
 notifai config unset <key>   # return a setting to its inherited/default value

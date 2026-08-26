@@ -316,21 +316,25 @@ the harness's own flow.
 You are the one doing the setup. Run everything a process can run; never tell the
 user to run a command you could have run yourself.
 
+Before mutating `init`, ask one question for both user decisions:
+
+- setup scope — this project or every project here
+- Question Routing — devices or terminal only
+
+Pass both; never guess unattended:
+
 ```bash
-notifai init --json # idempotent coordinator and authoritative final readiness
+notifai init --setup-scope <project|global> <--hooks|--no-hooks> --json
 ```
 
 Branch on `states`, `can_send`, and `question_routing_ready`; a nonzero exit is
 a gap to close, never to bypass. Do not follow a successful structured init
 with doctor. `ask --json` performs its own exact-session admission check.
 
-Ask for these human-only steps together in one structured question:
+Then gather the human-only steps its reported gap needs:
 
 - approving this machine in the browser (after **you** started `notifai login`)
 - installing the companion app, signing in, and allowing notifications
-- whether they want questions routed back to you
-
-Unattended: `notifai init --setup-scope project|global`.
 
 Never emulate them or claim an unlisted harness.
 

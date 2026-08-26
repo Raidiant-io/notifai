@@ -27,11 +27,12 @@ fail differently and are worth separating before you report either as broken.
 
 ## Install deliberately
 
-Ask whether they want questions routed. If they do, let init install and assess
-the hooks. Never tell the user to run setup commands themselves.
+Ask setup scope and whether they want questions routed in the same structured
+question. If they do, let init install and assess the hooks in their chosen
+scope. Never tell the user to run setup commands themselves.
 
 ```bash
-notifai init --hooks --setup-scope project --json
+notifai init --hooks --setup-scope <project|global> --json
 ```
 
 A machine-global Notifai skill is guidance, not routing evidence. The active
