@@ -1,7 +1,10 @@
 import path from 'node:path'
 import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 import { configHome } from './install-hooks.js'
-import { MISSING_LIFECYCLE_GUIDANCE_CONTEXT } from './session-activation.js'
+import {
+  MISSING_LIFECYCLE_GUIDANCE_CONTEXT,
+  WORKER_ACTIVATION_CONTEXT,
+} from './session-activation.js'
 
 /**
  * The OpenCode adapter.
@@ -32,7 +35,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 11
+const OPENCODE_ADAPTER_VERSION = 12
 
 export function opencodePluginDir(
   global: boolean,
@@ -105,6 +108,7 @@ ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCODE_ADAPTER_VERSION}
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}
+const WORKER_ACTIVATION_CONTEXT = ${JSON.stringify(WORKER_ACTIVATION_CONTEXT)}
 const PENDING_SESSION_TITLE =
   /^New session(?: *- *[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]+)?Z)?$/i
 
@@ -166,14 +170,29 @@ export const NotifAIPlugin = async ({ directory, client }) => {
       const sessionID = input?.sessionID
       if (typeof sessionID !== "string" || sessionID.length === 0) return
       if (activated.has(sessionID)) return
-      const resolved = await runHook("session-start", {
+      // OpenCode represents delegated work as child sessions. Missing or
+      // malformed relationship data must fail closed as worker context: it is
+      // safe to suppress a notification, never safe to let a child duplicate
+      // its parent's User-visible request.
+      let worker = true
+      try {
+        const response = await client.session.get({ path: { id: sessionID } })
+        const session = response?.data
+        if (session !== null && typeof session === "object") {
+          worker = typeof session.parentID === "string" && session.parentID.length > 0
+        }
+      } catch {
+        // Keep the safe worker classification.
+      }
+      const hookEventName = worker ? "SubagentStart" : "SessionStart"
+      const resolved = await runHook(worker ? "subagent-start" : "session-start", {
         session_id: sessionID,
         cwd,
-        hook_event_name: "SessionStart",
+        hook_event_name: hookEventName,
       })
       const context = typeof resolved === "string" && resolved.trim().length > 0
         ? resolved.trim()
-        : MISSING_LIFECYCLE_GUIDANCE_CONTEXT
+        : worker ? WORKER_ACTIVATION_CONTEXT : MISSING_LIFECYCLE_GUIDANCE_CONTEXT
       if (output.system.length === 0) {
         output.system.push(context)
       } else {

@@ -90,10 +90,6 @@ export interface SessionState {
   harness?: HookHarness
   /** Checkout whose hook definition activated this session; lifecycle diagnostics only. */
   activation_cwd?: string
-  /** Model-visible proactive context already emitted for this harness session. */
-  activation_context_emitted_at?: number
-  /** Harness process that received it; a resumed session has a new owner. */
-  activation_context_owner_pid?: number
   /** Cursor's documented session context path is lossy; bounded first-Stop fallback journal. */
   cursor_activation_claimed_at?: number
   cursor_activation_confirmed_at?: number
@@ -547,12 +543,10 @@ function updateSessionState(
   })
 }
 
-/** Record a lifecycle activation so the first-prompt compatibility path stays silent. */
-export function markSessionActivation(
+/** Record the current installation when an owner session starts. */
+export function recordSessionStart(
   sessionId: string,
   env: NodeJS.ProcessEnv,
-  now: number,
-  ownerPid: number,
   harness?: HookHarness,
   cwd?: string,
 ): void {
@@ -560,44 +554,7 @@ export function markSessionActivation(
     ...current,
     ...(harness === undefined ? {} : { harness }),
     ...(cwd === undefined ? {} : { activation_cwd: current.activation_cwd ?? cwd }),
-    activation_context_emitted_at: now,
-    activation_context_owner_pid: ownerPid,
   }))
-}
-
-/**
- * Atomically own first-prompt activation only when no lifecycle hook did.
- *
- * Some managed hosts preserve UserPromptSubmit while regenerating away newer
- * SessionStart definitions. This is a compatibility seam, not the primary
- * lifecycle: one session gets at most one model-visible activation from it.
- */
-export function claimPromptActivation(
-  sessionId: string,
-  env: NodeJS.ProcessEnv,
-  now: number,
-  ownerPid: number,
-  harness?: HookHarness,
-  cwd?: string,
-): boolean {
-  let claimed = false
-  updateSessionState(sessionId, env, (current) => {
-    if (
-      current.activation_context_emitted_at !== undefined &&
-      current.activation_context_owner_pid === ownerPid
-    ) {
-      return current
-    }
-    claimed = true
-    return {
-      ...current,
-      ...(harness === undefined ? {} : { harness }),
-      ...(cwd === undefined ? {} : { activation_cwd: current.activation_cwd ?? cwd }),
-      activation_context_emitted_at: now,
-      activation_context_owner_pid: ownerPid,
-    }
-  })
-  return claimed
 }
 
 /** Atomically claim Cursor's first-Stop activation fallback once per conversation. */

@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Proactively use Notifai in every agent session, even when the user does not mention Notifai. Read guidance first; use it for finished, failed, blocked, attention, decisions, setup, and delivery/reply diagnosis.
+description: Use Notifai proactively in every agent session that owns User-visible Notification Requests, even when the user does not mention it. The parent owns by default; use it in a worker only when ownership is explicitly delegated. Read guidance.
 ---
 
 # Notifai
@@ -30,22 +30,21 @@ or time and do not retry automatically. Re-run the exact semantic send with
 
 ## Decide whether to notify
 
-Session lifecycle context normally includes the bounded, effective guidance
-under provenance markers. When that context is absent or explicitly says the
-guidance exceeded its bound, read it once before judging an Agent Event:
+Owners load skill. Parent owns by default.
+Ordinary workers report Agent Events and do not load or send. Explicit textual
+delegation makes a worker the owner; then it reads effective guidance.
+
+Owner session lifecycle context normally includes the bounded, effective
+guidance under provenance markers. When that context is absent or explicitly
+says the guidance exceeded its bound, read it once before judging an Agent Event:
 
 ```bash
 notifai guidance
 ```
 
-The parent owns User-visible Notification Requests unless it explicitly delegates
-ownership. Workers report Agent Events; they do not send independently.
-
-It prints its own trust preamble, then `when-to-notify`, `titles`, `bodies`,
-`questions`, and `acknowledgements` under source markers, in authority order:
-`from=you` (the user's standing word), `from=this repository` (house rules),
-then `from=shipped default` (fallback). The first decides whether to notify;
-the others own the words.
+`notifai guidance` prints `when-to-notify`, `titles`, `bodies`, `questions`, and
+`acknowledgements` under `from=you`, `from=this repository`, then
+`from=shipped default`. The first decides whether to notify; the others own the words.
 
 Two limits no topic can override:
 
