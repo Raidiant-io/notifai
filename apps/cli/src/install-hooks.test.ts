@@ -21,7 +21,10 @@ import {
   opencodePluginSource,
   opencodePluginTarget,
 } from './opencode-plugin.js'
-import { MISSING_LIFECYCLE_GUIDANCE_CONTEXT } from './session-activation.js'
+import {
+  MISSING_LIFECYCLE_GUIDANCE_CONTEXT,
+  WORKER_ACTIVATION_CONTEXT,
+} from './session-activation.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -196,8 +199,9 @@ describe('hook config', () => {
     })
   })
 
-  it('leaves exactly one handler per event when an old blocking shape is reinstalled over', () => {
+  it('restores missing SessionStart exactly once when an old owned shape is reinstalled over', () => {
     const old = mergeHooks({}, buildHookConfig({ adapterPath: ADAPTER }), SCRIPT)
+    delete old.document.hooks?.['SessionStart']
     const migrated = mergeHooks(
       old.document,
       buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' }),
@@ -214,7 +218,6 @@ describe('hook config', () => {
     })
     expect(migrated.replaced.sort()).toEqual([
       'SessionEnd',
-      'SessionStart',
       'Stop',
       'SubagentStart',
       'UserPromptSubmit',
@@ -882,32 +885,54 @@ describe('the OpenCode adapter', () => {
     expect(source).not.toContain('"permission.ask"')
   })
 
-  it('adds session activation through OpenCode system context without setup or network', async () => {
+  it('classifies OpenCode parent, child, lookup failure, and missing identity safely', async () => {
     expect(source).toContain('"experimental.chat.system.transform"')
     const generated = (await import(
       `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
     )) as {
-      NotifAIPlugin(input: { directory: string; client: object }): Promise<{
+      NotifAIPlugin(input: {
+        directory: string
+        client: {
+          session: {
+            get(input: { path: { id: string } }): Promise<{ data: object }>
+          }
+        }
+      }): Promise<{
         'experimental.chat.system.transform'?: (
-          input: object,
+          input: { sessionID?: string },
           output: { system: string[] },
         ) => Promise<void>
       }>
     }
-    const plugin = await generated.NotifAIPlugin({ directory: '/repo', client: {} })
-    const output = { system: ['existing context'] }
+    const plugin = await generated.NotifAIPlugin({
+      directory: '/repo',
+      client: {
+        session: {
+          get: async ({ path: { id } }) => {
+            if (id === 'ses_parent') return { data: { id } }
+            if (id === 'ses_child') return { data: { id, parentID: 'ses_parent' } }
+            throw new Error('relationship lookup unavailable')
+          },
+        },
+      },
+    })
+    const parent = { system: ['existing context'] }
 
-    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_1' }, output)
+    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_parent' }, parent)
 
-    expect(output.system).toEqual([`existing context\n\n${MISSING_LIFECYCLE_GUIDANCE_CONTEXT}`])
+    expect(parent.system).toEqual([`existing context\n\n${MISSING_LIFECYCLE_GUIDANCE_CONTEXT}`])
 
-    const internal = { system: ['internal agent-generation context'] }
-    await plugin['experimental.chat.system.transform']?.({}, internal)
-    expect(internal.system).toEqual(['internal agent-generation context'])
+    const child = { system: [] as string[] }
+    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_child' }, child)
+    expect(child.system).toEqual([WORKER_ACTIVATION_CONTEXT])
 
-    const empty = { system: [] as string[] }
-    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_2' }, empty)
-    expect(empty.system).toEqual([MISSING_LIFECYCLE_GUIDANCE_CONTEXT])
+    const lookupFailure = { system: [] as string[] }
+    await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_unknown' }, lookupFailure)
+    expect(lookupFailure.system).toEqual([WORKER_ACTIVATION_CONTEXT])
+
+    const missingIdentity = { system: ['internal agent-generation context'] }
+    await plugin['experimental.chat.system.transform']?.({}, missingIdentity)
+    expect(missingIdentity.system).toEqual(['internal agent-generation context'])
   })
 
   it('publishes the session pointer on a user message without injecting content', () => {

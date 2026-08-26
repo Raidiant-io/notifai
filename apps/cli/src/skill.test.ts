@@ -47,21 +47,22 @@ const section = (heading: string): string => {
 }
 
 describe('Notifai agent skill', () => {
-  it('routes proactively in ordinary sessions without waiting for the user to name Notifai', () => {
+  it('routes proactively in owner sessions without turning ordinary workers into senders', () => {
     // The frontmatter description is the only skill text available during
-    // automatic selection. If the ordinary-session trigger lives only in the
-    // body, agents doing unrelated work never load it and therefore never see
-    // the completion rule.
-    expect(description).toMatch(/every agent session/i)
-    expect(description).toMatch(/even when the user does not mention Notifai/i)
+    // automatic selection. It must select parent owners and workers given
+    // explicit delegation without selecting every ordinary worker.
+    expect(description).toMatch(/every agent session that owns User-visible Notification Requests/i)
+    expect(description).toMatch(/parent owns by default/i)
+    expect(description).toMatch(/worker only when ownership is explicitly delegated/i)
+    expect(description).toMatch(/even when the user does not mention (?:Notifai|it)/i)
     expect(description).toMatch(/guidance/i)
 
     const decide = section('## Decide whether to notify')
-    expect(decide).toMatch(/lifecycle context normally includes.*effective guidance/is)
+    expect(decide).toMatch(/owner session lifecycle context normally includes.*effective\s+guidance/is)
     expect(decide).toMatch(/context is absent.*read it once before judging an Agent\s+Event/is)
-    expect(decide).toMatch(/parent owns User-visible Notification Requests/i)
-    expect(decide).toMatch(/unless\s+it explicitly delegates/i)
-    expect(decide).toMatch(/workers[\s\S]{0,100}do not send independently/i)
+    expect(decide).toMatch(/parent owns by default/i)
+    expect(decide).toMatch(/explicit textual\s+delegation makes a worker the owner/i)
+    expect(decide).toMatch(/ordinary workers[\s\S]{0,100}do not load or send/i)
   })
 
   it('preserves the original Agent Event across setup and ambiguous delivery', () => {

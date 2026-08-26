@@ -3277,13 +3277,13 @@ describe('stable hook installation', () => {
     ).toBe(EXIT.ok)
     const globalFile = settingsFile('opencode', true, cwd, env)
     const current = readFileSync(globalFile, 'utf8')
-    writeFileSync(globalFile, current.replace('const ADAPTER_VERSION = 11', 'const ADAPTER_VERSION = 10'))
+    writeFileSync(globalFile, current.replace('const ADAPTER_VERSION = 12', 'const ADAPTER_VERSION = 11'))
 
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
     expect(existsSync(path.join(cwd, '.opencode', 'plugins', 'notifai.js'))).toBe(false)
     const refreshed = readFileSync(globalFile, 'utf8')
-    expect(refreshed).toContain('const ADAPTER_VERSION = 11')
+    expect(refreshed).toContain('const ADAPTER_VERSION = 12')
     expect(refreshed).toContain('experimental.chat.system.transform')
     expect(io.outLines.join('\n')).toMatch(/Installed opencode hooks/)
   })

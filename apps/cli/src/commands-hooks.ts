@@ -30,14 +30,13 @@ import {
 } from './hook-adapter.js'
 import {
   clearAcknowledgementObligation,
-  claimPromptActivation,
   claimCursorStopActivation,
   confirmCursorStopActivation,
   dropPendingQuestion,
   handleSessionEnd,
   handleStop,
   handleUserPromptSubmit,
-  markSessionActivation,
+  recordSessionStart,
   parkForRetirement,
   parseHookInput,
   pruneAbandonedSessions,
@@ -254,14 +253,6 @@ export async function hookRunCommand(
   const cwd = envelope.cwd ?? deps.cwd
   const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
   logger.bind({ session: envelope.session_id ?? null })
-  const declaredSourcePid = declaredHookSourcePid(deps)
-  const activationOwnerPid =
-    harness === 'claude-code'
-      ? (deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env))
-      : harness === 'codex'
-        ? (deps.codexSourcePid ?? declaredSourcePid ?? process.ppid)
-        : undefined
-
   // Session activation is local model context, not authenticated routing. It
   // must survive the exact first-run states it exists to repair: no config,
   // no credential, no Companion device, and no network.
@@ -285,22 +276,14 @@ export async function hookRunCommand(
       deps.env,
     )
     if (stdout !== undefined) deps.io.out(stdout)
-    if (
-      stdout !== undefined &&
-      event === 'session-start' &&
-      activationOwnerPid !== undefined &&
-      envelope.session_id !== undefined
-    ) {
+    if (event === 'session-start' && envelope.session_id !== undefined) {
       try {
-        // Write stdout first. If the process dies between these operations a
-        // later prompt may duplicate context, but it cannot suppress context
-        // that the host never received.
-        markSessionActivation(envelope.session_id, deps.env, now(), activationOwnerPid, harness, cwd)
+        recordSessionStart(envelope.session_id, deps.env, harness, cwd)
       } catch (err) {
         logger.error('hook.end', {
           hook: event,
-          outcome: 'mark-failed',
-          reason: 'activation-state-failed',
+          outcome: 'record-failed',
+          reason: 'session-state-failed',
           ...failureData(err),
         })
       }
@@ -311,33 +294,6 @@ export async function hookRunCommand(
       decided: false,
     })
     return EXIT.ok
-  }
-
-  // SessionStart is the preferred model-visible activation seam. A few
-  // managed hosts regenerate older hook definitions that retain
-  // UserPromptSubmit but omit newer lifecycle events. Claim the first prompt
-  // once per exact session as a compatibility fallback, before config/auth/
-  // device/network work, and stay silent when SessionStart already ran.
-  let promptActivationStdout: string | undefined
-  if (
-    event === 'user-prompt-submit' &&
-    (harness === 'claude-code' || harness === 'codex') &&
-    activationOwnerPid !== undefined &&
-    envelope.session_id !== undefined
-  ) {
-    try {
-      if (claimPromptActivation(envelope.session_id, deps.env, now(), activationOwnerPid, harness, cwd)) {
-        promptActivationStdout = sessionActivationOutput(harness, 'UserPromptSubmit', cwd, deps.env)
-        if (promptActivationStdout !== undefined) deps.io.out(promptActivationStdout)
-      }
-    } catch (err) {
-      logger.error('hook.end', {
-        hook: event,
-        outcome: 'claim-failed',
-        reason: 'activation-state-failed',
-        ...failureData(err),
-      })
-    }
   }
 
   // Cursor has a confirmed host bug in which sessionStart.additional_context
@@ -443,7 +399,6 @@ export async function hookRunCommand(
         hook: event,
         outcome: 'failed',
         reason: 'config-failed',
-        ...(promptActivationStdout === undefined ? {} : { activation: 'context-added' }),
         ...failureData(err),
       })
       for (const line of describeHookFailure(err)) deps.io.err(`notifai: ${line}`)
@@ -547,10 +502,7 @@ export async function hookRunCommand(
     const notes = outcome.notes.filter((note) => !/^(?:late )?answer from /.test(note))
     logger.info('hook.end', {
       hook: event,
-      // Stop stdout takes over the turn. UserPromptSubmit stdout may instead
-      // add context to the user's own turn, which is explicitly non-decisive.
       decided: outcome.decided ?? outcome.stdout !== undefined,
-      ...(promptActivationStdout === undefined ? {} : { activation: 'context-added' }),
       ...(notes.length === 0 ? {} : { notes }),
       ...outcome.log,
     })

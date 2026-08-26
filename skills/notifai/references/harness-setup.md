@@ -64,17 +64,19 @@ Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 
 - **Claude Code:** run the installer if needed, start one fresh session, send
   one prompt, then run `notifai doctor`. An already-running session cannot
-  receive newly installed `SessionStart` context. If a managed host retained
-  only an older UserPromptSubmit definition, the first prompt supplies one
-  compatibility activation for that harness process; this does not make the
-  lifecycle installation current.
+  receive newly installed `SessionStart` context. If SessionStart is absent,
+  reinstall the current hooks and start a fresh session; UserPromptSubmit
+  records presence and question lifecycle only and never substitutes for
+  lifecycle activation. Claude's SubagentStart gives ordinary workers the
+  reporting-only context; explicit textual delegation makes a worker load the
+  skill and guidance as the new Notification Request owner.
 - **Codex:** run `notifai hooks install --harness codex`. If `hooks-trust`
   fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
-  Then start one fresh session, send one prompt, and run `notifai doctor`. Codex
-  uses the same bounded first-prompt compatibility activation when a managed
-  host retained UserPromptSubmit but omitted SessionStart; `hooks-stale` still
-  diagnoses that lifecycle installation until the host persists the current
-  definitions. Codex resolves project hooks from the main repository. In a
+  Then start one fresh session, send one prompt, and run `notifai doctor`. If
+  SessionStart is absent, reinstall the current hooks and start a fresh session;
+  UserPromptSubmit does not activate it. Codex SubagentStart uses the same
+  reporting-only worker contract and explicit textual delegation rule as
+  Claude. Codex resolves project hooks from the main repository. In a
   linked worktree, the installer writes the shared file to
   the main checkout and creates the project-layer `.codex` directory in the
   current worktree; run it once in each new worktree.
@@ -83,12 +85,18 @@ Notifai never writes trust approvals. If its diagnosis and Codex disagree,
   lossy, so one visible synthetic follow-up activates Notifai through its native
   Stop contract; cancellation does not trigger it, and a live question
   continuation takes priority. Then run `notifai doctor`. The agent shell does
-  not expose the exact conversation id needed to prove which concurrent session
+  not create a separately activated context for delegated work: it remains
+  under the parent session and its explicit Notification Request ownership. It
+  does not expose the exact conversation id needed to prove which concurrent session
   invoked `notifai ask`, so asynchronous ask fails closed. Use blocking
   `notifai send --reply` for questions.
 - **OpenCode:** restart after installation because plugins load at startup,
   then start one fresh session, send one prompt, and run `notifai doctor`.
   Notifai owns its generated plugin file and will not overwrite a foreign one.
+  The plugin treats a session with `parentID` as a worker. When relationship
+  lookup fails or returns unusable data it also fails safe as a non-sending
+  worker; only a proven parent session receives owner context. Explicit textual
+  delegation promotes that worker through the same skill-and-guidance rule.
   OpenCode has no locally proven exactly-once continuation after `session.idle`,
   so `notifai ask` fails closed instead of accepting an answer into a void.
   Use a blocking `notifai send --reply` question when its answer must return to

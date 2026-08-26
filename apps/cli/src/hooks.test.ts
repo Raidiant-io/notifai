@@ -2855,7 +2855,7 @@ describe('session-start hook', () => {
 })
 
 describe('user-prompt-submit hook', () => {
-  it('activates once as a compatibility fallback when SessionStart was absent', async () => {
+  it('stays silent when SessionStart was absent while preserving prompt lifecycle', async () => {
     const h = harness()
 
     await hookRunCommand(
@@ -2865,136 +2865,10 @@ describe('user-prompt-submit hook', () => {
       'claude-code',
     )
 
-    expect(h.io.outLines).toHaveLength(1)
-    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: expect.stringMatching(/Notifai.*session/i),
-      },
-    })
-    expect(readSessionState('presence-only', h.env).last_prompt_at).toBe(NOW)
-
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'presence-only' }),
-      'claude-code',
-    )
-    expect(h.io.outLines).toHaveLength(1)
-  })
-
-  it('stays silent when SessionStart already delivered activation', async () => {
-    const h = harness()
-    h.deps.codexSourcePid = 4242
-
-    await hookRunCommand(
-      h.deps,
-      'session-start',
-      stdin({ session_id: 'lifecycle-owned' }),
-      'codex',
-    )
-    h.io.outLines = []
-
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'lifecycle-owned' }),
-      'codex',
-    )
-
     expect(h.io.outLines).toEqual([])
-  })
-
-  it('reactivates a resumed session owned by a new harness process', async () => {
-    const h = harness()
-    h.deps.codexSourcePid = 4242
-    await hookRunCommand(
-      h.deps,
-      'session-start',
-      stdin({ session_id: 'resumed-owner' }),
-      'codex',
-    )
-    h.io.outLines = []
-    h.deps.codexSourcePid = 4343
-
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'resumed-owner' }),
-      'codex',
-    )
-
-    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
-      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
-    })
-  })
-
-  it('uses the adapter-propagated harness owner across per-hook CLI processes', async () => {
-    const h = harness()
-    h.env['NOTIFAI_HOOK_SOURCE_PID'] = '5252'
-
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'adapter-owned' }),
-      'codex',
-    )
-    h.io.outLines = []
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'adapter-owned' }),
-      'codex',
-    )
-    expect(h.io.outLines).toEqual([])
-
-    h.env['NOTIFAI_HOOK_SOURCE_PID'] = '5353'
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'adapter-owned' }),
-      'codex',
-    )
-    expect(h.io.outLines).toHaveLength(1)
-  })
-
-  it('does not let a worker lifecycle suppress parent prompt activation', async () => {
-    const h = harness()
-    h.deps.codexSourcePid = 4242
-    await hookRunCommand(
-      h.deps,
-      'subagent-start',
-      stdin({ session_id: 'shared-parent-worker' }),
-      'codex',
-    )
-    h.io.outLines = []
-
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'shared-parent-worker' }),
-      'codex',
-    )
-
-    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
-      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
-    })
-  })
-
-  it('activates before config and authentication readiness', async () => {
-    const h = harness()
-    h.deps.cwd = path.join(h.deps.cwd, 'missing-project')
-    h.deps.store.load = () => null
-
-    await hookRunCommand(
-      h.deps,
-      'user-prompt-submit',
-      stdin({ session_id: 'first-run', cwd: h.deps.cwd }),
-      'codex',
-    )
-
-    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({
-      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
+    expect(readSessionState('presence-only', h.env)).toEqual({
+      harness: 'claude-code',
+      last_prompt_at: NOW,
     })
   })
 

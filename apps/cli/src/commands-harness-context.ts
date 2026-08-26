@@ -98,18 +98,14 @@ export function resolveActiveHarness(
   if (candidates.length === 1) return { active: first, contested: [] }
 
   // Exact lifecycle state is machine-global and survives a command moving to
-  // another linked checkout. Prefer it before the checkout-local compatibility
+  // another linked checkout. Prefer it before the checkout-local
   // pointer. A unique newest hook event proves which nested harness owns this
   // shell; ties and missing evidence remain contested and fail closed.
   const evidenced = candidates.flatMap((candidate) => {
     if (candidate.sessionId === undefined) return []
     const state = readSessionState(candidate.sessionId, env)
     if (state.harness !== candidate.harness) return []
-    const activity = Math.max(
-      state.last_prompt_at ?? 0,
-      state.last_stop_at ?? 0,
-      state.activation_context_emitted_at ?? 0,
-    )
+    const activity = Math.max(state.last_prompt_at ?? 0, state.last_stop_at ?? 0)
     return activity > 0 ? [{ candidate, activity }] : []
   })
   if (evidenced.length > 0) {

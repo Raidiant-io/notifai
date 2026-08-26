@@ -8,7 +8,7 @@ const ROOT_OWNERSHIP =
   'The root agent owns User-visible Notification Requests unless it explicitly delegates that ownership; workers report Agent Events to the parent.'
 
 export const WORKER_ACTIVATION_CONTEXT =
-  'Notifai worker context: report Agent Events to the parent; do not send User-visible Notification Requests unless the parent explicitly delegated that ownership. If delegated, run `notifai guidance` before composing one.'
+  'Notifai worker context: report Agent Events to the parent; do not send User-visible Notification Requests unless the parent explicitly delegated that ownership. If delegated, load the Notifai skill and run `notifai guidance` before composing one.'
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
   'Notifai is active, but lifecycle guidance could not be loaded. Run `notifai guidance` once before deciding whether or how to send a Notification Request.'
@@ -25,7 +25,7 @@ function rootActivationContext(cwd: string, env: NodeJS.ProcessEnv): string {
 /** One lifecycle meaning, encoded for each harness output contract. */
 export function sessionActivationOutput(
   harness: HookHarness | undefined,
-  hookEventName: 'SessionStart' | 'SubagentStart' | 'UserPromptSubmit',
+  hookEventName: 'SessionStart' | 'SubagentStart',
   cwd: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
