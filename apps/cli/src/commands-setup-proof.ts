@@ -4,34 +4,41 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
 import { stateDir } from './config.js'
 import type { CommandDeps } from './commands-core.js'
+import { inferInvocationContext } from './invocation-context.js'
 
-interface SetupProofRecord {
+export interface SetupProofRecord {
   request_id: string
   device_id: string
   project: string | null
   started_at: string
 }
 
-function setupProofPath(deps: CommandDeps): string {
-  let projectDir = path.resolve(deps.cwd)
-  try {
-    projectDir = realpathSync(projectDir)
-  } catch {
-    // A deleted or not-yet-created cwd cannot collide with a real directory:
-    // the resolved absolute path is still a stable local identity for it.
-  }
-  const digest = createHash('sha256').update(projectDir).digest('hex').slice(0, 32)
+export function setupProofProject(deps: CommandDeps, configured: string | null): string | null {
+  return configured ?? inferInvocationContext(deps.cwd).project
+}
+
+function setupProofPath(deps: CommandDeps, project: string | null): string | null {
+  const credential = deps.store.load()
+  if (credential === null) return null
+  const approval = createHash('sha256')
+    .update('notifai-setup-proof-approval-v1\0')
+    .update(credential.secret)
+    .digest('base64url')
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ project, machine_id: credential.machineId, service: credential.baseUrl, approval }))
+    .digest('hex')
+    .slice(0, 32)
   return path.join(stateDir(deps.env), 'setup-proofs', `${digest}.json`)
 }
 
-export function readSetupProof(deps: CommandDeps): SetupProofRecord | null {
-  const file = setupProofPath(deps)
+export function readSetupProof(deps: CommandDeps, project: string | null): SetupProofRecord | null {
+  const file = setupProofPath(deps, project)
+  if (file === null) return null
   if (!existsSync(file)) return null
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<SetupProofRecord>
@@ -48,7 +55,11 @@ export function readSetupProof(deps: CommandDeps): SetupProofRecord | null {
 }
 
 export function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boolean {
-  const file = setupProofPath(deps)
+  const file = setupProofPath(deps, proof.project)
+  if (file === null) {
+    deps.io.err('Could not save setup proof without an Approved Machine credential.')
+    return false
+  }
   try {
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(file, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 })
@@ -80,6 +91,14 @@ export const SETUP_PROOF_STALE_MS = 24 * 60 * 60 * 1000
 export function setupProofIsStale(proof: SetupProofRecord, now: number): boolean {
   const started = Date.parse(proof.started_at)
   return Number.isFinite(started) && now - started > SETUP_PROOF_STALE_MS
+}
+
+export function setupProofApplies(
+  proof: SetupProofRecord | null,
+  project: string | null,
+  deviceIds: readonly string[],
+): proof is SetupProofRecord {
+  return proof !== null && proof.project === project && deviceIds.includes(proof.device_id)
 }
 
 /**

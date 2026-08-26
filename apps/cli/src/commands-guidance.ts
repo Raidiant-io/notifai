@@ -1,12 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { describeSource } from './config-schema.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
-import {
-  GUIDANCE_TRUST_PREAMBLE,
-  SHIPPED_GUIDANCE,
-  shippedGuidanceTopic,
-} from './guidance-content.js'
+import { GUIDANCE_TRUST_PREAMBLE, SHIPPED_GUIDANCE, shippedGuidanceTopic } from './guidance-content.js'
 import {
   GUIDANCE_TOPIC_MAX_BYTES,
   GUIDANCE_TOPIC_PATTERN,
@@ -14,35 +9,12 @@ import {
   globalGuidanceDir,
   personalProjectGuidanceDir,
   resolveGuidance,
-  type GuidanceAuthority,
 } from './guidance.js'
+import { renderGuidance } from './guidance-render.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
 // ---------------------------------------------------------------------------
-
-/** How each authority is named in the marker above a topic. */
-const AUTHORITY_LABEL: Record<GuidanceAuthority, string> = {
-  user: 'you',
-  repository: 'this repository',
-  shipped: 'shipped default',
-}
-
-/**
- * The token that makes a marker line ours.
- *
- * Without it, a repository topic could open with a handwritten
- * `<!-- when-to-notify · this machine · /Users/... -->` and everything after
- * it would read as the User's own standing word. The marker therefore carries
- * a fixed token, and any occurrence of that token inside file content is
- * defanged below — so the only lines that can claim to be provenance are the
- * ones this command wrote.
- */
-const MARKER_TOKEN = 'notifai:guidance'
-
-function markerSafe(content: string): string {
-  return content.replaceAll(MARKER_TOKEN, `${MARKER_TOKEN.replace(':', '-')} [not a provenance marker]`)
-}
 
 /**
  * The whole effective guidance, ready to be followed as read.
@@ -74,14 +46,7 @@ export function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean }
     )
     return EXIT.ok
   }
-  const blocks = topics.map((topic) => {
-    const { path: filePath } = describeSource(topic.source)
-    const marker =
-      `<!-- ${MARKER_TOKEN} topic=${topic.name} from=${AUTHORITY_LABEL[topic.authority]}` +
-      `${filePath === null ? '' : ` file=${encodeURIComponent(filePath)}`} -->`
-    return `${marker}\n${markerSafe(topic.content).trimEnd()}`
-  })
-  deps.io.out([GUIDANCE_TRUST_PREAMBLE, ...blocks].join('\n\n'))
+  deps.io.out(renderGuidance(topics))
   return EXIT.ok
 }
 

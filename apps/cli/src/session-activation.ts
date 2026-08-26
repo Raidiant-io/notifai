@@ -1,29 +1,46 @@
 import type { HookHarness } from './hooks.js'
+import { Buffer } from 'node:buffer'
+import { GUIDANCE_CONTEXT_MAX_BYTES, boundedEffectiveGuidance } from './guidance-render.js'
 
-/**
- * Model-visible session bootstrap. It names the installed capability and its
- * authoritative sources without restating any notification policy that the
- * user may have overridden.
- */
-export const SESSION_ACTIVATION_CONTEXT =
-  'Notifai is active for this session, even when the user did not mention it. ' +
-  'Before beginning task work, use the Notifai skill and run `notifai guidance`; its resolved guidance governs notification decisions for Agent Events. ' +
-  'Missing skill or CLI readiness is handled through `notifai init` and its diagnosis. ' +
-  'For delegated work, the parent owns User-visible Notification Requests unless it explicitly delegates that ownership; workers report Agent Events to the parent and do not send independently.'
+const ROOT_OWNERSHIP =
+  'Notifai is active for this session. The effective, provenance-marked guidance below governs Notification Requests. ' +
+  'Missing CLI readiness is handled through `notifai init --json`. ' +
+  'The root agent owns User-visible Notification Requests unless it explicitly delegates that ownership; workers report Agent Events to the parent.'
+
+export const WORKER_ACTIVATION_CONTEXT =
+  'Notifai worker context: report Agent Events to the parent; do not send User-visible Notification Requests unless the parent explicitly delegated that ownership. If delegated, run `notifai guidance` before composing one.'
+
+export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
+  'Notifai is active, but lifecycle guidance could not be loaded. Run `notifai guidance` once before deciding whether or how to send a Notification Request.'
+
+function rootActivationContext(cwd: string, env: NodeJS.ProcessEnv): string {
+  const guidance = boundedEffectiveGuidance({
+    cwd,
+    env,
+    maxBytes: GUIDANCE_CONTEXT_MAX_BYTES - Buffer.byteLength(`${ROOT_OWNERSHIP}\n\n`, 'utf8'),
+  })
+  return `${ROOT_OWNERSHIP}\n\n${guidance.ok ? guidance.content : guidance.fallback}`
+}
 
 /** One lifecycle meaning, encoded for each harness output contract. */
 export function sessionActivationOutput(
   harness: HookHarness | undefined,
   hookEventName: 'SessionStart' | 'SubagentStart' | 'UserPromptSubmit',
+  cwd: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
+  const context = hookEventName === 'SubagentStart'
+    ? WORKER_ACTIVATION_CONTEXT
+    : rootActivationContext(cwd, env)
+  if (harness === 'opencode') return context
   if (harness === 'cursor') {
-    return JSON.stringify({ additional_context: SESSION_ACTIVATION_CONTEXT })
+    return JSON.stringify({ additional_context: context })
   }
   if (harness === 'claude-code' || harness === 'codex') {
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName,
-        additionalContext: SESSION_ACTIVATION_CONTEXT,
+        additionalContext: context,
       },
     })
   }
@@ -35,11 +52,11 @@ export function sessionActivationOutput(
  * to the model. Its native post-Stop follow-up is the narrow fallback and is
  * claimed once per conversation by the hook-state layer.
  */
-export function cursorStopActivationOutput(): string {
+export function cursorStopActivationOutput(
+  cwd: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   return JSON.stringify({
-    followup_message: SESSION_ACTIVATION_CONTEXT.replace(
-      'Before beginning task work,',
-      'Before finalizing the Agent Event from the turn that just ended,',
-    ),
+    followup_message: rootActivationContext(cwd, env),
   })
 }

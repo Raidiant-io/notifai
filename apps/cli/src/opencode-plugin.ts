@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 import { configHome } from './install-hooks.js'
-import { SESSION_ACTIVATION_CONTEXT } from './session-activation.js'
+import { MISSING_LIFECYCLE_GUIDANCE_CONTEXT } from './session-activation.js'
 
 /**
  * The OpenCode adapter.
@@ -32,7 +32,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 10
+const OPENCODE_ADAPTER_VERSION = 11
 
 export function opencodePluginDir(
   global: boolean,
@@ -104,7 +104,7 @@ import { spawn } from "node:child_process"
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCODE_ADAPTER_VERSION}
-const SESSION_ACTIVATION_CONTEXT = ${JSON.stringify(SESSION_ACTIVATION_CONTEXT)}
+const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}
 const PENDING_SESSION_TITLE =
   /^New session(?: *- *[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]+)?Z)?$/i
 
@@ -158,17 +158,28 @@ function runHook(event, envelope) {
 
 export const NotifAIPlugin = async ({ directory, client }) => {
   const cwd = typeof directory === "string" && directory.length > 0 ? directory : process.cwd()
+  const activated = new Set()
 
   return {
     /** Model-visible activation, independent of CLI setup and delivery state. */
     "experimental.chat.system.transform": async (input, output) => {
       const sessionID = input?.sessionID
       if (typeof sessionID !== "string" || sessionID.length === 0) return
+      if (activated.has(sessionID)) return
+      const resolved = await runHook("session-start", {
+        session_id: sessionID,
+        cwd,
+        hook_event_name: "SessionStart",
+      })
+      const context = typeof resolved === "string" && resolved.trim().length > 0
+        ? resolved.trim()
+        : MISSING_LIFECYCLE_GUIDANCE_CONTEXT
       if (output.system.length === 0) {
-        output.system.push(SESSION_ACTIVATION_CONTEXT)
+        output.system.push(context)
       } else {
-        output.system[0] = output.system[0] + "\\n\\n" + SESSION_ACTIVATION_CONTEXT
+        output.system[0] = output.system[0] + "\\n\\n" + context
       }
+      activated.add(sessionID)
     },
 
     /** Exact active-harness identity and first-party title for agent shell commands. */

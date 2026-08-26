@@ -86,6 +86,10 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Harness that owns this exact lifecycle state. */
+  harness?: HookHarness
+  /** Checkout whose hook definition activated this session; lifecycle diagnostics only. */
+  activation_cwd?: string
   /** Model-visible proactive context already emitted for this harness session. */
   activation_context_emitted_at?: number
   /** Harness process that received it; a resumed session has a new owner. */
@@ -450,12 +454,61 @@ export function readSessionState(sessionId: string, env: NodeJS.ProcessEnv): Ses
   if (!existsSync(file)) return {}
   try {
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
-    return typeof parsed === 'object' && parsed !== null ? (parsed as SessionState) : {}
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    const state = { ...(parsed as SessionState & { session_id?: unknown }) }
+    delete state.session_id
+    return state
   } catch {
     // A corrupt marker must not wedge the harness; treat it as "no evidence",
     // which fails closed onto ordinary terminal behaviour.
     return {}
   }
+}
+
+/**
+ * Resolve a stable question or request id to the one exact session that owns it.
+ *
+ * This deliberately searches lifecycle state, not checkout pointers: question
+ * identity is global on this machine, while a linked worktree is only where a
+ * command happened to run. Ambiguous or corrupt matches fail closed.
+ */
+export function findOwningSession(
+  id: string,
+  env: NodeJS.ProcessEnv,
+): { sessionId: string | null; ambiguous: boolean } {
+  const directory = path.join(stateDir(env), 'sessions')
+  if (!existsSync(directory)) return { sessionId: null, ambiguous: false }
+  const matches: string[] = []
+  for (const name of readdirSync(directory)) {
+    if (!name.endsWith('.json')) continue
+    let persisted: (SessionState & { session_id?: unknown }) | null = null
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path.join(directory, name), 'utf8'))
+      if (typeof parsed === 'object' && parsed !== null) {
+        persisted = parsed as SessionState & { session_id?: unknown }
+      }
+    } catch {
+      // Corrupt lifecycle state is not identity evidence.
+    }
+    if (persisted === null || typeof persisted.session_id !== 'string') continue
+    const sessionId = persisted.session_id
+    const state = persisted
+    const pendingMatch = pendingList(state).some(
+      (entry) => entry.question_id === id || entry.request_id === id,
+    )
+    const retiringMatch = (state.retiring ?? []).some((entry) => entry.request_id === id)
+    const acknowledgementMatch = (state.acknowledgement_due ?? []).some(
+      (entry) => entry.request_id === id,
+    )
+    const acceptedMatch = state.accepted?.answers.some(
+      ({ pending }) => pending.question_id === id || pending.request_id === id,
+    ) ?? false
+    if (pendingMatch || retiringMatch || acknowledgementMatch || acceptedMatch) {
+      matches.push(sessionId)
+      if (matches.length > 1) return { sessionId: null, ambiguous: true }
+    }
+  }
+  return { sessionId: matches[0] ?? null, ambiguous: false }
 }
 
 export function writeSessionState(
@@ -464,7 +517,7 @@ export function writeSessionState(
   state: SessionState,
 ): void {
   const file = sessionStatePath(sessionId, env)
-  withFileLock(`${file}.lock`, () => writeSessionStateUnlocked(file, state))
+  withFileLock(`${file}.lock`, () => writeSessionStateUnlocked(file, sessionId, state))
 }
 
 export function clearSessionState(sessionId: string, env: NodeJS.ProcessEnv): void {
@@ -477,8 +530,8 @@ export function clearSessionState(sessionId: string, env: NodeJS.ProcessEnv): vo
   })
 }
 
-function writeSessionStateUnlocked(file: string, state: SessionState): void {
-  atomicWriteFileSync(file, `${JSON.stringify(state, null, 2)}\n`)
+function writeSessionStateUnlocked(file: string, sessionId: string, state: SessionState): void {
+  atomicWriteFileSync(file, `${JSON.stringify({ ...state, session_id: sessionId }, null, 2)}\n`)
 }
 
 function updateSessionState(
@@ -489,7 +542,7 @@ function updateSessionState(
   const file = sessionStatePath(sessionId, env)
   return withFileLock(`${file}.lock`, () => {
     const next = update(readSessionState(sessionId, env))
-    writeSessionStateUnlocked(file, next)
+    writeSessionStateUnlocked(file, sessionId, next)
     return next
   })
 }
@@ -500,9 +553,13 @@ export function markSessionActivation(
   env: NodeJS.ProcessEnv,
   now: number,
   ownerPid: number,
+  harness?: HookHarness,
+  cwd?: string,
 ): void {
   updateSessionState(sessionId, env, (current) => ({
     ...current,
+    ...(harness === undefined ? {} : { harness }),
+    ...(cwd === undefined ? {} : { activation_cwd: current.activation_cwd ?? cwd }),
     activation_context_emitted_at: now,
     activation_context_owner_pid: ownerPid,
   }))
@@ -520,6 +577,8 @@ export function claimPromptActivation(
   env: NodeJS.ProcessEnv,
   now: number,
   ownerPid: number,
+  harness?: HookHarness,
+  cwd?: string,
 ): boolean {
   let claimed = false
   updateSessionState(sessionId, env, (current) => {
@@ -532,6 +591,8 @@ export function claimPromptActivation(
     claimed = true
     return {
       ...current,
+      ...(harness === undefined ? {} : { harness }),
+      ...(cwd === undefined ? {} : { activation_cwd: current.activation_cwd ?? cwd }),
       activation_context_emitted_at: now,
       activation_context_owner_pid: ownerPid,
     }
@@ -2141,6 +2202,7 @@ export async function handleUserPromptSubmit(
   if (state.accepted !== undefined) {
     updateSessionState(sessionId, ctx.env, (current) => ({
       ...current,
+      ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
       last_prompt_at: ctx.now(),
     }))
     if (envelope.cwd !== undefined && ctx.harness !== undefined) {
@@ -2238,6 +2300,7 @@ export async function handleUserPromptSubmit(
     // attached while this older writer applies the prompt transition it knows.
     const next: SessionState = {
       ...current,
+      ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
       last_prompt_at: ctx.now(),
     }
     if (remaining.length > 0) next.pending = remaining
@@ -2324,6 +2387,7 @@ export async function runEscalationWaiter(
   // from the prompt-only state that previously looked healthy.
   updateSessionState(sessionId, ctx.env, (current) => ({
     ...current,
+    ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
     last_stop_at: ctx.now(),
   }))
 

@@ -13,7 +13,7 @@ import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { personalProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
-import { firstBlocker, type Readiness, type ReadinessRefresh, type ReadinessState } from './readiness.js'
+import { firstBlocker, readinessJson, type Readiness, type ReadinessRefresh, type ReadinessState } from './readiness.js'
 import { buildDraft, formatReceipt } from './send.js'
 import { loginCommand } from './commands-auth.js'
 import {
@@ -30,6 +30,8 @@ import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hooks.js
 import {
   observedCompanionReceipt,
   readSetupProof,
+  setupProofProject,
+  setupProofApplies,
   setupProofIsStale,
   writeSetupProof,
 } from './commands-setup-proof.js'
@@ -49,6 +51,8 @@ export function projectSlugFrom(name: string): string {
 export type SetupScope = SkillScope
 
 export interface InitFlags {
+  /** Emit the final shared readiness model and never prompt. */
+  json?: boolean
   projectId?: string
   /**
    * Install the agent guidance skill. Tri-state on purpose:
@@ -397,19 +401,23 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     return 'failed'
   }
   const candidates = readyCompanionDevices(devices)
-  const existing = readSetupProof(deps)
-  const target =
-    candidates.find(
-      (device) =>
-        device.device_id === existing?.device_id && existing.project === config.project.value,
-    ) ?? candidates[0]
+  const project = setupProofProject(deps, config.project.value)
+  const existing = readSetupProof(deps, project)
+  const existingApplies = setupProofApplies(
+    existing,
+    project,
+    candidates.map((device) => device.device_id),
+  )
+  const target = (existingApplies
+    ? candidates.find((device) => device.device_id === existing.device_id)
+    : undefined) ?? candidates[0]
   if (!target) {
     deps.io.err('Setup proof needs a receipt-capable iPhone or Android Companion App.')
     return 'pending'
   }
 
   let proof =
-    existing?.device_id === target.device_id && existing.project === config.project.value
+    existingApplies && existing.device_id === target.device_id
       ? existing
       : null
   const nowMs = (deps.now ?? Date.now)()
@@ -438,7 +446,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     proof = {
       request_id: receipt.request_id,
       device_id: target.device_id,
-      project: config.project.value,
+      project,
       started_at: new Date((deps.now ?? Date.now)()).toISOString(),
     }
     if (!writeSetupProof(deps, proof)) return 'failed'
@@ -486,7 +494,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
         proof = {
           request_id: receipt.request_id,
           device_id: target.device_id,
-          project: config.project.value,
+          project,
           started_at: new Date(now()).toISOString(),
         }
         if (!writeSetupProof(deps, proof)) return 'failed'
@@ -621,19 +629,32 @@ async function resolveSetupScope(
 }
 
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
-  const setupScope = await resolveSetupScope(deps, flags)
+  const workingDeps: CommandDeps = flags.json === true
+    ? {
+        ...deps,
+        io: {
+          interactive: false,
+          out: () => {},
+          err: (line) => deps.io.err(line),
+          confirm: async () => false,
+          openUrl: (url) => deps.io.openUrl(url),
+        },
+      }
+    : deps
+  const setupScope = await resolveSetupScope(workingDeps, flags)
   if (setupScope === 'usage') return EXIT.usage
   const resolved: InitFlags = {
     ...flags,
     ...(setupScope === undefined ? {} : { setupScope, skillsScope: flags.skillsScope ?? setupScope }),
   }
-  await deps.io.intro?.('Notifai setup')
+  await workingDeps.io.intro?.('Notifai setup')
 
   const skillOpts = resolved.setupScope === undefined ? {} : { skillScope: resolved.setupScope }
-  let readiness = await assessReadiness(deps, skillOpts)
+  let readiness = await assessReadiness(workingDeps, { ...skillOpts, ...(flags.json === true ? { json: true } : {}) })
   const reassess = (refresh?: readonly ReadinessRefresh[]) =>
-    assessReadiness(deps, {
+    assessReadiness(workingDeps, {
       ...skillOpts,
+      ...(flags.json === true ? { json: true } : {}),
       ...(refresh === undefined ? {} : { previous: readiness, refresh }),
     })
   let failed = false
@@ -661,9 +682,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (state.status === 'optional-gap') {
-        if (remedy.by !== 'cli' || !(await wantsOptional(deps, state, resolved))) continue
+        if (remedy.by !== 'cli' || !(await wantsOptional(workingDeps, state, resolved))) continue
         attempted.add(state.id)
-        const result = await closeGap(deps, state, resolved)
+        const result = await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
         if (result === 'failed' && state.status === 'optional-gap') {
           readiness = await reassess(refreshAfterClose(state.id))
@@ -681,7 +702,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
       if (remedy.by === 'cli') {
         attempted.add(state.id)
-        const result = await closeGap(deps, state, resolved)
+        const result = await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
         if (result !== 'closed') {
           stop = true
@@ -697,11 +718,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       if (
         remedy.by === 'user-here' &&
         remedy.interactive === true &&
-        deps.io.interactive === true
+        workingDeps.io.interactive === true
       ) {
         attempted.add(state.id)
-        deps.io.out('Opening your browser to approve this machine — Ctrl-C to stop.')
-        if ((await loginCommand(deps, {})) !== EXIT.ok) {
+        workingDeps.io.out('Opening your browser to approve this machine — Ctrl-C to stop.')
+        if ((await loginCommand(workingDeps, {})) !== EXIT.ok) {
           failed = true
           stop = true
           break
@@ -714,10 +735,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       if (
         state.id === 'devices' &&
         remedy.by === 'user-elsewhere' &&
-        deps.io.interactive === true
+        workingDeps.io.interactive === true
       ) {
         attempted.add(state.id)
-        const result = await waitForReadyDevice(deps, state)
+        const result = await waitForReadyDevice(workingDeps, state)
         if (result === 'failed') failed = true
         if (result !== 'closed') {
           stop = true
@@ -736,10 +757,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     if (stop || !advanced) break
   }
 
-  await printInitClose(deps, readiness, resolved)
+  if (flags.json === true) deps.io.out(JSON.stringify(readinessJson(readiness), null, 2))
+  else await printInitClose(deps, readiness, resolved)
   const blocker = firstBlocker(readiness)
   if (blocker === null) return failed ? EXIT.failed : EXIT.ok
-  return failed || deps.io.interactive !== true ? EXIT.failed : EXIT.ok
+  return failed || workingDeps.io.interactive !== true ? EXIT.failed : EXIT.ok
 }
 
 function isHookSubstate(id: string): boolean {

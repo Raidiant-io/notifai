@@ -36,6 +36,7 @@ export {
   hooksInstallCommand,
   hooksUninstallCommand,
   runningViaNpx,
+  reportAskFailure,
   type AskFlags,
   type BuiltQuestions,
   type HookEvent,

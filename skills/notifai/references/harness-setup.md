@@ -27,12 +27,11 @@ fail differently and are worth separating before you report either as broken.
 
 ## Install deliberately
 
-Ask whether they want questions routed. If they do, install hooks yourself.
-Never tell the user to run `notifai hooks install` or `notifai doctor`.
+Ask whether they want questions routed. If they do, let init install and assess
+the hooks. Never tell the user to run setup commands themselves.
 
 ```bash
-notifai hooks install
-notifai doctor --json
+notifai init --hooks --setup-scope project --json
 ```
 
 A machine-global Notifai skill is guidance, not routing evidence. The active
@@ -49,15 +48,10 @@ prompt-submit and session-end retain fixed short limits on both.
 Migrating an older Codex definition requires one unavoidable `/hooks` approval;
 later upgrades must not require another.
 
-Before the first `notifai ask` in a new harness session, `doctor --json` must
-show `hooks-active-harness` naming the harness, `hooks-fired` confirming that a
-session in this directory ran both UserPromptSubmit and Stop, and
-`hooks-stop-shape` passing — which is where an older, blocking Claude Code
-definition or a missing explicit timeout is caught. For Codex, `hooks-trust`
-must also pass. Branch on those `id`s: the titles beside them are for people
-and may be reworded.
-The check is fail-closed against the exact active session identity where the
-harness exports one. An explicit `--session-id` cannot create missing routing evidence; do not invent one to bypass the check.
+`notifai ask --json` owns its admission check. On failure, branch on its stable
+`code`, `check_id`, `exit_code`, and `remedy`; do not run a routine doctor pass
+first. Historical UserPromptSubmit and Stop evidence remains part of that
+fail-closed check. Ask exposes no `--session-id` override and will not guess one.
 
 `hooks-wake-route` reports, without probing anything, whether an answer
 could start a turn in this exact session on its own. It never blocks: when it
