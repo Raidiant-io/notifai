@@ -70,6 +70,7 @@ import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
   CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
 } from './install-hooks.js'
+import { GUIDANCE_CONTEXT_MAX_BYTES } from './guidance-render.js'
 
 /** New-format test fixtures always carry the canonical body explicitly. */
 function registerQuestion(
@@ -2651,13 +2652,37 @@ describe('session-start hook', () => {
         hookEventName: 'SessionStart',
       })
       expect(first.hookSpecificOutput?.additionalContext).toMatch(/Notifai.*session/i)
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(
-        /before beginning task work.*use the Notifai skill.*run `notifai guidance`/i,
+      expect(first.hookSpecificOutput?.additionalContext).toContain('# How to read this guidance')
+      expect(first.hookSpecificOutput?.additionalContext).toContain(
+        '<!-- notifai:guidance topic=when-to-notify from=shipped default -->',
       )
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(/`notifai guidance`/i)
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(/did not mention/i)
+      expect(first.hookSpecificOutput?.additionalContext).not.toContain('run `notifai guidance` once')
       expect(h.io.errLines.join('\n')).not.toMatch(/not paired/i)
     }
+  })
+
+  it('caps the total root lifecycle context and falls back without partial guidance', async () => {
+    const h = harness()
+    const guidance = path.join(h.deps.cwd, '.notifai', 'guidance')
+    mkdirSync(guidance, { recursive: true })
+    writeFileSync(path.join(guidance, 'titles.md'), `private-start-${'x'.repeat(16_000)}`)
+    writeFileSync(path.join(guidance, 'bodies.md'), `private-end-${'y'.repeat(16_000)}`)
+
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ session_id: 'bounded-root-guidance', source: 'startup' }),
+      'claude-code',
+    )
+    const output = JSON.parse(h.io.outLines.at(-1) ?? '{}') as {
+      hookSpecificOutput?: { additionalContext?: string }
+    }
+    const context = output.hookSpecificOutput?.additionalContext ?? ''
+    expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(GUIDANCE_CONTEXT_MAX_BYTES)
+    expect(context).toContain('above the')
+    expect(context).toContain('run `notifai guidance` once')
+    expect(context).not.toContain('private-start-')
+    expect(context).not.toContain('private-end-')
   })
 
   it('uses each supported lifecycle output contract and gives workers deterministic ownership', async () => {
@@ -2685,10 +2710,12 @@ describe('session-start hook', () => {
       hookSpecificOutput: {
         hookEventName: 'SubagentStart',
         additionalContext: expect.stringMatching(
-          /parent owns.*unless it explicitly delegates.*workers.*do not send independently/i,
+          /report Agent Events to the parent.*do not send.*unless the parent explicitly delegated/i,
         ),
       },
     })
+    expect(h.io.outLines.at(-1)).not.toContain('topic=titles')
+    expect(h.io.outLines.at(-1)).not.toContain('topic=bodies')
   })
 
   it('uses Cursor native Stop follow-up once when its SessionStart context is lossy', async () => {
@@ -2702,7 +2729,7 @@ describe('session-start hook', () => {
 
     await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
-      followup_message: expect.stringMatching(/before finalizing.*turn that just ended.*notifai guidance/i),
+      followup_message: expect.stringMatching(/effective, provenance-marked guidance.*when-to-notify/is),
     })
 
     h.io.outLines = []
@@ -3396,6 +3423,7 @@ describe('session-end hook', () => {
     expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toEqual({
       future_root: { retained: true },
       acknowledgement_due: [acknowledgement],
+      session_id: sessionId,
     })
   })
 
@@ -3921,7 +3949,10 @@ describe('durable state writes', () => {
 
     writeSessionState('truncated', h.env, { last_prompt_at: NOW })
 
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ last_prompt_at: NOW })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      last_prompt_at: NOW,
+      session_id: 'truncated',
+    })
     expect(readdirSync(path.dirname(file)).filter((name) => name.includes('.tmp'))).toEqual([])
   })
 

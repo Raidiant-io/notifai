@@ -57,8 +57,8 @@ describe('Notifai agent skill', () => {
     expect(description).toMatch(/guidance/i)
 
     const decide = section('## Decide whether to notify')
-    expect(decide).toMatch(/every session's first task turn/i)
-    expect(decide).toMatch(/read guidance before judging an Agent\s+Event/i)
+    expect(decide).toMatch(/lifecycle context normally includes.*effective guidance/is)
+    expect(decide).toMatch(/context is absent.*read it once before judging an Agent\s+Event/is)
     expect(decide).toMatch(/parent owns User-visible Notification Requests/i)
     expect(decide).toMatch(/unless\s+it explicitly delegates/i)
     expect(decide).toMatch(/workers[\s\S]{0,100}do not send independently/i)
@@ -66,11 +66,11 @@ describe('Notifai agent skill', () => {
 
   it('preserves the original Agent Event across setup and ambiguous delivery', () => {
     expect(skill).toMatch(
-      /interrupted or killed `send`[\s\S]*`send\.attempt`[\s\S]*session,\s+title length, kind, and time/i,
+      /interrupted or killed `send`[\s\S]*do not correlate redacted logs by title[\s\S]*re-run the exact semantic send with\s+`--retry`/i,
     )
-    expect(skill).toMatch(/unambiguous match[\s\S]*otherwise report ambiguous delivery without retrying/i)
-    expect(skill).toMatch(/`no_active_devices`[\s\S]*repeat the original send/i)
-    expect(skill).toMatch(/verification Notification[\s\S]*does not deliver the original Agent Event/i)
+    expect(skill).toMatch(/opaque matching attempt[\s\S]*refuse ambiguity/i)
+    expect(skill).toMatch(/`no_active_devices`[\s\S]*repeat the\s+(?:exact\s+)?original send/i)
+    expect(skill).toMatch(/verification Notification[\s\S]*does not deliver\s+the original Agent Event/i)
   })
 
   it('fits inside the budget a skill is actually read within', () => {
@@ -224,17 +224,16 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/kind and the project travel as their own\s+fields, never in it/i)
   })
 
-  it('names each immutable session once without asking the agent for its id', () => {
+  it('lets callers repeat one immutable semantic session name without supplying its id', () => {
     const send = section('## Send')
     expect(send).toContain('--session-label')
-    expect(send).toMatch(/first Notification\s+Request/i)
     expect(send).toMatch(/2-6 words/i)
-    expect(send).toMatch(/only when the current\s+environment exposes an exact session/i)
+    expect(send).toMatch(/when the current\s+environment exposes an exact session/i)
     expect(send).toMatch(/without an exact session[\s\S]{0,160}usage\s+error/i)
     expect(send).toMatch(/omit `--session-label`/i)
     expect(send).toMatch(/name the\s+environment supplies wins/i)
     expect(send).toMatch(/freezes one semantic name/i)
-    expect(send).toMatch(/omit the flag on later sends and\s+questions/i)
+    expect(send).toMatch(/safe to repeat the same `--session-label` on every send and ask/i)
     // The one exception to permanence: garbage names are recoverable.
     expect(send).toMatch(/generated fallback name[\s\S]*replaced by a later\s+semantic name/i)
     expect(send).toMatch(/never pass\s+`--session-id`/i)
@@ -309,8 +308,8 @@ describe('Notifai agent skill', () => {
     expect(setup).toMatch(/never tell the\s+user to run a command you could have run/i)
     expect(setup).toMatch(/browser/i)
     expect(setup).toMatch(/companion/i)
-    expect(setup).toContain('notifai doctor --json')
-    expect(setup).toContain('notifai init')
+    expect(setup).toContain('notifai init --json')
+    expect(setup).toMatch(/do not follow a successful structured init\s+with doctor/i)
     expect(setup).toContain('--setup-scope')
   })
 
@@ -371,7 +370,6 @@ describe('Notifai agent skill', () => {
       'notifai replies',
       'notifai acknowledge',
       'notifai close',
-      'notifai doctor',
       'notifai init',
       'notifai config show',
       'notifai guidance',
@@ -389,7 +387,7 @@ describe('Notifai agent skill', () => {
       expect(harnessReference).toContain(`**${harness}:**`)
     }
     // The agent runs what a process can run; the human only does the human part.
-    expect(harnessReference).toContain('install hooks yourself')
+    expect(harnessReference).toMatch(/let init install and assess\s+the hooks/i)
     expect(harnessReference).toMatch(/run `notifai login` yourself/i)
     expect(harnessReference).toMatch(/only the user can approve/i)
   })

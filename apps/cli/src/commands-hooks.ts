@@ -41,8 +41,6 @@ import {
   parkForRetirement,
   parseHookInput,
   pruneAbandonedSessions,
-  readMatchingProjectSessionPointer,
-  readProjectSession,
   readSessionState,
   resetCursorStopActivation,
   registerQuestion,
@@ -123,6 +121,7 @@ import {
   uploadImage,
   waitForReply,
 } from './commands-send-support.js'
+import { resolveCommandSession } from './command-session.js'
 
 // ---------------------------------------------------------------------------
 // hook / ask / close — harness integration
@@ -282,6 +281,8 @@ export async function hookRunCommand(
     const stdout = sessionActivationOutput(
       harness,
       event === 'session-start' ? 'SessionStart' : 'SubagentStart',
+      cwd,
+      deps.env,
     )
     if (stdout !== undefined) deps.io.out(stdout)
     if (
@@ -294,7 +295,7 @@ export async function hookRunCommand(
         // Write stdout first. If the process dies between these operations a
         // later prompt may duplicate context, but it cannot suppress context
         // that the host never received.
-        markSessionActivation(envelope.session_id, deps.env, now(), activationOwnerPid)
+        markSessionActivation(envelope.session_id, deps.env, now(), activationOwnerPid, harness, cwd)
       } catch (err) {
         logger.error('hook.end', {
           hook: event,
@@ -325,8 +326,8 @@ export async function hookRunCommand(
     envelope.session_id !== undefined
   ) {
     try {
-      if (claimPromptActivation(envelope.session_id, deps.env, now(), activationOwnerPid)) {
-        promptActivationStdout = sessionActivationOutput(harness, 'UserPromptSubmit')
+      if (claimPromptActivation(envelope.session_id, deps.env, now(), activationOwnerPid, harness, cwd)) {
+        promptActivationStdout = sessionActivationOutput(harness, 'UserPromptSubmit', cwd, deps.env)
         if (promptActivationStdout !== undefined) deps.io.out(promptActivationStdout)
       }
     } catch (err) {
@@ -417,7 +418,7 @@ export async function hookRunCommand(
       outcome: claimed ? 'followup-added' : 'already-activated',
       decided: claimed,
     })
-    if (claimed) deps.io.out(cursorStopActivationOutput())
+    if (claimed) deps.io.out(cursorStopActivationOutput(cwd, deps.env))
     return EXIT.ok
   }
 
@@ -666,8 +667,50 @@ export interface AskFlags {
   image?: string[]
   imageAlt?: string[]
   project?: string
-  sessionId?: string
   sessionLabel?: string
+}
+
+export interface AskFailure {
+  ok: false
+  registered: false
+  code: string
+  check_id: string
+  exit_code: number
+  remedy: string
+  message: string
+}
+
+/** One stable failure contract for every machine-readable ask refusal. */
+export function reportAskFailure(
+  deps: CommandDeps,
+  flags: Pick<AskFlags, 'json'>,
+  failure: Omit<AskFailure, 'ok' | 'registered'>,
+): number {
+  if (flags.json === true) {
+    deps.io.out(JSON.stringify({ ok: false, registered: false, ...failure }, null, 2))
+  } else {
+    deps.io.err(failure.message)
+    deps.io.err(`next: ${failure.remedy}`)
+  }
+  return failure.exit_code
+}
+
+function askFailure(
+  deps: CommandDeps,
+  flags: AskFlags,
+  code: string,
+  checkId: string,
+  message: string,
+  remedy: string,
+  exitCode: number = EXIT.usage,
+): number {
+  return reportAskFailure(deps, flags, {
+    code,
+    check_id: checkId,
+    exit_code: exitCode,
+    remedy,
+    message,
+  })
 }
 
 /** The `--form` document: what an agent writes to ask several things at once. */
@@ -863,8 +906,15 @@ function recordRegisteredQuestion(
     )
   } catch (err) {
     log(deps).error('ask.registered', { ok: false, session: sessionId, message: String(err) })
-    deps.io.err(`Could not register the question: ${err instanceof Error ? err.message : String(err)}`)
-    return EXIT.failed
+    return askFailure(
+      deps,
+      { json },
+      'registration_failed',
+      'question_registration',
+      `Could not register the question: ${err instanceof Error ? err.message : String(err)}`,
+      'retire an older pending question if the limit was reached, then retry the same ask',
+      EXIT.failed,
+    )
   }
   log(deps).info('ask.registered', {
     ok: true,
@@ -962,7 +1012,17 @@ async function uploadAskMedia(
   invocation: DraftInvocation,
 ): Promise<number> {
   const authed = authedClient(deps, config)
-  if (!authed) return EXIT.auth
+  if (!authed) {
+    return askFailure(
+      deps,
+      flags,
+      'auth_required',
+      'credential',
+      'Question routing is not paired on this machine.',
+      'run `notifai init --json`',
+      EXIT.auth,
+    )
+  }
   const mediaIds: string[] = []
   for (const image of flags.image ?? []) {
     if (image.startsWith('med_')) {
@@ -972,14 +1032,21 @@ async function uploadAskMedia(
     const uploaded = await uploadImage(deps, authed.client, image, config.media_origins.value)
     if (!uploaded.ok) {
       if (uploaded.error !== null) deps.io.err(uploaded.error)
-      return uploaded.exit
+      return askFailure(
+        deps,
+        flags,
+        'media_upload_failed',
+        'media',
+        uploaded.error ?? 'The image upload failed.',
+        'fix the reported image or network problem, then retry the same ask',
+        uploaded.exit,
+      )
     }
     mediaIds.push(uploaded.mediaId)
   }
   const ready = buildAskDraft(config, built, flags, invocation, mediaIds)
   if (!ready.ok) {
-    deps.io.err(ready.error)
-    return EXIT.usage
+    return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
   }
   return recordRegisteredQuestion(deps, sessionId, built, ready.draft, flags.json === true)
 }
@@ -999,31 +1066,26 @@ export function askCommand(
   // happens to exist on this machine.
   const escapedBody = rejectAccidentalEscapedNewlines(flags.body, flags.literalBackslashN)
   if (escapedBody !== null) {
-    deps.io.err(escapedBody)
-    return EXIT.usage
+    return askFailure(deps, flags, 'invalid_input', 'body', escapedBody, 'fix the body and retry')
   }
   const built = buildQuestions(flags, question)
   if (!built.ok) {
-    deps.io.err(built.error)
-    return EXIT.usage
+    return askFailure(deps, flags, 'invalid_input', 'questions', built.error, 'fix the question input and retry')
   }
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
   if (mediaInputError !== null) {
-    deps.io.err(mediaInputError)
-    return EXIT.usage
-  }
-  const routingConfig = loadConfig({ cwd: deps.cwd, env: deps.env })
-  if (!routingConfig.ask_notifications.value) {
-    deps.io.err(
-      'Question routing is disabled by ask_notifications=false; enable it or use a blocking `notifai send --reply` question.',
-    )
-    return EXIT.usage
+    return askFailure(deps, flags, 'invalid_input', 'media', mediaInputError, 'fix the media flags and retry')
   }
   if (deps.store.load() === null) {
-    deps.io.err(
-      'Question routing is not paired on this machine; run `notifai login` before registering an asynchronous question.',
+    return askFailure(
+      deps,
+      flags,
+      'auth_required',
+      'credential',
+      'Question routing is not paired on this machine.',
+      'run `notifai init --json`',
+      EXIT.auth,
     )
-    return EXIT.usage
   }
   // An agent calling this gets no hook payload. Harness-native environment
   // markers identify the active owner, while UserPromptSubmit adds the hook's
@@ -1032,78 +1094,127 @@ export function askCommand(
   const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, now)
   let sessionId: string | undefined
   if (active !== null) {
-    const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
+    if (contested.length > 1) {
+      return askFailure(
+        deps,
+        flags,
+        'session_identity_ambiguous',
+        'exact_session',
+        `Several harness sessions could own this shell (${contested.map((candidate) => candidate.label).join(', ')}).`,
+        'run the ask from a shell with one exact active harness session',
+      )
+    }
+    const exactState = active.sessionId === undefined
+      ? null
+      : readSessionState(active.sessionId, deps.env)
+    const installationCwd = exactState?.activation_cwd ?? deps.cwd
+    const installationDeps = installationCwd === deps.cwd ? deps : { ...deps, cwd: installationCwd }
+    const installations = findInstallations(installationCwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
     const activeInstalled = installations.some(
       (installation) => installation.harness === active.harness,
     )
     if (!activeInstalled) {
-      for (const line of diagnoseActiveHarnessSession(
-        active,
-        'not-installed',
-        installations,
-        contested,
-      )) {
-        deps.io.err(line)
-      }
-      return EXIT.usage
+      return askFailure(
+        deps,
+        flags,
+        'hooks_not_installed',
+        'hook_installation',
+        `Notifai ${active.label} hooks are not installed for this project.`,
+        `run \`notifai init --json\` from this ${active.label} session`,
+      )
     }
     if (active.sessionId === undefined) {
-      for (const problem of activeQuestionRouteProblems(deps, active, installations)) {
-        deps.io.err(`Question routing is not ready: ${problem}`)
-      }
-      return EXIT.usage
-    }
-    const projectPointer = readMatchingProjectSessionPointer(
-      deps.cwd,
-      deps.env,
-      now,
-      active.sessionId,
-      active.harness,
-    )
-    if (projectPointer === null) {
-      for (const line of diagnoseActiveHarnessSession(
-        active,
-        'not-fired',
-        installations,
-        contested,
-      )) {
-        deps.io.err(line)
-      }
-      return EXIT.usage
-    }
-    const routeProblems = activeQuestionRouteProblems(deps, active, installations)
-    if (routeProblems.length > 0) {
-      for (const problem of routeProblems) deps.io.err(`Question routing is not ready: ${problem}`)
-      return EXIT.usage
-    }
-    if (readSessionState(projectPointer.sessionId, deps.env).last_stop_at === undefined) {
-      deps.io.err(
-        `Question routing is not ready: this ${active.label} session has fired UserPromptSubmit, but its Stop hook has not been observed. End one harmless turn, send a new prompt, then run \`notifai doctor\`.`,
+      return askFailure(
+        deps,
+        flags,
+        'session_identity_missing',
+        'exact_session',
+        `The active ${active.label} shell does not expose an exact session id.`,
+        'use a blocking `notifai send --reply` question',
       )
-      return EXIT.usage
     }
-    sessionId = projectPointer.sessionId
+    const routeProblems = activeQuestionRouteProblems(installationDeps, active, installations)
+    if (routeProblems.length > 0) {
+      return askFailure(
+        deps,
+        flags,
+        'question_routing_unavailable',
+        'hook_contract',
+        `Question routing is not ready: ${routeProblems.join('; ')}`,
+        'run `notifai init --json` and follow its question-routing remedy',
+      )
+    }
+    const state = exactState ?? readSessionState(active.sessionId, deps.env)
+    if (state.harness !== active.harness || state.last_prompt_at === undefined) {
+      return askFailure(
+        deps,
+        flags,
+        'session_not_activated',
+        'user_prompt_submit',
+        `This exact ${active.label} session has not fired UserPromptSubmit.`,
+        `send one prompt in this ${active.label} session, then retry \`notifai ask --json\``,
+      )
+    }
+    if (state.last_stop_at === undefined) {
+      return askFailure(
+        deps,
+        flags,
+        'stop_not_observed',
+        'stop_hook',
+        `This exact ${active.label} session has fired UserPromptSubmit, but its Stop hook has not been observed.`,
+        `end one harmless turn, send a new prompt, then retry \`notifai ask --json\``,
+      )
+    }
+    sessionId = active.sessionId
   } else {
-    for (const line of diagnoseMissingSession(deps)) deps.io.err(line)
-    deps.io.err(
-      'Could not prove which live harness session owns this command, so Notifai will not register a question that could be delivered to the wrong or already-ended agent. Run it from a supported harness with exact session identity, or use a blocking `notifai send --reply` question.',
+    return askFailure(
+      deps,
+      flags,
+      'session_identity_missing',
+      'exact_session',
+      'Could not prove which live harness session owns this command.',
+      'run it from a supported harness with exact session identity, or use a blocking `notifai send --reply` question',
     )
-    return EXIT.usage
   }
   if (!sessionId) {
-    for (const line of diagnoseMissingSession(deps)) deps.io.err(line)
-    return EXIT.usage
+    return askFailure(deps, flags, 'session_identity_missing', 'exact_session', 'No exact active session is available.', 'use a blocking `notifai send --reply` question')
+  }
+  let routingConfig: CliConfig
+  try {
+    routingConfig = loadConfig({ cwd: deps.cwd, env: deps.env, sessionId })
+  } catch (err) {
+    return askFailure(
+      deps,
+      flags,
+      'config_invalid',
+      'configuration',
+      `Question routing configuration is invalid: ${String(err)}`,
+      'fix the reported Notifai configuration and retry',
+    )
+  }
+  if (!routingConfig.ask_notifications.value) {
+    return askFailure(
+      deps,
+      flags,
+      'question_routing_disabled',
+      'ask_notifications',
+      'Question routing is disabled by ask_notifications=false.',
+      'enable question routing or use a blocking `notifai send --reply` question',
+    )
   }
   const source = resolveDraftInvocation(deps, flags, active)
   if (!source.ok) {
-    deps.io.err(source.error)
-    return EXIT.usage
+    return askFailure(deps, flags, 'invalid_source', 'source_context', source.error, 'remove the conflicting source override and retry')
   }
   if (source.invocation.source?.session_id !== sessionId) {
-    deps.io.err(
-      `Question routing is not ready: --session-id or NOTIFAI_SESSION_ID does not match the exact active ${active.label} session; refusing cross-session routing.`,
+    return askFailure(
+      deps,
+      flags,
+      'session_identity_mismatch',
+      'exact_session',
+      `The inferred session does not match the exact active ${active.label} session.`,
+      'remove NOTIFAI_SESSION_ID and retry from the exact active session',
     )
-    return EXIT.usage
   }
 
   // Placeholders let every body, source, project, media, and payload limit fail
@@ -1111,8 +1222,7 @@ export function askCommand(
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
   const preflight = buildAskDraft(routingConfig, built, flags, source.invocation, placeholders)
   if (!preflight.ok) {
-    deps.io.err(preflight.error)
-    return EXIT.usage
+    return askFailure(deps, flags, 'invalid_draft', 'draft', preflight.error, 'fix the reported field and retry')
   }
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
@@ -1176,79 +1286,6 @@ export function activeQuestionRouteProblems(
   for (const installation of matching) problems.push(...stopShapeProblems(installation, deps.hookPlatform))
   problems.push(...codexTrustProblems(matching, deps.env))
   return [...new Set(problems)]
-}
-
-type ActiveHarnessProblem = 'not-installed' | 'not-fired' | 'different-session'
-
-function diagnoseActiveHarnessSession(
-  active: ActiveHarnessSession,
-  problem: ActiveHarnessProblem,
-  installations: Installation[],
-  contested: ActiveHarnessSession[] = [],
-): string[] {
-  // Naming one harness confidently is wrong when the environment carries the
-  // markers of several and none of them has fired here: whichever one the
-  // agent is told to prompt may not be the one it is running in.
-  const ambiguity =
-    contested.length > 1
-      ? [
-          `Several harness markers are present here (${contested.map((candidate) => candidate.label).join(', ')}) and none names a session that has fired in this directory, so ${active.label} is a guess from the environment. Send the prompt in the harness you are actually running.`,
-        ]
-      : []
-  if (problem === 'not-installed') {
-    const others = installations.map((installation) => installation.harness)
-    return [
-      `Could not register the question for the active ${active.label} session: Notifai ${active.label} hooks are not installed for this project.`,
-      ...ambiguity,
-      ...(others.length === 0
-        ? []
-        : [
-            `Hooks installed for ${[...new Set(others)].join(', ')} do not route an active ${active.label} session.`,
-          ]),
-      `Run \`notifai hooks install --harness ${active.harness}\`, then send one ${active.label} prompt and run \`notifai doctor\`.`,
-      `Retry \`notifai ask\` only after doctor reports that the ${active.label} hooks fired.`,
-    ]
-  }
-  if (problem === 'different-session') {
-    return [
-      `Could not register the question for the active ${active.label} session: the project pointer belongs to another ${active.label} session or harness.`,
-      ...ambiguity,
-      `Refusing to guess or cross-wire the question. Send one prompt in this ${active.label} session, then run \`notifai doctor\`.`,
-      `Retry \`notifai ask\` only after doctor reports that this active ${active.label} session fired the hooks.`,
-    ]
-  }
-  return [
-    `Could not register the question for the active ${active.label} session: Notifai hooks are installed, but this session has not published its pointer.`,
-    ...ambiguity,
-    `Send one ${active.label} prompt, then run \`notifai doctor\`.`,
-    `Retry \`notifai ask\` only after doctor reports that the active ${active.label} session fired the hooks.`,
-  ]
-}
-
-/**
- * Why `ask` cannot see a session, in terms of what to do about it.
- *
- * Only a UserPromptSubmit hook firing produces the pointer this reads, and the
- * old message answered every cause with "run `notifai hooks install` and send
- * one prompt". The useful next action depends on the harness: some reload
- * project hook files, OpenCode loads its plugin at startup, and Codex should be
- * checked after a prompt before assuming that a new session is required.
- */
-function diagnoseMissingSession(deps: CommandDeps): string[] {
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
-  if (installations.length === 0) {
-    return [
-      'Could not tell which harness session this is: no Notifai hooks are installed for this project.',
-      'Run `notifai hooks install`, then follow the activation instruction it prints.',
-    ]
-  }
-  const where = installations.map((i) => `${i.harness} in ${i.file}`).join(', ')
-  return [
-    `Could not tell which harness session this is. Notifai hooks are installed (${where}),`,
-    'but no usable session pointer from the last 24 hours exists here.',
-    hookActivationAdvice(installations),
-    'Do not bypass this with a guessed session id; run from the exact active harness session or use a blocking `notifai send --reply` question.',
-  ]
 }
 
 /** The least disruptive verified way to make each installed adapter run once. */
@@ -1324,7 +1361,12 @@ export async function acknowledgeCommand(
   }
 
   const logger = log(deps)
-  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const lifecycleSession = resolveCommandSession(deps, requestId)
+  const config = loadLoggedConfig(deps, {
+    cwd: deps.cwd,
+    env: deps.env,
+    ...(lifecycleSession === null ? {} : { sessionId: lifecycleSession.sessionId }),
+  })
   logger.info('acknowledgement.attempted', {
     request_id: requestId,
     characters: text.length,
@@ -1349,9 +1391,8 @@ export async function acknowledgeCommand(
       created_at: result.agent_acknowledgement.created_at,
       agent_acknowledgement_required: true,
     })
-    const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
-    if (sessionId !== null) {
-      clearAcknowledgementObligation(sessionId, deps.env, requestId)
+    if (lifecycleSession !== null) {
+      clearAcknowledgementObligation(lifecycleSession.sessionId, deps.env, requestId)
     }
     if (flags.json) deps.io.out(JSON.stringify(output, null, 2))
     else {
@@ -1387,7 +1428,12 @@ export async function closeCommand(
   const local = await closeLocalQuestion(deps, requestId!, flags.json === true)
   if (local !== null) return local
 
-  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const lifecycleSession = resolveCommandSession(deps, requestId!)
+  const config = loadLoggedConfig(deps, {
+    cwd: deps.cwd,
+    env: deps.env,
+    ...(lifecycleSession === null ? {} : { sessionId: lifecycleSession.sessionId }),
+  })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -1426,12 +1472,12 @@ export async function closeCommand(
  * them is the whole retirement. Live ones still need their reply window closed.
  */
 async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<number> {
-  const now = (deps.now ?? Date.now)()
-  const sessionId = readProjectSession(deps.cwd, deps.env, now)
-  if (sessionId === null) {
+  const lifecycleSession = resolveCommandSession(deps)
+  if (lifecycleSession === null) {
     deps.io.err('No active session pointer is available in this directory.')
     return EXIT.noReply
   }
+  const sessionId = lifecycleSession.sessionId
   const pending = readSessionState(sessionId, deps.env).pending ?? []
   if (pending.length === 0) {
     if (json) {
@@ -1452,7 +1498,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
 
   const closed: string[] = []
   if (live.length > 0) {
-    const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+    const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, sessionId })
     const authed = authedClient(deps, config)
     if (!authed) return EXIT.auth
     for (const entry of live) {
@@ -1502,9 +1548,9 @@ async function closeLocalQuestion(
   id: string,
   json: boolean,
 ): Promise<number | null> {
-  const now = (deps.now ?? Date.now)()
-  const sessionId = readProjectSession(deps.cwd, deps.env, now)
-  if (sessionId === null) return null
+  const lifecycleSession = resolveCommandSession(deps, id)
+  if (lifecycleSession === null) return null
+  const sessionId = lifecycleSession.sessionId
   const entry = (readSessionState(sessionId, deps.env).pending ?? []).find(
     (candidate) => candidate.question_id === id || candidate.request_id === id,
   )
@@ -1531,7 +1577,7 @@ async function closeLocalQuestion(
     return EXIT.ok
   }
 
-  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, sessionId })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -1567,8 +1613,9 @@ async function closeLocalQuestion(
 }
 
 function forgetClosedQuestion(deps: CommandDeps, requestId: string): void {
-  const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
-  if (sessionId === null) return
+  const lifecycleSession = resolveCommandSession(deps, requestId)
+  if (lifecycleSession === null) return
+  const sessionId = lifecycleSession.sessionId
   const entry = (readSessionState(sessionId, deps.env).pending ?? []).find(
     (candidate) => candidate.request_id === requestId,
   )

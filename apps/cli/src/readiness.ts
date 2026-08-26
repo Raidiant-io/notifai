@@ -84,6 +84,50 @@ export function isReady(readiness: Readiness): boolean {
   return firstBlocker(readiness) === null
 }
 
+const SEND_PREREQUISITES = new Set([
+  'cli-bin',
+  'credential',
+  'server',
+  'contract',
+  'auth',
+  'devices',
+])
+
+/** Baseline Notification Requests can be submitted in the final assessed state. */
+export function canSend(readiness: Readiness): boolean {
+  return [...SEND_PREREQUISITES].every((id) => {
+    const state = readiness.states.find((candidate) => candidate.id === id)
+    return state?.status === 'ready' || state?.status === 'optional-gap'
+  })
+}
+
+/** This exact invocation has a fully evidenced asynchronous question route. */
+export function questionRoutingReady(readiness: Readiness): boolean {
+  const relevant = readiness.states.filter(
+    (state) =>
+      state.id === 'question-routing-settings' ||
+      (state.id === 'hooks' || state.id.startsWith('hooks-')) && state.id !== 'hooks-detected',
+  )
+  return relevant.length > 0 && relevant.every((state) => state.status === 'ready')
+}
+
+/** Stable machine renderer shared by init and doctor. */
+export function readinessJson(readiness: Readiness): object {
+  return {
+    ready: isReady(readiness),
+    can_send: canSend(readiness),
+    question_routing_ready: questionRoutingReady(readiness),
+    states: readiness.states.map((state) => ({
+      id: state.id,
+      title: state.title,
+      status: state.status,
+      detail: state.detail,
+      technical: state.technical ?? null,
+      remedy: state.remedy ?? null,
+    })),
+  }
+}
+
 /** Everything that could still be done, blocking or not, in dependency order. */
 export function openItems(readiness: Readiness): ReadinessState[] {
   return readiness.states.filter((s) => s.status === 'gap' || s.status === 'optional-gap')

@@ -1,4 +1,4 @@
-import { readLiveProjectSessionPointers } from './hooks.js'
+import { readLiveProjectSessionPointers, readSessionState } from './hooks.js'
 import { type Harness } from './install-hooks.js'
 
 /**
@@ -96,6 +96,29 @@ export function resolveActiveHarness(
   const first = candidates[0]
   if (first === undefined) return { active: null, contested: [] }
   if (candidates.length === 1) return { active: first, contested: [] }
+
+  // Exact lifecycle state is machine-global and survives a command moving to
+  // another linked checkout. Prefer it before the checkout-local compatibility
+  // pointer. A unique newest hook event proves which nested harness owns this
+  // shell; ties and missing evidence remain contested and fail closed.
+  const evidenced = candidates.flatMap((candidate) => {
+    if (candidate.sessionId === undefined) return []
+    const state = readSessionState(candidate.sessionId, env)
+    if (state.harness !== candidate.harness) return []
+    const activity = Math.max(
+      state.last_prompt_at ?? 0,
+      state.last_stop_at ?? 0,
+      state.activation_context_emitted_at ?? 0,
+    )
+    return activity > 0 ? [{ candidate, activity }] : []
+  })
+  if (evidenced.length > 0) {
+    evidenced.sort((left, right) => right.activity - left.activity)
+    if (evidenced.length === 1 || evidenced[0]!.activity > evidenced[1]!.activity) {
+      return { active: evidenced[0]!.candidate, contested: [] }
+    }
+    return { active: first, contested: candidates }
+  }
   for (const pointer of readLiveProjectSessionPointers(cwd, env, now)) {
     const owner = candidates.find(
       (candidate) =>

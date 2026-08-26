@@ -22,16 +22,17 @@ Branch on exit status:
 | 2 | usage *or* setup; stderr names what to fix | fix that. For `ask` this is usually routing or sign-in, not a flag |
 | 3 | no answer yet | not a failure — collect it later |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
-| 5 | network | retry; for `send`, reuse the same `--idempotency-key` so one event cannot become two |
+| 5 | network | for `send`, make the semantic retry choice explicitly and rerun the exact command with `--retry` |
 
-After an interrupted or killed `send`, match one `send.attempt` by session,
-title length, kind, and time in `notifai logs --json`. Reuse its key only for
-an unambiguous match; otherwise report ambiguous delivery without retrying.
+After an interrupted or killed `send`, do not correlate redacted logs by title
+or time and do not retry automatically. Re-run the exact semantic send with
+`--retry`; the CLI will reuse one opaque matching attempt or refuse ambiguity.
 
 ## Decide whether to notify
 
-On every session's first task turn, read guidance before judging an Agent
-Event. Do this even when the user did not mention Notifai; read it once:
+Session lifecycle context normally includes the bounded, effective guidance
+under provenance markers. When that context is absent or explicitly says the
+guidance exceeded its bound, read it once before judging an Agent Event:
 
 ```bash
 notifai guidance
@@ -80,7 +81,7 @@ notifai guidance unset when-to-notify --local --yes
 
 ## Send
 
-Name the session on the first Notification Request only when the current
+Name the session on Notification Requests when the current
 environment exposes an exact session; supported harnesses provide it to the
 CLI automatically. A `--session-label` without an exact session is a usage
 error because silently discarding a parsed flag is never safe. When no exact
@@ -151,16 +152,17 @@ Other controls, when they earn their place:
   Otherwise every registered device is the right answer, narrowed by the
   `devices` config key when the user saved one; `--all` overrides the
   narrowing. `notifai devices --json` lists ids and readiness.
-- `--idempotency-key <key>` when you rerun a send whose outcome you never saw —
-  a network failure or a killed shell. Reusing the key is what stops one event
-  becoming two notifications.
+- `--retry` only after you decide an unresolved send still represents the same
+  Agent Event. The CLI matches its opaque attempt and reuses the hidden
+  idempotency key; it refuses no match or more than one match.
 
 Project and exact session are inferred; never pass `--session-id`.
 `--session-label` is 2-6 words about the session, never the project, branch,
 status, result, identifier, hash, or filesystem path.
 The CLI freezes one semantic name; the name the environment supplies wins, then yours.
-Omit the flag on later sends and questions. Only a generated fallback name can be
-replaced by a later semantic name.
+It is safe to repeat the same `--session-label` on every send and ask; the first
+accepted semantic name remains authoritative. Only a generated fallback name
+can be replaced by a later semantic name.
 
 ## Ask a question
 
@@ -316,12 +318,12 @@ You are the one doing the setup. Run everything a process can run; never tell th
 user to run a command you could have run yourself.
 
 ```bash
-notifai init          # the idempotent coordinator: run this first
-notifai doctor --json # then confirm, and branch on whatever is still open
+notifai init --json # idempotent coordinator and authoritative final readiness
 ```
 
-Branch on diagnosis; a nonzero exit is a gap to close, never to bypass. Exit 0
-alone does not prove `ask` routing; the harness reference names those checks.
+Branch on `states`, `can_send`, and `question_routing_ready`; a nonzero exit is
+a gap to close, never to bypass. Do not follow a successful structured init
+with doctor. `ask --json` performs its own exact-session admission check.
 
 Ask for these human-only steps together in one structured question:
 
@@ -338,8 +340,9 @@ nothing sends, `notifai auth status --json` and `notifai auth access --json`
 separate a pairing problem from an account without an active plan — report which
 one it is instead of calling it a delivery failure.
 
-On `no_active_devices`, run `notifai init`, close its gap, then repeat the original send
-with its printed key. A verification Notification does not deliver the original Agent Event.
+On `no_active_devices`, run `notifai init --json`, close its gap, then repeat the
+exact original send with `--retry`. A verification Notification does not deliver
+the original Agent Event.
 
 Question routing needs a harness hook installed, and `ask` refuses to register a
 question it cannot route back to you — the diagnosis names what to fix. The

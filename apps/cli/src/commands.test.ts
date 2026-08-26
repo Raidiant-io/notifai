@@ -72,7 +72,7 @@ import {
 } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
 import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
-import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, stateDir } from './config.js'
+import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, sessionConfigPath, stateDir } from './config.js'
 import { SETUP_PROOF_STALE_MS, writeSetupProof } from './commands-setup-proof.js'
 import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
@@ -585,7 +585,7 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('project')
   })
 
-  it('prints the exact idempotency key needed after an ambiguous submit failure', async () => {
+  it('persists one opaque retry attempt after an ambiguous submit failure', async () => {
     const io = new CapturedIo()
     let attemptedKey = ''
     const client = {
@@ -611,24 +611,22 @@ describe('command contracts', () => {
     ).toBe(EXIT.network)
 
     expect(attemptedKey).toMatch(/^cli-/)
-    expect(io.errLines.join('\n')).toContain(`--idempotency-key ${attemptedKey}`)
+    expect(io.errLines.join('\n')).toContain('exact semantic send with `--retry`')
+    expect(io.errLines.join('\n')).toMatch(/Opaque retry attempt: sat_/)
     expect(
       readLogRecords(deps.env, { event: ['send.attempt'] }).records.at(-1)?.data,
     ).toMatchObject({
       idempotency_key: attemptedKey,
-      kind: 'done',
-      title_chars: 'Checks finished'.length,
-      session_id: null,
+      attempt_id: expect.stringMatching(/^sat_/),
+      replay: false,
     })
     rmSync(root, { recursive: true, force: true })
   })
 
-  it('prints the same generated key for an ambiguous server failure', async () => {
+  it('prints an opaque retry instruction for an ambiguous server failure', async () => {
     const io = new CapturedIo()
-    let attemptedKey = ''
     const client = {
-      submit: async (body: SubmitNotificationRequestT) => {
-        attemptedKey = body.idempotency_key
+      submit: async () => {
         throw new ApiCallError(503, 'temporarily_unavailable', 'Try again later.')
       },
     } as unknown as ApiClient
@@ -640,15 +638,40 @@ describe('command contracts', () => {
         body: 'The service failed while accepting the result.',
       }),
     ).toBe(EXIT.network)
-    expect(io.errLines.join('\n')).toContain(`--idempotency-key ${attemptedKey}`)
+    expect(io.errLines.join('\n')).toContain('exact semantic send with `--retry`')
+  })
+
+  it('reuses the opaque attempt key only after an explicit exact semantic retry', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-retry-'))
+    const io = new CapturedIo()
+    const keys: string[] = []
+    let calls = 0
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        keys.push(body.idempotency_key)
+        calls += 1
+        if (calls === 1) throw new NetworkError('killed after an ambiguous boundary')
+        return { ...receipt, replayed: true }
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd: root,
+      env: { XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') },
+    }
+    const semantic = { kind: 'done', title: 'Recovery completed', body: 'The exact work is done.' }
+
+    expect(await sendCommand(deps, semantic)).toBe(EXIT.network)
+    expect(await sendCommand(deps, { ...semantic, retry: true })).toBe(EXIT.ok)
+    expect(keys).toHaveLength(2)
+    expect(keys[1]).toBe(keys[0])
+    expect(await sendCommand(deps, { ...semantic, retry: true })).toBe(EXIT.usage)
   })
 
   it('routes a send with no active Companion devices into the setup coordinator', async () => {
     const io = new CapturedIo()
-    let attemptedKey = ''
     const client = {
-      submit: async (body: SubmitNotificationRequestT) => {
-        attemptedKey = body.idempotency_key
+      submit: async () => {
         throw new ApiCallError(
           409,
           'no_active_devices',
@@ -667,7 +690,7 @@ describe('command contracts', () => {
     ).toBe(EXIT.failed)
 
     expect(io.errLines.join('\n')).toMatch(/next:.*`notifai init`.*Companion/i)
-    expect(io.errLines.join('\n')).toContain(`--idempotency-key ${attemptedKey}`)
+    expect(io.errLines.join('\n')).toContain('exact original Notification Request with `--retry`')
     expect(io.errLines.join('\n')).toMatch(/verification request does not replace this Agent Event/i)
   })
 
@@ -1146,11 +1169,13 @@ describe('command contracts', () => {
       expect(grammar).not.toContain(".option('--detail")
       expect(grammar).not.toContain(".option('--session <")
       expect(grammar).toContain(".option('--body-file")
-      expect(grammar).toContain(".option('--session-id")
       expect(grammar).toContain("'--session-label <text>'")
       expect(grammar).toContain("'--image <path|url|media_id>'")
       expect(grammar).toContain("'--image-alt <text>'")
     }
+    expect(sendGrammar).toContain(".option('--session-id")
+    expect(sendGrammar).toContain(".option('--retry'")
+    expect(askGrammar).not.toContain(".option('--session-id")
     // Kind now selects the sound, so the help must say so — and must not carry
     // the retired separation it replaced.
     expect(source).toContain('Kind is required, and it selects the sound')
@@ -1624,7 +1649,7 @@ describe('command contracts', () => {
     expect(events[1]?.data).toMatchObject({ text_chars: 'I will deploy staging now.'.length })
   })
 
-  it('clears a matching active-session obligation after acknowledgement success', async () => {
+  it('clears the stable-id session obligation after acknowledgement from another checkout', async () => {
     const io = new CapturedIo()
     const client = {
       putAgentAcknowledgement: async () => ({
@@ -1647,6 +1672,7 @@ describe('command contracts', () => {
       acknowledgement_due: [{ request_id: receipt.request_id, recorded_at: now }],
     })
     writeProjectSession(deps.cwd, deps.env, 'ack-session', now, 'codex')
+    deps.cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ack-other-checkout-'))
 
     expect(
       await acknowledgeCommand(deps, receipt.request_id, {
@@ -1868,7 +1894,7 @@ describe('command contracts', () => {
     expect(readSessionState('close-unpushed', deps.env).pending).toBeUndefined()
   })
 
-  it('close withdraws one unpushed question by the ask id', async () => {
+  it('close withdraws one unpushed question by stable id from another checkout', async () => {
     const io = new CapturedIo()
     const client = {
       closeReplies: async () => {
@@ -1889,6 +1915,7 @@ describe('command contracts', () => {
       ],
     })
     writeProjectSession(root, deps.env, 'close-one', Date.now(), 'codex')
+    deps.cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-other-checkout-'))
 
     expect(await closeCommand(deps, 'q_local', { json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines[0] ?? '{}')).toEqual({
@@ -1974,7 +2001,7 @@ describe('command contracts', () => {
     expect(readLogRecords(deps.env, { event: ['reply.received'] }).records).toHaveLength(1)
   })
 
-  it('resolves replies --pending through the project session pointer and prints its id', async () => {
+  it('resolves replies --pending by exact session from another checkout', async () => {
     const io = new CapturedIo()
     const client = {
       replies: async () => replyResponse([reply]),
@@ -1985,11 +2012,15 @@ describe('command contracts', () => {
     deps.env = {
       XDG_CONFIG_HOME: path.join(root, 'config'),
       XDG_STATE_HOME: path.join(root, 'state'),
+      CODEX_THREAD_ID: 'pending-session',
     }
     writeSessionState('pending-session', deps.env, {
+      harness: 'codex',
+      last_prompt_at: Date.now(),
       pending: [{ question: 'Deploy?', request_id: receipt.request_id }],
     })
     writeProjectSession(root, deps.env, 'pending-session', Date.now(), 'codex')
+    deps.cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-pending-other-checkout-'))
 
     expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.ok)
     expect(io.outLines).toEqual([
@@ -3246,13 +3277,13 @@ describe('stable hook installation', () => {
     ).toBe(EXIT.ok)
     const globalFile = settingsFile('opencode', true, cwd, env)
     const current = readFileSync(globalFile, 'utf8')
-    writeFileSync(globalFile, current.replace('const ADAPTER_VERSION = 10', 'const ADAPTER_VERSION = 8'))
+    writeFileSync(globalFile, current.replace('const ADAPTER_VERSION = 11', 'const ADAPTER_VERSION = 10'))
 
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
     expect(existsSync(path.join(cwd, '.opencode', 'plugins', 'notifai.js'))).toBe(false)
     const refreshed = readFileSync(globalFile, 'utf8')
-    expect(refreshed).toContain('const ADAPTER_VERSION = 10')
+    expect(refreshed).toContain('const ADAPTER_VERSION = 11')
     expect(refreshed).toContain('experimental.chat.system.transform')
     expect(io.outLines.join('\n')).toMatch(/Installed opencode hooks/)
   })
@@ -5359,7 +5390,7 @@ describe('init', () => {
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
-  it('scopes proof to each project worktree even on the same paired machine', async () => {
+  it('reuses proof across worktrees of one Project on the same Approved Machine', async () => {
     const stateRoot = mkdtempSync(path.join(os.tmpdir(), 'init-worktrees-state-'))
     let submitCalls = 0
     const client = {
@@ -5391,7 +5422,62 @@ describe('init', () => {
       ).toBe(EXIT.ok)
     }
 
-    expect(submitCalls).toBe(2)
+    expect(submitCalls).toBe(1)
+  })
+
+  it('returns one authoritative structured final readiness without duplicate probes', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-json-ready-'))
+    const io = new InteractiveIo()
+    let healthCalls = 0
+    let compatibilityCalls = 0
+    let deviceCalls = 0
+    const client = {
+      health: async () => {
+        healthCalls += 1
+        return true
+      },
+      compatibility: async () => {
+        compatibilityCalls += 1
+        return currentCompatibility
+      },
+      listDevices: async () => {
+        deviceCalls += 1
+        return { devices: [readyIphone] }
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-25T00:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "json-ready"\n')
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    writeSetupProof(deps, {
+      request_id: 'req_json_ready',
+      device_id: readyIphone.device_id,
+      project: 'json-ready',
+      started_at: '2026-08-25T00:00:00.000Z',
+    })
+
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(io.prompts).toEqual([])
+    expect(io.outLines).toHaveLength(1)
+    const result = JSON.parse(io.outLines[0] ?? '{}') as {
+      ready: boolean
+      can_send: boolean
+      question_routing_ready: boolean
+      states: Array<{ id: string; status: string; remedy: unknown }>
+    }
+    expect(result.ready).toBe(true)
+    expect(result.can_send).toBe(true)
+    expect(result.question_routing_ready).toBe(false)
+    expect(result.states.length).toBeGreaterThan(8)
+    expect(result.states.every((state) => 'remedy' in state)).toBe(true)
+    expect(healthCalls).toBe(1)
+    expect(compatibilityCalls).toBe(1)
+    expect(deviceCalls).toBe(1)
   })
 })
 
@@ -5711,8 +5797,8 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     const said = io.errLines.join(' ')
-    expect(said).toMatch(/active Codex session/i)
-    expect(said).toContain('notifai hooks install --harness codex')
+    expect(said).toMatch(/Codex hooks are not installed/i)
+    expect(said).toContain('notifai init --json')
     expect(said).not.toMatch(/Claude Code: send one new prompt|OpenCode: restart/)
   })
 
@@ -5729,12 +5815,13 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('codex-other-thread', env, { last_prompt_at: 42 })
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-other-thread', env, { harness: 'codex', last_prompt_at: 42 })
     writeProjectSession(cwd, env, 'codex-other-thread', 42, 'codex')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/active Codex session:.*has not published/i)
+    expect(io.errLines.join(' ')).toMatch(/exact Codex session has not fired UserPromptSubmit/i)
     expect(io.outLines).not.toContain(
       'Question registered. Ask it in the conversation as usual and end your turn.',
     )
@@ -5754,9 +5841,9 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
-    writeSessionState('claude-concurrent', env, { last_prompt_at: 43, last_stop_at: 43 })
+    writeSessionState('claude-concurrent', env, { harness: 'claude-code', last_prompt_at: 43, last_stop_at: 43 })
     writeProjectSession(cwd, env, 'claude-concurrent', 43, 'claude-code')
     io.outLines = []
 
@@ -5769,6 +5856,49 @@ describe('asking before the hooks have ever run', () => {
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
     ).toBe('Gentle Salmon')
+  })
+
+  it('uses exact lifecycle state across checkouts while Project stays invocation-owned', () => {
+    const first = scratchDir('notifai-exact-session-first-')
+    const second = scratchDir('notifai-exact-session-second-')
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(first),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-cross-checkout',
+    }
+    const firstDeps = { ...makeDeps(io, {} as ApiClient), cwd: first, env, now: () => 42 }
+    expect(
+      hooksInstallCommand(firstDeps, {
+        harness: 'claude-code',
+        execPath,
+        scriptPath,
+      }),
+    ).toBe(EXIT.ok)
+    writeSessionState('claude-cross-checkout', env, {
+      harness: 'claude-code',
+      activation_cwd: first,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(first, env, 'claude-cross-checkout', 42, 'claude-code')
+    mkdirSync(path.join(second, '.notifai'), { recursive: true })
+    writeFileSync(
+      path.join(second, '.notifai', 'config.toml'),
+      'project = "second-project"\nask_notifications = false\n',
+    )
+    mkdirSync(path.dirname(sessionConfigPath('claude-cross-checkout', env)), { recursive: true })
+    writeFileSync(sessionConfigPath('claude-cross-checkout', env), 'ask_notifications = true\n')
+    io.outLines = []
+
+    const secondDeps = { ...firstDeps, cwd: second }
+    expect(askCommand(secondDeps, 'Use this checkout?', {})).toBe(EXIT.ok)
+    const pending = readSessionState('claude-cross-checkout', env).pending?.[0]
+    expect(pending?.project).toBe('second-project')
+    expect(pending?.source).toMatchObject({
+      session_id: 'claude-cross-checkout',
+      harness: 'claude-code',
+    })
   })
 
   it('uploads ask images before registration and freezes canonical body media', async () => {
@@ -5805,7 +5935,7 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-media-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-media-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-media-thread', 42, 'codex')
     io.outLines = []
 
@@ -5856,7 +5986,7 @@ describe('asking before the hooks have ever run', () => {
       hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
     ).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
@@ -5886,9 +6016,9 @@ describe('asking before the hooks have ever run', () => {
     trustInstalledCodexHooks(cwd, env)
     // Both sessions are live here. The parent fired when its own turn began;
     // the child fired for the turn that is running this command.
-    writeSessionState('codex-orchestrator', env, { last_prompt_at: 40, last_stop_at: 39 })
+    writeSessionState('codex-orchestrator', env, { harness: 'codex', last_prompt_at: 40, last_stop_at: 39 })
     writeProjectSession(cwd, env, 'codex-orchestrator', 40, 'codex')
-    writeSessionState('claude-current', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('claude-current', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
@@ -5921,7 +6051,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    writeSessionState('orca-claude-question', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('orca-claude-question', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'orca-claude-question', 42, 'claude-code')
     io.outLines = []
 
@@ -5949,7 +6079,7 @@ describe('asking before the hooks have ever run', () => {
       hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
     ).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
 
     const readiness = await assessReadiness(deps)
@@ -5987,7 +6117,7 @@ describe('asking before the hooks have ever run', () => {
 
     io.errLines = []
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/Several harness markers are present/i)
+    expect(io.errLines.join(' ')).toMatch(/Several harness sessions could own this shell/i)
   })
 
   it('makes one work-resumption commitment per offered answer part of the asking turn', () => {
@@ -6004,7 +6134,7 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-commitment-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-commitment-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-commitment-thread', 42, 'codex')
     io.outLines = []
 
@@ -6040,7 +6170,7 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-free-text-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-free-text-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-free-text-thread', 42, 'codex')
     io.outLines = []
 
@@ -6072,7 +6202,7 @@ describe('asking before the hooks have ever run', () => {
       configFile,
       readFileSync(configFile, 'utf8').replace(codexHookIdentityHash(stop!), 'sha256:obsolete'),
     )
-    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
@@ -6147,12 +6277,12 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    writeSessionState('claude-other', env, { last_prompt_at: 42 })
+    writeSessionState('claude-other', env, { harness: 'claude-code', last_prompt_at: 42 })
     writeProjectSession(cwd, env, 'claude-other', 42, 'claude-code')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/active Claude Code session:.*has not published/i)
+    expect(io.errLines.join(' ')).toMatch(/exact Claude Code session has not fired UserPromptSubmit/i)
   })
 
   it('accepts a Claude Code subprocess when its documented session id owns the pointer', () => {
@@ -6170,7 +6300,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    writeSessionState('claude-parent-loop', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('claude-parent-loop', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-parent-loop', 42, 'claude-code')
     io.outLines = []
 
@@ -6191,7 +6321,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    writeSessionState('claude-last-writer', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('claude-last-writer', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-last-writer', 42, 'claude-code')
     io.outLines = []
 
@@ -6220,7 +6350,7 @@ describe('asking before the hooks have ever run', () => {
       }),
     })
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
@@ -6243,7 +6373,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    writeSessionState('claude-current', env, { last_prompt_at: 42 })
+    writeSessionState('claude-current', env, { harness: 'claude-code', last_prompt_at: 42 })
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
@@ -6268,12 +6398,12 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('opencode-other', env, { last_prompt_at: 42 })
+    writeSessionState('opencode-other', env, { harness: 'opencode', last_prompt_at: 42 })
     writeProjectSession(cwd, env, 'opencode-other', 42, 'opencode')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/active OpenCode session:.*has not published/i)
+    expect(io.errLines.join(' ')).toMatch(/no proven answer continuation/i)
   })
 
   it('rejects OpenCode before registration even with an exact matching pointer', () => {
@@ -6288,7 +6418,7 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('opencode-current', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('opencode-current', env, { harness: 'opencode', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'opencode-current', 42, 'opencode')
     io.outLines = []
 
@@ -6307,7 +6437,7 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('cursor-live', env, { last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('cursor-live', env, { harness: 'cursor', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'cursor-live', 42, 'cursor')
     io.outLines = []
 
@@ -6330,7 +6460,7 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    writeSessionState('codex-live', env, { last_prompt_at: 42 })
+    writeSessionState('codex-live', env, { harness: 'codex', last_prompt_at: 42 })
     writeProjectSession(cwd, env, 'codex-live', 42, 'codex')
     io.outLines = []
 
@@ -6361,7 +6491,7 @@ describe('asking before the hooks have ever run', () => {
 
     const pointer = readiness.states.find((s) => s.id === 'hooks-active-session')
     expect(pointer?.status).toBe('optional-gap')
-    expect(pointer?.detail).toMatch(/has not published a live pointer/)
+    expect(pointer?.detail).toMatch(/has not published exact lifecycle state/)
     expect(pointer?.remedy?.summary).toMatch(/send one Claude Code prompt/)
     expect(pointer?.remedy?.by === 'user-here' ? pointer.remedy.command : '').toBe(
       'notifai doctor',
@@ -6580,7 +6710,7 @@ describe('asking before the hooks have ever run', () => {
     expect(payload).toMatchObject({ ok: false, exit_code: EXIT.failed })
   })
 
-  it('tells Claude Code to start fresh so activation is model-visible', () => {
+  it('returns a stable exact-session failure when lifecycle context is absent', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-firstrun-'))
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
     applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
@@ -6592,13 +6722,18 @@ describe('asking before the hooks have ever run', () => {
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: { XDG_STATE_HOME: cwd } }
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    const said = io.errLines.join(' ')
-    expect(said).toMatch(/Claude Code: start one fresh session, send one prompt/i)
-    expect(said).not.toMatch(/Run `notifai hooks install` and send one prompt/)
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
+      ok: false,
+      registered: false,
+      code: 'session_identity_missing',
+      check_id: 'exact_session',
+      exit_code: EXIT.usage,
+      remedy: expect.stringMatching(/exact session|blocking/i),
+    })
   })
 
-  it('gives Cursor its fresh-conversation and first-Stop activation path', () => {
+  it('does not guess a Cursor conversation when lifecycle context is absent', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-first-run-'))
     const io = new CapturedIo()
     const deps = {
@@ -6610,11 +6745,14 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/Cursor: start one fresh conversation[\s\S]*finish its first turn[\s\S]*`notifai doctor`/)
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
+      code: 'session_identity_missing',
+      check_id: 'exact_session',
+    })
   })
 
-  it('keeps OpenCode activation separate from unsupported answer continuation', () => {
+  it('does not infer OpenCode from an installed adapter alone', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-first-run-'))
     const io = new CapturedIo()
     const deps = {
@@ -6629,13 +6767,14 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    const said = io.errLines.join(' ')
-    expect(said).toMatch(/OpenCode: restart it, then send one prompt/)
-    expect(said).toContain('non-blocking question continuation is intentionally unsupported')
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
+      code: 'session_identity_missing',
+      check_id: 'exact_session',
+    })
   })
 
-  it('says to install when nothing is installed at all', () => {
+  it('does not turn missing harness identity into an installation guess', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-noinstall-'))
     const io = new CapturedIo()
     const deps = {
@@ -6650,8 +6789,11 @@ describe('asking before the hooks have ever run', () => {
       },
     }
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/hooks install/)
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
+      code: 'session_identity_missing',
+      check_id: 'exact_session',
+    })
   })
 })
 

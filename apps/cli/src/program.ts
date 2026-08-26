@@ -25,6 +25,7 @@ import {
   logoutCommand,
   logsCommand,
   repliesCommand,
+  reportAskFailure,
   sendCommand,
   statusCommand,
   type CommandDeps,
@@ -216,6 +217,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
     )
     .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
+    .option('--json', 'machine-readable final readiness; never prompts')
     .option('--skills', 'install/update the agent skill from its pinned public release')
     .option('--no-skills', 'suppress the optional agent-skill status line')
     .option(
@@ -228,6 +230,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action(
       async (opts: {
         projectId?: string
+        json?: boolean
         skills?: boolean
         setupScope?: SkillScope
         skillsScope?: SkillScope
@@ -339,10 +342,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
     .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--all', 'target all routable devices (overrides configured devices)')
-    .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
+    .option('--session-id <id>', 'low-level automation override for an opaque exact session (env: NOTIFAI_SESSION_ID)')
     .option(
       '--session-label <text>',
-      'first human session name, frozen locally (env: NOTIFAI_SESSION_LABEL)',
+      'human session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
     )
     .optionsGroup(SEND_GROUP.presentation)
     .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -373,6 +376,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--no-wait', 'return immediately after acceptance')
     .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--idempotency-key <key>', 'safe-retry key (default: random)')
+    .option('--retry', 'explicitly retry one unresolved exact semantic send using its opaque saved attempt')
     .option(
       '--base-url <url>',
       'pairing override for the service origin; ignored when this machine is already paired (also NOTIFAI_BASE_URL)',
@@ -478,10 +482,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       (v: string, all: string[] = []) => [...all, v],
     )
     .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
-    .option('--session-id <id>', 'opaque exact-session override (env: NOTIFAI_SESSION_ID)')
     .option(
       '--session-label <text>',
-      'first human session name, frozen locally (env: NOTIFAI_SESSION_LABEL)',
+      'human session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
     )
     .action(async (question: string | undefined, opts: {
       choice?: string[]
@@ -494,20 +497,25 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       image?: string[]
       imageAlt?: string[]
       project?: string
-      sessionId?: string
       sessionLabel?: string
     }) => {
       let body = opts.body
       if (typeof opts.bodyFile === 'string') {
         if (body !== undefined) {
-          deps.io.err('Pass either --body or --body-file, not both.')
-          return exit(2)
+          return exit(reportAskFailure(deps, opts, {
+            code: 'invalid_input', check_id: 'body', exit_code: 2,
+            remedy: 'pass either --body or --body-file, then retry',
+            message: 'Pass either --body or --body-file, not both.',
+          }))
         }
         try {
           body = readFileSync(opts.bodyFile === '-' ? 0 : opts.bodyFile, 'utf8')
         } catch (err) {
-          deps.io.err(`Could not read ${opts.bodyFile}: ${String(err)}`)
-          return exit(2)
+          return exit(reportAskFailure(deps, opts, {
+            code: 'input_unreadable', check_id: 'body_file', exit_code: 2,
+            remedy: 'fix the body-file path or permissions, then retry',
+            message: `Could not read ${opts.bodyFile}: ${String(err)}`,
+          }))
         }
       }
       let form: string | undefined
@@ -515,8 +523,11 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         try {
           form = readFileSync(opts.form === '-' ? 0 : opts.form, 'utf8')
         } catch (err) {
-          deps.io.err(`Could not read ${opts.form}: ${String(err)}`)
-          return exit(2)
+          return exit(reportAskFailure(deps, opts, {
+            code: 'input_unreadable', check_id: 'form_file', exit_code: 2,
+            remedy: 'fix the form-file path or permissions, then retry',
+            message: `Could not read ${opts.form}: ${String(err)}`,
+          }))
         }
       }
       // Commander collectors default to []; an empty list means "not passed".
@@ -528,7 +539,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         ...(opts.image?.length ? { image: opts.image } : {}),
         ...(opts.imageAlt?.length ? { imageAlt: opts.imageAlt } : {}),
         ...(opts.project !== undefined ? { project: opts.project } : {}),
-        ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
         ...(opts.sessionLabel !== undefined ? { sessionLabel: opts.sessionLabel } : {}),
         ...(opts.json === true ? { json: true } : {}),
         ...(opts.literalBackslashN === true ? { literalBackslashN: true } : {}),

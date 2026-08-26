@@ -6,10 +6,9 @@ import {
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
-import { randomBytes } from 'node:crypto'
 import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
-import { MIN_REPLY_WINDOW_SECONDS, readProjectSession, readSessionState } from './hooks.js'
+import { MIN_REPLY_WINDOW_SECONDS, readSessionState } from './hooks.js'
 import {
   buildDraft,
   formatReceipt,
@@ -18,7 +17,7 @@ import {
   validateMediaInputs,
   type SendFlags,
 } from './send.js'
-import { recordObservedDeliveryProof } from './commands-setup-proof.js'
+import { recordObservedDeliveryProof, setupProofProject } from './commands-setup-proof.js'
 import {
   EXIT,
   authedClient,
@@ -28,6 +27,13 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { activeHarnessSession } from './commands-harness-context.js'
+import { resolveCommandSession } from './command-session.js'
+import {
+  beginSendAttempt,
+  semanticMediaIds,
+  sendDraftFingerprint,
+  settleSendAttempt,
+} from './send-attempts.js'
 import {
   acknowledgementCommand,
   printAcknowledgementStatus,
@@ -49,9 +55,14 @@ export async function sendCommand(
     noWait?: boolean
     replyTimeout?: number
     idempotencyKey?: string
+    retry?: boolean
     baseUrl?: string
   },
 ): Promise<number> {
+  if (flags.retry === true && flags.idempotencyKey !== undefined) {
+    deps.io.err('Pass --retry or --idempotency-key, not both.')
+    return EXIT.usage
+  }
   const hasChoice = Array.isArray(flags.choice)
     ? flags.choice.length > 0
     : flags.choice !== undefined
@@ -139,6 +150,35 @@ export async function sendCommand(
   }
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
+  const credential = deps.store.load()!
+  let semanticImages: string[]
+  try {
+    semanticImages = semanticMediaIds(flags.image ?? [], deps.cwd)
+  } catch (err) {
+    deps.io.err(`Could not fingerprint an image for safe retry: ${String(err)}`)
+    return EXIT.usage
+  }
+  const semanticBuild = buildDraft(
+    config,
+    { ...flags, ...(semanticImages.length > 0 ? { image: semanticImages } : {}) },
+    source.invocation,
+  )
+  if (!semanticBuild.ok) {
+    deps.io.err(semanticBuild.error)
+    return EXIT.usage
+  }
+  const attempt = beginSendAttempt({
+    env: deps.env,
+    credential,
+    fingerprint: sendDraftFingerprint(semanticBuild.draft, credential),
+    retry: flags.retry === true,
+    ...(flags.idempotencyKey === undefined ? {} : { idempotencyKey: flags.idempotencyKey }),
+    now: (deps.now ?? Date.now)(),
+  })
+  if (!attempt.ok) {
+    deps.io.err(`${attempt.code}: ${attempt.message}`)
+    return EXIT.usage
+  }
   const mediaIds: string[] = []
   for (const image of flags.image ?? []) {
     if (image.startsWith('med_')) {
@@ -147,6 +187,7 @@ export async function sendCommand(
     }
     const uploaded = await uploadImage(deps, authed.client, image, config.media_origins.value)
     if (!uploaded.ok) {
+      settleSendAttempt(deps.env, attempt.attemptId)
       if (uploaded.error !== null) deps.io.err(uploaded.error)
       return uploaded.exit
     }
@@ -155,16 +196,19 @@ export async function sendCommand(
   flags = { ...flags, image: mediaIds }
   const build = buildDraft(config, flags, source.invocation)
   if (!build.ok) {
+    settleSendAttempt(deps.env, attempt.attemptId)
     deps.io.err(build.error)
     return EXIT.usage
   }
   const capabilities = CAPABILITIES_V1.describe(build.platform)
   if (!capabilities) {
+    settleSendAttempt(deps.env, attempt.attemptId)
     deps.io.err(`No capability contract is available for ${build.platform}.`)
     return EXIT.usage
   }
   const validation = validateDraft(build.draft, capabilities)
   if (!validation.ok) {
+    settleSendAttempt(deps.env, attempt.attemptId)
     for (const issue of validation.errors) deps.io.err(`${issue.path}: ${issue.message}`)
     return EXIT.usage
   }
@@ -181,15 +225,14 @@ export async function sendCommand(
     )
   }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
-  const idempotencyKey = flags.idempotencyKey ?? `cli-${randomBytes(12).toString('base64url')}`
+  const idempotencyKey = attempt.idempotencyKey
   // Persist the retry identity before entering the ambiguous network boundary.
   // If the process is killed after the server accepts but before a response,
   // this is the only durable way to reconstruct the same Agent Event key.
   log(deps).info('send.attempt', {
+    attempt_id: attempt.attemptId,
     idempotency_key: idempotencyKey,
-    kind: flags.reply ? 'question' : (flags.kind ?? 'update'),
-    title: flags.title,
-    session_id: source.invocation.source?.session_id ?? null,
+    replay: attempt.replay,
   })
   let receipt: SubmissionReceipt
   try {
@@ -202,17 +245,23 @@ export async function sendCommand(
     if (exit === EXIT.network) {
       deps.io.err(
         'The server may have accepted this Notification Request before the connection failed. ' +
-          `Retry the same send with \`--idempotency-key ${idempotencyKey}\` so this Agent Event cannot create a duplicate.`,
+          'Re-run the exact semantic send with `--retry`; the CLI will reuse its opaque attempt identity.',
       )
     }
     if (err instanceof ApiCallError && err.code === 'no_active_devices') {
       deps.io.err(
-        'After setup succeeds, repeat this original Notification Request with ' +
-          `\`--idempotency-key ${idempotencyKey}\`; the setup verification request does not replace this Agent Event.`,
+        'After setup succeeds, repeat this exact original Notification Request with `--retry`; ' +
+          'the setup verification request does not replace this Agent Event.',
       )
+    }
+    if (!(exit === EXIT.network || (err instanceof ApiCallError && err.code === 'no_active_devices'))) {
+      settleSendAttempt(deps.env, attempt.attemptId)
+    } else {
+      deps.io.err(`Opaque retry attempt: ${attempt.attemptId}. Re-run the exact semantic send with \`--retry\`; do not retry automatically.`)
     }
     return exit
   }
+  settleSendAttempt(deps.env, attempt.attemptId)
   const receiptExit = receiptExitCode(receipt)
   // The single most useful line in the log: it ties the local invocation to
   // the server-side request id, which is what every later question about this
@@ -383,12 +432,15 @@ export async function repliesCommand(
     return EXIT.usage
   }
   let requestIds = requestedId === undefined ? [] : [requestedId]
+  let lifecycleSessionId: string | undefined
   if (flags.pending === true) {
-    const sessionId = readProjectSession(deps.cwd, deps.env, (deps.now ?? Date.now)())
-    if (sessionId === null) {
+    const session = resolveCommandSession(deps)
+    if (session === null) {
       deps.io.err('No active session pointer is available in this directory.')
       return EXIT.noReply
     }
+    const sessionId = session.sessionId
+    lifecycleSessionId = sessionId
     // Every delivered question in the session's queue, in registration order —
     // an agent may have several outstanding at once.
     const state = readSessionState(sessionId, deps.env)
@@ -445,7 +497,11 @@ export async function repliesCommand(
     return EXIT.usage
   }
 
-  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const config = loadLoggedConfig(deps, {
+    cwd: deps.cwd,
+    env: deps.env,
+    ...(lifecycleSessionId === undefined ? {} : { sessionId: lifecycleSessionId }),
+  })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
@@ -649,7 +705,7 @@ export async function statusCommand(
   if (!authed) return EXIT.auth
   try {
     const snapshot = await authed.client.evidence(requestId)
-    recordObservedDeliveryProof(deps, snapshot, config.project.value)
+    recordObservedDeliveryProof(deps, snapshot, setupProofProject(deps, config.project.value))
     if (flags.json) {
       deps.io.out(JSON.stringify(snapshot, null, 2))
       return EXIT.ok

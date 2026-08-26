@@ -21,7 +21,7 @@ import {
   opencodePluginSource,
   opencodePluginTarget,
 } from './opencode-plugin.js'
-import { SESSION_ACTIVATION_CONTEXT } from './session-activation.js'
+import { MISSING_LIFECYCLE_GUIDANCE_CONTEXT } from './session-activation.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import {
   BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -899,7 +899,7 @@ describe('the OpenCode adapter', () => {
 
     await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_1' }, output)
 
-    expect(output.system).toEqual([`existing context\n\n${SESSION_ACTIVATION_CONTEXT}`])
+    expect(output.system).toEqual([`existing context\n\n${MISSING_LIFECYCLE_GUIDANCE_CONTEXT}`])
 
     const internal = { system: ['internal agent-generation context'] }
     await plugin['experimental.chat.system.transform']?.({}, internal)
@@ -907,7 +907,7 @@ describe('the OpenCode adapter', () => {
 
     const empty = { system: [] as string[] }
     await plugin['experimental.chat.system.transform']?.({ sessionID: 'ses_2' }, empty)
-    expect(empty.system).toEqual([SESSION_ACTIVATION_CONTEXT])
+    expect(empty.system).toEqual([MISSING_LIFECYCLE_GUIDANCE_CONTEXT])
   })
 
   it('publishes the session pointer on a user message without injecting content', () => {

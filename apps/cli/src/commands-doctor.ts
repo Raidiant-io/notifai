@@ -9,7 +9,6 @@ import { HARNESS_CAPABILITIES, HARNESS_LABELS } from './harnesses.js'
 import { inspectHookAdapter } from './hook-adapter.js'
 import {
   readLiveProjectSessionPointers,
-  readMatchingProjectSessionPointer,
   readProjectSessionPointer,
   readSessionState,
 } from './hooks.js'
@@ -33,6 +32,7 @@ import { inferInvocationContext } from './invocation-context.js'
 import type { SkillScope } from './native-skills.js'
 import {
   firstBlocker,
+  readinessJson,
   type Readiness,
   type ReadinessRefresh,
   type ReadinessState,
@@ -75,7 +75,9 @@ import {
   SETUP_PROOF_STALE_MS,
   observedCompanionReceipt,
   readSetupProof,
+  setupProofProject,
   setupProofIsStale,
+  setupProofApplies,
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 
@@ -542,12 +544,10 @@ async function setupProofState(
     }
   }
 
-  const proof = readSetupProof(deps)
-  const target =
-    proof === null
-      ? null
-      : companions.find((device) => device.device_id === proof.device_id)
-  if (proof === null || proof.project !== config.project.value || target === undefined) {
+  const project = setupProofProject(deps, config.project.value)
+  const proof = readSetupProof(deps, project)
+  const applies = setupProofApplies(proof, project, companions.map((device) => device.device_id))
+  if (!applies) {
     return {
       id: 'proof',
       title: 'Delivery proof',
@@ -629,7 +629,7 @@ export async function doctorCommand(
   if (flags.json || deps.io.interactive !== true) {
     deps.io.out(
       JSON.stringify(
-        { ok, exit_code: ok ? EXIT.ok : EXIT.failed, states: readiness.states },
+        { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed },
         null,
         2,
       ),
@@ -905,17 +905,11 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           }),
     })
     if (activeInstallations.length > 0) {
-      const pointer =
-        active.sessionId === undefined
-          ? null
-          : readMatchingProjectSessionPointer(
-              deps.cwd,
-              deps.env,
-              (deps.now ?? Date.now)(),
-              active.sessionId,
-              active.harness,
-            )
-      if (pointer === null) {
+      const exactState = active.sessionId === undefined
+        ? null
+        : readSessionState(active.sessionId, deps.env)
+      const activated = exactState?.harness === active.harness && exactState.last_prompt_at !== undefined
+      if (!activated) {
         // The normal condition of hooks installed moments ago: the pointer
         // appears when the harness next fires a hook, and no command can
         // force that. Informational, so `init` walks on to the states it can
@@ -924,7 +918,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           name: 'hooks (active session)',
           ok: false,
           informational: true,
-          detail: `active ${active.label} session has not published a live pointer — send one ${active.label} prompt, then check again`,
+          detail: `active ${active.label} session has not published exact lifecycle state — send one ${active.label} prompt, then check again`,
           remedy: {
             summary: `send one ${active.label} prompt — its hook publishes the routing pointer`,
             command: 'notifai doctor',
@@ -934,7 +928,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         checks.push({
           name: 'hooks (active session)',
           ok: true,
-          detail: `the concurrent project index contains the active ${active.label} session`,
+          detail: `the exact active ${active.label} session has published lifecycle state`,
         })
       }
     }
@@ -1102,13 +1096,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         ? (readLiveProjectSessionPointers(deps.cwd, deps.env, (deps.now ?? Date.now)()).find(
             (pointer) => pointer.harness === active.harness,
           ) ?? null)
-        : readMatchingProjectSessionPointer(
-            deps.cwd,
-            deps.env,
-            (deps.now ?? Date.now)(),
-            active.sessionId,
-            active.harness,
-          )
+        : readSessionState(active.sessionId, deps.env).harness === active.harness
+          ? { sessionId: active.sessionId, harness: active.harness }
+          : null
   const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
   const promptFired = firedState?.last_prompt_at !== undefined
   const stopFired = firedState?.last_stop_at !== undefined
