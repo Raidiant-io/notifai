@@ -1,4 +1,8 @@
 import { SKILLS_INSTALLER_SPEC, type NativeSkill, type SkillScope } from './native-skills.js'
+import { createHash } from 'node:crypto'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { type ReadinessState } from './readiness.js'
 import { skillsSource } from './release.js'
 import type { CommandDeps } from './commands-core.js'
@@ -19,6 +23,40 @@ export const SKILLS_SOURCE: string | null = skillsSource()
 const SKILLS_SOURCE_LABEL = SKILLS_SOURCE ?? 'the public release tag matching this CLI'
 
 const SKILL_SCOPES: readonly SkillScope[] = ['project', 'global']
+
+function markdownTreeDigest(root: string): string | null {
+  if (!existsSync(root)) return null
+  const files: string[] = []
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name)
+      if (entry.isDirectory()) walk(absolute)
+      else if (entry.isFile() && entry.name.endsWith('.md')) files.push(absolute)
+    }
+  }
+  try {
+    walk(root)
+    const hash = createHash('sha256')
+    for (const file of files.sort()) {
+      hash.update(path.relative(root, file))
+      hash.update('\0')
+      hash.update(readFileSync(file))
+      hash.update('\0')
+    }
+    return `sha256:${hash.digest('hex')}`
+  } catch {
+    return null
+  }
+}
+
+function developmentSkillMismatch(skill: NativeSkill): { checkout: string; installed: string } | null {
+  const checkoutRoot = fileURLToPath(new URL('../../../skills/notifai/', import.meta.url))
+  const checkout = markdownTreeDigest(checkoutRoot)
+  const installed = markdownTreeDigest(skill.path)
+  return checkout !== null && installed !== null && checkout !== installed
+    ? { checkout, installed }
+    : null
+}
 
 function skillSourceParts(): { source: string; ref: string } | null {
   if (SKILLS_SOURCE === null) return null
@@ -118,6 +156,25 @@ export async function skillReadiness(
 
   const current = installed.find(expectedSkill)
   if (current !== undefined) {
+    const mismatch = developmentSkillMismatch(current)
+    if (mismatch !== null) {
+      return {
+        id: 'skill',
+        title: 'Agent guidance skill',
+        status: 'gap',
+        detail:
+          `the active development CLI's shipped guidance differs from the installer-managed ${skillPin(current)} skill. ` +
+          'Released installs remain immutable; publish a new CLI/skill release before treating this combination as ready.',
+        technical: {
+          resolution: 'development-cli-skill-mismatch',
+          scope: current.scope,
+          ref: current.ref,
+          path: current.path,
+          checkout_digest: mismatch.checkout,
+          installed_digest: mismatch.installed,
+        },
+      }
+    }
     return {
       id: 'skill',
       title: 'Agent guidance skill',

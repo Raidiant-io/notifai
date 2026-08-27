@@ -178,6 +178,8 @@ jobs:
 
       - run: pnpm check:boundary
 
+      - run: pnpm check:agent-guidance
+
   secret-history:
     needs: dispatch-integrity
     if: ${{ always() }}

@@ -34,6 +34,11 @@ Owners load skill. Parent owns by default.
 Ordinary workers report Agent Events and do not load or send. Explicit textual
 delegation makes a worker the owner; then it reads effective guidance.
 
+An **Agent Event** is a meaningful occurrence in the work. A **Notification
+Request** is the deliberate User-visible message or question submitted through
+Notifai about one; it is not every event and it is not an internal worker
+report.
+
 Owner session lifecycle context normally includes the bounded, effective
 guidance under provenance markers. When that context is absent or explicitly
 says the guidance exceeded its bound, read it once before judging an Agent Event:
@@ -93,6 +98,10 @@ notifai send --kind done \
   --body "Sign-up, email verification, and login work end to end on staging. Next: password reset, unless you want something else first."
 ```
 
+Outside a Project, or when the User explicitly asks for a Projectless
+notification, pass `--projectless`. This deliberate override prevents cwd or
+saved config from inventing a Project and never enables one.
+
 `--kind` is required, and it is the most consequential word you choose:
 
 | kind | what it means | how it arrives |
@@ -130,29 +139,13 @@ notifai send --kind failed \
 Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
 channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
 
-Other controls, when they earn their place:
-
-- `--thread-id <id>` groups related notifications.
-- `--collapse-key <key>` replaces your own earlier notification instead of
-  stacking a second one (≤64 UTF-8 bytes).
-- `--ttl <seconds>` — how long delivery is still worth attempting. Never past the
-  point the news stops being useful.
-- `--image <path|url>` attaches visual evidence in order (up to 8), with
-  `--image-alt` paired by position; `media:1`…`media:8` reference them from the
-  body. Check `notifai capabilities --platform <platform>` when an image is the
-  message rather than decoration.
-- `--sound` and `--level` are attention overrides that belong to the user —
-  pass one only when they asked for that behaviour on this send. What each
-  destination honours is not yours to memorize:
-  `notifai capabilities --platform <platform>` is the exact contract, and the
-  CLI rejects and explains a combination a destination cannot carry.
-- `--device` only when the user asked for specific devices on this send.
-  Otherwise every registered device is the right answer, narrowed by the
-  `devices` config key when the user saved one; `--all` overrides the
-  narrowing. `notifai devices --json` lists ids and readiness.
-- `--retry` only after you decide an unresolved send still represents the same
-  Agent Event. The CLI matches its opaque attempt and reuses the hidden
-  idempotency key; it refuses no match or more than one match.
+Other controls: `--thread-id` groups; `--collapse-key` replaces your earlier
+matching notification; `--ttl` bounds useful delivery. `--image` attaches up
+to 8 items, paired with `--image-alt`; `media:1`…`media:8` reference them.
+Use `notifai capabilities --platform <platform>` for destination contracts.
+Attention overrides (`--sound`, `--level`) and device targeting belong to the
+User; otherwise use saved routing. Use `--retry` only for the same unresolved
+Agent Event; the CLI reuses one opaque attempt or refuses ambiguity.
 
 Project and Agent Session are inferred; never pass `--session-id`.
 `--session-label` is 2-6 words about the Agent Session, never the Project, branch,
@@ -231,14 +224,10 @@ in the conversation and say what each answer will make you do:
 > production. If you choose Cancel, I'll leave the rollout alone and finish the
 > report. If you tell me something else, I'll follow that instead.
 
-Then end your turn. That commitment is what turns an arriving answer into work;
-without it agents receive the answer and stall, asking the user to confirm what
-they already said.
+Then end your turn. That commitment turns the arriving answer into work.
 
-**Never say where the answer must arrive.** Not "tell me here", not "type it at
-this prompt". The user answers from wherever they are, and the answer comes back
-by whatever route the harness supports. Naming one route teaches you to refuse
-every other one — the answer arrives and the work never resumes.
+**Never say where the answer must arrive:** not "tell me here" or "type it at
+this prompt". The route is the harness's concern.
 
 Other question surfaces: `--multi` when several offered answers may genuinely be
 combined, `--body`/`--body-file` for context, `--image`/`--image-alt` for
@@ -256,11 +245,9 @@ together:
 }
 ```
 
-Keep independent questions as separate `ask` calls — each is answerable on its
-own, and a new question never cancels an earlier one. If a registered question
-no longer needs an answer — including one Stop has not pushed yet — retire it
-with `notifai close <question_id>` or `notifai close --pending`. If they answer
-in the conversation, close it in that same turn so Stop cannot send it later.
+Keep independent questions as separate `ask` calls. Retire an obsolete or
+registration they answer in the conversation — even before Stop pushes it — with
+`notifai close <question_id>` or `notifai close --pending`.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
@@ -315,7 +302,13 @@ the harness's own flow.
 You are the one doing the setup. Run everything a process can run; never tell the
 user to run a command you could have run yourself.
 
-Before mutating `init`, ask one question for both user decisions:
+“Notifai me” or “use notifai” authorizes durable enablement for this Project;
+do not ask again. Run the send. If setup is missing, run `notifai init --json`,
+perform its CLI-owned remedies, and retry the exact send. Projectless requests
+never enable a Project.
+
+For general setup that was not authorized by an explicit Notification Request,
+ask one question for both user decisions:
 
 - setup scope — this project or every project here
 - Question Routing — devices or terminal only
@@ -334,6 +327,10 @@ Then gather the human-only steps its reported gap needs:
 
 - approving this machine in the browser (after **you** started `notifai login`)
 - installing the companion app, signing in, and allowing notifications
+
+For Codex `command: "/hooks"`, say exactly: “Open `/hooks` in Codex, approve or
+enable the Notifai handlers, then tell me when it is done. I will finish setup
+and verify a fresh session.” Never claim to approve hooks yourself.
 
 Never emulate them or claim an unlisted harness.
 

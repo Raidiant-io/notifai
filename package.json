@@ -17,6 +17,7 @@
     "check:release": "node --test scripts/cross-platform.test.mjs scripts/chmod-cli-bin.test.mjs scripts/plan-publish.test.mjs scripts/check-npm-trusted-publishing.test.mjs scripts/release-workflow-identity.test.mjs scripts/verify-release-pr-metadata.test.mjs scripts/npm-registry.test.mjs && node scripts/check-release.mjs",
     "check:packed": "node --test scripts/verify-packed-install.test.mjs && node scripts/verify-packed-install.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
+    "check:agent-guidance": "node scripts/check-agent-guidance.mjs",
     "check:published": "node scripts/verify-published.mjs"
   },
   "devDependencies": {

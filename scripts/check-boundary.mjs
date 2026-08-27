@@ -42,6 +42,7 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   'NOTICE',
   'SECURITY.md',
   'CONTRIBUTING.md',
+  'agent-guidance-review.json',
   'docs',
   'scripts',
   'apps',
