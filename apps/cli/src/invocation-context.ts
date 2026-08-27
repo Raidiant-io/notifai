@@ -150,7 +150,7 @@ export type SourceContextBuild =
   | { ok: true; source?: SourceContextT }
   | { ok: false; error: string }
 
-/** Resolve per-field source precedence without fabricating session identity. */
+/** Resolve per-field Source Context precedence without fabricating Agent Session identity. */
 export function buildSourceContext(input: SourceContextInput): SourceContextBuild {
   const sessionId =
     input.sessionId ?? input.env['NOTIFAI_SESSION_ID'] ?? input.activeHarness?.sessionId
@@ -158,7 +158,7 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
   if (explicitLabel !== undefined && (sessionId === undefined || sessionId === '')) {
     return {
       ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact session id.',
+      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact Agent Session id.',
     }
   }
   if (sessionId === '') {

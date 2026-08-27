@@ -1124,12 +1124,12 @@ export function askCommand(
       flags,
       'session_identity_missing',
       'exact_session',
-      'Could not prove which live harness session owns this command.',
-      'run it from a supported harness with exact session identity, or use a blocking `notifai send --reply` question',
+      'Could not prove which live Agent Session owns this command.',
+      'run it from a supported harness with exact Agent Session identity, or use a blocking `notifai send --reply` question',
     )
   }
   if (!sessionId) {
-    return askFailure(deps, flags, 'session_identity_missing', 'exact_session', 'No exact active session is available.', 'use a blocking `notifai send --reply` question')
+    return askFailure(deps, flags, 'session_identity_missing', 'exact_session', 'No exact active Agent Session is available.', 'use a blocking `notifai send --reply` question')
   }
   let routingConfig: CliConfig
   try {

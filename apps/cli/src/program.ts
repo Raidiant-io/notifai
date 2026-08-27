@@ -216,7 +216,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'Set up Notifai here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
         'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
     )
-    .option('--project-id <id>', 'project identifier slug (default: derived from the directory name)')
+    .option('--project-id <id>', 'Project identifier slug (default: derived from the directory name)')
     .option('--json', 'machine-readable final readiness; never prompts')
     .option('--skills', 'install/update the agent skill from its pinned public release')
     .option('--no-skills', 'suppress the optional agent-skill status line')
@@ -339,13 +339,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .optionsGroup(SEND_GROUP.routing)
     .option('--kind <kind>', 'what this is (required): update | done | failed | blocked (no User reply would resume it) — question is set by --reply')
-    .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
+    .option('--project <id>', 'Project identifier override (otherwise configured or inferred)')
     .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--all', 'target all routable devices (overrides configured devices)')
-    .option('--session-id <id>', 'low-level automation override for an opaque exact session (env: NOTIFAI_SESSION_ID)')
+    .option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)')
     .option(
       '--session-label <text>',
-      'human session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
+      'human Agent Session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
     )
     .optionsGroup(SEND_GROUP.presentation)
     .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -421,7 +421,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Retrieve replies to a question')
     .description('Retrieve replies for a notification request')
-    .option('--pending', 'use the pushed question pending for this project session')
+    .option('--pending', 'use the pushed question pending for this Project and Agent Session')
     .option('--wait <seconds>', 'how long to wait for a reply', (v: string) => Number(v))
     .option('--after <seq>', 'return replies after this sequence number', (v: string) => Number(v))
     .option('--json', 'machine-readable output')
@@ -481,10 +481,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'alt text paired with --image occurrences by position (repeatable)',
       (v: string, all: string[] = []) => [...all, v],
     )
-    .option('--project <id>', 'project identifier override (otherwise configured or inferred)')
+    .option('--project <id>', 'Project identifier override (otherwise configured or inferred)')
     .option(
       '--session-label <text>',
-      'human session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
+      'human Agent Session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
     )
     .action(async (question: string | undefined, opts: {
       choice?: string[]
@@ -551,9 +551,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Retire a question so late answers are rejected')
     .description(
-      'Retire a question so late answers are rejected rather than lost. Pass --pending to withdraw this session\'s outstanding registrations, including ones the turn-end hook has not pushed yet.',
+      'Retire a question so late answers are rejected rather than lost. Pass --pending to withdraw this Agent Session\'s outstanding registrations, including ones the turn-end hook has not pushed yet.',
     )
-    .option('--pending', 'retire this session\'s outstanding questions, including ones not yet pushed')
+    .option('--pending', 'retire this Agent Session\'s outstanding questions, including ones not yet pushed')
     .option('--json', 'machine-readable output')
     .action(async (requestId: string | undefined, opts: { json?: boolean; pending?: boolean }) => {
       exit(await runners.close(deps, requestId, opts))
@@ -615,9 +615,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--event <name>', 'only this event; repeatable', (v: string, all: string[] = []) => [...all, v])
     .option('--run <id>', 'everything one command invocation did')
     .option('--request <id>', 'everything about one notification request')
-    .option('--session <id>', 'only this harness session')
-    .option('--project <id>', 'only this project')
-    .option('--all-projects', 'do not scope to the project in this directory')
+    .option('--session <id>', 'only this Agent Session')
+    .option('--project <id>', 'only this Project')
+    .option('--all-projects', 'do not scope to the Project in this directory')
     .option('--grep <text>', 'only records containing this text')
     .option('--json', 'one JSON record per line on stdout')
     .option('--path', 'print the log file paths instead of the records')
@@ -656,7 +656,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--project', 'write to the shared .notifai/config.toml instead')
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
-    .option('--session <id>', 'apply only to one session')
+    .option('--session <id>', 'apply only to one Agent Session')
     .option('--yes', 'skip the confirmation gate')
     .action(
       async (
@@ -674,7 +674,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--project', 'remove from the shared .notifai/config.toml instead')
     .option('--local', 'remove a personal project preference stored on this machine')
-    .option('--session <id>', 'remove from one session')
+    .option('--session <id>', 'remove from one Agent Session')
     .option('--yes', 'skip the confirmation gate')
     .action(
       async (

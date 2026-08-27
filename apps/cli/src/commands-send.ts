@@ -392,7 +392,7 @@ function emitSendWarnings(
   }
   if (/^(?:update|done|question|failed|blocked)\s*(?:[·:—-]|$)/i.test(flags.title.trim())) {
     deps.io.err(
-      'Heads up: keep the title to the specific substance. Put notification type in --kind; project identity is inferred separately.',
+      'Heads up: keep the title to the specific substance. Put notification type in --kind; Project identity is inferred separately.',
     )
   }
   if (

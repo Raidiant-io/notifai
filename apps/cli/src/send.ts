@@ -34,9 +34,9 @@ export interface SendFlags {
   /** What this notification is; absent means update. */
   kind?: string
   project?: string
-  /** Opaque exact-session override. */
+  /** Opaque exact Agent Session override. */
   sessionId?: string
-  /** Human-readable session label override. */
+  /** Human-readable Agent Session label override. */
   sessionLabel?: string
   device?: string[]
   all?: boolean

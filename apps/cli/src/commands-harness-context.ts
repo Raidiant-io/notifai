@@ -6,7 +6,7 @@ import { type Harness } from './install-hooks.js'
  * harness. Configuration-directory variables are deliberately absent: they
  * describe where a tool stores files, not which tool owns the current shell.
  * OpenCode's generated plugin supplies the Notifai-owned marker because its
- * plugin API exposes session identity but the ordinary environment does not.
+ * plugin API exposes Agent Session identity but the ordinary environment does not.
  */
 export interface ActiveHarnessSession {
   harness: Harness
@@ -67,7 +67,7 @@ interface ActiveHarnessResolution {
 }
 
 /**
- * Which harness session owns this shell, when several claim to.
+ * Which Agent Session owns this shell, when several claim to.
  *
  * Nesting is ordinary: an orchestrator running inside Claude Code starts a
  * Codex session, and that Codex process inherits `CLAUDECODE` and

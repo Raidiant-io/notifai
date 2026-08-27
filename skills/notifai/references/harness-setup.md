@@ -54,27 +54,27 @@ later upgrades must not require another.
 first. Historical UserPromptSubmit and Stop evidence remains part of that
 fail-closed check. Ask exposes no `--session-id` override and will not guess one.
 
-`hooks-wake-route` reports, without probing anything, whether an answer
-could start a turn in this exact session on its own. It never blocks: when it
-cannot, the answer is held and replayed at the session's next turn instead.
+`hooks-wake-route` reports, without probing anything, whether an answer could
+start a turn in this exact Agent Session on its own. It never blocks: when it
+cannot, the answer is held and replayed at the Agent Session's next turn instead.
 
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
 
 ## Activation by harness
 
-- **Claude Code:** run the installer if needed, start one fresh session, send
-  one prompt, then run `notifai doctor`. An already-running session cannot
+- **Claude Code:** run the installer if needed, start one fresh Agent Session,
+  send one prompt, then run `notifai doctor`. An already-running Agent Session cannot
   receive newly installed `SessionStart` context. If SessionStart is absent,
-  reinstall the current hooks and start a fresh session; UserPromptSubmit
+  reinstall the current hooks and start a fresh Agent Session; UserPromptSubmit
   records presence and question lifecycle only and never substitutes for
   lifecycle activation. Claude's SubagentStart gives ordinary workers the
   reporting-only context; explicit textual delegation makes a worker load the
   skill and guidance as the new Notification Request owner.
 - **Codex:** run `notifai hooks install --harness codex`. If `hooks-trust`
   fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
-  Then start one fresh session, send one prompt, and run `notifai doctor`. If
-  SessionStart is absent, reinstall the current hooks and start a fresh session;
+  Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
+  SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same
   reporting-only worker contract and explicit textual delegation rule as
   Claude. Codex resolves project hooks from the main repository. In a
@@ -87,16 +87,16 @@ Notifai never writes trust approvals. If its diagnosis and Codex disagree,
   Stop contract; cancellation does not trigger it, and a live question
   continuation takes priority. Then run `notifai doctor`. The agent shell does
   not create a separately activated context for delegated work: it remains
-  under the parent session and its explicit Notification Request ownership. It
-  does not expose the exact conversation id needed to prove which concurrent session
+  under the parent Agent Session and its explicit Notification Request ownership. It
+  does not expose the exact conversation id needed to prove which concurrent Agent Session
   invoked `notifai ask`, so asynchronous ask fails closed. Use blocking
   `notifai send --reply` for questions.
 - **OpenCode:** restart after installation because plugins load at startup,
-  then start one fresh session, send one prompt, and run `notifai doctor`.
+  then start one fresh Agent Session, send one prompt, and run `notifai doctor`.
   Notifai owns its generated plugin file and will not overwrite a foreign one.
   The plugin treats a session with `parentID` as a worker. When relationship
   lookup fails or returns unusable data it also fails safe as a non-sending
-  worker; only a proven parent session receives owner context. Explicit textual
+  worker; only a proven parent Agent Session receives owner context. Explicit textual
   delegation promotes that worker through the same skill-and-guidance rule.
   OpenCode has no locally proven exactly-once continuation after `session.idle`,
   so `notifai ask` fails closed instead of accepting an answer into a void.
@@ -114,14 +114,14 @@ meter differs per harness:
 - **Claude Code:** the Stop hook is asynchronous. It returns at once, so the
   turn is never held and the terminal stays the user's, and the same process
   keeps waiting out of band. When the answer arrives it is posted to that
-  session's own inbox socket: an idle session starts a new turn with it, a busy
-  one receives it when its current turn ends. A session that is provably gone
+  Agent Session's own inbox socket: an idle Agent Session starts a new turn with it, a busy
+  one receives it when its current turn ends. An Agent Session that is provably gone
   is cold-resumed instead — never one whose liveness probe cannot rule it out.
 - **Codex:** the Stop hook is the waiter. It holds until the answer arrives or
   its window ends, then continues the session by returning `decision: block`.
 - **Where neither applies** — including an answer that lands after the Codex
-  hook has already returned, and any session whose state cannot be proved — the
-  answer is held in the session's journal and delivered at that session's next
+  hook has already returned, and any Agent Session whose state cannot be proved — the
+  answer is held in the Agent Session's journal and delivered at that Agent Session's next
   Stop. This is the floor under every route.
 
 An accepted answer is never dropped and never delivered twice, so a question
@@ -131,7 +131,7 @@ that has not come back yet is still coming: do not re-ask it.
 default of `0` the question reaches devices as soon as the asking turn ends. A
 positive value keeps it in the terminal for that long first, so an answer typed
 there wins without a notification ever leaving. The window is skipped when a
-question from this session is already waiting on the user's devices: they have
+question from this Agent Session is already waiting on the user's devices: they have
 been interrupted already, and holding the second question back would only delay
 it.
 
@@ -155,7 +155,7 @@ when several are wired.
 `notifai logs` narrows several ways, and they compose:
 
 - `--request <id>` · `--run <id>` · `--session <id>` — one notification, one
-  invocation, one harness session
+  invocation, one Agent Session
 - `--event <name>` (repeatable) · `--grep <text>` · `--level error`
 - `--since 10m|2h|1d|<ISO 8601>` · `-n <count>` · `--all` · `--project <id>` ·
   `--all-projects`
@@ -169,7 +169,7 @@ a copy — do not run it to tidy up.
 `notifai config explain <key> [--json]` gives the full explanation of one
 setting; `notifai config show --explain` includes advanced keys and the file
 each value came from. Beyond the usual scopes, `--session <id>` writes a
-preference that lasts only for one harness session.
+preference that lasts only for one Agent Session.
 
 `ask_notifications` is the setting that turns question routing off for a scope;
 `ask_grace_seconds` is the terminal-first window described above;
@@ -179,7 +179,7 @@ default and up to three.
 Those are three different clocks and only the last one decides whether an
 answer is still wanted. Nothing waits on the user for a day: the asking turn
 ends immediately, the waiter gives up long before, and everything after that is
-the next turn's poll or the journal replaying at that session's next Stop.
+the next turn's poll or the journal replaying at that Agent Session's next Stop.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the

@@ -64,7 +64,7 @@ Settings — routing, devices, sounds — are config, not guidance:
 `notifai config show --json` returns every key as `{ value, source, summary }`.
 Quote values as they are — never flatten one into "the defaults apply".
 
-An instruction about the work in hand tunes this session; it needs no command
+An instruction about the work in hand tunes this Agent Session; it needs no command
 and never touches config or guidance.
 
 Write only preferences meant to outlive the session, in the user's words
@@ -80,12 +80,11 @@ notifai guidance unset when-to-notify --local --yes
 
 ## Send
 
-Name the session on Notification Requests when the current
-environment exposes an exact session; supported harnesses provide it to the
-CLI automatically. A `--session-label` without an exact session is a usage
-error because silently discarding a parsed flag is never safe. When no exact
-session is available, omit `--session-label` and let the Notification Request
-carry only project context:
+Name the Agent Session when the current environment exposes its exact
+identifier; supported harnesses provide it automatically. A `--session-label`
+without an exact Agent Session is a usage error because silently discarding a
+parsed flag is never safe. Without an Agent Session identifier, omit `--session-label`
+and carry only Project context:
 
 ```bash
 notifai send --kind done \
@@ -114,7 +113,7 @@ Reporting ready is a response.
 The words come from the guidance — `titles` and `bodies` own what a title,
 body, and summary line carry. The shape on the wire:
 
-- **Title** — stands alone; the kind and the project travel as their own
+- **Title** — stands alone; the kind and the Project travel as their own
   fields, never in it.
 - **Body** — one canonical Markdown body; the banner excerpt is taken from the
   top of it.
@@ -155,8 +154,8 @@ Other controls, when they earn their place:
   Agent Event. The CLI matches its opaque attempt and reuses the hidden
   idempotency key; it refuses no match or more than one match.
 
-Project and exact session are inferred; never pass `--session-id`.
-`--session-label` is 2-6 words about the session, never the project, branch,
+Project and Agent Session are inferred; never pass `--session-id`.
+`--session-label` is 2-6 words about the Agent Session, never the Project, branch,
 status, result, identifier, hash, or filesystem path.
 The CLI freezes one semantic name; the name the environment supplies wins, then yours.
 It is safe to repeat the same `--session-label` on every send and ask; the first
@@ -203,7 +202,7 @@ deliberate way to stop waiting and pick the answer up later:
 ```bash
 notifai replies <request_id>          # the answer, whenever it landed
 notifai close <request_id|question_id> # retire one question, including an unpushed ask id
-notifai close --pending               # retire this session's outstanding questions, including ones not yet pushed
+notifai close --pending               # retire this Agent Session's outstanding questions, including ones not yet pushed
 ```
 
 `send --reply --json` prints one JSON object: the reply result, with the

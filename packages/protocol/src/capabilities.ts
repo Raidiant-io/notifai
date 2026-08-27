@@ -491,7 +491,7 @@ export function validateDraft(
     errors.push({
       code: 'invalid_request',
       path: 'source.session_label',
-      message: 'A session label needs an opaque session id behind it; omit both when identity is unknown.',
+      message: 'An Agent Session label needs an opaque Agent Session id behind it; omit both when identity is unknown.',
     })
   }
 

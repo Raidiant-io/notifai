@@ -374,7 +374,7 @@ export const CompanionReceiptRequest = Type.Object(
     delivery_id: Type.String({ pattern: '^del_[A-Za-z0-9_-]+$' }),
     /**
      * The delivery's own secret, taken from the push payload. Present, it is
-     * the whole authorization and no user session is needed — which is what
+     * the whole authorization and no Auth Session is needed — which is what
      * keeps Notification Service Extensions out of the keychain. Absent, the
      * request falls back to a bearer token, so companions installed before the
      * token existed keep reporting.

@@ -346,7 +346,7 @@ describe('buildSourceContext', () => {
       }),
     ).toEqual({
       ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact session id.',
+      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact Agent Session id.',
     })
   })
 })
