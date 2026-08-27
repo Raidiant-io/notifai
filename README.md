@@ -90,7 +90,8 @@ part of the current public support claim.
 | Cursor hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 
-“Fails closed” means Notifai keeps the accepted answer in the session journal
+“Fails closed” means Notifai keeps the accepted answer in the Agent Session
+journal
 for the next hook rather than starting an unproven or divergent agent turn.
 Claude Code live inbox wake requires Claude Code 2.1.224 or newer and is an
 upstream macOS/Linux capability; on Windows, Notifai keeps Stop open and returns
@@ -157,8 +158,9 @@ pass `--setup-scope project` or `--setup-scope global`.
 
 ## The installed hooks
 
-`notifai hooks install` wires session activation, the prompt the user submits,
-the end of the agent's turn, and the end of the session into the agent harness.
+`notifai hooks install` wires Agent Session activation, the prompt the user
+submits, the end of the agent's turn, and the end of the Agent Session into the
+harness.
 How they appear depends on the harness — Claude Code and Codex name
 them in a hook file, Cursor uses its own hook shapes, and OpenCode gets a
 generated plugin. They are how a question reaches your devices and how the
@@ -171,9 +173,10 @@ context instead. The parent owns User-visible Notification Requests unless it
 explicitly delegates that ownership in text; a delegated worker then loads the
 Notifai skill and runs `notifai guidance`. These contexts are local-only and run before project setup,
 authentication, Device Installations, or network access, so those missing
-prerequisites cannot make activation disappear. OpenCode uses its session
-relationship data to give parent sessions owner context and child sessions
-worker context; missing or unusable relationship data fails safe as worker.
+prerequisites cannot make activation disappear. OpenCode uses its Agent Session
+relationship data to give parent Agent Sessions owner context and child Agent
+Sessions worker context; missing or unusable relationship data fails safe as
+worker.
 Cursor currently drops the context it
 accepts at SessionStart, so after the first completed turn Notifai uses one
 bounded native Stop follow-up: Cursor shows a synthetic follow-up turn, the
@@ -181,14 +184,14 @@ agent reads guidance and evaluates the just-finished Agent Event, and the next
 Stop confirms that activation arrived. Cancelled turns do not trigger that
 follow-up; errored turns do, because failure is itself an Agent Event. A live
 question continuation takes priority. Delegated
-Cursor work stays under the parent session's explicit notification ownership
+Cursor work stays under the parent Agent Session's explicit notification ownership
 rather than pretending the worker received context its host cannot deliver.
 
 **UserPromptSubmit** (`user-prompt-submit`) runs when you send a prompt. That
 is the proof you are at the keyboard, so Notifai retires any question still
-waiting on your devices and remembers this session for later `notifai ask`
+waiting on your devices and remembers this Agent Session for later `notifai ask`
 calls. It never substitutes activation when SessionStart is missing; reinstall
-the current hooks and begin a fresh session. It has to run here for presence:
+the current hooks and begin a fresh Agent Session. It has to run here for presence:
 only this moment can tell that you were present for this turn.
 
 **Stop** (`stop`) runs when the agent turn ends. If the agent registered a
@@ -197,7 +200,7 @@ devices and when a device answer is handed back into the next turn. It has to
 run at Stop because that is the first moment the turn is over and the agent is
 waiting.
 
-**SessionEnd** (`session-end`) runs when the session closes. It drops this
-session's local state and queues any leftover questions for retirement so they
-do not sit on your devices after the agent is gone. It has to run here because
-no later hook for this session will fire.
+**SessionEnd** (`session-end`) runs when the Agent Session closes. It drops this
+Agent Session's local state and queues any leftover questions for retirement so
+they do not sit on your devices after the agent is gone. It has to run here
+because no later hook for this Agent Session will fire.

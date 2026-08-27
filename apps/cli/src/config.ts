@@ -21,8 +21,8 @@ import { normalizeOrigin } from './url-policy.js'
  * preference that evaporates mid-session is worse than none.
  *
  * `project-local` is a personal file under the user's config directory, keyed
- * by the project root so a checkout does not have to gitignore anything. Shared
- * `.notifai/config.toml` stays in the tree for committed project identity.
+ * by the Project root so a checkout does not have to gitignore anything. Shared
+ * `.notifai/config.toml` stays in the tree for committed Project identity.
  *
  * `config show --explain` surfaces the winning layer per key.
  */
@@ -245,9 +245,9 @@ export function sanitizeSessionId(sessionId: string): string {
 }
 
 /**
- * Pointer from a project directory to the harness session currently working in
+ * Pointer from a Project directory to the Agent Session currently working in
  * it, written by the UserPromptSubmit hook. Without it `notifai ask` has no way
- * to learn its own session id: an ordinary agent shell command receives no hook
+ * to learn its own Agent Session id: an ordinary agent shell command receives no hook
  * payload, and no harness exports one into the environment.
  */
 export function projectSessionPointerPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -420,7 +420,7 @@ export function loadConfig(options: {
   cwd?: string
   env?: NodeJS.ProcessEnv
   flags?: FlagOverrides
-  /** Harness session id; enables the session override layer when present. */
+  /** Agent Session id; enables the Agent Session override layer when present. */
   sessionId?: string | undefined
 }): CliConfig {
   const env = options.env ?? process.env

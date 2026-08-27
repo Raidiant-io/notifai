@@ -80,9 +80,9 @@ export const SESSION_LABEL_MAX_LENGTH = 64
 
 export const SourceContext = Type.Object(
   {
-    /** Opaque routing/grouping identity. Never rendered in User-facing text. */
+    /** Opaque Agent Session identity. Never rendered in User-facing text. */
     session_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-    /** The only session string a User-facing surface may display. */
+    /** The only Agent Session string a User-facing surface may display. */
     session_label: Type.Optional(
       Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH }),
     ),
