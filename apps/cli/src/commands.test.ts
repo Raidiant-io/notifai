@@ -68,6 +68,7 @@ import {
   codexTrustKey,
   findInstallations,
   handlerEvent,
+  QUESTION_STOP_TIMEOUT_SECONDS,
   settingsFile,
 } from './install-hooks.js'
 import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
@@ -6650,7 +6651,8 @@ describe('asking before the hooks have ever run', () => {
     const out = io.outLines.join('\n')
     expect(out).toMatch(/FAIL\s+Turn\-end hook shape/)
     expect(out).toContain('needs `async: true`')
-    expect(out).toContain('kills the backgrounded waiter at its 600s default')
+    expect(out).toContain('kills the backgrounded waiter silently before the complete answer window')
+    expect(out).toContain(`needs an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s`)
   })
 
   /** A configured Claude Code project with one live session claiming `pid`. */

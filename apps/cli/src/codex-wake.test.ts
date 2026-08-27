@@ -21,6 +21,7 @@ const event = {
   remaining: 0,
   request_ids: ['req_test'],
   journal_recorded_at: 1_800_000_000_000,
+  commitDelivery: () => true,
 }
 
 const temporaries: string[] = []

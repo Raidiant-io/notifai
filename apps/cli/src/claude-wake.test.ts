@@ -76,6 +76,7 @@ const event = {
   remaining: 0,
   request_ids: ['req_test'],
   journal_recorded_at: STARTED_AT,
+  commitDelivery: () => true,
 }
 
 describe('Claude session observation', () => {

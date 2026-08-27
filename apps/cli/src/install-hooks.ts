@@ -22,6 +22,10 @@ import {
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
 import { HARNESSES, type Harness } from './harnesses.js'
 import { accountHome } from './platform.js'
+import {
+  NON_ROUTING_STOP_TIMEOUT_SECONDS,
+  QUESTION_STOP_TIMEOUT_SECONDS,
+} from './question-timing.js'
 
 export { HARNESSES, type Harness } from './harnesses.js'
 
@@ -177,40 +181,18 @@ export interface BuildOptions {
 }
 
 /**
- * Claude Code's Stop handler returns instantly and the same process lives on
- * out of band as the escalation waiter, so this `timeout` bounds a background
- * process rather than the user's turn.
- *
- * It is always declared, and declared far above the longest wait a waiter can
- * take. Claude's default is 600 s and the kill is **silent** — the backgrounded
- * process simply vanishes, no error is reported anywhere, and the answer the
- * user already gave is never delivered. Sitting anywhere near that boundary
- * turns a slow reply into a lost one, so this does not: an explicit value
- * raises the ceiling (verified against a 660 s wait under an hour-long
- * declaration), and an hour is several times the waiter's own ceiling.
+ * Harnesses without asynchronous Question Routing use this short Stop budget.
+ * Claude Code and Codex use `QUESTION_STOP_TIMEOUT_SECONDS` instead.
  */
-export const CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS = 3600
-
-/**
- * The declared process budget for a host that holds its turn while the waiter
- * runs: the waiter's own ceiling plus a minute of host headroom, as one plain
- * number rather than a budget carved into reserves.
- *
- * Codex is deliberately absent from this. It owns its Stop timeout today, and
- * declaring one would change the serialized definition Codex hashes into
- * `trusted_hash` — which silently stops every Notifai handler from running
- * until the user re-approves them in `/hooks`.
- */
-export const BLOCKING_STOP_TIMEOUT_SECONDS = 540
+export const NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS = NON_ROUTING_STOP_TIMEOUT_SECONDS
+export { QUESTION_STOP_TIMEOUT_SECONDS } from './question-timing.js'
 
 /**
  * Whether this harness's Stop handler runs detached from the turn.
  *
- * Three places decide this — the installer that declares `async: true`, the
- * hook runtime that picks the waiter's wall clock, and doctor's check that the
- * installed definition still has the right shape — and they must agree or the
- * waiter outlives a turn nobody left open. They were three separate spellings
- * of the same condition with nothing tying them together.
+ * The installer and doctor share this predicate so they agree whether Claude
+ * runs out of band. Owner lifetime is route-neutral and lives in
+ * `question-timing.ts`.
  */
 export function stopHandlerIsDetached(
   harness: Harness | undefined,
@@ -224,10 +206,10 @@ export function stopHandlerIsDetached(
  *
  * Claude Code takes the answer over its own inbox socket, so its Stop hook is
  * `async: true`: it returns immediately, the terminal is never held, and the
- * waiter finishes out of band. Every other host still delivers by printing a
- * continuation to this process's stdout, so its Stop hook blocks and needs a
- * declared ceiling above the wait — except Codex, which owns that number
- * itself and whose definition must stay byte-stable for its trust store.
+ * waiter finishes out of band. Codex and Claude on Windows block and print a
+ * continuation to stdout. Every Question Routing owner declares the same
+ * complete-window timeout; changing Codex's definition requires one explicit
+ * trust approval.
  */
 function stopHandler(
   adapterPath: string,
@@ -236,10 +218,12 @@ function stopHandler(
 ): HookHandler {
   const command = hookCommand(adapterPath, 'stop', harness, options)
   if (stopHandlerIsDetached(harness, options.platform)) {
-    return { type: 'command', command, timeout: CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS, async: true }
+    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
-  if (harness === 'codex') return { type: 'command', command }
-  return { type: 'command', command, timeout: BLOCKING_STOP_TIMEOUT_SECONDS }
+  if (harness === 'codex' || harness === 'claude-code') {
+    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
+  }
+  return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }
 
 function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
@@ -350,7 +334,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
       },
       {
         command: hookCommand(options.adapterPath, 'stop', 'cursor', commandOptions),
-        timeout: BLOCKING_STOP_TIMEOUT_SECONDS,
+        timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
         // A continuation may register a real follow-up question. Match the
         // session-state cap so those chains are useful but never unbounded.
         loop_limit: 3,

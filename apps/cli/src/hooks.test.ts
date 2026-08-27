@@ -44,8 +44,10 @@ import {
 import {
   claimQuestionPush,
   clearSessionState,
+  dropPendingQuestion,
   drainRetirements,
   drainOrphanRetirements,
+  handleSessionEnd,
   runEscalationWaiter,
   MAX_CONTINUATION_COUNT,
   MAX_HELD_DELIVERIES,
@@ -61,15 +63,10 @@ import {
   writeSessionState as persistSessionState,
   type PendingQuestion,
   type SessionState,
-  waiterCeilingSeconds,
-  WAITER_CEILING_SECONDS,
-  DETACHED_WAITER_CEILING_SECONDS,
 } from './hooks.js'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
-import {
-  BLOCKING_STOP_TIMEOUT_SECONDS,
-  CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
-} from './install-hooks.js'
+import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
+import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { GUIDANCE_CONTEXT_MAX_BYTES } from './guidance-render.js'
 
 /** New-format test fixtures always carry the canonical body explicitly. */
@@ -506,23 +503,12 @@ function writeGlobalConfig(h: Harness, toml: string): void {
 const AWAY = NOW - 600_000
 
 describe('the waiter wall clock', () => {
-  it('spends a held turn sparingly and a detached one generously', () => {
-    // A held turn is somebody's terminal, so the short ceiling is the cost of
-    // waiting. Detached, nothing is held, and the same number only shortens how
-    // long a direct wake stays possible.
-    expect(waiterCeilingSeconds(false)).toBe(WAITER_CEILING_SECONDS)
-    expect(waiterCeilingSeconds(true)).toBe(DETACHED_WAITER_CEILING_SECONDS)
-    expect(DETACHED_WAITER_CEILING_SECONDS).toBeGreaterThan(WAITER_CEILING_SECONDS)
+  it('keeps both ownership routes alive beyond the longest answer window', () => {
+    expect(QUESTION_WAITER_CEILING_SECONDS).toBeGreaterThan(REPLY_MAX_WINDOW_SECONDS)
   })
 
-  it('stays under the timeout the async Stop handler declares', () => {
-    // That declaration's kill is silent: past it the waiter vanishes and the
-    // answer the user already gave is never delivered.
-    expect(DETACHED_WAITER_CEILING_SECONDS).toBeLessThan(CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS)
-  })
-
-  it('leaves the blocking host headroom above the waiter it declares for', () => {
-    expect(BLOCKING_STOP_TIMEOUT_SECONDS).toBeGreaterThan(WAITER_CEILING_SECONDS)
+  it('stays under the timeout every Question Routing Stop declares', () => {
+    expect(QUESTION_WAITER_CEILING_SECONDS).toBeLessThan(QUESTION_STOP_TIMEOUT_SECONDS)
   })
 })
 
@@ -930,10 +916,9 @@ describe('terminal-first grace window', () => {
     expect(h.recorder.submitted).toHaveLength(0)
   })
 
-  it('never lets the longest window crowd out a reply window the server accepts', async () => {
-    // The maximum grace a user can configure still has to leave the protocol's
-    // 60s minimum inside the waiter ceiling. Real timers do not wake on the
-    // exact requested millisecond, so the sleep deliberately overshoots.
+  it('keeps the longest grace inside the owner startup allowance', async () => {
+    // Real timers do not wake on the exact requested millisecond, so the sleep
+    // deliberately overshoots the supported six-minute preference.
     const h = harness([reply({ text: 'Yes' })])
     const virtualSleep = h.deps.sleep!
     h.deps.sleep = async (milliseconds: number) => virtualSleep(milliseconds + 1)
@@ -1015,9 +1000,8 @@ describe('terminal-first grace window', () => {
       return JSON.stringify({ session_id: 'transport-budget' })
     })
 
-    // The waiter's 480s ceiling is the last moment it will accept an answer;
-    // closing the window and retiring the card happens after it, which is what
-    // the blocking hosts' extra minute of declared headroom is there for.
+    // This fixture commits a short eight-minute answer window. Transport and
+    // the close fence still fit inside the Stop definition's teardown margin.
     expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 540_000)
     expect(readSessionState('transport-budget', h.env).pending).toBeUndefined()
   })
@@ -1214,6 +1198,74 @@ describe('OpenCode answer continuation', () => {
 })
 
 describe('the waiter owning one question to the end', () => {
+  it('does not admit a max-window question after setup consumes its allowance', async () => {
+    const h = harness([])
+    writeGlobalConfig(h, `reply_window_seconds = ${REPLY_MAX_WINDOW_SECONDS}\n`)
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        listDevices: async () => {
+          h.advanceClock(10 * 60 * 1000 + 1)
+          return client.listDevices()
+        },
+      } as ApiClient
+    }
+    writeSessionState('setup-overrun', h.env, { last_prompt_at: AWAY })
+    registerQuestion('setup-overrun', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'setup-overrun' }))
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toEqual([])
+    const pending = readSessionState('setup-overrun', h.env).pending?.[0]
+    expect(pending?.request_id).toBeUndefined()
+    expect(pending?.submission?.request_id).toBeDefined()
+    expect(h.io.errLines.join('\n')).toContain('setup consumed the admission allowance')
+  })
+
+  it('continues the same turn when the default one-day answer arrives just before expiry', async () => {
+    const h = harness([])
+    const answerAt = NOW + (86_400 - 10) * 1000
+    h.recorder.replyExpiresAt = new Date(NOW + 86_400_000).toISOString()
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async (
+          requestId: string,
+          options: { waitSeconds: number; afterSeq: number },
+        ) => {
+          const remaining = Math.max(0, answerAt - (h.deps.now?.() ?? NOW))
+          h.advanceClock(Math.min(options.waitSeconds * 1000, remaining))
+          const response = await client.replies(requestId, options)
+          return {
+            ...response,
+            replies:
+              (h.deps.now?.() ?? NOW) >= answerAt
+                ? [reply({ text: 'Answer near the one-day edge' })]
+                : [],
+          }
+        },
+      } as ApiClient
+    }
+    writeSessionState('full-default-window', h.env, { last_prompt_at: AWAY })
+    registerQuestion('full-default-window', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'full-default-window' }),
+      'codex',
+    )
+
+    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain(
+      'Answer near the one-day edge',
+    )
+  })
+
   it('delivers a reply that commits while the server close fence is finalizing silence', async () => {
     const h = harness([])
     const factory = h.deps.clientFactory
@@ -1487,7 +1539,7 @@ describe('the waiter owning one question to the end', () => {
     })
   })
 
-  it('closes and retires silence at the absolute owner deadline', async () => {
+  it('does not close silence before the committed answer deadline', async () => {
     const h = harness([])
     const factory = h.deps.clientFactory
     h.deps.clientFactory = () => {
@@ -1496,8 +1548,8 @@ describe('the waiter owning one question to the end', () => {
         ...client,
         submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => ({
           ...(await client.submit(body, waitSeconds)),
-          // The real server commits the configured reply window, rather than
-          // the generic recorder's deliberately broad 480s fixture.
+          // Pin a short real-server deadline so the virtual clock proves the
+          // waiter did not borrow even its close fence from the answer window.
           reply_expires_at: new Date(NOW + 60_000).toISOString(),
         }),
       } as ApiClient
@@ -1507,10 +1559,97 @@ describe('the waiter owning one question to the end', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'deadline' }))
 
-    expect(h.deps.now?.()).toBe(NOW + 57_000)
+    expect(h.deps.now?.()).toBe(NOW + 60_000)
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(readSessionState('deadline', h.env).pending).toBeUndefined()
     expect(h.io.errLines.join('\n')).toContain('expired with its continuation owner')
+  })
+
+  it('closes a server window whose committed deadline exceeds its process owner', async () => {
+    const h = harness([])
+    h.recorder.replyExpiresAt = new Date(
+      NOW + (QUESTION_WAITER_CEILING_SECONDS + 60) * 1000,
+    ).toISOString()
+    writeSessionState('deadline-overrun', h.env, { last_prompt_at: AWAY })
+    registerQuestion('deadline-overrun', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'deadline-overrun' }))
+
+    expect(h.recorder.closed).toEqual([h.recorder.receipts[0]])
+    expect(readSessionState('deadline-overrun', h.env).pending).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('deadline beyond this process owner')
+  })
+
+  it('keeps anomalous live state when immediate closure is unreachable', async () => {
+    const h = harness([])
+    h.recorder.failCloses = true
+    h.recorder.replyExpiresAt = new Date(
+      NOW + (QUESTION_WAITER_CEILING_SECONDS + 60) * 1000,
+    ).toISOString()
+    writeSessionState('deadline-recovery', h.env, { last_prompt_at: AWAY })
+    registerQuestion('deadline-recovery', h.env, { question: 'Deploy?' }, NOW)
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'deadline-recovery' }))
+
+    const live = readSessionState('deadline-recovery', h.env).pending?.[0]
+    expect(live?.request_id).toBe(h.recorder.receipts[0])
+    expect(h.io.errLines.join('\n')).toContain('preserving the live question')
+
+    h.recorder.failCloses = false
+    h.recorder.repliesFor = (requestId) =>
+      requestId === live?.request_id ? [reply({ text: 'Recovered answer' })] : []
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'deadline-recovery' }))
+
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain('Recovered answer')
+  })
+
+  it('parks anomalous retirement when terminal input removes the frozen entry', async () => {
+    const h = harness([])
+    h.recorder.failCloses = true
+    h.recorder.replyExpiresAt = new Date(
+      NOW + (QUESTION_WAITER_CEILING_SECONDS + 60) * 1000,
+    ).toISOString()
+    const factory = h.deps.clientFactory!
+    let markClose: (() => void) | undefined
+    const closeStarted = new Promise<void>((resolve) => {
+      markClose = resolve
+    })
+    let releaseClose: (() => void) | undefined
+    const heldClose = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    h.deps.clientFactory = (...args) => {
+      const client = factory(...args)
+      return {
+        ...client,
+        closeReplies: async (requestId: string) => {
+          markClose?.()
+          await heldClose
+          return client.closeReplies(requestId)
+        },
+      } as ApiClient
+    }
+    writeSessionState('deadline-prompt-race', h.env, { last_prompt_at: AWAY })
+    registerQuestion('deadline-prompt-race', h.env, { question: 'Deploy?' }, NOW)
+
+    const stop = hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'deadline-prompt-race' }),
+    )
+    await closeStarted
+    const frozen = readSessionState('deadline-prompt-race', h.env).pending?.[0]
+    if (frozen === undefined) throw new Error('expected frozen submission state')
+    dropPendingQuestion('deadline-prompt-race', h.env, frozen)
+    releaseClose?.()
+    await stop
+
+    expect(
+      readSessionState('deadline-prompt-race', h.env).retiring?.map(
+        (entry) => entry.request_id,
+      ),
+    ).toEqual([h.recorder.receipts[0]])
   })
 
   it('charges sequential submission latency to one owner deadline, not to the answer window', async () => {
@@ -1529,9 +1668,11 @@ describe('the waiter owning one question to the end', () => {
     // part of its own budget getting the question out. Both questions stay
     // answerable for the configured window.
     expect(windows).toEqual([86_400, 86_400])
-    // The owner's own budget is still one shared deadline, and it is still
-    // charged for the latency: the whole pass fits inside the waiter ceiling.
-    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
+    // Submission latency is charged to the one owner lifetime, without
+    // shrinking either server answer window.
+    expect(h.deps.now?.()).toBeLessThanOrEqual(
+      NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
+    )
   })
 
   it('re-arms the next Stop for an independently pending answer', async () => {
@@ -1590,7 +1731,7 @@ describe('the waiter owning one question to the end', () => {
     expect(h.deps.now?.()).toBeLessThan(started + 30_000)
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(0)
     expect(readSessionState('spent-owner', h.env).pending?.[0]?.request_id).toBe('req_old')
-    expect(h.io.errLines.join('\n')).toContain('previous waiter already used its ceiling')
+    expect(h.io.errLines.join('\n')).toContain('previous answer owner ended')
   })
 
   it('does not re-arm a live question written before owner leases were persisted', async () => {
@@ -1619,7 +1760,7 @@ describe('the waiter owning one question to the end', () => {
     )
   })
 
-  it('pushes a newly registered question on the next Stop after a spent waiter', async () => {
+  it('pushes and owns a newly registered question after a spent legacy waiter', async () => {
     const h = harness([])
     h.recorder.replyExpiresAt = new Date(NOW + 86_400_000).toISOString()
     writeSessionState('after-degraded', h.env, {
@@ -1643,8 +1784,9 @@ describe('the waiter owning one question to the end', () => {
     const questions = h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))
     expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['New question?'])
     expect(readSessionState('after-degraded', h.env).pending?.map((entry) => entry.question)).toEqual(
-      ['Earlier question?', 'New question?'],
+      ['Earlier question?'],
     )
+    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
   })
 
   it('still waits out a live owner lease for an independent answer', async () => {
@@ -2428,8 +2570,8 @@ describe('hostile input', () => {
     mkdirSync(path.join(project, '.notifai'), { recursive: true })
     writeFileSync(path.join(project, '.notifai', 'config.toml'), 'ask_grace_seconds = 99999\n')
     const config = loadConfig({ cwd: project, env: h.env })
-    // A committed repository file must not be able to consume the waiter's
-    // whole ceiling and leave no window in which an answer is still accepted.
+    // A committed repository file must not be able to replace the supported
+    // terminal-first preference with an arbitrary multi-hour hold.
     expect(config.ask_grace_seconds.value).toBeLessThanOrEqual(360)
   })
 })
@@ -3999,6 +4141,111 @@ describe('two hooks racing one question', () => {
     expect(h.io.errLines.join(" ")).toContain('already handling')
   })
 
+  it('waits past fifteen seconds for an older owner to hand off a newer ask', async () => {
+    const h = harness([reply({ text: 'Continue' })])
+    writeSessionState('race-long-handoff', h.env, { last_prompt_at: AWAY })
+    registerQuestion('race-long-handoff', h.env, { question: 'Original?' }, NOW)
+    expect(claimQuestionPush('race-long-handoff', h.env, Date.now())).toBe(true)
+    h.advanceClock(1)
+    registerQuestion(
+      'race-long-handoff',
+      h.env,
+      { question: 'New independent ask?' },
+      NOW + 1,
+    )
+    const startedAt = h.deps.now!()
+    let handedOff = false
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      if (!handedOff && h.deps.now!() - startedAt >= 20_000) {
+        handedOff = true
+        releaseQuestionPush('race-long-handoff', h.env)
+      }
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-long-handoff' }))
+
+    expect(handedOff).toBe(true)
+    expect(h.deps.now!() - startedAt).toBeGreaterThanOrEqual(20_000)
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(2)
+    expect(h.io.errLines.join(' ')).not.toContain('claimed-elsewhere')
+  })
+
+  it('waits through the holder teardown margin instead of stranding a boundary ask', async () => {
+    const h = harness([reply({ text: 'Continue' })])
+    writeSessionState('race-holder-deadline', h.env, { last_prompt_at: AWAY })
+    registerQuestion('race-holder-deadline', h.env, { question: 'Original?' }, NOW)
+    expect(
+      claimQuestionPush(
+        'race-holder-deadline',
+        h.env,
+        Date.now(),
+        undefined,
+        NOW + 20_000,
+      ),
+    ).toBe(true)
+    h.advanceClock(1)
+    registerQuestion(
+      'race-holder-deadline',
+      h.env,
+      { question: 'New?' },
+      NOW + 1,
+    )
+    let released = false
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      if (!released && h.deps.now!() >= NOW + 25_000) {
+        released = true
+        releaseQuestionPush('race-holder-deadline', h.env)
+      }
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-holder-deadline' }))
+
+    expect(released).toBe(true)
+    expect(h.deps.now!()).toBeGreaterThanOrEqual(NOW + 25_000)
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(2)
+  })
+
+  it('stops waiting when another successor snapshots the new ask', async () => {
+    const h = harness([])
+    writeSessionState('race-resnapshot', h.env, { last_prompt_at: AWAY })
+    registerQuestion('race-resnapshot', h.env, { question: 'Original?' }, NOW)
+    expect(
+      claimQuestionPush(
+        'race-resnapshot',
+        h.env,
+        Date.now(),
+        undefined,
+        NOW + 60_000,
+      ),
+    ).toBe(true)
+    h.advanceClock(1)
+    registerQuestion('race-resnapshot', h.env, { question: 'New?' }, NOW + 1)
+    const startedAt = h.deps.now!()
+    let replacementClaimed = false
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      if (!replacementClaimed && h.deps.now!() - startedAt >= 20_000) {
+        releaseQuestionPush('race-resnapshot', h.env)
+        replacementClaimed = claimQuestionPush(
+          'race-resnapshot',
+          h.env,
+          Date.now(),
+          undefined,
+          NOW + 40_000,
+        )
+      }
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'race-resnapshot' }))
+
+    expect(replacementClaimed).toBe(true)
+    expect(h.deps.now!() - startedAt).toBe(20_000)
+    expect(h.recorder.submitted).toEqual([])
+    releaseQuestionPush('race-resnapshot', h.env)
+  })
+
   it('resumes the agent once when two Stops collect the same late answer', async () => {
     const answers: ReplyView[] = []
     const h = harness(answers)
@@ -4044,10 +4291,54 @@ describe('two hooks racing one question', () => {
     expect(polls).toBe(1)
     expect(resumes.filter((entry) => entry.decision === 'block')).toHaveLength(1)
   })
+
+  it('hands the claim to a later Stop so its independent question is sent now', async () => {
+    const h = harness([])
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    h.recorder.repliesFor = (requestId) =>
+      h.recorder.aliases.get(requestId) === 2
+        ? [reply({ text: 'Answer the newer question' })]
+        : []
+    let markFirstPoll: (() => void) | undefined
+    const firstPoll = new Promise<void>((resolve) => {
+      markFirstPoll = resolve
+    })
+    let releaseFirstPoll: (() => void) | undefined
+    const heldFirstPoll = new Promise<void>((resolve) => {
+      releaseFirstPoll = resolve
+    })
+    let hold = true
+    h.recorder.beforeReplies = async () => {
+      if (!hold) return
+      hold = false
+      markFirstPoll?.()
+      await heldFirstPoll
+    }
+    writeSessionState('claim-handoff', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claim-handoff', h.env, { question: 'Older question?' }, NOW)
+
+    const firstStop = hookRunCommand(h.deps, 'stop', stdin({ session_id: 'claim-handoff' }))
+    await firstPoll
+    registerQuestion('claim-handoff', h.env, { question: 'Newer question?' }, NOW + 1)
+    const secondStop = hookRunCommand(h.deps, 'stop', stdin({ session_id: 'claim-handoff' }))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    releaseFirstPoll?.()
+    await Promise.all([firstStop, secondStop])
+
+    const sent = h.recorder.submitted
+      .filter((entry) => isQuestionSubmit(entry))
+      .map((entry) => entry.draft.presentation.body)
+    expect(sent).toEqual(['Older question?', 'Newer question?'])
+    expect(h.io.outLines.join('\n')).toContain('Answer the newer question')
+    expect(h.io.errLines.join('\n')).toContain('yielding the answer owner')
+  })
 })
 
 describe('question registration racing a Stop submission', () => {
-  it('keeps the new question when the older owner expires', async () => {
+  it('preserves both questions while the old owner yields to the new ask', async () => {
     const h = harness([])
     writeSessionState('submit-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('submit-race', h.env, { question: 'Old question?' }, NOW)
@@ -4058,19 +4349,19 @@ describe('question registration racing a Stop submission', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'submit-race' }))
 
-    // The racing ask appended and remains unasked. The already-delivered old
-    // question is retired when this Stop owner reaches its deadline, so it
-    // cannot accept a phone answer after the hook has returned.
+    // The racing ask is a handoff signal. This owner leaves the delivered old
+    // question and the new unasked one intact for the successor Stop.
     const state = readSessionState('submit-race', h.env)
-    expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
-    expect(state.pending?.[0]?.request_id).toBeUndefined()
-    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
-    expect(state.retiring).toContainEqual(
-      expect.objectContaining({ request_id: h.recorder.receipts[0], state: 'expired' }),
-    )
+    expect(state.pending?.map((entry) => entry.question)).toEqual([
+      'Old question?',
+      'New question?',
+    ])
+    expect(state.pending?.[0]?.request_id).toBe(h.recorder.receipts[0])
+    expect(state.pending?.[1]?.request_id).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('yielding the answer owner')
   })
 
-  it('keeps the newer question when the older in-flight question receives an answer', async () => {
+  it('lets the successor owner collect an old answer without losing the newer question', async () => {
     const h = harness([reply({ text: 'Old answer' })])
     writeSessionState('answer-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('answer-race', h.env, { question: 'Old question?' }, NOW)
@@ -4079,6 +4370,7 @@ describe('question registration racing a Stop submission', () => {
       registerQuestion('answer-race', h.env, { question: 'New question?' }, NOW + 1)
     }
 
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-race' }))
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-race' }))
 
     const state = readSessionState('answer-race', h.env)
@@ -4169,6 +4461,194 @@ describe('Claude Code Stop wake route', () => {
     expect(message.message.content).not.toMatch(/trusted|urgent|permission|approval/i)
     expect(wake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
     expect(readSessionState('claude-route', h.env).accepted).toBeDefined()
+  })
+
+  it('keeps the detached owner through the default one-day answer window', async () => {
+    const h = harness([])
+    const answerAt = NOW + (86_400 - 10) * 1000
+    h.recorder.replyExpiresAt = new Date(NOW + 86_400_000).toISOString()
+    const factory = h.deps.clientFactory
+    h.deps.clientFactory = () => {
+      const client = factory!()
+      return {
+        ...client,
+        replies: async (
+          requestId: string,
+          options: { waitSeconds: number; afterSeq: number },
+        ) => {
+          const remaining = Math.max(0, answerAt - (h.deps.now?.() ?? NOW))
+          h.advanceClock(Math.min(options.waitSeconds * 1000, remaining))
+          const response = await client.replies(requestId, options)
+          return {
+            ...response,
+            replies:
+              (h.deps.now?.() ?? NOW) >= answerAt
+                ? [reply({ text: 'Wake near the one-day edge' })]
+                : [],
+          }
+        },
+      } as ApiClient
+    }
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-route', h.env, { question: 'Deploy?' }, NOW)
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+
+    expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
+    expect(wake.sent).toHaveLength(1)
+    expect(wake.sent[0]).toContain('Wake near the one-day edge')
+  })
+
+  it('stops a detached observer when SessionEnd removes its ownership', async () => {
+    const h = harness([reply({ text: 'Too late' })])
+    let markPoll: (() => void) | undefined
+    const pollStarted = new Promise<void>((resolve) => {
+      markPoll = resolve
+    })
+    let releasePoll: (() => void) | undefined
+    const heldPoll = new Promise<void>((resolve) => {
+      releasePoll = resolve
+    })
+    h.recorder.beforeReplies = async () => {
+      markPoll?.()
+      await heldPoll
+    }
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-route', h.env, { question: 'Deploy?' }, NOW)
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+
+    const stop = hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+    await pollStarted
+    await hookRunCommand(
+      deps,
+      'session-end',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+    releasePoll?.()
+    await stop
+
+    expect(wake.sent).toEqual([])
+    expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('stopping this observer')
+    expect(claimQuestionPush('claude-route', h.env)).toBe(true)
+    releaseQuestionPush('claude-route', h.env)
+  })
+
+  it('does not resurrect or wake an ended session after its close fence returns', async () => {
+    const h = harness([reply({ text: 'Too late' })])
+    const factory = h.deps.clientFactory!
+    let markClose: (() => void) | undefined
+    const closeStarted = new Promise<void>((resolve) => {
+      markClose = resolve
+    })
+    let releaseClose: (() => void) | undefined
+    const heldClose = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    h.deps.clientFactory = (...args) => {
+      const client = factory(...args)
+      return {
+        ...client,
+        closeReplies: async (requestId: string) => {
+          markClose?.()
+          await heldClose
+          return client.closeReplies(requestId)
+        },
+      } as ApiClient
+    }
+    writeSessionState('claude-fence-end', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-fence-end', h.env, { question: 'Deploy?' }, NOW)
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+
+    const stop = hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: 'claude-fence-end', cwd: '/tmp/claude-fence-end' }),
+      'claude-code',
+    )
+    await closeStarted
+    await hookRunCommand(
+      deps,
+      'session-end',
+      stdin({ session_id: 'claude-fence-end', cwd: '/tmp/claude-fence-end' }),
+      'claude-code',
+    )
+    releaseClose?.()
+    await stop
+
+    expect(wake.sent).toEqual([])
+    expect(readSessionState('claude-fence-end', h.env).accepted).toBeUndefined()
+    expect(h.io.errLines.join('\n')).toContain('ended before answer delivery')
+  })
+
+  it('globally retires a submission that commits after SessionEnd', async () => {
+    const h = harness([])
+    const factory = h.deps.clientFactory!
+    let markSubmit: (() => void) | undefined
+    const submitStarted = new Promise<void>((resolve) => {
+      markSubmit = resolve
+    })
+    let releaseSubmit: (() => void) | undefined
+    const heldSubmit = new Promise<void>((resolve) => {
+      releaseSubmit = resolve
+    })
+    h.deps.clientFactory = (...args) => {
+      const client = factory(...args)
+      return {
+        ...client,
+        submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => {
+          if (body.draft.reply !== undefined) {
+            markSubmit?.()
+            await heldSubmit
+          }
+          return client.submit(body, waitSeconds)
+        },
+      } as ApiClient
+    }
+    writeSessionState('claude-submit-end', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-submit-end', h.env, { question: 'Deploy?' }, NOW)
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+
+    const stop = hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: 'claude-submit-end', cwd: '/tmp/claude-submit-end' }),
+      'claude-code',
+    )
+    await submitStarted
+    await hookRunCommand(
+      deps,
+      'session-end',
+      stdin({ session_id: 'claude-submit-end', cwd: '/tmp/claude-submit-end' }),
+      'claude-code',
+    )
+    releaseSubmit?.()
+    await stop
+
+    const client = factory('https://test.notifai.invalid', 'Bearer test')
+    await drainOrphanRetirements(
+      { client, config: loadConfig({ cwd: h.deps.cwd, env: h.env }) },
+      h.env,
+      NOW,
+    )
+    expect(wake.sent).toEqual([])
+    expect(h.recorder.closed).toContain(h.recorder.receipts[0])
+    expect(readSessionState('claude-submit-end', h.env).pending).toBeUndefined()
   })
 
   /** One answer already accepted and journaled, ready for the next Stop. */
@@ -4488,7 +4968,7 @@ describe('escalation waiter delivery seam', () => {
       sessionId: 'waiter-route',
       envelope: { session_id: 'waiter-route' },
       route: { kind: 'hook-continuation', deliver },
-      processDeadlineAt: NOW + 480_000,
+      processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
     })
 
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
@@ -4548,7 +5028,7 @@ describe('escalation waiter delivery seam', () => {
           return { stdout: JSON.stringify({ decision: 'block', reason: event.context }), notes: [] }
         },
       },
-      processDeadlineAt: NOW + 480_000,
+      processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
     })
 
     expect(phases.filter((phase) => phase === 'grace').length).toBeGreaterThan(0)
@@ -4559,6 +5039,74 @@ describe('escalation waiter delivery seam', () => {
     ])
     expect(claimQuestionPush('waiter-race-lifetime', h.env)).toBe(true)
     releaseQuestionPush('waiter-race-lifetime', h.env)
+  })
+
+  it('keeps an unrelated answer when another owned question is retired mid-poll', async () => {
+    const h = harness([])
+    const first: PendingQuestion = {
+      question: 'First?',
+      body: 'First?',
+      asked_at: NOW,
+      request_id: 'req_partial_1',
+      collapse_key: 'collapse-partial-1',
+      device_ids: ['dev_iphone'],
+      reply_deadline_at: NOW + 60_000,
+      owner_deadline_at: NOW + 120_000,
+    }
+    const second: PendingQuestion = {
+      question: 'Second?',
+      body: 'Second?',
+      asked_at: NOW,
+      request_id: 'req_partial_2',
+      collapse_key: 'collapse-partial-2',
+      device_ids: ['dev_iphone'],
+      reply_deadline_at: NOW + 60_000,
+      owner_deadline_at: NOW + 120_000,
+    }
+    writeSessionState('waiter-partial', h.env, {
+      last_prompt_at: AWAY,
+      pending: [first, second],
+    })
+    const context = waiterContext(h)
+    const polls = new Map<string, number>()
+    let longPolls = 0
+    let releaseLongPolls: (() => void) | undefined
+    const heldLongPolls = new Promise<void>((resolve) => {
+      releaseLongPolls = resolve
+    })
+    context.waitForFirstReply = async (requestId: string) => {
+      const count = (polls.get(requestId) ?? 0) + 1
+      polls.set(requestId, count)
+      if (count === 1) return { replies: [], timedOut: true }
+      longPolls += 1
+      await heldLongPolls
+      return {
+        replies: requestId === second.request_id ? [reply({ text: 'Second answer' })] : [],
+        timedOut: requestId !== second.request_id,
+      }
+    }
+    const deliveries: string[] = []
+
+    const waiter = runEscalationWaiter(context, {
+      sessionId: 'waiter-partial',
+      envelope: { session_id: 'waiter-partial' },
+      route: {
+        kind: 'hook-continuation',
+        deliver: async (event) => {
+          deliveries.push(event.context)
+          return { acknowledgement: 'stdout', stdout: event.context }
+        },
+      },
+      processDeadlineAt: NOW + 120_000,
+    })
+    await waitUntil(() => longPolls === 2, 1_000, 'long reply polls did not start')
+    dropPendingQuestion('waiter-partial', h.env, first)
+    releaseLongPolls?.()
+    await waiter
+
+    expect(deliveries).toHaveLength(1)
+    expect(deliveries[0]).toContain('Second answer')
+    expect(deliveries[0]).not.toContain('First?')
   })
 
   /** One accepted answer on the journal, whatever route is about to own it. */
@@ -4583,6 +5131,138 @@ describe('escalation waiter delivery seam', () => {
     })
   }
 
+  it('lets SessionEnd cancel at the final route commit boundary', async () => {
+    const h = harness([])
+    journaled(h, 'waiter-final-cancel')
+    const context = waiterContext(h)
+    let markRoute: (() => void) | undefined
+    const routeStarted = new Promise<void>((resolve) => {
+      markRoute = resolve
+    })
+    let releaseRoute: (() => void) | undefined
+    const heldRoute = new Promise<void>((resolve) => {
+      releaseRoute = resolve
+    })
+    let wrote = false
+
+    const waiter = runEscalationWaiter(context, {
+      sessionId: 'waiter-final-cancel',
+      envelope: { session_id: 'waiter-final-cancel' },
+      route: {
+        kind: 'inbox-socket',
+        deliver: async (event) => {
+          markRoute?.()
+          await heldRoute
+          if (event.commitDelivery()) wrote = true
+          return { acknowledgement: wrote ? 'delivered' : 'held' }
+        },
+      },
+      processDeadlineAt: NOW + 120_000,
+    })
+    await routeStarted
+    await hookRunCommand(
+      h.deps,
+      'session-end',
+      stdin({ session_id: 'waiter-final-cancel' }),
+      'claude-code',
+    )
+    releaseRoute?.()
+    await waiter
+
+    expect(wrote).toBe(false)
+  })
+
+  it('fences production blocking stdout immediately before the harness write', async () => {
+    const h = harness([reply({ text: 'Too late for stdout' })])
+    writeSessionState('waiter-stdout-cancel', h.env, { last_prompt_at: AWAY })
+    registerQuestion('waiter-stdout-cancel', h.env, { question: 'Deploy?' }, NOW)
+    const originalErr = h.io.err.bind(h.io)
+    let ended = false
+    h.io.err = (line: string) => {
+      originalErr(line)
+      if (!ended && line.includes('answer from')) {
+        ended = true
+        handleSessionEnd(h.env, { session_id: 'waiter-stdout-cancel' }, NOW)
+      }
+    }
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'waiter-stdout-cancel' }),
+      'codex',
+    )
+
+    expect(ended).toBe(true)
+    expect(h.io.outLines).toEqual([])
+    expect(h.io.errLines.join('\n')).toContain('no continuation was written')
+  })
+
+  it('finishes a delivery that committed before SessionEnd without replaying it', async () => {
+    const h = harness([])
+    journaled(h, 'waiter-commit-first')
+    const context = waiterContext(h)
+    let markCommitted: (() => void) | undefined
+    const committed = new Promise<void>((resolve) => {
+      markCommitted = resolve
+    })
+    let releaseWrite: (() => void) | undefined
+    const heldWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    let writes = 0
+
+    const waiter = runEscalationWaiter(context, {
+      sessionId: 'waiter-commit-first',
+      envelope: { session_id: 'waiter-commit-first' },
+      route: {
+        kind: 'inbox-socket',
+        deliver: async (event) => {
+          expect(event.commitDelivery()).toBe(true)
+          markCommitted?.()
+          await heldWrite
+          writes += 1
+          return { acknowledgement: 'delivered' }
+        },
+      },
+      processDeadlineAt: NOW + 120_000,
+    })
+    await committed
+    await hookRunCommand(
+      h.deps,
+      'session-end',
+      stdin({ session_id: 'waiter-commit-first' }),
+      'claude-code',
+    )
+    releaseWrite?.()
+    await waiter
+
+    expect(writes).toBe(1)
+    expect(readSessionState('waiter-commit-first', h.env).accepted?.delivered_at).toBe(
+      NOW,
+    )
+
+    await hookRunCommand(
+      h.deps,
+      'session-start',
+      stdin({ session_id: 'waiter-commit-first' }),
+      'claude-code',
+    )
+    await runEscalationWaiter(context, {
+      sessionId: 'waiter-commit-first',
+      envelope: { session_id: 'waiter-commit-first' },
+      route: {
+        kind: 'inbox-socket',
+        deliver: async () => {
+          writes += 1
+          return { acknowledgement: 'delivered' }
+        },
+      },
+      processDeadlineAt: NOW + 120_000,
+    })
+    expect(writes).toBe(1)
+  })
+
   it('delivers an accepted answer once on a route that acknowledges its own write', async () => {
     const h = harness([])
     journaled(h, 'waiter-once')
@@ -4590,7 +5270,8 @@ describe('escalation waiter delivery seam', () => {
     const deliveries: string[] = []
     const route = {
       kind: 'inbox-socket' as const,
-      deliver: async (event: { context: string }) => {
+      deliver: async (event: { context: string; commitDelivery(): boolean }) => {
+        expect(event.commitDelivery()).toBe(true)
         deliveries.push(event.context)
         return {
           notes: ['posted the accepted answer'],
@@ -4607,13 +5288,32 @@ describe('escalation waiter delivery seam', () => {
         sessionId: 'waiter-once',
         envelope: { session_id: 'waiter-once', stop_hook_active: false },
         route,
-        processDeadlineAt: NOW + 480_000,
+        processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
       })
     }
 
     expect(deliveries).toHaveLength(1)
     expect(deliveries[0]).toContain('Ship it')
     expect(readSessionState('waiter-once', h.env).accepted).toBeUndefined()
+  })
+
+  it('does not settle a route that reports delivery without the SessionEnd commit', async () => {
+    const h = harness([])
+    journaled(h, 'waiter-uncommitted-route')
+    const context = waiterContext(h)
+
+    const outcome = await runEscalationWaiter(context, {
+      sessionId: 'waiter-uncommitted-route',
+      envelope: { session_id: 'waiter-uncommitted-route' },
+      route: {
+        kind: 'inbox-socket',
+        deliver: async () => ({ acknowledgement: 'delivered' }),
+      },
+      processDeadlineAt: NOW + 120_000,
+    })
+
+    expect(readSessionState('waiter-uncommitted-route', h.env).accepted).toBeDefined()
+    expect(outcome.notes.join('\n')).toContain('reported delivery without committing')
   })
 
   it('does not spend the delivery cap on turns where nothing was handed over', async () => {
@@ -4635,7 +5335,7 @@ describe('escalation waiter delivery seam', () => {
           kind: 'inbox-socket',
           deliver: async () => ({ notes: [], acknowledgement: 'held' as const }),
         },
-        processDeadlineAt: NOW + 480_000,
+        processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
       })
     }
     // Still journaled after more holds than the delivery cap allows.
@@ -4647,12 +5347,13 @@ describe('escalation waiter delivery seam', () => {
       envelope: { session_id: sessionId, stop_hook_active: false },
       route: {
         kind: 'inbox-socket',
-        deliver: async () => {
+        deliver: async (event) => {
+          expect(event.commitDelivery()).toBe(true)
           handedOver += 1
           return { notes: [], acknowledgement: 'delivered' as const }
         },
       },
-      processDeadlineAt: NOW + 480_000,
+      processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
     })
     expect(handedOver).toBe(1)
   })
@@ -4679,7 +5380,7 @@ describe('escalation waiter delivery seam', () => {
               return { notes: [], acknowledgement: 'held' as const }
             },
           },
-          processDeadlineAt: NOW + 480_000,
+          processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
         })
         notes.push(...outcome.notes)
       }
@@ -4711,7 +5412,7 @@ describe('escalation waiter delivery seam', () => {
             throw new Error('socket unavailable')
           },
         },
-        processDeadlineAt: NOW + 480_000,
+        processDeadlineAt: NOW + QUESTION_WAITER_CEILING_SECONDS * 1000,
       }),
     ).rejects.toThrow('socket unavailable')
 
@@ -4778,12 +5479,8 @@ describe('session state across a prompt', () => {
   })
 })
 
-describe('a question outliving the waiter that pushed it', () => {
-  it('records when the server stops accepting, not when this owner stops waiting', async () => {
-    // These were the same number until the window became a setting, and taking
-    // the minimum capped every question at the waiter's ceiling: a day-long
-    // window was swept as stale about eight minutes later and retired, so the
-    // answer given over lunch met a closed question.
+describe('a question reaching the end of its answer window', () => {
+  it('keeps the owner alive until the server stops accepting', async () => {
     const h = harness([])
     const aDayOut = NOW + 86_400_000
     h.recorder.replyExpiresAt = new Date(aDayOut).toISOString()
@@ -4793,15 +5490,13 @@ describe('a question outliving the waiter that pushed it', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'outlive' }))
 
     const state = readSessionState('outlive', h.env)
-    const live = state.pending?.[0]
-    // Still live, still carrying the server's window — not the waiter's.
-    expect(live?.request_id).toBeDefined()
-    expect(live?.reply_deadline_at).toBe(aDayOut)
-    // Not closed and not retired: those are what capped it at eight minutes.
-    expect(state.retiring).toBeUndefined()
-    expect(h.recorder.closed).toEqual([])
-    // And the waiter still stopped at its own ceiling rather than waiting a day.
-    expect(h.deps.now?.()).toBeLessThanOrEqual(NOW + 480_000)
+    expect(state.pending).toBeUndefined()
+    expect(state.retiring).toEqual([
+      expect.objectContaining({ request_id: h.recorder.receipts[0], state: 'expired' }),
+    ])
+    expect(h.recorder.closed).toHaveLength(1)
+    expect(h.deps.now?.()).toBeGreaterThan(NOW + 8 * 60 * 1000)
+    expect(h.deps.now?.()).toBeLessThanOrEqual(aDayOut)
   })
 
   it('still closes a question the server has genuinely stopped accepting', async () => {
@@ -4812,7 +5507,7 @@ describe('a question outliving the waiter that pushed it', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'short-window' }))
 
-    // Its window closed inside the waiter's ceiling, so it is retired here
+    // Its short window closes under the same owner, so it is retired here
     // rather than left for a turn that could never collect it.
     expect(readSessionState('short-window', h.env).pending).toBeUndefined()
     expect(h.recorder.closed.length).toBe(1)

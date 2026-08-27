@@ -50,9 +50,11 @@ collection (up to eight), pair each with `--image-alt` for alt text, and use
 notifai ask "Deploy the migration to production?" --choice Yes --choice No
 ```
 
-The agent registers the question, ends its turn, and your answer comes
-back on its next turn. On iPhone, press and hold the collapsed banner to
-answer; the choices appear on the expanded card, not on the lock screen.
+The agent registers the question, ends its work, and your answer comes back on
+its next turn. Question Routing keeps that exact session available for the
+complete answer window: Claude Code waits out of band and wakes it, while Codex
+holds the asking turn. On iPhone, press and hold the collapsed banner to answer;
+the choices appear on the expanded card, not on the lock screen.
 
 By default a question reaches your devices when the agent turn ends, whether or
 not you are at the keyboard (`ask_grace_seconds = 0`). Set a positive grace
@@ -96,8 +98,9 @@ Claude Code Stop returns immediately into the live inbox route on macOS/Linux;
 on Windows, where upstream exposes no inbox socket, Stop stays open and returns
 the accepted answer through the harness continuation. The first migration may
 require one Codex `/hooks` approval; later repairs keep the same identity.
-Codex's Stop definition omits its timeout so the host default remains
-authoritative; prompt-submit and session-end retain fixed short limits.
+Codex's Stop definition declares the full-window timeout explicitly; that
+one-time definition change is why the migration needs approval. Prompt-submit
+and session-end retain fixed short limits.
 
 `notifai doctor` compares Codex trust on a best-effort basis against Codex's
 current persisted representation. Notifai never writes that trust store;

@@ -38,13 +38,13 @@ export const HARNESS_CAPABILITIES: Record<Harness, HarnessCapability> = {
     stopContinuation: 'decision-block',
     deliveryRoutes: ['hook-continuation', 'inbox-socket', 'cold-resume', 'hold-for-next-turn'],
     deliveryContract:
-      'the Stop hook returns at once and waits out of band, then posts the answer into this same session over its own inbox socket; a session that has stopped is resumed only once a liveness probe proves it stopped',
+      'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same session over its own inbox socket; a session that has stopped is resumed only once a liveness probe proves it stopped',
   },
   codex: {
     stopContinuation: 'decision-block',
     deliveryRoutes: ['hook-continuation', 'cold-resume', 'hold-for-next-turn'],
     deliveryContract:
-      'live Stop continuation while the turn is held; once it returns, a stopped thread is resumed behind its writer lock and anything else waits for the next turn',
+      'live Stop continuation while the turn is held through the complete answer window; crash recovery may resume only a stopped thread behind its writer lock',
   },
   cursor: {
     stopContinuation: 'unsupported',
