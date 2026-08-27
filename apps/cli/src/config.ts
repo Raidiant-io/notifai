@@ -70,8 +70,8 @@ export interface CliConfig {
    * elapses does the question reach companion devices.
    *
    * A timer, and only a timer. Whether the user happens to be at this keyboard
-   * decides nothing — the waiter no longer holds their terminal, so there is
-   * nothing for their presence to protect them from.
+   * decides nothing; the harness-specific owner continues waiting either in
+   * the held turn or out of band.
    */
   ask_grace_seconds: ResolvedValue<number>
   /**
@@ -90,7 +90,7 @@ export interface CliConfig {
    * usefulness.
    */
   log_max_bytes: ResolvedValue<number>
-  /** How long the server keeps accepting an answer to a question. */
+  /** How long the server accepts an answer and Question Routing owns its return path. */
   reply_window_seconds: ResolvedValue<number>
   /** Log files kept in total, the active one included. */
   log_max_files: ResolvedValue<number>
@@ -330,17 +330,14 @@ export function findProjectLocalConfigPath(
 
 /**
  * Ranges every layer is clamped to. Config is readable from a repository, so an
- * out-of-range value is attacker input, not a typo: an unbounded grace window
- * would consume the waiter's whole ceiling and silently leave no time at all in
- * which the user's answer could still be accepted.
+ * out-of-range value is attacker input, not a typo.
  */
 const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> = {
   wait_seconds: { min: 0, max: 300 },
   ttl_seconds: { min: 0, max: 7 * 24 * 3600 },
-  // A plain number, no longer derived from a hook budget's leftovers. Six
-  // minutes leaves two clear minutes of the waiter's 480s ceiling, so the
-  // longest window a user can choose still leaves an answer window the server
-  // will accept — with room to spare for a timer that wakes late.
+  // Six minutes is the supported terminal-first preference bound. The Stop
+  // owner carries separate startup headroom, so this never shortens the answer
+  // window that begins after submission.
   ask_grace_seconds: { min: 0, max: 360 },
   // The floor is the shortest window the wire contract accepts; the ceiling is
   // the point past which a question would outlive the retained content it

@@ -156,6 +156,7 @@ export function codexWakeRoute(options: {
       const raced = holdForNextTurn(confirmed)
       if (raced !== null) return raced
 
+      if (!event.commitDelivery()) return cancelledDelivery()
       await adapters.resume(options.threadId, options.cwd, event.context)
       return {
         notes: ['cold-resumed the stopped Codex thread with its accepted answer'],
@@ -165,6 +166,14 @@ export function codexWakeRoute(options: {
         acknowledgement: 'delivered',
       }
     },
+  }
+}
+
+function cancelledDelivery(): DeliveryOutcome {
+  return {
+    notes: ['the Agent Session ended before answer delivery; stopping this observer'],
+    log: { route: 'hold-for-next-turn', stage: 'queued', reason: 'session-ended' },
+    acknowledgement: 'held',
   }
 }
 

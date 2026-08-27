@@ -43,7 +43,6 @@ import {
   readSessionState,
   resetCursorStopActivation,
   registerQuestion,
-  waiterCeilingSeconds,
   withdrawUnpushedQuestions,
   type EscalationDeliveryRoute,
   type HookContext,
@@ -51,7 +50,7 @@ import {
   type PendingQuestion,
 } from './hooks.js'
 import {
-  BLOCKING_STOP_TIMEOUT_SECONDS,
+  NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   HARNESSES,
   applyPlan,
   buildCursorHookConfig,
@@ -75,11 +74,11 @@ import {
   removeCursorHooks,
   removeHooks,
   settingsFile,
-  stopHandlerIsDetached,
   withCodexLayerTransaction,
   type Harness,
   type Installation,
 } from './install-hooks.js'
+import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
@@ -176,11 +175,10 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
-  // The waiter may spend a long wall clock exactly when no turn is held open
-  // for it, which is the same condition the installer used to declare
-  // `async: true`. One predicate decides it for both.
-  const detachedWaiter = stopHandlerIsDetached(harness, deps.hookPlatform ?? process.platform)
-  const processDeadlineAt = now() + waiterCeilingSeconds(detachedWaiter) * 1000
+  // One owner lifetime covers startup and the longest answer window. Claude
+  // runs it detached; Codex holds the turn. The delivery mechanism does not
+  // change how long the exact Agent Session remains reachable.
+  const processDeadlineAt = now() + QUESTION_WAITER_CEILING_SECONDS * 1000
 
   const logger = log(deps)
   logger.bind({ cmd: `hook ${event}` })
@@ -507,7 +505,15 @@ export async function hookRunCommand(
       ...outcome.log,
     })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
-    if (outcome.stdout !== undefined) deps.io.out(outcome.stdout)
+    if (outcome.stdout !== undefined) {
+      // No work, await, or diagnostic may sit between this cross-process
+      // SessionEnd fence and the irreversible harness stdout write.
+      if (outcome.commitStdout === undefined || outcome.commitStdout()) {
+        deps.io.out(outcome.stdout)
+      } else {
+        deps.io.err('notifai: the Agent Session ended before answer delivery; no continuation was written')
+      }
+    }
     return EXIT.ok
   } catch (err) {
     // SessionEnd defers its start record until after cleanup; if cleanup itself
@@ -1732,7 +1738,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (harness === 'opencode') {
     return installOpencodePlugin(deps, settingsTarget, {
       adapterPath,
-      timeoutSeconds: BLOCKING_STOP_TIMEOUT_SECONDS,
+      timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
       platform: hookPlatform,
       nodePath,
       ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),

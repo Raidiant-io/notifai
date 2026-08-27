@@ -43,9 +43,9 @@ Installed definitions call one stable user-level adapter at
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
 package-manager, CLI-version, checkout, XDG directory, and Notifai preference
 changes. Stop definitions differ by harness: Claude Code's runs asynchronously
-with an explicit timeout above the longest wait (POSIX hosts only — on Windows
-it blocks like the others), Codex's uses the host timeout default;
-prompt-submit and session-end retain fixed short limits on both.
+with an explicit timeout above the longest answer window (POSIX hosts only — on
+Windows it blocks like the others), and Codex declares the same full-window
+timeout; prompt-submit and session-end retain fixed short limits on both.
 Migrating an older Codex definition requires one unavoidable `/hooks` approval;
 later upgrades must not require another.
 
@@ -113,27 +113,29 @@ meter differs per harness:
 
 - **Claude Code:** the Stop hook is asynchronous. It returns at once, so the
   turn is never held and the terminal stays the user's, and the same process
-  keeps waiting out of band. When the answer arrives it is posted to that
-  Agent Session's own inbox socket: an idle Agent Session starts a new turn with it, a busy
-  one receives it when its current turn ends. An Agent Session that is provably gone
-  is cold-resumed instead — never one whose liveness probe cannot rule it out.
+  keeps waiting out of band for the complete answer window. When the answer
+  arrives it is posted to that Agent Session's own inbox socket: an idle Agent
+  Session starts a new turn with it, and a busy one receives it when its current
+  turn ends. An Agent Session that is provably gone is cold-resumed instead —
+  never one whose liveness probe cannot rule it out.
 - **Codex:** the Stop hook is the waiter. It holds until the answer arrives or
-  its window ends, then continues the session by returning `decision: block`.
-- **Where neither applies** — including an answer that lands after the Codex
-  hook has already returned, and any Agent Session whose state cannot be proved — the
-  answer is held in the Agent Session's journal and delivered at that Agent Session's next
-  Stop. This is the floor under every route.
+  the complete answer window ends, then continues the session by returning
+  `decision: block`.
+- **Crash recovery:** the answer journal protects an accepted answer if an
+  owner process or its route fails. It is not the normal last meter for an
+  unexpired question.
 
 An accepted answer is never dropped and never delivered twice, so a question
 that has not come back yet is still coming: do not re-ask it.
 
-`ask_grace_seconds` is the only setting that changes any of this. At its
-default of `0` the question reaches devices as soon as the asking turn ends. A
-positive value keeps it in the terminal for that long first, so an answer typed
-there wins without a notification ever leaving. The window is skipped when a
-question from this Agent Session is already waiting on the user's devices: they have
-been interrupted already, and holding the second question back would only delay
-it.
+At the `ask_grace_seconds` default of `0`, the question reaches devices as soon
+as the asking turn ends. A positive value keeps it in the terminal for that
+long first, so an answer typed there wins without a notification ever leaving.
+`reply_window_seconds` then controls how long the answer is accepted and how
+long Question Routing keeps an exact return path to this Agent Session. The
+grace window is skipped when a question from this Agent Session is already
+waiting on the user's devices: they have been interrupted already, and holding
+the second question back would only delay it.
 
 ## Bounded recovery
 
@@ -176,10 +178,10 @@ preference that lasts only for one Agent Session.
 `reply_window_seconds` is how long an answer is still accepted, a day by
 default and up to three.
 
-Those are three different clocks and only the last one decides whether an
-answer is still wanted. Nothing waits on the user for a day: the asking turn
-ends immediately, the waiter gives up long before, and everything after that is
-the next turn's poll or the journal replaying at that Agent Session's next Stop.
+Those are three different controls and only the last one decides whether an
+answer is still wanted. Question Routing owns that complete window: Claude Code
+waits out of band and wakes the Agent Session, while Codex keeps the asking turn
+held. The journal is crash recovery, not the ordinary delivery path.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the

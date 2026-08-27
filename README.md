@@ -196,9 +196,11 @@ only this moment can tell that you were present for this turn.
 
 **Stop** (`stop`) runs when the agent turn ends. If the agent registered a
 question with `notifai ask`, this is when that question can leave for your
-devices and when a device answer is handed back into the next turn. It has to
-run at Stop because that is the first moment the turn is over and the agent is
-waiting.
+devices and when a device answer is handed back into the next turn. Question
+Routing keeps that exact return path alive for the complete answer window:
+Claude Code waits out of band and wakes the session, while Codex holds the
+asking turn. It has to run at Stop because that is the first moment the agent
+has finished its current work and is waiting for the answer.
 
 **SessionEnd** (`session-end`) runs when the Agent Session closes. It drops this
 Agent Session's local state and queues any leftover questions for retirement so

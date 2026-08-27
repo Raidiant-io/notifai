@@ -13,8 +13,8 @@ import {
   readSessionState,
 } from './hooks.js'
 import {
-  BLOCKING_STOP_TIMEOUT_SECONDS,
-  CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS,
+  NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
+  QUESTION_STOP_TIMEOUT_SECONDS,
   codexCoexistenceNotes,
   codexHomeNote,
   codexLayerDir,
@@ -1010,7 +1010,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok: shapeProblems.length === 0,
     detail:
       shapeProblems.length === 0
-        ? `every installed Stop handler declares the shape its harness needs: Claude Code async with an explicit ${CLAUDE_ASYNC_STOP_TIMEOUT_SECONDS}s waiter budget, blocking hosts ${BLOCKING_STOP_TIMEOUT_SECONDS}s, Codex host-owned`
+        ? `every installed Stop handler declares the shape its harness needs: Claude Code async and Codex blocking with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
         : shapeProblems.join('; '),
   })
 

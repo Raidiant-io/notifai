@@ -141,10 +141,9 @@ describe('harness config layers', () => {
     expect(config.ask_grace_seconds).toEqual({ value: 0, source: 'default' })
   })
 
-  it('bounds the terminal-first window so a reply window always survives it', () => {
+  it('bounds the terminal-first window to the supported preference', () => {
     // Config is readable from a repository, so an unbounded grace is hostile
-    // input: it would eat the waiter's whole ceiling and leave no window the
-    // server would accept an answer into.
+    // input rather than permission to hold question delivery arbitrarily.
     const { env, cwd } = setup({ globalToml: 'ask_grace_seconds = 100000\n' })
     expect(loadConfig({ cwd, env }).ask_grace_seconds.value).toBe(360)
   })

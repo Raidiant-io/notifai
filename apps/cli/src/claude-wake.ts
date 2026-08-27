@@ -357,6 +357,7 @@ export function claudeWakeRoute(options: {
             acknowledgement: 'held',
           }
         }
+        if (!event.commitDelivery()) return cancelledDelivery()
         await adapters.resume(options.sessionId, sourceDescriptor.cwd, event.context)
         return {
           notes: ['cold-resumed the stopped Claude session with its accepted answer'],
@@ -376,6 +377,7 @@ export function claudeWakeRoute(options: {
           acknowledgement: 'held',
         }
       }
+      if (!event.commitDelivery()) return cancelledDelivery()
       await adapters.sendSocket(
         observation.descriptor.messagingSocketPath,
         socketLine(event.context),
@@ -397,6 +399,14 @@ export function claudeWakeRoute(options: {
         acknowledgement: 'delivered',
       }
     },
+  }
+}
+
+function cancelledDelivery(): DeliveryOutcome {
+  return {
+    notes: ['the Agent Session ended before answer delivery; stopping this observer'],
+    log: { route: 'hold-for-next-turn', stage: 'queued', reason: 'session-ended' },
+    acknowledgement: 'held',
   }
 }
 

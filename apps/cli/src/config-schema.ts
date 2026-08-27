@@ -100,7 +100,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'Optional delay before a question may reach your devices',
     detail:
-      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nA timer and nothing more. Whether you happen to be at this keyboard does not change it: waiting no longer holds your terminal, so there is nothing your being here would protect you from.',
+      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nThis controls when the question reaches devices, not how the harness keeps the Agent Session available afterward. Claude Code waits out of band; Codex holds the asking turn.',
     example: '0',
   },
 
@@ -111,7 +111,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'How long the service keeps accepting your answer to a question',
     detail:
-      'A question stays answerable for this long after it is asked. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nThis is not how long anything waits on you. The agent ends its turn immediately; if it is still running when you answer, the answer reaches it directly, and otherwise it is delivered at that session\'s next turn. Shortening this only makes an answer arrive too late to be accepted.',
+      'A question stays answerable for this long after it reaches the service. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nQuestion Routing keeps the exact Agent Session available for this complete window. Claude Code waits out of band and wakes the Agent Session; Codex keeps its turn held. This is separate from `--reply-timeout`, which controls how long a direct `send --reply` command blocks.',
     example: '86400',
   },
 

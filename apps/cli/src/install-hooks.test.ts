@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { describe, expect, it } from 'vitest'
+import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { parseChoices } from './send.js'
 import {
   OPENCODE_PLUGIN_MARKER,
@@ -27,7 +28,7 @@ import {
 } from './session-activation.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import {
-  BLOCKING_STOP_TIMEOUT_SECONDS,
+  QUESTION_STOP_TIMEOUT_SECONDS,
   HARNESSES,
   applyPlan,
   detectHarness,
@@ -152,18 +153,13 @@ describe('hook config', () => {
     ).toBe(true)
   })
 
-  it('lets Codex own Stop timeout while keeping short fixed lifecycle budgets', () => {
+  it('gives Codex a Stop timeout beyond the longest answer window', () => {
     const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
 
     expect(codex['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
     expect(codex['SessionEnd']?.[0]?.hooks[0]?.timeout).toBe(3)
-    // Codex hashes the exact serialized definition into `trusted_hash`, so its
-    // Stop handler stays a bare blocking command: declaring a timeout would
-    // invalidate the user's approval and the handler would silently stop.
-    expect(codex['Stop']?.[0]?.hooks[0]).toEqual({
-      type: 'command',
-      command: hookCommand(ADAPTER, 'stop', 'codex'),
-    })
+    expect(codex['Stop']?.[0]?.hooks[0]?.timeout).toBe(QUESTION_STOP_TIMEOUT_SECONDS)
+    expect(QUESTION_STOP_TIMEOUT_SECONDS).toBeGreaterThan(REPLY_MAX_WINDOW_SECONDS)
   })
 
   it('gives Claude Code an asynchronous Stop with an explicit waiter budget on POSIX', () => {
@@ -176,7 +172,7 @@ describe('hook config', () => {
     expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',
       command: hookCommand(ADAPTER, 'stop', 'claude-code'),
-      timeout: 3600,
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
       async: true,
     })
     expect(claude['UserPromptSubmit']?.[0]?.hooks[0]?.async).toBeUndefined()
@@ -195,7 +191,7 @@ describe('hook config', () => {
     expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',
       command: hookCommand(options.adapterPath, 'stop', 'claude-code', options),
-      timeout: BLOCKING_STOP_TIMEOUT_SECONDS,
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
     })
   })
 
@@ -213,7 +209,7 @@ describe('hook config', () => {
       expect(groups.flatMap((group) => group.hooks)).toHaveLength(1)
     }
     expect(migrated.document.hooks?.['Stop']?.[0]?.hooks[0]).toMatchObject({
-      timeout: 3600,
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
       async: true,
     })
     expect(migrated.replaced.sort()).toEqual([
