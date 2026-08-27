@@ -34,6 +34,8 @@ export interface SendFlags {
   /** What this notification is; absent means update. */
   kind?: string
   project?: string
+  /** Deliberately omit Project identity even when config or cwd could supply one. */
+  projectless?: boolean
   /** Opaque exact Agent Session override. */
   sessionId?: string
   /** Human-readable Agent Session label override. */
@@ -287,7 +289,12 @@ export function buildDraft(
     }
   }
 
-  const project = flags.project ?? config.project.value ?? invocation.inferredProject
+  if (flags.projectless === true && flags.project !== undefined) {
+    return { ok: false, error: 'Choose either --project or --projectless, not both.' }
+  }
+  const project = flags.projectless === true
+    ? undefined
+    : flags.project ?? config.project.value ?? invocation.inferredProject
 
   // Ids are derived from labels so an agent writing a one-liner does not have
   // to invent them, but they stay the stable thing it branches on afterwards.

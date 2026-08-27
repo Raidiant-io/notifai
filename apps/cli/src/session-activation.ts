@@ -3,12 +3,11 @@ import { Buffer } from 'node:buffer'
 import { GUIDANCE_CONTEXT_MAX_BYTES, boundedEffectiveGuidance } from './guidance-render.js'
 
 const ROOT_OWNERSHIP =
-  'Notifai is active for this session. The effective, provenance-marked guidance below governs Notification Requests. ' +
-  'Missing CLI readiness is handled through `notifai init --json`. ' +
-  'The root agent owns User-visible Notification Requests unless it explicitly delegates that ownership; workers report Agent Events to the parent.'
+  'Notifai is enabled for this Project. The effective, provenance-marked guidance below governs Notification Requests. ' +
+  'Missing CLI readiness is handled through `notifai init --json`.'
 
 export const WORKER_ACTIVATION_CONTEXT =
-  'Notifai worker context: report Agent Events to the parent; do not send User-visible Notification Requests unless the parent explicitly delegated that ownership. If delegated, load the Notifai skill and run `notifai guidance` before composing one.'
+  'Notifai worker context: an Agent Event is a meaningful occurrence in your work; a Notification Request is a deliberate User-visible message about one. Report Agent Events to the parent and do not send Notification Requests unless the parent explicitly delegated that ownership. If delegated, load the Notifai skill and run `notifai guidance` before composing one.'
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
   'Notifai is active, but lifecycle guidance could not be loaded. Run `notifai guidance` once before deciding whether or how to send a Notification Request.'

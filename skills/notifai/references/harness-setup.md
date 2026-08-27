@@ -61,6 +61,11 @@ cannot, the answer is held and replayed at the Agent Session's next turn instead
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
 
+The prepared User message for this human-only action is:
+
+> Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me
+> when it is done. I will finish setup and verify a fresh session.
+
 ## Activation by harness
 
 - **Claude Code:** run the installer if needed, start one fresh Agent Session,

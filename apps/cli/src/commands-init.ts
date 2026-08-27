@@ -43,6 +43,7 @@ import {
   writeSetupProof,
 } from './commands-setup-proof.js'
 import { listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
+import { enableProject, projectBinding } from './project-enablement.js'
 
 // ---------------------------------------------------------------------------
 // init
@@ -136,6 +137,14 @@ async function closeGap(
     if (flags.setupScope === 'global') ensurePrivateDirectory(path.dirname(configPath))
     else mkdirSync(path.dirname(configPath), { recursive: true })
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
+    return 'closed'
+  }
+
+  if (state.id === 'project-enablement') {
+    const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+    const binding = projectBinding(deps.cwd, deps.env, config.project.value)
+    if (binding === null) return 'failed'
+    enableProject(binding)
     return 'closed'
   }
 
@@ -534,7 +543,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
 
 /** Closing a local gap cannot have changed the service, the keychain, or devices. */
 function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined {
-  return id === 'project' || id === 'hooks' || id === 'skill' || id === 'question-routing-settings'
+  return id === 'project' || id === 'project-enablement' || id === 'hooks' || id === 'skill' || id === 'question-routing-settings'
     ? ['local']
     : undefined
 }
@@ -548,6 +557,7 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   // nothing, and is undone by editing one line — so it is done rather than
   // asked about, for a human and an agent alike.
   if (state.id === 'project') return Promise.resolve(true)
+  if (state.id === 'project-enablement') return Promise.resolve(true)
   const explicit = state.id === 'hooks' ? flags.hooks : state.id === 'skill' ? flags.skills : undefined
   if (explicit !== undefined) return Promise.resolve(explicit)
   // An agent is never asked, and never assumed into a change it did not

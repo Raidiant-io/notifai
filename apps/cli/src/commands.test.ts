@@ -79,6 +79,7 @@ import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
+import { projectBinding, projectEnabled } from './project-enablement.js'
 
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
@@ -417,6 +418,31 @@ function replyResponse(
 }
 
 describe('command contracts', () => {
+  it('durably enables a valid in-Project send before missing authentication stops it', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-explicit-enable-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+    }
+    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done' })).toBe(EXIT.auth)
+    expect(projectEnabled(projectBinding(cwd, env))).toBe(true)
+  })
+
+  it('sends deliberately Projectless without enabling the inferred Project', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-projectless-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = { submit: async (body: SubmitNotificationRequestT) => ((submitted = body), receipt) } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done', projectless: true })).toBe(EXIT.ok)
+    expect(submitted?.draft.project).toBeUndefined()
+    expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
+  })
   it('shows an actionable no-plan access state', async () => {
     const io = new CapturedIo()
     const client = {
@@ -830,7 +856,7 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
   })
 
-  it('uses the exact Orca worktree title for an active Claude session send', async () => {
+  it('never promotes an Orca worktree title into an Agent Session label', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-claude-title-'))
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
@@ -853,10 +879,6 @@ describe('command contracts', () => {
       ...makeDeps(io, client),
       cwd,
       env,
-      orcaSessionTitle: (lookupEnv: NodeJS.ProcessEnv) => {
-        expect(lookupEnv['ORCA_WORKTREE_ID']).toBe(worktreeId)
-        return 'Worker - semantic session implementation'
-      },
     }
 
     expect(
@@ -869,12 +891,13 @@ describe('command contracts', () => {
 
     expect(submitted?.draft.source).toMatchObject({
       session_id: 'orca-claude-session',
-      session_label: 'Worker - semantic session implementation',
       harness: 'claude-code',
     })
+    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+    expect(submitted?.draft.source?.session_label).not.toBe('Worker - semantic session implementation')
   })
 
-  it('uses the exact Orca worktree title for an active Codex session send', async () => {
+  it('never treats an Orca worktree title as a Codex Agent Session label', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-codex-title-'))
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
@@ -895,10 +918,6 @@ describe('command contracts', () => {
         TERM_PROGRAM: 'Orca',
         ORCA_WORKTREE_ID: worktreeId,
       },
-      orcaSessionTitle: (lookupEnv: NodeJS.ProcessEnv) => {
-        expect(lookupEnv['ORCA_WORKTREE_ID']).toBe(worktreeId)
-        return 'Worker - semantic session implementation'
-      },
     }
 
     expect(
@@ -911,9 +930,9 @@ describe('command contracts', () => {
 
     expect(submitted?.draft.source).toMatchObject({
       session_id: 'orca-codex-thread',
-      session_label: 'Worker - semantic session implementation',
       harness: 'codex',
     })
+    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
   })
 
   it('falls back safely when Orca returns a private path as its title', async () => {
@@ -937,7 +956,6 @@ describe('command contracts', () => {
         TERM_PROGRAM: 'Orca',
         ORCA_WORKTREE_ID: `repo-123::${cwd}`,
       },
-      orcaSessionTitle: () => '/private/untrusted/worktree',
     }
 
     expect(
@@ -6094,7 +6112,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
   })
 
-  it('registers an Orca-managed Claude question under the semantic worktree title', () => {
+  it('registers an Orca-managed Claude question without borrowing the worktree title', () => {
     const cwd = scratchDir('notifai-orca-claude-ask-')
     const io = new CapturedIo()
     const env = {
@@ -6109,7 +6127,6 @@ describe('asking before the hooks have ever run', () => {
       cwd,
       env,
       now: () => 42,
-      orcaSessionTitle: () => 'Worker - semantic session implementation',
     }
 
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
@@ -6122,9 +6139,10 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship the semantic resolver?', {})).toBe(EXIT.ok)
     expect(readSessionState('orca-claude-question', env).pending?.[0]?.source).toMatchObject({
       session_id: 'orca-claude-question',
-      session_label: 'Worker - semantic session implementation',
       harness: 'claude-code',
     })
+    expect(readSessionState('orca-claude-question', env).pending?.[0]?.source?.session_label)
+      .toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
   })
 
   it('judges the fired check against the active harness, not a global installation of another', async () => {
@@ -6277,6 +6295,16 @@ describe('asking before the hooks have ever run', () => {
     await doctorCommand(deps, {})
     expect(io.outLines.join('\n')).toMatch(/FAIL\s+Codex hook trust.*Stop/is)
     expect(io.outLines.join('\n')).toMatch(/best-effort.*never writes.*\/hooks/is)
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'hooks-trust')?.remedy).toMatchObject({
+      command: '/hooks',
+      user_action: {
+        code: 'codex_hook_approval_required',
+        harness: 'codex',
+        action: 'approve_or_enable_notifai_hooks',
+        message: expect.stringContaining('Open `/hooks` in Codex'),
+      },
+    })
   })
 
   it('gives doctor the same active-Codex diagnosis as ask', async () => {

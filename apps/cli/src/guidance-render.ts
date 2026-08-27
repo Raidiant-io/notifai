@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { describeSource } from './config-schema.js'
-import { GUIDANCE_TRUST_PREAMBLE } from './guidance-content.js'
+import { AGENT_TERMS_FALLBACK, AGENT_TERMS_PREAMBLE, GUIDANCE_TRUST_PREAMBLE } from './guidance-content.js'
 import { resolveGuidance, type GuidanceAuthority, type ResolvedGuidanceTopic } from './guidance.js'
 
 const AUTHORITY_LABEL: Record<GuidanceAuthority, string> = {
@@ -24,7 +24,7 @@ export function renderGuidance(topics: readonly ResolvedGuidanceTopic[]): string
       `${filePath === null ? '' : ` file=${encodeURIComponent(filePath)}`} -->`
     return `${marker}\n${markerSafe(topic.content).trimEnd()}`
   })
-  return [GUIDANCE_TRUST_PREAMBLE, ...blocks].join('\n\n')
+  return [GUIDANCE_TRUST_PREAMBLE, AGENT_TERMS_PREAMBLE, ...blocks].join('\n\n')
 }
 
 /** Hard ceiling for model-visible lifecycle context, including repository topics. */
@@ -48,7 +48,7 @@ export function boundedEffectiveGuidance(options: {
     bytes,
     max_bytes: maxBytes,
     fallback:
-      `${GUIDANCE_TRUST_PREAMBLE}\n\n` +
+      `${GUIDANCE_TRUST_PREAMBLE}\n\n${AGENT_TERMS_FALLBACK}\n\n` +
       `Notifai guidance is ${bytes} bytes, above the ${maxBytes}-byte lifecycle limit. ` +
       'Before deciding whether or how to notify, run `notifai guidance` once in this session. ' +
       'Do not infer or partially follow the omitted topics.',

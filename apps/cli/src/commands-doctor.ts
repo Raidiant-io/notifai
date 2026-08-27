@@ -80,6 +80,7 @@ import {
   setupProofApplies,
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
+import { projectBinding, projectEnabled } from './project-enablement.js'
 
 // ---------------------------------------------------------------------------
 // doctor
@@ -229,6 +230,37 @@ function projectReadiness(deps: CommandDeps, config: CliConfig): ReadinessState 
   }
 }
 
+function projectEnablementReadiness(deps: CommandDeps, config: CliConfig): ReadinessState {
+  const binding = projectBinding(deps.cwd, deps.env, config.project.value)
+  if (binding === null) {
+    return {
+      id: 'project-enablement',
+      title: 'Project enablement',
+      status: 'optional-gap',
+      detail: 'no Project is available here; lifecycle hooks stay silent',
+    }
+  }
+  if (projectEnabled(binding)) {
+    return {
+      id: 'project-enablement',
+      title: 'Project enablement',
+      status: 'ready',
+      detail: `enabled by the User for Project "${binding.project}"`,
+    }
+  }
+  return {
+    id: 'project-enablement',
+    title: 'Project enablement',
+    status: 'optional-gap',
+    detail: `disabled for Project "${binding.project}"; installed lifecycle hooks will emit no model guidance`,
+    remedy: {
+      by: 'cli',
+      summary: 'enable Notifai lifecycle behavior for this Project',
+      command: 'notifai project enable',
+    },
+  }
+}
+
 function remoteStatesFrom(previous: Readiness): {
   credential: ReadinessState
   server: ReadinessState
@@ -303,6 +335,7 @@ export async function assessReadiness(
       return {
         states: [
           cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform),
+          projectEnablementReadiness(deps, config),
           projectReadiness(deps, config),
           reused.credential,
           reused.server,
@@ -322,6 +355,7 @@ export async function assessReadiness(
   let accountDevices: RoutableDevice[] | null = null
 
   states.push(cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform))
+  states.push(projectEnablementReadiness(deps, config))
   states.push(projectReadiness(deps, config))
 
   states.push(
@@ -838,7 +872,11 @@ interface HookCheck {
   /** Real but not in the way: worth a line, never a blocker. */
   informational?: boolean
   /** A remedy truer than the generic `notifai hooks install`. */
-  remedy?: { summary: string; command: string }
+  remedy?: {
+    summary: string
+    command: string
+    user_action?: { code: string; harness: string; action: string; message: string }
+  }
 }
 
 function hookChecks(deps: CommandDeps): HookCheck[] {
@@ -995,6 +1033,12 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           remedy: {
             summary: 'open `/hooks` in Codex and approve the changed Notifai handlers',
             command: '/hooks',
+            user_action: {
+              code: 'codex_hook_approval_required',
+              harness: 'codex',
+              action: 'approve_or_enable_notifai_hooks',
+              message: 'Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me when it is done. I will finish setup and verify a fresh session.',
+            },
           },
         }),
   })

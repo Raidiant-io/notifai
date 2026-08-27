@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "behavior_digest": "sha256:8874a9e43f5c3a2751d47e6285f31e625629d5baa21b4da8520cc6b80c0f2c62",
+  "outcome": "guidance-updated",
+  "reason": "Project Enablement, explicit-use bootstrap, lifecycle vocabulary, and semantic Agent Session label rules changed together with every affected shipped guidance surface.",
+  "surfaces_reviewed": [
+    "lifecycle-hooks",
+    "notifai-skill",
+    "harness-setup",
+    "cli-readiness",
+    "domain-terms"
+  ]
+}

@@ -79,9 +79,11 @@ import {
   type Installation,
 } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
+import { inferInvocationContext } from './invocation-context.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
+import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
 import { rejectAccidentalEscapedNewlines } from './send.js'
 import {
   cursorStopActivationOutput,
@@ -251,11 +253,29 @@ export async function hookRunCommand(
   const cwd = envelope.cwd ?? deps.cwd
   const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
   logger.bind({ session: envelope.session_id ?? null })
-  // Session activation is local model context, not authenticated routing. It
-  // must survive the exact first-run states it exists to repair: no config,
-  // no credential, no Companion device, and no network.
+  const lifecycleEnabled = (): boolean => {
+    try {
+      const activationConfig = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
+      return projectEnabled(projectBinding(cwd, deps.env, activationConfig.project.value))
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'enablement-unavailable', ...failureData(err) })
+      return false
+    }
+  }
+  // Installation only makes lifecycle hooks available. Model-visible
+  // activation is a separate User-owned Project decision, checked anew on
+  // every run so disabling takes effect without reinstalling anything.
   if (event === 'session-start' || event === 'subagent-start') {
     start({ cwd, source: envelope.source ?? null })
+    if (!lifecycleEnabled()) {
+      logger.info('hook.end', {
+        hook: event,
+        outcome: 'ignored',
+        reason: 'project-disabled',
+        decided: false,
+      })
+      return EXIT.ok
+    }
     if (event === 'session-start' && harness === 'cursor' && envelope.session_id !== undefined) {
       try {
         resetCursorStopActivation(envelope.session_id, deps.env)
@@ -303,6 +323,15 @@ export async function hookRunCommand(
     start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
     if (harness !== 'cursor') {
       logger.info('hook.end', { hook: event, outcome: 'unsupported-harness', decided: false })
+      return EXIT.ok
+    }
+    if (!lifecycleEnabled()) {
+      logger.info('hook.end', {
+        hook: event,
+        outcome: 'ignored',
+        reason: 'project-disabled',
+        decided: false,
+      })
       return EXIT.ok
     }
     if (envelope.status === 'aborted') {
@@ -1033,6 +1062,17 @@ export function askCommand(
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
   if (mediaInputError !== null) {
     return askFailure(deps, flags, 'invalid_input', 'media', mediaInputError, 'fix the media flags and retry')
+  }
+  let explicitUseConfig: CliConfig
+  try {
+    explicitUseConfig = loadConfig({ cwd: deps.cwd, env: deps.env })
+  } catch (err) {
+    return askFailure(deps, flags, 'config_invalid', 'configuration', `Question routing configuration is invalid: ${String(err)}`, 'fix the reported Notifai configuration and retry')
+  }
+  const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferInvocationContext(deps.cwd).project
+  if (explicitProject !== null) {
+    const binding = projectBinding(deps.cwd, deps.env, explicitProject)
+    if (binding !== null) enableProject(binding)
   }
   if (deps.store.load() === null) {
     return askFailure(

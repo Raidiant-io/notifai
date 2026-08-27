@@ -9,6 +9,7 @@ import {
 import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
 import { MIN_REPLY_WINDOW_SECONDS, readSessionState } from './hooks.js'
+import { enableProject, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
   formatReceipt,
@@ -148,9 +149,6 @@ export async function sendCommand(
     deps.io.err(source.error)
     return EXIT.usage
   }
-  const authed = authedClient(deps, config)
-  if (!authed) return EXIT.auth
-  const credential = deps.store.load()!
   let semanticImages: string[]
   try {
     semanticImages = semanticMediaIds(flags.image ?? [], deps.cwd)
@@ -167,6 +165,13 @@ export async function sendCommand(
     deps.io.err(semanticBuild.error)
     return EXIT.usage
   }
+  if (semanticBuild.draft.project !== undefined) {
+    const binding = projectBinding(deps.cwd, deps.env, semanticBuild.draft.project)
+    if (binding !== null) enableProject(binding)
+  }
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  const credential = deps.store.load()!
   const attempt = beginSendAttempt({
     env: deps.env,
     credential,

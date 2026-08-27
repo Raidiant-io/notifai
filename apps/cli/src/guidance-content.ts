@@ -24,6 +24,28 @@ export interface GuidanceTopic {
   content: string
 }
 
+/** Canonical lifecycle vocabulary, always emitted from trusted CLI source. */
+export const AGENT_TERMS_PREAMBLE = `# Notifai terms
+
+An **Agent Event** is something that happened in the agent's work: completion,
+failure, a blocker, a question that needs the User, or another meaningful
+change. It stays inside the agent team until the Notification Request owner
+decides it should reach the User.
+
+A **Notification Request** is the deliberate User-visible message or question
+submitted through Notifai about an Agent Event. It is not every event and it
+is not an internal worker report.
+
+The root agent owns Notification Requests by default. Ordinary workers report
+Agent Events to their parent and do not notify the User themselves. Explicit
+delegation transfers that ownership for the delegated work.`
+
+export const AGENT_TERMS_FALLBACK = `# Notifai terms
+
+An **Agent Event** is a meaningful occurrence in agent work. A **Notification
+Request** is a deliberate User-visible message about one. Root owns requests;
+workers report events unless ownership is explicitly delegated.`
+
 const WHEN_TO_NOTIFY = `# When to notify
 
 Notify when something changed for the user:

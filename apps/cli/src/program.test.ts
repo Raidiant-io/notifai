@@ -98,6 +98,24 @@ describe('program argv parsing', () => {
     })
   })
 
+  it('preserves deliberate Projectless send intent at the argv boundary', async () => {
+    let seen: Record<string, unknown> | undefined
+    await parse(
+      ['send', '--kind', 'done', '--title', 'T', '--body', 'B', '--projectless'],
+      { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
+    )
+    expect(seen).toMatchObject({ projectless: true })
+  })
+
+  it('dispatches User-owned Project enablement commands', async () => {
+    let enabled = 0
+    const result = await parse(['project', 'enable'], {
+      projectEnable: ((_deps) => (enabled += 1, 0)) as ProgramRunners['projectEnable'],
+    })
+    expect(result.exitCode).toBe(0)
+    expect(enabled).toBe(1)
+  })
+
   it('drops empty collector defaults so "not passed" stays absent', async () => {
     let seen: Record<string, unknown> | undefined
     await parse(

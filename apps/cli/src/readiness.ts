@@ -34,7 +34,14 @@ export type Remedy =
    * the CLI's to launch but the human's to complete, so an agent must still
    * treat it as out of reach.
    */
-  | { by: 'user-here'; summary: string; command: string; interactive?: boolean }
+  | {
+      by: 'user-here'
+      summary: string
+      command: string
+      interactive?: boolean
+      /** Stable agent-facing description of an unavoidable harness-owned action. */
+      user_action?: { code: string; harness: string; action: string; message: string }
+    }
   /**
    * A human somewhere else entirely — phone in hand, app store, permission
    * dialog. The class the old init could only print a sentence about, and the

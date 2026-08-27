@@ -62,4 +62,9 @@ export {
   type SetupScope,
 } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
+export {
+  projectDisableCommand,
+  projectEnableCommand,
+  projectStatusCommand,
+} from './commands-project.js'
 export { realIo } from './commands-io.js'

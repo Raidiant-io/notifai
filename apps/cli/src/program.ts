@@ -23,6 +23,9 @@ import {
   initCommand,
   loginCommand,
   logoutCommand,
+  projectDisableCommand,
+  projectEnableCommand,
+  projectStatusCommand,
   logsCommand,
   repliesCommand,
   reportAskFailure,
@@ -81,6 +84,9 @@ const defaultRunners = {
   accessStatus: accessStatusCommand,
   devices: devicesCommand,
   capabilities: capabilitiesCommand,
+  projectEnable: projectEnableCommand,
+  projectDisable: projectDisableCommand,
+  projectStatus: projectStatusCommand,
   send: sendCommand,
   replies: repliesCommand,
   acknowledge: acknowledgeCommand,
@@ -250,6 +256,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       exit(await runners.doctor(deps, opts))
     })
 
+  const project = program
+    .command('project')
+    .helpGroup(GROUP.daily)
+    .summary('Control Notifai for this Project')
+    .description('Inspect or change this Project\'s User-owned lifecycle enablement')
+  project.command('enable').description('Enable lifecycle guidance for this Project').action(() => {
+    exit(runners.projectEnable(deps))
+  })
+  project.command('disable').description('Disable lifecycle guidance for this Project').action(() => {
+    exit(runners.projectDisable(deps))
+  })
+  project.command('status').description('Show lifecycle enablement for this Project').option('--json').action((opts: { json?: boolean }) => {
+    exit(runners.projectStatus(deps, opts.json === true))
+  })
+
   program
     .command('login')
     .helpGroup(GROUP.start)
@@ -340,6 +361,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .optionsGroup(SEND_GROUP.routing)
     .option('--kind <kind>', 'what this is (required): update | done | failed | blocked (no User reply would resume it) — question is set by --reply')
     .option('--project <id>', 'Project identifier override (otherwise configured or inferred)')
+    .option('--projectless', 'deliberately omit Project identity for this notification')
     .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--all', 'target all routable devices (overrides configured devices)')
     .option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)')

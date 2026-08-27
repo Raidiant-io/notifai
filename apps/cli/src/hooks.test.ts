@@ -68,6 +68,12 @@ import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { GUIDANCE_CONTEXT_MAX_BYTES } from './guidance-render.js'
+import {
+  disableProject,
+  enableProject,
+  projectBinding,
+  projectEnabled,
+} from './project-enablement.js'
 
 /** New-format test fixtures always carry the canonical body explicitly. */
 function registerQuestion(
@@ -319,6 +325,9 @@ function harness(replies: ReplyView[] = []): Harness {
   // Virtual clock: sleeps advance it instead of costing wall time. A frozen
   // clock would make the reply poll's deadline unreachable and spin forever.
   let clock = NOW
+  const binding = projectBinding(root, env)
+  if (binding === null) throw new Error('test Project binding unavailable')
+  enableProject(binding, new Date(NOW))
   return {
     io,
     recorder,
@@ -2774,7 +2783,31 @@ describe('ask registration', () => {
 })
 
 describe('session-start hook', () => {
-  it('adds proactive Notifai context before setup or machine authentication exists', async () => {
+  it('is completely silent when the Project is disabled', async () => {
+    const h = harness()
+    const binding = projectBinding(h.deps.cwd, h.env)
+    if (binding === null) throw new Error('test Project binding unavailable')
+    disableProject(binding)
+
+    for (const [event, hookHarness] of [
+      ['session-start', 'claude-code'],
+      ['subagent-start', 'codex'],
+      ['activation-stop', 'cursor'],
+    ] as const) {
+      h.io.outLines = []
+      await hookRunCommand(
+        h.deps,
+        event,
+        stdin({ session_id: 'disabled', conversation_id: 'disabled', workspace_roots: [h.deps.cwd], loop_count: 0 }),
+        hookHarness,
+      )
+      expect(h.io.outLines).toEqual([])
+    }
+    expect(projectEnabled(binding)).toBe(false)
+    expect(readSessionState('disabled', h.env).started_at).toBeUndefined()
+  })
+
+  it('adds proactive Notifai context for an enabled Project before machine authentication exists', async () => {
     const h = harness()
     h.deps.store.load = () => null
 
@@ -2793,7 +2826,7 @@ describe('session-start hook', () => {
       expect(first.hookSpecificOutput).toMatchObject({
         hookEventName: 'SessionStart',
       })
-      expect(first.hookSpecificOutput?.additionalContext).toMatch(/Notifai.*session/i)
+      expect(first.hookSpecificOutput?.additionalContext).toMatch(/Notifai.*enabled.*Project/i)
       expect(first.hookSpecificOutput?.additionalContext).toContain('# How to read this guidance')
       expect(first.hookSpecificOutput?.additionalContext).toContain(
         '<!-- notifai:guidance topic=when-to-notify from=shipped default -->',
@@ -2838,7 +2871,7 @@ describe('session-start hook', () => {
       'cursor',
     )
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
-      additional_context: expect.stringMatching(/Notifai.*session/i),
+      additional_context: expect.stringMatching(/Notifai.*enabled.*Project/i),
     })
 
     h.io.outLines = []
