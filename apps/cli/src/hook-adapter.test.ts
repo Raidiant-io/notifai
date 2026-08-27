@@ -21,6 +21,7 @@ import {
   isNpxAdapterTarget,
 } from './hook-adapter.js'
 import { buildHookConfig, codexHookIdentityHash, type InstalledHandler } from './install-hooks.js'
+import { enableProject, projectBinding } from './project-enablement.js'
 
 function isolated(): { root: string; homeDir: string } {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hook-adapter-'))
@@ -28,22 +29,40 @@ function isolated(): { root: string; homeDir: string } {
 }
 
 describe('stable hook adapter', () => {
-  it('delivers session activation through the installed adapter before setup exists', () => {
+  it('keeps the installed adapter silent until the Project is enabled', () => {
     const { root, homeDir } = isolated()
+    const env = {
+      ...process.env,
+      HOME: homeDir,
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
     const scriptPath = fileURLToPath(new URL('../dist/main.js', import.meta.url))
     const installed = installHookAdapter({ execPath: process.execPath, scriptPath }, homeDir)
+    const disabled = spawnSync(
+      installed.path,
+      ['hook', 'session-start', '--owner', 'notifai', '--harness', 'codex'],
+      {
+        encoding: 'utf8',
+        input: JSON.stringify({ session_id: 'adapter-session', cwd: root, source: 'startup' }),
+        env,
+      },
+    )
+
+    expect(disabled.status).toBe(0)
+    expect(disabled.stderr).toBe('')
+    expect(disabled.stdout).toBe('')
+
+    const binding = projectBinding(root, env)
+    if (binding === null) throw new Error('test Project binding unavailable')
+    enableProject(binding)
     const run = spawnSync(
       installed.path,
       ['hook', 'session-start', '--owner', 'notifai', '--harness', 'codex'],
       {
         encoding: 'utf8',
         input: JSON.stringify({ session_id: 'adapter-session', cwd: root, source: 'startup' }),
-        env: {
-          ...process.env,
-          HOME: homeDir,
-          XDG_CONFIG_HOME: path.join(root, 'config'),
-          XDG_STATE_HOME: path.join(root, 'state'),
-        },
+        env,
       },
     )
 
@@ -52,7 +71,7 @@ describe('stable hook adapter', () => {
     expect(JSON.parse(run.stdout)).toMatchObject({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: expect.stringMatching(/Notifai.*session/i),
+        additionalContext: expect.stringMatching(/Notifai.*enabled.*Project/i),
       },
     })
   })
