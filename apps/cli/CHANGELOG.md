@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.2.2](https://github.com/Raidiant-io/notifai/compare/v9.2.1...v9.2.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* publish canonical Project and Agent Session language ([e4a44b0](https://github.com/Raidiant-io/notifai/commit/e4a44b01520fdc35f9b1d31024a2ce4c9f1adbc1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 5.0.0 to 5.0.1
+
 ## [9.2.1](https://github.com/Raidiant-io/notifai/compare/v9.2.0...v9.2.1) (2026-08-26)
 
 

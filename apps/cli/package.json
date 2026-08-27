@@ -1,6 +1,6 @@
 {
   "name": "@raidiant/notifai",
-  "version": "9.2.1",
+  "version": "9.2.2",
   "type": "module",
   "description": "Send native device notifications from agents and local programs",
   "bin": {
@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
-    "@raidiant/notifai-protocol": "5.0.0",
+    "@raidiant/notifai-protocol": "5.0.1",
     "commander": "^14.0.0",
     "picocolors": "^1.1.1",
     "smol-toml": "^1.4.0"
