@@ -18,6 +18,7 @@
     "check:packed": "node --test scripts/verify-packed-install.test.mjs && node scripts/verify-packed-install.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:agent-guidance": "node scripts/check-agent-guidance.mjs",
+    "check:agent-guidance:test": "node --test scripts/check-agent-guidance.test.mjs",
     "check:published": "node scripts/verify-published.mjs"
   },
   "devDependencies": {
