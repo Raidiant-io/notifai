@@ -50,6 +50,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      cli_version: ${{ steps.cli-version.outputs.version }}
+      verify_cli: ${{ steps.plan.outputs.verify_cli }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,6 +88,11 @@ jobs:
         id: plan
         run: node scripts/plan-publish.mjs
 
+      - name: Record the exact CLI version
+        id: cli-version
+        shell: bash
+        run: echo "version=$(node -p \"require('./apps/cli/package.json').version\")" >> "$GITHUB_OUTPUT"
+
       # Protocol must reach the registry before a CLI that pins it exactly.
       - name: Publish protocol with OIDC provenance
         if: ${{ steps.plan.outputs.publish_protocol == 'true' }}
@@ -103,3 +111,25 @@ jobs:
       - name: Verify published CLI bytes and metadata
         if: ${{ steps.plan.outputs.verify_cli == 'true' }}
         run: node scripts/verify-published.mjs @raidiant/notifai
+
+  windows-cli:
+    needs: npm
+    if: needs.npm.outputs.verify_cli == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-11-arm]
+        node: ['22', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Verify the exact published CLI through native Windows shells
+        run: node scripts/verify-published-windows.mjs "${{ needs.npm.outputs.cli_version }}"

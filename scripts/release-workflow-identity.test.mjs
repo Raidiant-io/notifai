@@ -119,7 +119,7 @@ test('explicit release-branch CI cannot recurse into release automation', () => 
   assert.doesNotMatch(ci, /\n\s+(?:actions|contents|pull-requests): write/)
 })
 
-test('a failed integrity dependency makes all seven required checks run and fail', () => {
+test('a failed integrity dependency makes all eleven required checks run and fail', () => {
   assert.deepEqual(
     requiredChecks.map(check => check.name).sort(),
     [
@@ -129,6 +129,10 @@ test('a failed integrity dependency makes all seven required checks run and fail
       'platform (macos-latest, 24)',
       'platform (ubuntu-latest, 22)',
       'platform (ubuntu-latest, 24)',
+      'platform (windows-11-arm, 22)',
+      'platform (windows-11-arm, 24)',
+      'platform (windows-2025, 22)',
+      'platform (windows-2025, 24)',
       'secret-history',
     ],
   )
@@ -184,6 +188,12 @@ test('each created release tag dispatches protected publication at its exact SHA
   assert.match(publish, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
   assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/)
   assert.match(publish, /environment: npm-release/)
+  assert.match(publish, /os: \[windows-2025, windows-11-arm\]/)
+  assert.match(publish, /node: \['22', '24'\]/)
+  assert.match(
+    publish,
+    /run: node scripts\/verify-published-windows\.mjs "\$\{\{ needs\.npm\.outputs\.cli_version \}\}"/,
+  )
 })
 
 test('the rootless combined manifest does not use an empty group title template', () => {

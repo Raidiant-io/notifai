@@ -47,7 +47,10 @@ const SERVICE = 'io.notifai.cli'
 const CREDENTIAL_FORMAT = 'notifai.machine-credential.v1'
 const DPAPI_FORMAT = 'notifai.dpapi.current-user.v1'
 const DPAPI_ENTROPY = 'io.notifai.cli'
-const DPAPI_TIMEOUT_MS = 15_000
+// Inbox Windows PowerShell can have a slow first start on a newly provisioned
+// or heavily loaded machine. Keep the helper bounded without rejecting a
+// valid DPAPI operation during that cold-start window.
+const DPAPI_TIMEOUT_MS = 30_000
 const DPAPI_FILE = 'credentials.dpapi'
 const KEYCHAIN_TIMEOUT_MS = 15_000
 

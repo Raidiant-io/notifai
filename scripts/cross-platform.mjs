@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,7 @@ export function commandInvocation(
   args,
   platform = process.platform,
   env = process.env,
+  nodeExecutable = process.execPath,
 ) {
   if (platform !== 'win32') return { file: command, args: [...args], options: {} }
   const executable = env.npm_execpath
@@ -39,6 +40,16 @@ export function commandInvocation(
       return {
         file: process.execPath,
         args: [path.resolve(home, relative), ...args],
+        options: { windowsHide: true },
+      }
+    }
+  }
+  if (command === 'npm') {
+    const npmCli = path.join(path.dirname(nodeExecutable), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    if (existsSync(npmCli)) {
+      return {
+        file: nodeExecutable,
+        args: [npmCli, ...args],
         options: { windowsHide: true },
       }
     }

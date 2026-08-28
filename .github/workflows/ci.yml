@@ -37,19 +37,19 @@ jobs:
             exit 1
           fi
 
-  # Prove the public sending surface on the active CI hosts and at both ends of
-  # the maintained Node range. Native Windows acceptance is run locally rather
-  # than in CI for now.
+  # Prove the public sending surface on the supported desktop hosts and at both
+  # ends of the maintained Node range. Pin both Windows architectures so
+  # windows-latest image changes cannot silently redefine the release evidence.
   platform:
     needs: dispatch-integrity
     if: ${{ always() }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-2025, windows-11-arm]
         node: ['22', '24']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Fail when dispatch integrity did not succeed
         if: needs.dispatch-integrity.result != 'success'
@@ -76,14 +76,38 @@ jobs:
       # Protocol before CLI: the CLI resolves its built exports.
       - run: pnpm build
 
-      # Platform-agnostic suites run once on Ubuntu. macOS also runs the focused
-      # wake test; simulated-platform tests in the common suite continue to
-      # exercise Windows branches without claiming native Windows evidence.
+      - name: Record the native Windows evidence environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "runner_image=$env:ImageOS"
+          "runner_image_version=$env:ImageVersion"
+          "windows=$([System.Environment]::OSVersion.VersionString)"
+          "process_arch=$(node -p process.arch)"
+          "node=$(node --version)"
+          "npm=$(npm --version)"
+          "pnpm=$(pnpm --version)"
+          "powershell=$($PSVersionTable.PSVersion)"
+          git --version
+
+      # Platform-agnostic suites run once on Ubuntu. The other hosts run the
+      # platform boundaries whose implementation can differ by OS. Windows
+      # additionally reaches the real CurrentUser DPAPI implementation.
       - name: Run platform tests
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
             pnpm -r test
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            pnpm --filter @raidiant/notifai-protocol test
+            pnpm --filter @raidiant/notifai test -- \
+              src/platform.test.ts \
+              src/credentials.test.ts \
+              src/ui/config-view.test.ts
+            pnpm --filter @raidiant/notifai test -- \
+              src/hook-adapter.test.ts \
+              src/install-hooks.test.ts \
+              --testNamePattern Windows
           else
             pnpm --filter @raidiant/notifai-protocol test
             pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
@@ -96,6 +120,13 @@ jobs:
       # Checks the actual pnpm pack file list, package metadata, license/docs,
       # production dependency licenses, and CLI version single source.
       - run: pnpm check:release
+
+      # On Windows this also exercises the installed npm shims through Windows
+      # PowerShell, PowerShell 7, cmd.exe, and Git Bash from a metacharacter and
+      # Unicode path outside the checkout.
+      - name: Verify the packed CLI on native Windows
+        if: runner.os == 'Windows'
+        run: pnpm check:packed
 
   # Install the packed CLI outside the workspace, registry-shaped, and prove
   # the installed bin starts. This is the only pre-publish gate that can catch
