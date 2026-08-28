@@ -868,9 +868,9 @@ describe('validateDraft', () => {
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.category', status: 'unsupported' }),
-        expect.objectContaining({ path: 'sound_file', status: 'supported' }),
       ]),
     )
+    expect(MACOS_CAPABILITIES_V1.fields.some((field) => field.path === 'sound_file')).toBe(false)
     expect(ANDROID_CAPABILITIES_V1).toMatchObject({
       platform: 'android',
       payload_limit_bytes: 4096,
