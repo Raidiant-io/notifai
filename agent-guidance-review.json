@@ -1,13 +1,13 @@
 {
-  "version": 1,
-  "behavior_digest": "sha256:dd7a6f91668a37b4434180a974ed26a73ddcbc3e723155096efc26874399fe23",
-  "outcome": "guidance-updated",
-  "reason": "CLI --sound and the saved sound key now accept Account custom names/ids as well as shipped names; notifai sounds lists the catalog; the skill and config copy say Device default; send omits kind-default sound so the server can resolve. The public skill also teaches the Hermes classic CLI/local send-only Source Context baseline and the narrow exact-session rename exception after a complete job change makes the old label misleading. Managed Hermes hooks, lifecycle activation, and asynchronous ask remain unavailable, and existing harness continuation contracts and domain terms are unchanged.",
-  "surfaces_reviewed": [
-    "lifecycle-hooks",
-    "notifai-skill",
-    "harness-setup",
-    "cli-readiness",
-    "domain-terms"
-  ]
+ "version": 1,
+ "behavior_digest": "sha256:3865ae43865a89820bdca45e1f9d9d22c2bdddc9e23f98af256b604b54e09934",
+ "outcome": "guidance-updated",
+ "reason": "Custom sounds ship as one canonical WAV: capability copy now says sounds sync as notifai-<id>.wav, the sounds catalog exposes a single url per sound instead of per-format urls, and the silent sound_library sync envelope is named for Companion App refreshes. No agent obligations changed: send/--sound semantics, Device default wording, server-side kind-default resolution, and all harness continuation contracts and domain terms are as previously reviewed.",
+ "surfaces_reviewed": [
+  "lifecycle-hooks",
+  "notifai-skill",
+  "harness-setup",
+  "cli-readiness",
+  "domain-terms"
+ ]
 }
