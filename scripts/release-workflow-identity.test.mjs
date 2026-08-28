@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
-import {readFileSync} from 'node:fs'
+import {execFileSync} from 'node:child_process'
+import {mkdtempSync, readFileSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import test from 'node:test'
 import {parse} from 'yaml'
 import {verifyReleasePleaseOutput} from './verify-release-please-output.mjs'
@@ -12,7 +15,9 @@ const release = readWorkflowText('.github/workflows/release-please.yml')
 const ci = readWorkflowText('.github/workflows/ci.yml')
 const publish = readWorkflowText('.github/workflows/publish.yml')
 const ciWorkflow = parse(ci)
+const publishWorkflow = parse(publish)
 const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
+const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
 
 const requiredChecks = [
   {name: 'commits', job: ciWorkflow.jobs.commits},
@@ -194,6 +199,24 @@ test('each created release tag dispatches protected publication at its exact SHA
     publish,
     /run: node scripts\/verify-published-windows\.mjs "\$\{\{ needs\.npm\.outputs\.cli_version \}\}"/,
   )
+})
+
+test('the publish workflow records the exact CLI version in GitHub output', () => {
+  const step = publishWorkflow.jobs.npm.steps.find(
+    candidate => candidate.name === 'Record the exact CLI version',
+  )
+  const directory = mkdtempSync(join(tmpdir(), 'notifai-publish-output-'))
+  const output = join(directory, 'github-output')
+
+  try {
+    execFileSync('bash', ['-c', step.run], {
+      cwd: process.cwd(),
+      env: {...process.env, GITHUB_OUTPUT: output},
+    })
+    assert.equal(readFileSync(output, 'utf8'), `version=${cliPackage.version}\n`)
+  } finally {
+    rmSync(directory, {recursive: true, force: true})
+  }
 })
 
 test('the rootless combined manifest does not use an empty group title template', () => {

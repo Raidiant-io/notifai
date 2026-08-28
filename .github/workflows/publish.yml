@@ -91,7 +91,7 @@ jobs:
       - name: Record the exact CLI version
         id: cli-version
         shell: bash
-        run: echo "version=$(node -p \"require('./apps/cli/package.json').version\")" >> "$GITHUB_OUTPUT"
+        run: node -e "process.stdout.write('version=' + require('./apps/cli/package.json').version + '\\n')" >> "$GITHUB_OUTPUT"
 
       # Protocol must reach the registry before a CLI that pins it exactly.
       - name: Publish protocol with OIDC provenance
