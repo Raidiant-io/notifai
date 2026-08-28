@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c488ff25eb7af964d204d1bedfec775a62e0e2404d4a68cfe8cc9fbda3551dc0",
+  "behavior_digest": "sha256:ea140f26f9fb84d680a12e5fe5bfca7ab755c8c048b171cb1fef0f3447015950",
   "outcome": "reviewed-no-impact",
-  "reason": "Release version marker payloads are generated metadata; normalizing only those payloads changes no lifecycle, skill, setup, readiness, or domain guidance.",
+  "reason": "Raising the documented Node runtime prerequisite from 20 to 22 changes package admission, not lifecycle hooks, the skill, harness setup, CLI readiness after launch, or domain terminology.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

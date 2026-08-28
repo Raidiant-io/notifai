@@ -127,7 +127,7 @@ failure.
 
 ## Development
 
-Requires Node >= 20 and pnpm.
+Requires Node >= 22 and pnpm.
 
 ```sh
 pnpm install

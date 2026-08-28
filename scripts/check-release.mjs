@@ -33,14 +33,14 @@ const packages = [
 
 requireValue(rootManifest.private === true, 'root workspace must remain private')
 requireValue(rootManifest.version === undefined, 'root workspace must not advertise a package version')
-requireValue(rootManifest.engines?.node === '>=20', 'root Node support must be exactly >=20')
+requireValue(rootManifest.engines?.node === '>=22', 'root Node support must be exactly >=22')
 
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const entry of packages) {
   const { manifest, directory } = entry
   requireValue(semver.test(manifest.version), `${manifest.name}: version must be semver`)
   requireValue(manifest.license === 'Apache-2.0', `${manifest.name}: license must be Apache-2.0`)
-  requireValue(manifest.engines?.node === '>=20', `${manifest.name}: Node support must be exactly >=20`)
+  requireValue(manifest.engines?.node === '>=22', `${manifest.name}: Node support must be exactly >=22`)
   requireValue(manifest.publishConfig?.access === 'public', `${manifest.name}: publishConfig.access must be public`)
   requireValue(manifest.repository?.directory === directory, `${manifest.name}: repository.directory must be ${directory}`)
   requireValue(manifest.homepage === 'https://github.com/Raidiant-io/notifai#readme', `${manifest.name}: homepage is missing or unexpected`)
