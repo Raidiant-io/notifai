@@ -1,0 +1,50 @@
+{
+  "vendor": "NousResearch/hermes-agent",
+  "release": "0.20.6",
+  "commit": "5f75ec197b16d1a055688fb9df63ac49586a2230",
+  "instance": {
+    "harness": "hermes",
+    "surface": "classic-cli",
+    "terminalBackend": "local"
+  },
+  "durableSessionId": "20260828_111302_29a404",
+  "observedToolSubprocessEnv": {
+    "HERMES_SESSION_ID": "20260828_111302_29a404"
+  },
+  "cwd": {
+    "invocation": "/workspace",
+    "shellHookCwdIsProcessCwd": true,
+    "promptSectionCwdRequiresTerminalOverride": true
+  },
+  "evidence": {
+    "nativeHostOs": "macos",
+    "portableFixtureFamilies": ["posix", "windows"],
+    "nativeOsUnrun": ["linux", "windows"]
+  },
+  "compression": {
+    "defaultMode": "in-place",
+    "sessionIdBefore": "20260828_120000_inplace",
+    "sessionIdAfter": "20260828_120000_inplace",
+    "legacyRotatingSessionId": "20260828_111114_88ae83"
+  },
+  "supported": ["deliberate-send", "source-context-from-invocation-cwd"],
+  "unsupported": [
+    "managed-setup",
+    "lifecycle-activation",
+    "question-routing"
+  ],
+  "deferred": [
+    "tui",
+    "gateway",
+    "api",
+    "acp-session",
+    "safe-mode",
+    "native-linux",
+    "native-windows",
+    "live-auto-compression",
+    "interactive-reset",
+    "docker-backend",
+    "ssh-backend",
+    "other-remote-backends"
+  ]
+}

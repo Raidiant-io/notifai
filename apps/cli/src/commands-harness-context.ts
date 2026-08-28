@@ -1,5 +1,10 @@
+import {
+  hermesClassicCliLocalInstance,
+  isHookInstallableHarness,
+  type HermesClassicCliLocalInstance,
+  type SourceContextHarness,
+} from './harnesses.js'
 import { readLiveProjectSessionPointers, readSessionState } from './hooks.js'
-import { type Harness } from './install-hooks.js'
 
 /**
  * Exact evidence that this shell command is running inside one supported
@@ -7,11 +12,17 @@ import { type Harness } from './install-hooks.js'
  * describe where a tool stores files, not which tool owns the current shell.
  * OpenCode's generated plugin supplies the Notifai-owned marker because its
  * plugin API exposes Agent Session identity but the ordinary environment does not.
+ *
+ * Hermes contributes `HERMES_SESSION_ID` only — the durable Agent Session id
+ * bridged into tool subprocesses. `HERMES_SESSION_KEY` is a gateway routing
+ * key and must never be treated as Agent Session identity.
  */
 export interface ActiveHarnessSession {
-  harness: Harness
+  harness: SourceContextHarness
   label: string
   sessionId?: string
+  /** Exact surface/backend cell proven for this marker envelope. */
+  integrationInstance?: HermesClassicCliLocalInstance
   /** Trusted human title published by this harness's managed adapter. */
   sessionLabel?: string
   /** The harness has only a temporary placeholder title so far. */
@@ -53,6 +64,16 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
     candidates.push({ harness: 'codex', label: 'Codex', sessionId: codexSession })
   }
   if ((env['CURSOR_AGENT'] ?? '') !== '') candidates.push({ harness: 'cursor', label: 'Cursor' })
+  const hermesSession = env['HERMES_SESSION_ID']
+  if (hermesSession !== undefined && hermesSession !== '') {
+    const integrationInstance = hermesClassicCliLocalInstance(env)
+    candidates.push({
+      harness: 'hermes',
+      label: 'Hermes',
+      sessionId: hermesSession,
+      ...(integrationInstance === null ? {} : { integrationInstance }),
+    })
+  }
   return candidates
 }
 
@@ -97,6 +118,12 @@ export function resolveActiveHarness(
   if (first === undefined) return { active: null, contested: [] }
   if (candidates.length === 1) return { active: first, contested: [] }
 
+  // A send-only harness has no hook evidence, so live pointer/state of a
+  // hook-installable parent cannot prove which nested process owns this
+  // shell. Mixing Hermes with another marker therefore stays contested.
+  const mixedWithSendOnly = candidates.some((candidate) => !isHookInstallableHarness(candidate.harness))
+  if (mixedWithSendOnly) return { active: first, contested: candidates }
+
   // Exact lifecycle state is machine-global and survives a command moving to
   // another linked checkout. Prefer it before the checkout-local
   // pointer. A unique newest hook event proves which nested harness owns this
@@ -131,6 +158,25 @@ export function activeHarnessSession(
   now: number,
 ): ActiveHarnessSession | null {
   return resolveActiveHarness(env, cwd, now).active
+}
+
+/**
+ * Source Context attribution. Hook-installable nesting still uses declared
+ * order when nothing has fired — that existing send behavior is preserved.
+ * A contested mix that includes a send-only harness (Hermes) fails closed:
+ * the wrong Agent Session would otherwise be named as the owner.
+ */
+export function sourceContextHarnessSession(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  now: number,
+): ActiveHarnessSession | null {
+  const { active, contested } = resolveActiveHarness(env, cwd, now)
+  if (contested.some((candidate) => !isHookInstallableHarness(candidate.harness))) {
+    return null
+  }
+  if (active?.harness === 'hermes' && active.integrationInstance === undefined) return null
+  return active
 }
 
 /**
