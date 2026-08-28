@@ -57,7 +57,7 @@ export interface SessionLabelRenameInput {
   env: NodeJS.ProcessEnv
   sessionId: string
   label: string
-  harness?: Harness
+  harness?: SourceContextHarness
   now?: number
 }
 
