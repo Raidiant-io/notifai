@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:fcaf5f37cfd1191746f4d58ce612e85e087499c1f5cc4bd4ae6ac1ffa4dc6c07",
+  "behavior_digest": "sha256:dd7a6f91668a37b4434180a974ed26a73ddcbc3e723155096efc26874399fe23",
   "outcome": "guidance-updated",
   "reason": "CLI --sound and the saved sound key now accept Account custom names/ids as well as shipped names; notifai sounds lists the catalog; the skill and config copy say Device default; send omits kind-default sound so the server can resolve. Hermes classic CLI/local Source Context and the exact-session rename exception remain as previously reviewed. Harness continuation contracts are unchanged.",
   "surfaces_reviewed": [
