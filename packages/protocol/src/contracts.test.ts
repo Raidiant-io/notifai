@@ -31,6 +31,7 @@ import {
   validateDraft,
   type ListRepliesResponse,
   type NotificationDraftT,
+  type ProjectView,
   type PutAgentAcknowledgementResponse,
   type SubmissionReceipt,
 } from './index.js'
@@ -52,10 +53,27 @@ function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT 
   }
 }
 
+const projectViewFixture: ProjectView = {
+  project_id: 'prj_example',
+  identifier: 'example',
+  display_name: 'Example',
+  image_media_id: null,
+  avatar_revision: 'generated:v1',
+  image_url: 'https://example.test/api/v1/projects/prj_example/avatar.png',
+  last_seen_at: '2026-08-28T00:00:00.000Z',
+}
+
 /** The smallest well-formed reply block: one free-text question. */
 function freeTextReply(expiresInSeconds = 86400): NotificationDraftT['reply'] {
   return { expires_in_seconds: expiresInSeconds, questions: [{ id: 'q', text: 'Your call?' }] }
 }
+
+describe('Project identity contract', () => {
+  it('carries a stable avatar revision separately from its URL', () => {
+    expect(projectViewFixture.avatar_revision).toBe('generated:v1')
+    expect(projectViewFixture.image_url).toContain('/avatar.png')
+  })
+})
 
 describe('pairing ownership proof contract', () => {
   const begin = {
@@ -395,10 +413,15 @@ describe('validateDraft', () => {
       { requestId: 'req_x', deliveryId: 'del_x' },
       null,
       'ios',
-      { name: 'My App', imageUrl: 'https://signed.example/avatar.png' },
+      {
+        name: 'My App',
+        imageUrl: 'https://signed.example/avatar.png',
+        avatarRevision: 'med_custom_avatar',
+      },
     )
     const notifai = withAvatar.payload['notifai'] as Record<string, unknown>
     expect(notifai['project_image_url']).toBe('https://signed.example/avatar.png')
+    expect(notifai['project_avatar_revision']).toBe('med_custom_avatar')
     expect(notifai['project_name']).toBe('My App')
   })
 
@@ -1039,6 +1062,7 @@ describe('validateDraft', () => {
       {
         name: 'n'.padEnd(128, 'n'),
         imageUrl: 'https://x.invalid/'.padEnd(500, 'a'),
+        avatarRevision: 'a'.repeat(128),
       },
       new Date(0),
       null,
@@ -1062,6 +1086,7 @@ describe('validateDraft', () => {
       custom_data: { run_id: '42' },
       media_count: 1,
       has_full_body: true,
+      project_avatar_revision: 'a'.repeat(128),
     })
     expect(estimateFcmPayloadBytes(androidDraft)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.data)).length,

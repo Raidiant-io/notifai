@@ -632,6 +632,7 @@ const ESTIMATED_MEDIA_URL = 'https://x.invalid/'.padEnd(500, 'a')
 const ESTIMATED_PROJECT_IDENTITY = {
   name: 'n'.padEnd(128, 'n'),
   imageUrl: 'https://x.invalid/'.padEnd(500, 'a'),
+  avatarRevision: 'a'.repeat(128),
 } as const
 
 /**
