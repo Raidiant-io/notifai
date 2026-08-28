@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:09fd5b5d2722131e4374af1ed2a12cff342f361053caaa5f6827d73072581d3d",
+  "behavior_digest": "sha256:dd7a6f91668a37b4434180a974ed26a73ddcbc3e723155096efc26874399fe23",
   "outcome": "guidance-updated",
   "reason": "The public skill now teaches both the Hermes classic CLI/local send-only Source Context baseline and the narrow Agent Session rename exception. Hermes keeps only the proven marker envelope, HERMES_SESSION_ID, and invocation-cwd git/worktree while managed hooks, lifecycle activation, and asynchronous ask remain unavailable; an agent rename remains limited to the exact active session after a complete job change makes its old label misleading. Existing continuation contracts and domain terms remain unchanged, and the inherited Node 22, Windows credential, custom-sound protocol, and generalized harness-type integration changes have no guidance effect.",
   "surfaces_reviewed": [
