@@ -1,13 +1,13 @@
 {
- "version": 1,
- "behavior_digest": "sha256:3865ae43865a89820bdca45e1f9d9d22c2bdddc9e23f98af256b604b54e09934",
- "outcome": "guidance-updated",
- "reason": "Custom sounds ship as one canonical WAV: capability copy now says sounds sync as notifai-<id>.wav, the sounds catalog exposes a single url per sound instead of per-format urls, and the silent sound_library sync envelope is named for Companion App refreshes. No agent obligations changed: send/--sound semantics, Device default wording, server-side kind-default resolution, and all harness continuation contracts and domain terms are as previously reviewed.",
- "surfaces_reviewed": [
-  "lifecycle-hooks",
-  "notifai-skill",
-  "harness-setup",
-  "cli-readiness",
-  "domain-terms"
- ]
+  "version": 1,
+  "behavior_digest": "sha256:2d95cac34c2809020929dce6cf74c955be53a395727cbe092321607979f1fee7",
+  "outcome": "guidance-updated",
+  "reason": "The public skill now teaches the narrow Agent Session rename exception and the CLI adds an exact-active-session command with no id override. The upstream Windows credential timeout remains an implementation bound with no lifecycle or guidance effect.",
+  "surfaces_reviewed": [
+    "lifecycle-hooks",
+    "notifai-skill",
+    "harness-setup",
+    "cli-readiness",
+    "domain-terms"
+  ]
 }
