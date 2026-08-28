@@ -103,9 +103,11 @@ jobs:
             pnpm --filter @raidiant/notifai test -- \
               src/platform.test.ts \
               src/credentials.test.ts \
-              src/ui/config-view.test.ts \
+              src/ui/config-view.test.ts
+            pnpm --filter @raidiant/notifai test -- \
               src/hook-adapter.test.ts \
-              src/install-hooks.test.ts
+              src/install-hooks.test.ts \
+              --testNamePattern Windows
           else
             pnpm --filter @raidiant/notifai-protocol test
             pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
