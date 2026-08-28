@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ea140f26f9fb84d680a12e5fe5bfca7ab755c8c048b171cb1fef0f3447015950",
+  "behavior_digest": "sha256:cda7426185af48a0f1f59d4e3774aa1e20334561a175ed6edbd862a0730bbe7b",
   "outcome": "reviewed-no-impact",
-  "reason": "Raising the documented Node runtime prerequisite from 20 to 22 changes package admission, not lifecycle hooks, the skill, harness setup, CLI readiness after launch, or domain terminology.",
+  "reason": "Raising the Node prerequisite to 22 changes package admission, and allowing 30 seconds for a cold Windows DPAPI helper changes only a bounded credential-operation timeout; neither changes lifecycle hooks, the skill, harness setup, CLI readiness semantics, or domain terminology.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
