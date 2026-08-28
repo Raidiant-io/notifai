@@ -89,7 +89,7 @@ part of the current public support claim.
 | Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
 | Cursor hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenClaw hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenClaw hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
 
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
 journal
@@ -101,7 +101,8 @@ identity needed to prove asynchronous return, OpenCode has no proven
 exactly-once continuation after `session.idle`, and OpenClaw has no proven
 exactly-once continuation after `agent_end`; their hooks still support
 lifecycle cleanup and routing diagnostics, while blocking reply mode provides
-the reliable question path.
+the reliable question path. OpenClaw's advertised Windows cell is WSL2 only;
+a native Windows Gateway plus native Notifai CLI in one process is unproven.
 
 ## Companion App installation
 

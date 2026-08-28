@@ -211,15 +211,42 @@ describe('Hermes classic CLI/local Source Context seam', () => {
   })
 })
 
-describe('OpenClaw gateway-embedded Source Context seam', () => {
+describe('OpenClaw agent-local Source Context seam', () => {
   const PINNED_OPENCLAW = JSON.parse(
-    readFileSync(new URL('./fixtures/openclaw-2026.7.1-2-gateway-embedded.json', import.meta.url), 'utf8'),
+    readFileSync(new URL('./fixtures/openclaw-2026.7.1-2-agent-local.json', import.meta.url), 'utf8'),
   ) as {
     durableSessionKey: string
     rotatingSessionId: string
     observedPluginEnv: { NOTIFAI_ACTIVE_HARNESS: 'openclaw'; NOTIFAI_ACTIVE_SESSION_ID: string }
-    instance: { harness: 'openclaw'; surface: 'gateway-embedded'; execHost: 'gateway' }
+    instance: { harness: 'openclaw'; surface: 'agent-local'; execHost: 'gateway' }
+    hooks: {
+      proven: { activation: string; stop: string; execMarkers: string }
+      unprovenOnThisSurface: { presence: string; sessionEnd: string }
+    }
+    deferred: string[]
   }
+
+  it('pins only the probed agent-local surface, not Gateway-embedded', () => {
+    expect(PINNED_OPENCLAW.instance).toEqual({
+      harness: 'openclaw',
+      surface: 'agent-local',
+      execHost: 'gateway',
+    })
+    expect(PINNED_OPENCLAW.durableSessionKey).toBe('agent:main:probe-owner')
+    expect(PINNED_OPENCLAW.observedPluginEnv.NOTIFAI_ACTIVE_SESSION_ID).toBe(
+      PINNED_OPENCLAW.durableSessionKey,
+    )
+    expect(PINNED_OPENCLAW.hooks.proven).toEqual({
+      activation: 'before_prompt_build',
+      stop: 'agent_end',
+      execMarkers: 'resolve_exec_env',
+    })
+    expect(PINNED_OPENCLAW.hooks.unprovenOnThisSurface).toEqual({
+      presence: 'message_received',
+      sessionEnd: 'session_end',
+    })
+    expect(PINNED_OPENCLAW.deferred).toContain('gateway-embedded')
+  })
 
   it('attributes Source Context to the plugin-injected sessionKey', () => {
     const env = stateEnv(PINNED_OPENCLAW.observedPluginEnv)

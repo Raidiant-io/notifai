@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:30c1c37bd3118c34073f8a3c378e9c22f9130132e642b092e18b619731fb4058",
+  "behavior_digest": "sha256:db0dbefc866e482631af317904f9acc1aabd7f01510c1fb3889e3758f1357fea",
   "outcome": "guidance-updated",
-  "reason": "Added first-class OpenClaw managed lifecycle: generated Gateway plugin, sessionKey Source Context, worker-safe activation, fail-closed ask, and matching harness-setup/README/CLI help. Domain terms and skill Decide/Send/Ask sections stay harness-name-free.",
+  "reason": "Reviewed every shipped Agent Guidance surface on the rebased OpenClaw history (first-run one-init journey plus OpenClaw managed lifecycle and the Windows/agent-local evidence repair). Lifecycle hooks, harness-setup, README, and CLI help name OpenClaw; ask stays fail-closed; the Windows cell is WSL2-only with native Gateway unproven. Domain terms and skill Decide/Send/Ask stay harness-name-free. First-run init keeps unpaired hook skip on `notifai init` and login in the advanced group.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
