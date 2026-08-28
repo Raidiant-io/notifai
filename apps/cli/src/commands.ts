@@ -67,4 +67,8 @@ export {
   projectEnableCommand,
   projectStatusCommand,
 } from './commands-project.js'
+export {
+  agentSessionRenameCommand,
+  type AgentSessionRenameFlags,
+} from './commands-agent-sessions.js'
 export { realIo } from './commands-io.js'

@@ -53,6 +53,14 @@ export interface SessionLabelInput {
   now?: number
 }
 
+export interface SessionLabelRenameInput {
+  env: NodeJS.ProcessEnv
+  sessionId: string
+  label: string
+  harness?: Harness
+  now?: number
+}
+
 export type SessionLabelResolution =
   | { ok: true; label: string; source: SessionLabelSource }
   | { ok: false; error: string }
@@ -201,6 +209,20 @@ function explicitCandidate(
     }
   }
   return { label: normalized, source: 'explicit' }
+}
+
+export function normalizeExplicitSessionLabel(
+  input: Pick<SessionLabelRenameInput, 'env' | 'sessionId' | 'label'>,
+): { ok: true; label: string } | { ok: false; error: string } {
+  const candidate = explicitCandidate(input.label, {
+    env: input.env,
+    sessionId: input.sessionId,
+  })
+  if (candidate === null) {
+    return { ok: false, error: '--session-label must not be empty.' }
+  }
+  if ('error' in candidate) return { ok: false, error: candidate.error }
+  return { ok: true, label: candidate.label }
 }
 
 function harnessLabelIsPending(
@@ -386,6 +408,40 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
     return {
       ok: false,
       error: `Could not persist this session's name: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}
+
+/** Replace the local frozen label only after the Account-authoritative rename succeeds. */
+export function renameStoredSessionLabel(
+  input: SessionLabelRenameInput,
+): SessionLabelResolution {
+  const normalized = normalizeExplicitSessionLabel(input)
+  if (!normalized.ok) return normalized
+  const file = storePath(input.env)
+  const key = sessionKey(input.sessionId)
+  const now = input.now ?? Date.now()
+  try {
+    return withFileLock(`${file}.lock`, () => {
+      const store = readStore(file)
+      const existing = store.sessions[key]
+      store.sessions[key] = {
+        label: normalized.label,
+        source: 'explicit',
+        first_seen_at: existing?.first_seen_at ?? now,
+        ...(input.harness === undefined
+          ? existing?.harness === undefined
+            ? {}
+            : { harness: existing.harness }
+          : { harness: input.harness }),
+      }
+      writeStore(file, store)
+      return { ok: true, label: normalized.label, source: 'explicit' }
+    })
+  } catch (err) {
+    return {
+      ok: false,
+      error: `The Account label changed, but this machine could not save it locally: ${err instanceof Error ? err.message : String(err)}`,
     }
   }
 }

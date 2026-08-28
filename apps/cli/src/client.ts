@@ -17,6 +17,8 @@ import type {
   PollPairingResponse,
   PutAgentAcknowledgementRequestT,
   PutAgentAcknowledgementResponse,
+  PutAgentSessionLabelRequestT,
+  AgentSessionView,
   SubmissionReceipt,
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
@@ -94,6 +96,7 @@ export interface ApiClient {
     requestId: string,
     body: PutAgentAcknowledgementRequestT,
   ): Promise<PutAgentAcknowledgementResponse>
+  putAgentSessionLabel(body: PutAgentSessionLabelRequestT): Promise<AgentSessionView>
   agentAcknowledgement(
     requestId: string,
     options: { waitSeconds: number },
@@ -279,6 +282,8 @@ export function createClient(
         `/api/v1/notifications/${encodeURIComponent(requestId)}/agent-acknowledgement`,
         body,
       ),
+    putAgentSessionLabel: (body) =>
+      call<AgentSessionView>('PUT', '/api/v1/agent-sessions/label', body),
     agentAcknowledgement: (requestId, { waitSeconds }) =>
       call<GetAgentAcknowledgementResponse>(
         'GET',

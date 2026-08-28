@@ -116,6 +116,15 @@ describe('program argv parsing', () => {
     expect(enabled).toBe(1)
   })
 
+  it('dispatches the current Agent Session rename without exposing an id override', async () => {
+    let label: string | undefined
+    const result = await parse(['session', 'rename', 'Hermes Support'], {
+      agentSessionRename: (async (_deps, value) => ((label = value), 0)) as ProgramRunners['agentSessionRename'],
+    })
+    expect(result.exitCode).toBe(0)
+    expect(label).toBe('Hermes Support')
+  })
+
   it('drops empty collector defaults so "not passed" stays absent', async () => {
     let seen: Record<string, unknown> | undefined
     await parse(

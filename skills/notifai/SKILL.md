@@ -155,6 +155,12 @@ It is safe to repeat the same `--session-label` on every send and ask; the first
 accepted semantic name remains authoritative. Only a generated fallback name
 can be replaced by a later semantic name.
 
+User renames sync across Companion Apps and future Requests. An agent may run
+`notifai session rename "New job"` only when its job changed completely and its
+current name would now mislead. Never rename for milestones, ordinary progress,
+or same-job refinement. The command accepts no Agent Session id and fails unless
+the active harness proves the exact current Agent Session.
+
 ## Ask a question
 
 A question must be answerable from the notification itself. Keep it under 240

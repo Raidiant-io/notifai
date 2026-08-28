@@ -3,7 +3,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { stateDir } from './config.js'
-import { formatSessionFirstSeen, resolveSessionLabel } from './session-labels.js'
+import {
+  formatSessionFirstSeen,
+  renameStoredSessionLabel,
+  resolveSessionLabel,
+} from './session-labels.js'
 
 function fixture(): { env: NodeJS.ProcessEnv; now: number } {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-labels-'))
@@ -437,5 +441,31 @@ describe('semantic session labels', () => {
   it('formats first seen using the machine local calendar', () => {
     const now = new Date(2026, 0, 2, 3, 4).getTime()
     expect(formatSessionFirstSeen(now)).toBe('Jan 2, 2026 03:04')
+  })
+
+  it('explicitly replaces a semantic or fallback label after an authorized rename', () => {
+    const { env, now } = fixture()
+    resolveSessionLabel({
+      env,
+      now,
+      sessionId: 'rename-me',
+      harness: 'codex',
+      explicitLabel: 'Old job',
+    })
+
+    expect(
+      renameStoredSessionLabel({
+        env,
+        now: now + 1_000,
+        sessionId: 'rename-me',
+        harness: 'codex',
+        label: '  Completely   different job  ',
+      }),
+    ).toEqual({ ok: true, label: 'Completely different job', source: 'explicit' })
+    expect(resolveSessionLabel({ env, now: now + 2_000, sessionId: 'rename-me' })).toEqual({
+      ok: true,
+      label: 'Completely different job',
+      source: 'explicit',
+    })
   })
 })

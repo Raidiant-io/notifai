@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:cda7426185af48a0f1f59d4e3774aa1e20334561a175ed6edbd862a0730bbe7b",
-  "outcome": "reviewed-no-impact",
-  "reason": "Raising the Node prerequisite to 22 changes package admission, and allowing 30 seconds for a cold Windows DPAPI helper changes only a bounded credential-operation timeout; neither changes lifecycle hooks, the skill, harness setup, CLI readiness semantics, or domain terminology.",
+  "behavior_digest": "sha256:2d95cac34c2809020929dce6cf74c955be53a395727cbe092321607979f1fee7",
+  "outcome": "guidance-updated",
+  "reason": "The public skill now teaches the narrow Agent Session rename exception and the CLI adds an exact-active-session command with no id override. The upstream Windows credential timeout remains an implementation bound with no lifecycle or guidance effect.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

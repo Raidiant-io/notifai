@@ -6,6 +6,7 @@ import {
   PlatformSchema,
   REPLY_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
+  SESSION_LABEL_MAX_LENGTH,
   type NotificationMediaType,
   type Platform,
 } from './notification.js'
@@ -617,6 +618,30 @@ export interface ProjectView {
 
 export interface ListProjectsResponse {
   projects: ProjectView[]
+}
+
+// ---------------------------------------------------------------------------
+// Agent Sessions (Account-authoritative current labels)
+// ---------------------------------------------------------------------------
+
+export const PutAgentSessionLabelRequest = Type.Object(
+  {
+    session_id: Type.String({ minLength: 1, maxLength: 128 }),
+    label: Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH }),
+  },
+  { additionalProperties: false },
+)
+export type PutAgentSessionLabelRequestT = Static<typeof PutAgentSessionLabelRequest>
+
+export interface AgentSessionView {
+  session_id: string
+  label: string
+  renamed_by: 'user' | 'agent'
+  updated_at: string
+}
+
+export interface ListAgentSessionsResponse {
+  agent_sessions: AgentSessionView[]
 }
 
 // ---------------------------------------------------------------------------

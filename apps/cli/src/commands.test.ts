@@ -56,6 +56,7 @@ import {
   repliesCommand,
   sendCommand,
   statusCommand,
+  agentSessionRenameCommand,
   type CommandDeps,
   type CommandIo,
   type CommandSpinner,
@@ -7312,5 +7313,48 @@ describe('a second device that disagrees', () => {
   it('is silent for a single answer', () => {
     expect(contradictingAnswer([view({})])).toBeNull()
     expect(contradictingAnswer([])).toBeNull()
+  })
+})
+
+describe('Agent Session rename command', () => {
+  it('renames only the exact active Agent Session and updates its local frozen label', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-rename-'))
+    const io = new CapturedIo()
+    const seen: { session_id: string; label: string }[] = []
+    const client = {
+      putAgentSessionLabel: async (body: { session_id: string; label: string }) => {
+        seen.push(body)
+        return {
+          ...body,
+          renamed_by: 'agent' as const,
+          updated_at: '2026-08-28T10:00:00.000Z',
+        }
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_THREAD_ID: '01a04789-9589-76b2-82c8-bfe63062c867',
+      },
+    }
+
+    expect(await agentSessionRenameCommand(deps, '  Hermes   Runtime Support  ')).toBe(EXIT.ok)
+    expect(seen).toEqual([{
+      session_id: '01a04789-9589-76b2-82c8-bfe63062c867',
+      label: 'Hermes Runtime Support',
+    }])
+    expect(io.outLines.join('\n')).toContain('Hermes Runtime Support')
+  })
+
+  it('fails closed when the harness does not expose an exact current Agent Session', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-rename-none-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+
+    expect(await agentSessionRenameCommand(deps, 'A new job')).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/exact active Agent Session/i)
   })
 })

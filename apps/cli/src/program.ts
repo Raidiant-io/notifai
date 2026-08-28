@@ -4,6 +4,7 @@ import {
   acknowledgeCommand,
   askCommand,
   accessStatusCommand,
+  agentSessionRenameCommand,
   authStatusCommand,
   capabilitiesCommand,
   closeCommand,
@@ -87,6 +88,7 @@ const defaultRunners = {
   projectEnable: projectEnableCommand,
   projectDisable: projectDisableCommand,
   projectStatus: projectStatusCommand,
+  agentSessionRename: agentSessionRenameCommand,
   send: sendCommand,
   replies: repliesCommand,
   acknowledge: acknowledgeCommand,
@@ -270,6 +272,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   project.command('status').description('Show lifecycle enablement for this Project').option('--json').action((opts: { json?: boolean }) => {
     exit(runners.projectStatus(deps, opts.json === true))
   })
+
+  const session = program
+    .command('session')
+    .helpGroup(GROUP.agent)
+    .summary('Inspect or rename the current Agent Session')
+    .description('Operate on the exact Agent Session owned by the active harness')
+  session
+    .command('rename <label>')
+    .description(
+      'Rename this exact Agent Session; agents use this only after its job changes completely enough that the old label would mislead',
+    )
+    .option('--json', 'machine-readable output')
+    .action(async (label: string, opts: { json?: boolean }) => {
+      exit(await runners.agentSessionRename(deps, label, opts))
+    })
 
   program
     .command('login')
