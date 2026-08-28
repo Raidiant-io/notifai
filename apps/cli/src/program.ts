@@ -180,11 +180,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   /**
    * Bare `notifai`.
    *
-   * At a human terminal this opens the interactive app; anywhere else it prints
-   * help exactly as before. The check is the same one every other prompt in this
-   * CLI is gated on — stdin and stdout both TTYs, not CI, `NOTIFAI_NO_INPUT`
-   * unset — because an agent that reaches a prompt does not fail, it hangs
-   * for ever waiting on a stdin nobody is typing into.
+   * At a human terminal this opens the interactive app, which enters `init`
+   * when the machine is not yet paired and otherwise offers daily actions.
+   * Anywhere else it prints help exactly as before. The check is the same one
+   * every other prompt in this CLI is gated on — stdin and stdout both TTYs,
+   * not CI, `NOTIFAI_NO_INPUT` unset — because an agent that reaches a prompt
+   * does not fail, it hangs for ever waiting on a stdin nobody is typing into.
    */
   /**
    * An unrecognised subcommand reaches the root as an excess argument, and
@@ -292,7 +293,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
 
   program
     .command('login')
-    .helpGroup(GROUP.start)
+    .helpGroup(GROUP.advanced)
     .summary('Sign in and pair this machine')
     .description('Pair this machine with your Notifai account via browser approval')
     .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')

@@ -7,6 +7,7 @@ import { type FlagOverrides } from './config.js'
 import { checkApproveUrl } from './url-policy.js'
 import {
   EXIT,
+  SETUP_COMMAND,
   authedClient,
   loadLoggedConfig,
   makeClient,
@@ -128,14 +129,14 @@ export async function loginCommand(
       spinner?.error('Account has no Alpha access')
       deps.io.err('This account has no active plan or temporary Alpha access.')
       deps.io.err(`next: ${next}`)
-      deps.io.err('After access is granted, run `notifai login` again.')
+      deps.io.err(`After access is granted, run \`${SETUP_COMMAND}\` again.`)
       return EXIT.auth
     }
     if (poll.status === 'expired') break
     spinner?.message(approvalWaitMessage())
   }
   spinner?.error('Pairing expired')
-  deps.io.err('Pairing expired before it was approved. Run `notifai login` again.')
+  deps.io.err(`Pairing expired before it was approved. Run \`${SETUP_COMMAND}\` again.`)
   return EXIT.auth
 }
 
@@ -166,7 +167,7 @@ export function authStatusCommand(deps: CommandDeps, flags: { json?: boolean }):
     return credential ? EXIT.ok : EXIT.auth
   }
   if (!credential) {
-    deps.io.err('Not signed in. Run `notifai login`.')
+    deps.io.err(`Not signed in. Run \`${SETUP_COMMAND}\`; it will coordinate machine login and device setup.`)
     return EXIT.auth
   }
   deps.io.out(`Signed in as machine "${credential.machineName}" (${credential.machineId})`)

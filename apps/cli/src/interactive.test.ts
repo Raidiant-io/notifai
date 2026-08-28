@@ -226,6 +226,37 @@ describe('interactiveCommand', () => {
     answers = []
   })
 
+  it('enters init on first-run instead of a parallel Sign in path', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-first-run-'))
+    const out: string[] = []
+    const deps = makeDeps(cwd)
+    deps.store.load = () => null
+    deps.io.out = (line: string) => {
+      out.push(line)
+    }
+    answers = [CANCEL]
+
+    expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
+    expect(out.join('\n')).toContain('Next: This machine')
+    expect(out.join('\n')).toContain('notifai init')
+    expect(out.join('\n')).not.toContain('notifai login')
+    const menu = promptLog.find((entry) => entry.message === 'What would you like to do?')
+    expect(menu?.options?.[0]).toMatchObject({ value: 'setup', label: 'Finish setup' })
+    expect(optionLabels(menu!)).not.toContain('Sign in')
+    expect(optionLabels(menu!)).not.toContain('Add a device')
+  })
+
+  it('offers Finish setup instead of a parallel Add a device path', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-finish-setup-'))
+    answers = [CANCEL]
+
+    expect(await interactiveCommand(makeDeps(cwd), '0.0.0-test')).toBe(EXIT.ok)
+    const menu = promptLog.find((entry) => entry.message === 'What would you like to do?')
+    expect(menu?.options?.[0]).toMatchObject({ value: 'setup', label: 'Finish setup' })
+    expect(optionLabels(menu!)).not.toContain('Add a device')
+    expect(optionLabels(menu!)).not.toContain('Sign in')
+  })
+
   it('quits from the root menu on Escape', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-root-esc-'))
     answers = [CANCEL]

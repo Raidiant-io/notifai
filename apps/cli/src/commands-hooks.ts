@@ -104,6 +104,7 @@ import {
 } from './send.js'
 import {
   EXIT,
+  SETUP_COMMAND,
   authedClient,
   diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
@@ -469,7 +470,7 @@ export async function hookRunCommand(
     const credential = deps.store.load()
     if (!credential) {
       logger.error('hook.end', { hook: event, outcome: 'not-paired' })
-      deps.io.err('notifai: hook skipped: this machine is not paired; run `notifai login`')
+      deps.io.err(`notifai: hook skipped: this machine is not paired; run \`${SETUP_COMMAND}\``)
       return EXIT.ok
     }
     // Pin authenticated traffic to the origin the credential was issued for. A

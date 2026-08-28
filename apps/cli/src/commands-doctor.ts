@@ -48,6 +48,7 @@ import type { Tone } from './ui/theme.js'
 import type { MachineCredential } from './credentials.js'
 import {
   EXIT,
+  SETUP_COMMAND,
   UPDATE_CLI_COMMAND,
   diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
@@ -303,6 +304,94 @@ function remoteInvalidatedByConfig(
   return server === undefined || !server.detail.includes(origin)
 }
 
+function isNoActivePlanError(err: unknown): err is ApiCallError {
+  return err instanceof ApiCallError && err.code === 'no_active_plan'
+}
+
+/**
+ * Device listing is grant-gated; access status is not. A paired Account whose
+ * plan lapsed must not be diagnosed as a revoked machine.
+ */
+async function probeAccount(
+  client: ApiClient,
+  credential: MachineCredential,
+  baseUrl: string,
+): Promise<{
+  email: string | null
+  devices: RoutableDevice[] | null
+  lookupFailed: boolean
+  auth: ReadinessState
+}> {
+  const [devicesOutcome, accessOutcome] = await Promise.allSettled([
+    Promise.resolve().then(() => client.listDevices()),
+    Promise.resolve().then(() => client.accessStatus()),
+  ])
+  const access = accessOutcome.status === 'fulfilled' ? accessOutcome.value : null
+  const devices = devicesOutcome.status === 'fulfilled' ? devicesOutcome.value.devices : null
+  const email = access?.email ?? null
+  const devicesErr = devicesOutcome.status === 'rejected' ? devicesOutcome.reason : null
+  const noActivePlan =
+    access?.status === 'no_active_plan' || isNoActivePlanError(devicesErr)
+
+  if (noActivePlan) {
+    const next =
+      (isNoActivePlanError(devicesErr) ? devicesErr.nextAction : null) ??
+      `Open ${supportPageUrl(baseUrl)} to request Alpha access, then retry.`
+    return {
+      email,
+      devices: null,
+      lookupFailed: true,
+      auth: {
+        id: 'auth',
+        title: 'Account',
+        status: 'gap',
+        detail: email
+          ? `no active plan or temporary Alpha access (${email})`
+          : 'no active plan or temporary Alpha access',
+        remedy: {
+          by: 'user-elsewhere',
+          summary: next,
+        },
+      },
+    }
+  }
+
+  if (devices !== null) {
+    return {
+      email,
+      devices,
+      lookupFailed: false,
+      auth: {
+        id: 'auth',
+        title: 'Account',
+        status: 'ready',
+        detail: email
+          ? `machine ${credential.machineId} accepted (${email})`
+          : `machine ${credential.machineId} accepted`,
+      },
+    }
+  }
+
+  const err = devicesErr ?? (accessOutcome.status === 'rejected' ? accessOutcome.reason : null)
+  return {
+    email: null,
+    devices: null,
+    lookupFailed: true,
+    auth: {
+      id: 'auth',
+      title: 'Account',
+      status: 'gap',
+      detail: err instanceof ApiCallError ? `${err.code}: ${err.message}` : String(err),
+      remedy: {
+        by: 'user-here',
+        summary: 'this machine is no longer recognised; pair it again',
+        command: SETUP_COMMAND,
+        interactive: true,
+      },
+    },
+  }
+}
+
 /**
  * Read the whole setup once, in dependency order.
  *
@@ -378,7 +467,7 @@ export async function assessReadiness(
           remedy: {
             by: 'user-here',
             summary: 'sign in — this opens your browser to approve the machine',
-            command: 'notifai login',
+            command: SETUP_COMMAND,
             interactive: true,
           },
         },
@@ -437,39 +526,11 @@ export async function assessReadiness(
   } else {
     const client = makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
     accountClient = client
-    try {
-      const [{ devices }, email] = await Promise.all([
-        client.listDevices(),
-        Promise.resolve()
-          .then(async () => (await client.accessStatus()).email)
-          .catch(() => null as string | null),
-      ])
-      accountDevices = devices
-      accountEmail = email
-      states.push({
-        id: 'auth',
-        title: 'Account',
-        status: 'ready',
-        detail: accountEmail
-          ? `machine ${credential.machineId} accepted (${accountEmail})`
-          : `machine ${credential.machineId} accepted`,
-      })
-    } catch (err) {
-      // A credential the server rejects is revocation, not absence, and the
-      // remedy is the same sign-in either way.
-      accountLookupFailed = true
-      states.push({
-        id: 'auth',
-        title: 'Account',
-        status: 'gap',
-        detail: err instanceof ApiCallError ? `${err.code}: ${err.message}` : String(err),
-        remedy: {
-          by: 'user-here',
-          summary: 'this machine is no longer recognised; pair it again',
-          command: 'notifai login',
-        },
-      })
-    }
+    const probed = await probeAccount(client, credential, baseUrl)
+    accountDevices = probed.devices
+    accountEmail = probed.email
+    accountLookupFailed = probed.lookupFailed
+    states.push(probed.auth)
   }
 
   // Optional setup that works without a companion device must appear before the
