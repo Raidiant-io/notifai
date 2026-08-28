@@ -49,7 +49,7 @@ const kitchenTimer = {
   name: 'Kitchen timer',
   duration_ms: 2400,
   content_hash: 'a'.repeat(64),
-  urls: { caf: 'https://caf', ogg: 'https://ogg', m4a: 'https://m4a' },
+  url: 'https://wav.example/kitchen.wav',
 }
 
 describe('soundsCommand', () => {
