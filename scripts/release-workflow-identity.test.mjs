@@ -119,18 +119,16 @@ test('explicit release-branch CI cannot recurse into release automation', () => 
   assert.doesNotMatch(ci, /\n\s+(?:actions|contents|pull-requests): write/)
 })
 
-test('a failed integrity dependency makes all nine required checks run and fail', () => {
+test('a failed integrity dependency makes all seven required checks run and fail', () => {
   assert.deepEqual(
     requiredChecks.map(check => check.name).sort(),
     [
       'commits',
       'gates',
-      'platform (macos-latest, 20)',
+      'platform (macos-latest, 22)',
       'platform (macos-latest, 24)',
-      'platform (ubuntu-latest, 20)',
+      'platform (ubuntu-latest, 22)',
       'platform (ubuntu-latest, 24)',
-      'platform (windows-latest, 20)',
-      'platform (windows-latest, 24)',
       'secret-history',
     ],
   )

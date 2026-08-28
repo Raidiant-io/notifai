@@ -37,17 +37,17 @@ jobs:
             exit 1
           fi
 
-  # Prove the public sending surface on every supported desktop OS and at both
-  # ends of the Node range. Windows and macOS run the release package check too:
-  # it executes the platform's real package-manager shims and inspects pnpm pack.
+  # Prove the public sending surface on the active CI hosts and at both ends of
+  # the maintained Node range. Native Windows acceptance is run locally rather
+  # than in CI for now.
   platform:
     needs: dispatch-integrity
     if: ${{ always() }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node: ['20', '24']
+        os: [ubuntu-latest, macos-latest]
+        node: ['22', '24']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -76,10 +76,9 @@ jobs:
       # Protocol before CLI: the CLI resolves its built exports.
       - run: pnpm build
 
-      # Platform-agnostic suites run once on Ubuntu. Each host also runs the
-      # focused tests that exercise its real process, path, credential, and hook
-      # adapter behavior; the CLI's simulated-platform tests still cover every
-      # branch from the common suite.
+      # Platform-agnostic suites run once on Ubuntu. macOS also runs the focused
+      # wake test; simulated-platform tests in the common suite continue to
+      # exercise Windows branches without claiming native Windows evidence.
       - name: Run platform tests
         shell: bash
         run: |
@@ -87,15 +86,7 @@ jobs:
             pnpm -r test
           else
             pnpm --filter @raidiant/notifai-protocol test
-            if [ "${{ runner.os }}" = "Windows" ]; then
-              pnpm --filter @raidiant/notifai test -- \
-                src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts
-              pnpm --filter @raidiant/notifai test -- \
-                src/hook-adapter.test.ts src/install-hooks.test.ts \
-                --testNamePattern="Windows"
-            else
-              pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
-            fi
+            pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
           fi
 
       - run: pnpm -r typecheck
