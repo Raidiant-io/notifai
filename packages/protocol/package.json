@@ -1,6 +1,6 @@
 {
   "name": "@raidiant/notifai-protocol",
-  "version": "5.0.2",
+  "version": "6.0.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

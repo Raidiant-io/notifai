@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.0.0](https://github.com/Raidiant-io/notifai/compare/v9.3.0...v10.0.0) (2026-08-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Node 22 and defer Windows CI ([#90](https://github.com/Raidiant-io/notifai/issues/90))
+
+### Features
+
+* align Agent Session naming and avatar revisions ([#95](https://github.com/Raidiant-io/notifai/issues/95)) ([cc764b1](https://github.com/Raidiant-io/notifai/commit/cc764b195129c8a14eee6c49e043d055417c553f))
+* **cli:** add Hermes local Source Context send baseline ([#93](https://github.com/Raidiant-io/notifai/issues/93)) ([37ddd4f](https://github.com/Raidiant-io/notifai/commit/37ddd4ffc0bb7ab7d2689adb08674cce03f815c2))
+* custom notification sounds — catalog refs, canonical WAV, silent library sync ([#94](https://github.com/Raidiant-io/notifai/issues/94)) ([c0b072c](https://github.com/Raidiant-io/notifai/commit/c0b072ce8aced01bdef25444eab1f60785684da7))
+* require Node 22 and defer Windows CI ([#90](https://github.com/Raidiant-io/notifai/issues/90)) ([30a8a22](https://github.com/Raidiant-io/notifai/commit/30a8a22b0cb7df8448cee61b55d8593d24c13fdf))
+
+
+### Bug Fixes
+
+* restore meaningful sessions and mobile sound contracts ([#96](https://github.com/Raidiant-io/notifai/issues/96)) ([764c040](https://github.com/Raidiant-io/notifai/commit/764c0408d9152676d8ec102532cb2d600313ec92))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 5.0.2 to 6.0.0
+
 ## [9.3.0](https://github.com/Raidiant-io/notifai/compare/v9.2.2...v9.3.0) (2026-08-28)
 
 
