@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.3.0/schemas/config.json",
   "changelog-type": "default",
   "separate-pull-requests": false,
-  "plugins": [{ "type": "node-workspace" }],
+  "plugins": [{ "type": "node-workspace", "updateAllPackages": true }],
   "packages": {
     "apps/cli": {
       "release-type": "node",

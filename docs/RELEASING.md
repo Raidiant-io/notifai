@@ -62,6 +62,16 @@ protocol version and the other can leave the CLI pinned to the old version.
 `pnpm check:packed` installs both tarballs outside the workspace and enforces
 the exact-pair invariant that workspace linking otherwise hides.
 
+The `node-workspace` plugin therefore uses `updateAllPackages: true`. A change
+to either package advances both packages by at least a patch and keeps the
+candidate genuinely combined. This is also required by release-please 17.3.0:
+with a rootless manifest and `include-component-in-tag: false`, a CLI-only
+combined candidate is rendered as one componentless body entry. After merge,
+release-please treats that shape as a standalone component branch, cannot
+correlate it with `release-please--branches--main`, and silently creates no
+`v<version>` release. Shipping the pair together avoids that invalid metadata
+shape without changing the established CLI tag or bypassing verification.
+
 The release workflow then repairs the generated branch after release-please
 updates it:
 
@@ -97,7 +107,9 @@ an incompatible Release PR. In the combined no-root configuration, a lone
 componentless release entry is rejected because release-please 17.3.0 treats it
 as a standalone component branch and cannot correlate the branch back to the
 configured package. Component-named single-package candidates and parseable
-combined candidates remain valid. Keep the generated Release PR metadata
+combined candidates remain valid. The workspace-wide bump above prevents the
+CLI-only form during ordinary generation; this verifier remains the fail-closed
+backstop if configuration or upstream behavior drifts. Keep the generated Release PR metadata
 unchanged; if this check rejects a candidate, do not merge it.
 
 GitHub documents one narrower exception to the recursion rule: when

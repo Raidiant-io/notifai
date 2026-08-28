@@ -192,6 +192,9 @@ test('the rootless combined manifest does not use an empty group title template'
   assert.equal(releaseConfig.packages['.'], undefined)
   assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)
   assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/protocol'])
+  assert.deepEqual(releaseConfig.plugins, [
+    {type: 'node-workspace', updateAllPackages: true},
+  ])
 })
 
 test('single-package releases are verified at their exact tags and dispatched', () => {
