@@ -1302,6 +1302,15 @@ describe('notification kind', () => {
       (buildApnsEnvelope(draft({ kind: 'blocked' }), { requestId: 'req_k', deliveryId: 'del_k' }, null)
         .payload['aps'] as Record<string, unknown>)['sound'],
     ).toBe('attention.caf')
+    expect(
+      (
+        buildApnsEnvelope(
+          draft({ platform: { ios: { sound: 'snd_chime' } } }),
+          { requestId: 'req_custom_sound', deliveryId: 'del_custom_sound' },
+          null,
+        ).payload['aps'] as Record<string, unknown>
+      )['sound'],
+    ).toBe('notifai-snd_chime.wav')
   })
 
   it('rejects a kind outside the closed vocabulary', () => {

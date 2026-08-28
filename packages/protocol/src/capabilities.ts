@@ -130,7 +130,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'sound_file',
       status: 'supported',
-      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.caf.',
+      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.wav.',
     },
     {
       path: 'localization',
@@ -231,7 +231,7 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'sound_file',
       status: 'supported',
-      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.caf.',
+      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.wav.',
     },
     {
       path: 'localization',

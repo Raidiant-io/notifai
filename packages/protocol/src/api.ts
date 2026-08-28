@@ -617,18 +617,12 @@ export interface BeginSoundUploadResponse {
   expires_at: string
 }
 
-export interface SoundFormatUrls {
-  caf: string
-  ogg: string
-  m4a: string
-}
-
 export interface SoundView {
   sound_id: string
   name: string
   duration_ms: number
   content_hash: string
-  urls: SoundFormatUrls
+  url: string
 }
 
 export interface ListSoundsResponse {

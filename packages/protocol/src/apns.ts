@@ -171,12 +171,12 @@ export function buildApnsEnvelope(
 
 /**
  * APNs sound filename for a resolved ref. Shipped semantic names keep their
- * bundled `.caf` files; Account custom sounds use `notifai-<id>.caf`.
+ * bundled `.caf` files; Account custom sounds use `notifai-<id>.wav`.
  */
 export function apnsSoundFilename(sound: string): string {
   if (sound === 'default') return 'default'
   if (isSemanticSound(sound)) return `${sound}.caf`
-  return `notifai-${sound}.caf`
+  return `notifai-${sound}.wav`
 }
 
 /** The custom `notifai` payload key shared by alert and silent state syncs. */
