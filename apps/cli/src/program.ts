@@ -642,7 +642,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('Wire this harness to route registered questions to your devices')
     .option(
       '--harness <name>',
-      'claude-code | codex | cursor | opencode (default: every detected harness)',
+      'claude-code | codex | cursor | opencode | openclaw (default: every detected harness)',
     )
     .option('--global', 'install for every project instead of just this one')
     .action((opts: { harness?: string; global?: boolean }) => {
@@ -651,7 +651,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   hooks
     .command('uninstall')
     .description('Remove the hooks this CLI installed')
-    .option('--harness <name>', 'claude-code | codex | cursor | opencode (default: detected)')
+    .option('--harness <name>', 'claude-code | codex | cursor | opencode | openclaw (default: detected)')
     .option('--global', 'remove the machine-wide install')
     .action((opts: { harness?: string; global?: boolean }) => {
       exit(runners.hooksUninstall(deps, opts))

@@ -107,6 +107,19 @@ The prepared User message for this human-only action is:
   so `notifai ask` fails closed instead of accepting an answer into a void.
   Use a blocking `notifai send --reply` question when its answer must return to
   the agent without another human prompt.
+- **OpenClaw:** restart the Gateway after installation because plugins load at
+  startup, then start one fresh Agent Session, send one prompt, and run
+  `notifai doctor`. Notifai owns its generated Gateway plugin and will not
+  overwrite a foreign one. Exact Agent Session identity is the OpenClaw
+  `sessionKey`; `sessionId` is a rotating generation and is never used as the
+  session id. A session key containing `:subagent:` or an ACP nested context
+  is a worker. Missing identity fails safe as a non-sending worker; only a
+  proven parent Agent Session receives owner context. Explicit textual
+  delegation promotes that worker through the same skill-and-guidance rule.
+  OpenClaw has no locally proven exactly-once continuation after `agent_end`,
+  so `notifai ask` fails closed instead of accepting an answer into a void.
+  Use a blocking `notifai send --reply` question when its answer must return to
+  the agent without another human prompt. Do not treat `/stop` as turn-end.
 - **Hermes:** classic CLI on the local terminal backend can send. Notifai reads
   exact `HERMES_SESSION_ID` and derives git branch and worktree from the actual
   invocation cwd. Do not run `notifai hooks install --harness hermes` — managed

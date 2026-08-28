@@ -31,7 +31,7 @@ export function sessionActivationOutput(
   const context = hookEventName === 'SubagentStart'
     ? WORKER_ACTIVATION_CONTEXT
     : rootActivationContext(cwd, env)
-  if (harness === 'opencode') return context
+  if (harness === 'opencode' || harness === 'openclaw') return context
   if (harness === 'cursor') {
     return JSON.stringify({ additional_context: context })
   }

@@ -210,3 +210,58 @@ describe('Hermes classic CLI/local Source Context seam', () => {
     )
   })
 })
+
+describe('OpenClaw gateway-embedded Source Context seam', () => {
+  const PINNED_OPENCLAW = JSON.parse(
+    readFileSync(new URL('./fixtures/openclaw-2026.7.1-2-gateway-embedded.json', import.meta.url), 'utf8'),
+  ) as {
+    durableSessionKey: string
+    rotatingSessionId: string
+    observedPluginEnv: { NOTIFAI_ACTIVE_HARNESS: 'openclaw'; NOTIFAI_ACTIVE_SESSION_ID: string }
+    instance: { harness: 'openclaw'; surface: 'gateway-embedded'; execHost: 'gateway' }
+  }
+
+  it('attributes Source Context to the plugin-injected sessionKey', () => {
+    const env = stateEnv(PINNED_OPENCLAW.observedPluginEnv)
+    const cwd = '/workspace'
+    const active = resolveActiveHarness(env, cwd, Date.now()).active
+    expect(active).toMatchObject({
+      harness: 'openclaw',
+      sessionId: PINNED_OPENCLAW.durableSessionKey,
+    })
+    const built = buildSourceContext({
+      env,
+      invocation: inferInvocationContext(cwd, fixtureGit({})),
+      ...(active === null ? {} : { activeHarness: active }),
+      now: Date.now(),
+    })
+    expect(built).toMatchObject({
+      ok: true,
+      source: {
+        harness: 'openclaw',
+        session_id: PINNED_OPENCLAW.durableSessionKey,
+      },
+    })
+    if (built.ok) {
+      expect(JSON.stringify(built.source)).not.toContain(PINNED_OPENCLAW.rotatingSessionId)
+    }
+  })
+
+  it('treats nested OpenClaw and Claude markers as contested until live evidence exists', () => {
+    const env = stateEnv({
+      ...PINNED_OPENCLAW.observedPluginEnv,
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+    })
+    const resolution = resolveActiveHarness(env, '/workspace', 1)
+    expect(resolution.contested.map((candidate) => candidate.harness).sort()).toEqual([
+      'claude-code',
+      'openclaw',
+    ])
+  })
+
+  it('keeps OpenClaw Question Routing unsupported', () => {
+    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('unsupported')
+    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
+  })
+})

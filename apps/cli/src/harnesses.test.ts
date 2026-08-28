@@ -34,7 +34,13 @@ describe('harness contract', () => {
   })
 
   it('keeps managed hook installation a strict subset of Source Context', () => {
-    expect(HOOK_INSTALLABLE_HARNESSES).toEqual(['claude-code', 'codex', 'cursor', 'opencode'])
+    expect(HOOK_INSTALLABLE_HARNESSES).toEqual([
+      'claude-code',
+      'codex',
+      'cursor',
+      'opencode',
+      'openclaw',
+    ])
     expect(SOURCE_CONTEXT_HARNESSES).toContain('hermes')
     expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
     expect(Object.keys(HARNESS_CAPABILITIES).sort()).toEqual([...HOOK_INSTALLABLE_HARNESSES].sort())
@@ -96,6 +102,8 @@ describe('harness contract', () => {
     })
     expect(HARNESS_CAPABILITIES.opencode.stopContinuation).toBe('unsupported')
     expect(HARNESS_CAPABILITIES.opencode.deliveryRoutes).toEqual(['unsupported'])
+    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('unsupported')
+    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
   })
 
   it('treats the pinned Hermes classic CLI/local trace as send-only', () => {

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3a82e4a1da841403b40b2ac8054fd0ced9f4c1a0eb8cf010d92bb3149e73b9af",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the README Subscription rewrite that replaces the premature paid-service claim with pre-launch wording (purchase not open yet, access by invitation) against every shipped Agent Guidance surface. The hooks, skill, harness setup, and CLI readiness surfaces make no purchase or subscription claims, and the new wording uses the existing canonical terms, so no guidance content needed to change.",
+  "behavior_digest": "sha256:30c1c37bd3118c34073f8a3c378e9c22f9130132e642b092e18b619731fb4058",
+  "outcome": "guidance-updated",
+  "reason": "Added first-class OpenClaw managed lifecycle: generated Gateway plugin, sessionKey Source Context, worker-safe activation, fail-closed ask, and matching harness-setup/README/CLI help. Domain terms and skill Decide/Send/Ask sections stay harness-name-free.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -30,7 +30,9 @@ for (const key of Object.keys(env)) {
     key === 'CODEX_THREAD_ID' ||
     key === 'OPENCODE_SESSION_ID' ||
     key.startsWith('CURSOR_') ||
-    key.startsWith('HERMES_SESSION_')
+    key.startsWith('HERMES_SESSION_') ||
+    key.startsWith('OPENCLAW_') ||
+    key.startsWith('NOTIFAI_ACTIVE_')
   ) {
     delete env[key]
   }

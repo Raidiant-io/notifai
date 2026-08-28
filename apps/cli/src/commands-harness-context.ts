@@ -51,6 +51,14 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
       ...(sessionLabelPending ? { sessionLabelPending: true } : {}),
     })
   }
+  if (env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
+    const sessionId = env['NOTIFAI_ACTIVE_SESSION_ID']
+    candidates.push({
+      harness: 'openclaw',
+      label: 'OpenClaw',
+      ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
+    })
+  }
   if (env['CLAUDECODE'] === '1') {
     const sessionId = env['CLAUDE_CODE_SESSION_ID']
     candidates.push({

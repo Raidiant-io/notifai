@@ -3288,6 +3288,71 @@ describe('harness activation guidance', () => {
     expect(inspectHookAdapter(deps.hookAdapterHome).problems).toEqual([])
     expect(inspectHookAdapter(deps.hookAdapterHome).target?.scriptPath).toBe(scriptPath)
   })
+
+  it('installs an owned OpenClaw plugin and reports unsupported continuation', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-activation-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const home = path.join(cwd, 'home')
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        HOME: home,
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCLAW_STATE_DIR: path.join(cwd, 'openclaw-home'),
+      },
+    }
+
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain('Installed openclaw hooks in')
+    expect(io.outLines.join('\n')).toContain(
+      'Restart the OpenClaw Gateway, start one fresh Agent Session, send one prompt, then run `notifai doctor`.',
+    )
+    const pluginFile = path.join(cwd, '.openclaw', 'extensions', 'notifai', 'index.js')
+    const plugin = readFileSync(pluginFile, 'utf8')
+    expect(plugin).toContain('api.on("before_prompt_build"')
+    expect(plugin).toContain('api.on("resolve_exec_env"')
+    expect(plugin).not.toContain('command:stop')
+    const config = JSON.parse(
+      readFileSync(path.join(cwd, 'openclaw-home', 'openclaw.json'), 'utf8'),
+    ) as {
+      plugins: { entries: { notifai: { enabled: boolean; hooks: { allowConversationAccess: boolean } } } }
+    }
+    expect(config.plugins.entries.notifai).toEqual({
+      enabled: true,
+      hooks: { allowConversationAccess: true },
+    })
+
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toContain('no proven answer continuation')
+  })
+
+  it('refuses to overwrite a foreign OpenClaw plugin', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-foreign-'))
+    const plugin = path.join(cwd, '.openclaw', 'extensions', 'notifai', 'index.js')
+    mkdirSync(path.dirname(plugin), { recursive: true })
+    writeFileSync(plugin, 'export default { id: "foreign" }\n')
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: {
+        HOME: path.join(cwd, 'home'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCLAW_STATE_DIR: path.join(cwd, 'openclaw-home'),
+      },
+    }
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(io.errLines.join('\n')).toMatch(/was not written by Notifai/)
+    expect(readFileSync(plugin, 'utf8')).toBe('export default { id: "foreign" }\n')
+  })
 })
 
 describe('stable hook installation', () => {
@@ -6813,6 +6878,28 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
     expect(readSessionState('opencode-current', env).pending).toBeUndefined()
+  })
+
+  it('rejects OpenClaw before registration even with an exact matching pointer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-openclaw-unsupported-'))
+    const io = new CapturedIo()
+    const env = {
+      HOME: path.join(cwd, 'home'),
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      OPENCLAW_STATE_DIR: path.join(cwd, 'openclaw-home'),
+      NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:main',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('agent:main:main', env, { harness: 'openclaw', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'agent:main:main', 42, 'openclaw')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
+    expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
   })
 
   it('refuses Hermes ask as unsupported rather than as missing hooks', () => {

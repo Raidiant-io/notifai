@@ -1,5 +1,12 @@
 /** Every harness Notifai can name in Source Context when authoritatively known. */
-export const SOURCE_CONTEXT_HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode', 'hermes'] as const
+export const SOURCE_CONTEXT_HARNESSES = [
+  'claude-code',
+  'codex',
+  'cursor',
+  'opencode',
+  'openclaw',
+  'hermes',
+] as const
 
 export type SourceContextHarness = (typeof SOURCE_CONTEXT_HARNESSES)[number]
 
@@ -10,7 +17,13 @@ export type SourceContextHarness = (typeof SOURCE_CONTEXT_HARNESSES)[number]
  * narrower, independently proven cell: Hermes can appear in Source Context
  * without being hook-installable.
  */
-export const HOOK_INSTALLABLE_HARNESSES = ['claude-code', 'codex', 'cursor', 'opencode'] as const
+export const HOOK_INSTALLABLE_HARNESSES = [
+  'claude-code',
+  'codex',
+  'cursor',
+  'opencode',
+  'openclaw',
+] as const
 
 export type HookInstallableHarness = (typeof HOOK_INSTALLABLE_HARNESSES)[number]
 
@@ -23,6 +36,7 @@ export const HARNESS_LABELS: Record<SourceContextHarness, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
   opencode: 'OpenCode',
+  openclaw: 'OpenClaw',
   hermes: 'Hermes',
 }
 
@@ -71,6 +85,13 @@ const OPENCODE_CAPABILITY: HarnessCapability = {
   deliveryRoutes: ['unsupported'],
   deliveryContract:
     'no proven answer continuation after session.idle; use a blocking reply command',
+}
+
+const OPENCLAW_CAPABILITY: HarnessCapability = {
+  stopContinuation: 'unsupported',
+  deliveryRoutes: ['unsupported'],
+  deliveryContract:
+    'no proven answer continuation after agent_end; use a blocking reply command',
 }
 
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {
@@ -134,6 +155,7 @@ export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapabil
   codex: CODEX_CAPABILITY,
   cursor: CURSOR_CAPABILITY,
   opencode: OPENCODE_CAPABILITY,
+  openclaw: OPENCLAW_CAPABILITY,
 }
 
 /** Question-routing capability for the active harness integration. */

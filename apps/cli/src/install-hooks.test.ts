@@ -23,6 +23,17 @@ import {
   opencodePluginTarget,
 } from './opencode-plugin.js'
 import {
+  OPENCLAW_PLUGIN_MARKER,
+  isOurOpenclawPlugin,
+  mergeOpenclawNotifaiEntry,
+  openclawHasGlobalEvidence,
+  openclawPluginPath,
+  openclawPluginSource,
+  openclawPluginTarget,
+  parseOpenclawConfig,
+  removeOpenclawNotifaiEntry,
+} from './openclaw-plugin.js'
+import {
   MISSING_LIFECYCLE_GUIDANCE_CONTEXT,
   WORKER_ACTIVATION_CONTEXT,
 } from './session-activation.js'
@@ -1068,6 +1079,179 @@ describe('the OpenCode adapter', () => {
   })
 })
 
+describe('the OpenClaw adapter', () => {
+  const source = openclawPluginSource({
+    adapterPath: ADAPTER,
+    timeoutSeconds: 240,
+  })
+
+  async function loadPlugin() {
+    return (await import(
+      `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+    )) as {
+      default: {
+        id: string
+        register(api: {
+          on(name: string, handler: (...args: never[]) => unknown): void
+        }): void
+      }
+    }
+  }
+
+  function handlersOf(mod: Awaited<ReturnType<typeof loadPlugin>>) {
+    const handlers = new Map<string, (...args: never[]) => unknown>()
+    mod.default.register({
+      on(name, handler) {
+        handlers.set(name, handler)
+      },
+    })
+    return handlers
+  }
+
+  it('shells out to the same hook commands the other harnesses run', () => {
+    expect(source).toContain('"hook", event')
+    expect(source).toContain('"--harness", "openclaw"')
+    expect(source).toContain(JSON.stringify(ADAPTER))
+    expect(source).not.toContain('command:stop')
+  })
+
+  it('wires current plugin joints and leaves user abort alone', () => {
+    expect(source).toContain('api.on("before_prompt_build"')
+    expect(source).toContain('api.on("message_received"')
+    expect(source).toContain('api.on("agent_end"')
+    expect(source).toContain('api.on("session_end"')
+    expect(source).toContain('api.on("resolve_exec_env"')
+    expect(source).not.toContain('command:stop')
+  })
+
+  it('classifies root, subagent, ACP, and missing identity safely', async () => {
+    const handlers = handlersOf(await loadPlugin())
+    const activate = handlers.get('before_prompt_build') as (
+      event: object,
+      ctx: object,
+    ) => Promise<{ prependContext?: string } | undefined>
+
+    const root = await activate({}, { sessionKey: 'agent:main:main', workspaceDir: '/ws' })
+    expect(root?.prependContext).toBe(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)
+
+    const worker = await activate({}, { sessionKey: 'agent:main:subagent:abc', workspaceDir: '/ws' })
+    expect(worker?.prependContext).toBe(WORKER_ACTIVATION_CONTEXT)
+
+    const acp = await activate({}, { sessionKey: 'agent:main:acp-child', targetKind: 'acp' })
+    expect(acp?.prependContext).toBe(WORKER_ACTIVATION_CONTEXT)
+
+    const missing = await activate({}, {})
+    expect(missing?.prependContext).toBe(WORKER_ACTIVATION_CONTEXT)
+  })
+
+  it('does not treat heartbeat or cron traffic as User presence', async () => {
+    const handlers = handlersOf(await loadPlugin())
+    const presence = handlers.get('message_received') as (
+      event: object,
+      ctx: object,
+    ) => Promise<void>
+    await presence({ from: '' }, { sessionKey: 'agent:main:main' })
+    await presence({ from: 'cron' }, { sessionKey: 'agent:main:main', trigger: 'cron' })
+    await presence({ from: 'hb' }, { sessionKey: 'agent:main:main', trigger: 'heartbeat' })
+    expect(source).toContain('trigger === "cron" || trigger === "heartbeat"')
+  })
+
+  it('publishes exact sessionKey markers into exec without PATH', async () => {
+    const handlers = handlersOf(await loadPlugin())
+    const resolve = handlers.get('resolve_exec_env') as (
+      event: object,
+      ctx: object,
+    ) => Record<string, string> | undefined
+    expect(resolve({}, { sessionKey: 'agent:main:telegram:dm:1' })).toEqual({
+      NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:telegram:dm:1',
+    })
+    expect(resolve({}, {})).toBeUndefined()
+    expect(source).not.toContain('PATH:')
+  })
+
+  it('activates a parent session only once', async () => {
+    const handlers = handlersOf(await loadPlugin())
+    const activate = handlers.get('before_prompt_build') as (
+      event: object,
+      ctx: object,
+    ) => Promise<{ prependContext?: string } | undefined>
+    const first = await activate({}, { sessionKey: 'agent:main:main' })
+    const second = await activate({}, { sessionKey: 'agent:main:main' })
+    expect(first?.prependContext).toBe(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)
+    expect(second).toBeUndefined()
+  })
+
+  it('carries the ownership marker so a second checkout replaces it', () => {
+    expect(source).toContain(OPENCLAW_PLUGIN_MARKER)
+    expect(isOurOpenclawPlugin(source)).toBe(true)
+    expect(isOurOpenclawPlugin('export default { id: "other" }')).toBe(false)
+  })
+
+  it('installs beside the OpenClaw config rather than into a hook document', () => {
+    const local = openclawPluginPath(false, '/repo', {})
+    expect(local).toBe(path.join('/repo', '.openclaw', 'extensions', 'notifai', 'index.js'))
+    const global = openclawPluginPath(true, '/repo', { OPENCLAW_STATE_DIR: '/cfg/openclaw' })
+    expect(global).toBe(path.join('/cfg/openclaw', 'extensions', 'notifai', 'index.js'))
+  })
+
+  it('is a harness `hooks install` knows about', () => {
+    expect(HOOK_INSTALLABLE_HARNESSES).toContain('openclaw')
+    expect(settingsFile('openclaw', false, '/repo', {})).toContain('index.js')
+  })
+
+  it('reports the same stable adapter identity as command-hook harnesses', () => {
+    expect(openclawPluginTarget(source)).toEqual({
+      adapter: ADAPTER,
+      current: true,
+      timeoutSeconds: 240,
+    })
+    expect(openclawPluginTarget(source.replace(/^const ADAPTER_VERSION = .*\n/m, ''))).toEqual({
+      adapter: ADAPTER,
+      current: false,
+      timeoutSeconds: 240,
+    })
+    expect(openclawPluginTarget('export default { id: "other" }')).toBeNull()
+  })
+
+  it('merges only the Notifai plugin entry into OpenClaw config', () => {
+    const merged = mergeOpenclawNotifaiEntry(
+      { gateway: { port: 18789 }, plugins: { entries: { memory: { enabled: true } } } },
+      '/repo/.openclaw/extensions/notifai',
+      false,
+    )
+    expect(merged).toMatchObject({
+      gateway: { port: 18789 },
+      plugins: {
+        entries: {
+          memory: { enabled: true },
+          notifai: { enabled: true, hooks: { allowConversationAccess: true } },
+        },
+        load: { paths: ['/repo/.openclaw/extensions/notifai'] },
+      },
+    })
+    const stripped = removeOpenclawNotifaiEntry(merged, '/repo/.openclaw/extensions/notifai')
+    expect(stripped).toEqual({
+      gateway: { port: 18789 },
+      plugins: { entries: { memory: { enabled: true } } },
+    })
+  })
+
+  it('parses JSON with comments without requiring a JSON5 dependency', () => {
+    expect(parseOpenclawConfig('{\n  // port\n  "gateway": { "port": 1 },\n}\n')).toEqual({
+      gateway: { port: 1 },
+    })
+  })
+
+  it('does not treat a skills-only ~/.openclaw tree as OpenClaw evidence', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-skills-only-'))
+    mkdirSync(path.join(home, '.openclaw', 'skills'), { recursive: true })
+    expect(openclawHasGlobalEvidence(existsSync, { HOME: home })).toBe(false)
+    writeFileSync(path.join(home, '.openclaw', 'openclaw.json'), '{}\n')
+    expect(openclawHasGlobalEvidence(existsSync, { HOME: home })).toBe(true)
+  })
+})
+
 describe('detectHarness', () => {
   function project(...entries: string[]): string {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-'))
@@ -1113,6 +1297,7 @@ describe('detectHarness', () => {
     expect(detectHarness(project('.codex'))).toBe('codex')
     expect(detectHarness(project('.cursor'))).toBe('cursor')
     expect(detectHarness(project('.opencode'))).toBe('opencode')
+    expect(detectHarness(project('.openclaw'))).toBe('openclaw')
   })
 
   it('returns null when the project itself names two harnesses', () => {
@@ -1233,6 +1418,9 @@ describe('Windows hook commands and discovery', () => {
     expect(opencodePluginPath(true, '/repo', env, 'win32')).toBe(
       path.join('C:\\Users\\Ada', '.config', 'opencode', 'plugins', 'notifai.js'),
     )
+    expect(openclawPluginPath(true, '/repo', env, 'win32')).toBe(
+      path.join('C:\\Users\\Ada', '.openclaw', 'extensions', 'notifai', 'index.js'),
+    )
   })
 
   it('makes OpenCode spawn the adapter through Node on Windows with shell:false', () => {
@@ -1248,6 +1436,26 @@ describe('Windows hook commands and discovery', () => {
     expect(source).toContain('windowsHide: true')
     expect(source).not.toContain('spawn(ADAPTER,')
     expect(opencodePluginTarget(source)).toEqual({
+      adapter: winAdapter,
+      current: true,
+      timeoutSeconds: 240,
+      nodePath: winNode,
+    })
+  })
+
+  it('makes OpenClaw spawn the adapter through Node on Windows with shell:false', () => {
+    const source = openclawPluginSource({
+      adapterPath: winAdapter,
+      timeoutSeconds: 240,
+      platform: 'win32',
+      nodePath: winNode,
+    })
+    expect(source).toContain(`const NODE = ${JSON.stringify(winNode)}`)
+    expect(source).toContain('spawn(NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "openclaw"]')
+    expect(source).toContain('shell: false')
+    expect(source).toContain('windowsHide: true')
+    expect(source).not.toContain('spawn(ADAPTER,')
+    expect(openclawPluginTarget(source)).toEqual({
       adapter: winAdapter,
       current: true,
       timeoutSeconds: 240,
