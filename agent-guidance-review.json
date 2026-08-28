@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b31bf08b88d651fd8e4f44b8bb767d54cfa9d4e4c4db5e8293a6b0ae48d7fa6b",
+  "behavior_digest": "sha256:319916d7d422ce863ecef3d0e4b2d549cdfe80eb7ab554f36c381e5fff05cf7a",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the restored exact-Orca task-title producer against every shipped Agent Guidance surface. It implements the existing rule that an environment-supplied semantic Agent Session name wins while generated fallback remains exceptional, and it preserves explicit rename stability. No lifecycle ownership, notification decision, harness setup, readiness remedy, or domain term changes, so the Notifai skill and harness guidance remain accurate. The adjacent dormant-macOS capability correction likewise changes no agent instruction.",
+  "reason": "Reviewed the README's public-launch wording and new commercial-document links against every shipped Agent Guidance surface. The change explains subscription scope and removes obsolete Private Alpha framing, but it does not alter lifecycle ownership, Notification Request decisions, harness setup, CLI readiness remedies, or canonical domain terms, so the Notifai skill and harness guidance remain accurate.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
