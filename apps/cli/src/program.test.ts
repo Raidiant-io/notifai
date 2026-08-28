@@ -125,6 +125,24 @@ describe('program argv parsing', () => {
     expect(label).toBe('Hermes Support')
   })
 
+  it('dispatches sounds --json onto soundsCommand', async () => {
+    let seen: Record<string, unknown> | undefined
+    const result = await parse(['sounds', '--json'], {
+      sounds: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['sounds'],
+    })
+    expect(result.exitCode).toBe(0)
+    expect(seen).toMatchObject({ json: true })
+  })
+
+  it('passes a custom sound name through --sound', async () => {
+    let seen: Record<string, unknown> | undefined
+    await parse(
+      ['send', '--kind', 'done', '--title', 'T', '--body', 'B', '--sound', 'Kitchen timer'],
+      { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
+    )
+    expect(seen).toMatchObject({ sound: 'Kitchen timer' })
+  })
+
   it('drops empty collector defaults so "not passed" stays absent', async () => {
     let seen: Record<string, unknown> | undefined
     await parse(

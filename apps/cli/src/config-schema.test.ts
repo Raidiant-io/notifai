@@ -70,6 +70,7 @@ describe('acceptedValues', () => {
 
   it('lists the choices for an enum', () => {
     expect(acceptedValues('sound')).toContain('none')
+    expect(acceptedValues('sound')).toContain('custom sound')
   })
 
   it('names both values for a toggle', () => {

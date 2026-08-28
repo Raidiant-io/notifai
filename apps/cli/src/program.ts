@@ -31,6 +31,7 @@ import {
   repliesCommand,
   reportAskFailure,
   sendCommand,
+  soundsCommand,
   statusCommand,
   type CommandDeps,
 } from './commands.js'
@@ -84,6 +85,7 @@ const defaultRunners = {
   authStatus: authStatusCommand,
   accessStatus: accessStatusCommand,
   devices: devicesCommand,
+  sounds: soundsCommand,
   capabilities: capabilitiesCommand,
   projectEnable: projectEnableCommand,
   projectDisable: projectDisableCommand,
@@ -341,6 +343,18 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     })
 
   program
+    .command('sounds')
+    .helpGroup(GROUP.daily)
+    .summary('List shipped and Account custom sounds')
+    .description(
+      'List the sounds --sound and the saved sound key accept: shipped names and this Account\'s custom sounds',
+    )
+    .option('--json', 'machine-readable output')
+    .action(async (opts: { json?: boolean }) => {
+      exit(await runners.sounds(deps, opts))
+    })
+
+  program
     .command('capabilities')
     .helpGroup(GROUP.advanced)
     .summary('Show what a platform can render')
@@ -406,7 +420,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--multi', 'with --choice, several answers may be selected')
     .optionsGroup(SEND_GROUP.advanced)
-    .option('--sound <sound>', 'override saved sound: default | done | attention | alert | none')
+    .option(
+      '--sound <sound>',
+      'override saved sound: default | done | attention | alert | none, or a custom name or id from notifai sounds',
+    )
     .option(
       '--level <level>',
       'Apple-only interruption level: passive | active | time_sensitive (unsupported with --platform android)',
@@ -452,7 +469,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
 
   send.addHelpText(
     'after',
-    `\nKind is required, and it selects the sound the notification arrives with: done rings the completion chime, failed the most insistent tone, blocked and question a distinct attention tone, update the standard one.\nAn explicit --sound or saved sound preference outranks that default. --level is Apple-only; Android attention is owned by kind, product channels, and device settings.\n`,
+    `\nKind is required, and it selects the sound the notification arrives with: done rings the completion chime, failed the most insistent tone, blocked and question a distinct attention tone, update Device default.\nAn explicit --sound or saved sound preference outranks that default. --sound accepts a shipped name, an Account custom sound name or id from \`notifai sounds\`, or none. --level is Apple-only; Android attention is owned by kind, product channels, and device settings.\n`,
   )
 
   program

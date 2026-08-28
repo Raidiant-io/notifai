@@ -9,6 +9,7 @@ import type {
   EvidenceSnapshot,
   GetAgentAcknowledgementResponse,
   ListDevicesResponse,
+  ListSoundsResponse,
   ClientCapability,
   CompatibilityResponse,
   RecoveryAction,
@@ -78,6 +79,7 @@ export interface ApiClient {
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   accessStatus(): Promise<AccountAccessResponse>
   listDevices(): Promise<ListDevicesResponse>
+  listSounds(): Promise<ListSoundsResponse>
   capabilities(
     platform?: Platform,
     appVersion?: string,
@@ -253,6 +255,7 @@ export function createClient(
       }),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     listDevices: () => call('GET', '/api/v1/devices'),
+    listSounds: () => call('GET', '/api/v1/sounds'),
     capabilities: (platform = 'ios', appVersion, appBuild) => {
       const query = new URLSearchParams()
       if (appVersion !== undefined) query.set('app_version', appVersion)

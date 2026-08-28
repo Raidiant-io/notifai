@@ -85,5 +85,6 @@ describe('renderConfigExplain', () => {
       expect(text, choice).toContain(choice)
     }
     expect(text).toContain('the completion chime')
+    expect(text).toContain('Device default')
   })
 })

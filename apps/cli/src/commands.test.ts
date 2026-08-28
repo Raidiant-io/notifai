@@ -765,6 +765,28 @@ describe('command contracts', () => {
     expect(io.errLines).toEqual([])
   })
 
+  it('sends an Account custom sound name on the draft', async () => {
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(makeDeps(io, client), {
+        kind: 'done',
+        title: 'Build finished',
+        body: 'All checks passed.',
+        sound: 'Kitchen timer',
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.platform?.ios?.sound).toBe('Kitchen timer')
+    expect(submitted?.draft.platform?.android?.sound).toBe('Kitchen timer')
+  })
+
   it('prints Android downgrade warnings before submitting', async () => {
     const io = new CapturedIo()
     let submitCalls = 0
@@ -1307,6 +1329,8 @@ describe('command contracts', () => {
     // Kind now selects the sound, so the help must say so — and must not carry
     // the retired separation it replaced.
     expect(source).toContain('Kind is required, and it selects the sound')
+    expect(source).toContain('Device default')
+    expect(source).toContain('custom name or id')
     expect(source).not.toContain('it never chooses banner sound or interruption level')
     expect(source).not.toContain('Kind profiles apply automatically')
   })
@@ -3648,19 +3672,20 @@ describe('config surfaces', () => {
     expect(io.errLines[0]).toBe('Unknown setting "ask_notification".')
   })
 
-  it('refuses an enum value the sender would later reject', async () => {
-    // `config set sound whatever` used to be written straight to disk: the
-    // typo only surfaced when a notification failed to carry the sound.
+  it('refuses a sound that cannot be a shipped name, custom id, or custom name', async () => {
     const io = new CapturedIo()
-    expect(await configSetCommand(configDeps(io), 'sound', 'whatever', { yes: true })).toBe(
+    expect(await configSetCommand(configDeps(io), 'sound', 'n'.repeat(200), { yes: true })).toBe(
       EXIT.usage,
     )
-    expect(io.errLines[0]).toContain('default, done, attention, alert, none')
+    expect(io.errLines[0]).toContain('custom sound')
   })
 
-  it('still accepts a legal enum value', async () => {
+  it('accepts a shipped sound and an Account custom name', async () => {
     const io = new CapturedIo()
     expect(await configSetCommand(configDeps(io), 'sound', 'none', { yes: true })).toBe(EXIT.ok)
+    expect(await configSetCommand(configDeps(io), 'sound', 'Kitchen timer', { yes: true })).toBe(
+      EXIT.ok,
+    )
   })
 
   it('removes one machine setting, preserves its siblings, and restores default provenance', async () => {

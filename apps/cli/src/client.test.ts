@@ -110,6 +110,18 @@ describe('a server that never answers', () => {
     ])
   })
 
+  it('lists Account custom sounds from the catalog endpoint', async () => {
+    let seen: string | undefined
+    const baseUrl = await serving((request, response) => {
+      seen = `${request.method} ${request.url}`
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ sounds: [] }))
+    })
+    const result = await createClient(baseUrl, 'Bearer test').listSounds()
+    expect(seen).toBe('GET /api/v1/sounds')
+    expect(result).toEqual({ sounds: [] })
+  })
+
   it('refuses redirects on bearer-authenticated calls', async () => {
     let followed = false
     const baseUrl = await serving((request, response) => {
