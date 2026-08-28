@@ -23,7 +23,12 @@ function fixture() {
     'apps/cli/src/readiness.ts': 'message: "Open /hooks and approve Notifai"\n',
     'packages/protocol/src/notification.ts': 'export const term = "Notification Request"\n',
     'skills/notifai/SKILL.md': '# Notifai\n',
-    'README.md': '# Notifai\n',
+    'README.md': [
+      '# Notifai',
+      '',
+      'Install `@raidiant/notifai` <!--x-release-please-start-notifai-->9.2.2<!--x-release-please-end-->.',
+      '',
+    ].join('\n'),
     'docs/TRUST.md': '# Trust\n',
   }
   for (const [relative, contents] of Object.entries(inputs)) write(root, relative, contents)
@@ -62,4 +67,31 @@ test('rejects a stale hook-remedy review fixture', () => {
 
 test('rejects a stale domain-term review fixture', () => {
   assertMutationIsCaught('packages/protocol/src/notification.ts', (source) => source.replace('Notification Request', 'Alert'))
+})
+
+test('ignores only the generated README release version payload', () => {
+  const { root, recordPath } = fixture()
+  try {
+    const readmePath = path.join(root, 'README.md')
+    const before = behaviorDigest(root, DEFAULT_INPUT_ROOTS)
+    writeFileSync(
+      readmePath,
+      readFileSync(readmePath, 'utf8').replace(
+        '<!--x-release-please-start-notifai-->9.2.2<!--x-release-please-end-->',
+        '<!--x-release-please-start-notifai-->9.3.0<!--x-release-please-end-->',
+      ),
+    )
+    assert.equal(behaviorDigest(root, DEFAULT_INPUT_ROOTS), before)
+    assert.doesNotThrow(() => checkAgentGuidance({ repo: root, recordPath }))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('still rejects semantic README text beside a generated version marker', () => {
+  assertMutationIsCaught('README.md', (source) => source.replace('Install', 'Uninstall'))
+})
+
+test('does not hide arbitrary text placed inside a release marker', () => {
+  assertMutationIsCaught('README.md', (source) => source.replace('9.2.2', 'install from anywhere'))
 })

@@ -21,6 +21,17 @@ export const REQUIRED_SURFACES = [
   'domain-terms',
 ]
 
+const RELEASE_VERSION_MARKER =
+  /<!--x-release-please-start-([^>]+)-->(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)<!--x-release-please-end-->/g
+
+function behaviorInput(relative, contents) {
+  if (relative !== 'README.md') return contents
+  return contents.replace(
+    RELEASE_VERSION_MARKER,
+    '<!--x-release-please-start-$1--><generated-version><!--x-release-please-end-->',
+  )
+}
+
 function filesUnder(repo, relative) {
   const absolute = path.join(repo, relative)
   const stat = statSync(absolute)
@@ -38,7 +49,7 @@ export function behaviorDigest(repo, inputRoots = DEFAULT_INPUT_ROOTS) {
   for (const file of files) {
     digest.update(file)
     digest.update('\0')
-    digest.update(readFileSync(path.join(repo, file)))
+    digest.update(behaviorInput(file, readFileSync(path.join(repo, file), 'utf8')))
     digest.update('\0')
   }
   return `sha256:${digest.digest('hex')}`
