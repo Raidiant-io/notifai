@@ -26,6 +26,8 @@ export interface ProjectIdentity {
   name?: string | null
   /** Generated public or custom signed avatar URL the extension can fetch. */
   imageUrl?: string | null
+  /** Stable cache identity for replacement/removal ordering across signed-URL refreshes. */
+  avatarRevision?: string | null
 }
 
 /** What a companion needs to name this Delivery back to the service. */
@@ -238,6 +240,9 @@ function notifaiKey(
     ...(draft.source?.worktree !== undefined ? { worktree: draft.source.worktree } : {}),
     ...(projectIdentity?.name != null ? { project_name: projectIdentity.name } : {}),
     ...(projectIdentity?.imageUrl != null ? { project_image_url: projectIdentity.imageUrl } : {}),
+    ...(projectIdentity?.avatarRevision != null
+      ? { project_avatar_revision: projectIdentity.avatarRevision }
+      : {}),
     ...(options?.custom_data !== undefined ? { data: options.custom_data } : {}),
     ...(mediaUrl !== null ? { media_url: mediaUrl } : {}),
     ...(draft.presentation.media !== undefined

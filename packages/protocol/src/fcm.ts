@@ -82,6 +82,9 @@ export function buildFcmDataEnvelope(
     ...(projectIdentity?.imageUrl != null
       ? { project_image_url: projectIdentity.imageUrl }
       : {}),
+    ...(projectIdentity?.avatarRevision != null
+      ? { project_avatar_revision: projectIdentity.avatarRevision }
+      : {}),
     sound: resolvedSound,
     sound_fallback: kindFallback,
     ...(soundHash !== null ? { sound_hash: soundHash } : {}),

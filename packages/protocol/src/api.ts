@@ -670,6 +670,8 @@ export interface ProjectView {
   identifier: string
   display_name: string | null
   image_media_id: string | null
+  /** Stable cache identity. Signed URLs are transport capabilities, never cache identity. */
+  avatar_revision: string
   /** Public generated avatar URL, or a short-lived signed URL for custom media. */
   image_url: string | null
   last_seen_at: string
