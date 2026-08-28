@@ -6,7 +6,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { generatedSessionLabel } from './generated-session-label.js'
-import { HARNESS_LABELS, type Harness } from './harnesses.js'
+import { HARNESS_LABELS, type SourceContextHarness } from './harnesses.js'
 
 const STORE_VERSION = 1
 const MONTHS = [
@@ -35,7 +35,7 @@ interface StoredSessionLabel {
   label: string
   source: SessionLabelSource
   first_seen_at: number
-  harness?: Harness
+  harness?: SourceContextHarness
 }
 
 interface SessionLabelStore {
@@ -46,7 +46,7 @@ interface SessionLabelStore {
 export interface SessionLabelInput {
   env: NodeJS.ProcessEnv
   sessionId: string
-  harness?: Harness
+  harness?: SourceContextHarness
   explicitLabel?: string
   harnessLabel?: string
   harnessLabelPending?: boolean
@@ -260,7 +260,7 @@ function collisionKey(value: string): string {
 function uniqueLabel(
   base: string,
   source: SessionLabelSource,
-  harness: Harness | undefined,
+  harness: SourceContextHarness | undefined,
   now: number,
   used: ReadonlySet<string>,
 ): string {

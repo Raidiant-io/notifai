@@ -21,7 +21,14 @@ import { ApiCallError } from './client.js'
 import { codexWakeRoute } from './codex-wake.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withTargetFileLock } from './file-lock.js'
-import { HARNESS_CAPABILITIES, HARNESS_LABELS } from './harnesses.js'
+import {
+  HARNESS_LABELS,
+  HERMES_QUESTION_ROUTING_UNAVAILABLE,
+  HOOK_INSTALLABLE_HARNESSES,
+  isHookInstallableHarness,
+  questionRoutingCapability,
+  type HookInstallableHarness,
+} from './harnesses.js'
 import {
   inspectHookAdapter,
   installHookAdapter,
@@ -51,7 +58,6 @@ import {
 } from './hooks.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
-  HARNESSES,
   applyPlan,
   buildCursorHookConfig,
   buildHookConfig,
@@ -75,7 +81,6 @@ import {
   removeHooks,
   settingsFile,
   withCodexLayerTransaction,
-  type Harness,
   type Installation,
 } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -138,7 +143,7 @@ export const HOOK_EVENTS = [
 export type HookEvent = (typeof HOOK_EVENTS)[number]
 
 /** Lifecycle handlers one installed harness must carry in this CLI build. */
-export function requiredHookEvents(harness: Harness): readonly HookEvent[] {
+export function requiredHookEvents(harness: HookInstallableHarness): readonly HookEvent[] {
   if (harness === 'opencode') return []
   return harness === 'cursor'
     ? ['session-start', 'activation-stop', 'user-prompt-submit', 'stop', 'session-end']
@@ -572,7 +577,7 @@ export async function hookRunCommand(
  */
 function stopWakeRoute(
   deps: CommandDeps,
-  harness: Harness | undefined,
+  harness: HookInstallableHarness | undefined,
   sessionId: string | undefined,
   cwd: string,
 ): EscalationDeliveryRoute | undefined {
@@ -1102,6 +1107,17 @@ export function askCommand(
         'run the ask from a shell with one exact active harness session',
       )
     }
+    if (!isHookInstallableHarness(active.harness)) {
+      const capability = HERMES_QUESTION_ROUTING_UNAVAILABLE
+      return askFailure(
+        deps,
+        flags,
+        'question_routing_unavailable',
+        'hook_contract',
+        `${active.label}: ${capability.deliveryContract}`,
+        'use a blocking `notifai send --reply` question',
+      )
+    }
     const exactState = active.sessionId === undefined
       ? null
       : readSessionState(active.sessionId, deps.env)
@@ -1253,7 +1269,9 @@ export function activeQuestionRouteProblems(
       `the active ${active.label} shell does not expose an exact session id; a project-level last-writer pointer can cross-wire two sessions. Use a blocking \`notifai send --reply\` question`,
     )
   }
-  const capability = HARNESS_CAPABILITIES[active.harness]
+  const capability = isHookInstallableHarness(active.harness)
+    ? questionRoutingCapability(active.harness)
+    : HERMES_QUESTION_ROUTING_UNAVAILABLE
   if (capability.stopContinuation === 'unsupported') {
     problems.push(`${active.label}: ${capability.deliveryContract}`)
   }
@@ -1683,7 +1701,7 @@ function resolveHookAdapterTarget(deps: CommandDeps, flags: HooksInstallFlags): 
   return { execPath, scriptPath }
 }
 
-function printHooksInstallClose(deps: CommandDeps, harness: Harness, file: string): void {
+function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarness, file: string): void {
   const label = HARNESS_LABELS[harness]
   const activation =
     harness === 'codex'
@@ -1705,7 +1723,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (flags.harness === undefined) {
     const detected = detectedHarnesses(deps.cwd, deps.env)
     if (detected.length === 0) {
-      deps.io.err(`Could not tell which harness you mean — pass --harness <${HARNESSES.join('|')}>.`)
+      deps.io.err(`Could not tell which harness you mean — pass --harness <${HOOK_INSTALLABLE_HARNESSES.join('|')}>.`)
       return EXIT.usage
     }
     let ok = true
@@ -2049,17 +2067,17 @@ function assertOwnedRegularFile(file: string): void {
   }
 }
 
-function resolveHarness(deps: CommandDeps, requested: string | undefined): Harness | null {
+function resolveHarness(deps: CommandDeps, requested: string | undefined): HookInstallableHarness | null {
   if (requested !== undefined) {
-    if ((HARNESSES as readonly string[]).includes(requested)) return requested as Harness
+    if ((HOOK_INSTALLABLE_HARNESSES as readonly string[]).includes(requested)) return requested as HookInstallableHarness
     deps.io.err(
-      `Unknown harness "${requested}". Supported: ${HARNESSES.join(', ')}.`,
+      `Unknown harness "${requested}". Supported: ${HOOK_INSTALLABLE_HARNESSES.join(', ')}.`,
     )
     return null
   }
   const detected = detectHarness(deps.cwd, deps.env)
   if (!detected) {
-    deps.io.err(`Could not tell which harness to install for — pass --harness <${HARNESSES.join('|')}>.`)
+    deps.io.err(`Could not tell which harness to install for — pass --harness <${HOOK_INSTALLABLE_HARNESSES.join('|')}>.`)
     return null
   }
   return detected
@@ -2073,7 +2091,7 @@ function resolveHarness(deps: CommandDeps, requested: string | undefined): Harne
 export async function pickHarnessesToInstall(
   deps: CommandDeps,
   requested?: string,
-): Promise<Harness[] | null> {
+): Promise<HookInstallableHarness[] | null> {
   if (requested !== undefined) {
     const harness = resolveHarness(deps, requested)
     return harness === null ? null : [harness]
@@ -2083,7 +2101,7 @@ export async function pickHarnessesToInstall(
   if (deps.io.interactive === true && deps.io.multiselect) {
     const picked = await deps.io.multiselect(
       'Which agent harnesses should Notifai wire here?',
-      HARNESSES.map((name) => ({
+      HOOK_INSTALLABLE_HARNESSES.map((name) => ({
         value: name,
         label: HARNESS_LABELS[name],
         ...(detected.includes(name) ? { hint: 'detected on this machine' } : {}),
@@ -2091,16 +2109,16 @@ export async function pickHarnessesToInstall(
       detected,
     )
     if (picked === null) return null
-    const unknown = picked.filter((name) => !(HARNESSES as readonly string[]).includes(name))
+    const unknown = picked.filter((name) => !(HOOK_INSTALLABLE_HARNESSES as readonly string[]).includes(name))
     if (unknown.length > 0) {
-      deps.io.err(`Unknown harness "${unknown[0]}". Supported: ${HARNESSES.join(', ')}.`)
+      deps.io.err(`Unknown harness "${unknown[0]}". Supported: ${HOOK_INSTALLABLE_HARNESSES.join(', ')}.`)
       return null
     }
-    return picked as Harness[]
+    return picked as HookInstallableHarness[]
   }
   if (detected.length === 0) {
     deps.io.err(
-      `Could not tell which harness to wire. Run: notifai hooks install --harness <${HARNESSES.join('|')}>`,
+      `Could not tell which harness to wire. Run: notifai hooks install --harness <${HOOK_INSTALLABLE_HARNESSES.join('|')}>`,
     )
     return null
   }

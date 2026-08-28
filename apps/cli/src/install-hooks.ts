@@ -20,14 +20,12 @@ import {
   type HookHostPlatform,
 } from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
-import { HARNESSES, type Harness } from './harnesses.js'
+import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { accountHome } from './platform.js'
 import {
   NON_ROUTING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
 } from './question-timing.js'
-
-export { HARNESSES, type Harness } from './harnesses.js'
 
 /**
  * The three joints the OpenCode plugin hooks into, as (harness event, the
@@ -73,7 +71,7 @@ export interface HookGroup {
 export type HookConfig = Record<string, HookGroup[]>
 
 export interface InstallPlan {
-  harness: Harness
+  harness: HookInstallableHarness
   /** Absolute path of the settings file that will be written. */
   file: string
   /** True when the file is machine-wide rather than per-project. */
@@ -97,7 +95,7 @@ export interface HookCommandOptions {
 export function hookCommand(
   adapterPath: string,
   event: string,
-  harness?: Harness,
+  harness?: HookInstallableHarness,
   options: HookCommandOptions = {},
 ): string {
   return (
@@ -174,7 +172,7 @@ export interface BuildOptions {
   /** Stable user-level executable installed by the hook adapter module. */
   adapterPath: string
   /** The installed adapter stamps its exact harness into project pointers. */
-  harness?: Harness
+  harness?: HookInstallableHarness
   platform?: NodeJS.Platform | HookHostPlatform
   /** Registered Node named first in Windows hook commands. */
   nodePath?: string
@@ -195,7 +193,7 @@ export { QUESTION_STOP_TIMEOUT_SECONDS } from './question-timing.js'
  * `question-timing.ts`.
  */
 export function stopHandlerIsDetached(
-  harness: Harness | undefined,
+  harness: HookInstallableHarness | undefined,
   platform?: Parameters<typeof hookHostPlatform>[0],
 ): boolean {
   return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
@@ -213,7 +211,7 @@ export function stopHandlerIsDetached(
  */
 function stopHandler(
   adapterPath: string,
-  harness: Harness | undefined,
+  harness: HookInstallableHarness | undefined,
   options: HookCommandOptions,
 ): HookHandler {
   const command = hookCommand(adapterPath, 'stop', harness, options)
@@ -355,7 +353,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
  * questions pushed to is not a property of the repository.
  */
 export function settingsFile(
-  harness: Harness,
+  harness: HookInstallableHarness,
   global: boolean,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -606,7 +604,7 @@ export function withCodexLayerTransaction<T>(
 
 /** Every file in this layer Codex might already be reading hooks from. */
 export function hookDefinitionFiles(
-  harness: Harness,
+  harness: HookInstallableHarness,
   global: boolean,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -741,8 +739,8 @@ function ourHandlerEvents(document: SettingsDocument | null): string[] {
  * document. Treating it as evidence of any one harness would be a guess
  * dressed up as detection.
  */
-function localHarnessEvidence(cwd: string): Harness[] {
-  const found: Harness[] = []
+function localHarnessEvidence(cwd: string): HookInstallableHarness[] {
+  const found: HookInstallableHarness[] = []
   if (existsSync(path.join(cwd, '.claude')) || existsSync(path.join(cwd, 'CLAUDE.md'))) {
     found.push('claude-code')
   }
@@ -756,9 +754,9 @@ function localHarnessEvidence(cwd: string): Harness[] {
 function globalHarnessEvidence(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
-): Harness[] {
+): HookInstallableHarness[] {
   const home = harnessAccountHome(env, platform)
-  const found: Harness[] = []
+  const found: HookInstallableHarness[] = []
   if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
   if (existsSync(codexGlobalDir(env, platform))) found.push('codex')
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
@@ -777,12 +775,12 @@ export function detectedHarnesses(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
-): Harness[] {
-  const seen = new Set<Harness>([
+): HookInstallableHarness[] {
+  const seen = new Set<HookInstallableHarness>([
     ...localHarnessEvidence(cwd),
     ...globalHarnessEvidence(env, platform),
   ])
-  return HARNESSES.filter((harness) => seen.has(harness))
+  return HOOK_INSTALLABLE_HARNESSES.filter((harness) => seen.has(harness))
 }
 
 /**
@@ -798,7 +796,7 @@ export function detectHarness(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
-): Harness | null {
+): HookInstallableHarness | null {
   const local = localHarnessEvidence(cwd)
   if (local.length > 0) return local.length === 1 ? local[0]! : null
   const global = globalHarnessEvidence(env, platform)
@@ -1193,7 +1191,7 @@ export interface InstalledHandler {
 }
 
 export interface Installation {
-  harness: Harness
+  harness: HookInstallableHarness
   file: string
   global: boolean
   handlers: InstalledHandler[]
@@ -1331,7 +1329,7 @@ export function findInstallations(
     ...(nodePath === undefined ? {} : { nodePath }),
   }
   const found: Installation[] = []
-  for (const harness of HARNESSES) {
+  for (const harness of HOOK_INSTALLABLE_HARNESSES) {
     for (const global of [false, true]) {
       const files = hookDefinitionFiles(harness, global, cwd, env, platform)
       for (const file of files) {
@@ -1411,7 +1409,7 @@ export function findInstallations(
 }
 
 function harnessMarkerProblems(
-  harness: Harness,
+  harness: HookInstallableHarness,
   handlers: InstalledHandler[],
   adapterHome?: string,
   options: HookCommandOptions = {},

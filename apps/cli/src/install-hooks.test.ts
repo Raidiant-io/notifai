@@ -27,9 +27,9 @@ import {
   WORKER_ACTIVATION_CONTEXT,
 } from './session-activation.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
+import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
 import {
   QUESTION_STOP_TIMEOUT_SECONDS,
-  HARNESSES,
   applyPlan,
   detectHarness,
   detectedHarnesses,
@@ -1045,7 +1045,8 @@ describe('the OpenCode adapter', () => {
   })
 
   it('is a harness `hooks install` knows about', () => {
-    expect(HARNESSES).toContain('opencode')
+    expect(HOOK_INSTALLABLE_HARNESSES).toContain('opencode')
+    expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
     expect(settingsFile('opencode', false, '/repo', {})).toContain('notifai.js')
   })
 
@@ -1099,7 +1100,7 @@ describe('detectHarness', () => {
     const dir = project('AGENTS.md')
     const answer = detectHarness(dir)
     expect(answer).not.toBe('codex')
-    expect(HARNESSES.includes(answer as never) || answer === null).toBe(true)
+    expect(HOOK_INSTALLABLE_HARNESSES.includes(answer as never) || answer === null).toBe(true)
   })
 
   it('pairs AGENTS.md with CLAUDE.md as Claude Code, not Codex', () => {
@@ -1155,7 +1156,7 @@ describe('detectHarness', () => {
     // Whatever this machine has, an empty project must never crash and must
     // return either a single harness or null — never an arbitrary pick.
     const answer = detectHarness(empty)
-    expect(answer === null || HARNESSES.includes(answer)).toBe(true)
+    expect(answer === null || HOOK_INSTALLABLE_HARNESSES.includes(answer)).toBe(true)
   })
 })
 

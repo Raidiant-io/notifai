@@ -29,7 +29,8 @@ for (const key of Object.keys(env)) {
     key.startsWith('CLAUDE_CODE_') ||
     key === 'CODEX_THREAD_ID' ||
     key === 'OPENCODE_SESSION_ID' ||
-    key.startsWith('CURSOR_')
+    key.startsWith('CURSOR_') ||
+    key.startsWith('HERMES_SESSION_')
   ) {
     delete env[key]
   }

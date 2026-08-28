@@ -34,7 +34,7 @@ import {
   type CommandDeps,
 } from './commands.js'
 import { packageVersion } from './release.js'
-import { HARNESSES } from './install-hooks.js'
+import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
 import type { Platform } from '@raidiant/notifai-protocol'
 import type { SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
@@ -593,7 +593,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--owner <name>', 'internal ownership marker')
     .option('--harness <name>', 'internal harness output adapter')
     .action(async (event: string, opts: { harness?: string }) => {
-      const harness = HARNESSES.find((candidate) => candidate === opts.harness)
+      const harness = HOOK_INSTALLABLE_HARNESSES.find((candidate) => candidate === opts.harness)
       exit(await runners.hookRun(deps, event, () => readStdinWithTimeout(), harness))
     })
 

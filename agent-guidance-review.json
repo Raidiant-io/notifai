@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:cda7426185af48a0f1f59d4e3774aa1e20334561a175ed6edbd862a0730bbe7b",
-  "outcome": "reviewed-no-impact",
-  "reason": "Raising the Node prerequisite to 22 changes package admission, and allowing 30 seconds for a cold Windows DPAPI helper changes only a bounded credential-operation timeout; neither changes lifecycle hooks, the skill, harness setup, CLI readiness semantics, or domain terminology.",
+  "behavior_digest": "sha256:aba7a937b0a3515ae15c55964e3945cc111e1599d7016c60239ebc32a36d29f4",
+  "outcome": "guidance-updated",
+  "reason": "The public skill now teaches the Hermes classic CLI/local send-only Source Context baseline. Hermes uses the complete proven marker envelope, HERMES_SESSION_ID, and invocation-cwd git/worktree; deferred surfaces omit Source Context, managed hooks and lifecycle activation stay unavailable, asynchronous ask fails closed, and npx skills remains skill authority. The existing four harness continuation contracts and domain terms remain unchanged; the inherited Node 22 and Windows credential bounds have no guidance effect.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

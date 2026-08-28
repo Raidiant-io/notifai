@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { type SourceContextT } from '@raidiant/notifai-protocol'
-import type { Harness } from './harnesses.js'
+import type { SourceContextHarness } from './harnesses.js'
 import { resolveSessionLabel } from './session-labels.js'
 
 export type GitCommand = (cwd: string, args: readonly string[]) => string | null
@@ -138,7 +138,7 @@ export interface SourceContextInput {
   sessionId?: string
   sessionLabel?: string
   activeHarness?: {
-    harness: Harness
+    harness: SourceContextHarness
     sessionId?: string
     sessionLabel?: string
     sessionLabelPending?: boolean
