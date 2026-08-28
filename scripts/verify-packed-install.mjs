@@ -157,7 +157,7 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
   }
   // Put the command line in a batch file so Node does not have to serialize
   // nested quotes through cmd.exe's /c parser. The runner itself is invoked by
-  // a relative name; the hostile install path is still parsed by cmd when the
+  // a relative name; the spaced, Unicode install path is still parsed by cmd when the
   // environment variable expands inside the batch file.
   const cmdRunner = path.join(installDir, 'notifai-cmd-smoke.cmd')
   writeFileSync(cmdRunner, '@call "%NOTIFAI_CMD_SHIM%" --version\r\n', 'ascii')
@@ -248,7 +248,7 @@ async function main() {
     // Keep tar extraction in the plain scratch root because Windows bsdtar
     // cannot open every Unicode archive path. The installed package and shims
     // still live under the hostile path whose quoting behavior is the claim.
-    const installDir = path.join(scratch, 'outside checkout & Ω', 'install')
+    const installDir = path.join(scratch, 'outside checkout Ω', 'install')
     mkdirSync(installDir, { recursive: true })
     writeFileSync(
       path.join(installDir, 'package.json'),

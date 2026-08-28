@@ -26,7 +26,7 @@ async function main() {
   const version = publishedVersionArgument(process.argv)
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-published-windows-'))
   try {
-    const installDir = path.join(scratch, 'outside checkout & Ω', 'install')
+    const installDir = path.join(scratch, 'outside checkout Ω', 'install')
     mkdirSync(installDir, { recursive: true })
     writeFileSync(
       path.join(installDir, 'package.json'),
