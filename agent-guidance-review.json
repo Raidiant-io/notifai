@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8874a9e43f5c3a2751d47e6285f31e625629d5baa21b4da8520cc6b80c0f2c62",
-  "outcome": "guidance-updated",
-  "reason": "Project Enablement, explicit-use bootstrap, lifecycle vocabulary, and semantic Agent Session label rules changed together with every affected shipped guidance surface.",
+  "behavior_digest": "sha256:c488ff25eb7af964d204d1bedfec775a62e0e2404d4a68cfe8cc9fbda3551dc0",
+  "outcome": "reviewed-no-impact",
+  "reason": "Release version marker payloads are generated metadata; normalizing only those payloads changes no lifecycle, skill, setup, readiness, or domain guidance.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
