@@ -1,5 +1,6 @@
 import { CAPABILITIES_V1, PLATFORMS, REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -957,6 +958,74 @@ describe('command contracts', () => {
       harness: 'codex',
     })
     expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+  })
+
+  it('sends after isolating an invalid session-name record without losing valid names', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-invalid-session-name-'))
+    const io = new CapturedIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_THREAD_ID: 'current-session',
+    }
+    const file = path.join(stateDir(env), 'session-labels.json')
+    const validKey = createHash('sha256').update('unrelated-session').digest('hex')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          version: 1,
+          sessions: {
+            [validKey]: {
+              label: 'Unrelated work',
+              source: 'explicit',
+              first_seen_at: 1_777_777_777_000,
+              harness: 'codex',
+            },
+            obsolete: {
+              label: 'Old shape',
+              source: 'legacy',
+              first_seen_at: 'unknown',
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    )
+
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await sendCommand(
+        { ...makeDeps(io, client), cwd, env },
+        { title: 'Store recovered', body: 'The valid Agent Session name survived.', kind: 'done' },
+      ),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'current-session',
+      harness: 'codex',
+    })
+
+    const recovered = JSON.parse(readFileSync(file, 'utf8')) as {
+      sessions: Record<string, { label: string }>
+    }
+    expect(recovered.sessions[validKey]?.label).toBe('Unrelated work')
+    expect(recovered.sessions['obsolete']).toBeUndefined()
+    const backups = readdirSync(path.dirname(file)).filter((name) =>
+      /^session-labels\.invalid-[a-f0-9]{64}\.json$/u.test(name),
+    )
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(path.join(path.dirname(file), backups[0]!), 'utf8')).toContain(
+      '"obsolete"',
+    )
   })
 
   it('falls back safely when Orca returns a private path as its title', async () => {

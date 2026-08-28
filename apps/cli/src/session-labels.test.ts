@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -420,22 +427,26 @@ describe('semantic session labels', () => {
     })
   })
 
-  it('fails closed instead of replacing an unreadable name store', () => {
+  it('isolates an unreadable name store before creating a clean one', () => {
     const { env, now } = fixture()
     const file = path.join(stateDir(env), 'session-labels.json')
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(file, '{not json}\n')
 
-    const resolved = resolveSessionLabel({
+    expect(
+      resolveSessionLabel({
       env,
       now,
       sessionId: 'new-session',
       explicitLabel: 'Do not overwrite me',
-    })
-
-    expect(resolved.ok).toBe(false)
-    expect(!resolved.ok && resolved.error).toContain('session-name store is unreadable')
-    expect(readFileSync(file, 'utf8')).toBe('{not json}\n')
+      }),
+    ).toEqual({ ok: true, label: 'Do not overwrite me', source: 'explicit' })
+    expect(readFileSync(file, 'utf8')).not.toBe('{not json}\n')
+    const backups = readdirSync(path.dirname(file)).filter((name) =>
+      /^session-labels\.invalid-[a-f0-9]{64}\.json$/u.test(name),
+    )
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(path.join(path.dirname(file), backups[0]!), 'utf8')).toBe('{not json}\n')
   })
 
   it('formats first seen using the machine local calendar', () => {

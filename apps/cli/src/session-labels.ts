@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { SESSION_LABEL_MAX_LENGTH } from '@raidiant/notifai-protocol'
 import { atomicWriteFileSync } from './atomic-file.js'
@@ -78,6 +78,24 @@ function emptyStore(): SessionLabelStore {
   return { version: STORE_VERSION, sessions: {} }
 }
 
+function quarantineInvalidStore(file: string, raw: string): void {
+  const digest = createHash('sha256').update(raw).digest('hex')
+  const backup = path.join(path.dirname(file), `session-labels.invalid-${digest}.json`)
+  if (existsSync(backup)) {
+    if (readFileSync(backup, 'utf8') !== raw) {
+      throw new Error('the session-name store recovery backup does not match its content hash')
+    }
+    return
+  }
+  copyFileSync(file, backup)
+}
+
+function recoverInvalidStore(file: string, raw: string, store: SessionLabelStore): SessionLabelStore {
+  quarantineInvalidStore(file, raw)
+  writeStore(file, store)
+  return store
+}
+
 function storedRecord(candidate: unknown): StoredSessionLabel | null {
   if (typeof candidate !== 'object' || candidate === null) return null
   const value = candidate as Partial<StoredSessionLabel>
@@ -103,33 +121,42 @@ function storedRecord(candidate: unknown): StoredSessionLabel | null {
 
 function readStore(file: string): SessionLabelStore {
   if (!existsSync(file)) return emptyStore()
-  let parsed: unknown
+  let rawText: string
   try {
-    parsed = JSON.parse(readFileSync(file, 'utf8'))
+    rawText = readFileSync(file, 'utf8')
   } catch (err) {
     throw new Error(
       `the session-name store is unreadable: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawText)
+  } catch {
+    return recoverInvalidStore(file, rawText, emptyStore())
+  }
   if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error('the session-name store is not a JSON object')
+    return recoverInvalidStore(file, rawText, emptyStore())
   }
   const raw = parsed as { version?: unknown; sessions?: unknown }
   if (raw.version !== STORE_VERSION) {
-    throw new Error(`unsupported session-name store version ${String(raw.version)}`)
+    return recoverInvalidStore(file, rawText, emptyStore())
   }
   if (typeof raw.sessions !== 'object' || raw.sessions === null) {
-    throw new Error('the session-name store has no sessions object')
+    return recoverInvalidStore(file, rawText, emptyStore())
   }
   const sessions: Record<string, StoredSessionLabel> = {}
+  let invalidRecordFound = false
   for (const [key, candidate] of Object.entries(raw.sessions)) {
     const record = storedRecord(candidate)
     if (!/^[a-f0-9]{64}$/.test(key) || record === null) {
-      throw new Error('the session-name store contains an invalid record')
+      invalidRecordFound = true
+      continue
     }
     sessions[key] = record
   }
-  return { version: STORE_VERSION, sessions }
+  const store = { version: STORE_VERSION, sessions } satisfies SessionLabelStore
+  return invalidRecordFound ? recoverInvalidStore(file, rawText, store) : store
 }
 
 function writeStore(file: string, store: SessionLabelStore): void {
