@@ -107,7 +107,7 @@ The iPhone Companion App is distributed only through controlled TestFlight
 invitations. Open the invitation on the iPhone you want to use, install Apple's
 TestFlight app, install Notifai, then open it once, sign in with the same Account
 as the CLI, and allow notifications. There is no public App Store link or public
-TestFlight link for the Private Alpha.
+TestFlight link yet.
 
 The pre-public Android external-test lane is distributed only to invited testers
 through Firebase App Distribution as a consistently signed APK. Testers install
@@ -115,6 +115,21 @@ it on a compatible Google Play services device, open it, sign in with the same
 Account, and allow notifications. There is no public Firebase invitation and no
 Google Play listing; access to this lane is controlled separately from Notifai
 Account access.
+
+## Subscription
+
+Notifai is launching as a paid service. When public purchase opens, one
+individual subscription will cover the dashboard, this CLI, and the iPhone
+Companion App on a single Account, with a free trial offered once per person.
+Purchase is not open yet: access today is by invitation, and there is nothing
+to buy. Prices, trial length, renewal, cancellation, and where the service is
+sold are on the pricing page. Subscriptions will be sold and managed from the
+dashboard and the iPhone Companion App; the CLI never takes a payment.
+
+- Pricing — <https://app.notifai.sh/pricing>
+- Terms of Service — <https://app.notifai.sh/terms>
+- Privacy Policy — <https://app.notifai.sh/privacy>
+- Support — <https://app.notifai.sh/support>
 
 ## Status
 
