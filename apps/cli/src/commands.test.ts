@@ -881,7 +881,7 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
   })
 
-  it('never promotes an Orca worktree title into an Agent Session label', async () => {
+  it('uses trusted Orca task context for an active Claude Agent Session label', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-claude-title-'))
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
@@ -904,6 +904,7 @@ describe('command contracts', () => {
       ...makeDeps(io, client),
       cwd,
       env,
+      orcaSessionTitle: () => 'Agent Session context labels',
     }
 
     expect(
@@ -916,13 +917,12 @@ describe('command contracts', () => {
 
     expect(submitted?.draft.source).toMatchObject({
       session_id: 'orca-claude-session',
+      session_label: 'Agent Session context labels',
       harness: 'claude-code',
     })
-    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
-    expect(submitted?.draft.source?.session_label).not.toBe('Worker - semantic session implementation')
   })
 
-  it('never treats an Orca worktree title as a Codex Agent Session label', async () => {
+  it('uses trusted Orca task context for an active Codex Agent Session label', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-codex-title-'))
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
@@ -943,6 +943,7 @@ describe('command contracts', () => {
         TERM_PROGRAM: 'Orca',
         ORCA_WORKTREE_ID: worktreeId,
       },
+      orcaSessionTitle: () => 'Release verification',
     }
 
     expect(
@@ -955,9 +956,9 @@ describe('command contracts', () => {
 
     expect(submitted?.draft.source).toMatchObject({
       session_id: 'orca-codex-thread',
+      session_label: 'Release verification',
       harness: 'codex',
     })
-    expect(submitted?.draft.source?.session_label).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
   })
 
   it('sends after isolating an invalid session-name record without losing valid names', async () => {

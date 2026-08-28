@@ -229,11 +229,6 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
       reason: 'macOS has no arbitrary per-notification app-icon field.',
     },
     {
-      path: 'sound_file',
-      status: 'supported',
-      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.wav.',
-    },
-    {
       path: 'localization',
       status: 'unsupported',
       reason: 'The V1 macOS Companion App ships no localization catalogs, so loc-key fields cannot resolve.',

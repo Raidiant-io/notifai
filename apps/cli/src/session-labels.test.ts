@@ -473,7 +473,15 @@ describe('semantic session labels', () => {
         label: '  Completely   different job  ',
       }),
     ).toEqual({ ok: true, label: 'Completely different job', source: 'explicit' })
-    expect(resolveSessionLabel({ env, now: now + 2_000, sessionId: 'rename-me' })).toEqual({
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 2_000,
+        sessionId: 'rename-me',
+        harness: 'codex',
+        harnessLabel: 'Later task context',
+      }),
+    ).toEqual({
       ok: true,
       label: 'Completely different job',
       source: 'explicit',
