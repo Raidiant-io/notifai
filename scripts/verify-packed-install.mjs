@@ -195,9 +195,7 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
 }
 
 async function main() {
-  // Deliberately include spaces, a command metacharacter, and Unicode: every
-  // Windows shell must survive the same paths real Users commonly have.
-  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai packed & Ω '))
+  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-install-'))
   try {
     let cliTarball = argvValue('--cli-tarball')
     let protocolTarball = argvValue('--protocol-tarball')
@@ -237,7 +235,10 @@ async function main() {
     // The isolated install lives in the OS temp directory, outside any
     // workspace, so nothing can fall back to workspace resolution. A private
     // manifest keeps npm from treating the directory as publishable.
-    const installDir = path.join(scratch, 'install')
+    // Keep tar extraction in the plain scratch root because Windows bsdtar
+    // cannot open every Unicode archive path. The installed package and shims
+    // still live under the hostile path whose quoting behavior is the claim.
+    const installDir = path.join(scratch, 'outside checkout & Ω', 'install')
     mkdirSync(installDir, { recursive: true })
     writeFileSync(
       path.join(installDir, 'package.json'),
