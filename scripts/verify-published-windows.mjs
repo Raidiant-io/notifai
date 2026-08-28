@@ -24,9 +24,9 @@ async function main() {
     throw new Error('published Windows verification must run on a native Windows runner')
   }
   const version = publishedVersionArgument(process.argv)
-  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai published & Ω '))
+  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-published-windows-'))
   try {
-    const installDir = path.join(scratch, 'outside checkout')
+    const installDir = path.join(scratch, 'outside checkout & Ω', 'install')
     mkdirSync(installDir, { recursive: true })
     writeFileSync(
       path.join(installDir, 'package.json'),

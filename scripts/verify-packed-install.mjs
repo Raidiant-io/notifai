@@ -155,13 +155,23 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
     NOTIFAI_POWERSHELL_SHIM: powershellShim,
     NOTIFAI_BASH_SHIM: bashShim,
   }
-  verifyVersionOutput('notifai.cmd through cmd.exe', expectedVersion, () =>
-    execFileSync(
-      'cmd.exe',
-      ['/d', '/v:off', '/s', '/c', 'call "%NOTIFAI_CMD_SHIM%" --version'],
-      { cwd: installDir, env: shellEnv, encoding: 'utf8' },
-    ),
-  )
+  // Put the command line in a batch file so Node does not have to serialize
+  // nested quotes through cmd.exe's /c parser. The runner itself is invoked by
+  // a relative name; the hostile install path is still parsed by cmd when the
+  // environment variable expands inside the batch file.
+  const cmdRunner = path.join(installDir, 'notifai-cmd-smoke.cmd')
+  writeFileSync(cmdRunner, '@call "%NOTIFAI_CMD_SHIM%" --version\r\n', 'ascii')
+  try {
+    verifyVersionOutput('notifai.cmd through cmd.exe', expectedVersion, () =>
+      execFileSync('cmd.exe', ['/d', '/v:off', '/c', path.basename(cmdRunner)], {
+        cwd: installDir,
+        env: shellEnv,
+        encoding: 'utf8',
+      }),
+    )
+  } finally {
+    rmSync(cmdRunner, { force: true })
+  }
 
   const powershellArgs = [
     '-NoLogo',
