@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:2d95cac34c2809020929dce6cf74c955be53a395727cbe092321607979f1fee7",
+  "behavior_digest": "sha256:09fd5b5d2722131e4374af1ed2a12cff342f361053caaa5f6827d73072581d3d",
   "outcome": "guidance-updated",
-  "reason": "The public skill now teaches the narrow Agent Session rename exception and the CLI adds an exact-active-session command with no id override. The upstream Windows credential timeout remains an implementation bound with no lifecycle or guidance effect.",
+  "reason": "The public skill now teaches both the Hermes classic CLI/local send-only Source Context baseline and the narrow Agent Session rename exception. Hermes keeps only the proven marker envelope, HERMES_SESSION_ID, and invocation-cwd git/worktree while managed hooks, lifecycle activation, and asynchronous ask remain unavailable; an agent rename remains limited to the exact active session after a complete job change makes its old label misleading. Existing continuation contracts and domain terms remain unchanged, and the inherited Node 22, Windows credential, custom-sound protocol, and generalized harness-type integration changes have no guidance effect.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
