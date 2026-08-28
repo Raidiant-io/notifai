@@ -1,5 +1,5 @@
 import { bannerExcerpt } from './content.js'
-import { effectiveKind, type NotificationDraftT } from './notification.js'
+import { defaultSoundForKind, effectiveKind, type NotificationDraftT } from './notification.js'
 import type {
   AgentAcknowledgementSync,
   EnvelopeIds,
@@ -33,10 +33,13 @@ export function buildFcmDataEnvelope(
   retirementAnswerContext: RetirementAnswerContext | null = null,
   replyMetadata: ReplyMetadata | null = null,
   agentAcknowledgementSync: AgentAcknowledgementSync | null = null,
+  soundHash: string | null = null,
 ): FcmDataEnvelope {
   const options = draft.platform?.android
   const kind = effectiveKind(draft)
   const excerpt = bannerExcerpt(draft.presentation.body)
+  const kindFallback = defaultSoundForKind(kind)
+  const resolvedSound = options?.sound === undefined ? kindFallback : options.sound
   const envelope = {
     schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
     request_id: ids.requestId,
@@ -79,7 +82,9 @@ export function buildFcmDataEnvelope(
     ...(projectIdentity?.imageUrl != null
       ? { project_image_url: projectIdentity.imageUrl }
       : {}),
-    ...(options?.sound !== undefined ? { sound: options.sound } : {}),
+    sound: resolvedSound,
+    sound_fallback: kindFallback,
+    ...(soundHash !== null ? { sound_hash: soundHash } : {}),
     ...(options?.thread_id !== undefined && options.thread_id !== null
       ? { thread_id: options.thread_id }
       : {}),
