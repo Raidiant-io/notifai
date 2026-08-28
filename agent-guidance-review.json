@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:107d08da4f8f7cb66a9171b5627c19d102748a44560dfe1c0b50ce8ab4f0fea5",
+  "behavior_digest": "sha256:b31bf08b88d651fd8e4f44b8bb767d54cfa9d4e4c4db5e8293a6b0ae48d7fa6b",
   "outcome": "reviewed-no-impact",
-  "reason": "Malformed local Agent Session name records are now isolated without changing send, rename, or continuation obligations, and the public Project identity wire now carries the stable avatar revision already used by active Companion Apps. The narrow exact-session rename rule, Hermes local-send boundary, canonical WAV sound behavior, lifecycle guidance, setup guidance, and domain terms remain unchanged.",
+  "reason": "Reviewed the restored exact-Orca task-title producer against every shipped Agent Guidance surface. It implements the existing rule that an environment-supplied semantic Agent Session name wins while generated fallback remains exceptional, and it preserves explicit rename stability. No lifecycle ownership, notification decision, harness setup, readiness remedy, or domain term changes, so the Notifai skill and harness guidance remain accurate. The adjacent dormant-macOS capability correction likewise changes no agent instruction.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
