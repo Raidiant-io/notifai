@@ -17,6 +17,7 @@ export {
   deviceInventory,
   devicesCommand,
 } from './commands-devices.js'
+export { soundsCommand } from './commands-sounds.js'
 export {
   contradictingAnswer,
   repliesCommand,

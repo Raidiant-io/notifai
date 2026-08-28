@@ -561,8 +561,9 @@ describe('pushing a registered question', () => {
       title: 'Ship it?',
       body: 'Ship it?',
     })
-    // A pushed question is a question, and a question has an attention tone.
-    expect(h.recorder.submitted[0]?.draft.platform?.ios?.sound).toBe('attention')
+    // Kind default sounds are resolved server-side; stamping one here would
+    // skip Account and Project maps.
+    expect(h.recorder.submitted[0]?.draft.platform?.ios?.sound).toBeUndefined()
   })
 
   it('routes a registered question to an answer-capable Android installation', async () => {
@@ -594,7 +595,7 @@ describe('pushing a registered question', () => {
       mode: 'selected',
       device_ids: ['dev_android'],
     })
-    expect(h.recorder.submitted[0]?.draft.platform?.android?.sound).toBe('attention')
+    expect(h.recorder.submitted[0]?.draft.platform?.android?.sound).toBeUndefined()
   })
 
   it('keeps sparse alt text paired with its original media item', async () => {

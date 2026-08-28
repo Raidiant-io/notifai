@@ -388,6 +388,7 @@ describe('Notifai agent skill', () => {
       'notifai guidance',
       'notifai logs',
       'notifai status',
+      'notifai sounds',
     ]) {
       expect(skill, `${command} is unreachable from the skill`).toContain(command)
     }
