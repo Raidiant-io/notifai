@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:319916d7d422ce863ecef3d0e4b2d549cdfe80eb7ab554f36c381e5fff05cf7a",
+  "behavior_digest": "sha256:3a82e4a1da841403b40b2ac8054fd0ced9f4c1a0eb8cf010d92bb3149e73b9af",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the README's public-launch wording and new commercial-document links against every shipped Agent Guidance surface. The change explains subscription scope and removes obsolete Private Alpha framing, but it does not alter lifecycle ownership, Notification Request decisions, harness setup, CLI readiness remedies, or canonical domain terms, so the Notifai skill and harness guidance remain accurate.",
+  "reason": "Reviewed the README Subscription rewrite that replaces the premature paid-service claim with pre-launch wording (purchase not open yet, access by invitation) against every shipped Agent Guidance surface. The hooks, skill, harness setup, and CLI readiness surfaces make no purchase or subscription claims, and the new wording uses the existing canonical terms, so no guidance content needed to change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

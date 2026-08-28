@@ -118,11 +118,13 @@ Account access.
 
 ## Subscription
 
-Notifai is a paid service. One individual subscription covers the dashboard, this
-CLI, and the iPhone Companion App on a single Account, and a free trial is
-offered once per person. Current prices, trial length, renewal, cancellation, and
-where the service is sold are on the pricing page; subscribe and manage from the
-dashboard or from the iPhone Companion App. The CLI never takes a payment.
+Notifai is launching as a paid service. When public purchase opens, one
+individual subscription will cover the dashboard, this CLI, and the iPhone
+Companion App on a single Account, with a free trial offered once per person.
+Purchase is not open yet: access today is by invitation, and there is nothing
+to buy. Prices, trial length, renewal, cancellation, and where the service is
+sold are on the pricing page. Subscriptions will be sold and managed from the
+dashboard and the iPhone Companion App; the CLI never takes a payment.
 
 - Pricing — <https://app.notifai.sh/pricing>
 - Terms of Service — <https://app.notifai.sh/terms>
