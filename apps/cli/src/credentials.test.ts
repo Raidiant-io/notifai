@@ -285,6 +285,25 @@ describe('KeychainStore', () => {
 })
 
 describe('WindowsDpapiStore', () => {
+  it('round-trips through real Windows CurrentUser DPAPI without plaintext on disk', () => {
+    if (process.platform !== 'win32') return
+
+    const local = path.join(tmp, 'real dpapi & Ω', 'local app data')
+    mkdirSync(local, { recursive: true })
+    const env = { ...process.env, LOCALAPPDATA: local }
+    const store = new WindowsDpapiStore(env)
+    store.save(SAMPLE)
+
+    const file = path.join(local, 'notifai', 'credentials.dpapi')
+    const onDisk = readFileSync(file, 'utf8')
+    expect(onDisk).not.toContain(SAMPLE.secret)
+    expect(onDisk).not.toContain(SAMPLE.machineId)
+    expect(new WindowsDpapiStore(env).load()).toEqual(SAMPLE)
+
+    store.clear()
+    expect(existsSync(file)).toBe(false)
+  })
+
   it('protects under LOCALAPPDATA and never writes roaming or config trees', () => {
     const { env, roaming, config } = sandbox('dpapi-location')
     const { runner, calls } = mockDpapi()

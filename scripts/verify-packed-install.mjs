@@ -41,7 +41,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -127,8 +127,77 @@ function argvValue(flag) {
   return index === -1 ? undefined : process.argv[index + 1]
 }
 
+function verifyVersionOutput(label, expected, run) {
+  let reported
+  try {
+    reported = run().trim()
+  } catch (error) {
+    fail(`${label} failed to execute (${String(error)})`)
+  }
+  if (reported !== expected) {
+    fail(`${label} reports ${reported || '<empty>'}, packed manifest says ${expected}`)
+  }
+}
+
+/** Exercise the three npm shims Windows users actually launch. */
+export function verifyWindowsShims(installDir, expectedVersion, env) {
+  const binDir = path.join(installDir, 'node_modules', '.bin')
+  const cmdShim = path.join(binDir, 'notifai.cmd')
+  const powershellShim = path.join(binDir, 'notifai.ps1')
+  const bashShim = path.join(binDir, 'notifai')
+  for (const shim of [cmdShim, powershellShim, bashShim]) {
+    if (!existsSync(shim)) fail(`npm did not create the Windows shim ${shim}`)
+  }
+
+  const shellEnv = {
+    ...env,
+    NOTIFAI_CMD_SHIM: cmdShim,
+    NOTIFAI_POWERSHELL_SHIM: powershellShim,
+    NOTIFAI_BASH_SHIM: bashShim,
+  }
+  verifyVersionOutput('notifai.cmd through cmd.exe', expectedVersion, () =>
+    execFileSync(
+      'cmd.exe',
+      ['/d', '/v:off', '/s', '/c', 'call "%NOTIFAI_CMD_SHIM%" --version'],
+      { cwd: installDir, env: shellEnv, encoding: 'utf8' },
+    ),
+  )
+
+  const powershellArgs = [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    '& $env:NOTIFAI_POWERSHELL_SHIM --version',
+  ]
+  for (const executable of ['powershell.exe', 'pwsh.exe']) {
+    verifyVersionOutput(`notifai.ps1 through ${executable}`, expectedVersion, () =>
+      execFileSync(executable, powershellArgs, {
+        cwd: installDir,
+        env: shellEnv,
+        encoding: 'utf8',
+      }),
+    )
+  }
+
+  const programFiles = process.env['ProgramFiles'] ?? 'C:\\Program Files'
+  const gitBash = path.join(programFiles, 'Git', 'bin', 'bash.exe')
+  if (!existsSync(gitBash)) fail(`Git Bash is missing at ${gitBash}`)
+  verifyVersionOutput('notifai POSIX shim through Git Bash', expectedVersion, () =>
+    execFileSync(
+      gitBash,
+      ['-lc', 'shim_path=$(cygpath -u "$NOTIFAI_BASH_SHIM"); "$shim_path" --version'],
+      { cwd: installDir, env: shellEnv, encoding: 'utf8' },
+    ),
+  )
+}
+
 async function main() {
-  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-install-'))
+  // Deliberately include spaces, a command metacharacter, and Unicode: every
+  // Windows shell must survive the same paths real Users commonly have.
+  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai packed & Ω '))
   try {
     let cliTarball = argvValue('--cli-tarball')
     let protocolTarball = argvValue('--protocol-tarball')
@@ -223,14 +292,12 @@ async function main() {
     const runInstalled = (args) =>
       execFileSync(process.execPath, [bin, ...args], { cwd: installDir, env, encoding: 'utf8' })
 
-    let reported
-    try {
-      reported = runInstalled(['--version']).trim()
-    } catch (error) {
-      fail(`installed notifai --version failed to execute (${String(error)})`)
-    }
-    if (reported !== cliManifest.version) {
-      fail(`installed notifai --version reports ${reported || '<empty>'}, packed manifest says ${cliManifest.version}`)
+    verifyVersionOutput('installed notifai --version', cliManifest.version, () =>
+      runInstalled(['--version']),
+    )
+
+    if (process.platform === 'win32') {
+      verifyWindowsShims(installDir, cliManifest.version, env)
     }
 
     // `config show` runs the full command path offline. Reaching it at all
