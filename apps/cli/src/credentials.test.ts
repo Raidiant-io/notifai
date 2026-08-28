@@ -323,6 +323,7 @@ describe('WindowsDpapiStore', () => {
     expect(calls[0]?.args).toEqual(
       expect.arrayContaining(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']),
     )
+    expect(calls.every((call) => call.timeoutMs === 30_000)).toBe(true)
     assertNoSecretInArgs(calls)
   })
 
