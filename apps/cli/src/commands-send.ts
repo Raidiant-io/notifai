@@ -27,7 +27,7 @@ import {
   reportError,
   type CommandDeps,
 } from './commands-core.js'
-import { activeHarnessSession } from './commands-harness-context.js'
+import { sourceContextHarnessSession } from './commands-harness-context.js'
 import { resolveCommandSession } from './command-session.js'
 import {
   beginSendAttempt,
@@ -143,7 +143,7 @@ export async function sendCommand(
   const source = resolveDraftInvocation(
     deps,
     flags,
-    activeHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)()),
+    sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)()),
   )
   if (!source.ok) {
     deps.io.err(source.error)

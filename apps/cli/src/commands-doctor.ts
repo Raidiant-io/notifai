@@ -5,7 +5,12 @@ import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, type ApiClient } from './client.js'
 import { inspectCodexResume } from './codex-wake.js'
 import { type CliConfig } from './config.js'
-import { HARNESS_CAPABILITIES, HARNESS_LABELS } from './harnesses.js'
+import {
+  HARNESS_CAPABILITIES,
+  HARNESS_LABELS,
+  HERMES_QUESTION_ROUTING_UNAVAILABLE,
+  isHookInstallableHarness,
+} from './harnesses.js'
 import { inspectHookAdapter } from './hook-adapter.js'
 import {
   readLiveProjectSessionPointers,
@@ -52,7 +57,6 @@ import {
 } from './commands-core.js'
 import { deviceInstallRemedy, readyCompanionDevices, supportPageUrl } from './commands-devices.js'
 import {
-  activeHarnessSession,
   claudeSessionPid,
   resolveActiveHarness,
   type ActiveHarnessSession,
@@ -761,7 +765,11 @@ export function remedyLine(state: ReadinessState): string {
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
-  const active = activeHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
+  const { active, contested } = resolveActiveHarness(
+    deps.env,
+    deps.cwd,
+    (deps.now ?? Date.now)(),
+  )
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const settings: ReadinessState = {
     id: 'question-routing-settings',
@@ -782,6 +790,28 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
         }),
   }
   if (installations.length === 0) {
+    if (contested.length > 1) {
+      return [
+        {
+          id: 'hooks',
+          title: 'Question routing',
+          status: 'optional-gap',
+          detail: `Several harness sessions could own this shell (${contested.map((candidate) => candidate.label).join(', ')}); routing readiness is intentionally not attributed to either one`,
+        },
+        settings,
+      ]
+    }
+    if (active !== null && !isHookInstallableHarness(active.harness)) {
+      return [
+        {
+          id: 'hooks',
+          title: 'Question routing',
+          status: 'optional-gap',
+          detail: `${active.label}: ${HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryContract}`,
+        },
+        settings,
+      ]
+    }
     return [
       {
         id: 'hooks',
@@ -925,7 +955,21 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     active === null
       ? []
       : installations.filter((installation) => installation.harness === active.harness)
-  if (active !== null) {
+  if (contested.length > 1) {
+    checks.push({
+      name: 'hooks (active harness)',
+      ok: false,
+      informational: true,
+      detail: `Several harness sessions could own this shell (${contested.map((candidate) => candidate.label).join(', ')}); routing readiness is intentionally not attributed to either one`,
+    })
+  } else if (active !== null && !isHookInstallableHarness(active.harness)) {
+    checks.push({
+      name: 'hooks (active harness)',
+      ok: true,
+      informational: true,
+      detail: `${active.label}: ${HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryContract}`,
+    })
+  } else if (active !== null) {
     checks.push({
       name: 'hooks (active harness)',
       ok: activeInstallations.length > 0,

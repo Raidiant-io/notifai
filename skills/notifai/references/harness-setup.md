@@ -107,9 +107,18 @@ The prepared User message for this human-only action is:
   so `notifai ask` fails closed instead of accepting an answer into a void.
   Use a blocking `notifai send --reply` question when its answer must return to
   the agent without another human prompt.
+- **Hermes:** classic CLI on the local terminal backend can send. Notifai reads
+  exact `HERMES_SESSION_ID` and derives git branch and worktree from the actual
+  invocation cwd. Do not run `notifai hooks install --harness hermes` — managed
+  setup, lifecycle activation, and Question Routing are unsupported. Use a
+  blocking `notifai send --reply` question. Install the Notifai skill through
+  `npx skills`; no Hermes plugin may vendor a copy. Nested inherited harness
+  markers fail closed. TUI, gateway, API, ACP, and remote backends are not
+  this baseline.
 
-Do not claim support for a harness that is absent from
-`notifai hooks install --help`.
+Do not claim managed hook, activation, or Question Routing support for a
+harness that is absent from `notifai hooks install --help`. Classic Hermes CLI
+can send with Source Context without those.
 
 ## How the answer gets back to the agent
 

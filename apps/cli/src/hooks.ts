@@ -48,9 +48,9 @@ import { inferInvocationContext } from './invocation-context.js'
 import type { Logger } from './logging.js'
 import {
   HARNESS_CAPABILITIES,
-  HARNESSES,
+  HOOK_INSTALLABLE_HARNESSES,
   type DeliveryRoute,
-  type Harness,
+  type HookInstallableHarness,
 } from './harnesses.js'
 
 /**
@@ -896,7 +896,7 @@ function storedProjectSessionPointer(candidate: unknown): StoredProjectSessionPo
   }
   if (typeof entry.session_id !== 'string' || entry.session_id === '') return null
   if (typeof entry.updated_at !== 'number') return null
-  if (!(HARNESSES as readonly unknown[]).includes(entry.harness)) return null
+  if (!(HOOK_INSTALLABLE_HARNESSES as readonly unknown[]).includes(entry.harness)) return null
   return {
     sessionId: entry.session_id,
     updatedAt: entry.updated_at,
@@ -1135,7 +1135,7 @@ function gate(
   ctx.log?.info('hook.gate', { verdict, reason, stage: 'queued', ...data })
 }
 
-export type HookHarness = Harness
+export type HookHarness = HookInstallableHarness
 
 /**
  * One round of the waiter's reply poll. Short enough that several questions

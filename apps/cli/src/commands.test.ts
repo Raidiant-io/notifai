@@ -1,4 +1,5 @@
 import { CAPABILITIES_V1, PLATFORMS, REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
+import { execFileSync } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -1040,6 +1041,113 @@ describe('command contracts', () => {
     expect(submitted).toBe(false)
     expect(io.errLines.join('\n')).toContain('still generating this session')
     expect(existsSync(path.join(cwd, 'state', 'notifai', 'session-labels.json'))).toBe(false)
+  })
+
+  it('sends Hermes Source Context from HERMES_SESSION_ID and the invocation cwd', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-send-'))
+    const repo = path.join(root, 'notifai')
+    const worktree = path.join(root, 'hermes-topic')
+    mkdirSync(repo)
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' })
+    git('init')
+    git('config', 'user.email', 'test@example.invalid')
+    git('config', 'user.name', 'Test')
+    git('config', 'commit.gpgsign', 'false')
+    writeFileSync(path.join(repo, 'file'), 'x')
+    git('add', 'file')
+    git('commit', '-m', 'fixture')
+    git('worktree', 'add', worktree, '-b', 'feature/hermes-send')
+
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const sessionId = '20260828_111302_29a404'
+    const deps = {
+      ...makeDeps(io, client),
+      cwd: worktree,
+      env: {
+        ...isolatedEnv(worktree),
+        HERMES_SESSION_ID: sessionId,
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Hermes baseline landed',
+        body: 'Classic CLI send carries exact session identity.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: sessionId,
+      harness: 'hermes',
+      branch: 'feature/hermes-send',
+      worktree: 'hermes-topic',
+    })
+    expect(io.outLines.join('\n')).not.toContain(sessionId)
+
+    submitted = undefined
+    expect(
+      await sendCommand(
+        {
+          ...deps,
+          env: {
+            ...deps.env,
+            HERMES_SESSION_KEY: 'gateway-route-key-must-not-be-session-id',
+          },
+        },
+        {
+          title: 'Hermes deferred surface sent',
+          body: 'The send stays universal while unproven Source Context is omitted.',
+          kind: 'done',
+        },
+      ),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.source).toMatchObject({
+      branch: 'feature/hermes-send',
+      worktree: 'hermes-topic',
+    })
+    expect(submitted?.draft.source).not.toHaveProperty('session_id')
+    expect(submitted?.draft.source).not.toHaveProperty('harness')
+    expect(JSON.stringify(submitted?.draft.source)).not.toContain('gateway-route-key')
+  })
+
+  it('does not attribute Hermes Source Context when another harness marker is nested', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-nested-send-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        ...isolatedEnv(cwd),
+        CLAUDECODE: '1',
+        CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+        HERMES_SESSION_ID: '20260828_111302_29a404',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Nested send stays honest',
+        body: 'Ambiguous ownership omits harness identity.',
+        kind: 'update',
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.source?.harness).toBeUndefined()
+    expect(submitted?.draft.source?.session_id).toBeUndefined()
   })
 
   it('uploads repeatable images in order and sends only canonical media references', async () => {
@@ -6518,6 +6626,92 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
     expect(readSessionState('opencode-current', env).pending).toBeUndefined()
+  })
+
+  it('refuses Hermes ask as unsupported rather than as missing hooks', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-ask-unsupported-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      HERMES_SESSION_ID: '20260828_111302_29a404',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    const payload = JSON.parse(io.outLines.join('\n')) as { code: string; message: string; remedy: string }
+    expect(payload.code).toBe('question_routing_unavailable')
+    expect(payload.message).toMatch(/no proven continuation owner/i)
+    expect(payload.message).not.toMatch(/hooks are not installed/i)
+    expect(payload.remedy).toMatch(/send --reply/)
+    expect(hooksInstallCommand(deps, { harness: 'hermes', execPath, scriptPath })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/Unknown harness "hermes"/)
+  })
+
+  it('fails closed when Hermes nested markers leave session ownership ambiguous', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-nested-ask-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+      HERMES_SESSION_ID: '20260828_111302_29a404',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('claude-orchestrator', env, {
+      harness: 'claude-code',
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(cwd, env, 'claude-orchestrator', 42, 'claude-code')
+    io.outLines = []
+    io.errLines = []
+
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    const payload = JSON.parse(io.outLines.join('\n')) as { code: string; message: string }
+    expect(payload.code).toBe('session_identity_ambiguous')
+    expect(payload.message).toMatch(/Several harness sessions could own this shell/i)
+    expect(payload.message).toMatch(/Hermes/)
+    expect(readSessionState('claude-orchestrator', env).pending).toBeUndefined()
+  })
+
+  it('does not attribute doctor readiness when Hermes nested markers are ambiguous', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-nested-doctor-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-orchestrator',
+      HERMES_SESSION_ID: '20260828_111302_29a404',
+    }
+    const readiness = await assessReadiness({
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      now: () => 42,
+    })
+    const hooks = readiness.states.find((state) => state.id === 'hooks')
+    expect(hooks?.status).toBe('optional-gap')
+    expect(hooks?.detail).toMatch(/Several harness sessions could own this shell/i)
+    expect(hooks?.detail).toMatch(/Claude Code, Hermes/)
+    expect(hooks?.remedy).toBeUndefined()
+    expect(JSON.stringify(hooks)).not.toContain('hooks install --harness claude-code')
+  })
+
+  it('does not tell an active Hermes session to install managed hooks', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-doctor-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      HERMES_SESSION_ID: '20260828_111302_29a404',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    const readiness = await assessReadiness(deps)
+    const hooks = readiness.states.find((state) => state.id === 'hooks')
+    expect(hooks?.status).toBe('optional-gap')
+    expect(hooks?.remedy).toBeUndefined()
+    expect(JSON.stringify(hooks)).not.toContain('hooks install --harness hermes')
+    expect(hooks?.detail).toMatch(/no proven continuation owner/i)
   })
 
   it('refuses Cursor when its active-agent marker has no exact conversation id', () => {

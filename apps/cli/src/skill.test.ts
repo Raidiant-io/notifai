@@ -252,7 +252,7 @@ describe('Notifai agent skill', () => {
     // Harness names may appear only in setup/routing material, where the
     // harness IS the subject.
     for (const heading of ['## Decide whether to notify', '## Send', '## Ask a question', '## When the answer arrives']) {
-      expect(section(heading), heading).not.toMatch(/OpenCode|Orca|Cursor|Codex/)
+      expect(section(heading), heading).not.toMatch(/OpenCode|Orca|Cursor|Codex|Hermes/)
     }
   })
 
@@ -396,9 +396,14 @@ describe('Notifai agent skill', () => {
   it('moves per-harness mechanics into progressive disclosure', () => {
     expect(skill).toContain('[Harness setup and recovery](references/harness-setup.md)')
     expect(skill).toMatch(/read it when you are\s+installing hooks or diagnosing routing/i)
-    for (const harness of ['Claude Code', 'Codex', 'Cursor', 'OpenCode']) {
+    for (const harness of ['Claude Code', 'Codex', 'Cursor', 'OpenCode', 'Hermes']) {
       expect(harnessReference).toContain(`**${harness}:**`)
     }
+    expect(harnessReference).toMatch(/exact `HERMES_SESSION_ID`/i)
+    expect(harnessReference).toMatch(/Do not run `notifai hooks install --harness hermes`/i)
+    expect(harnessReference).toMatch(/blocking `notifai send --reply`/i)
+    expect(harnessReference).toMatch(/npx skills/i)
+    expect(harnessReference).toMatch(/no Hermes plugin may vendor/i)
     // The agent runs what a process can run; the human only does the human part.
     expect(harnessReference).toMatch(/let init install and assess\s+the hooks/i)
     expect(harnessReference).toContain('--setup-scope <project|global>')
