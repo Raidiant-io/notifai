@@ -218,6 +218,8 @@ export const CUSTOM_SOUND_LIBRARY_LIMIT = 50
 export const CUSTOM_SOUND_ID_PATTERN = '^snd_[A-Za-z0-9_-]+$'
 /** Client-normalized upload media type. */
 export const NOTIFICATION_SOUND_MEDIA_TYPE = 'audio/wav'
+/** Silent background push that asks a Companion App to refresh custom sounds. */
+export const SOUND_LIBRARY_SYNC = 'sound_library' as const
 
 export const INTERRUPTION_LEVELS = ['passive', 'active', 'time_sensitive'] as const
 
