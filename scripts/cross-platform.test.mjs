@@ -31,6 +31,20 @@ test('reads the active pnpm entry from its Windows shim', () => {
   assert.deepEqual(invocation.options, { windowsHide: true })
 })
 
+test('runs the npm JavaScript entry instead of spawning npm.cmd on Windows', () => {
+  const nodeHome = mkdtempSync(path.join(os.tmpdir(), 'notifai-node-home-'))
+  const node = path.join(nodeHome, 'node.exe')
+  const npmCli = path.join(nodeHome, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  mkdirSync(path.dirname(npmCli), { recursive: true })
+  writeFileSync(npmCli, '// fixture')
+
+  const invocation = commandInvocation('npm', ['install', 'fixture.tgz'], 'win32', {}, node)
+
+  assert.equal(invocation.file, node)
+  assert.deepEqual(invocation.args, [npmCli, 'install', 'fixture.tgz'])
+  assert.deepEqual(invocation.options, { windowsHide: true })
+})
+
 test('keeps POSIX package-manager execution direct', () => {
   assert.deepEqual(commandInvocation('pnpm', ['pack'], 'linux', {}), {
     file: 'pnpm',
