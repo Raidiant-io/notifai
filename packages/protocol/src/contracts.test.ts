@@ -840,7 +840,7 @@ describe('validateDraft', () => {
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.category', status: 'unsupported' }),
-        expect.objectContaining({ path: 'sound_file', status: 'unsupported' }),
+        expect.objectContaining({ path: 'sound_file', status: 'supported' }),
       ]),
     )
     expect(ANDROID_CAPABILITIES_V1).toMatchObject({
@@ -1294,6 +1294,14 @@ describe('notification kind', () => {
     expect(validateDraft(draft({ kind: 'blocked' })).ok).toBe(true)
     expect(notifaiKeyOf(draft({ kind: 'failed' }))['kind']).toBe('failed')
     expect(notifaiKeyOf(draft({ kind: 'blocked' }))['kind']).toBe('blocked')
+    expect(
+      (buildApnsEnvelope(draft({ kind: 'failed' }), { requestId: 'req_k', deliveryId: 'del_k' }, null)
+        .payload['aps'] as Record<string, unknown>)['sound'],
+    ).toBe('alert.caf')
+    expect(
+      (buildApnsEnvelope(draft({ kind: 'blocked' }), { requestId: 'req_k', deliveryId: 'del_k' }, null)
+        .payload['aps'] as Record<string, unknown>)['sound'],
+    ).toBe('attention.caf')
   })
 
   it('rejects a kind outside the closed vocabulary', () => {

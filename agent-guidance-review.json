@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:29e68fc975654669215be44ea93cfacf90147a7be11d54a4439d1b858df76d42",
+  "behavior_digest": "sha256:61d6919d6e98b8d24f3903fb9b34c9165bdbdb6b23d27c6d4250df48308197df",
   "outcome": "guidance-updated",
-  "reason": "The public skill now teaches both the Hermes classic CLI/local send-only Source Context baseline and the narrow Agent Session rename exception. Hermes keeps only the proven marker envelope, HERMES_SESSION_ID, and invocation-cwd git/worktree while managed hooks, lifecycle activation, and asynchronous ask remain unavailable; an agent rename remains limited to the exact active session after a complete job change makes its old label misleading. Existing continuation contracts and domain terms remain unchanged, and the inherited Node 22 and Windows credential bounds have no guidance effect.",
+  "reason": "The public skill now teaches both the Hermes classic CLI/local send-only Source Context baseline and the narrow Agent Session rename exception. Hermes keeps only the proven marker envelope, HERMES_SESSION_ID, and invocation-cwd git/worktree while managed hooks, lifecycle activation, and asynchronous ask remain unavailable; an agent rename remains limited to the exact active session after a complete job change makes its old label misleading. Existing continuation contracts and domain terms remain unchanged, and the inherited Node 22, Windows credential, and custom-sound protocol changes have no guidance effect.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -91,7 +91,12 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
       },
       reason: 'The first resolvable image is attached to the banner; the full ordered collection remains available in the app.',
     },
-    { path: 'platform.ios.sound', status: 'supported', constraints: { allowed: [...IOS_SOUNDS, null] } },
+    {
+      path: 'platform.ios.sound',
+      status: 'supported',
+      constraints: { allowed: [...IOS_SOUNDS, null], custom: true },
+      reason: 'Bundled semantic names, Account custom sound ids/names, or null (silent).',
+    },
     { path: 'platform.ios.badge', status: 'supported' },
     { path: 'platform.ios.thread_id', status: 'supported' },
     {
@@ -124,8 +129,8 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
     },
     {
       path: 'sound_file',
-      status: 'unsupported',
-      reason: 'Arbitrary sound files are unsupported; sounds come from the bundled semantic set.',
+      status: 'supported',
+      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.caf.',
     },
     {
       path: 'localization',
@@ -187,7 +192,12 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
       reason:
         'The macOS banner omits images; the full ordered collection remains available in the app.',
     },
-    { path: 'platform.macos.sound', status: 'supported', constraints: { allowed: [...MACOS_SOUNDS, null] } },
+    {
+      path: 'platform.macos.sound',
+      status: 'supported',
+      constraints: { allowed: [...MACOS_SOUNDS, null], custom: true },
+      reason: 'Bundled semantic names, Account custom sound ids/names, or null (silent).',
+    },
     { path: 'platform.macos.badge', status: 'supported' },
     { path: 'platform.macos.thread_id', status: 'supported' },
     {
@@ -220,8 +230,8 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     },
     {
       path: 'sound_file',
-      status: 'unsupported',
-      reason: 'Arbitrary sound files are unsupported; sounds come from the bundled semantic set.',
+      status: 'supported',
+      reason: 'Account-owned custom sounds sync into Library/Sounds as notifai-<id>.caf.',
     },
     {
       path: 'localization',
@@ -285,8 +295,10 @@ export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
       status: 'supported',
       constraints: {
         allowed: [...ANDROID_SOUNDS, null],
+        custom: true,
         delivery: 'product-owned channels subject to User settings',
       },
+      reason: 'Bundled semantic names, Account custom sound ids/names, or null for the quiet channel.',
     },
     {
       path: 'platform.android.thread_id',
@@ -332,8 +344,9 @@ export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
     },
     {
       path: 'sound_file',
-      status: 'unsupported',
-      reason: 'Arbitrary sound files are unsupported; sounds come from product-owned channels.',
+      status: 'supported',
+      reason:
+        'Account-owned custom sounds ingest through MediaStore; channels are notifai.<kind>.<soundRef>.v1.',
     },
     {
       path: 'localization',
