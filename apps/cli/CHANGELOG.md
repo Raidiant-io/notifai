@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.3.0](https://github.com/Raidiant-io/notifai/compare/v9.2.2...v9.3.0) (2026-08-28)
+
+
+### Features
+
+* **hooks:** gate guidance by project enablement ([#86](https://github.com/Raidiant-io/notifai/issues/86)) ([9304e40](https://github.com/Raidiant-io/notifai/commit/9304e40421872b4fd1fa7bec67f292e675d1cb2c))
+
+
+### Bug Fixes
+
+* **hooks:** preserve full answer windows ([94a08a9](https://github.com/Raidiant-io/notifai/commit/94a08a990c55f6f6f5e425b8c112012e69f8af30))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 5.0.1 to 5.0.2
+
 ## [9.2.2](https://github.com/Raidiant-io/notifai/compare/v9.2.1...v9.2.2) (2026-08-27)
 
 
