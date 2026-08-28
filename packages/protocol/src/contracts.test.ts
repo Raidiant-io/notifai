@@ -34,7 +34,12 @@ import {
   type PutAgentAcknowledgementResponse,
   type SubmissionReceipt,
 } from './index.js'
-import { buildApnsEnvelope, collapsedChoiceAlert, RECEIPT_TOKEN_LENGTH } from './apns.js'
+import {
+  buildApnsEnvelope,
+  buildSoundLibrarySyncEnvelope,
+  collapsedChoiceAlert,
+  RECEIPT_TOKEN_LENGTH,
+} from './apns.js'
 import { buildFcmDataEnvelope } from './fcm.js'
 
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
@@ -840,7 +845,7 @@ describe('validateDraft', () => {
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.category', status: 'unsupported' }),
-        expect.objectContaining({ path: 'sound_file', status: 'unsupported' }),
+        expect.objectContaining({ path: 'sound_file', status: 'supported' }),
       ]),
     )
     expect(ANDROID_CAPABILITIES_V1).toMatchObject({
@@ -1294,6 +1299,34 @@ describe('notification kind', () => {
     expect(validateDraft(draft({ kind: 'blocked' })).ok).toBe(true)
     expect(notifaiKeyOf(draft({ kind: 'failed' }))['kind']).toBe('failed')
     expect(notifaiKeyOf(draft({ kind: 'blocked' }))['kind']).toBe('blocked')
+    expect(
+      (buildApnsEnvelope(draft({ kind: 'failed' }), { requestId: 'req_k', deliveryId: 'del_k' }, null)
+        .payload['aps'] as Record<string, unknown>)['sound'],
+    ).toBe('alert.caf')
+    expect(
+      (buildApnsEnvelope(draft({ kind: 'blocked' }), { requestId: 'req_k', deliveryId: 'del_k' }, null)
+        .payload['aps'] as Record<string, unknown>)['sound'],
+    ).toBe('attention.caf')
+    expect(
+      (
+        buildApnsEnvelope(
+          draft({ platform: { ios: { sound: 'snd_chime' } } }),
+          { requestId: 'req_custom_sound', deliveryId: 'del_custom_sound' },
+          null,
+        ).payload['aps'] as Record<string, unknown>
+      )['sound'],
+    ).toBe('notifai-snd_chime.wav')
+  })
+
+  it('emits a distinct silent sound-library sync without alert, sound, or badge', () => {
+    expect(buildSoundLibrarySyncEnvelope()).toEqual({
+      payload: {
+        aps: { 'content-available': 1 },
+        notifai: { sync: 'sound_library' },
+      },
+      priority: 5,
+      pushType: 'background',
+    })
   })
 
   it('rejects a kind outside the closed vocabulary', () => {

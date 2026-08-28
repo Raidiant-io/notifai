@@ -1,5 +1,4 @@
 import {
-  CLI_SOUNDS,
   INTERRUPTION_LEVELS,
   REPLY_MAX_WINDOW_SECONDS,
 } from '@raidiant/notifai-protocol'
@@ -8,6 +7,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { configHome, stateHome } from './platform.js'
+import { isCliSoundRef } from './sound-ref.js'
 import { normalizeOrigin } from './url-policy.js'
 
 /**
@@ -41,7 +41,6 @@ export interface ResolvedValue<T> {
   source: ConfigSource
 }
 
-type CliSound = (typeof CLI_SOUNDS)[number]
 type CliInterruptionLevel = (typeof INTERRUPTION_LEVELS)[number]
 
 /**
@@ -58,7 +57,7 @@ export interface CliConfig {
   ttl_seconds: ResolvedValue<number>
   collapse_key: ResolvedValue<string | null>
   devices: ResolvedValue<string[] | null>
-  sound: ResolvedValue<CliSound | null>
+  sound: ResolvedValue<string | null>
   interruption_level: ResolvedValue<CliInterruptionLevel | null>
   /** Project identifier stamped on sends; typically set in .notifai/config.toml. */
   project: ResolvedValue<string | null>
@@ -159,7 +158,6 @@ export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
  * is the same discipline the numeric bounds follow.
  */
 export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> = {
-  sound: CLI_SOUNDS,
   interruption_level: INTERRUPTION_LEVELS,
   log_level: LOG_LEVELS,
 }
@@ -365,6 +363,9 @@ function coerce(key: ConfigKey, value: unknown): unknown | undefined {
     const origins = value.map((entry) => (typeof entry === 'string' ? normalizeOrigin(entry) : null))
     return origins.every((origin): origin is string => origin !== null) ? origins : undefined
   }
+  if (key === 'sound') {
+    return typeof value === 'string' && isCliSoundRef(value) ? value : undefined
+  }
   const allowed = ENUM_CONFIG_VALUES[key]
   if (allowed !== undefined) {
     return typeof value === 'string' && allowed.includes(value) ? value : undefined
@@ -390,7 +391,7 @@ export interface FlagOverrides {
   ttl_seconds?: number
   collapse_key?: string | null
   devices?: string[]
-  sound?: CliSound
+  sound?: string
   interruption_level?: CliInterruptionLevel
 }
 

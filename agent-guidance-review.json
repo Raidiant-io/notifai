@@ -1,13 +1,13 @@
 {
-  "version": 1,
-  "behavior_digest": "sha256:aba7a937b0a3515ae15c55964e3945cc111e1599d7016c60239ebc32a36d29f4",
-  "outcome": "guidance-updated",
-  "reason": "The public skill now teaches the Hermes classic CLI/local send-only Source Context baseline. Hermes uses the complete proven marker envelope, HERMES_SESSION_ID, and invocation-cwd git/worktree; deferred surfaces omit Source Context, managed hooks and lifecycle activation stay unavailable, asynchronous ask fails closed, and npx skills remains skill authority. The existing four harness continuation contracts and domain terms remain unchanged; the inherited Node 22 and Windows credential bounds have no guidance effect.",
-  "surfaces_reviewed": [
-    "lifecycle-hooks",
-    "notifai-skill",
-    "harness-setup",
-    "cli-readiness",
-    "domain-terms"
-  ]
+ "version": 1,
+ "behavior_digest": "sha256:3865ae43865a89820bdca45e1f9d9d22c2bdddc9e23f98af256b604b54e09934",
+ "outcome": "guidance-updated",
+ "reason": "Custom sounds ship as one canonical WAV: capability copy now says sounds sync as notifai-<id>.wav, the sounds catalog exposes a single url per sound instead of per-format urls, and the silent sound_library sync envelope is named for Companion App refreshes. No agent obligations changed: send/--sound semantics, Device default wording, server-side kind-default resolution, and all harness continuation contracts and domain terms are as previously reviewed.",
+ "surfaces_reviewed": [
+  "lifecycle-hooks",
+  "notifai-skill",
+  "harness-setup",
+  "cli-readiness",
+  "domain-terms"
+ ]
 }

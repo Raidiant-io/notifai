@@ -225,7 +225,7 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/kind and the project travel as their own\s+fields, never in it/i)
   })
 
-  it('lets callers repeat one immutable semantic session name without supplying its id', () => {
+  it('keeps initial labels stable and teaches the narrow exact-session rename exception', () => {
     const send = section('## Send')
     expect(send).toContain('--session-label')
     expect(send).toMatch(/2-6 words/i)
@@ -239,6 +239,11 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/generated fallback name[\s\S]*replaced by a later\s+semantic name/i)
     expect(send).toMatch(/never pass\s+`--session-id`/i)
     expect(send).toMatch(/identifier, hash, or\s+filesystem path/i)
+    expect(send).toContain('notifai session rename')
+    expect(send).toMatch(/job changed completely[\s\S]{0,100}current\s+name would now mislead/i)
+    expect(send).toMatch(/never rename for milestones, ordinary progress/i)
+    expect(send).toMatch(/accepts no Agent Session id/i)
+    expect(send).toMatch(/active harness proves the exact current Agent Session/i)
   })
 
   it('never teaches by enumerating environments the CLI can detect itself', () => {
@@ -383,6 +388,7 @@ describe('Notifai agent skill', () => {
       'notifai guidance',
       'notifai logs',
       'notifai status',
+      'notifai sounds',
     ]) {
       expect(skill, `${command} is unreachable from the skill`).toContain(command)
     }

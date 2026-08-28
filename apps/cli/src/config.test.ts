@@ -177,13 +177,28 @@ describe('config precedence', () => {
     expect(config.wait_seconds.source).toBe('flag')
   })
 
-  it('uses the prior default when a newer CLI wrote an unknown enum value', () => {
+  it('uses the prior default when a newer CLI wrote an unknown interruption level', () => {
     const { env, cwd } = setup({
-      globalToml: 'sound = "future-sound"\ninterruption_level = "future-level"\n',
+      globalToml: 'interruption_level = "future-level"\n',
+    })
+    const config = loadConfig({ cwd, env })
+    expect(config.interruption_level).toEqual({ value: null, source: 'default' })
+  })
+
+  it('keeps a custom sound name written by the user', () => {
+    const { env, cwd } = setup({
+      globalToml: 'sound = "Kitchen timer"\n',
+    })
+    const config = loadConfig({ cwd, env })
+    expect(config.sound).toEqual({ value: 'Kitchen timer', source: expect.stringMatching(/^global:/) })
+  })
+
+  it('drops a sound value that cannot be a name or id', () => {
+    const { env, cwd } = setup({
+      globalToml: `sound = "${'n'.repeat(200)}"\n`,
     })
     const config = loadConfig({ cwd, env })
     expect(config.sound).toEqual({ value: null, source: 'default' })
-    expect(config.interruption_level).toEqual({ value: null, source: 'default' })
   })
 })
 
@@ -199,29 +214,23 @@ describe('draft building', () => {
       presentation: { title: 'T', body: 'B' },
       targets: { mode: 'all' },
       delivery: { ttl_seconds: 86400, collapse_key: null },
-      // An unlabelled draft is ordinary news, and news has a sound.
-      platform: {
-        ios: { sound: 'default' },
-        macos: { sound: 'default' },
-        android: { sound: 'default' },
-      },
     })
   })
 
   it.each([
-    { flags: {}, sound: 'default' },
-    { flags: { kind: 'update' }, sound: 'default' },
-    { flags: { kind: 'done' }, sound: 'done' },
-    { flags: { kind: 'failed' }, sound: 'alert' },
-    { flags: { kind: 'blocked' }, sound: 'attention' },
-    { flags: { kind: 'question' }, sound: 'attention' },
-    { flags: { reply: true }, sound: 'attention' },
-  ])('gives $flags the $sound sound when nobody chose one', ({ flags, sound }) => {
+    { flags: {} },
+    { flags: { kind: 'update' } },
+    { flags: { kind: 'done' } },
+    { flags: { kind: 'failed' } },
+    { flags: { kind: 'blocked' } },
+    { flags: { kind: 'question' } },
+    { flags: { reply: true } },
+  ])('omits sound from the draft for $flags so the server can resolve it', ({ flags }) => {
     const config = loadConfig({ cwd: base.cwd, env: base.env })
     const build = buildDraft(config, { title: 'T', body: 'B', ...flags })
     if (!build.ok) throw new Error(build.error)
-    expect(build.draft.platform?.ios?.sound).toBe(sound)
-    expect(build.draft.platform?.android?.sound).toBe(sound)
+    expect(build.draft.platform?.ios?.sound).toBeUndefined()
+    expect(build.draft.platform?.android?.sound).toBeUndefined()
     expect(build.draft.platform?.ios?.interruption_level).toBeUndefined()
   })
 
@@ -551,9 +560,22 @@ describe('draft building', () => {
   it('rejects malformed inputs with usage errors', () => {
     const config = loadConfig({ cwd: base.cwd, env: base.env })
     expect(buildDraft(config, { title: '', body: 'B' }).ok).toBe(false)
-    expect(buildDraft(config, { title: 'T', body: 'B', sound: 'airhorn' }).ok).toBe(false)
+    expect(buildDraft(config, { title: 'T', body: 'B', sound: 'n'.repeat(200) }).ok).toBe(false)
     expect(buildDraft(config, { title: 'T', body: 'B', data: ['nokey'] }).ok).toBe(false)
     expect(buildDraft(config, { title: 'T', body: 'B', level: 'shouting' }).ok).toBe(false)
     expect(buildDraft(config, { title: 'T', body: 'B', platform: 'linux' }).ok).toBe(false)
+  })
+
+  it('puts a custom sound name on the draft for the server to resolve', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const byName = buildDraft(config, { title: 'T', body: 'B', sound: 'airhorn' })
+    if (!byName.ok) throw new Error(byName.error)
+    expect(byName.draft.platform?.ios?.sound).toBe('airhorn')
+    expect(byName.draft.platform?.android?.sound).toBe('airhorn')
+
+    const byId = buildDraft(config, { title: 'T', body: 'B', sound: 'snd_01HQTEST' })
+    if (!byId.ok) throw new Error(byId.error)
+    expect(byId.draft.platform?.ios?.sound).toBe('snd_01HQTEST')
+    expect(byId.draft.platform?.android?.sound).toBe('snd_01HQTEST')
   })
 })

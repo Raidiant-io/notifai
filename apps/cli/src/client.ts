@@ -9,6 +9,7 @@ import type {
   EvidenceSnapshot,
   GetAgentAcknowledgementResponse,
   ListDevicesResponse,
+  ListSoundsResponse,
   ClientCapability,
   CompatibilityResponse,
   RecoveryAction,
@@ -17,6 +18,8 @@ import type {
   PollPairingResponse,
   PutAgentAcknowledgementRequestT,
   PutAgentAcknowledgementResponse,
+  PutAgentSessionLabelRequestT,
+  AgentSessionView,
   SubmissionReceipt,
   SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
@@ -76,6 +79,7 @@ export interface ApiClient {
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   accessStatus(): Promise<AccountAccessResponse>
   listDevices(): Promise<ListDevicesResponse>
+  listSounds(): Promise<ListSoundsResponse>
   capabilities(
     platform?: Platform,
     appVersion?: string,
@@ -94,6 +98,7 @@ export interface ApiClient {
     requestId: string,
     body: PutAgentAcknowledgementRequestT,
   ): Promise<PutAgentAcknowledgementResponse>
+  putAgentSessionLabel(body: PutAgentSessionLabelRequestT): Promise<AgentSessionView>
   agentAcknowledgement(
     requestId: string,
     options: { waitSeconds: number },
@@ -250,6 +255,7 @@ export function createClient(
       }),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     listDevices: () => call('GET', '/api/v1/devices'),
+    listSounds: () => call('GET', '/api/v1/sounds'),
     capabilities: (platform = 'ios', appVersion, appBuild) => {
       const query = new URLSearchParams()
       if (appVersion !== undefined) query.set('app_version', appVersion)
@@ -279,6 +285,8 @@ export function createClient(
         `/api/v1/notifications/${encodeURIComponent(requestId)}/agent-acknowledgement`,
         body,
       ),
+    putAgentSessionLabel: (body) =>
+      call<AgentSessionView>('PUT', '/api/v1/agent-sessions/label', body),
     agentAcknowledgement: (requestId, { waitSeconds }) =>
       call<GetAgentAcknowledgementResponse>(
         'GET',

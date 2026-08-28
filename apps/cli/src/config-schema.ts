@@ -121,7 +121,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'enum',
     choices: CLI_SOUNDS,
     choiceHints: {
-      default: 'the standard notification tone',
+      default: 'Device default',
       done: 'the completion chime',
       attention: 'a distinct attention tone',
       alert: 'the most insistent tone',
@@ -129,7 +129,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     },
     summary: 'Set the sound notifications from here use',
     detail:
-      'Setting this pins one sound for every notification sent from here, whatever kind it is.\n\nLeave it unset and each notification arrives with the sound its kind implies: the completion chime when work finished, the most insistent tone when it failed, a distinct attention tone for a question or blocked work, and the standard tone for ordinary news. A common explicit preference is `none`, to make a noisy project completely silent.',
+      'Setting this pins one sound for every notification sent from here, whatever kind it is. Shipped names are `default` (Device default), `done`, `attention`, `alert`, and `none`; an Account custom sound name or id from `notifai sounds` is accepted too.\n\nLeave it unset and each notification arrives with the sound its kind implies: the completion chime when work finished, the most insistent tone when it failed, a distinct attention tone for a question or blocked work, and Device default for ordinary news. A common explicit preference is `none`, to make a noisy project completely silent.',
     unsetMeans: 'not set; each kind brings its own sound',
   },
   interruption_level: {
@@ -281,6 +281,9 @@ export function boundsHint(key: ConfigKey): string | null {
 /** What a `config set` caller may legally pass, phrased for an error message. */
 export function acceptedValues(key: ConfigKey): string {
   const info = INFO[key]
+  if (key === 'sound') {
+    return `${CLI_SOUNDS.join(', ')}, a custom sound id, or a custom sound name`
+  }
   switch (info.kind) {
     case 'boolean':
       return 'true or false'

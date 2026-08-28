@@ -1,11 +1,16 @@
 import { Type, type Static } from '@sinclair/typebox'
 import {
+  CUSTOM_SOUND_MAX_BYTES,
+  KindSoundMap,
   NotificationDraft,
   NOTIFICATION_IMAGE_MAX_BYTES,
+  NOTIFICATION_SOUND_MEDIA_TYPE,
   NotificationMediaTypeSchema,
   PlatformSchema,
   REPLY_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
+  SESSION_LABEL_MAX_LENGTH,
+  SOUND_NAME_MAX_LENGTH,
   type NotificationMediaType,
   type Platform,
 } from './notification.js'
@@ -58,6 +63,15 @@ export const UpdateAccountPreferencesRequest = Type.Object(
   { additionalProperties: false },
 )
 export type UpdateAccountPreferencesRequestT = Static<typeof UpdateAccountPreferencesRequest>
+
+export const AccountSoundDefaults = Type.Object(
+  { sounds: KindSoundMap },
+  { additionalProperties: false },
+)
+export type AccountSoundDefaultsT = Static<typeof AccountSoundDefaults>
+export type AccountSoundDefaultsResponse = AccountSoundDefaultsT
+export const UpdateAccountSoundDefaultsRequest = AccountSoundDefaults
+export type UpdateAccountSoundDefaultsRequestT = AccountSoundDefaultsT
 
 // ---------------------------------------------------------------------------
 // Account access (the account shell is not product access)
@@ -569,6 +583,52 @@ export interface FinalizeMediaUploadResponse {
   status: 'ready'
 }
 
+export const BeginSoundUploadRequest = Type.Object(
+  {
+    media_type: Type.Literal(NOTIFICATION_SOUND_MEDIA_TYPE),
+    size_bytes: Type.Integer({ minimum: 1, maximum: CUSTOM_SOUND_MAX_BYTES }),
+    sha256: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+  },
+  { additionalProperties: false },
+)
+export type BeginSoundUploadRequestT = Static<typeof BeginSoundUploadRequest>
+
+export const CommitSoundRequest = Type.Object(
+  {
+    media_id: Type.String({ pattern: '^med_[A-Za-z0-9_-]+$' }),
+    name: Type.String({ minLength: 1, maxLength: SOUND_NAME_MAX_LENGTH }),
+  },
+  { additionalProperties: false },
+)
+export type CommitSoundRequestT = Static<typeof CommitSoundRequest>
+
+export const RenameSoundRequest = Type.Object(
+  {
+    name: Type.String({ minLength: 1, maxLength: SOUND_NAME_MAX_LENGTH }),
+  },
+  { additionalProperties: false },
+)
+export type RenameSoundRequestT = Static<typeof RenameSoundRequest>
+
+export interface BeginSoundUploadResponse {
+  media_id: string
+  upload_url: string
+  upload_headers: Record<string, string>
+  expires_at: string
+}
+
+export interface SoundView {
+  sound_id: string
+  name: string
+  duration_ms: number
+  content_hash: string
+  url: string
+}
+
+export interface ListSoundsResponse {
+  sounds: SoundView[]
+}
+
 /** One ordered image in the authenticated full-content response. */
 export interface NotificationContentMediaItem {
   media_id: string
@@ -617,6 +677,30 @@ export interface ProjectView {
 
 export interface ListProjectsResponse {
   projects: ProjectView[]
+}
+
+// ---------------------------------------------------------------------------
+// Agent Sessions (Account-authoritative current labels)
+// ---------------------------------------------------------------------------
+
+export const PutAgentSessionLabelRequest = Type.Object(
+  {
+    session_id: Type.String({ minLength: 1, maxLength: 128 }),
+    label: Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH }),
+  },
+  { additionalProperties: false },
+)
+export type PutAgentSessionLabelRequestT = Static<typeof PutAgentSessionLabelRequest>
+
+export interface AgentSessionView {
+  session_id: string
+  label: string
+  renamed_by: 'user' | 'agent'
+  updated_at: string
+}
+
+export interface ListAgentSessionsResponse {
+  agent_sessions: AgentSessionView[]
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,4 @@
 import {
-  CLI_SOUNDS,
   COLLAPSE_KEY_MAX_BYTES,
   INTERRUPTION_LEVELS,
   MEDIA_MAX_ITEMS,
@@ -13,9 +12,6 @@ import {
   type MediaItemT,
   type NotificationDraftT,
   NOTIFICATION_KINDS,
-  DEFAULT_NOTIFICATION_KIND,
-  defaultSoundForKind,
-  type NotificationKind,
   PLATFORMS,
   type Platform,
   type QuestionT,
@@ -23,8 +19,7 @@ import {
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import type { CliConfig } from './config.js'
-
-type CliSound = (typeof CLI_SOUNDS)[number]
+import { isCliSoundRef, unknownSoundMessage } from './sound-ref.js'
 
 export interface SendFlags {
   title: string
@@ -217,18 +212,15 @@ export function buildDraft(
     }
   }
 
-  // Kind states what happened; the sound table turns that truth into the
-  // attention it deserves, so an honest sender gets the right sound without
-  // reasoning about audio. An explicit --sound and the user's saved preference
-  // both outrank it, and `none` still means silent.
-  const kindForSound: NotificationKind = flags.reply
-    ? 'question'
-    : ((flags.kind as NotificationKind | undefined) ?? DEFAULT_NOTIFICATION_KIND)
-  const sound = flags.sound ?? config.sound.value ?? defaultSoundForKind(kindForSound)
-  if (sound !== null && sound !== undefined && !CLI_SOUNDS.includes(sound as CliSound)) {
+  // Explicit --sound and the saved sound key outrank kind. The server is the
+  // one that applies kind, Project, and Account maps — stamping a kind default
+  // here would look like an explicit choice and skip those layers. `none` is
+  // still silent.
+  const sound = flags.sound !== undefined ? flags.sound : config.sound.value
+  if (sound !== null && sound !== undefined && !isCliSoundRef(sound)) {
     return {
       ok: false,
-      error: `Unknown sound "${sound}" — supported: ${CLI_SOUNDS.map((value) => `"${value}"`).join(', ')}.`,
+      error: unknownSoundMessage(sound),
     }
   }
   const level =
@@ -254,9 +246,8 @@ export function buildDraft(
     appleOptions.sound = null
     androidOptions.sound = null
   } else if (sound !== null && sound !== undefined) {
-    const semanticSound = sound as Exclude<(typeof CLI_SOUNDS)[number], 'none'>
-    appleOptions.sound = semanticSound
-    androidOptions.sound = semanticSound
+    appleOptions.sound = sound
+    androidOptions.sound = sound
   }
   if (flags.threadId !== undefined) {
     appleOptions.thread_id = flags.threadId

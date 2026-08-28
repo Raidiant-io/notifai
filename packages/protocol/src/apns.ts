@@ -2,9 +2,12 @@ import { bannerExcerpt } from './content.js'
 import {
   CLOSED_CHOICE_BANNER_AFFORDANCE,
   DEFAULT_NOTIFICATION_KIND,
+  defaultSoundForKind,
   effectiveKind,
+  isSemanticSound,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
+  SOUND_LIBRARY_SYNC,
   type ApplePlatform,
   type NotificationDraftT,
 } from './notification.js'
@@ -129,8 +132,7 @@ export function buildApnsEnvelope(
     alert: collapsedChoiceAlert(draft, platform),
   }
   if (options?.sound !== null) {
-    const sound = options?.sound ?? 'default'
-    aps['sound'] = sound === 'default' ? 'default' : `${sound}.caf`
+    aps['sound'] = apnsSoundFilename(options?.sound ?? defaultSoundForKind(effectiveKind(draft)))
   }
   if (options?.badge !== undefined && options.badge !== null) aps['badge'] = options.badge
   if (options?.thread_id !== undefined && options.thread_id !== null) aps['thread-id'] = options.thread_id
@@ -165,6 +167,34 @@ export function buildApnsEnvelope(
     },
     priority: options?.interruption_level === 'passive' ? 5 : 10,
     pushType: 'alert',
+  }
+}
+
+/**
+ * APNs sound filename for a resolved ref. Shipped semantic names keep their
+ * bundled `.caf` files; Account custom sounds use `notifai-<id>.wav`.
+ */
+export function apnsSoundFilename(sound: string): string {
+  if (sound === 'default') return 'default'
+  if (isSemanticSound(sound)) return `${sound}.caf`
+  return `notifai-${sound}.wav`
+}
+
+/** Collapse id so rapid library mutations replace one pending background push. */
+export const SOUND_LIBRARY_SYNC_COLLAPSE_ID = 'notifai.sound-library' as const
+
+/**
+ * Silent library-refresh push. Distinct from a `done` retirement: no alert,
+ * sound, badge, or mutable-content, and `notifai.sync=sound_library`.
+ */
+export function buildSoundLibrarySyncEnvelope(): ApnsEnvelope {
+  return {
+    payload: {
+      aps: { 'content-available': 1 },
+      notifai: { sync: SOUND_LIBRARY_SYNC },
+    },
+    priority: 5,
+    pushType: 'background',
   }
 }
 

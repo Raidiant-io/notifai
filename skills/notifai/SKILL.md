@@ -106,7 +106,7 @@ saved config from inventing a Project and never enables one.
 
 | kind | what it means | how it arrives |
 | --- | --- | --- |
-| `update` | ordinary news | standard tone |
+| `update` | ordinary news | Device default |
 | `done` | work finished successfully | completion chime |
 | `failed` | work reached a terminal failure | most insistent tone |
 | `blocked` | no User reply would resume the work | attention tone |
@@ -143,9 +143,10 @@ Other controls: `--thread-id` groups; `--collapse-key` replaces your earlier
 matching notification; `--ttl` bounds useful delivery. `--image` attaches up
 to 8 items, paired with `--image-alt`; `media:1`…`media:8` reference them.
 Use `notifai capabilities --platform <platform>` for destination contracts.
-Attention overrides (`--sound`, `--level`) and device targeting belong to the
-User; otherwise use saved routing. Use `--retry` only for the same unresolved
-Agent Event; the CLI reuses one opaque attempt or refuses ambiguity.
+`--sound`, `--level`, and `--device` belong to the User.
+`--sound` takes a shipped name or a custom name/id from `notifai sounds`.
+Use `--retry` only for the same unresolved Agent Event; the CLI reuses one
+opaque attempt or refuses ambiguity.
 
 Project and Agent Session are inferred; never pass `--session-id`.
 `--session-label` is 2-6 words about the Agent Session, never the Project, branch,
@@ -154,6 +155,12 @@ The CLI freezes one semantic name; the name the environment supplies wins, then 
 It is safe to repeat the same `--session-label` on every send and ask; the first
 accepted semantic name remains authoritative. Only a generated fallback name
 can be replaced by a later semantic name.
+
+User renames sync across Companion Apps and future Requests. An agent may run
+`notifai session rename "New job"` only when its job changed completely and its
+current name would now mislead. Never rename for milestones, ordinary progress,
+or same-job refinement. The command accepts no Agent Session id and fails unless
+the active harness proves the exact current Agent Session.
 
 ## Ask a question
 

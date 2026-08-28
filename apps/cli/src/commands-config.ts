@@ -26,6 +26,7 @@ import {
 import { normalizeOrigin } from './url-policy.js'
 import { renderConfigExplain, renderConfigList, renderConfigPlain } from './ui/config-view.js'
 import { EXIT, loadLoggedConfig, type CommandDeps } from './commands-core.js'
+import { isCliSoundRef } from './sound-ref.js'
 
 // ---------------------------------------------------------------------------
 // config show / set / unset
@@ -186,10 +187,15 @@ export async function configSetCommand(
     }
     value = rawValue === 'true'
   }
-  // Enum keys were accepted unchecked, so `config set sound whatever` wrote a
-  // value the sender would later reject — a typo that only surfaces at the
-  // moment a notification fails to carry the sound you asked for.
-  if (info.kind === 'enum' && info.choices !== undefined && !info.choices.includes(rawValue)) {
+  // Sound is listed as an enum of shipped names so the interactive picker has
+  // choices, but it also accepts an Account custom name or id. Other enum keys
+  // stay closed: an unrecognised value used to be written and only fail at send.
+  if (configKey === 'sound') {
+    if (!isCliSoundRef(rawValue)) {
+      deps.io.err(`${key} takes ${acceptedValues(configKey)} — not "${rawValue}".`)
+      return EXIT.usage
+    }
+  } else if (info.kind === 'enum' && info.choices !== undefined && !info.choices.includes(rawValue)) {
     deps.io.err(`${key} takes one of: ${info.choices.join(', ')} — not "${rawValue}".`)
     return EXIT.usage
   }

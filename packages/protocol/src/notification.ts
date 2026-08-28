@@ -204,12 +204,35 @@ export type AndroidSound = (typeof ANDROID_SOUNDS)[number]
 /** CLI spelling adds `none` for the contract's explicit silent (`null`) value. */
 export const CLI_SOUNDS = [...SEMANTIC_SOUNDS, 'none'] as const
 
+/** User-given custom sound display names. */
+export const SOUND_NAME_MAX_LENGTH = 64
+/** Semantic name, custom sound id, or custom display name on a send. */
+export const SOUND_REF_MAX_LENGTH = 128
+/** Client-normalized upload ceiling for one custom sound. */
+export const CUSTOM_SOUND_MAX_BYTES = 1 * 1024 * 1024
+/** Inclusive duration cap after client-side trim. */
+export const CUSTOM_SOUND_MAX_DURATION_MS = 10_000
+/** Account-owned custom sound library size. */
+export const CUSTOM_SOUND_LIBRARY_LIMIT = 50
+/** Opaque custom sound ids minted by the service. */
+export const CUSTOM_SOUND_ID_PATTERN = '^snd_[A-Za-z0-9_-]+$'
+/** Client-normalized upload media type. */
+export const NOTIFICATION_SOUND_MEDIA_TYPE = 'audio/wav'
+/** Silent background push that asks a Companion App to refresh custom sounds. */
+export const SOUND_LIBRARY_SYNC = 'sound_library' as const
+
 export const INTERRUPTION_LEVELS = ['passive', 'active', 'time_sensitive'] as const
+
+/** A shipped semantic name, an Account custom sound id/name, or null (silent). */
+const SoundChoice = Type.Union([
+  Type.String({ minLength: 1, maxLength: SOUND_REF_MAX_LENGTH }),
+  Type.Null(),
+])
 
 export const IosOptions = Type.Object(
   {
-    /** A bundled semantic sound name, or null (silent). */
-    sound: Type.Optional(Type.Union([...IOS_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()])),
+    /** A semantic sound, an Account custom sound id/name, or null (silent). */
+    sound: Type.Optional(SoundChoice),
     badge: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
     /** Caller-selected categories are unsupported; companions own their fixed reply categories. */
@@ -234,7 +257,7 @@ export const IosOptions = Type.Object(
 /** macOS UserNotifications options carried in the shared APNs alert envelope. */
 export const MacosOptions = Type.Object(
   {
-    sound: Type.Optional(Type.Union([...MACOS_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()])),
+    sound: Type.Optional(SoundChoice),
     badge: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
     /** Caller-selected categories are unsupported; companions own their fixed reply categories. */
@@ -259,10 +282,8 @@ export const MacosOptions = Type.Object(
 /** Android options the first native Companion App actually honors. */
 export const AndroidOptions = Type.Object(
   {
-    /** A product-owned semantic channel sound, or null for the quiet channel. */
-    sound: Type.Optional(
-      Type.Union([...ANDROID_SOUNDS.map((sound) => Type.Literal(sound)), Type.Null()]),
-    ),
+    /** A semantic sound, an Account custom sound id/name, or null for the quiet channel. */
+    sound: Type.Optional(SoundChoice),
     /** Explicit notification group key; final grouping remains Android/OEM-owned. */
     thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
     /** Namespaced, size-bounded custom data inside the application-owned FCM envelope. */
@@ -341,6 +362,44 @@ export const DEFAULT_SOUND_BY_KIND: Readonly<Record<NotificationKind, IosSound>>
 /** The sound a kind arrives with absent an explicit choice. */
 export function defaultSoundForKind(kind: NotificationKind): IosSound {
   return DEFAULT_SOUND_BY_KIND[kind]
+}
+
+export function isSemanticSound(value: string): value is IosSound {
+  return (SEMANTIC_SOUNDS as readonly string[]).includes(value)
+}
+
+export function isCustomSoundId(value: string): boolean {
+  return /^snd_[A-Za-z0-9_-]+$/.test(value)
+}
+
+/**
+ * Sparse per-kind sound map. Missing keys inherit the next resolution layer.
+ * Values are semantic names or custom sound ids.
+ */
+export const KindSoundMap = Type.Object(
+  {
+    update: Type.Optional(Type.String({ minLength: 1, maxLength: SOUND_REF_MAX_LENGTH })),
+    question: Type.Optional(Type.String({ minLength: 1, maxLength: SOUND_REF_MAX_LENGTH })),
+    done: Type.Optional(Type.String({ minLength: 1, maxLength: SOUND_REF_MAX_LENGTH })),
+    failed: Type.Optional(Type.String({ minLength: 1, maxLength: SOUND_REF_MAX_LENGTH })),
+    blocked: Type.Optional(Type.String({ minLength: 1, maxLength: SOUND_REF_MAX_LENGTH })),
+  },
+  { additionalProperties: false },
+)
+export type KindSoundMapT = Static<typeof KindSoundMap>
+
+/** Treat malformed keys as absent so a stored map cannot break delivery. */
+export function normalizeKindSoundMap(value: unknown): KindSoundMapT {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const raw = value as Record<string, unknown>
+  const map: KindSoundMapT = {}
+  for (const kind of NOTIFICATION_KINDS) {
+    const ref = raw[kind]
+    if (typeof ref === 'string' && ref.length >= 1 && ref.length <= SOUND_REF_MAX_LENGTH) {
+      map[kind] = ref
+    }
+  }
+  return map
 }
 
 export const NotificationDraft = Type.Object(
