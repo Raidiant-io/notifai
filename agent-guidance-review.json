@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:30e3a640c133c9638476ca80f1e4c21bde49241fc5fd6426c402c05450abcf98",
+  "behavior_digest": "sha256:4e45ddace88e24cedd9744042859c8841410ffb9a3da31c460659f5b726de274",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after the onboarding change that says the no-access wall once. Only human terminal copy moved: a caller-owned login stops printing the three access lines and the interactive init close drops the framed duplicate, so one stopped visit now states one errand once. Structured init readiness, exit codes, and the auth-versus-access split agents branch on are unchanged, so no shipped guidance wording needed to change.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after PATH recovery began modeling the effective command, duplicate installations, and the shared hook-adapter target. The accepted update sentences and typed update_cli contract remain unchanged, while one local npx action now repairs the PATH-winning npm prefix and resumed init retargets Question Routing without another undocumented command. Existing Agent Guidance still correctly sends agents through notifai init --json and does not prescribe package-manager or hook-repair internals, so no shipped guidance wording needed to change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
