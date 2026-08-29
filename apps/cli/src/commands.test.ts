@@ -75,7 +75,12 @@ import {
   QUESTION_STOP_TIMEOUT_SECONDS,
   settingsFile,
 } from './install-hooks.js'
-import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
+import {
+  inspectQuestionState,
+  readSessionState,
+  writeProjectSession,
+  writeSessionState,
+} from './hooks.js'
 import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, sessionConfigPath, stateDir } from './config.js'
 import { SETUP_PROOF_STALE_MS, writeSetupProof } from './commands-setup-proof.js'
@@ -84,6 +89,7 @@ import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './lo
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { firstRequiredBlocker } from './readiness.js'
 
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
@@ -469,8 +475,8 @@ describe('command contracts', () => {
 
     expect(await accessStatusCommand(makeDeps(io, client), {})).toBe(EXIT.failed)
     expect(io.outLines).toEqual([
-      'No active plan or temporary Alpha access for this account.',
-      'next: Open https://test.notifai.invalid/support to request Alpha access, then retry.',
+      'This account does not have access to Notifai yet.',
+      'next: Open https://test.notifai.invalid/setup/access to set up access, then retry.',
     ])
   })
 
@@ -2125,6 +2131,10 @@ describe('command contracts', () => {
       closed: [],
     })
     expect(readSessionState('close-unpushed', deps.env).pending).toBeUndefined()
+    expect(inspectQuestionState('q_local', deps.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false, request_id: null },
+    })
   })
 
   it('close withdraws one unpushed question by stable id from another checkout', async () => {
@@ -2182,6 +2192,7 @@ describe('command contracts', () => {
         { question: 'Unpushed?', question_id: 'q_local' },
         {
           question: 'Already on a device?',
+          question_id: 'q_live',
           request_id: receipt.request_id,
           collapse_key: 'question-live',
           device_ids: ['dev_iphone'],
@@ -2198,6 +2209,14 @@ describe('command contracts', () => {
       closed: [receipt.request_id],
     })
     expect(readSessionState('close-mix', deps.env).pending).toBeUndefined()
+    expect(inspectQuestionState('q_local', deps.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false, request_id: null },
+    })
+    expect(inspectQuestionState('q_live', deps.env)).toMatchObject({
+      found: true,
+      question: { state: 'retired', submitted: true, request_id: receipt.request_id },
+    })
   })
 
   it('close requires a request id or --pending', async () => {
@@ -2614,6 +2633,51 @@ describe('credential origin pinning', () => {
     expect(now).toBeLessThan(10_000)
   })
 
+  it('reports the access blocker to whoever asked for the sign-in', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({
+        status: 'no_active_plan',
+        next_action: 'Open https://app.notifai.sh/setup/access to set up access, then retry.',
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    let blocked: { title: string; detail: string } | null = null
+    expect(
+      await loginCommand(deps, { open: false }, (state) => {
+        blocked = state
+      }),
+    ).toBe(EXIT.auth)
+    // Without this the caller falls back to the state it held before the
+    // attempt — "not paired … run `notifai init`" — and prints it under the
+    // correct line, in contradiction with it.
+    expect(blocked).toMatchObject({
+      id: 'auth',
+      title: 'Access',
+      status: 'gap',
+      detail: 'this account does not have access to Notifai yet',
+      remedy: {
+        by: 'user-elsewhere',
+        summary: 'Open https://app.notifai.sh/setup/access to set up access, then retry.',
+      },
+    })
+  })
+
   it('reports expiry only when pairing times out without a no-access mark', async () => {
     const io = new CapturedIo()
     let now = 0
@@ -2736,6 +2800,96 @@ describe('delivery evidence status', () => {
       ],
     }
   }
+
+  it('reports every local question state by q identity without creating or submitting anything', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-question-status-'))
+    const env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeSessionState('question-states', env, {
+      pending: [
+        { question: 'Local?', question_id: 'q_local' },
+        {
+          question: 'Frozen?',
+          question_id: 'q_frozen',
+          submission: {
+            request_id: 'req_frozen',
+            idempotency_key: 'idem-frozen',
+            collapse_key: 'collapse-frozen',
+            device_ids: ['dev_status_test'],
+            draft: {} as never,
+            owner_deadline_at: Date.now() + 60_000,
+          },
+        },
+        { question: 'Live?', question_id: 'q_live', request_id: 'req_live' },
+      ],
+      question_history: [
+        { question_id: 'q_answered', state: 'answered', request_id: 'req_answered' },
+        { question_id: 'q_withdrawn', state: 'withdrawn' },
+        { question_id: 'q_retired', state: 'retired', request_id: 'req_retired' },
+      ],
+    })
+    const evidenceCalls: string[] = []
+    const client = {
+      evidence: async (requestId: string) => {
+        evidenceCalls.push(requestId)
+        return { ...snapshot({ state: 'unknown', observed_at: null, latency_ms: null }), request_id: requestId }
+      },
+    } as unknown as ApiClient
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, client), cwd: root, env }
+
+    const expected = [
+      ['q_local', 'local', false, null, null],
+      ['q_frozen', 'frozen', null, null, 'req_frozen'],
+      ['q_live', 'live', true, 'req_live', null],
+      ['q_answered', 'answered', true, 'req_answered', null],
+      ['q_withdrawn', 'withdrawn', false, null, null],
+      ['q_retired', 'retired', true, 'req_retired', null],
+    ] as const
+    for (const [questionId, state, submitted, requestId, frozenRequestId] of expected) {
+      io.outLines = []
+      expect(await statusCommand(deps, questionId, { json: true })).toBe(EXIT.ok)
+      expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+        question_id: questionId,
+        state,
+        submitted,
+        request_id: requestId,
+        frozen_request_id: frozenRequestId,
+        recovery: {
+          inspect: `notifai status ${questionId}`,
+          close: `notifai close ${questionId}`,
+          register_replacement: false,
+        },
+      })
+    }
+    expect(evidenceCalls).toEqual(['req_live', 'req_answered', 'req_retired'])
+  })
+
+  it('states plainly that a local registration has no submission or Provider Acceptance', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-local-question-status-'))
+    const env = { XDG_STATE_HOME: path.join(root, 'state') }
+    writeSessionState('local-question', env, {
+      pending: [{ question: 'Ship?', question_id: 'q_local_plain' }],
+    })
+    const io = new CapturedIo()
+    const client = {
+      evidence: async () => {
+        throw new Error('local status must not call the service')
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await statusCommand({ ...makeDeps(io, client), cwd: root, env }, 'q_local_plain', {}),
+    ).toBe(EXIT.ok)
+    const said = io.outLines.join('\n')
+    expect(said).toContain('question q_local_plain — local')
+    expect(said).toContain('not submitted')
+    expect(said).toContain('only a local registration')
+    expect(said).toContain('Provider Acceptance: not available')
+    expect(said).toContain('do not register a replacement')
+  })
 
   it('calls an unobserved first-minute receipt unknown rather than failed', async () => {
     const io = new CapturedIo()
@@ -4658,19 +4812,23 @@ describe('init', () => {
     )
   })
 
-  it('does not let an unattended readiness pass silently choose project scope', async () => {
+  it('closes what a process can close when no scope was passed, and asks nothing', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
     expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
-    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
+    // Naming this checkout is not skill or hook placement, so it no longer
+    // waits on a scope question nobody can answer here.
+    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain('project = "')
     const result = JSON.parse(io.outLines[0] ?? '{}') as {
-      states: Array<{ id: string; status: string }>
+      states: Array<{ id: string; status: string; remedy: { command?: string } | null }>
     }
-    expect(result.states.find((state) => state.id === 'project')).toMatchObject({
-      status: 'optional-gap',
-    })
+    expect(result.states.find((state) => state.id === 'project')).toMatchObject({ status: 'ready' })
+    // The run stops where a human genuinely is required, and never hands back
+    // the command that produced this output as the thing to do about it.
+    const project = result.states.find((state) => state.id === 'project')
+    expect(project?.remedy).toBeNull()
     expect(io.errLines).toEqual([])
   })
 
@@ -5128,7 +5286,11 @@ describe('init', () => {
     expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(true)
     expect(io.outLines.join('\n')).not.toContain('Installed claude-code hooks')
     expect(io.outLines.join('\n')).not.toContain('Installed codex hooks')
-    expect(io.outLines.join('\n')).toContain('Next: Codex hook trust')
+    // A hook diagnostic is a report line. The run it appears in still reaches
+    // the delivery proof, which is the thing `init` is there to produce.
+    expect(io.outLines.join('\n')).toContain('Companion Receipt')
+    expect(io.outLines.join('\n')).toContain('All set.')
+    expect(io.outLines.join('\n')).not.toContain('Next: Codex hook trust')
   })
 
   it('lets a human keep a subset of the detected harnesses', async () => {
@@ -5263,11 +5425,11 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('https://test.notifai.invalid/support')
+    // One focused destination for this errand, never the omnibus help page.
+    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).not.toContain('/support')
     expect(out).toContain('sign in with the same email as this account (alpha@example.com)')
-    expect(out).toContain(
-      'no active Companion device registered yet; install Notifai via https://test.notifai.invalid/support',
-    )
+    expect(out).toContain('no active Companion App registered yet')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
@@ -5382,6 +5544,9 @@ describe('init', () => {
       },
     }
 
+    // The terminal asks which phone, in those words, and the destination it
+    // opens is already about that answer — nobody chooses twice.
+    io.selectAnswer = 'iphone'
     expect(
       await initCommand(deps, {
         hooks: false,
@@ -5390,10 +5555,11 @@ describe('init', () => {
       }),
     ).toBe(EXIT.ok)
     expect(io.prompts).toEqual([
-      'Open install instructions in your browser?',
-      'Wait here while you finish that on your device?',
+      'Where do you want to receive notifications?',
+      'Open those steps in your browser?',
+      'Wait here while you finish that on your phone?',
     ])
-    expect(io.openedUrls).toEqual(['https://test.notifai.invalid/support'])
+    expect(io.openedUrls).toEqual(['https://test.notifai.invalid/setup/companion?platform=iphone'])
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
     expect(io.spinnerEvents).toContain(
       'message:Waiting for a Companion App to sign in and register…',
@@ -5407,6 +5573,11 @@ describe('init', () => {
     expect(submitCalls).toBe(1)
     expect(submittedDraft?.draft).not.toHaveProperty('event')
     expect(submittedDraft?.draft.targets).toEqual({ mode: 'selected', device_ids: ['dev_iphone'] })
+    // The proof is a real send that has to be seen: a normal banner and sound,
+    // not a silent arrival in Notification Center a first-time User never
+    // looks at. Its sound is left to the server's kind/Project/Account layers.
+    expect(submittedDraft?.draft.platform).toEqual({ ios: { interruption_level: 'active' } })
+    expect(submittedDraft?.draft.kind).toBe('done')
 
     io.outLines = []
     io.prompts = []
@@ -5513,7 +5684,8 @@ describe('init', () => {
     ).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('https://test.notifai.invalid/support')
+    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).not.toContain('/support')
     expect(out).toContain('sign in with the same email as this account (agent@example.com)')
     expect(io.openedUrls).toEqual([])
   })
@@ -5664,6 +5836,57 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
   })
 
+  it('writes the first notification about the User, not about the check', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-copy-'))
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "orders-api"\n')
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | null = null
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return setupReceipt()
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    const presentation = submitted!.draft.presentation
+
+    // A title says what is now true for the reader, alone on a lock screen,
+    // and carries neither the kind nor the Project — both travel as their own
+    // fields.
+    expect(presentation.title).toBe('Your agents can reach you')
+    expect(presentation.title.length).toBeLessThanOrEqual(40)
+    expect(presentation.title).not.toMatch(/orders-api|done/i)
+
+    // None of the vocabulary of the check that produced it: the reader has not
+    // met "verification", a "proof", or the distinction between a real
+    // notification and any other kind.
+    const copy = `${presentation.title} ${presentation.body}`
+    expect(copy).not.toMatch(/verification|verify|proof|receipt|real notification|test/i)
+    // And nothing about where it landed or what to do to it.
+    expect(copy).not.toMatch(/iPhone|Android|phone|tap|swipe|banner|lock screen/i)
+
+    expect(presentation.body).toContain('orders-api')
+    expect(presentation.body).toMatch(/^Notifai setup is finished/)
+
+    // Still the same bar: a real send whose Companion Receipt was observed.
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from iPhone.",
+    )
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
   it('treats Android as active Companion readiness and sends a platform-correct proof', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-android-proof-'))
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
@@ -5702,7 +5925,12 @@ describe('init', () => {
       mode: 'selected',
       device_ids: [readyAndroid.device_id],
     })
-    expect(submitted?.draft.platform).toEqual({ android: { sound: null } })
+    // Android has no caller-selected interruption level, so a configured Apple
+    // preference must not reach it — and nothing else is stamped either, so the
+    // server's kind sound applies rather than the old hard silence.
+    expect(submitted?.draft.platform).toBeUndefined()
+    expect(JSON.stringify(submitted?.draft)).not.toContain('interruption_level')
+    expect(submitted?.draft.kind).toBe('done')
     expect(io.outLines.join('\n')).toContain(
       "Companion Receipt (the app's delivery confirmation) observed from Pixel.",
     )
@@ -5734,7 +5962,7 @@ describe('init', () => {
     expect(submitCalls).toBe(0)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('no active Companion device registered yet')
+    expect(out).toContain('no active Companion App registered yet')
     expect(out).not.toContain('All set.')
     expect(out).not.toMatch(/Companion Receipt observed/i)
 
@@ -5751,11 +5979,140 @@ describe('init', () => {
       ),
     ).toBe(EXIT.failed)
     const doctorOut = doctorIo.outLines.join('\n')
-    expect(doctorOut).toMatch(/FAIL\s+Your devices:/)
-    expect(doctorOut).toContain('no active Companion device registered yet')
+    expect(doctorOut).toMatch(/FAIL\s+Your devices: no active Companion App registered yet/)
     expect(doctorOut).toContain(
       'Delivery proof: not checked — no iPhone or Android Companion App is ready',
     )
+  })
+
+  it('says access is already requested rather than asking for it again', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-access-requested-'))
+    const io = new CapturedIo()
+    const nextAction = 'Open https://app.notifai.sh/setup/access to set up access, then retry.'
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        throw new ApiCallError(403, 'no_active_plan', 'No active plan.', nextAction)
+      },
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+        email: 'waiting@example.test',
+        public_v1_cutover: false,
+      }),
+      accessRequest: async () => ({
+        request: {
+          status: 'requested',
+          requested_at: '2026-08-21T09:15:00.000Z',
+          updated_at: '2026-08-21T09:15:00.000Z',
+        },
+      }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    const readiness = await assessReadiness(deps)
+    const auth = readiness.states.find((state) => state.id === 'auth')
+    // The middle value. Without it, someone who asked in August is told to ask
+    // again on every run, forever, for a wait no command of theirs can shorten.
+    expect(auth?.detail).toContain('access requested on 2026-08-21')
+    expect(auth?.detail).toContain('waiting@example.test')
+    expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere' })
+    expect(JSON.stringify(auth)).not.toContain('/setup/access')
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('nothing is needed from you')
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it('asks for access only when this account has never asked', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-access-never-asked-'))
+    const io = new CapturedIo()
+    const nextAction = 'Open https://app.notifai.sh/setup/access to set up access, then retry.'
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        throw new ApiCallError(403, 'no_active_plan', 'No active plan.', nextAction)
+      },
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+        email: 'fresh@example.test',
+        public_v1_cutover: false,
+      }),
+      accessRequest: async () => ({ request: null }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    const auth = (await assessReadiness(deps)).states.find((state) => state.id === 'auth')
+    expect(auth?.detail).toContain('does not have access to Notifai yet')
+    expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
+  })
+
+  it('does not let a duplicate agent-skill install stand in front of the proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-'))
+    const io = new CapturedIo()
+    const calls = { submit: 0 }
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      remove: async () => 0,
+      // Both scopes installed: the harness lists two, which is a real problem
+      // and a human decision — and still not a reason to withhold the proof.
+      list: async (scope) => ({ skills: [managedSkill(scope ?? 'project', cwd)] }),
+    }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'skill')?.status).toBe('gap')
+    expect(firstRequiredBlocker(readiness)).toBeNull()
+    expect(calls.submit).toBe(1)
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('closes on the blocker that stopped the run, not the state before it', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-login-access-'))
+    const io = new InteractiveIo()
+    let now = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({
+        status: 'no_active_plan',
+        next_action: 'Open https://app.notifai.sh/setup/access to set up access, then retry.',
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test store' },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    // One next step, and it is the one that actually stopped the run. The
+    // pairing state that preceded it would send the reader straight back into
+    // the command that just failed, for a reason it never names.
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+    expect(out).toContain('Next: Access')
+    expect(out).toContain('https://app.notifai.sh/setup/access')
+    expect(out).not.toContain('not paired with your account')
   })
 
   it('treats a revoked credential as the one blocker and points back to pairing', async () => {
@@ -5810,7 +6167,7 @@ describe('init', () => {
     const auth = readiness.states.find((state) => state.id === 'auth')
     expect(auth).toMatchObject({
       status: 'gap',
-      detail: 'no active plan or temporary Alpha access (rafael@example.test)',
+      detail: 'this account does not have access to Notifai yet (rafael@example.test)',
       remedy: { by: 'user-elsewhere', summary: nextAction },
     })
     expect(auth?.remedy && 'command' in auth.remedy ? auth.remedy.command : undefined).toBeUndefined()
@@ -5855,7 +6212,7 @@ describe('init', () => {
     const readiness = await assessReadiness(deps)
     const auth = readiness.states.find((state) => state.id === 'auth')
     expect(auth?.status).toBe('gap')
-    expect(auth?.detail).toContain('no active plan')
+    expect(auth?.detail).toContain('does not have access to Notifai yet')
     expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
     expect(JSON.stringify(auth)).not.toContain('pair it again')
   })
@@ -6323,7 +6680,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
+    expect(io.outLines.some((line) => line.startsWith('Question registered locally (q_'))).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
       harness: 'codex',
@@ -6331,6 +6688,28 @@ describe('asking before the hooks have ever run', () => {
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
     ).toBe('Gentle Salmon')
+
+    io.outLines = []
+    expect(askCommand(deps, 'Wait?', { json: true })).toBe(EXIT.ok)
+    const registered = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
+    expect(registered).toMatchObject({
+      registered: true,
+      state: 'local',
+      submitted: false,
+      request_id: null,
+      provider_acceptance: 'not_available',
+      status: `notifai status ${registered.question_id as string}`,
+      close: `notifai close ${registered.question_id as string}`,
+    })
+    expect(inspectQuestionState(registered.question_id as string, env)).toMatchObject({
+      found: true,
+      question: {
+        question_id: registered.question_id,
+        state: 'local',
+        submitted: false,
+        request_id: null,
+      },
+    })
   })
 
   it('uses exact lifecycle state across checkouts while Project stays invocation-owned', () => {
@@ -6867,8 +7246,11 @@ describe('asking before the hooks have ever run', () => {
 
     const readiness = await assessReadiness(deps)
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
-    expect(fired?.status).toBe('gap')
+    // Reported, never a blocker: the only thing that closes this is a turn
+    // ending, which the agent standing inside that turn cannot supply.
+    expect(fired?.status).toBe('optional-gap')
     expect(fired?.detail).toMatch(/UserPromptSubmit.*Stop has not been observed/)
+    expect(firstRequiredBlocker(readiness)?.id).not.toBe('hooks-fired')
   })
 
   it('uses the OpenCode adapter marker instead of its config-directory variable', () => {

@@ -56,7 +56,8 @@ import {
   resolvedBaseUrl,
   type CommandDeps,
 } from './commands-core.js'
-import { deviceInstallRemedy, readyCompanionDevices, supportPageUrl } from './commands-devices.js'
+import { deviceInstallRemedy, readyCompanionDevices } from './commands-devices.js'
+import { setupAccessUrl } from './setup-destinations.js'
 import {
   claudeSessionPid,
   resolveActiveHarness,
@@ -322,11 +323,14 @@ async function probeAccount(
   lookupFailed: boolean
   auth: ReadinessState
 }> {
-  const [devicesOutcome, accessOutcome] = await Promise.allSettled([
+  const [devicesOutcome, accessOutcome, requestOutcome] = await Promise.allSettled([
     Promise.resolve().then(() => client.listDevices()),
     Promise.resolve().then(() => client.accessStatus()),
+    Promise.resolve().then(() => client.accessRequest()),
   ])
   const access = accessOutcome.status === 'fulfilled' ? accessOutcome.value : null
+  const pendingRequest =
+    requestOutcome.status === 'fulfilled' ? requestOutcome.value.request : null
   const devices = devicesOutcome.status === 'fulfilled' ? devicesOutcome.value.devices : null
   const email = access?.email ?? null
   const devicesErr = devicesOutcome.status === 'rejected' ? devicesOutcome.reason : null
@@ -336,23 +340,36 @@ async function probeAccount(
   if (noActivePlan) {
     const next =
       (isNoActivePlanError(devicesErr) ? devicesErr.nextAction : null) ??
-      `Open ${supportPageUrl(baseUrl)} to request Alpha access, then retry.`
+      `Open ${setupAccessUrl(baseUrl)} to set up access, then retry.`
+    const who = email ? ` (${email})` : ''
+    // Three values, not two. Someone who asked yesterday is waiting on a person,
+    // not on an action of theirs, and telling them to ask again — every run,
+    // forever — is the only thing this terminal could get wrong about a wait it
+    // cannot shorten.
     return {
       email,
       devices: null,
       lookupFailed: true,
-      auth: {
-        id: 'auth',
-        title: 'Account',
-        status: 'gap',
-        detail: email
-          ? `no active plan or temporary Alpha access (${email})`
-          : 'no active plan or temporary Alpha access',
-        remedy: {
-          by: 'user-elsewhere',
-          summary: next,
-        },
-      },
+      auth:
+        pendingRequest === null
+          ? {
+              id: 'auth',
+              title: 'Account',
+              status: 'gap',
+              detail: `this account does not have access to Notifai yet${who}`,
+              remedy: { by: 'user-elsewhere', summary: next },
+            }
+          : {
+              id: 'auth',
+              title: 'Account',
+              status: 'gap',
+              detail: `access requested on ${pendingRequest.requested_at.slice(0, 10)}${who} — waiting to be granted`,
+              remedy: {
+                by: 'user-elsewhere',
+                summary:
+                  'nothing is needed from you; this resumes on the next run once access is granted',
+              },
+            },
     }
   }
 
@@ -570,7 +587,7 @@ export async function assessReadiness(
             // dashboard origin — not a placeholder, and not typed by hand.
             detail:
               companionDevices.length === 0
-                ? `no active Companion device registered yet; install Notifai via ${supportPageUrl(baseUrl)}`
+                ? 'no active Companion App registered yet'
                 : `${companionDevices.map((d) => `${d.display_name} (${d.platform}, ${d.permission_status})`).join(', ')} — registered but not able to receive`,
             remedy: {
               by: 'user-elsewhere',
@@ -815,14 +832,15 @@ export function remedyLine(state: ReadinessState): string {
  * way and is not worth re-deriving. The judgment added here is which failures
  * actually stand in the way.
  *
- * Not everything failed is in the way. A pointer that has never been
- * published is the normal condition of an install thirty seconds old — the
- * next prompt fixes it and no command can. Treating that as blocking would
- * mean `init` could only finish after a session had already run — so it
- * reports as something worth knowing rather than something to
- * fix, and `init` walks on to the states it can actually close, delivery
- * proof included. Which failures are informational, and what the true remedy
- * is, is each check's own call (`HookCheck`).
+ * `doctor` is a report and keeps its strict verdict here: a Codex Stop handler
+ * that would swallow an answer is a real failure and reads as one. `init` is
+ * the other consumer, and it treats every state in this group as a report line
+ * rather than a blocker — Question Routing is optional automation, and nothing
+ * optional may stand between a send-capable setup and its delivery proof.
+ *
+ * `reportOnly` marks the checks that no command can close, only the passage of
+ * a turn. Those are report lines even in `doctor`, because "look again" is not
+ * a remedy.
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
@@ -924,17 +942,15 @@ function checkTitle(name: string): string {
   return CHECK_TITLES[name] ?? name
 }
 
-  /** Real but not in the way; see the note above. */
-  const informational = new Set<string>()
   return [
     ...hookChecks(deps).map((check) => ({
       id: check.name.replace(/[ ()]+/g, '-').replace(/-$/, ''),
       title: checkTitle(check.name),
       status: check.ok
-        ? 'ready' as const
-        : check.informational === true || informational.has(check.name)
-          ? 'optional-gap' as const
-          : 'gap' as const,
+        ? ('ready' as const)
+        : check.reportOnly === true
+          ? ('optional-gap' as const)
+          : ('gap' as const),
       detail: check.detail,
       ...(check.ok
         ? {}
@@ -957,11 +973,11 @@ function checkTitle(name: string): string {
 
 
 interface HookCheck {
+  /** No command closes this; only a turn that has not happened yet. */
+  reportOnly?: boolean
   name: string
   ok: boolean
   detail: string
-  /** Real but not in the way: worth a line, never a blocker. */
-  informational?: boolean
   /** A remedy truer than the generic `notifai hooks install`. */
   remedy?: {
     summary: string
@@ -998,7 +1014,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     checks.push({
       name: 'hooks (detected)',
       ok: false,
-      informational: true,
+      reportOnly: true,
       detail: `${unwired.map((harness) => HARNESS_LABELS[harness]).join(', ')} detected on this machine but not wired`,
       remedy: {
         summary: 'install hooks for every detected harness',
@@ -1020,14 +1036,14 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     checks.push({
       name: 'hooks (active harness)',
       ok: false,
-      informational: true,
+      reportOnly: true,
       detail: `Several harness sessions could own this shell (${contested.map((candidate) => candidate.label).join(', ')}); routing readiness is intentionally not attributed to either one`,
     })
   } else if (active !== null && !isHookInstallableHarness(active.harness)) {
     checks.push({
       name: 'hooks (active harness)',
       ok: true,
-      informational: true,
+      reportOnly: true,
       detail: `${active.label}: ${HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryContract}`,
     })
   } else if (active !== null) {
@@ -1060,7 +1076,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         checks.push({
           name: 'hooks (active session)',
           ok: false,
-          informational: true,
+          reportOnly: true,
           detail: `active ${active.label} session has not published exact lifecycle state — send one ${active.label} prompt, then check again`,
           remedy: {
             summary: `send one ${active.label} prompt — its hook publishes the routing pointer`,
@@ -1118,8 +1134,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       name: 'hooks (adapter)',
       ok: false,
       // A machine-global install for a harness that is not active in this
-      // project is useful diagnosis, but it must not block unrelated init.
-      informational: active === null && installations.every((installation) => installation.global),
+      // project is useful diagnosis, but it is not this project's failure.
+      reportOnly: active === null && installations.every((installation) => installation.global),
       detail: adapterProblems.join('; '),
     })
   }
@@ -1276,9 +1292,10 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
-    // A wholly fresh install is informational. Once UserPromptSubmit has fired,
-    // a missing Stop is a broken route, not missing historical evidence.
-    informational: firedPointer === null,
+    // Nothing here is a command. Whether the pointer is absent or the turn is
+    // half-finished, the only thing that closes this is a turn ending — which
+    // an agent running `init` inside that very turn cannot supply.
+    reportOnly: true,
     detail: fired
       ? active === null
         ? 'a session in this directory has run UserPromptSubmit and Stop'
@@ -1319,7 +1336,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       continuationHarnesses.every(
         (harness) => HARNESS_CAPABILITIES[harness].stopContinuation !== 'unsupported',
       ),
-    informational: active === null,
+    reportOnly: active === null,
     detail:
       continuationHarnesses.length === 0
         ? active === null
@@ -1376,7 +1393,7 @@ function wakeRouteCheck(
     return {
       name: 'hooks (wake route)',
       ok: readiness.state === 'ready',
-      informational: true,
+      reportOnly: true,
       detail:
         readiness.state === 'ready'
           ? `this Claude Code ${readiness.version} session is listening on ${readiness.socketPath}, so an answer can start a turn here without you`
@@ -1391,7 +1408,7 @@ function wakeRouteCheck(
     return {
       name: 'hooks (wake route)',
       ok: readiness.state === 'ready',
-      informational: true,
+      reportOnly: true,
       detail:
         readiness.state === 'ready'
           ? `the held Codex turn continues from its own hook, and after it returns ${readiness.lockDirectory} can prove a stopped thread unowned before resuming it`

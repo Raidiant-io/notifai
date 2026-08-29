@@ -278,6 +278,17 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/tell me here/i)
   })
 
+  it('keeps local registration distinct from submission and delivery evidence', () => {
+    const ask = section('## Ask a question')
+    expect(ask).toMatch(/`registered: true`[\s\S]{0,180}local/i)
+    expect(ask).toMatch(/not yet been submitted as a\s+Notification\s+Request/i)
+    expect(ask).toMatch(/no Provider Acceptance/i)
+    expect(ask).toContain('notifai status <question_id> --json')
+    expect(ask).toMatch(/local.*frozen.*live.*answered.*withdrawn.*retired/is)
+    expect(ask).toMatch(/never call a question\s+sent\s+or\s+delivered\s+from registration alone/i)
+    expect(ask).toMatch(/inspect or close the original[\s\S]{0,160}do not register/i)
+  })
+
   it('requires an acknowledgement before any resumed work', () => {
     const answers = section('## When the answer arrives')
     const acknowledge = answers.indexOf('notifai acknowledge')

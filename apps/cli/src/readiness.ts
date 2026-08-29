@@ -81,14 +81,47 @@ export function firstBlocker(readiness: Readiness): ReadinessState | null {
 }
 
 /**
+ * Question Routing: what lets a question reach a phone when nobody is at the
+ * terminal. Hooks, their sub-states, and the setting that admits them.
+ *
+ * Separate from `isOptionalSetup` because these are also the states a human
+ * should not be handed as leftovers — "Optional, not set up" is a fair line
+ * about the agent skill and a confusing one about a session pointer.
+ */
+export function isOptionalAutomation(id: string): boolean {
+  return id === 'hooks' || id.startsWith('hooks-') || id === 'question-routing-settings'
+}
+
+/**
+ * Automation layered on top of a product that already sends: Question Routing
+ * and the agent guidance skill.
+ *
+ * Real, and reported. `doctor` is the report and judges it strictly. Anything
+ * whose job is to get a first notification delivered treats it as a line to
+ * print, never a gate — a hook diagnostic or a duplicate skill install in
+ * front of the delivery proof means a setup that can already send never proves
+ * that it can. The one that fires most often, a turn that has not ended yet,
+ * cannot be closed by the agent standing inside that turn at all.
+ */
+export function isOptionalSetup(id: string): boolean {
+  return id === 'skill' || isOptionalAutomation(id)
+}
+
+/** The first thing in the way that is not optional automation. */
+export function firstRequiredBlocker(readiness: Readiness): ReadinessState | null {
+  return readiness.states.find((s) => s.status === 'gap' && !isOptionalSetup(s.id)) ?? null
+}
+
+/**
  * Ready enough to be useful, which is not the same as every box ticked.
  *
  * Hooks and the agent skill are genuinely optional — `send` works without
  * them — so an install that declined both is finished, not half-done. Saying
- * otherwise trains people to ignore the summary line.
+ * otherwise trains people to ignore the summary line, and it is the summary
+ * line an agent branches on.
  */
 export function isReady(readiness: Readiness): boolean {
-  return firstBlocker(readiness) === null
+  return firstRequiredBlocker(readiness) === null
 }
 
 const SEND_PREREQUISITES = new Set([

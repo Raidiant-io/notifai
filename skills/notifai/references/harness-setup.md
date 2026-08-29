@@ -21,15 +21,19 @@ instead of trying to open a browser — hand the user that URL. `--name <name>`
 sets what the machine is called in their dashboard; the hostname is the default.
 
 `notifai auth status --json` says whether this machine is paired.
-`notifai auth access --json` says whether the account has an active plan. They
-fail differently and are worth separating before you report either as broken.
+`notifai auth access --json` says whether the account has access, including
+access already requested and waiting on a person — not something to ask them to
+do again. They fail differently and are worth separating before you report
+either as broken.
 `notifai logout` removes the stored credential.
 
 ## Install deliberately
 
-Ask setup scope and whether they want questions routed in the same structured
-question. If they do, let init install and assess the hooks in their chosen
-scope. Never tell the user to run setup commands themselves.
+Flagless `notifai init --json` needs no answer and closes everything before
+this point. Hooks place files, so this is where a question belongs: ask setup
+scope and whether they want questions routed, in the same structured question.
+If they do, let init install and assess the hooks in their chosen scope. Never
+tell the user to run setup commands themselves.
 
 ```bash
 notifai init --hooks --setup-scope <project|global> --json

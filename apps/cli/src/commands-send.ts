@@ -2,13 +2,19 @@ import {
   CAPABILITIES_V1,
   REPLY_MAX_WINDOW_SECONDS,
   validateDraft,
+  type EvidenceSnapshot,
   type ListRepliesResponse,
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
-import { MIN_REPLY_WINDOW_SECONDS, readSessionState } from './hooks.js'
+import {
+  MIN_REPLY_WINDOW_SECONDS,
+  inspectQuestionState,
+  readSessionState,
+  type QuestionStateView,
+} from './hooks.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
@@ -702,63 +708,163 @@ function printNoReply(deps: CommandDeps, requestId: string, expiresAt?: string |
 
 export async function statusCommand(
   deps: CommandDeps,
-  requestId: string,
+  id: string,
   flags: { json?: boolean },
 ): Promise<number> {
+  const local = id.startsWith('q_') ? inspectQuestionState(id, deps.env) : null
+  if (local?.found === true) {
+    return questionStatusCommand(deps, local.session_id, local.question, flags)
+  }
+  if (local?.found === false) {
+    deps.io.err(
+      local.ambiguous
+        ? `Question ${id} appears in more than one local Agent Session; refusing to guess.`
+        : `No local registration state exists for ${id}. Inspect or close the original identity instead of registering a replacement.`,
+    )
+    return EXIT.failed
+  }
+
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    const snapshot = await authed.client.evidence(requestId)
+    const snapshot = await authed.client.evidence(id)
     recordObservedDeliveryProof(deps, snapshot, setupProofProject(deps, config.project.value))
     if (flags.json) {
       deps.io.out(JSON.stringify(snapshot, null, 2))
       return EXIT.ok
     }
-    deps.io.out(`request ${snapshot.request_id} — ${snapshot.overall}`)
-    let anyReplyReceived = false
-    for (const d of snapshot.deliveries) {
-      deps.io.out(`  ${d.device_name}:`)
-      deps.io.out(`    Delivery: ${d.state} after ${d.attempts} attempt(s)`)
-      deps.io.out(
-        `    Provider Acceptance: ${d.state === 'provider_accepted' ? 'accepted' : 'not recorded'}`,
-      )
-      if (d.companion_receipt.state === 'observed') {
-        const latency = d.companion_receipt.latency_ms
-        deps.io.out(
-          `    Companion Receipt (the app's delivery confirmation): observed at ${d.companion_receipt.observed_at}` +
-            (latency === null ? '' : ` (${formatElapsed(latency)} after Provider Acceptance)`),
-        )
-      } else {
-        deps.io.out(
-          "    Companion Receipt (the app's delivery confirmation): unknown — not observed; this is not a failure or proof of non-receipt",
-        )
-      }
-      // Notifai never learns whether the OS painted a banner; saying so stops
-      // a reply-wait fault from being misread as "the phone never showed it".
-      deps.io.out(
-        '    OS presentation: not observed by Notifai — Provider Acceptance and Companion Receipt do not prove a banner was shown',
-      )
-      const replyEvent = d.events.find((e) => e.stage === 'reply_received')
-      if (replyEvent) {
-        anyReplyReceived = true
-        deps.io.out(`    Reply received: yes (first at ${replyEvent.occurred_at})`)
-      } else {
-        deps.io.out('    Reply received: not yet recorded on this delivery')
-      }
-      for (const e of d.events) {
-        deps.io.out(`      ${e.occurred_at}  ${e.stage}${e.reason ? ` (${e.reason})` : ''}`)
-      }
-    }
-    deps.io.out(
-      anyReplyReceived
-        ? `  Reply wait: answers are on the server — collect with \`notifai replies ${snapshot.request_id}\` (a local wait fault does not erase them)`
-        : `  Reply wait: no answer stored yet — a blocking wait failure is independent of Delivery above; retry with \`notifai replies ${snapshot.request_id}\``,
-    )
+    printEvidenceSnapshot(deps, snapshot)
     return EXIT.ok
   } catch (err) {
     return reportError(deps, err)
   }
+}
+
+async function questionStatusCommand(
+  deps: CommandDeps,
+  sessionId: string,
+  local: QuestionStateView,
+  flags: { json?: boolean },
+): Promise<number> {
+  if (local.request_id === null) {
+    const output = questionStatusOutput(local, null)
+    if (flags.json) deps.io.out(JSON.stringify(output, null, 2))
+    else printLocalQuestionStatus(deps, local)
+    return EXIT.ok
+  }
+
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, sessionId })
+  const authed = authedClient(deps, config)
+  if (!authed) return EXIT.auth
+  try {
+    const snapshot = await authed.client.evidence(local.request_id)
+    recordObservedDeliveryProof(deps, snapshot, setupProofProject(deps, config.project.value))
+    const answered = snapshot.deliveries.some((delivery) =>
+      delivery.events.some((event) => event.stage === 'reply_received'),
+    )
+    const question = answered && local.state === 'live'
+      ? { ...local, state: 'answered' as const }
+      : local
+    if (flags.json) {
+      deps.io.out(JSON.stringify(questionStatusOutput(question, snapshot), null, 2))
+      return EXIT.ok
+    }
+    deps.io.out(`question ${question.question_id} — ${question.state} as ${question.request_id}`)
+    printEvidenceSnapshot(deps, snapshot)
+    deps.io.out(
+      `  Recovery: inspect or close ${question.question_id}; do not register a replacement for the same question.`,
+    )
+    return EXIT.ok
+  } catch (err) {
+    return reportError(deps, err, { question_id: local.question_id, request_id: local.request_id })
+  }
+}
+
+function questionStatusOutput(local: QuestionStateView, evidence: EvidenceSnapshot | null) {
+  const receipt = evidence === null
+    ? 'not_available'
+    : evidence.deliveries.some((delivery) => delivery.companion_receipt.state === 'observed')
+      ? 'observed'
+      : 'unknown'
+  return {
+    question_id: local.question_id,
+    state: local.state,
+    submitted: local.submitted,
+    request_id: local.request_id,
+    frozen_request_id: local.frozen_request_id,
+    provider_acceptance: evidence?.overall ?? 'not_available',
+    companion_receipt: receipt,
+    evidence,
+    recovery: {
+      inspect: `notifai status ${local.question_id}`,
+      close: `notifai close ${local.question_id}`,
+      register_replacement: false,
+    },
+  }
+}
+
+function printLocalQuestionStatus(deps: CommandDeps, local: QuestionStateView): void {
+  deps.io.out(`question ${local.question_id} — ${local.state}`)
+  if (local.state === 'local') {
+    deps.io.out('  Submission: not submitted — this is only a local registration until question settlement runs')
+    deps.io.out('  Provider Acceptance: not available — no Notification Request exists yet')
+  } else if (local.state === 'frozen') {
+    deps.io.out(
+      `  Submission: frozen under reserved identity ${local.frozen_request_id}; service acceptance is not proven locally`,
+    )
+    deps.io.out('  Provider Acceptance: not available until the frozen identity is promoted locally')
+  } else if (local.state === 'withdrawn') {
+    deps.io.out('  Submission: not submitted — the local registration was withdrawn')
+    deps.io.out('  Provider Acceptance: not available — no Notification Request was created')
+  } else {
+    deps.io.out('  Submission: retired before local promotion; service acceptance is not proven locally')
+    deps.io.out('  Provider Acceptance: not available')
+  }
+  deps.io.out(
+    `  Recovery: inspect or close ${local.question_id}; do not register a replacement for the same question.`,
+  )
+}
+
+function printEvidenceSnapshot(deps: CommandDeps, snapshot: EvidenceSnapshot): void {
+  deps.io.out(`request ${snapshot.request_id} — ${snapshot.overall}`)
+  let anyReplyReceived = false
+  for (const d of snapshot.deliveries) {
+    deps.io.out(`  ${d.device_name}:`)
+    deps.io.out(`    Delivery: ${d.state} after ${d.attempts} attempt(s)`)
+    deps.io.out(
+      `    Provider Acceptance: ${d.state === 'provider_accepted' ? 'accepted' : 'not recorded'}`,
+    )
+    if (d.companion_receipt.state === 'observed') {
+      const latency = d.companion_receipt.latency_ms
+      deps.io.out(
+        `    Companion Receipt (the app's delivery confirmation): observed at ${d.companion_receipt.observed_at}` +
+          (latency === null ? '' : ` (${formatElapsed(latency)} after Provider Acceptance)`),
+      )
+    } else {
+      deps.io.out(
+        "    Companion Receipt (the app's delivery confirmation): unknown — not observed; this is not a failure or proof of non-receipt",
+      )
+    }
+    deps.io.out(
+      '    OS presentation: not observed by Notifai — Provider Acceptance and Companion Receipt do not prove a banner was shown',
+    )
+    const replyEvent = d.events.find((e) => e.stage === 'reply_received')
+    if (replyEvent) {
+      anyReplyReceived = true
+      deps.io.out(`    Reply received: yes (first at ${replyEvent.occurred_at})`)
+    } else {
+      deps.io.out('    Reply received: not yet recorded on this delivery')
+    }
+    for (const e of d.events) {
+      deps.io.out(`      ${e.occurred_at}  ${e.stage}${e.reason ? ` (${e.reason})` : ''}`)
+    }
+  }
+  deps.io.out(
+    anyReplyReceived
+      ? `  Reply wait: answers are on the server — collect with \`notifai replies ${snapshot.request_id}\` (a local wait fault does not erase them)`
+      : `  Reply wait: no answer stored yet — a blocking wait failure is independent of Delivery above; retry with \`notifai replies ${snapshot.request_id}\``,
+  )
 }
 
 function formatElapsed(milliseconds: number): string {

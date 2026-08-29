@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ac89fb1ff0841bd81399f48f076521550f0d36fffedfe99caf02a4c4d4182bfb",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after clarifying the proof-gated no_active_plan polling contract. The change documents and tests the existing login stop and its existing notifai init recovery, so no shipped Agent Guidance instruction needs to change.",
+  "behavior_digest": "sha256:cfa4d1a8bca40d7bd0578cbefd3a88421cc6a616155f66bf4424e3f6c9357cca",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after adding interrupted-turn settlement and stable question-state inspection. Guidance now states that registration is local, distinguishes Provider Acceptance and Companion Receipt, and directs recovery to inspect or close the original question identity instead of registering a duplicate.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

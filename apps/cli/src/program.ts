@@ -42,6 +42,7 @@ import type { SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
+import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -500,10 +501,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     })
 
   program
-    .command('status <request_id>')
+    .command('status <question_or_request_id>')
     .helpGroup(GROUP.agent)
-    .summary('Show the evidence trail for a request')
-    .description('Show the evidence trail for a notification request')
+    .summary('Show question state or request evidence')
+    .description('Show local question state and, once submitted, the notification request evidence trail')
     .option('--json', 'machine-readable output')
     .action(async (requestId: string, opts: { json?: boolean }) => {
       exit(await runners.status(deps, requestId, opts))
@@ -629,7 +630,18 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--harness <name>', 'internal harness output adapter')
     .action(async (event: string, opts: { harness?: string }) => {
       const harness = HOOK_INSTALLABLE_HARNESSES.find((candidate) => candidate === opts.harness)
-      exit(await runners.hookRun(deps, event, () => readStdinWithTimeout(), harness))
+      const settlementInput = deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
+      if (event === 'question-settlement') {
+        delete deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
+      }
+      exit(await runners.hookRun(
+        deps,
+        event,
+        event === 'question-settlement' && settlementInput !== undefined
+          ? async () => settlementInput
+          : () => readStdinWithTimeout(),
+        harness,
+      ))
     })
 
   const hooks = program

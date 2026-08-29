@@ -106,6 +106,35 @@ export interface AccountAccessResponse {
    * that must match — never guess, and omit only when the server has none.
    */
   email: string | null
+  /**
+   * Whether the server has opened public purchase. Decided by the server and
+   * carried on the call every client already makes, because a client that
+   * compiled its own copy of the instant keeps offering the wrong errand to
+   * every install that has not been updated.
+   */
+  public_v1_cutover: boolean
+}
+
+/**
+ * Whether this Account has already asked for access, and when.
+ *
+ * A no-access Account has three states, not two: nothing asked, asked and
+ * waiting, and active. Without the middle one every surface tells someone who
+ * asked yesterday to ask again, indefinitely — the wait is fulfilled by a
+ * person, so there is nothing else to observe.
+ *
+ * A machine may read this. It may never create it: asking for access is the
+ * User's decision, and an agent filing it on their behalf is not consent.
+ */
+export interface AccountAccessRequestView {
+  status: 'requested'
+  /** ISO-8601. What "waiting since" means on every surface that shows it. */
+  requested_at: string
+  updated_at: string
+}
+
+export interface AccountAccessRequestResponse {
+  request: AccountAccessRequestView | null
 }
 
 // ---------------------------------------------------------------------------
