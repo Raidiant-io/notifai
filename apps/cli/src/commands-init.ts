@@ -996,7 +996,9 @@ async function printInitClose(
       await deps.io.outro?.('All set ✨')
       return
     }
-    await deps.io.note?.(`${blocker.title} — ${blocker.detail}\n${remedyLine(blocker)}`, 'Next')
+    // No framed copy of what the next three lines already say. The "Ready"
+    // note above adds something the close does not; this one only made a
+    // stopped visit state its one step twice, box then text.
     deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
     deps.io.out(`  ${remedyLine(blocker)}`)
     if (shouldRestateInit(blocker)) {

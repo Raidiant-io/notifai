@@ -39,6 +39,10 @@ export function pairingApprovalUrl(approveUrl: string, confirmationSecret: strin
  * machine is not paired … run `notifai init`" — so the last thing a User read
  * contradicted the correct line three lines above it and pointed back at the
  * command that had just failed, for a reason it never mentioned.
+ *
+ * Passing one also transfers the errand: whoever takes the blocker prints the
+ * close, so this command stops after naming what stopped. A sign-in run on its
+ * own has no such caller and states the errand itself.
  */
 export type LoginBlockedSink = (blocker: ReadinessState) => void
 
@@ -134,16 +138,25 @@ export async function loginCommand(
       deps.io.err('Pairing was denied from the dashboard.')
       return EXIT.auth
     }
-    // Proof-gated: the server never returns this from lookup. Stop now instead
-    // of waiting out TTL, and name init rather than a second pairing command.
+    // Proof-gated: the server never returns this from lookup. Stop now rather
+    // than waiting out a TTL no approval can arrive within.
     if (poll.status === 'no_active_plan') {
       // The server owns which access errand is current — requesting it today,
       // choosing a plan after cutover — so its line wins whenever it sends one.
       const next = poll.next_action ?? `Open ${setupAccessUrl(baseUrl)} to set up access, then retry.`
-      spinner?.error('This account does not have access yet')
-      deps.io.err('This account has no active plan or temporary Alpha access.')
-      deps.io.err(`next: ${next}`)
-      deps.io.err(`After access is granted, run \`${SETUP_COMMAND}\` again.`)
+      // Ends the wait, like its three siblings above and below; the wall
+      // itself belongs to the line under it, which said the same sentence a
+      // second time when this one tried to say it first.
+      spinner?.error('Pairing stopped')
+      // One wall, said once. When a caller takes the blocker it closes the
+      // visit on this exact errand, so repeating the destination here — and
+      // naming `init` as the way past a wall no command of theirs can open —
+      // would leave the User three phrasings of one step to choose between.
+      if (onBlocked === undefined) {
+        deps.io.err('This account has no active plan or temporary Alpha access.')
+        deps.io.err(`next: ${next}`)
+        deps.io.err(`After access is granted, run \`${SETUP_COMMAND}\` again.`)
+      }
       onBlocked?.({
         id: 'auth',
         title: 'Access',
