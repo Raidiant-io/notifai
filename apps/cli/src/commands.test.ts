@@ -5884,6 +5884,27 @@ describe('init', () => {
     expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
   })
 
+  it('does not let a duplicate agent-skill install stand in front of the proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-'))
+    const io = new CapturedIo()
+    const calls = { submit: 0 }
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      remove: async () => 0,
+      // Both scopes installed: the harness lists two, which is a real problem
+      // and a human decision — and still not a reason to withhold the proof.
+      list: async (scope) => ({ skills: [managedSkill(scope ?? 'project', cwd)] }),
+    }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'skill')?.status).toBe('gap')
+    expect(firstRequiredBlocker(readiness)).toBeNull()
+    expect(calls.submit).toBe(1)
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
   it('closes on the blocker that stopped the run, not the state before it', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-login-access-'))
     const io = new InteractiveIo()

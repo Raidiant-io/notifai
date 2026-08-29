@@ -16,6 +16,7 @@ import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
 import {
   firstRequiredBlocker,
   isOptionalAutomation,
+  isOptionalSetup,
   questionRoutingReady,
   readinessJson,
   type Readiness,
@@ -774,7 +775,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       // waited on. `doctor` still fails on a broken route; `init` walks past
       // it, because a hook diagnostic standing in front of the delivery proof
       // means a setup that can already send never proves that it can.
-      const optional = isOptionalAutomation(state.id)
+      const optional = isOptionalSetup(state.id)
       const halt = () => {
         if (!optional) stop = true
         return !optional
