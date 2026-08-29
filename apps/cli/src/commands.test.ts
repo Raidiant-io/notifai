@@ -4783,7 +4783,7 @@ describe('init', () => {
     mkdirSync(path.dirname(currentCommand), { recursive: true })
     writeFileSync(oldArtifact, '#!/usr/bin/env node\n')
     writeFileSync(currentArtifact, '#!/usr/bin/env node\n')
-    writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ version: '10.1.0' }))
+    writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ version: RELEASE_REF.slice(1) }))
     chmodSync(oldArtifact, 0o755)
     chmodSync(currentArtifact, 0o755)
     symlinkSync(path.relative(path.dirname(currentCommand), currentArtifact), currentCommand)

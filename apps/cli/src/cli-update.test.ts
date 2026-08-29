@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 import type { CommandDeps, CommandIo } from './commands-core.js'
 import { cliUpdateCommand } from './commands-update.js'
 import { installHookAdapter, inspectHookAdapter } from './hook-adapter.js'
+import { packageVersion } from './release.js'
 
 class CapturedIo implements CommandIo {
   outLines: string[] = []
@@ -41,8 +42,10 @@ function npmInstall(root: string, name: string, version: string) {
 describe('CLI update recovery', () => {
   it('updates the PATH winner prefix and retargets the shared hook adapter in one action', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-loop-'))
+    const currentVersion = packageVersion()
+    if (currentVersion === null) throw new Error('test build has no package version')
     const stale = npmInstall(root, 'stale-prefix', '3.0.1')
-    const current = npmInstall(root, 'current-prefix', '10.1.0')
+    const current = npmInstall(root, 'current-prefix', currentVersion)
     const managerPrefix = path.join(root, 'manager-prefix')
     const managerBin = path.join(managerPrefix, 'bin')
     const npm = path.join(managerBin, 'npm')
@@ -63,8 +66,8 @@ const prefix = args[args.indexOf('--prefix') + 1];
 const packageRoot = path.join(prefix, 'lib', 'node_modules', '@raidiant', 'notifai');
 const artifact = path.join(packageRoot, 'dist', 'main.js');
 fs.mkdirSync(path.dirname(artifact), { recursive: true });
-fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ version: '10.1.0' }));
-fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write("10.1.0\\\\n")\\n', { mode: 0o755 });
+fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ version: ${JSON.stringify(currentVersion)} }));
+fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write(${JSON.stringify(`${currentVersion}\\n`)})\\n', { mode: 0o755 });
 `,
     )
     chmodSync(npm, 0o755)
@@ -86,7 +89,7 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write("10.1.0
 
     expect(cliUpdateCommand(deps, {})).toBe(0)
     expect(JSON.parse(readFileSync(path.join(stale.packageRoot, 'package.json'), 'utf8'))).toMatchObject({
-      version: '10.1.0',
+      version: currentVersion,
     })
     expect(
       readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)),
@@ -94,7 +97,7 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write("10.1.0
       ['prefix', '--global'],
       ['install', '--global', '--prefix', realpathSync(stale.prefix), '@raidiant/notifai'],
     ])
-    expect(spawnSync(stale.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('10.1.0')
+    expect(spawnSync(stale.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(currentVersion)
     expect(inspectHookAdapter(home).target).toMatchObject({ scriptPath: realpathSync(stale.artifact) })
     expect(io.outLines).toEqual(['Notifai is updated. Re-run `notifai init` to continue setup.'])
     expect(io.outLines.join('\n')).not.toContain(root)
@@ -111,7 +114,7 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write("10.1.0
         effective: {
           command_path: stale.command,
           artifact_path: realpathSync(stale.artifact),
-          version: '10.1.0',
+          version: currentVersion,
         },
       },
       hook_adapter: {
