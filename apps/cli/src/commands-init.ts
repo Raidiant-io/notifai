@@ -394,24 +394,42 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   }
 }
 
+/**
+ * The first notification a User ever receives from Notifai.
+ *
+ * It is the payoff of the whole setup, and it used to be written as an
+ * internal receipt: "This real notification completed setup verification" — a
+ * sentence about the check rather than about them — delivered silently, at
+ * `passive`, with the sound turned off. So the one arrival that proves their
+ * agents can reach them landed in Notification Center with no banner and no
+ * sound, where a first-time User has no reason to look and every reason to
+ * conclude that nothing came.
+ *
+ * It now says what is true for them and arrives the way their notifications
+ * will. `done` is the honest kind — a body of work finished successfully — and
+ * it is also what lets the server pick the sound through its own kind, Project
+ * and Account layers instead of this command stamping one and skipping them.
+ */
 function setupProofDraft(
   config: CliConfig,
   device: RoutableDevice,
 ): ReturnType<typeof buildDraft> {
   const project = config.project.value
   return buildDraft(config, {
-    title: 'Notifai is ready',
+    title: 'Your agents can reach you',
     body:
       project === null
-        ? 'This real notification completed setup verification.'
-        : `This real notification completed setup verification for ${project}.`,
-    kind: 'update',
+        ? 'Notifai setup is finished. Notifications from your agents will arrive like this one.'
+        : `Notifai setup is finished for ${project}. Notifications from your agents will arrive like this one.`,
+    kind: 'done',
     platform: device.platform,
     device: [device.device_id],
-    sound: 'none',
+    // Noticeable, not intrusive: a normal banner and sound. Deliberately not
+    // `time_sensitive` — a setup confirmation has no business breaking a Focus.
+    //
     // Android has no caller-selected interruption level. Explicit null keeps an
     // Apple preference in config from leaking into this Android-only proof.
-    level: device.platform === 'ios' ? 'passive' : null,
+    level: device.platform === 'ios' ? 'active' : null,
     collapseKey: 'notifai-setup-verification',
   })
 }

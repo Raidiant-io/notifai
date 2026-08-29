@@ -5465,6 +5465,11 @@ describe('init', () => {
     expect(submitCalls).toBe(1)
     expect(submittedDraft?.draft).not.toHaveProperty('event')
     expect(submittedDraft?.draft.targets).toEqual({ mode: 'selected', device_ids: ['dev_iphone'] })
+    // The proof is a real send that has to be seen: a normal banner and sound,
+    // not a silent arrival in Notification Center a first-time User never
+    // looks at. Its sound is left to the server's kind/Project/Account layers.
+    expect(submittedDraft?.draft.platform).toEqual({ ios: { interruption_level: 'active' } })
+    expect(submittedDraft?.draft.kind).toBe('done')
 
     io.outLines = []
     io.prompts = []
@@ -5723,6 +5728,57 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
   })
 
+  it('writes the first notification about the User, not about the check', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-copy-'))
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "orders-api"\n')
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | null = null
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return setupReceipt()
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    const presentation = submitted!.draft.presentation
+
+    // A title says what is now true for the reader, alone on a lock screen,
+    // and carries neither the kind nor the Project — both travel as their own
+    // fields.
+    expect(presentation.title).toBe('Your agents can reach you')
+    expect(presentation.title.length).toBeLessThanOrEqual(40)
+    expect(presentation.title).not.toMatch(/orders-api|done/i)
+
+    // None of the vocabulary of the check that produced it: the reader has not
+    // met "verification", a "proof", or the distinction between a real
+    // notification and any other kind.
+    const copy = `${presentation.title} ${presentation.body}`
+    expect(copy).not.toMatch(/verification|verify|proof|receipt|real notification|test/i)
+    // And nothing about where it landed or what to do to it.
+    expect(copy).not.toMatch(/iPhone|Android|phone|tap|swipe|banner|lock screen/i)
+
+    expect(presentation.body).toContain('orders-api')
+    expect(presentation.body).toMatch(/^Notifai setup is finished/)
+
+    // Still the same bar: a real send whose Companion Receipt was observed.
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from iPhone.",
+    )
+    expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
   it('treats Android as active Companion readiness and sends a platform-correct proof', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-android-proof-'))
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
@@ -5761,7 +5817,12 @@ describe('init', () => {
       mode: 'selected',
       device_ids: [readyAndroid.device_id],
     })
-    expect(submitted?.draft.platform).toEqual({ android: { sound: null } })
+    // Android has no caller-selected interruption level, so a configured Apple
+    // preference must not reach it — and nothing else is stamped either, so the
+    // server's kind sound applies rather than the old hard silence.
+    expect(submitted?.draft.platform).toBeUndefined()
+    expect(JSON.stringify(submitted?.draft)).not.toContain('interruption_level')
+    expect(submitted?.draft.kind).toBe('done')
     expect(io.outLines.join('\n')).toContain(
       "Companion Receipt (the app's delivery confirmation) observed from Pixel.",
     )
