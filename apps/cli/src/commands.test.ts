@@ -2609,6 +2609,38 @@ describe('credential origin pinning', () => {
       'next: Ask the account owner for Alpha access.',
       'After access is granted, run `notifai init` again.',
     ])
+    expect(io.errLines.join('\n')).not.toMatch(/Pairing expired/i)
+    expect(io.errLines.join('\n')).not.toContain('notifai login')
+    expect(now).toBeLessThan(10_000)
+  })
+
+  it('reports expiry only when pairing times out without a no-access mark', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({ status: 'expired' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    expect(await loginCommand(deps, { open: false })).toBe(EXIT.auth)
+    expect(io.errLines).toEqual([
+      'Pairing expired before it was approved. Run `notifai init` again.',
+    ])
+    expect(io.errLines.join('\n')).not.toMatch(/no active plan/i)
+    expect(io.errLines.join('\n')).not.toContain('notifai login')
   })
 
   it('keeps notification titles out of send logs', async () => {

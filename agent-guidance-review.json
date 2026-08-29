@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:db0dbefc866e482631af317904f9acc1aabd7f01510c1fb3889e3758f1357fea",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed every shipped Agent Guidance surface on the rebased OpenClaw history (first-run one-init journey plus OpenClaw managed lifecycle and the Windows/agent-local evidence repair). Lifecycle hooks, harness-setup, README, and CLI help name OpenClaw; ask stays fail-closed; the Windows cell is WSL2-only with native Gateway unproven. Domain terms and skill Decide/Send/Ask stay harness-name-free. First-run init keeps unpaired hook skip on `notifai init` and login in the advanced group.",
+  "behavior_digest": "sha256:ac89fb1ff0841bd81399f48f076521550f0d36fffedfe99caf02a4c4d4182bfb",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after clarifying the proof-gated no_active_plan polling contract. The change documents and tests the existing login stop and its existing notifai init recovery, so no shipped Agent Guidance instruction needs to change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
