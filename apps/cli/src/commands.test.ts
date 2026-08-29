@@ -2,10 +2,12 @@ import { CAPABILITIES_V1, PLATFORMS, REPLY_MAX_QUESTIONS } from '@raidiant/notif
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -59,6 +61,7 @@ import {
   repliesCommand,
   sendCommand,
   statusCommand,
+  updateCliCommand,
   agentSessionRenameCommand,
   type CommandDeps,
   type CommandIo,
@@ -86,7 +89,7 @@ import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, sessionConfigPath, 
 import { SETUP_PROOF_STALE_MS, writeSetupProof } from './commands-setup-proof.js'
 import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
-import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
+import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { firstRequiredBlocker } from './readiness.js'
@@ -4339,7 +4342,7 @@ describe('interactive command UX', () => {
 
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     expect(io.outLines).toContain('A newer Notifai is available.')
-    expect(io.outLines).toContain('npm install -g @raidiant/notifai')
+    expect(io.outLines).toContain(updateCliCommand(deps))
   })
 })
 
@@ -4350,7 +4353,6 @@ describe('compatibility-first update guidance', () => {
     status: 'ready' | 'optional-gap' | 'gap'
     detail: string
     exit: number
-    humanLines: string[]
   }> = [
     {
       name: 'current',
@@ -4358,7 +4360,6 @@ describe('compatibility-first update guidance', () => {
       status: 'ready',
       detail: 'Notifai can send notifications.',
       exit: EXIT.ok,
-      humanLines: [],
     },
     {
       name: 'optional newer release',
@@ -4371,10 +4372,6 @@ describe('compatibility-first update guidance', () => {
       status: 'optional-gap',
       detail: 'A newer Notifai is available.',
       exit: EXIT.ok,
-      humanLines: [
-        'A newer Notifai is available.',
-        'npm install -g @raidiant/notifai',
-      ],
     },
     {
       name: 'scheduled Sunset',
@@ -4389,10 +4386,6 @@ describe('compatibility-first update guidance', () => {
       status: 'optional-gap',
       detail: 'Update Notifai soon to keep sending notifications.',
       exit: EXIT.ok,
-      humanLines: [
-        'Update Notifai soon to keep sending notifications.',
-        'npm install -g @raidiant/notifai',
-      ],
     },
     {
       name: 'required update',
@@ -4407,16 +4400,12 @@ describe('compatibility-first update guidance', () => {
       status: 'gap',
       detail: "Notifai can't send notifications until you update.",
       exit: EXIT.failed,
-      humanLines: [
-        "Notifai can't send notifications until you update.",
-        'npm install -g @raidiant/notifai',
-      ],
     },
   ]
 
   it.each(cases)(
     'maps $name policy to closed human copy and structured JSON',
-    async ({ support, status, detail, exit, humanLines }) => {
+    async ({ support, status, detail, exit }) => {
       const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-guidance-'))
       const client = {
         health: async () => true,
@@ -4437,7 +4426,9 @@ describe('compatibility-first update guidance', () => {
       expect(
         await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
       ).toBe(exit)
-      expect(humanIo.outLines).toEqual(humanLines)
+      expect(humanIo.outLines).toEqual(
+        status === 'ready' ? [] : [detail, updateCliCommand(deps)],
+      )
       expect(humanIo.errLines).toEqual([])
       expect(humanIo.outros).toEqual(
         status === 'ready' ? ['Everything looks good'] : [],
@@ -4467,7 +4458,7 @@ describe('compatibility-first update guidance', () => {
         states: [{ status, detail }],
       })
       expect(payload.states[0]?.remedy?.command ?? null).toBe(
-        status === 'ready' ? null : 'npm install -g @raidiant/notifai',
+        status === 'ready' ? null : updateCliCommand(deps),
       )
       expect(jsonIo.errLines).toEqual([])
 
@@ -4536,7 +4527,7 @@ describe('compatibility-first update guidance', () => {
       await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
     ).toBe(EXIT.ok)
     expect(io.outLines).toEqual(['The service is being updated; try again later.'])
-    expect(io.outLines.join('\n')).not.toContain('npm install -g @raidiant/notifai')
+    expect(io.outLines.join('\n')).not.toContain('notifai update')
 
     const sendIo = new CapturedIo()
     expect(
@@ -4749,7 +4740,7 @@ describe('init', () => {
       }),
     ).toBe(EXIT.failed)
     expect(io.outLines).toContain("Notifai can't send notifications until you update.")
-    expect(io.outLines).toContain('npm install -g @raidiant/notifai')
+    expect(io.outLines).toContain(updateCliCommand(deps))
     expect(io.outros).toEqual([])
     expect(submissions).toBe(0)
 
@@ -4769,8 +4760,52 @@ describe('init', () => {
     expect(io.outLines).toContain(
       'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.',
     )
-    expect(io.outLines).not.toContain('npm install -g @raidiant/notifai')
+    expect(io.outLines).not.toContain('notifai update')
     expect(io.errLines).toEqual([])
+  })
+
+  it('retargets Question Routing while the post-update init resumes', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-init-update-adapter-'))
+    const io = new CapturedIo()
+    const nativeSkills: NativeSkills = {
+      add: async () => 0,
+      remove: async () => 0,
+      list: async () => ({ skills: [] }),
+    }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
+    const oldArtifact = path.join(cwd, 'old', 'dist', 'main.js')
+    const prefix = path.join(cwd, 'current')
+    const packageRoot = path.join(prefix, 'lib', 'node_modules', '@raidiant', 'notifai')
+    const currentArtifact = path.join(packageRoot, 'dist', 'main.js')
+    const currentCommand = path.join(prefix, 'bin', 'notifai')
+    mkdirSync(path.dirname(oldArtifact), { recursive: true })
+    mkdirSync(path.dirname(currentArtifact), { recursive: true })
+    mkdirSync(path.dirname(currentCommand), { recursive: true })
+    writeFileSync(oldArtifact, '#!/usr/bin/env node\n')
+    writeFileSync(currentArtifact, '#!/usr/bin/env node\n')
+    writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ version: '10.1.0' }))
+    chmodSync(oldArtifact, 0o755)
+    chmodSync(currentArtifact, 0o755)
+    symlinkSync(path.relative(path.dirname(currentCommand), currentArtifact), currentCommand)
+    deps.env = { ...deps.env, PATH: path.dirname(currentCommand) }
+    deps.hookInstallTarget = { execPath: process.execPath, scriptPath: currentArtifact }
+
+    installHookAdapter({ execPath: process.execPath, scriptPath: oldArtifact }, deps.hookAdapterHome)
+    applyPlan(path.join(cwd, '.codex', 'hooks.json'), {
+      hooks: buildHookConfig({
+        adapterPath: hookAdapterPath(deps.hookAdapterHome),
+        harness: 'codex',
+      }),
+    })
+
+    expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({ scriptPath: oldArtifact })
+    expect(
+      await initCommand(deps, { hooks: false, setupScope: 'project', skills: false }),
+    ).toBe(EXIT.ok)
+    expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({
+      scriptPath: realpathSync(currentArtifact),
+    })
+    expect(io.outLines.join('\n')).not.toContain('notifai hooks install')
   })
 
   it('surfaces one next step, not the whole remaining list', async () => {
@@ -7844,7 +7879,7 @@ describe('a server behind this CLI', () => {
 
     const said = io.outLines.concat(io.errLines).join(' ')
     expect(said).toMatch(/service is being updated/)
-    expect(said).not.toContain('npm install -g @raidiant/notifai')
+    expect(said).not.toContain('notifai update')
     expect(said).not.toMatch(/Protocol version|schema v/i)
 
     const sendIo = new CapturedIo()

@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   statSync,
 } from 'node:fs'
 import os from 'node:os'
@@ -40,6 +41,19 @@ export interface HookAdapterInspection {
   path: string
   target: HookAdapterTarget | null
   problems: string[]
+}
+
+/** Whether a parsed adapter runs the same installed CLI artifact as PATH. */
+export function hookAdapterTargetsArtifact(
+  target: HookAdapterTarget | null,
+  artifactPath: string,
+): boolean {
+  if (target === null || isNpxAdapterTarget(target)) return false
+  try {
+    return realpathSync(target.scriptPath) === realpathSync(artifactPath)
+  } catch {
+    return false
+  }
 }
 
 export function hookHostPlatform(

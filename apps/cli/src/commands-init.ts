@@ -28,10 +28,10 @@ import { loginCommand } from './commands-auth.js'
 import {
   EXIT,
   SETUP_COMMAND,
-  UPDATE_CLI_COMMAND,
   authedClient,
   loadLoggedConfig,
   reportError,
+  updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
 import { readyCompanionDevices } from './commands-devices.js'
@@ -52,6 +52,8 @@ import {
 } from './commands-setup-proof.js'
 import { listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
+import { inspectCliInstallations } from './cli-bin.js'
+import { installHookAdapter } from './hook-adapter.js'
 
 // ---------------------------------------------------------------------------
 // init
@@ -168,6 +170,25 @@ async function closeGap(
       if (hooksInstallCommand(deps, { harness, ...hookFlags, narrate: false }) !== EXIT.ok) ok = false
     }
     return ok ? 'closed' : 'failed'
+  }
+
+  if (state.id === 'hooks-adapter') {
+    const effective = inspectCliInstallations(
+      deps.env,
+      deps.hookPlatform ?? process.platform,
+    ).effective
+    if (effective === null || effective.artifact_path === null) return 'failed'
+    try {
+      installHookAdapter(
+        { execPath: process.execPath, scriptPath: effective.artifact_path },
+        deps.hookAdapterHome,
+        deps.hookPlatform ?? process.platform,
+      )
+      return 'closed'
+    } catch (err) {
+      deps.io.err(`Could not retarget Question Routing: ${String(err)}`)
+      return 'failed'
+    }
   }
 
   if (state.id === 'skill') {
@@ -614,7 +635,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
 
 /** Closing a local gap cannot have changed the service, the keychain, or devices. */
 function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined {
-  return id === 'project' || id === 'project-enablement' || id === 'hooks' || id === 'skill' || id === 'question-routing-settings'
+  return id === 'project' || id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings'
     ? ['local']
     : undefined
 }
@@ -972,7 +993,11 @@ async function printInitClose(
 
   if (blocker?.id === 'contract') {
     deps.io.out(blocker.detail)
-    deps.io.out(UPDATE_CLI_COMMAND)
+    deps.io.out(
+      blocker.remedy?.by !== 'user-elsewhere' && blocker.remedy?.command !== undefined
+        ? blocker.remedy.command
+        : updateCliCommand(deps),
+    )
     return
   }
 

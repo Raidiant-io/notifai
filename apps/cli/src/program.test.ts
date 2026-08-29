@@ -191,6 +191,16 @@ describe('program argv parsing', () => {
     expect(seen).toMatchObject({ skills: true, setupScope: 'global', hooks: false })
   })
 
+  it('dispatches update --json onto the local CLI recovery', async () => {
+    let seen: Record<string, unknown> | undefined
+    const { exitCode } = await parse(
+      ['update', '--json'],
+      { update: ((_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['update'] },
+    )
+    expect(exitCode).toBe(0)
+    expect(seen).toEqual({ json: true })
+  })
+
   it('disentangles --no-wait and --wait from their shared commander flag', async () => {
     const capture = (sink: Record<string, unknown>[]): ProgramRunners['send'] =>
       (async (_deps, flags) => (sink.push(flags as Record<string, unknown>), 0)) as ProgramRunners['send']

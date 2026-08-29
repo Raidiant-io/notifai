@@ -8,6 +8,7 @@ import {
   authStatusCommand,
   capabilitiesCommand,
   closeCommand,
+  cliUpdateCommand,
   configExplainCommand,
   configSetCommand,
   configShowCommand,
@@ -81,6 +82,7 @@ function commandPath(command: Command): string {
 const defaultRunners = {
   init: initCommand,
   doctor: doctorCommand,
+  update: cliUpdateCommand,
   login: loginCommand,
   logout: logoutCommand,
   authStatus: authStatusCommand,
@@ -260,6 +262,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable output')
     .action(async (opts: { json?: boolean }) => {
       exit(await runners.doctor(deps, opts))
+    })
+
+  program
+    .command('update')
+    .helpGroup(GROUP.start)
+    .summary('Update the Notifai command this shell uses')
+    .description('Update the effective global Notifai installation and keep Question Routing on it')
+    .option('--json', 'machine-readable installation and adapter result')
+    .action((opts: { json?: boolean }) => {
+      exit(runners.update(deps, opts))
     })
 
   const project = program

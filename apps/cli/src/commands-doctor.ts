@@ -11,7 +11,11 @@ import {
   HERMES_QUESTION_ROUTING_UNAVAILABLE,
   isHookInstallableHarness,
 } from './harnesses.js'
-import { inspectHookAdapter } from './hook-adapter.js'
+import {
+  hookAdapterTargetsArtifact,
+  inspectHookAdapter,
+  isNpxAdapterTarget,
+} from './hook-adapter.js'
 import {
   readLiveProjectSessionPointers,
   readProjectSessionPointer,
@@ -49,11 +53,11 @@ import type { MachineCredential } from './credentials.js'
 import {
   EXIT,
   SETUP_COMMAND,
-  UPDATE_CLI_COMMAND,
   diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
   makeClient,
   resolvedBaseUrl,
+  updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
 import { deviceInstallRemedy, readyCompanionDevices } from './commands-devices.js'
@@ -70,7 +74,7 @@ import {
   hookActivationAdvice,
   requiredHookEvents,
 } from './commands-hooks.js'
-import { cliBinReadiness } from './cli-bin.js'
+import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
 import {
   latestPublishedCliVersion,
   newerPublishedCli,
@@ -97,7 +101,7 @@ import { projectBinding, projectEnabled } from './project-enablement.js'
  * versions and document integers are structured inventory, never routing or a
  * definition of "up to date".
  */
-async function compatibilityCheck(client: ApiClient): Promise<ReadinessState> {
+async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise<ReadinessState> {
   try {
     const [compatibility, documents] = await Promise.all([
       client.compatibility(),
@@ -132,7 +136,7 @@ async function compatibilityCheck(client: ApiClient): Promise<ReadinessState> {
         remedy: {
           by: 'user-here',
           summary: 'update Notifai',
-          command: UPDATE_CLI_COMMAND,
+          command: updateCliCommand(deps),
         },
       }
     }
@@ -149,7 +153,7 @@ async function compatibilityCheck(client: ApiClient): Promise<ReadinessState> {
         remedy: {
           by: 'user-here',
           summary: 'update Notifai',
-          command: UPDATE_CLI_COMMAND,
+          command: updateCliCommand(deps),
         },
       }
     }
@@ -532,7 +536,7 @@ export async function assessReadiness(
       baseUrl,
       `Bearer nfm_${credential.machineId}.${credential.secret}`,
     )
-    states.push(await compatibilityCheck(compatibilityClient))
+    states.push(await compatibilityCheck(compatibilityClient, deps))
   }
 
   let accountEmail: string | null = null
@@ -631,7 +635,7 @@ async function applyRegistryRecommendation(
   contract.remedy = {
     by: 'user-here',
     summary: 'update Notifai',
-    command: UPDATE_CLI_COMMAND,
+    command: updateCliCommand(deps),
   }
 }
 
@@ -762,8 +766,12 @@ export async function doctorCommand(
     if (s.id === 'contract') {
       if (s.status === 'ready' || s.status === 'unknown') continue
       deps.io.out(s.detail)
-      if (s.remedy?.by !== 'user-elsewhere' && s.remedy?.command === UPDATE_CLI_COMMAND) {
-        deps.io.out(UPDATE_CLI_COMMAND)
+      if (
+        s.remedy?.by !== 'user-elsewhere' &&
+        s.remedy?.summary === 'update Notifai' &&
+        s.remedy.command !== undefined
+      ) {
+        deps.io.out(s.remedy.command)
       }
       continue
     }
@@ -952,11 +960,11 @@ function checkTitle(name: string): string {
           ? ('optional-gap' as const)
           : ('gap' as const),
       detail: check.detail,
+      ...(check.technical === undefined ? {} : { technical: check.technical }),
       ...(check.ok
         ? {}
         : {
             remedy: {
-              by: 'user-here' as const,
               // The check's own remedy when it has one; the generic reinstall
               // line was wrong exactly where it mattered (an unfired pointer
               // needs a prompt, not `hooks install`).
@@ -964,6 +972,7 @@ function checkTitle(name: string): string {
                 summary: 'the detail above names what to change',
                 command: 'notifai hooks install',
               }),
+              by: check.remedy?.by ?? ('user-here' as const),
             },
           }),
     })),
@@ -978,8 +987,10 @@ interface HookCheck {
   name: string
   ok: boolean
   detail: string
+  technical?: unknown
   /** A remedy truer than the generic `notifai hooks install`. */
   remedy?: {
+    by?: 'cli' | 'user-here'
     summary: string
     command: string
     user_action?: { code: string; harness: string; action: string; message: string }
@@ -1129,6 +1140,27 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   )
   const sharedAdapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
   adapterProblems.push(...sharedAdapter.problems)
+  const runningTarget = deps.hookInstallTarget
+  const runningArtifact =
+    runningTarget !== undefined && !isNpxAdapterTarget(runningTarget)
+      ? runningTarget.scriptPath
+      : process.argv[1]
+  const cliInstallations = inspectCliInstallations(
+    deps.env,
+    deps.hookPlatform ?? process.platform,
+    {
+      ...(runningArtifact === undefined ? {} : { runningArtifactPath: runningArtifact }),
+      currentVersion: packageVersion(),
+    },
+  )
+  const effectiveArtifact = cliInstallations.effective?.artifact_path ?? null
+  const adapterMismatch =
+    sharedAdapter.problems.length === 0 &&
+    effectiveArtifact !== null &&
+    !hookAdapterTargetsArtifact(sharedAdapter.target, effectiveArtifact)
+  if (adapterMismatch) {
+    adapterProblems.push('the registered CLI does not match the effective notifai command')
+  }
   if (adapterProblems.length > 0) {
     checks.push({
       name: 'hooks (adapter)',
@@ -1137,6 +1169,18 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       // project is useful diagnosis, but it is not this project's failure.
       reportOnly: active === null && installations.every((installation) => installation.global),
       detail: adapterProblems.join('; '),
+      ...(adapterMismatch
+        ? { technical: { effective_cli_artifact: effectiveArtifact, registered_target: sharedAdapter.target } }
+        : {}),
+      ...(adapterMismatch && adapterProblems.length === 1
+        ? {
+            remedy: {
+              by: 'cli' as const,
+              summary: 'retarget Question Routing to the effective notifai command',
+              command: 'notifai init',
+            },
+          }
+        : {}),
     })
   }
 

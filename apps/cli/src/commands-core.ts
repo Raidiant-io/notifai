@@ -17,6 +17,7 @@ import type { OrcaSessionTitleLookup } from './orca-session-title.js'
 import type { QuestionSettlementLaunch } from './question-settlement-process.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
+import { cliUpdateRecoveryCommand } from './cli-update-contract.js'
 
 export interface CommandIo {
   out(line: string): void
@@ -187,7 +188,13 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
   }
 }
 
-export const UPDATE_CLI_COMMAND = 'npm install -g @raidiant/notifai'
+/**
+ * Resolve a current CLI independently of PATH. A bare `notifai update` would
+ * be captured by the stale winner this action is meant to repair.
+ */
+export function updateCliCommand(_deps: Pick<CommandDeps, 'hookInstallTarget' | 'hookPlatform'>): string {
+  return cliUpdateRecoveryCommand()
+}
 
 /** The one first-run command an unsigned machine is told to run. */
 export const SETUP_COMMAND = 'notifai init'
@@ -205,10 +212,14 @@ function naturalList(values: readonly string[]): string {
   return `${values.slice(0, -1).join(', ')}, and ${values.at(-1)}`
 }
 
-function localRecovery(action: RecoveryAction | null, details: unknown): string | null {
+function localRecovery(
+  deps: Pick<CommandDeps, 'hookInstallTarget' | 'hookPlatform'>,
+  action: RecoveryAction | null,
+  details: unknown,
+): string | null {
   switch (action) {
     case 'update_cli':
-      return `next: ${UPDATE_CLI_COMMAND}`
+      return `next: ${updateCliCommand(deps)}`
     case 'update_companion': {
       const names = affectedDeviceNames(details)
       return names.length > 0
@@ -274,7 +285,7 @@ export function reportError(
     const recovery =
       err.code === 'no_active_devices'
         ? 'next: Run `notifai init` to connect an active Companion App; it will complete machine setup and identify any human-only device step.'
-        : localRecovery(err.recoveryAction, err.details)
+        : localRecovery(deps, err.recoveryAction, err.details)
     if (recovery !== null) deps.io.err(recovery)
     else if (err.recoveryAction === null && err.nextAction) deps.io.err(`next: ${err.nextAction}`)
     if (err.code === 'auth_required' || err.code === 'machine_revoked') return EXIT.auth
