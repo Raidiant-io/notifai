@@ -355,6 +355,8 @@ export interface HookOutcome {
   notes: string[]
   /** Structured lifecycle detail that belongs on hook.end without user text. */
   log?: Record<string, unknown>
+  /** An unpushed registration survived UserPromptSubmit and needs its own owner. */
+  settlementRequired?: boolean
 }
 
 /** An accepted continuation ready for whichever host owns the last meter. */
@@ -416,6 +418,8 @@ export interface EscalationWaiterOptions {
   envelope: HookEnvelope
   route: EscalationDeliveryRoute
   processDeadlineAt?: number
+  /** Stop owns diagnostics; a pre-Stop recovery owner must not impersonate it. */
+  recordStop?: boolean
 }
 
 function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -2399,7 +2403,7 @@ export async function handleUserPromptSubmit(
   // Park before dropping `pending`. If the process dies between these writes,
   // the next hook sees both copies and dedupes them; the old order could die in
   // the gap after erasing the only request/collapse/device identifiers.
-  updateSessionState(sessionId, ctx.env, (current) => {
+  const updated = updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
     const matchedNow = pendingAnsweredByPrompt(envelope.prompt, pendingList(current))
     const unmatched = pendingList(current).filter(
@@ -2452,7 +2456,10 @@ export async function handleUserPromptSubmit(
     // model. Keep the journal and let the next Stop use its acknowledged
     // continuation channel instead of recreating the crash-before-stdout gap.
     notes.push('the late device answer will continue the agent at this turn’s Stop')
-    return { notes }
+    return {
+      notes,
+      settlementRequired: pendingList(updated).some((entry) => entry.request_id === undefined),
+    }
   }
   const retired = await drainRetirements(ctx, sessionId, ctx.env)
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
@@ -2460,7 +2467,10 @@ export async function handleUserPromptSubmit(
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
-  return { notes }
+  return {
+    notes,
+    settlementRequired: pendingList(updated).some((entry) => entry.request_id === undefined),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2477,6 +2487,7 @@ export async function handleStop(
   envelope: HookEnvelope,
   processDeadlineAt = ctx.now() + QUESTION_WAITER_CEILING_SECONDS * 1000,
   route: EscalationDeliveryRoute = hookContinuationRoute(),
+  recordStop = true,
 ): Promise<HookOutcome> {
   const sessionId = envelope.session_id
   if (!sessionId) {
@@ -2488,6 +2499,7 @@ export async function handleStop(
     envelope,
     route,
     processDeadlineAt,
+    recordStop,
   })
 }
 
@@ -2545,11 +2557,13 @@ export async function runEscalationWaiter(
   // This event marker is diagnostic evidence in its own right. Record it
   // before every early return so doctor can distinguish a working Stop route
   // from the prompt-only state that previously looked healthy.
-  updateSessionState(sessionId, ctx.env, (current) => ({
-    ...current,
-    ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
-    last_stop_at: ctx.now(),
-  }))
+  if (options.recordStop !== false) {
+    updateSessionState(sessionId, ctx.env, (current) => ({
+      ...current,
+      ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
+      last_stop_at: ctx.now(),
+    }))
+  }
 
   // The waiter, not its host, owns this lease. It spans grace, submission,
   // polling, close fencing, route delivery, and every retirement path.

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildProgram, type ProgramRunners } from './program.js'
 import type { CommandDeps } from './commands.js'
+import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 
 /**
  * The layer these tests own is the argv boundary: what a real command line
@@ -123,6 +124,30 @@ describe('program argv parsing', () => {
     })
     expect(result.exitCode).toBe(0)
     expect(label).toBe('Hermes Support')
+  })
+
+  it('hands the detached settlement input to the internal hook owner', async () => {
+    const deps = makeDeps()
+    const input = JSON.stringify({ session_id: 'session-1', cwd: '/tmp/project' })
+    deps.env[QUESTION_SETTLEMENT_INPUT_ENV] = input
+    let seen:
+      | { event: string; input: string; harness: string | undefined }
+      | undefined
+
+    const result = await parse(
+      ['hook', 'question-settlement', '--owner', 'notifai', '--harness', 'codex'],
+      {
+        hookRun: (async (_deps, event, readInput, harness) => {
+          seen = { event, input: await readInput(), harness }
+          return 0
+        }) as ProgramRunners['hookRun'],
+      },
+      deps,
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(seen).toEqual({ event: 'question-settlement', input, harness: 'codex' })
+    expect(deps.env[QUESTION_SETTLEMENT_INPUT_ENV]).toBeUndefined()
   })
 
   it('dispatches sounds --json onto soundsCommand', async () => {

@@ -11,6 +11,7 @@ import { defaultCredentialStore } from './credentials.js'
 import { nativeSkills } from './native-skills.js'
 import { argvFlagNames, bootstrapLogger } from './logging.js'
 import { buildProgram } from './program.js'
+import { spawnQuestionSettlement } from './question-settlement-process.js'
 
 /**
  * The local record for this invocation.
@@ -28,6 +29,7 @@ const deps: CommandDeps = {
   env: process.env,
   cwd: process.cwd(),
   nativeSkills,
+  spawnQuestionSettlement,
   logger,
 }
 

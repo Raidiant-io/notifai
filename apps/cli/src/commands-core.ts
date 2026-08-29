@@ -14,6 +14,7 @@ import { type HookAdapterTarget } from './hook-adapter.js'
 import { logConfigResolved, logSettingsFrom, nullLogger, type Logger } from './logging.js'
 import type { NativeSkills } from './native-skills.js'
 import type { OrcaSessionTitleLookup } from './orca-session-title.js'
+import type { QuestionSettlementLaunch } from './question-settlement-process.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
 
@@ -80,6 +81,8 @@ export interface CommandDeps {
   /** Test seams for the Codex thread-writer probe and cold resume. */
   codexWake?: CodexWakeAdapters
   codexSourcePid?: number
+  /** Test seam for the detached owner recovered from a pre-Stop User prompt. */
+  spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-worktree task/session title lookup. */

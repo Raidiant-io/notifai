@@ -137,6 +137,8 @@ export function codexWakeRoute(options: {
   sourcePid: number
   env?: NodeJS.ProcessEnv
   adapters?: CodexWakeAdapters
+  /** False for a detached recovery owner whose stdout no harness will read. */
+  continuationActive?: boolean
 }): EscalationDeliveryRoute {
   const env = options.env ?? process.env
   const adapters = options.adapters ?? systemCodexWakeAdapters(env)
@@ -144,7 +146,9 @@ export function codexWakeRoute(options: {
   return {
     kind: 'hook-continuation',
     async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
-      if (adapters.sourceAlive(options.sourcePid)) return continuation.deliver(event)
+      if (options.continuationActive !== false && adapters.sourceAlive(options.sourcePid)) {
+        return continuation.deliver(event)
+      }
 
       // Probe immediately before the spawn, twice, and never trust the earlier
       // answer: ownership is a kernel fact that can change between two syscalls,

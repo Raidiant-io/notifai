@@ -55,6 +55,7 @@ import {
   withdrawUnpushedQuestions,
   type EscalationDeliveryRoute,
   type HookContext,
+  type HookOutcome,
   type HookHarness,
   type PendingQuestion,
 } from './hooks.js'
@@ -102,6 +103,7 @@ import {
   removeOpenclawNotifaiEntry,
 } from './openclaw-plugin.js'
 import { packageVersion } from './release.js'
+import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
 import { rejectAccidentalEscapedNewlines } from './send.js'
 import {
@@ -156,6 +158,7 @@ export const HOOK_EVENTS = [
   'session-end',
 ] as const
 export type HookEvent = (typeof HOOK_EVENTS)[number]
+const INTERNAL_HOOK_EVENTS = ['question-settlement'] as const
 
 /** Lifecycle handlers one installed harness must carry in this CLI build. */
 export function requiredHookEvents(harness: HookInstallableHarness): readonly HookEvent[] {
@@ -187,7 +190,10 @@ export async function hookRunCommand(
   readStdin: () => Promise<string>,
   harness?: HookHarness,
 ): Promise<number> {
-  if (!(HOOK_EVENTS as readonly string[]).includes(event)) {
+  if (
+    !(HOOK_EVENTS as readonly string[]).includes(event) &&
+    !(INTERNAL_HOOK_EVENTS as readonly string[]).includes(event)
+  ) {
     deps.io.err(`Unknown hook event "${event}". Valid: ${HOOK_EVENTS.join(', ')}`)
     return EXIT.usage
   }
@@ -501,7 +507,9 @@ export async function hookRunCommand(
       `Bearer nfm_${credential.machineId}.${credential.secret}`,
       {
         timeoutMs: event === 'user-prompt-submit' ? 4_000 : 20_000,
-        ...(event === 'stop' ? { deadlineAt: processDeadlineAt, now } : {}),
+        ...(event === 'stop' || event === 'question-settlement'
+          ? { deadlineAt: processDeadlineAt, now }
+          : {}),
       },
     )
     const ctx: HookContext = {
@@ -533,17 +541,49 @@ export async function hookRunCommand(
     // Daily state pruning is housekeeping, not part of the Stop delivery
     // contract. Its directory scan has no useful bound, so keep it on the
     // short prompt path and never spend the answer owner's finite budget on it.
-    if (event !== 'stop') pruneAbandonedSessions(deps.env)
+    if (event !== 'stop' && event !== 'question-settlement') {
+      pruneAbandonedSessions(deps.env)
+    }
 
-    const outcome =
-      event === 'user-prompt-submit'
-        ? await handleUserPromptSubmit(ctx, envelope)
-        : await handleStop(
-            ctx,
-            envelope,
-            processDeadlineAt,
-            stopWakeRoute(deps, harness, envelope.session_id, cwd),
-          )
+    let outcome: HookOutcome
+    if (event === 'user-prompt-submit') {
+      outcome = await handleUserPromptSubmit(ctx, envelope)
+      if (
+        outcome.settlementRequired === true &&
+        envelope.session_id !== undefined &&
+        harness !== undefined &&
+        questionRoutingCapability(harness).stopContinuation !== 'unsupported'
+      ) {
+        try {
+          const launchSettlement = deps.spawnQuestionSettlement ?? spawnQuestionSettlement
+          launchSettlement({
+            envelope: { session_id: envelope.session_id, cwd },
+            harness,
+          })
+          outcome.log = { ...outcome.log, settlement: 'launched' }
+        } catch (err) {
+          outcome.log = {
+            ...outcome.log,
+            settlement: 'launch-failed',
+            settlement_error: failureData(err),
+          }
+        }
+      }
+    } else {
+      outcome = await handleStop(
+        ctx,
+        envelope,
+        processDeadlineAt,
+        stopWakeRoute(
+          deps,
+          harness,
+          envelope.session_id,
+          cwd,
+          event === 'stop',
+        ),
+        event === 'stop',
+      )
+    }
     // Answer diagnostics are already persisted once as hook.answer. Keep every
     // other note in the lifecycle record without duplicating the user's text.
     const notes = outcome.notes.filter((note) => !/^(?:late )?answer from /.test(note))
@@ -595,6 +635,7 @@ function stopWakeRoute(
   harness: HookInstallableHarness | undefined,
   sessionId: string | undefined,
   cwd: string,
+  continuationActive = true,
 ): EscalationDeliveryRoute | undefined {
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
@@ -614,6 +655,7 @@ function stopWakeRoute(
       sourcePid: deps.codexSourcePid ?? declaredSourcePid ?? process.ppid,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
+      continuationActive,
     })
   }
   return undefined

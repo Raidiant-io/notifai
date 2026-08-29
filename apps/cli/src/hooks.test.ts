@@ -355,6 +355,7 @@ function harness(replies: ReplyView[] = []): Harness {
       sleep: async (milliseconds: number) => {
         clock += milliseconds
       },
+      spawnQuestionSettlement: () => {},
     },
   }
 }
@@ -3054,6 +3055,40 @@ describe('user-prompt-submit hook', () => {
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
   })
 
+  it('launches one settlement owner when a new prompt overtakes the asking turn Stop', async () => {
+    const h = harness([])
+    writeSessionState('pre-stop-prompt', h.env, { last_prompt_at: AWAY })
+    registerQuestion(
+      'pre-stop-prompt',
+      h.env,
+      { question: 'Ship the release?', body: 'Ship the release?' },
+      NOW,
+    )
+    let launches = 0
+    const deps = {
+      ...h.deps,
+      spawnQuestionSettlement: () => {
+        launches += 1
+      },
+    } as CommandDeps
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({
+        session_id: 'pre-stop-prompt',
+        cwd: h.deps.cwd,
+        prompt: 'Keep working on the unrelated release notes.',
+      }),
+      'codex',
+    )
+
+    expect(launches).toBe(1)
+    const pending = readSessionState('pre-stop-prompt', h.env).pending?.[0]
+    expect(pending?.question).toBe('Ship the release?')
+    expect(pending?.request_id).toBeUndefined()
+  })
+
   it('records Stop separately so a prompt hook cannot impersonate turn-end routing', async () => {
     const h = harness()
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'events' }))
@@ -3247,6 +3282,40 @@ describe('user-prompt-submit hook', () => {
 
     expect(h.recorder.closed).toContain('req_live')
     expect(readSessionState('prompt-match', h.env).pending).toBeUndefined()
+  })
+
+  it('withdraws a matching unpushed registration without launching settlement', async () => {
+    const h = harness([])
+    registerQuestion('prompt-match-unpushed', h.env, {
+      question: 'Ship it?',
+      questions: [
+        {
+          id: 'q1',
+          text: 'Ship it?',
+          choices: [
+            { id: 'ship', label: 'Ship it' },
+            { id: 'wait', label: 'Wait' },
+          ],
+        },
+      ],
+    })
+    let launches = 0
+
+    await hookRunCommand(
+      {
+        ...h.deps,
+        spawnQuestionSettlement: () => {
+          launches += 1
+        },
+      },
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-match-unpushed', prompt: 'Ship it' }),
+      'codex',
+    )
+
+    expect(launches).toBe(0)
+    expect(h.recorder.submitted).toEqual([])
+    expect(readSessionState('prompt-match-unpushed', h.env).pending).toBeUndefined()
   })
 
   it('leaves an unrelated prompt’s live question open for the reply window', async () => {
@@ -4462,6 +4531,63 @@ describe('Claude Code Stop wake route', () => {
     }
   }
 
+  it('settles a pre-Stop registration through the detached Claude owner', async () => {
+    const h = harness([reply({ text: 'Ship it' })])
+    h.recorder.acknowledgementRequiredFor = () => false
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    registerQuestion('claude-route', h.env, { question: 'Ship it?' }, NOW)
+    const wake = claudeWake()
+    let settlementInput: { session_id?: string; cwd?: string } | undefined
+    const deps: CommandDeps = {
+      ...h.deps,
+      claudeWake: wake,
+      claudeSourcePid: 12345,
+      spawnQuestionSettlement: (launch) => {
+        settlementInput = launch.envelope
+      },
+    }
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({
+        session_id: 'claude-route',
+        cwd: h.deps.cwd,
+        prompt: 'Keep working on the unrelated release notes.',
+      }),
+      'claude-code',
+    )
+    await hookRunCommand(
+      deps,
+      'question-settlement',
+      stdin(settlementInput),
+      'claude-code',
+    )
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+    expect(wake.sent).toHaveLength(1)
+    expect(wake.resumed).toEqual([])
+    expect(h.io.outLines).toEqual([])
+
+    await hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+    await hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: h.deps.cwd }),
+      'claude-code',
+    )
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+    expect(wake.sent).toHaveLength(1)
+    expect(readSessionState('claude-route', h.env).pending).toBeUndefined()
+    expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
+  })
+
   it('routes an accepted answer through the Claude inbox instead of hook stdout', async () => {
     const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
@@ -4876,6 +5002,129 @@ describe('Codex Stop wake route', () => {
       },
     })
   }
+
+  it('settles once when UserPromptSubmit overtakes the asking turn Stop', async () => {
+    const h = harness([reply({ text: 'Ship it' })])
+    h.recorder.acknowledgementRequiredFor = () => false
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
+    registerQuestion(CODEX_THREAD, h.env, { question: 'Ship it?' }, NOW)
+    const wake = codexWake({ sourceAlive: true, probe: { state: 'live' } })
+    let launched:
+      | { envelope: { session_id?: string; cwd?: string }; harness: string }
+      | undefined
+    const deps: CommandDeps = {
+      ...h.deps,
+      codexWake: wake,
+      codexSourcePid: 12345,
+      spawnQuestionSettlement: (launch) => {
+        launched = launch
+      },
+    }
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({
+        session_id: CODEX_THREAD,
+        cwd: h.deps.cwd,
+        prompt: 'Keep working on the unrelated release notes.',
+      }),
+      'codex',
+    )
+
+    expect(launched).toEqual({
+      envelope: { session_id: CODEX_THREAD, cwd: h.deps.cwd },
+      harness: 'codex',
+    })
+    expect(h.deps.now?.()).toBe(NOW)
+    expect(h.recorder.submitted).toEqual([])
+    expect(readSessionState(CODEX_THREAD, h.env).last_stop_at).toBeUndefined()
+
+    await hookRunCommand(
+      deps,
+      'question-settlement',
+      stdin(launched?.envelope),
+      'codex',
+    )
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+    expect(h.io.outLines).toEqual([])
+    expect(wake.resumed).toEqual([])
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+    expect(readSessionState(CODEX_THREAD, h.env).last_stop_at).toBeUndefined()
+
+    await hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: CODEX_THREAD, cwd: h.deps.cwd }),
+      'codex',
+    )
+    expect(h.io.outLines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({ decision: 'block' }),
+    ])
+
+    await hookRunCommand(
+      deps,
+      'stop',
+      stdin({
+        session_id: CODEX_THREAD,
+        cwd: h.deps.cwd,
+        stop_hook_active: true,
+      }),
+      'codex',
+    )
+    await hookRunCommand(
+      deps,
+      'stop',
+      stdin({ session_id: CODEX_THREAD, cwd: h.deps.cwd }),
+      'codex',
+    )
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+    expect(h.io.outLines).toHaveLength(1)
+    expect(readSessionState(CODEX_THREAD, h.env).pending).toBeUndefined()
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
+  })
+
+  it('keeps the detached recovery owner through the complete reply window', async () => {
+    const h = harness([])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
+    registerQuestion(CODEX_THREAD, h.env, { question: 'Ship it?' }, NOW)
+    let settlementInput: { session_id?: string; cwd?: string } | undefined
+    const deps: CommandDeps = {
+      ...h.deps,
+      codexWake: codexWake({ sourceAlive: true, probe: { state: 'live' } }),
+      codexSourcePid: 12345,
+      spawnQuestionSettlement: (launch) => {
+        settlementInput = launch.envelope
+      },
+    }
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({
+        session_id: CODEX_THREAD,
+        cwd: h.deps.cwd,
+        prompt: 'Keep working on the unrelated release notes.',
+      }),
+      'codex',
+    )
+    expect(h.deps.now?.()).toBe(NOW)
+
+    await hookRunCommand(
+      deps,
+      'question-settlement',
+      stdin(settlementInput),
+      'codex',
+    )
+
+    expect(h.deps.now?.()).toBe(NOW + 480_000)
+    expect(h.recorder.closed).toEqual([h.recorder.receipts[0]])
+    expect(readSessionState(CODEX_THREAD, h.env).pending).toBeUndefined()
+  })
 
   it('continues the held turn with decision:block when the answer arrives during the hold', async () => {
     const h = harness([reply({ text: 'BETA' })])
