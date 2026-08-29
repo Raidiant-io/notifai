@@ -138,7 +138,7 @@ dashboard and the iPhone Companion App; the CLI never takes a payment.
 ## Status
 
 Notifai is published under Apache-2.0. The current packages are
-`@raidiant/notifai` <!--x-release-please-start-notifai-->10.1.0<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->6.0.1<!--x-release-please-end-->; their
+`@raidiant/notifai` <!--x-release-please-start-notifai-->10.1.1<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->6.0.2<!--x-release-please-end-->; their
 versions advance independently. Released clients keep ordinary notification
 workflows during the documented compatibility window; newer work is negotiated
 as named capabilities instead of making every version mismatch a product-wide
@@ -173,8 +173,8 @@ asks once whether it is for this project or for this machine.
 using that chosen scope.
 The `notifai` CLI binary is always a global install (`npm install -g
 @raidiant/notifai`); setup scope does not change it. The skill is
-from the immutable public tag `v<!--x-release-please-start-notifai-->10.1.0<!--x-release-please-end-->`; the underlying installer source is
-`Raidiant-io/notifai#v<!--x-release-please-start-notifai-->10.1.0<!--x-release-please-end-->` (`#` selects a Git ref). For unattended use,
+from the immutable public tag `v<!--x-release-please-start-notifai-->10.1.1<!--x-release-please-end-->`; the underlying installer source is
+`Raidiant-io/notifai#v<!--x-release-please-start-notifai-->10.1.1<!--x-release-please-end-->` (`#` selects a Git ref). For unattended use,
 pass `--setup-scope project` or `--setup-scope global`.
 
 ## The installed hooks
