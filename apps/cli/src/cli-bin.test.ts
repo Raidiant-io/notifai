@@ -28,11 +28,14 @@ describe('PATH notifai diagnosis', () => {
     expect(cliBinReadiness({ PATH: directory }, 'darwin').status).toBe('ready')
   })
 
-  it('is ready when PATH has no notifai entry', () => {
+  it('does not call a PATH with no notifai entry ready', () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-empty-'))
     mkdirSync(directory, { recursive: true })
     const state = cliBinReadiness({ PATH: directory }, process.platform)
-    expect(state.status).toBe('ready')
-    expect(state.detail).toContain('no notifai binary was on PATH')
+    // The running process proves nothing about the command every printed next
+    // step names — but it is running, so this cannot stand in the way either.
+    expect(state.status).toBe('optional-gap')
+    expect(state.detail).toContain('will not be found')
+    expect(state.remedy?.command).toBe('npm install -g @raidiant/notifai')
   })
 })

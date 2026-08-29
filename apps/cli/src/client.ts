@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  AccountAccessRequestResponse,
   AccountAccessResponse,
   BeginPairingResponse,
   CapabilityDocument,
@@ -78,6 +79,11 @@ export interface ApiClient {
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   accessStatus(): Promise<AccountAccessResponse>
+  /**
+   * Read-only. There is no client-side write: filing this errand is the
+   * User's decision, and the server refuses it from a machine credential.
+   */
+  accessRequest(): Promise<AccountAccessRequestResponse>
   listDevices(): Promise<ListDevicesResponse>
   listSounds(): Promise<ListSoundsResponse>
   capabilities(
@@ -254,6 +260,7 @@ export function createClient(
         poll_verifier: pollVerifier,
       }),
     accessStatus: () => call('GET', '/api/v1/account/access'),
+    accessRequest: () => call('GET', '/api/v1/account/alpha-access-request'),
     listDevices: () => call('GET', '/api/v1/devices'),
     listSounds: () => call('GET', '/api/v1/sounds'),
     capabilities: (platform = 'ios', appVersion, appBuild) => {

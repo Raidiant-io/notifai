@@ -84,6 +84,7 @@ import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './lo
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { firstRequiredBlocker } from './readiness.js'
 
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
@@ -469,8 +470,8 @@ describe('command contracts', () => {
 
     expect(await accessStatusCommand(makeDeps(io, client), {})).toBe(EXIT.failed)
     expect(io.outLines).toEqual([
-      'No active plan or temporary Alpha access for this account.',
-      'next: Open https://test.notifai.invalid/support to request Alpha access, then retry.',
+      'This account does not have access to Notifai yet.',
+      'next: Open https://test.notifai.invalid/setup/access to set up access, then retry.',
     ])
   })
 
@@ -2614,6 +2615,51 @@ describe('credential origin pinning', () => {
     expect(now).toBeLessThan(10_000)
   })
 
+  it('reports the access blocker to whoever asked for the sign-in', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({
+        status: 'no_active_plan',
+        next_action: 'Open https://app.notifai.sh/setup/access to set up access, then retry.',
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+
+    let blocked: { title: string; detail: string } | null = null
+    expect(
+      await loginCommand(deps, { open: false }, (state) => {
+        blocked = state
+      }),
+    ).toBe(EXIT.auth)
+    // Without this the caller falls back to the state it held before the
+    // attempt — "not paired … run `notifai init`" — and prints it under the
+    // correct line, in contradiction with it.
+    expect(blocked).toMatchObject({
+      id: 'auth',
+      title: 'Access',
+      status: 'gap',
+      detail: 'this account does not have access to Notifai yet',
+      remedy: {
+        by: 'user-elsewhere',
+        summary: 'Open https://app.notifai.sh/setup/access to set up access, then retry.',
+      },
+    })
+  })
+
   it('reports expiry only when pairing times out without a no-access mark', async () => {
     const io = new CapturedIo()
     let now = 0
@@ -4658,19 +4704,23 @@ describe('init', () => {
     )
   })
 
-  it('does not let an unattended readiness pass silently choose project scope', async () => {
+  it('closes what a process can close when no scope was passed, and asks nothing', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
     expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
-    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
+    // Naming this checkout is not skill or hook placement, so it no longer
+    // waits on a scope question nobody can answer here.
+    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain('project = "')
     const result = JSON.parse(io.outLines[0] ?? '{}') as {
-      states: Array<{ id: string; status: string }>
+      states: Array<{ id: string; status: string; remedy: { command?: string } | null }>
     }
-    expect(result.states.find((state) => state.id === 'project')).toMatchObject({
-      status: 'optional-gap',
-    })
+    expect(result.states.find((state) => state.id === 'project')).toMatchObject({ status: 'ready' })
+    // The run stops where a human genuinely is required, and never hands back
+    // the command that produced this output as the thing to do about it.
+    const project = result.states.find((state) => state.id === 'project')
+    expect(project?.remedy).toBeNull()
     expect(io.errLines).toEqual([])
   })
 
@@ -5128,7 +5178,11 @@ describe('init', () => {
     expect(existsSync(path.join(cwd, '.codex', 'config.toml'))).toBe(true)
     expect(io.outLines.join('\n')).not.toContain('Installed claude-code hooks')
     expect(io.outLines.join('\n')).not.toContain('Installed codex hooks')
-    expect(io.outLines.join('\n')).toContain('Next: Codex hook trust')
+    // A hook diagnostic is a report line. The run it appears in still reaches
+    // the delivery proof, which is the thing `init` is there to produce.
+    expect(io.outLines.join('\n')).toContain('Companion Receipt')
+    expect(io.outLines.join('\n')).toContain('All set.')
+    expect(io.outLines.join('\n')).not.toContain('Next: Codex hook trust')
   })
 
   it('lets a human keep a subset of the detected harnesses', async () => {
@@ -5263,11 +5317,11 @@ describe('init', () => {
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('https://test.notifai.invalid/support')
+    // One focused destination for this errand, never the omnibus help page.
+    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).not.toContain('/support')
     expect(out).toContain('sign in with the same email as this account (alpha@example.com)')
-    expect(out).toContain(
-      'no active Companion device registered yet; install Notifai via https://test.notifai.invalid/support',
-    )
+    expect(out).toContain('no active Companion App registered yet')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
@@ -5382,6 +5436,9 @@ describe('init', () => {
       },
     }
 
+    // The terminal asks which phone, in those words, and the destination it
+    // opens is already about that answer — nobody chooses twice.
+    io.selectAnswer = 'iphone'
     expect(
       await initCommand(deps, {
         hooks: false,
@@ -5390,10 +5447,11 @@ describe('init', () => {
       }),
     ).toBe(EXIT.ok)
     expect(io.prompts).toEqual([
-      'Open install instructions in your browser?',
-      'Wait here while you finish that on your device?',
+      'Where do you want to receive notifications?',
+      'Open those steps in your browser?',
+      'Wait here while you finish that on your phone?',
     ])
-    expect(io.openedUrls).toEqual(['https://test.notifai.invalid/support'])
+    expect(io.openedUrls).toEqual(['https://test.notifai.invalid/setup/companion?platform=iphone'])
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
     expect(io.spinnerEvents).toContain(
       'message:Waiting for a Companion App to sign in and register…',
@@ -5513,7 +5571,8 @@ describe('init', () => {
     ).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('https://test.notifai.invalid/support')
+    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).not.toContain('/support')
     expect(out).toContain('sign in with the same email as this account (agent@example.com)')
     expect(io.openedUrls).toEqual([])
   })
@@ -5734,7 +5793,7 @@ describe('init', () => {
     expect(submitCalls).toBe(0)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('no active Companion device registered yet')
+    expect(out).toContain('no active Companion App registered yet')
     expect(out).not.toContain('All set.')
     expect(out).not.toMatch(/Companion Receipt observed/i)
 
@@ -5751,11 +5810,119 @@ describe('init', () => {
       ),
     ).toBe(EXIT.failed)
     const doctorOut = doctorIo.outLines.join('\n')
-    expect(doctorOut).toMatch(/FAIL\s+Your devices:/)
-    expect(doctorOut).toContain('no active Companion device registered yet')
+    expect(doctorOut).toMatch(/FAIL\s+Your devices: no active Companion App registered yet/)
     expect(doctorOut).toContain(
       'Delivery proof: not checked — no iPhone or Android Companion App is ready',
     )
+  })
+
+  it('says access is already requested rather than asking for it again', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-access-requested-'))
+    const io = new CapturedIo()
+    const nextAction = 'Open https://app.notifai.sh/setup/access to set up access, then retry.'
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        throw new ApiCallError(403, 'no_active_plan', 'No active plan.', nextAction)
+      },
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+        email: 'waiting@example.test',
+        public_v1_cutover: false,
+      }),
+      accessRequest: async () => ({
+        request: {
+          status: 'requested',
+          requested_at: '2026-08-21T09:15:00.000Z',
+          updated_at: '2026-08-21T09:15:00.000Z',
+        },
+      }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    const readiness = await assessReadiness(deps)
+    const auth = readiness.states.find((state) => state.id === 'auth')
+    // The middle value. Without it, someone who asked in August is told to ask
+    // again on every run, forever, for a wait no command of theirs can shorten.
+    expect(auth?.detail).toContain('access requested on 2026-08-21')
+    expect(auth?.detail).toContain('waiting@example.test')
+    expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere' })
+    expect(JSON.stringify(auth)).not.toContain('/setup/access')
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('nothing is needed from you')
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it('asks for access only when this account has never asked', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-access-never-asked-'))
+    const io = new CapturedIo()
+    const nextAction = 'Open https://app.notifai.sh/setup/access to set up access, then retry.'
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        throw new ApiCallError(403, 'no_active_plan', 'No active plan.', nextAction)
+      },
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+        email: 'fresh@example.test',
+        public_v1_cutover: false,
+      }),
+      accessRequest: async () => ({ request: null }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    const auth = (await assessReadiness(deps)).states.find((state) => state.id === 'auth')
+    expect(auth?.detail).toContain('does not have access to Notifai yet')
+    expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
+  })
+
+  it('closes on the blocker that stopped the run, not the state before it', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-login-access-'))
+    const io = new InteractiveIo()
+    let now = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      beginPairing: async () => ({
+        pairing_id: 'pair_test',
+        code: 'ABCD-EFGH',
+        approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
+        expires_at: new Date(10_000).toISOString(),
+        poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({
+        status: 'no_active_plan',
+        next_action: 'Open https://app.notifai.sh/setup/access to set up access, then retry.',
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test store' },
+    }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    // One next step, and it is the one that actually stopped the run. The
+    // pairing state that preceded it would send the reader straight back into
+    // the command that just failed, for a reason it never names.
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+    expect(out).toContain('Next: Access')
+    expect(out).toContain('https://app.notifai.sh/setup/access')
+    expect(out).not.toContain('not paired with your account')
   })
 
   it('treats a revoked credential as the one blocker and points back to pairing', async () => {
@@ -5810,7 +5977,7 @@ describe('init', () => {
     const auth = readiness.states.find((state) => state.id === 'auth')
     expect(auth).toMatchObject({
       status: 'gap',
-      detail: 'no active plan or temporary Alpha access (rafael@example.test)',
+      detail: 'this account does not have access to Notifai yet (rafael@example.test)',
       remedy: { by: 'user-elsewhere', summary: nextAction },
     })
     expect(auth?.remedy && 'command' in auth.remedy ? auth.remedy.command : undefined).toBeUndefined()
@@ -5855,7 +6022,7 @@ describe('init', () => {
     const readiness = await assessReadiness(deps)
     const auth = readiness.states.find((state) => state.id === 'auth')
     expect(auth?.status).toBe('gap')
-    expect(auth?.detail).toContain('no active plan')
+    expect(auth?.detail).toContain('does not have access to Notifai yet')
     expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
     expect(JSON.stringify(auth)).not.toContain('pair it again')
   })
@@ -6867,8 +7034,11 @@ describe('asking before the hooks have ever run', () => {
 
     const readiness = await assessReadiness(deps)
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
-    expect(fired?.status).toBe('gap')
+    // Reported, never a blocker: the only thing that closes this is a turn
+    // ending, which the agent standing inside that turn cannot supply.
+    expect(fired?.status).toBe('optional-gap')
     expect(fired?.detail).toMatch(/UserPromptSubmit.*Stop has not been observed/)
+    expect(firstRequiredBlocker(readiness)?.id).not.toBe('hooks-fired')
   })
 
   it('uses the OpenCode adapter marker instead of its config-directory variable', () => {

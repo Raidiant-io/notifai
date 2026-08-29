@@ -306,16 +306,16 @@ the harness's own flow.
 
 ## Set Notifai up
 
-You are the one doing the setup. Run everything a process can run; never tell the
+You are the one doing the setup. Never tell the
 user to run a command you could have run yourself.
 
 “Notifai me” or “use notifai” authorizes durable enablement for this Project;
-do not ask again. Run the send. If setup is missing, run `notifai init --json`,
-perform its CLI-owned remedies, and retry the exact send. Projectless requests
-never enable a Project.
+do not ask again. Run the send. If setup is missing, run `notifai init --json`
+and retry the exact send. Projectless requests never enable a Project.
 
-For general setup that was not authorized by an explicit Notification Request,
-ask one question for both user decisions:
+For setup not authorized by an explicit Notification Request, run flagless
+`notifai init --json` first: it asks nothing and reaches delivery proof.
+Only hooks and the skill need both user decisions:
 
 - setup scope — this project or every project here
 - Question Routing — devices or terminal only

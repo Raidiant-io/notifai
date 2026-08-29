@@ -14,7 +14,8 @@ import {
   reportError,
   type CommandDeps,
 } from './commands-core.js'
-import { supportPageUrl } from './commands-devices.js'
+import { setupAccessUrl } from './setup-destinations.js'
+import type { ReadinessState } from './readiness.js'
 
 // ---------------------------------------------------------------------------
 // login / logout / auth status
@@ -31,9 +32,20 @@ export function pairingApprovalUrl(approveUrl: string, confirmationSecret: strin
   return url.toString()
 }
 
+/**
+ * Why a sign-in stopped, in the shape the close line renders.
+ *
+ * Without it, `init` fell back to the state it had before the attempt — "this
+ * machine is not paired … run `notifai init`" — so the last thing a User read
+ * contradicted the correct line three lines above it and pointed back at the
+ * command that had just failed, for a reason it never mentioned.
+ */
+export type LoginBlockedSink = (blocker: ReadinessState) => void
+
 export async function loginCommand(
   deps: CommandDeps,
   flags: { name?: string; baseUrl?: string; open?: boolean },
+  onBlocked?: LoginBlockedSink,
 ): Promise<number> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, flags: { base_url: flags.baseUrl } as FlagOverrides })
   const baseUrl = config.base_url.value
@@ -125,13 +137,20 @@ export async function loginCommand(
     // Proof-gated: the server never returns this from lookup. Stop now instead
     // of waiting out TTL, and name init rather than a second pairing command.
     if (poll.status === 'no_active_plan') {
-      const next =
-        poll.next_action ??
-        `Open ${supportPageUrl(baseUrl)} to request Alpha access, then retry.`
-      spinner?.error('Account has no Alpha access')
+      // The server owns which access errand is current — requesting it today,
+      // choosing a plan after cutover — so its line wins whenever it sends one.
+      const next = poll.next_action ?? `Open ${setupAccessUrl(baseUrl)} to set up access, then retry.`
+      spinner?.error('This account does not have access yet')
       deps.io.err('This account has no active plan or temporary Alpha access.')
       deps.io.err(`next: ${next}`)
       deps.io.err(`After access is granted, run \`${SETUP_COMMAND}\` again.`)
+      onBlocked?.({
+        id: 'auth',
+        title: 'Access',
+        status: 'gap',
+        detail: 'this account does not have access to Notifai yet',
+        remedy: { by: 'user-elsewhere', summary: next },
+      })
       return EXIT.auth
     }
     if (poll.status === 'expired') break
@@ -193,9 +212,8 @@ export async function accessStatusCommand(
       return access.status === 'active' ? EXIT.ok : EXIT.failed
     }
     if (access.status === 'no_active_plan') {
-      const supportUrl = supportPageUrl(authed.baseUrl)
-      deps.io.out('No active plan or temporary Alpha access for this account.')
-      deps.io.out(`next: Open ${supportUrl} to request Alpha access, then retry.`)
+      deps.io.out('This account does not have access to Notifai yet.')
+      deps.io.out(`next: Open ${setupAccessUrl(authed.baseUrl)} to set up access, then retry.`)
       return EXIT.failed
     }
     const expiry = access.expires_at ? ` until ${access.expires_at}` : ''

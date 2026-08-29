@@ -14,7 +14,8 @@ import { personalProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
 import {
-  firstBlocker,
+  firstRequiredBlocker,
+  isOptionalAutomation,
   questionRoutingReady,
   readinessJson,
   type Readiness,
@@ -32,7 +33,12 @@ import {
   reportError,
   type CommandDeps,
 } from './commands-core.js'
-import { readyCompanionDevices, supportPageUrl } from './commands-devices.js'
+import { readyCompanionDevices } from './commands-devices.js'
+import {
+  companionPlatformLabel,
+  setupCompanionUrl,
+  type CompanionPlatform,
+} from './setup-destinations.js'
 import { assessReadiness, remedyLine } from './commands-doctor.js'
 import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hooks.js'
 import {
@@ -125,7 +131,10 @@ async function closeGap(
   flags: InitFlags,
 ): Promise<GapCloseResult> {
   if (state.id === 'project') {
-    if (flags.setupScope === undefined) return 'failed'
+    // Naming this checkout is local bookkeeping, not skill or hook placement,
+    // so it does not wait on the scope question. Without an explicit answer the
+    // name lands in the checkout it describes, which is the answer a User who
+    // never sees the question would have given.
     const slug = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
     const configPath =
       flags.setupScope === 'global'
@@ -233,11 +242,29 @@ function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
 }
 
 /**
+ * Which phone the notifications should arrive on.
+ *
+ * Asked in the User's words, here, so the destination this terminal opens is
+ * already about their phone rather than an index they have to choose from
+ * again on the other screen. A run with no human gets nothing — it opens no
+ * browser and answers no question — so there is no prompt to hang on.
+ */
+async function askCompanionPlatform(deps: CommandDeps): Promise<CompanionPlatform | null> {
+  if (deps.io.interactive !== true || deps.io.select === undefined) return null
+  const selected = await deps.io.select('Where do you want to receive notifications?', [
+    { value: 'iphone', label: 'iPhone' },
+    { value: 'android', label: 'Android' },
+  ])
+  return selected === 'iphone' || selected === 'android' ? selected : null
+}
+
+/**
  * Observe the supported Device Installation path while the user finishes the
- * app-side work. The live bridge is the dashboard `/support` page (controlled
- * Companion installation steps). Interactive runs offer to open it so the user
- * never types the URL; non-interactive/agent paths only print plain text and
- * never wait on a prompt.
+ * app-side work. The bridge is one focused setup destination for the platform
+ * they just named — not the omnibus help page, whose own next step is to go
+ * somewhere else. Interactive runs offer to open it so the user never types
+ * the URL; non-interactive/agent paths only print plain text and never wait on
+ * a prompt.
  *
  * The wait budget is stated up front. On expiry we say the *timer* expired —
  * not the setup — and offer another budget when a human is present. Agents
@@ -256,26 +283,33 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   }
 
   const budgetLabel = formatWaitBudget(DEVICE_BRIDGE_TIMEOUT_MS)
-  const supportUrl = supportPageUrl(authed.baseUrl)
+  // A device that is registered but silent needs its permission allowed, not
+  // install steps: asking which phone would be asking about one they are
+  // holding. Only the nothing-registered case has a platform still to name.
+  const nothingRegistered = /no active Companion App registered yet/.test(state.detail)
+  const platform = nothingRegistered ? await askCompanionPlatform(deps) : null
+  const setupUrl = setupCompanionUrl(authed.baseUrl, platform ?? undefined)
+  const stepsLabel =
+    platform === null ? 'Setup steps (no typing)' : `${companionPlatformLabel(platform)} steps (no typing)`
   await deps.io.note?.(
     [
       state.detail,
       remedy.summary,
-      `Install steps (no typing): ${supportUrl}`,
-      `I will wait up to ${budgetLabel} for a Companion device to become ready.`,
+      `${stepsLabel}: ${setupUrl}`,
+      `I will wait up to ${budgetLabel} for a Companion App to become ready.`,
     ].join('\n'),
-    'Finish setup on your Companion device',
+    'Finish setup on your phone',
   )
 
-  // Open the real support page so the user never has to type the URL. Decline
-  // is fine — the URL remains in the note and in the Next: line if they leave.
-  if (await deps.io.confirm('Open install instructions in your browser?', true)) {
-    deps.io.openUrl(supportUrl)
+  // Open the destination so the user never has to type the URL. Decline is
+  // fine — the URL remains in the note and in the Next: line if they leave.
+  if (await deps.io.confirm('Open those steps in your browser?', true)) {
+    deps.io.openUrl(setupUrl)
   }
 
-  if (!(await deps.io.confirm('Wait here while you finish that on your device?', true))) {
+  if (!(await deps.io.confirm('Wait here while you finish that on your phone?', true))) {
     deps.io.out(
-      `OK — finish device setup when you can (install steps: ${supportUrl}), then re-run \`notifai init\`.`,
+      `OK — finish that when you can (steps: ${setupUrl}), then re-run \`notifai init\`.`,
     )
     return 'pending'
   }
@@ -324,7 +358,7 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
     )
     deps.io.err(deviceBridgeMessage(lastDevices).replace(/…$/, '.'))
     deps.io.err(
-      `Re-run \`notifai init\` later and it will pick up from here (install steps: ${supportUrl}).`,
+      `Re-run \`notifai init\` later and it will pick up from here (steps: ${setupUrl}).`,
     )
 
     const keepWaiting = await deps.io.confirm(
@@ -337,7 +371,7 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
       )
       return 'pending'
     }
-    spinner?.message(`Waiting another ${budgetLabel} for a Companion device…`)
+    spinner?.message(`Waiting another ${budgetLabel} for a Companion App…`)
     deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
   }
 }
@@ -559,7 +593,11 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   // asked about, for a human and an agent alike.
   if (state.id === 'project') return Promise.resolve(true)
   if (state.id === 'project-enablement') return Promise.resolve(true)
-  const explicit = state.id === 'hooks' ? flags.hooks : state.id === 'skill' ? flags.skills : undefined
+  // Every other hook sub-state is a report line about routing, not an errand
+  // with a yes/no question of its own; offering the hooks question for one of
+  // them would ask about something the answer does not change.
+  if (state.id !== 'hooks' && state.id !== 'skill') return Promise.resolve(false)
+  const explicit = state.id === 'hooks' ? flags.hooks : flags.skills
   if (explicit !== undefined) return Promise.resolve(explicit)
   // An agent is never asked, and never assumed into a change it did not
   // request: silence means no, and the summary says what was skipped.
@@ -587,14 +625,21 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
  * and a revoked credential are the same code path arriving at different
  * states rather than four branches to enumerate.
  */
+/** The two states whose remedy actually places files the scope question is about. */
+function needsInstallScope(state: ReadinessState): boolean {
+  return state.id === 'hooks' || state.id === 'skill'
+}
+
 function isSetupScope(value: string | undefined): value is SetupScope {
   return value === 'project' || value === 'global'
 }
 
-async function resolveSetupScope(
-  deps: CommandDeps,
-  flags: InitFlags,
-): Promise<SetupScope | undefined | 'usage'> {
+/**
+ * Scope flags are checked before anything runs, because a contradiction is a
+ * usage error and reporting it after half a setup is worse than reporting it
+ * now. Answering the question is a separate step (`scopeForLocalInstall`).
+ */
+function checkSetupScopeFlags(deps: CommandDeps, flags: InitFlags): SetupScope | undefined | 'usage' {
   if (flags.setupScope !== undefined && !isSetupScope(flags.setupScope)) {
     deps.io.err('Invalid setup scope. Choose `project` or `global`.')
     return 'usage'
@@ -616,8 +661,41 @@ async function resolveSetupScope(
     return 'usage'
   }
   const fromFlags = flags.setupScope ?? flags.skillsScope
+  // Asking for an install nobody can be asked about is a usage error, and it
+  // is knowable from the flags alone — so it is reported before a setup runs
+  // half way rather than after.
+  if (
+    fromFlags === undefined &&
+    deps.io.interactive !== true &&
+    (flags.skills === true || flags.hooks === true)
+  ) {
+    deps.io.err(
+      'Unattended setup changes require an explicit scope: pass `--setup-scope project` or `--setup-scope global`.',
+    )
+    return 'usage'
+  }
+  return fromFlags
+}
+
+/**
+ * Where a skill or hook install should land, asked at the moment one is about
+ * to happen and not before.
+ *
+ * It used to be the first thing the product ever said, in front of the
+ * assessment, sign-in and every other gate — a question about skill, hook and
+ * shared-config placement put to someone who had met none of those words and
+ * might never reach the step it decides. Worse, project identity and Project
+ * Enablement were gated on the answer, so an unattended run that could not
+ * produce one advanced nothing at all.
+ *
+ * Now nothing depends on it except the two installs it actually describes.
+ */
+async function scopeForLocalInstall(
+  deps: CommandDeps,
+  flags: InitFlags,
+): Promise<SetupScope | 'declined'> {
+  const fromFlags = flags.setupScope ?? flags.skillsScope
   if (fromFlags !== undefined) return fromFlags
-  if (flags.skills === false && flags.hooks === false) return undefined
   if (deps.io.interactive === true && deps.io.select) {
     const selected = await deps.io.select(
       'Should this Notifai setup apply to this project only, or to every project on this machine?',
@@ -636,15 +714,12 @@ async function resolveSetupScope(
     )
     if (selected === 'project' || selected === 'global') return selected
     deps.io.err('No setup scope selected. Pass `--setup-scope project` or `--setup-scope global`.')
-    return 'usage'
+    return 'declined'
   }
-  if (flags.skills === true || flags.hooks === true) {
-    deps.io.err(
-      'Unattended setup changes require an explicit scope: pass `--setup-scope project` or `--setup-scope global`.',
-    )
-    return 'usage'
-  }
-  return undefined
+  deps.io.err(
+    'Unattended setup changes require an explicit scope: pass `--setup-scope project` or `--setup-scope global`.',
+  )
+  return 'declined'
 }
 
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
@@ -660,11 +735,13 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         },
       }
     : deps
-  const setupScope = await resolveSetupScope(workingDeps, flags)
-  if (setupScope === 'usage') return EXIT.usage
-  const resolved: InitFlags = {
+  const scopeFromFlags = checkSetupScopeFlags(workingDeps, flags)
+  if (scopeFromFlags === 'usage') return EXIT.usage
+  let resolved: InitFlags = {
     ...flags,
-    ...(setupScope === undefined ? {} : { setupScope, skillsScope: flags.skillsScope ?? setupScope }),
+    ...(scopeFromFlags === undefined
+      ? {}
+      : { setupScope: scopeFromFlags, skillsScope: flags.skillsScope ?? scopeFromFlags }),
   }
   await workingDeps.io.intro?.('Notifai setup')
 
@@ -677,6 +754,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       ...(refresh === undefined ? {} : { previous: readiness, refresh }),
     })
   let failed = false
+  // What actually stopped a sign-in, when something did. Without it the close
+  // renders the state as it was before the attempt — "not paired … run
+  // `notifai init`" — which contradicts the correct line printed moments
+  // earlier and sends the reader back into the command that just failed.
+  let loginBlocker: ReadinessState | null = null
   const attempted = new Set<string>()
 
   // Re-assess after every successful action. This is how a browser approval or
@@ -688,23 +770,35 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
     for (const state of readiness.states) {
       if (state.status === 'ready') continue
+      // Question Routing is optional automation, so it is reported and never
+      // waited on. `doctor` still fails on a broken route; `init` walks past
+      // it, because a hook diagnostic standing in front of the delivery proof
+      // means a setup that can already send never proves that it can.
+      const optional = isOptionalAutomation(state.id)
+      const halt = () => {
+        if (!optional) stop = true
+        return !optional
+      }
       if (state.status === 'unknown') {
-        stop = true
-        break
+        if (halt()) break
+        continue
       }
 
       const remedy = state.remedy
       if (remedy === undefined || attempted.has(state.id)) {
-        if (state.status === 'gap') stop = true
-        if (stop) break
+        if (state.status === 'gap' && halt()) break
         continue
       }
 
       if (state.status === 'optional-gap') {
         if (remedy.by !== 'cli' || !(await wantsOptional(workingDeps, state, resolved))) continue
-        if (resolved.setupScope === undefined && state.id === 'project') {
-          stop = true
-          break
+        if (needsInstallScope(state)) {
+          const scope = await scopeForLocalInstall(workingDeps, resolved)
+          if (scope === 'declined') {
+            attempted.add(state.id)
+            continue
+          }
+          resolved = { ...resolved, setupScope: scope, skillsScope: resolved.skillsScope ?? scope }
         }
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)
@@ -715,8 +809,8 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           break
         }
         if (result !== 'closed') {
-          stop = true
-          break
+          if (halt()) break
+          continue
         }
         readiness = await reassess(refreshAfterClose(state.id))
         advanced = true
@@ -724,16 +818,21 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (remedy.by === 'cli') {
-        if (resolved.setupScope === undefined && state.id === 'project') {
-          stop = true
-          break
+        if (needsInstallScope(state)) {
+          const scope = await scopeForLocalInstall(workingDeps, resolved)
+          if (scope === 'declined') {
+            attempted.add(state.id)
+            if (halt()) break
+            continue
+          }
+          resolved = { ...resolved, setupScope: scope, skillsScope: resolved.skillsScope ?? scope }
         }
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
         if (result !== 'closed') {
-          stop = true
-          break
+          if (halt()) break
+          continue
         }
         readiness = await reassess(refreshAfterClose(state.id))
         advanced = true
@@ -749,7 +848,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       ) {
         attempted.add(state.id)
         workingDeps.io.out('Opening your browser to approve this machine — Ctrl-C to stop.')
-        if ((await loginCommand(workingDeps, {})) !== EXIT.ok) {
+        if ((await loginCommand(workingDeps, {}, (blocker) => (loginBlocker = blocker))) !== EXIT.ok) {
           failed = true
           stop = true
           break
@@ -777,31 +876,43 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       // A human-only remedy is the first blocker for an unattended agent.
-      stop = true
-      break
+      if (halt()) break
+      continue
     }
 
     if (stop || !advanced) break
   }
 
+  const blocker = loginBlocker ?? firstRequiredBlocker(readiness)
   if (flags.json === true) deps.io.out(JSON.stringify(readinessJson(readiness), null, 2))
-  else await printInitClose(deps, readiness, resolved)
-  const blocker = firstBlocker(readiness)
+  else await printInitClose(deps, readiness, resolved, loginBlocker)
   if (blocker === null) return failed ? EXIT.failed : EXIT.ok
   return failed || workingDeps.io.interactive !== true ? EXIT.failed : EXIT.ok
-}
-
-function isHookSubstate(id: string): boolean {
-  return id === 'hooks' || id.startsWith('hooks-') || id === 'question-routing-settings'
 }
 
 function leftoverOptionals(readiness: Readiness, flags: InitFlags): ReadinessState[] {
   return readiness.states.filter((state) => {
     if (state.status !== 'optional-gap') return false
-    if (isHookSubstate(state.id)) return false
+    if (isOptionalAutomation(state.id)) return false
+    // Not an install anyone declined, so "Optional, not set up" would misread
+    // it; it gets its own line below.
+    if (state.id === 'cli-bin') return false
     if (state.id === 'skill' && flags.skills === false) return false
     return true
   })
+}
+
+/**
+ * A `notifai` the reader cannot type.
+ *
+ * Said on the way out of every run, successful or not, because every next step
+ * this command prints — here, in the skill, in the README — names a command
+ * that will not be found until it is fixed.
+ */
+function printMissingCliBin(deps: CommandDeps, readiness: Readiness): void {
+  const state = readiness.states.find((candidate) => candidate.id === 'cli-bin')
+  if (state?.status !== 'optional-gap') return
+  deps.io.out(`Heads up: ${state.detail}. ${remedyLine(state)}`)
 }
 
 function printOptionalLeftovers(deps: CommandDeps, leftovers: readonly ReadinessState[]): void {
@@ -814,8 +925,9 @@ async function printInitClose(
   deps: CommandDeps,
   readiness: Readiness,
   flags: InitFlags,
+  stoppedBy: ReadinessState | null = null,
 ): Promise<void> {
-  const blocker = firstBlocker(readiness)
+  const blocker = stoppedBy ?? firstRequiredBlocker(readiness)
   const canSend = readiness.states.find((state) => state.id === 'devices')?.status === 'ready'
   const questions = questionRoutingReady(readiness)
   const leftovers = leftoverOptionals(readiness, flags).filter(
@@ -827,6 +939,8 @@ async function printInitClose(
     deps.io.out(UPDATE_CLI_COMMAND)
     return
   }
+
+  printMissingCliBin(deps, readiness)
 
   if (deps.io.interactive === true) {
     if (blocker === null) {

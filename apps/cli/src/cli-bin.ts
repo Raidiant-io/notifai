@@ -55,13 +55,32 @@ export function cliBinReadiness(
       },
     }
   }
+  // A global install that landed outside PATH used to report `ready` with
+  // "this process can run" — which is true of the running process and false of
+  // every instruction it goes on to print. Hooks embed absolute paths, so
+  // nothing visibly breaks until the reader types `notifai` themselves.
+  //
+  // Not a blocker: this process is already running, so the whole setup —
+  // pairing, the app, the delivery proof — still completes. It is the later
+  // `notifai …` lines that will not be found, and saying so is the fix.
+  if (entries[0] === undefined) {
+    return {
+      id: 'cli-bin',
+      title: 'notifai command',
+      status: 'optional-gap',
+      detail:
+        'no `notifai` on PATH — this process runs, but a typed `notifai …` command will not be found',
+      remedy: {
+        by: 'user-here',
+        summary: 'install notifai globally so the command is on your PATH',
+        command: 'npm install -g @raidiant/notifai',
+      },
+    }
+  }
   return {
     id: 'cli-bin',
     title: 'notifai command',
     status: 'ready',
-    detail:
-      entries[0] === undefined
-        ? 'this process can run; no notifai binary was on PATH'
-        : `${entries[0]} is executable`,
+    detail: `${entries[0]} is executable`,
   }
 }

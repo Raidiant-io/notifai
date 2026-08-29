@@ -8,6 +8,11 @@ import {
   resolvedBaseUrl,
   type CommandDeps,
 } from './commands-core.js'
+import {
+  companionPlatformLabel,
+  setupCompanionUrl,
+  type CompanionPlatform,
+} from './setup-destinations.js'
 
 // ---------------------------------------------------------------------------
 // devices / capabilities
@@ -40,15 +45,15 @@ export async function devicesCommand(
         deps.io.out(`No ${platform} devices registered.`)
         return EXIT.ok
       }
-      const supportUrl = supportPageUrl(authed.baseUrl)
+      const setupUrl = setupCompanionUrl(authed.baseUrl)
       let email: string | null = null
       try {
         email = (await authed.client.accessStatus()).email
       } catch {
-        // Best-effort: the empty-state copy still points at /support without it.
+        // Best-effort: the empty-state copy still names the destination.
       }
       deps.io.out(
-        `No devices yet. Install Notifai from ${supportUrl}, ${sameAccountSignInLine(email)}, and allow notifications.`,
+        `No devices yet. Set up a Companion App at ${setupUrl}, ${sameAccountSignInLine(email)}, and allow notifications.`,
       )
       return EXIT.ok
     }
@@ -120,14 +125,6 @@ export async function capabilitiesCommand(
   }
 }
 
-export function supportPageUrl(baseUrl: string): string {
-  const normalized = baseUrl.replace(/\/+$/, '')
-  if (normalized === 'https://api.notifai.sh' || normalized === 'https://notifai.fly.dev') {
-    return 'https://app.notifai.sh/support'
-  }
-  return `${normalized}/support`
-}
-
 /** Same-account line for the device hop; prefers the real email when known. */
 export function sameAccountSignInLine(email: string | null | undefined): string {
   return email
@@ -135,18 +132,28 @@ export function sameAccountSignInLine(email: string | null | undefined): string 
     : 'sign in with the same email as this account'
 }
 
+/**
+ * What is actually left to do on the phone.
+ *
+ * Three sub-states, three remedies. "Install the app" is useless advice to
+ * someone who installed it and then declined the permission prompt, and
+ * offering install steps to a registered device says this terminal did not
+ * read the state it just fetched.
+ */
 export function deviceInstallRemedy(options: {
   baseUrl: string
   email: string | null
   devices: readonly RoutableDevice[]
+  platform?: CompanionPlatform
 }): string {
-  const support = supportPageUrl(options.baseUrl)
   const sameEmail = sameAccountSignInLine(options.email)
   if (options.devices.length === 0) {
-    return (
-      `open the Companion App install steps at ${support} on a supported device, ` +
-      `install Notifai, ${sameEmail}, and allow notifications`
-    )
+    const destination = setupCompanionUrl(options.baseUrl, options.platform)
+    const named =
+      options.platform === undefined
+        ? 'the Companion App'
+        : `Notifai on ${companionPlatformLabel(options.platform)}`
+    return `open the steps for ${named} at ${destination}, install it, ${sameEmail}, and allow notifications`
   }
   if (options.devices.some((d) => d.permission_status === 'denied')) {
     return "allow notifications for Notifai in the device's Settings"
