@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.0](https://github.com/Raidiant-io/notifai/compare/v10.0.0...v10.1.0) (2026-08-29)
+
+
+### Features
+
+* add first-class OpenClaw lifecycle support ([3df611b](https://github.com/Raidiant-io/notifai/commit/3df611b466d55c964a50576e404feb140484b1ab))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.0 to 6.0.1
+
 ## [10.0.0](https://github.com/Raidiant-io/notifai/compare/v9.3.0...v10.0.0) (2026-08-28)
 
 
