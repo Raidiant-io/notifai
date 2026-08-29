@@ -1,6 +1,7 @@
 export {
   EXIT,
   log,
+  updateCliCommand,
   type CommandDeps,
   type CommandIo,
   type CommandSpinner,
@@ -63,6 +64,7 @@ export {
   type SetupScope,
 } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
+export { cliUpdateCommand, type CliUpdateFlags } from './commands-update.js'
 export {
   projectDisableCommand,
   projectEnableCommand,

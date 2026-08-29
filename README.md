@@ -37,6 +37,7 @@ notifai config show          # every setting, explained
 notifai config explain <key> # one setting, in full
 notifai config unset <key>   # return a setting to its inherited/default value
 notifai doctor               # check every part of the setup
+notifai update               # update the CLI this shell and the hooks use
 ```
 
 Agents can ask for a reply, collect it directly, and send the required Agent

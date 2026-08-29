@@ -18,6 +18,9 @@ bin, `npx --yes @raidiant/notifai@<version>` is supported. Pin the version.
 `hooks install` then writes that same pinned npx invocation into the harness
 adapter. This is slower than a real install and is not the default path.
 
+Use `notifai update` for later global updates. It repairs the installation the
+shell actually selects and keeps the stable hook adapter on that same CLI.
+
 `init` walks the setup one step at a time and tells you the single next
 thing to do. Run it again after each step; it works out what remains.
 
