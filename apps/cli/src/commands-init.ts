@@ -242,6 +242,20 @@ function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
   return 'Waiting for a Companion device to become ready…'
 }
 
+/** How many Companion Apps this Account has registered, on any platform. */
+async function registeredCompanions(client: ApiClient): Promise<number> {
+  try {
+    const response = await client.listDevices()
+    return response.devices.filter(
+      (device) => device.platform === 'ios' || device.platform === 'android',
+    ).length
+  } catch {
+    // Unreachable here means unreachable for the wait that follows; ask, so a
+    // User with nothing installed still gets the platform-specific steps.
+    return 0
+  }
+}
+
 /**
  * Which phone the notifications should arrive on.
  *
@@ -284,11 +298,14 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   }
 
   const budgetLabel = formatWaitBudget(DEVICE_BRIDGE_TIMEOUT_MS)
-  // A device that is registered but silent needs its permission allowed, not
-  // install steps: asking which phone would be asking about one they are
-  // holding. Only the nothing-registered case has a platform still to name.
-  const nothingRegistered = /no active Companion App registered yet/.test(state.detail)
-  const platform = nothingRegistered ? await askCompanionPlatform(deps) : null
+  // A phone that is registered but silent needs its permission allowed, not
+  // install steps — and asking which phone would be asking about one they are
+  // already holding. Only a User with nothing registered has a platform still
+  // to name, and that is read from the account rather than from the wording of
+  // the state that got us here.
+  const platform = (await registeredCompanions(authed.client)) === 0
+    ? await askCompanionPlatform(deps)
+    : null
   const setupUrl = setupCompanionUrl(authed.baseUrl, platform ?? undefined)
   const stepsLabel =
     platform === null ? 'Setup steps (no typing)' : `${companionPlatformLabel(platform)} steps (no typing)`
@@ -610,22 +627,6 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   return deps.io.confirm(question, true)
 }
 
-/**
- * Setup as one step at a time.
- *
- * The old version ran five steps in a fixed order and ended with a list of
- * everything still outstanding. That is a report, and a report is the wrong
- * output here: someone handed five things to do does none of them, and the
- * order was the script's rather than the dependency graph's — it offered to
- * install hooks after a sign-in that had just failed.
- *
- * So this closes what it can, then surfaces exactly one thing, the first that
- * stands in the way. Re-running advances by one. Idempotence stops being a
- * property to preserve and becomes the mechanism: every decision is derived
- * from observed state, so a partial run, a second project, a fresh worktree
- * and a revoked credential are the same code path arriving at different
- * states rather than four branches to enumerate.
- */
 /** The two states whose remedy actually places files the scope question is about. */
 function needsInstallScope(state: ReadinessState): boolean {
   return state.id === 'hooks' || state.id === 'skill'
@@ -723,6 +724,22 @@ async function scopeForLocalInstall(
   return 'declined'
 }
 
+/**
+ * Setup as one step at a time.
+ *
+ * The old version ran five steps in a fixed order and ended with a list of
+ * everything still outstanding. That is a report, and a report is the wrong
+ * output here: someone handed five things to do does none of them, and the
+ * order was the script's rather than the dependency graph's — it offered to
+ * install hooks after a sign-in that had just failed.
+ *
+ * So this closes what it can, then surfaces exactly one thing, the first that
+ * stands in the way. Re-running advances by one. Idempotence stops being a
+ * property to preserve and becomes the mechanism: every decision is derived
+ * from observed state, so a partial run, a second project, a fresh worktree
+ * and a revoked credential are the same code path arriving at different
+ * states rather than four branches to enumerate.
+ */
 export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<number> {
   const workingDeps: CommandDeps = flags.json === true
     ? {
