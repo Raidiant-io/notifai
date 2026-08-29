@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3a82e4a1da841403b40b2ac8054fd0ced9f4c1a0eb8cf010d92bb3149e73b9af",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the README Subscription rewrite that replaces the premature paid-service claim with pre-launch wording (purchase not open yet, access by invitation) against every shipped Agent Guidance surface. The hooks, skill, harness setup, and CLI readiness surfaces make no purchase or subscription claims, and the new wording uses the existing canonical terms, so no guidance content needed to change.",
+  "behavior_digest": "sha256:db0dbefc866e482631af317904f9acc1aabd7f01510c1fb3889e3758f1357fea",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed every shipped Agent Guidance surface on the rebased OpenClaw history (first-run one-init journey plus OpenClaw managed lifecycle and the Windows/agent-local evidence repair). Lifecycle hooks, harness-setup, README, and CLI help name OpenClaw; ask stays fail-closed; the Windows cell is WSL2-only with native Gateway unproven. Domain terms and skill Decide/Send/Ask stay harness-name-free. First-run init keeps unpaired hook skip on `notifai init` and login in the advanced group.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

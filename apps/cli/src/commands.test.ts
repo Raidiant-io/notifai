@@ -34,6 +34,7 @@ import {
   acknowledgeCommand,
   askCommand,
   accessStatusCommand,
+  authStatusCommand,
   buildQuestions,
   assessReadiness,
   capabilitiesCommand,
@@ -446,6 +447,16 @@ describe('command contracts', () => {
     expect(submitted?.draft.project).toBeUndefined()
     expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
   })
+  it('tells an unsigned machine to run init, not login', () => {
+    const io = new CapturedIo()
+    const deps = makeDeps(io, {} as ApiClient)
+    deps.store.load = () => null
+
+    expect(authStatusCommand(deps, {})).toBe(EXIT.auth)
+    expect(io.errLines.join('\n')).toMatch(/Not signed in\. Run `notifai init`/)
+    expect(io.errLines.join('\n')).not.toContain('notifai login')
+  })
+
   it('shows an actionable no-plan access state', async () => {
     const io = new CapturedIo()
     const client = {
@@ -2596,7 +2607,7 @@ describe('credential origin pinning', () => {
     expect(io.errLines).toEqual([
       'This account has no active plan or temporary Alpha access.',
       'next: Ask the account owner for Alpha access.',
-      'After access is granted, run `notifai login` again.',
+      'After access is granted, run `notifai init` again.',
     ])
   })
 
@@ -3276,6 +3287,71 @@ describe('harness activation guidance', () => {
     // rejected definition.
     expect(inspectHookAdapter(deps.hookAdapterHome).problems).toEqual([])
     expect(inspectHookAdapter(deps.hookAdapterHome).target?.scriptPath).toBe(scriptPath)
+  })
+
+  it('installs an owned OpenClaw plugin and reports unsupported continuation', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-activation-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const home = path.join(cwd, 'home')
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        HOME: home,
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCLAW_STATE_DIR: path.join(cwd, 'openclaw-home'),
+      },
+    }
+
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain('Installed openclaw hooks in')
+    expect(io.outLines.join('\n')).toContain(
+      'Restart the OpenClaw Gateway, start one fresh Agent Session, send one prompt, then run `notifai doctor`.',
+    )
+    const pluginFile = path.join(cwd, '.openclaw', 'extensions', 'notifai', 'index.js')
+    const plugin = readFileSync(pluginFile, 'utf8')
+    expect(plugin).toContain('api.on("before_prompt_build"')
+    expect(plugin).toContain('api.on("resolve_exec_env"')
+    expect(plugin).not.toContain('command:stop')
+    const config = JSON.parse(
+      readFileSync(path.join(cwd, 'openclaw-home', 'openclaw.json'), 'utf8'),
+    ) as {
+      plugins: { entries: { notifai: { enabled: boolean; hooks: { allowConversationAccess: boolean } } } }
+    }
+    expect(config.plugins.entries.notifai).toEqual({
+      enabled: true,
+      hooks: { allowConversationAccess: true },
+    })
+
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toContain('no proven answer continuation')
+  })
+
+  it('refuses to overwrite a foreign OpenClaw plugin', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-foreign-'))
+    const plugin = path.join(cwd, '.openclaw', 'extensions', 'notifai', 'index.js')
+    mkdirSync(path.dirname(plugin), { recursive: true })
+    writeFileSync(plugin, 'export default { id: "foreign" }\n')
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: {
+        HOME: path.join(cwd, 'home'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCLAW_STATE_DIR: path.join(cwd, 'openclaw-home'),
+      },
+    }
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(io.errLines.join('\n')).toMatch(/was not written by Notifai/)
+    expect(readFileSync(plugin, 'utf8')).toBe('export default { id: "foreign" }\n')
   })
 })
 
@@ -4524,8 +4600,9 @@ describe('init', () => {
     expect(await initCommand(deps, {})).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: This machine')
-    expect(out).toContain('notifai login')
-    expect(out).toContain('Then re-run `notifai init` and it will pick up from here.')
+    expect(out).toContain('notifai init')
+    expect(out).not.toContain('notifai login')
+    expect(out).not.toContain('Then re-run')
     // The device gap is real and downstream; it must stay hidden until the
     // sign-in that would let anyone actually check it has happened.
     expect(out).not.toContain('companion app')
@@ -5071,7 +5148,8 @@ describe('init', () => {
     }
 
     expect(await initCommand(deps, { setupScope: 'project' })).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('notifai login')
+    expect(io.outLines.join('\n')).toContain('notifai init')
+    expect(io.outLines.join('\n')).not.toContain('notifai login')
   })
 
   it('announces sign-in for a present human without re-confirming', async () => {
@@ -5104,7 +5182,8 @@ describe('init', () => {
     const out = io.outLines.join('\n')
     expect(out).toContain('Opening your browser to approve this machine — Ctrl-C to stop.')
     expect(out).toContain('Next: This machine')
-    expect(out).toContain('Then re-run `notifai init` and it will pick up from here.')
+    expect(out).toContain('notifai init')
+    expect(out).not.toContain('notifai login')
   })
 
   it('never prompts or opens a browser when an agent runs it unattended', async () => {
@@ -5667,8 +5746,86 @@ describe('init', () => {
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Account')
     expect(out).toContain('pair it again')
-    expect(out).toContain('notifai login')
+    expect(out).toContain('notifai init')
+    expect(out).not.toContain('notifai login')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it('names the support next action when a paired account has no active plan', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-no-plan-'))
+    const io = new CapturedIo()
+    const nextAction = 'Open https://app.notifai.sh/support to request Alpha access, then retry.'
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => {
+        throw new ApiCallError(403, 'no_active_plan', 'No active plan.', nextAction)
+      },
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+        email: 'rafael@example.test',
+      }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+    }
+
+    const readiness = await assessReadiness(deps)
+    const auth = readiness.states.find((state) => state.id === 'auth')
+    expect(auth).toMatchObject({
+      status: 'gap',
+      detail: 'no active plan or temporary Alpha access (rafael@example.test)',
+      remedy: { by: 'user-elsewhere', summary: nextAction },
+    })
+    expect(auth?.remedy && 'command' in auth.remedy ? auth.remedy.command : undefined).toBeUndefined()
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: Account')
+    expect(out).toContain(nextAction)
+    expect(out).not.toContain('pair it again')
+    expect(out).not.toContain('notifai login')
+    expect(out.match(/^Next:/gm)).toHaveLength(1)
+
+    const doctorIo = new CapturedIo()
+    expect(await doctorCommand({ ...deps, io: doctorIo }, { json: true })).toBe(EXIT.failed)
+    const payload = JSON.parse(doctorIo.outLines[0] ?? '{}') as {
+      states: Array<{ id: string; remedy?: { summary?: string; command?: string } }>
+    }
+    const doctorAuth = payload.states.find((state) => state.id === 'auth')
+    expect(doctorAuth?.remedy?.summary).toBe(nextAction)
+    expect(doctorAuth?.remedy?.command).toBeUndefined()
+  })
+
+  it('does not treat a listDevices no-plan 403 as a revoked machine when accessStatus fails', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-no-plan-devices-only-'))
+    const io = new CapturedIo()
+    const nextAction = 'Open https://app.notifai.sh/support to request Alpha access, then retry.'
+    const client = {
+      health: async () => true,
+      listDevices: async () => {
+        throw new ApiCallError(403, 'no_active_plan', 'No active plan.', nextAction)
+      },
+      accessStatus: async () => {
+        throw new ApiCallError(500, 'internal_error', 'access status unavailable')
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+    }
+
+    const readiness = await assessReadiness(deps)
+    const auth = readiness.states.find((state) => state.id === 'auth')
+    expect(auth?.status).toBe('gap')
+    expect(auth?.detail).toContain('no active plan')
+    expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
+    expect(JSON.stringify(auth)).not.toContain('pair it again')
   })
 
   it('reuses proof across worktrees of one Project on the same Approved Machine', async () => {
@@ -6721,6 +6878,28 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
     expect(readSessionState('opencode-current', env).pending).toBeUndefined()
+  })
+
+  it('rejects OpenClaw before registration even with an exact matching pointer', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-openclaw-unsupported-'))
+    const io = new CapturedIo()
+    const env = {
+      HOME: path.join(cwd, 'home'),
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      OPENCLAW_STATE_DIR: path.join(cwd, 'openclaw-home'),
+      NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:main',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('agent:main:main', env, { harness: 'openclaw', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'agent:main:main', 42, 'openclaw')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
+    expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
   })
 
   it('refuses Hermes ask as unsupported rather than as missing hooks', () => {

@@ -15,10 +15,11 @@
  *
  * Three things shape the layout:
  *
- * The menu leads with whatever is actually in the way. Someone who is not
- * signed in is offered sign-in first; someone with no device that can receive
- * is offered a device; everyone else is offered the test notification, because
- * seeing the thing arrive on your device is what makes the product real.
+ * First-run is `init`, not a second sign-in/device split. An unsigned machine
+ * enters that journey immediately; a remaining blocker is offered as Finish
+ * setup. Once send-prerequisites are ready, the menu leads with the test
+ * notification, because seeing the thing arrive on a device is what makes the
+ * product real.
  *
  * Detail is earned, not given. A settings group shows fourteen one-line
  * summaries, and the paragraph explaining a key appears once the reader has
@@ -180,6 +181,10 @@ export async function interactiveCommand(deps: CommandDeps, version: string): Pr
   process.stdout.write(`  ${tagline(version)}\n`)
 
   let readiness = await assess(deps)
+  if (stateById(readiness, 'credential')?.status !== 'ready') {
+    await initCommand(deps, {})
+    readiness = await assess(deps)
+  }
   let first = true
 
   for (;;) {
@@ -362,24 +367,18 @@ function menuFor(readiness: Readiness): { value: Screen; label: string; hint?: s
 
   const options: { value: Screen; label: string; hint?: string }[] = []
 
-  if (!signedIn) {
-    options.push({ value: 'account', label: 'Sign in', hint: 'approve this machine in your browser' })
-  } else if (!hasDevice) {
+  if (blocker !== null) {
     options.push({
-      value: 'devices',
-      label: 'Add a device',
-      hint: 'install a supported Companion App',
+      value: 'setup',
+      label: 'Finish setup',
+      hint: shorten(blocker.title.toLowerCase(), 40),
     })
-  } else {
+  } else if (signedIn && hasDevice) {
     options.push({
       value: 'test',
       label: 'Send a test notification',
       hint: 'prove the whole path, end to end',
     })
-  }
-
-  if (blocker !== null && signedIn) {
-    options.push({ value: 'setup', label: 'Finish setup', hint: shorten(blocker.title.toLowerCase(), 40) })
   }
 
   options.push(
@@ -393,11 +392,11 @@ function menuFor(readiness: Readiness): { value: Screen; label: string; hint?: s
   if (signedIn && hasDevice) {
     options.push({ value: 'devices', label: 'Devices', hint: 'what can receive right now' })
   }
-  options.push(
-    { value: 'doctor', label: 'Run diagnostics', hint: 'check every part of the setup' },
-    { value: 'account', label: 'Account', hint: signedIn ? 'plan, machine, sign out' : 'sign in' },
-    { value: 'quit', label: 'Quit' },
-  )
+  options.push({ value: 'doctor', label: 'Run diagnostics', hint: 'check every part of the setup' })
+  if (signedIn) {
+    options.push({ value: 'account', label: 'Account', hint: 'plan, machine, sign out' })
+  }
+  options.push({ value: 'quit', label: 'Quit' })
   return options
 }
 
@@ -822,12 +821,7 @@ async function accountScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   const signedIn = stateById(readiness, 'credential')?.status === 'ready'
 
   if (!signedIn) {
-    const go = await clack.confirm({
-      message: 'Sign in now? This opens your browser to approve this machine.',
-      initialValue: true,
-    })
-    if (cancelled(go) || go !== true) return false
-    await loginCommand(deps, {})
+    await initCommand(deps, {})
     return true
   }
 

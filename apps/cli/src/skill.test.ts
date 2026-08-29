@@ -252,7 +252,7 @@ describe('Notifai agent skill', () => {
     // Harness names may appear only in setup/routing material, where the
     // harness IS the subject.
     for (const heading of ['## Decide whether to notify', '## Send', '## Ask a question', '## When the answer arrives']) {
-      expect(section(heading), heading).not.toMatch(/OpenCode|Orca|Cursor|Codex|Hermes/)
+      expect(section(heading), heading).not.toMatch(/OpenCode|OpenClaw|Orca|Cursor|Codex|Hermes/)
     }
   })
 
@@ -397,7 +397,7 @@ describe('Notifai agent skill', () => {
   it('moves per-harness mechanics into progressive disclosure', () => {
     expect(skill).toContain('[Harness setup and recovery](references/harness-setup.md)')
     expect(skill).toMatch(/read it when you are\s+installing hooks or diagnosing routing/i)
-    for (const harness of ['Claude Code', 'Codex', 'Cursor', 'OpenCode', 'Hermes']) {
+    for (const harness of ['Claude Code', 'Codex', 'Cursor', 'OpenCode', 'OpenClaw', 'Hermes']) {
       expect(harnessReference).toContain(`**${harness}:**`)
     }
     expect(harnessReference).toMatch(/exact `HERMES_SESSION_ID`/i)

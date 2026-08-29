@@ -12,6 +12,8 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  rmdirSync,
   rmSync,
 } from 'node:fs'
 import path from 'node:path'
@@ -87,6 +89,18 @@ import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
+import {
+  OPENCLAW_PLUGIN_MANIFEST,
+  OPENCLAW_PLUGIN_PACKAGE,
+  isOurOpenclawPlugin,
+  mergeOpenclawNotifaiEntry,
+  openclawConfigPath,
+  openclawPluginManifest,
+  openclawPluginPackage,
+  openclawPluginSource,
+  parseOpenclawConfig,
+  removeOpenclawNotifaiEntry,
+} from './openclaw-plugin.js'
 import { packageVersion } from './release.js'
 import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
 import { rejectAccidentalEscapedNewlines } from './send.js'
@@ -104,6 +118,7 @@ import {
 } from './send.js'
 import {
   EXIT,
+  SETUP_COMMAND,
   authedClient,
   diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
@@ -144,7 +159,7 @@ export type HookEvent = (typeof HOOK_EVENTS)[number]
 
 /** Lifecycle handlers one installed harness must carry in this CLI build. */
 export function requiredHookEvents(harness: HookInstallableHarness): readonly HookEvent[] {
-  if (harness === 'opencode') return []
+  if (harness === 'opencode' || harness === 'openclaw') return []
   return harness === 'cursor'
     ? ['session-start', 'activation-stop', 'user-prompt-submit', 'stop', 'session-end']
     : ['session-start', 'subagent-start', 'user-prompt-submit', 'stop', 'session-end']
@@ -469,7 +484,7 @@ export async function hookRunCommand(
     const credential = deps.store.load()
     if (!credential) {
       logger.error('hook.end', { hook: event, outcome: 'not-paired' })
-      deps.io.err('notifai: hook skipped: this machine is not paired; run `notifai login`')
+      deps.io.err(`notifai: hook skipped: this machine is not paired; run \`${SETUP_COMMAND}\``)
       return EXIT.ok
     }
     // Pin authenticated traffic to the origin the credential was issued for. A
@@ -1348,6 +1363,11 @@ export function hookActivationAdvice(installations: Installation[]): string {
       'OpenCode: restart it, then send one prompt; plugins load at startup, but non-blocking question continuation is intentionally unsupported',
     )
   }
+  if (harnesses.has('openclaw')) {
+    advice.push(
+      'OpenClaw: restart the Gateway, then send one prompt; plugins load at startup, but non-blocking question continuation is intentionally unsupported',
+    )
+  }
   return `${advice.join('. ')}.`
 }
 
@@ -1710,6 +1730,8 @@ function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarne
         ? 'Start one fresh Cursor conversation, send one prompt, finish its first turn, then run `notifai doctor`.'
         : harness === 'opencode'
           ? 'Restart OpenCode, start one fresh session, send one prompt, then run `notifai doctor`.'
+          : harness === 'openclaw'
+            ? 'Restart the OpenClaw Gateway, start one fresh Agent Session, send one prompt, then run `notifai doctor`.'
           : `Start one fresh ${label} session, send one prompt, then run \`notifai doctor\`.`
   if (deps.io.interactive === true && deps.io.note) {
     void deps.io.note(`${file}\n${activation}`, `${label} hooks installed`)
@@ -1799,6 +1821,16 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
       platform: hookPlatform,
       nodePath,
+      ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
+    })
+  }
+  if (harness === 'openclaw') {
+    return installOpenclawPlugin(deps, settingsTarget, {
+      adapterPath,
+      timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
+      platform: hookPlatform,
+      nodePath,
+      global: wantGlobal,
       ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
     })
   }
@@ -1948,6 +1980,113 @@ function installOpencodePlugin(
   return EXIT.ok
 }
 
+function installOpenclawPlugin(
+  deps: CommandDeps,
+  file: string,
+  options: {
+    adapterPath: string
+    timeoutSeconds: number
+    platform?: NodeJS.Platform
+    nodePath?: string
+    global: boolean
+    narrate?: boolean
+  },
+): number {
+  const pluginDir = path.dirname(file)
+  try {
+    withTargetFileLock(file, () => {
+      if (existsSync(file)) {
+        assertOwnedRegularFile(file)
+        const existing = readFileSync(file, 'utf8')
+        if (!isOurOpenclawPlugin(existing)) {
+          throw new Error(`${file} exists and was not written by Notifai; move it aside first.`)
+        }
+      }
+      atomicWriteFileSync(file, openclawPluginSource(options), {
+        mode: 0o600,
+        preserveMode: false,
+        requireCurrentUserOwner: true,
+      })
+      atomicWriteFileSync(path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), openclawPluginManifest(), {
+        mode: 0o600,
+        preserveMode: false,
+        requireCurrentUserOwner: true,
+      })
+      atomicWriteFileSync(path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), openclawPluginPackage(), {
+        mode: 0o600,
+        preserveMode: false,
+        requireCurrentUserOwner: true,
+      })
+    })
+    writeOpenclawEnablement(deps, pluginDir, options.global)
+  } catch (err) {
+    deps.io.err(String(err))
+    return EXIT.failed
+  }
+  if (options.narrate !== false) printHooksInstallClose(deps, 'openclaw', file)
+  return EXIT.ok
+}
+
+function writeOpenclawEnablement(deps: CommandDeps, pluginDir: string, global: boolean): void {
+  const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
+  withTargetFileLock(configFile, () => {
+    let config: Record<string, unknown> = {}
+    if (existsSync(configFile)) {
+      assertOwnedRegularFile(configFile)
+      config = parseOpenclawConfig(readFileSync(configFile, 'utf8'))
+    }
+    const merged = mergeOpenclawNotifaiEntry(config, pluginDir, global)
+    atomicWriteFileSync(configFile, `${JSON.stringify(merged, null, 2)}\n`, {
+      mode: 0o600,
+      preserveMode: true,
+      requireCurrentUserOwner: true,
+    })
+  })
+}
+
+function uninstallOpenclawPlugin(deps: CommandDeps, file: string): number {
+  const pluginDir = path.dirname(file)
+  try {
+    const removed = withTargetFileLock(file, () => {
+      if (!existsSync(file)) return false
+      assertOwnedRegularFile(file)
+      if (!isOurOpenclawPlugin(readFileSync(file, 'utf8'))) {
+        deps.io.out(`Left ${file} alone: Notifai did not write it.`)
+        return false
+      }
+      rmSync(file, { force: true })
+      rmSync(path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), { force: true })
+      rmSync(path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), { force: true })
+      if (existsSync(pluginDir) && readdirSync(pluginDir).length === 0) {
+        rmdirSync(pluginDir)
+      }
+      return true
+    })
+    if (removed) {
+      const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
+      if (existsSync(configFile)) {
+        withTargetFileLock(configFile, () => {
+          assertOwnedRegularFile(configFile)
+          const config = parseOpenclawConfig(readFileSync(configFile, 'utf8'))
+          const next = removeOpenclawNotifaiEntry(config, pluginDir)
+          atomicWriteFileSync(configFile, `${JSON.stringify(next, null, 2)}\n`, {
+            mode: 0o600,
+            preserveMode: true,
+            requireCurrentUserOwner: true,
+          })
+        })
+      }
+      deps.io.out(`Removed the Notifai OpenClaw plugin at ${file}`)
+    } else if (!existsSync(file)) {
+      deps.io.out(`Nothing to remove: ${file} does not exist.`)
+    }
+    return EXIT.ok
+  } catch (err) {
+    deps.io.err(String(err))
+    return EXIT.failed
+  }
+}
+
 export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
@@ -1980,6 +2119,9 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
       deps.io.err(String(err))
       return EXIT.failed
     }
+  }
+  if (harness === 'openclaw') {
+    return uninstallOpenclawPlugin(deps, file)
   }
   if (harness === 'cursor') {
     let stripped: ReturnType<typeof removeCursorHooks> | null

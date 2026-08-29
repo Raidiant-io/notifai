@@ -1,8 +1,8 @@
 /**
  * Help that answers "what can I do here", not "what strings does argv accept".
  *
- * The old help listed seventeen commands in one flat column, with the two a new
- * user needs (`init`, `login`) sitting between a platform capability dump and
+ * The old help listed seventeen commands in one flat column, with the one a new
+ * user needs (`init`) sitting between a platform capability dump and
  * an entry point marked "Internal:". Everything was equally prominent, which is
  * the same as nothing being prominent.
  *
@@ -102,18 +102,17 @@ export const helpConfiguration: HelpConfiguration = {
 /**
  * Footer for the root help.
  *
- * Its whole job is to make the interactive app discoverable, because someone
- * reading a wall of flags has already demonstrated they did not know it was
- * there.
+ * First-run is `notifai init`. The interactive app is what a human opens
+ * later, once setup is no longer the thing in the way.
  */
 export function rootHelpFooter(): string {
   const lines = [
     '',
     style.heading('Start here'),
-    `  ${style.code('notifai')}              ${style.dim(
-      `${glyph.arrow} the interactive app: status, settings, devices, test sends`,
-    )}`,
     `  ${style.code('notifai init')}         ${style.dim(`${glyph.arrow} set this project up, step by step`)}`,
+    `  ${style.code('notifai')}              ${style.dim(
+      `${glyph.arrow} after setup: status, settings, devices, test sends`,
+    )}`,
     '',
     style.heading('First call, for an agent'),
     `  ${style.code('notifai send --kind done --title "All 42 tests passed" --body "Finished in 3m 10s. Next: review the release candidate."')}`,

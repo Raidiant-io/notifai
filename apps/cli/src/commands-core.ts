@@ -186,6 +186,9 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
 
 export const UPDATE_CLI_COMMAND = 'npm install -g @raidiant/notifai'
 
+/** The one first-run command an unsigned machine is told to run. */
+export const SETUP_COMMAND = 'notifai init'
+
 function affectedDeviceNames(details: unknown): string[] {
   if (typeof details !== 'object' || details === null || !('device_names' in details)) return []
   const names = (details as { device_names?: unknown }).device_names

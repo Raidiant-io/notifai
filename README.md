@@ -89,6 +89,7 @@ part of the current public support claim.
 | Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
 | Cursor hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenClaw hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
 
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
 journal
@@ -96,10 +97,12 @@ for the next hook rather than starting an unproven or divergent agent turn.
 Claude Code live inbox wake requires Claude Code 2.1.224 or newer and is an
 upstream macOS/Linux capability; on Windows, Notifai keeps Stop open and returns
 the accepted answer through Claude Code's ordinary continuation channel. Cursor does not expose the conversation
-identity needed to prove asynchronous return, and OpenCode has no proven
-exactly-once continuation after `session.idle`; their hooks still support
+identity needed to prove asynchronous return, OpenCode has no proven
+exactly-once continuation after `session.idle`, and OpenClaw has no proven
+exactly-once continuation after `agent_end`; their hooks still support
 lifecycle cleanup and routing diagnostics, while blocking reply mode provides
-the reliable question path.
+the reliable question path. OpenClaw's advertised Windows cell is WSL2 only;
+a native Windows Gateway plus native Notifai CLI in one process is unproven.
 
 ## Companion App installation
 
@@ -177,8 +180,8 @@ pass `--setup-scope project` or `--setup-scope global`.
 submits, the end of the agent's turn, and the end of the Agent Session into the
 harness.
 How they appear depends on the harness — Claude Code and Codex name
-them in a hook file, Cursor uses its own hook shapes, and OpenCode gets a
-generated plugin. They are how a question reaches your devices and how the
+them in a hook file, Cursor uses its own hook shapes, and OpenCode and OpenClaw
+get a generated plugin. They are how a question reaches your devices and how the
 answer comes back, without the agent keeping any of that in its context.
 
 **SessionStart** (`session-start`) gives the main owner the small model-visible
@@ -191,7 +194,8 @@ authentication, Device Installations, or network access, so those missing
 prerequisites cannot make activation disappear. OpenCode uses its Agent Session
 relationship data to give parent Agent Sessions owner context and child Agent
 Sessions worker context; missing or unusable relationship data fails safe as
-worker.
+worker. OpenClaw uses the `sessionKey` the same way: a `:subagent:` or ACP
+nested key is a worker, and missing identity fails safe as worker.
 Cursor currently drops the context it
 accepts at SessionStart, so after the first completed turn Notifai uses one
 bounded native Stop follow-up: Cursor shows a synthetic follow-up turn, the

@@ -20,6 +20,12 @@ import {
   type HookHostPlatform,
 } from './hook-adapter.js'
 import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
+import {
+  OPENCLAW_EVENTS,
+  openclawHasGlobalEvidence,
+  openclawPluginPath,
+  openclawPluginTarget,
+} from './openclaw-plugin.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { accountHome } from './platform.js'
 import {
@@ -364,6 +370,8 @@ export function settingsFile(
     // generated plugin module, so it owns a whole file instead.
     case 'opencode':
       return opencodePluginPath(global, cwd, env, platform)
+    case 'openclaw':
+      return openclawPluginPath(global, cwd, env, platform)
     case 'cursor': {
       const home = harnessAccountHome(env, platform)
       return global
@@ -747,6 +755,7 @@ function localHarnessEvidence(cwd: string): HookInstallableHarness[] {
   if (existsSync(path.join(cwd, '.codex'))) found.push('codex')
   if (existsSync(path.join(cwd, '.cursor'))) found.push('cursor')
   if (existsSync(path.join(cwd, '.opencode'))) found.push('opencode')
+  if (existsSync(path.join(cwd, '.openclaw'))) found.push('openclaw')
   return found
 }
 
@@ -761,6 +770,7 @@ function globalHarnessEvidence(
   if (existsSync(codexGlobalDir(env, platform))) found.push('codex')
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
   if (existsSync(path.join(home, '.config', 'opencode'))) found.push('opencode')
+  if (openclawHasGlobalEvidence(existsSync, env, platform)) found.push('openclaw')
   return found
 }
 
@@ -1337,38 +1347,38 @@ export function findInstallations(
       // OpenCode's adapter is a plugin module, not a settings document, so it
       // is reported as one installation covering all three events rather than
       // parsed for handlers.
-      if (harness === 'opencode') {
+      if (harness === 'opencode' || harness === 'openclaw') {
         let source: string
         try {
           source = readOwnedRegularFile(file)
         } catch {
           continue
         }
-        const target = opencodePluginTarget(source)
+        const target =
+          harness === 'openclaw' ? openclawPluginTarget(source) : opencodePluginTarget(source)
         if (target === null) continue
+        const label = harness === 'openclaw' ? 'OpenClaw' : 'OpenCode'
         const problems = [
           ...(!target.current
-            ? ['obsolete OpenCode event wiring; rerun `notifai hooks install --harness opencode`']
+            ? [`obsolete ${label} event wiring; rerun \`notifai hooks install --harness ${harness}\``]
             : []),
           ...(target.adapter !== hookAdapterPath(adapterHome)
             ? [
-                'OpenCode still names a mutable CLI or runtime path; rerun `notifai hooks install --harness opencode`',
+                `${label} still names a mutable CLI or runtime path; rerun \`notifai hooks install --harness ${harness}\``,
               ]
             : []),
         ]
+        const events = harness === 'openclaw' ? OPENCLAW_EVENTS : OPENCODE_EVENTS
         found.push({
           harness,
           file,
           global,
           ...(problems.length > 0 ? { problems } : {}),
-          // Reported as the command line the plugin will actually run, not as
-          // the plugin's own path: every check downstream asks which build a
-          // handler invokes, and for a module that answer lives inside it.
-          handlers: OPENCODE_EVENTS.map(([event, hookEvent]) => ({
+          handlers: events.map(([event, hookEvent]) => ({
             event,
             groupIndex: 0,
             handlerIndex: 0,
-            command: hookCommand(target.adapter, hookEvent, 'opencode', {
+            command: hookCommand(target.adapter, hookEvent, harness, {
               ...commandOptions,
               ...(target.nodePath === undefined ? {} : { nodePath: target.nodePath }),
             }),

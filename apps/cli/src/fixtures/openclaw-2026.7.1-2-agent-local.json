@@ -1,0 +1,57 @@
+{
+  "vendor": "openclaw/openclaw",
+  "release": "2026.7.1-2",
+  "commit": "0790d9f",
+  "instance": {
+    "harness": "openclaw",
+    "surface": "agent-local",
+    "execHost": "gateway"
+  },
+  "durableSessionKey": "agent:main:probe-owner",
+  "rotatingSessionId": "ae6686a4-d632-4750-b73b-56faec5fff9a",
+  "observedPluginEnv": {
+    "NOTIFAI_ACTIVE_HARNESS": "openclaw",
+    "NOTIFAI_ACTIVE_SESSION_ID": "agent:main:probe-owner"
+  },
+  "worker": {
+    "sessionKeySubstring": ":subagent:",
+    "provedSessionKey": "agent:main:subagent:probe-worker",
+    "missingIdentity": "fail-closed-worker"
+  },
+  "hooks": {
+    "proven": {
+      "activation": "before_prompt_build",
+      "stop": "agent_end",
+      "execMarkers": "resolve_exec_env"
+    },
+    "unprovenOnThisSurface": {
+      "presence": "message_received",
+      "sessionEnd": "session_end"
+    }
+  },
+  "evidence": {
+    "nativeHostOs": "macos",
+    "command": "openclaw agent --local",
+    "nativeOsUnrun": ["linux", "windows"]
+  },
+  "supported": [
+    "managed-setup",
+    "lifecycle-activation",
+    "source-context-from-session-key"
+  ],
+  "unsupported": [
+    "question-routing",
+    "command-stop-as-turn-end",
+    "2026.2.26-cli"
+  ],
+  "deferred": [
+    "gateway-embedded",
+    "gateway-remote",
+    "agent-exec",
+    "acp-nested",
+    "exec-sandbox",
+    "exec-node",
+    "native-linux",
+    "native-windows"
+  ]
+}

@@ -25,6 +25,7 @@ import { buildDraft, formatReceipt } from './send.js'
 import { loginCommand } from './commands-auth.js'
 import {
   EXIT,
+  SETUP_COMMAND,
   UPDATE_CLI_COMMAND,
   authedClient,
   loadLoggedConfig,
@@ -848,8 +849,8 @@ async function printInitClose(
     await deps.io.note?.(`${blocker.title} — ${blocker.detail}\n${remedyLine(blocker)}`, 'Next')
     deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
     deps.io.out(`  ${remedyLine(blocker)}`)
-    if (blocker.remedy?.by === 'user-elsewhere' || blocker.remedy?.by === 'user-here') {
-      deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
+    if (shouldRestateInit(blocker)) {
+      deps.io.out(`  Then re-run \`${SETUP_COMMAND}\` and it will pick up from here.`)
     }
     await deps.io.outro?.('One step remains (above)')
     return
@@ -866,7 +867,12 @@ async function printInitClose(
   }
   deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
   deps.io.out(`  ${remedyLine(blocker)}`)
-  if (blocker.remedy?.by === 'user-elsewhere' || blocker.remedy?.by === 'user-here') {
-    deps.io.out('  Then re-run `notifai init` and it will pick up from here.')
+  if (shouldRestateInit(blocker)) {
+    deps.io.out(`  Then re-run \`${SETUP_COMMAND}\` and it will pick up from here.`)
   }
+}
+
+function shouldRestateInit(blocker: ReadinessState): boolean {
+  if (blocker.remedy?.by !== 'user-elsewhere' && blocker.remedy?.by !== 'user-here') return false
+  return !('command' in blocker.remedy) || blocker.remedy.command !== SETUP_COMMAND
 }
