@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [6.0.2](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.1...protocol-v6.0.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **cli:** harden launch reliability ([dc34f5d](https://github.com/Raidiant-io/notifai/commit/dc34f5d20531bc8ea75b7f2cfcd884203bc4cefd))
+* **cli:** stop pairing on the real no-access blocker ([#101](https://github.com/Raidiant-io/notifai/issues/101)) ([6a8f07d](https://github.com/Raidiant-io/notifai/commit/6a8f07d91d1e90553ae57725076973d9f6a605d8))
+
 ## [6.0.1](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.0...protocol-v6.0.1) (2026-08-29)
 
 ## [6.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v5.0.2...protocol-v6.0.0) (2026-08-28)

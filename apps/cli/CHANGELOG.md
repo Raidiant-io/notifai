@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.1](https://github.com/Raidiant-io/notifai/compare/v10.1.0...v10.1.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **cli:** harden launch reliability ([dc34f5d](https://github.com/Raidiant-io/notifai/commit/dc34f5d20531bc8ea75b7f2cfcd884203bc4cefd))
+* **cli:** repair the effective global installation ([c761cb6](https://github.com/Raidiant-io/notifai/commit/c761cb6f12371e7aff4116d24a44ee3ca04acdff))
+* **cli:** say the access wall once when setup stops ([df3baec](https://github.com/Raidiant-io/notifai/commit/df3baec85b5d7823b91665c089934b6050abb849))
+* **cli:** stop pairing on the real no-access blocker ([#101](https://github.com/Raidiant-io/notifai/issues/101)) ([6a8f07d](https://github.com/Raidiant-io/notifai/commit/6a8f07d91d1e90553ae57725076973d9f6a605d8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.1 to 6.0.2
+
 ## [10.1.0](https://github.com/Raidiant-io/notifai/compare/v10.0.0...v10.1.0) (2026-08-29)
 
 
