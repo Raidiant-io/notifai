@@ -23,12 +23,10 @@ const requiredChecks = [
   {name: 'commits', job: ciWorkflow.jobs.commits},
   {name: 'gates', job: ciWorkflow.jobs.gates},
   {name: 'secret-history', job: ciWorkflow.jobs['secret-history']},
-  ...ciWorkflow.jobs.platform.strategy.matrix.os.flatMap(os =>
-    ciWorkflow.jobs.platform.strategy.matrix.node.map(node => ({
-      name: `platform (${os}, ${node})`,
-      job: ciWorkflow.jobs.platform,
-    })),
-  ),
+  ...ciWorkflow.jobs.platform.strategy.matrix.os.map(os => ({
+    name: `platform (${os})`,
+    job: ciWorkflow.jobs.platform,
+  })),
 ]
 
 function eventConditionAllows(condition, eventName) {
@@ -124,20 +122,16 @@ test('explicit release-branch CI cannot recurse into release automation', () => 
   assert.doesNotMatch(ci, /\n\s+(?:actions|contents|pull-requests): write/)
 })
 
-test('a failed integrity dependency makes all eleven required checks run and fail', () => {
+test('a failed integrity dependency makes every required check run and fail', () => {
   assert.deepEqual(
     requiredChecks.map(check => check.name).sort(),
     [
       'commits',
       'gates',
-      'platform (macos-latest, 22)',
-      'platform (macos-latest, 24)',
-      'platform (ubuntu-latest, 22)',
-      'platform (ubuntu-latest, 24)',
-      'platform (windows-11-arm, 22)',
-      'platform (windows-11-arm, 24)',
-      'platform (windows-2025, 22)',
-      'platform (windows-2025, 24)',
+      'platform (macos-latest)',
+      'platform (ubuntu-latest)',
+      'platform (windows-11-arm)',
+      'platform (windows-2025)',
       'secret-history',
     ],
   )
@@ -157,6 +151,17 @@ test('a failed integrity dependency makes all eleven required checks run and fai
       `${check.name} must stop after its explicit integrity failure`,
     )
   }
+})
+
+test('CI uses Node 24 once per supported desktop host', () => {
+  const platform = ciWorkflow.jobs.platform
+  assert.deepEqual(
+    platform.strategy.matrix.os,
+    ['ubuntu-latest', 'macos-latest', 'windows-2025', 'windows-11-arm'],
+  )
+  assert.equal(platform.strategy.matrix.node, undefined)
+  const setupNode = platform.steps.find(step => String(step.uses).startsWith('actions/setup-node@'))
+  assert.equal(setupNode.with['node-version'], '24')
 })
 
 test('a packed install failure becomes a failing required gates check', () => {
@@ -193,8 +198,11 @@ test('each created release tag dispatches protected publication at its exact SHA
   assert.match(publish, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
   assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/)
   assert.match(publish, /environment: npm-release/)
-  assert.match(publish, /os: \[windows-2025, windows-11-arm\]/)
-  assert.match(publish, /node: \['22', '24'\]/)
+  const windows = publishWorkflow.jobs['windows-cli']
+  assert.deepEqual(windows.strategy.matrix.os, ['windows-2025', 'windows-11-arm'])
+  assert.equal(windows.strategy.matrix.node, undefined)
+  const setupNode = windows.steps.find(step => String(step.uses).startsWith('actions/setup-node@'))
+  assert.equal(setupNode.with['node-version'], '24')
   assert.match(
     publish,
     /run: node scripts\/verify-published-windows\.mjs "\$\{\{ needs\.npm\.outputs\.cli_version \}\}"/,
