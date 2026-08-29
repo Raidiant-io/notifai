@@ -157,9 +157,11 @@ export type PairingProofRequestT = Static<typeof PairingProofRequest>
 
 export interface PollPairingResponse {
   /**
-   * `no_active_plan` is set when a signed-in account without product access
-   * opened the approval page: the CLI should stop polling and surface the
-   * same next step the browser already showed.
+   * `no_active_plan` is set when the pairing initiator's poll verifier is
+   * valid and the pending handshake has been marked by an authenticated
+   * Request Alpha access errand that proved the approval link. Lookup alone
+   * never sets this status. The CLI should stop polling and surface
+   * `next_action` instead of waiting out the pairing TTL.
    */
   status: 'pending' | 'approved' | 'expired' | 'denied' | 'no_active_plan'
   machine_id?: string

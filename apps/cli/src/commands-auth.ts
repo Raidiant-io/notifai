@@ -122,6 +122,8 @@ export async function loginCommand(
       deps.io.err('Pairing was denied from the dashboard.')
       return EXIT.auth
     }
+    // Proof-gated: the server never returns this from lookup. Stop now instead
+    // of waiting out TTL, and name init rather than a second pairing command.
     if (poll.status === 'no_active_plan') {
       const next =
         poll.next_action ??
