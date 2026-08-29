@@ -223,6 +223,13 @@ Claude Code waits out of band and wakes the session, while Codex holds the
 asking turn. It has to run at Stop because that is the first moment the agent
 has finished its current work and is waiting for the answer.
 
+An `ask` success is a local registration, not a submitted Notification Request:
+it has no Provider Acceptance until question settlement promotes its stable
+`q_...` identity to a `req_...` identity. `notifai status <question_id>` reads
+that local state and, after promotion, links the downstream request evidence.
+Inspect or close the original identity when delivery is uncertain; registering
+again creates a separate question.
+
 **SessionEnd** (`session-end`) runs when the Agent Session closes. It drops this
 Agent Session's local state and queues any leftover questions for retirement so
 they do not sit on your devices after the agent is gone. It has to run here

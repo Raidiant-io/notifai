@@ -984,12 +984,17 @@ function recordRegisteredQuestion(
         {
           registered: true,
           question_id: questionId,
+          state: 'local',
+          submitted: false,
+          request_id: null,
+          provider_acceptance: 'not_available',
           questions: built.questions.map((entry) => ({
             id: entry.id,
             text: entry.text,
             ...(entry.choices === undefined ? {} : { choices: entry.choices }),
             ...(entry.multi === true ? { multi: true } : {}),
           })),
+          status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
           next: {
             end_turn: true,
@@ -1019,8 +1024,11 @@ function recordRegisteredQuestion(
   }
   deps.io.out(
     built.questions.length > 1
-      ? `${built.questions.length} questions registered as one form (${questionId}). Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
-      : `Question registered (${questionId}). Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.`,
+      ? `${built.questions.length} questions registered locally as one form (${questionId}); they have not been submitted as a Notification Request and have no Provider Acceptance yet. Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
+      : `Question registered locally (${questionId}); it has not been submitted as a Notification Request and has no Provider Acceptance yet. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.`,
+  )
+  deps.io.out(
+    `Question settlement runs after registration. Inspect the original identity with \`notifai status ${questionId}\`; never register a replacement to check whether this one was sent.`,
   )
   deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
   for (const [index, entry] of built.questions.entries()) {
@@ -1635,7 +1643,7 @@ async function closeLocalQuestion(
   if (entry === undefined) return null
 
   if (entry.request_id === undefined) {
-    dropPendingQuestion(sessionId, deps.env, entry)
+    dropPendingQuestion(sessionId, deps.env, entry, 'withdrawn')
     const output = {
       session_id: sessionId,
       withdrawn: [

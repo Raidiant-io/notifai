@@ -501,10 +501,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     })
 
   program
-    .command('status <request_id>')
+    .command('status <question_or_request_id>')
     .helpGroup(GROUP.agent)
-    .summary('Show the evidence trail for a request')
-    .description('Show the evidence trail for a notification request')
+    .summary('Show question state or request evidence')
+    .description('Show local question state and, once submitted, the notification request evidence trail')
     .option('--json', 'machine-readable output')
     .action(async (requestId: string, opts: { json?: boolean }) => {
       exit(await runners.status(deps, requestId, opts))

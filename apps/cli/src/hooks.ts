@@ -112,6 +112,13 @@ export interface SessionState {
    */
   pending?: PendingQuestion[]
   /**
+   * Bounded terminal history for stable `q_...` lookup after the live queue is
+   * gone. It carries identities and lifecycle state only; question content
+   * remains in the ordinary pending/retirement records under their existing
+   * retention boundary.
+   */
+  question_history?: QuestionHistoryEntry[]
+  /**
    * Questions that have been delivered to the user's devices and are now dead,
    * but whose retirement has not been confirmed yet.
    *
@@ -191,6 +198,8 @@ interface AcceptedAnswerDelivery {
 
 /** A delivered question awaiting its retirement push. */
 export interface RetiringQuestion {
+  /** Stable local identity retained through remote retirement. */
+  question_id?: string
   request_id: string
   collapse_key: string
   /** The Device Installations that actually received the question. */
@@ -272,6 +281,38 @@ export interface PendingQuestion {
   /** Frozen before the first network byte, so an ambiguous submit is replayable. */
   submission?: PendingSubmissionIntent
 }
+
+export type QuestionDeliveryState =
+  | 'local'
+  | 'frozen'
+  | 'live'
+  | 'answered'
+  | 'withdrawn'
+  | 'retired'
+
+type QuestionTerminalState = Extract<QuestionDeliveryState, 'answered' | 'withdrawn' | 'retired'>
+
+export interface QuestionHistoryEntry {
+  question_id: string
+  state: QuestionTerminalState
+  /** Present only after local promotion proves the Notification Request exists. */
+  request_id?: string
+  /** Reserved idempotent identity that was never locally promoted. */
+  frozen_request_id?: string
+}
+
+export interface QuestionStateView {
+  question_id: string
+  state: QuestionDeliveryState
+  /** Null means a frozen submission may or may not have crossed the service boundary. */
+  submitted: boolean | null
+  request_id: string | null
+  frozen_request_id: string | null
+}
+
+export type QuestionStateLookup =
+  | { found: true; session_id: string; question: QuestionStateView }
+  | { found: false; ambiguous: boolean }
 
 /** Keep immutable session grouping while replacing per-event Git location authoritatively. */
 function sourceContextAtHookEvent(
@@ -504,14 +545,19 @@ export function findOwningSession(
     const pendingMatch = pendingList(state).some(
       (entry) => entry.question_id === id || entry.request_id === id,
     )
-    const retiringMatch = (state.retiring ?? []).some((entry) => entry.request_id === id)
+    const retiringMatch = (state.retiring ?? []).some(
+      (entry) => entry.question_id === id || entry.request_id === id,
+    )
+    const historyMatch = (state.question_history ?? []).some(
+      (entry) => entry.question_id === id || entry.request_id === id,
+    )
     const acknowledgementMatch = (state.acknowledgement_due ?? []).some(
       (entry) => entry.request_id === id,
     )
     const acceptedMatch = state.accepted?.answers.some(
       ({ pending }) => pending.question_id === id || pending.request_id === id,
     ) ?? false
-    if (pendingMatch || retiringMatch || acknowledgementMatch || acceptedMatch) {
+    if (pendingMatch || retiringMatch || historyMatch || acknowledgementMatch || acceptedMatch) {
       matches.push(sessionId)
       if (matches.length > 1) return { sessionId: null, ambiguous: true }
     }
@@ -1456,14 +1502,24 @@ export function parkForRetirement(
   updateSessionState(sessionId, env, (current) => {
     const already = current.retiring ?? []
     const existing = already.findIndex((entry) => entry.request_id === retirement.request_id)
-    if (existing < 0) return { ...current, retiring: [...already, retirement] }
+    if (existing < 0) {
+      return rememberQuestionState(
+        { ...current, retiring: [...already, retirement] },
+        pending,
+        state === 'answered' ? 'answered' : 'retired',
+      )
+    }
     const retiring = [...already]
     // An observed answer is final truth and upgrades an earlier supersession
     // parked while the submission callback was racing a newer question.
     if (retirement.state === 'answered' && retiring[existing]!.state !== 'answered') {
       retiring[existing] = retirement
     }
-    return { ...current, retiring }
+    return rememberQuestionState(
+      { ...current, retiring },
+      pending,
+      state === 'answered' ? 'answered' : 'retired',
+    )
   })
 }
 
@@ -1498,6 +1554,7 @@ function retiringQuestion(
   }
   const source = sourceContextAtHookEvent(pending.source, cwd)
   return {
+    ...(pending.question_id !== undefined ? { question_id: pending.question_id } : {}),
     request_id: requestId!,
     collapse_key: collapseKey!,
     device_ids: [...deviceIds!],
@@ -1825,6 +1882,144 @@ function pendingList(state: SessionState): PendingQuestion[] {
   return Array.isArray(state.pending) ? state.pending : []
 }
 
+const QUESTION_HISTORY_CAP = 50
+
+type QuestionIdentity = Pick<PendingQuestion, 'question_id' | 'request_id' | 'submission'>
+
+/** Keep a bounded, content-free map from local identity to its terminal state. */
+function rememberQuestionState(
+  current: SessionState,
+  question: QuestionIdentity,
+  state: QuestionTerminalState,
+): SessionState {
+  if (question.question_id === undefined) return current
+  const existing = (current.question_history ?? []).find(
+    (entry) => entry.question_id === question.question_id,
+  )
+  const terminalState =
+    existing?.state === 'withdrawn' || existing?.state === 'answered'
+      ? existing.state
+      : state === 'answered'
+        ? 'answered'
+        : state
+  const requestId = question.request_id ?? existing?.request_id
+  const frozenRequestId =
+    requestId === undefined
+      ? question.submission?.request_id ?? existing?.frozen_request_id
+      : undefined
+  const record: QuestionHistoryEntry = {
+    question_id: question.question_id,
+    state: terminalState,
+    ...(requestId === undefined ? {} : { request_id: requestId }),
+    ...(frozenRequestId === undefined ? {} : { frozen_request_id: frozenRequestId }),
+  }
+  const history = [
+    ...(current.question_history ?? []).filter(
+      (entry) => entry.question_id !== question.question_id,
+    ),
+    record,
+  ].slice(-QUESTION_HISTORY_CAP)
+  return { ...current, question_history: history }
+}
+
+function pendingQuestionView(entry: PendingQuestion): QuestionStateView | null {
+  if (entry.question_id === undefined) return null
+  if (entry.request_id !== undefined) {
+    return {
+      question_id: entry.question_id,
+      state: 'live',
+      submitted: true,
+      request_id: entry.request_id,
+      frozen_request_id: null,
+    }
+  }
+  if (entry.submission !== undefined) {
+    return {
+      question_id: entry.question_id,
+      state: 'frozen',
+      submitted: null,
+      request_id: null,
+      frozen_request_id: entry.submission.request_id,
+    }
+  }
+  return {
+    question_id: entry.question_id,
+    state: 'local',
+    submitted: false,
+    request_id: null,
+    frozen_request_id: null,
+  }
+}
+
+/** Read one stable local question identity without minting or submitting anything. */
+export function inspectQuestionState(
+  questionId: string,
+  env: NodeJS.ProcessEnv,
+): QuestionStateLookup {
+  const owner = findOwningSession(questionId, env)
+  if (owner.ambiguous || owner.sessionId === null) {
+    return { found: false, ambiguous: owner.ambiguous }
+  }
+  const state = readSessionState(owner.sessionId, env)
+  const pending = pendingList(state).find((entry) => entry.question_id === questionId)
+  const pendingView = pending === undefined ? null : pendingQuestionView(pending)
+  if (pendingView !== null) {
+    return { found: true, session_id: owner.sessionId, question: pendingView }
+  }
+  const accepted = state.accepted?.answers.find(
+    ({ pending: entry }) => entry.question_id === questionId,
+  )?.pending
+  if (accepted?.question_id !== undefined) {
+    return {
+      found: true,
+      session_id: owner.sessionId,
+      question: {
+        question_id: accepted.question_id,
+        state: 'answered',
+        submitted: true,
+        request_id: accepted.request_id ?? null,
+        frozen_request_id: null,
+      },
+    }
+  }
+  const retiring = (state.retiring ?? []).find((entry) => entry.question_id === questionId)
+  if (retiring?.question_id !== undefined) {
+    return {
+      found: true,
+      session_id: owner.sessionId,
+      question: {
+        question_id: retiring.question_id,
+        state: retiring.state === 'answered' ? 'answered' : 'retired',
+        submitted: true,
+        request_id: retiring.request_id,
+        frozen_request_id: null,
+      },
+    }
+  }
+  const history = (state.question_history ?? []).find(
+    (entry) => entry.question_id === questionId,
+  )
+  if (history !== undefined) {
+    return {
+      found: true,
+      session_id: owner.sessionId,
+      question: {
+        question_id: history.question_id,
+        state: history.state,
+        submitted:
+          history.request_id !== undefined
+            ? true
+            : history.frozen_request_id !== undefined
+              ? null
+              : false,
+        request_id: history.request_id ?? null,
+        frozen_request_id: history.frozen_request_id ?? null,
+      },
+    }
+  }
+  return { found: false, ambiguous: false }
+}
+
 /** Registration identity — the convention every racing writer compares by. */
 function isSamePending(a: PendingQuestion, b: PendingQuestion): boolean {
   if (a.question_id !== undefined || b.question_id !== undefined) {
@@ -1846,13 +2041,14 @@ export function dropPendingQuestion(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   entry: PendingQuestion,
+  terminalState: QuestionTerminalState = 'retired',
 ): void {
   updateSessionState(sessionId, env, (current) => {
     const pending = pendingList(current).filter((candidate) => !isSamePending(candidate, entry))
     const next: SessionState = { ...current }
     if (pending.length > 0) next.pending = pending
     else delete next.pending
-    return next
+    return rememberQuestionState(next, entry, terminalState)
   })
 }
 
@@ -1874,7 +2070,10 @@ export function withdrawUnpushedQuestions(
     const next: SessionState = { ...current }
     if (remaining.length > 0) next.pending = remaining
     else delete next.pending
-    return next
+    return withdrawn.reduce(
+      (remembered, entry) => rememberQuestionState(remembered, entry, 'withdrawn'),
+      next,
+    )
   })
   return withdrawn
 }
@@ -2062,7 +2261,10 @@ function stageAcceptedAnswers(
     else delete next.pending
     if (acknowledgementDue.length > 0) next.acknowledgement_due = acknowledgementDue
     else delete next.acknowledgement_due
-    return next
+    return answered.reduce(
+      (remembered, answer) => rememberQuestionState(remembered, answer.pending, 'answered'),
+      next,
+    )
   })
   return accepted
 }
@@ -2300,7 +2502,14 @@ async function retirePendings(
     else delete next.pending
     if (retiring.length > 0) next.retiring = retiring
     else delete next.retiring
-    return next
+    return entries.reduce(
+      (remembered, entry) => rememberQuestionState(
+        remembered,
+        entry,
+        state === 'answered' ? 'answered' : 'retired',
+      ),
+      next,
+    )
   })
   // Network retirement is deliberately deferred to a later no-question hook.
   // The state write above is the durable operation; blocking here creates a
@@ -2442,7 +2651,14 @@ export async function handleUserPromptSubmit(
     if (current.continuation !== undefined) {
       next.continuation = { ...current.continuation, count: 0 }
     }
-    return next
+    return matchedNow.reduce(
+      (remembered, entry) => rememberQuestionState(
+        remembered,
+        entry,
+        entry.request_id === undefined ? 'withdrawn' : 'retired',
+      ),
+      next,
+    )
   })
   // The bridge that lets a plain `notifai ask` find the hook's canonical
   // session: an agent shell command gets no hook payload, and not every
@@ -3614,6 +3830,24 @@ export function handleSessionEnd(
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
 
   const state = readSessionState(sessionId, env)
+  let stateWithHistory = state
+  for (const entry of pendingList(state)) {
+    stateWithHistory = rememberQuestionState(
+      stateWithHistory,
+      entry,
+      entry.request_id === undefined && entry.submission === undefined ? 'withdrawn' : 'retired',
+    )
+  }
+  for (const answer of state.accepted?.answers ?? []) {
+    stateWithHistory = rememberQuestionState(stateWithHistory, answer.pending, 'answered')
+  }
+  for (const retirement of state.retiring ?? []) {
+    stateWithHistory = rememberQuestionState(
+      stateWithHistory,
+      retirement,
+      retirement.state === 'answered' ? 'answered' : 'retired',
+    )
+  }
   const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
   const retirementCandidates = [
     ...pendingList(state),
@@ -3645,7 +3879,7 @@ export function handleSessionEnd(
     )
   }
   if (state.accepted !== undefined || (state.acknowledgement_due?.length ?? 0) > 0) {
-    const preserved: SessionState = { ...state }
+    const preserved: SessionState = { ...stateWithHistory }
     delete preserved.pending
     delete preserved.retiring
     delete preserved.acknowledgement_blocks
@@ -3668,7 +3902,11 @@ export function handleSessionEnd(
       },
     }
   }
+  const history = stateWithHistory.question_history
   clearSessionState(sessionId, env)
+  if ((history?.length ?? 0) > 0) {
+    writeSessionState(sessionId, env, { question_history: history! })
+  }
   return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
 }
 

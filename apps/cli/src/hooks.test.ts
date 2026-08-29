@@ -48,6 +48,7 @@ import {
   drainRetirements,
   drainOrphanRetirements,
   handleSessionEnd,
+  inspectQuestionState,
   runEscalationWaiter,
   MAX_CONTINUATION_COUNT,
   MAX_HELD_DELIVERIES,
@@ -2220,6 +2221,7 @@ describe('several questions in flight', () => {
       pending: [
         {
           question: 'Ship it?',
+          question_id: 'q_answer_handoff',
           asked_at: NOW,
           request_id: 'req_existing',
           collapse_key: 'question-existing',
@@ -2232,6 +2234,10 @@ describe('several questions in flight', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-handoff' }))
     const staged = readSessionState('answer-handoff', h.env)
     expect(staged.accepted?.answers[0]?.reply.text).toBe('Ship it')
+    expect(inspectQuestionState('q_answer_handoff', h.env)).toMatchObject({
+      found: true,
+      question: { state: 'answered', submitted: true, request_id: 'req_existing' },
+    })
     expect(JSON.parse(h.io.outLines.at(-1)!).decision).toBe('block')
 
     h.io.outLines = []
@@ -3513,6 +3519,26 @@ describe('session-end hook', () => {
     const records = readLogRecords(h.env, { limit: 10 }).records
     expect(records.map((record) => record.event)).toEqual(['hook.start', 'hook.end'])
     expect(records.at(-1)?.data).toMatchObject({ outcome: 'cleaned', queued_retirements: 0 })
+  })
+
+  it('keeps only content-free terminal question state after SessionEnd', async () => {
+    const h = harness()
+    writeSessionState('ended-question', h.env, {
+      last_prompt_at: NOW,
+      pending: [{ question: 'Ship it?', question_id: 'q_ended_local' }],
+    })
+
+    expect(
+      await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'ended-question' })),
+    ).toBe(EXIT.ok)
+
+    expect(readSessionState('ended-question', h.env)).toEqual({
+      question_history: [{ question_id: 'q_ended_local', state: 'withdrawn' }],
+    })
+    expect(inspectQuestionState('q_ended_local', h.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false, request_id: null },
+    })
   })
 
   it('round-trips future session-state fields when SessionEnd preserves an obligation', async () => {

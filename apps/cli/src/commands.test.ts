@@ -75,7 +75,12 @@ import {
   QUESTION_STOP_TIMEOUT_SECONDS,
   settingsFile,
 } from './install-hooks.js'
-import { readSessionState, writeProjectSession, writeSessionState } from './hooks.js'
+import {
+  inspectQuestionState,
+  readSessionState,
+  writeProjectSession,
+  writeSessionState,
+} from './hooks.js'
 import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
 import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, sessionConfigPath, stateDir } from './config.js'
 import { SETUP_PROOF_STALE_MS, writeSetupProof } from './commands-setup-proof.js'
@@ -2126,6 +2131,10 @@ describe('command contracts', () => {
       closed: [],
     })
     expect(readSessionState('close-unpushed', deps.env).pending).toBeUndefined()
+    expect(inspectQuestionState('q_local', deps.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false, request_id: null },
+    })
   })
 
   it('close withdraws one unpushed question by stable id from another checkout', async () => {
@@ -2183,6 +2192,7 @@ describe('command contracts', () => {
         { question: 'Unpushed?', question_id: 'q_local' },
         {
           question: 'Already on a device?',
+          question_id: 'q_live',
           request_id: receipt.request_id,
           collapse_key: 'question-live',
           device_ids: ['dev_iphone'],
@@ -2199,6 +2209,14 @@ describe('command contracts', () => {
       closed: [receipt.request_id],
     })
     expect(readSessionState('close-mix', deps.env).pending).toBeUndefined()
+    expect(inspectQuestionState('q_local', deps.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false, request_id: null },
+    })
+    expect(inspectQuestionState('q_live', deps.env)).toMatchObject({
+      found: true,
+      question: { state: 'retired', submitted: true, request_id: receipt.request_id },
+    })
   })
 
   it('close requires a request id or --pending', async () => {
@@ -2782,6 +2800,96 @@ describe('delivery evidence status', () => {
       ],
     }
   }
+
+  it('reports every local question state by q identity without creating or submitting anything', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-question-status-'))
+    const env = {
+      XDG_CONFIG_HOME: path.join(root, 'config'),
+      XDG_STATE_HOME: path.join(root, 'state'),
+    }
+    writeSessionState('question-states', env, {
+      pending: [
+        { question: 'Local?', question_id: 'q_local' },
+        {
+          question: 'Frozen?',
+          question_id: 'q_frozen',
+          submission: {
+            request_id: 'req_frozen',
+            idempotency_key: 'idem-frozen',
+            collapse_key: 'collapse-frozen',
+            device_ids: ['dev_status_test'],
+            draft: {} as never,
+            owner_deadline_at: Date.now() + 60_000,
+          },
+        },
+        { question: 'Live?', question_id: 'q_live', request_id: 'req_live' },
+      ],
+      question_history: [
+        { question_id: 'q_answered', state: 'answered', request_id: 'req_answered' },
+        { question_id: 'q_withdrawn', state: 'withdrawn' },
+        { question_id: 'q_retired', state: 'retired', request_id: 'req_retired' },
+      ],
+    })
+    const evidenceCalls: string[] = []
+    const client = {
+      evidence: async (requestId: string) => {
+        evidenceCalls.push(requestId)
+        return { ...snapshot({ state: 'unknown', observed_at: null, latency_ms: null }), request_id: requestId }
+      },
+    } as unknown as ApiClient
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, client), cwd: root, env }
+
+    const expected = [
+      ['q_local', 'local', false, null, null],
+      ['q_frozen', 'frozen', null, null, 'req_frozen'],
+      ['q_live', 'live', true, 'req_live', null],
+      ['q_answered', 'answered', true, 'req_answered', null],
+      ['q_withdrawn', 'withdrawn', false, null, null],
+      ['q_retired', 'retired', true, 'req_retired', null],
+    ] as const
+    for (const [questionId, state, submitted, requestId, frozenRequestId] of expected) {
+      io.outLines = []
+      expect(await statusCommand(deps, questionId, { json: true })).toBe(EXIT.ok)
+      expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+        question_id: questionId,
+        state,
+        submitted,
+        request_id: requestId,
+        frozen_request_id: frozenRequestId,
+        recovery: {
+          inspect: `notifai status ${questionId}`,
+          close: `notifai close ${questionId}`,
+          register_replacement: false,
+        },
+      })
+    }
+    expect(evidenceCalls).toEqual(['req_live', 'req_answered', 'req_retired'])
+  })
+
+  it('states plainly that a local registration has no submission or Provider Acceptance', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-local-question-status-'))
+    const env = { XDG_STATE_HOME: path.join(root, 'state') }
+    writeSessionState('local-question', env, {
+      pending: [{ question: 'Ship?', question_id: 'q_local_plain' }],
+    })
+    const io = new CapturedIo()
+    const client = {
+      evidence: async () => {
+        throw new Error('local status must not call the service')
+      },
+    } as unknown as ApiClient
+
+    expect(
+      await statusCommand({ ...makeDeps(io, client), cwd: root, env }, 'q_local_plain', {}),
+    ).toBe(EXIT.ok)
+    const said = io.outLines.join('\n')
+    expect(said).toContain('question q_local_plain — local')
+    expect(said).toContain('not submitted')
+    expect(said).toContain('only a local registration')
+    expect(said).toContain('Provider Acceptance: not available')
+    expect(said).toContain('do not register a replacement')
+  })
 
   it('calls an unobserved first-minute receipt unknown rather than failed', async () => {
     const io = new CapturedIo()
@@ -6572,7 +6680,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
+    expect(io.outLines.some((line) => line.startsWith('Question registered locally (q_'))).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
       harness: 'codex',
@@ -6580,6 +6688,28 @@ describe('asking before the hooks have ever run', () => {
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
     ).toBe('Gentle Salmon')
+
+    io.outLines = []
+    expect(askCommand(deps, 'Wait?', { json: true })).toBe(EXIT.ok)
+    const registered = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
+    expect(registered).toMatchObject({
+      registered: true,
+      state: 'local',
+      submitted: false,
+      request_id: null,
+      provider_acceptance: 'not_available',
+      status: `notifai status ${registered.question_id as string}`,
+      close: `notifai close ${registered.question_id as string}`,
+    })
+    expect(inspectQuestionState(registered.question_id as string, env)).toMatchObject({
+      found: true,
+      question: {
+        question_id: registered.question_id,
+        state: 'local',
+        submitted: false,
+        request_id: null,
+      },
+    })
   })
 
   it('uses exact lifecycle state across checkouts while Project stays invocation-owned', () => {

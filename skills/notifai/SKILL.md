@@ -223,38 +223,36 @@ notifai ask "Which environment should I roll out to?" \
 
 Add `--json` for choice ids and the ask `question_id`.
 
+`registered: true` is local only. It has not yet been submitted as a
+Notification Request and has no Provider Acceptance. Never call a question sent
+or delivered from registration alone. Settlement preserves its `question_id` and adds a
+`request_id`. Inspect without changing it:
+
+```bash
+notifai status <question_id> --json
+```
+
+State is `local`, `frozen`, `live`, `answered`, `withdrawn`, or `retired`;
+promoted questions also show downstream evidence.
+
 **Registering is not the end of the turn.** In that same turn, ask the question
-in the conversation and say what each answer will make you do:
-
-> If you choose Staging, I'll run the rollout against staging and report the
-> health checks. If you choose Production, I'll run the same rollout against
-> production. If you choose Cancel, I'll leave the rollout alone and finish the
-> report. If you tell me something else, I'll follow that instead.
-
-Then end your turn. That commitment turns the arriving answer into work.
+in the conversation and say what each answer will make you do, then end your
+turn. That commitment turns the arriving answer into work.
 
 **Never say where the answer must arrive:** not "tell me here" or "type it at
 this prompt". The route is the harness's concern.
 
-Other question surfaces: `--multi` when several offered answers may genuinely be
-combined, `--body`/`--body-file` for context, `--image`/`--image-alt` for
-evidence, and `--form <path|->` for up to 10 questions that must be decided
-together:
+Other surfaces: `--multi` combines answers; `--body`/`--body-file` adds context;
+`--image`/`--image-alt` adds evidence; `--form <path|->` groups up to 10 related
+questions.
 
-```json
-{
-  "questions": [
-    { "text": "Deploy where?", "choices": ["Staging", "Production"] },
-    { "text": "Which checks may I skip?", "choices": ["Lint", "E2E"], "multi": true },
-    { "text": "Anything to watch?" }
-  ],
-  "body": "Optional Markdown context."
-}
-```
-
-Keep independent questions as separate `ask` calls. Retire an obsolete or
-registration they answer in the conversation — even before Stop pushes it — with
+Keep independent questions as separate `ask` calls. Retire an obsolete
+registration or one they answer in the conversation — even before Stop pushes
+it — with
 `notifai close <question_id>` or `notifai close --pending`.
+
+If uncertain, inspect or close the original `question_id`; do not register it
+again. A replacement is independent and may coexist.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
@@ -268,10 +266,9 @@ one, and a typed answer that arrives in parts is read together, in order. A
 relayed answer reaches you as the chosen label's text; run
 `notifai replies <request_id> --json` when you need the stable choice ids.
 
-A question stays answerable for a day by default, so an unanswered one is
-usually still open rather than lost. If you are resuming and no answer was
-handed to you — or you never kept the request id — ask for what is outstanding
-rather than re-asking the user:
+Questions normally remain answerable for a day. When resuming without a relayed
+answer, inspect the original `question_id`. If it is lost, list outstanding
+questions rather than re-asking:
 
 ```bash
 notifai replies --pending --json
@@ -363,7 +360,7 @@ proof it was displayed; a Companion Receipt is not proof it was read; `unknown`
 is not proof of failure. Say which of those you have.
 
 ```bash
-notifai status <request_id>     # the evidence trail for one notification
+notifai status <question_id|request_id> # state, promotion, and evidence
 ```
 
 When something did not happen and you cannot see why — most of all after `ask`,
