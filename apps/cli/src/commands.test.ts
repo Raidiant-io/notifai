@@ -2663,6 +2663,9 @@ describe('credential origin pinning', () => {
         blocked = state
       }),
     ).toBe(EXIT.auth)
+    // Handing the blocker over hands over the errand. Saying it here too gave
+    // the caller's close a second, differently worded copy to contradict.
+    expect(io.errLines).toEqual([])
     // Without this the caller falls back to the state it held before the
     // attempt — "not paired … run `notifai init`" — and prints it under the
     // correct line, in contradiction with it.
@@ -6113,6 +6116,23 @@ describe('init', () => {
     expect(out).toContain('Next: Access')
     expect(out).toContain('https://app.notifai.sh/setup/access')
     expect(out).not.toContain('not paired with your account')
+
+    // …and the wall is stated once across the whole visit. It used to arrive
+    // three ways — a lowercase `next:` from the pairing failure, an "after
+    // access … run `notifai init`" remedy, and this close — so a stopped User
+    // had to work out which of three destinations-and-commands was theirs.
+    const said = [
+      ...io.outLines,
+      ...io.errLines,
+      ...io.notes.map((note) => note.message),
+      ...io.spinnerEvents,
+    ].join('\n')
+    expect(said.match(/setup\/access/g)).toHaveLength(1)
+    expect(said.match(/does not have access/g)).toHaveLength(1)
+    expect(said).not.toContain('After access is granted')
+    expect(said).not.toContain('next: ')
+    // Rerunning is how they resume, not how they get access.
+    expect(out).toContain('Then re-run `notifai init` and it will pick up from here.')
   })
 
   it('treats a revoked credential as the one blocker and points back to pairing', async () => {

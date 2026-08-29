@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:cfa4d1a8bca40d7bd0578cbefd3a88421cc6a616155f66bf4424e3f6c9357cca",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after adding interrupted-turn settlement and stable question-state inspection. Guidance now states that registration is local, distinguishes Provider Acceptance and Companion Receipt, and directs recovery to inspect or close the original question identity instead of registering a duplicate.",
+  "behavior_digest": "sha256:30e3a640c133c9638476ca80f1e4c21bde49241fc5fd6426c402c05450abcf98",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after the onboarding change that says the no-access wall once. Only human terminal copy moved: a caller-owned login stops printing the three access lines and the interactive init close drops the framed duplicate, so one stopped visit now states one errand once. Structured init readiness, exit codes, and the auth-versus-access split agents branch on are unchanged, so no shipped guidance wording needed to change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
