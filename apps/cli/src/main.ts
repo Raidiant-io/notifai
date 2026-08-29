@@ -1,36 +1,12 @@
 #!/usr/bin/env node
-import { realIo, type CommandDeps } from './commands.js'
-import { defaultCredentialStore } from './credentials.js'
-import { nativeSkills } from './native-skills.js'
-import { argvFlagNames, bootstrapLogger } from './logging.js'
-import { buildProgram } from './program.js'
+import { belowNodeFloor, nodeFloorMessage } from './node-floor.js'
 
-/**
- * The local record for this invocation.
- *
- * Built before the command tree so that the very first thing recorded is the
- * command starting — including for a command that goes on to fail before it has
- * resolved anything. It configures itself from disk and disables itself if it
- * cannot write, so nothing below has to handle it failing.
- */
-const logger = bootstrapLogger()
-
-const deps: CommandDeps = {
-  io: realIo(),
-  store: defaultCredentialStore(),
-  env: process.env,
-  cwd: process.cwd(),
-  nativeSkills,
-  logger,
+// Before anything else is parsed. `node-floor.js` imports nothing and uses no
+// syntax newer than the floor it checks, so it can report on the runtimes that
+// would otherwise fail somewhere in a dependency with no mention of Notifai.
+if (belowNodeFloor(process.version)) {
+  for (const line of nodeFloorMessage(process.version)) process.stderr.write(`${line}\n`)
+  process.exit(2)
 }
 
-const startedAt = Date.now()
-process.on('exit', (code) => {
-  logger.info('cli.end', {
-    exit: code,
-    duration_ms: Date.now() - startedAt,
-    flags: argvFlagNames(process.argv.slice(2)),
-  })
-})
-
-await buildProgram(deps).parseAsync(process.argv)
+await import('./main-run.js')
