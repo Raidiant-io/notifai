@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8ed60087e8325e2626628ea5a4b600c65fe25adce5872061db9aad8a79887941",
+  "behavior_digest": "sha256:a66abfa5809117502e78701228d225f88e3e3794eefa4b6b32f6f8621f53505a",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making semantic Agent Session title acquisition harness-neutral. The shipped skill already states the correct agent-facing contract: exact identity is inferred, a trusted environment title wins over a repeated explicit label, and only a generated fallback may later upgrade to semantic text. Codex Desktop and CLI now satisfy that generic contract through the active harness configuration root and fixed native session-index filename without requiring Orca, while Orca remains optional host enrichment and durable local provenance keeps ambiguous safe retries semantically identical without adding an agent decision. Server provenance remains internal implementation detail, so no Agent Guidance wording changes are needed.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making semantic Codex Agent Session title acquisition harness-neutral through the active harness configuration root and fixed session-index filename, and making a Codex trust refusal expose the existing structured /hooks User action. The shipped skill already states both contracts: exact identity and a trusted semantic title are inferred without requiring Orca, and agents must close a reported setup gap instead of bypassing it. The Agent Behavior Contract already distinguishes the direct reply wait, answer window, and Stop-hook budget, so the CLI now teaches the immediate recovery and timeout ownership without requiring broader guidance wording changes.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
