@@ -53,6 +53,7 @@ import {
   EXIT,
   hooksInstallCommand,
   hooksUninstallCommand,
+  hookRunCommand,
   initCommand,
   SKILLS_SOURCE,
   loginCommand,
@@ -7288,6 +7289,66 @@ describe('asking before the hooks have ever run', () => {
         message: expect.stringContaining('Open `/hooks` in Codex'),
       },
     })
+  })
+
+  it('keeps a stale Codex Stop trust gap from becoming a short non-resuming wait', async () => {
+    const cwd = scratchDir('notifai-codex-stale-trust-fallback-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-desktop-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    const stop = findInstallations(cwd, env)
+      .find((installation) => installation.harness === 'codex')
+      ?.handlers.find((handler) => handler.event === 'Stop')
+    expect(stop).toBeDefined()
+    const configFile = path.join(env.CODEX_HOME, 'config.toml')
+    writeFileSync(
+      configFile,
+      readFileSync(configFile, 'utf8').replace(codexHookIdentityHash(stop!), 'sha256:obsolete'),
+    )
+    writeSessionState('codex-desktop-thread', env, {
+      harness: 'codex',
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(cwd, env, 'codex-desktop-thread', 42, 'codex')
+    io.outLines = []
+    io.errLines = []
+
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      ok: false,
+      registered: false,
+      code: 'codex_hook_approval_required',
+      check_id: 'hook_trust',
+      remedy: 'open `/hooks` in Codex and approve or enable the Notifai handlers',
+      user_action: {
+        code: 'codex_hook_approval_required',
+        harness: 'codex',
+        action: 'approve_or_enable_notifai_hooks',
+      },
+    })
+    expect(io.outLines.join('\n')).toMatch(/send --reply.*cannot resume this Agent Session after its reply timeout/is)
+    expect(readSessionState('codex-desktop-thread', env).pending).toBeUndefined()
+
+    io.outLines = []
+    io.errLines = []
+    expect(
+      await hookRunCommand(
+        deps,
+        'stop',
+        async () => JSON.stringify({ session_id: 'codex-desktop-thread', cwd }),
+        'codex',
+      ),
+    ).toBe(EXIT.ok)
+    expect(io.outLines).toEqual([])
   })
 
   it('gives doctor the same active-Codex diagnosis as ask', async () => {

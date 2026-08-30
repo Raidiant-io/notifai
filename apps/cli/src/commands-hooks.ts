@@ -727,7 +727,20 @@ export interface AskFailure {
   exit_code: number
   remedy: string
   message: string
+  user_action?: {
+    code: string
+    harness: string
+    action: string
+    message: string
+  }
 }
+
+export const CODEX_HOOK_APPROVAL_USER_ACTION = {
+  code: 'codex_hook_approval_required',
+  harness: 'codex',
+  action: 'approve_or_enable_notifai_hooks',
+  message: 'Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me when it is done. I will finish setup and verify a fresh session.',
+} as const
 
 /** One stable failure contract for every machine-readable ask refusal. */
 export function reportAskFailure(
@@ -752,6 +765,7 @@ function askFailure(
   message: string,
   remedy: string,
   exitCode: number = EXIT.usage,
+  details: Pick<AskFailure, 'user_action'> = {},
 ): number {
   return reportAskFailure(deps, flags, {
     code,
@@ -759,6 +773,7 @@ function askFailure(
     exit_code: exitCode,
     remedy,
     message,
+    ...details,
   })
 }
 
@@ -1210,6 +1225,24 @@ export function askCommand(
         'exact_session',
         `The active ${active.label} shell does not expose an exact session id.`,
         'use a blocking `notifai send --reply` question',
+      )
+    }
+    const matchingInstallations = installations.filter(
+      (installation) => installation.harness === active.harness,
+    )
+    const trustProblems = active.harness === 'codex'
+      ? codexTrustProblems(matchingInstallations, deps.env)
+      : []
+    if (trustProblems.length > 0) {
+      return askFailure(
+        deps,
+        flags,
+        'codex_hook_approval_required',
+        'hook_trust',
+        `Question routing is not ready: ${trustProblems.join('; ')}. This question was not registered. Do not replace it with a short \`notifai send --reply\` wait: that command cannot resume this Agent Session after its reply timeout.`,
+        'open `/hooks` in Codex and approve or enable the Notifai handlers',
+        EXIT.usage,
+        { user_action: CODEX_HOOK_APPROVAL_USER_ACTION },
       )
     }
     const routeProblems = activeQuestionRouteProblems(installationDeps, active, installations)

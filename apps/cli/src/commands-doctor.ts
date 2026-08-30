@@ -69,6 +69,7 @@ import {
 } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
 import {
+  CODEX_HOOK_APPROVAL_USER_ACTION,
   HOOK_EVENTS,
   activeQuestionRouteProblems,
   hookActivationAdvice,
@@ -1198,12 +1199,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           remedy: {
             summary: 'open `/hooks` in Codex and approve the changed Notifai handlers',
             command: '/hooks',
-            user_action: {
-              code: 'codex_hook_approval_required',
-              harness: 'codex',
-              action: 'approve_or_enable_notifai_hooks',
-              message: 'Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me when it is done. I will finish setup and verify a fresh session.',
-            },
+            user_action: CODEX_HOOK_APPROVAL_USER_ACTION,
           },
         }),
   })
