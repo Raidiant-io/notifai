@@ -156,7 +156,11 @@ export function npxLaunch(
   if (platform === 'win32') {
     const nodeExecutable = options.nodeExecutable ?? process.execPath
     const npxCli = windowsNpxCli(nodeExecutable)
-    if (npxCli === null) throw new Error('the current Windows Node installation does not include npm npx-cli.js')
+    if (npxCli === null) {
+      throw new Error(
+        'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
+      )
+    }
     return {
       file: nodeExecutable,
       args: [npxCli, ...args],

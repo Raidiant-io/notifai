@@ -5382,6 +5382,30 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
+  it('explains a local Windows npm launch failure without blaming the network', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-local-launch-failed-'))
+    const io = new InteractiveIo()
+    const nativeSkills: NativeSkills = {
+      add: async () => ({
+        code: 1,
+        error:
+          'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
+      }),
+      remove: async () => 0,
+      list: async () => ({ skills: [] }),
+    }
+
+    expect(
+      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
+        skills: true,
+        setupScope: 'project',
+        hooks: false,
+      }),
+    ).toBe(EXIT.failed)
+    expect(io.errLines.join('\n')).toContain('missing its bundled npm tools')
+    expect(io.errLines.join('\n')).not.toContain('network')
+  })
+
   it('tells the user what only they can do when nothing is signed in', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-nocred-'))
     const io = new CapturedIo()

@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SKILLS_INSTALLER_SPEC, nativeSkills, skillsAddArgv, skillsRemoveArgv } from './native-skills.js'
+import {
+  SKILLS_INSTALLER_SPEC,
+  nativeSkills,
+  runSkillsCommand,
+  skillsAddArgv,
+  skillsRemoveArgv,
+} from './native-skills.js'
 
 function writeLock(file: string, ref: string, skillPath?: string): void {
   mkdirSync(path.dirname(file), { recursive: true })
@@ -82,6 +88,22 @@ describe('skillsAddArgv', () => {
         env: {},
       }),
     ).toEqual(['-y', SKILLS_INSTALLER_SPEC, 'remove', 'notifai', '--global', '--yes'])
+  })
+})
+
+describe('runSkillsCommand', () => {
+  it('preserves a local launch failure instead of misreporting a network error', async () => {
+    const result = await runSkillsCommand([], { cwd: '/tmp', env: {} }, () => {
+      throw new Error(
+        'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
+      )
+    })
+
+    expect(result).toEqual({
+      code: 1,
+      error:
+        'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
+    })
   })
 })
 
