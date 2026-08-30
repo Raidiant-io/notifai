@@ -11,7 +11,8 @@
  * turn away. Everything else is loaded after it passes.
  */
 
-export const NODE_MAJOR_FLOOR = 22
+export const NODE_MAJOR_FLOOR = 20
+export const NODE_MINOR_FLOOR = 12
 
 /** The major from a `process.version` string, or null when unrecognisable. */
 export function nodeMajor(version: string): number | null {
@@ -22,16 +23,18 @@ export function nodeMajor(version: string): number | null {
 }
 
 export function belowNodeFloor(version: string): boolean {
-  const major = nodeMajor(version)
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version)
   // An unrecognisable version is not evidence of an old runtime, and refusing
   // to run on one would strand a reader whose Node is fine.
-  return major !== null && major < NODE_MAJOR_FLOOR
+  if (match === null) return false
+  const [major, minor] = [Number(match[1]), Number(match[2])]
+  return major < NODE_MAJOR_FLOOR || (major === NODE_MAJOR_FLOOR && minor < NODE_MINOR_FLOOR)
 }
 
 /** One sentence for what is wrong, one for what to do about it. */
 export function nodeFloorMessage(version: string): string[] {
   return [
-    `Notifai needs Node ${NODE_MAJOR_FLOOR} or newer; this is Node ${version}.`,
-    `next: install Node ${NODE_MAJOR_FLOOR}+ (https://nodejs.org), then run this again.`,
+    `Notifai needs Node ${NODE_MAJOR_FLOOR}.${NODE_MINOR_FLOOR} or newer; this is Node ${version}.`,
+    `next: install Node ${NODE_MAJOR_FLOOR}.${NODE_MINOR_FLOOR}+ (https://nodejs.org), then run this again.`,
   ]
 }

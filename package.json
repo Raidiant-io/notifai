@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=22"
+    "node": ">=20.12.0"
   },
   "scripts": {
     "build": "pnpm --filter @raidiant/notifai-protocol build && pnpm --filter @raidiant/notifai build",

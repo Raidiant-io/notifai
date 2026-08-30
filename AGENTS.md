@@ -67,8 +67,9 @@ or private location.
 `dist/` is generated and ignored, so nothing in Git records what a publish
 sent. `prepack` rebuilds before packing and every build starts by clearing
 `dist/`, which together make the packed tree a pure function of the source in
-whatever directory publishing runs from. `check:release` then proves the packed
-`src/` and `dist/` correspond module for module.
+whatever directory publishing runs from. `check:release` then proves the
+repository `src/` and packed `dist/` correspond module for module without
+shipping source or test files.
 
 Before publishing, `pnpm check:packed` installs the packed tarballs in an
 isolated directory outside the workspace, registry-shaped, and runs the

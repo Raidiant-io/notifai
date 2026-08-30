@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { NODE_MAJOR_FLOOR, belowNodeFloor, nodeFloorMessage, nodeMajor } from './node-floor.js'
+import {
+  NODE_MAJOR_FLOOR,
+  NODE_MINOR_FLOOR,
+  belowNodeFloor,
+  nodeFloorMessage,
+  nodeMajor,
+} from './node-floor.js'
 
 describe('the Node runtime floor', () => {
   it('turns away a runtime below the floor', () => {
@@ -8,7 +14,8 @@ describe('the Node runtime floor', () => {
   })
 
   it('admits the floor and everything above it', () => {
-    expect(belowNodeFloor(`v${NODE_MAJOR_FLOOR}.0.0`)).toBe(false)
+    expect(belowNodeFloor('v20.12.0')).toBe(false)
+    expect(belowNodeFloor(`v${NODE_MAJOR_FLOOR}.${NODE_MINOR_FLOOR}.0`)).toBe(false)
     expect(belowNodeFloor('v24.3.0')).toBe(false)
   })
 
@@ -18,9 +25,9 @@ describe('the Node runtime floor', () => {
   })
 
   it('says what is wrong and exactly one thing to do', () => {
-    const [problem, next] = nodeFloorMessage('v20.11.1')
-    expect(problem).toContain('Node 22 or newer')
-    expect(problem).toContain('v20.11.1')
+    const [problem, next] = nodeFloorMessage('v18.20.8')
+    expect(problem).toContain('Node 20.12 or newer')
+    expect(problem).toContain('v18.20.8')
     expect(next).toMatch(/^next: /)
     expect(next).toContain('nodejs.org')
   })

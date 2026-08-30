@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { execCommand, repositoryRoot } from './cross-platform.mjs'
@@ -22,25 +22,25 @@ const packages = [
   {
     directory: 'apps/cli',
     manifest: readJson('apps/cli/package.json'),
-    requiredFiles: ['LICENSE', 'README.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json'],
+    requiredFiles: ['LICENSE', 'README.md', 'CHANGELOG.md', 'package.json'],
   },
   {
     directory: 'packages/protocol',
     manifest: readJson('packages/protocol/package.json'),
-    requiredFiles: ['LICENSE', 'README.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json'],
+    requiredFiles: ['LICENSE', 'README.md', 'CHANGELOG.md', 'package.json'],
   },
 ]
 
 requireValue(rootManifest.private === true, 'root workspace must remain private')
 requireValue(rootManifest.version === undefined, 'root workspace must not advertise a package version')
-requireValue(rootManifest.engines?.node === '>=22', 'root Node support must be exactly >=22')
+requireValue(rootManifest.engines?.node === '>=20.12.0', 'root Node support must be exactly >=20.12.0')
 
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const entry of packages) {
   const { manifest, directory } = entry
   requireValue(semver.test(manifest.version), `${manifest.name}: version must be semver`)
   requireValue(manifest.license === 'Apache-2.0', `${manifest.name}: license must be Apache-2.0`)
-  requireValue(manifest.engines?.node === '>=22', `${manifest.name}: Node support must be exactly >=22`)
+  requireValue(manifest.engines?.node === '>=20.12.0', `${manifest.name}: Node support must be exactly >=20.12.0`)
   requireValue(manifest.publishConfig?.access === 'public', `${manifest.name}: publishConfig.access must be public`)
   requireValue(manifest.repository?.directory === directory, `${manifest.name}: repository.directory must be ${directory}`)
   requireValue(manifest.homepage === 'https://github.com/Raidiant-io/notifai#readme', `${manifest.name}: homepage is missing or unexpected`)
@@ -50,8 +50,8 @@ for (const entry of packages) {
     `${manifest.name}: package LICENSE must exactly match the repository LICENSE`,
   )
   requireValue(
-    JSON.stringify(manifest.files) === JSON.stringify(['dist', 'src', 'tsconfig.json', 'CHANGELOG.md']),
-    `${manifest.name}: files allowlist must be dist, src, tsconfig.json, CHANGELOG.md`,
+    JSON.stringify(manifest.files) === JSON.stringify(['dist', 'CHANGELOG.md']),
+    `${manifest.name}: files allowlist must be dist and CHANGELOG.md`,
   )
 
   for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
@@ -84,14 +84,15 @@ for (const entry of packages) {
     requireValue(paths.includes(required), `${manifest.name}: packed artifact is missing ${required}`)
   }
   for (const file of paths) {
-    const allowed =
-      entry.requiredFiles.includes(file) || file.startsWith('dist/') || file.startsWith('src/')
+    const allowed = entry.requiredFiles.includes(file) || file.startsWith('dist/')
     requireValue(allowed, `${manifest.name}: unexpected packed file ${file}`)
   }
 
   /**
-   * The compiled tree must correspond, module for module, to the sources
-   * packed beside it.
+   * The compiled tree must correspond, module for module, to the repository
+   * sources used to build it. Source and test files do not belong in the npm
+   * artifact; this comparison preserves the stale-build check without shipping
+   * them.
    *
    * This is the check that catches a stale build, and it catches it in both
    * directions: a source with no compiled output means the build never saw it,
@@ -107,18 +108,32 @@ for (const entry of packages) {
         .filter((file) => !file.endsWith(`.test${extension}`) && !file.endsWith(`.d${extension}`))
         .map((file) => file.slice(prefix.length + 1, -extension.length)),
     )
-  const sources = modules('src', '.ts')
+  const sourceFiles = []
+  const visitSources = (absolute, relative = '') => {
+    for (const item of readdirSync(absolute, { withFileTypes: true })) {
+      const itemRelative = relative ? `${relative}/${item.name}` : item.name
+      if (item.isDirectory()) visitSources(path.join(absolute, item.name), itemRelative)
+      else sourceFiles.push(itemRelative)
+    }
+  }
+  visitSources(path.join(root, directory, 'src'))
+  const sources = new Set(
+    sourceFiles
+      .filter((file) => file.endsWith('.ts'))
+      .filter((file) => !file.endsWith('.test.ts') && !file.endsWith('.d.ts'))
+      .map((file) => file.slice(0, -'.ts'.length)),
+  )
   const compiled = modules('dist', '.js')
   for (const name of sources) {
     requireValue(
       compiled.has(name),
-      `${manifest.name}: packed src/${name}.ts has no dist/${name}.js — the build is stale or incomplete`,
+      `${manifest.name}: repository src/${name}.ts has no packed dist/${name}.js — the build is stale or incomplete`,
     )
   }
   for (const name of compiled) {
     requireValue(
       sources.has(name),
-      `${manifest.name}: packed dist/${name}.js has no src/${name}.ts — leftover output from a deleted module`,
+      `${manifest.name}: packed dist/${name}.js has no repository src/${name}.ts — leftover output from a deleted module`,
     )
   }
 }

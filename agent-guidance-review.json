@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:4e45ddace88e24cedd9744042859c8841410ffb9a3da31c460659f5b726de274",
+  "behavior_digest": "sha256:93c5e0e543be8ad8fca1153183ab4350c0b47933f61237fd72c76eab3474c766",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after PATH recovery began modeling the effective command, duplicate installations, and the shared hook-adapter target. The accepted update sentences and typed update_cli contract remain unchanged, while one local npx action now repairs the PATH-winning npm prefix and resumed init retargets Question Routing without another undocumented command. Existing Agent Guidance still correctly sends agents through notifai init --json and does not prescribe package-manager or hook-repair internals, so no shipped guidance wording needed to change.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after lowering the public runtime floor from Node 22 to the dependency-justified Node 20.12 minimum. The startup diagnostic and package metadata now agree, while release evidence deliberately remains on Node 24. Existing Agent Guidance still routes missing CLI readiness through notifai init --json and does not promise or prescribe a different runtime floor, so no shipped guidance wording needed to change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
