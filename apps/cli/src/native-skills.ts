@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { accountHome, npxLaunch } from './platform.js'
+import { packageVersion } from './release.js'
+import { verifiedReleaseSkillSource } from './skill-integrity.js'
 
 /**
  * Exact reviewed version of the external `skills` installer.
@@ -38,6 +40,13 @@ export interface SkillsAddOptions {
   env: NodeJS.ProcessEnv
 }
 
+export interface SkillsOperationFailure {
+  code: number
+  error: string
+}
+
+export type SkillsOperationResult = number | SkillsOperationFailure
+
 export interface SkillsRemoveOptions {
   skill: string
   scope: SkillScope
@@ -47,7 +56,7 @@ export interface SkillsRemoveOptions {
 
 export interface NativeSkills {
   /** Launch the native interactive `npx skills add` flow. */
-  add(options: SkillsAddOptions): Promise<number>
+  add(options: SkillsAddOptions): Promise<SkillsOperationResult>
   /** Uninstall one installer-managed skill in one scope. */
   remove(options: SkillsRemoveOptions): Promise<number>
   /** Read installer-managed inventory from lock files. Does not spawn npx. */
@@ -146,7 +155,16 @@ export function skillsRemoveArgv(options: SkillsRemoveOptions): string[] {
 /** The only process/filesystem adapter Notifai needs for the external installer. */
 export const nativeSkills: NativeSkills = {
   async add(options) {
-    return run(skillsAddArgv(options), { cwd: options.cwd, env: options.env })
+    const version = packageVersion()
+    if (version === null) {
+      return { code: 1, error: 'this CLI cannot establish which packaged skill belongs to it' }
+    }
+    const verified = await verifiedReleaseSkillSource(options.source, version)
+    if (!verified.ok) return { code: 1, error: verified.error }
+    return run(skillsAddArgv({ ...options, source: verified.source }), {
+      cwd: options.cwd,
+      env: options.env,
+    })
   },
 
   async remove(options) {

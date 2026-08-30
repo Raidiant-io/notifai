@@ -11,7 +11,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json && node ../../scripts/chmod-cli-bin.mjs",
+    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json && node ../../scripts/copy-shipped-skill.mjs && node ../../scripts/chmod-cli-bin.mjs",
     "pretest": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node ../../scripts/run-cli-tests.mjs",

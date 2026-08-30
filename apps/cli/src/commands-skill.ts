@@ -1,10 +1,9 @@
 import { SKILLS_INSTALLER_SPEC, type NativeSkill, type SkillScope } from './native-skills.js'
-import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { type ReadinessState } from './readiness.js'
-import { skillsSource } from './release.js'
+import { packageVersion, skillsSource } from './release.js'
+import { createSkillManifest, shippedSkillBundle } from './skill-integrity.js'
 import type { CommandDeps } from './commands-core.js'
 
 /**
@@ -24,35 +23,26 @@ const SKILLS_SOURCE_LABEL = SKILLS_SOURCE ?? 'the public release tag matching th
 
 const SKILL_SCOPES: readonly SkillScope[] = ['project', 'global']
 
-function markdownTreeDigest(root: string): string | null {
+function skillTreeDigest(root: string): string | null {
   if (!existsSync(root)) return null
-  const files: string[] = []
-  const walk = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const absolute = path.join(directory, entry.name)
-      if (entry.isDirectory()) walk(absolute)
-      else if (entry.isFile() && entry.name.endsWith('.md')) files.push(absolute)
-    }
-  }
   try {
-    walk(root)
-    const hash = createHash('sha256')
-    for (const file of files.sort()) {
-      hash.update(path.relative(root, file))
-      hash.update('\0')
-      hash.update(readFileSync(file))
-      hash.update('\0')
-    }
-    return `sha256:${hash.digest('hex')}`
+    return createSkillManifest(root, '').digest
   } catch {
     return null
   }
 }
 
+function expectedSkillDigest(): string | null {
+  const version = packageVersion()
+  if (version === null) return null
+  const bundle = shippedSkillBundle(version)
+  return bundle.ok ? bundle.bundle.manifest.digest : null
+}
+
 function developmentSkillMismatch(skill: NativeSkill): { checkout: string; installed: string } | null {
   const checkoutRoot = fileURLToPath(new URL('../../../skills/notifai/', import.meta.url))
-  const checkout = markdownTreeDigest(checkoutRoot)
-  const installed = markdownTreeDigest(skill.path)
+  const checkout = skillTreeDigest(checkoutRoot)
+  const installed = skillTreeDigest(skill.path)
   return checkout !== null && installed !== null && checkout !== installed
     ? { checkout, installed }
     : null
@@ -64,14 +54,23 @@ function skillSourceParts(): { source: string; ref: string } | null {
   return match === null ? null : { source: match[1]!, ref: match[2]! }
 }
 
-function expectedSkill(skill: NativeSkill): boolean {
+function expectedSkillProvenance(skill: NativeSkill): boolean {
   const expected = skillSourceParts()
   return (
     expected !== null &&
     skill.name === 'notifai' &&
     skill.source === expected.source &&
     skill.sourceType === 'github' &&
-    skill.ref === expected.ref
+    (skill.ref === expected.ref || (skill.ref !== null && /^[0-9a-f]{40}$/.test(skill.ref)))
+  )
+}
+
+function expectedSkill(skill: NativeSkill): boolean {
+  const expectedDigest = expectedSkillDigest()
+  return (
+    expectedSkillProvenance(skill) &&
+    expectedDigest !== null &&
+    skillTreeDigest(skill.path) === expectedDigest
   )
 }
 
@@ -154,24 +153,49 @@ export async function skillReadiness(
   const { installed, errors } = await listScopedNotifaiSkills(deps)
   if (installed.length > 1) return duplicateSkillState(installed, selectedScope)
 
-  const current = installed.find(expectedSkill)
-  if (current !== undefined) {
-    const mismatch = developmentSkillMismatch(current)
+  const candidate = installed.find(expectedSkillProvenance)
+  if (candidate !== undefined) {
+    const mismatch = developmentSkillMismatch(candidate)
     if (mismatch !== null) {
       return {
         id: 'skill',
         title: 'Agent guidance skill',
         status: 'gap',
         detail:
-          `the active development CLI's shipped guidance differs from the installer-managed ${skillPin(current)} skill. ` +
+          `the active development CLI's shipped guidance differs from the installer-managed ${skillPin(candidate)} skill. ` +
           'Released installs remain immutable; publish a new CLI/skill release before treating this combination as ready.',
         technical: {
           resolution: 'development-cli-skill-mismatch',
-          scope: current.scope,
-          ref: current.ref,
-          path: current.path,
+          scope: candidate.scope,
+          ref: candidate.ref,
+          path: candidate.path,
           checkout_digest: mismatch.checkout,
           installed_digest: mismatch.installed,
+        },
+      }
+    }
+    const expectedDigest = expectedSkillDigest()
+    const installedDigest = skillTreeDigest(candidate.path)
+    if (expectedDigest === null || installedDigest !== expectedDigest) {
+      return {
+        id: 'skill',
+        title: 'Agent guidance skill',
+        status: 'gap',
+        detail:
+          'the installer record names this release, but the installed guidance does not match ' +
+          'the content shipped inside this CLI package.',
+        technical: {
+          resolution: 'installed-skill-content-mismatch',
+          scope: candidate.scope,
+          ref: candidate.ref,
+          path: candidate.path,
+          expected_digest: expectedDigest,
+          installed_digest: installedDigest,
+        },
+        remedy: {
+          by: 'cli',
+          summary: 'reinstall the content-verified skill shipped with this CLI',
+          command: `notifai init --skills --setup-scope ${candidate.scope}`,
         },
       }
     }
@@ -179,7 +203,9 @@ export async function skillReadiness(
       id: 'skill',
       title: 'Agent guidance skill',
       status: 'ready',
-      detail: `installed from ${SKILLS_SOURCE_LABEL} in the ${current.scope} scope`,
+      detail:
+        `installed in the ${candidate.scope} scope and verified against the guidance ` +
+        `shipped with ${SKILLS_SOURCE_LABEL}`,
     }
   }
 

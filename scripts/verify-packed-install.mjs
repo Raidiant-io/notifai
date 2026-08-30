@@ -296,6 +296,15 @@ async function main() {
     mkdirSync(home, { recursive: true })
     const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: undefined, XDG_STATE_HOME: undefined }
     const installedCli = path.join(installDir, 'node_modules', CLI_NAME)
+    try {
+      const integrity = await import(
+        pathToFileURL(path.join(installedCli, 'dist', 'skill-integrity.js')).href
+      )
+      const bundle = integrity.shippedSkillBundle(cliManifest.version)
+      if (!bundle.ok) fail(`installed CLI skill bundle is invalid (${bundle.error})`)
+    } catch (error) {
+      fail(`installed CLI skill bundle could not be verified (${String(error)})`)
+    }
     const binRelative =
       typeof cliManifest.bin === 'string' ? cliManifest.bin : cliManifest.bin?.notifai
     if (typeof binRelative !== 'string') fail('packed CLI manifest declares no notifai bin')

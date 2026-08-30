@@ -54,13 +54,15 @@ tags, without the maintainer asking for a release in that instance. A
 version, once published, cannot be taken back. Git pushes of ordinary
 commits are fine. The machine is documented in `docs/RELEASING.md`.
 
-The skill installer source (`SKILLS_SOURCE`) is an immutable public tag,
-derived at runtime from the package version in `apps/cli/src/release.ts` — so
-it always names the release it ships in, and there is no second copy to fall
-out of step. Do not reintroduce it as a literal; `check:release` fails if you
-do. In the skills CLI grammar, `owner/repo#ref` selects a Git ref;
-`owner/repo@name` selects a skill. Never point it at an unpublished, mutable,
-or private location.
+The skill's human-readable release source (`SKILLS_SOURCE`) is derived at
+runtime from the package version in `apps/cli/src/release.ts`. Installation
+does not trust that tag: the npm package carries the complete reviewed skill
+and its digest manifest; the CLI verifies the tag tree and bytes against that
+copy, then gives the external installer the resolved full commit SHA. Do not
+reintroduce a literal source, omit the packaged bundle, or pass the tag itself
+to the installer; `check:release` fails on bundle drift. In the skills CLI
+grammar, `owner/repo#ref` selects a Git ref and `owner/repo@name` selects a
+skill.
 
 ## Publishing must verify what actually shipped
 
