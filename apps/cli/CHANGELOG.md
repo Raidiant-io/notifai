@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.3](https://github.com/Raidiant-io/notifai/compare/v10.1.2...v10.1.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **cli:** resolve Codex session titles without Orca ([#118](https://github.com/Raidiant-io/notifai/issues/118)) ([aabaaf4](https://github.com/Raidiant-io/notifai/commit/aabaaf4b000b7427681d2f2ad878505ff608aeb1))
+* **cli:** surface Codex hook approval ([#119](https://github.com/Raidiant-io/notifai/issues/119)) ([45ecb92](https://github.com/Raidiant-io/notifai/commit/45ecb92c325ffbc3aa088d015fbc4af74bfe9e4a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.3 to 6.0.4
+
 ## [10.1.2](https://github.com/Raidiant-io/notifai/compare/v10.1.1...v10.1.2) (2026-08-30)
 
 

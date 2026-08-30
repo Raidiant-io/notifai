@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [6.0.4](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.3...protocol-v6.0.4) (2026-08-30)
+
+
+### Bug Fixes
+
+* **cli:** resolve Codex session titles without Orca ([#118](https://github.com/Raidiant-io/notifai/issues/118)) ([aabaaf4](https://github.com/Raidiant-io/notifai/commit/aabaaf4b000b7427681d2f2ad878505ff608aeb1))
+
 ## [6.0.3](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.2...protocol-v6.0.3) (2026-08-30)
 
 
