@@ -4,7 +4,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { SKILLS_INSTALLER_SPEC, nativeSkills, skillsAddArgv, skillsRemoveArgv } from './native-skills.js'
 
-function writeLock(file: string, ref: string): void {
+function writeLock(file: string, ref: string, skillPath?: string): void {
   mkdirSync(path.dirname(file), { recursive: true })
   writeFileSync(
     file,
@@ -16,6 +16,7 @@ function writeLock(file: string, ref: string): void {
           sourceType: 'github',
           sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
           ref,
+          ...(skillPath === undefined ? {} : { skillPath }),
         },
       },
     })}\n`,
@@ -40,6 +41,28 @@ describe('skillsAddArgv', () => {
       'notifai',
     ])
     expect(argv).not.toContain('skills')
+  })
+
+  it('passes the verified project-relative package source without prompting', () => {
+    const source = path.join('.notifai', 'skill-source-fixture')
+    expect(
+      skillsAddArgv({
+        source,
+        skill: 'notifai',
+        cwd: '/tmp',
+        env: {},
+        scope: 'project',
+      }),
+    ).toEqual([
+      '-y',
+      SKILLS_INSTALLER_SPEC,
+      'add',
+      source,
+      '--skill',
+      'notifai',
+      '--copy',
+      '--yes',
+    ])
   })
 
   it('uninstalls one skill in the named scope without a prompt', () => {
@@ -76,6 +99,19 @@ describe('nativeSkills.list', () => {
         source: 'Raidiant-io/notifai',
         sourceType: 'github',
         ref: 'v0.5.1',
+      }),
+    ])
+  })
+
+  it('uses the validated installed directory instead of source-relative lock skillPath', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-skills-lock-path-'))
+    writeLock(path.join(cwd, 'skills-lock.json'), 'v0.5.1', 'notifai/SKILL.md')
+
+    const result = await nativeSkills.list('project', cwd, { PATH: '/nonexistent' })
+    expect(result.skills).toEqual([
+      expect.objectContaining({
+        name: 'notifai',
+        path: path.join(cwd, '.agents', 'skills', 'notifai'),
       }),
     ])
   })

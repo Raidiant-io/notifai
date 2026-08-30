@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { execCommand, repositoryRoot } from './cross-platform.mjs'
 
 const root = repositoryRoot
@@ -18,6 +19,11 @@ function requireValue(ok, message) {
 
 const rootManifest = readJson('package.json')
 const rootLicense = readFileSync(path.join(root, 'LICENSE'), 'utf8')
+const gitAttributes = readFileSync(path.join(root, '.gitattributes'), 'utf8')
+requireValue(
+  /^skills\/notifai\/\*\* text eol=lf$/m.test(gitAttributes),
+  '.gitattributes must force LF for the byte-verified skills/notifai tree',
+)
 const packages = [
   {
     directory: 'apps/cli',
@@ -168,6 +174,26 @@ requireValue(
 )
 
 try {
+  const integrity = await import(
+    pathToFileURL(path.join(root, 'apps/cli/dist/skill-integrity.js')).href
+  )
+  const shipped = integrity.shippedSkillBundle(cli.version)
+  requireValue(shipped.ok, shipped.ok ? '' : shipped.error)
+  if (shipped.ok) {
+    const repositoryManifest = integrity.createSkillManifest(
+      path.join(root, 'skills/notifai'),
+      cli.version,
+    )
+    requireValue(
+      JSON.stringify(shipped.bundle.manifest) === JSON.stringify(repositoryManifest),
+      'packed CLI skill bundle must match the complete repository skills/notifai tree',
+    )
+  }
+} catch (error) {
+  failures.push(`could not verify the packed CLI skill bundle (${String(error)})`)
+}
+
+try {
   const reported = execFileSync('node', ['apps/cli/dist/main.js', '--version'], {
     cwd: root,
     encoding: 'utf8',
@@ -193,7 +219,7 @@ requireValue(
   readme.includes(`#v${cli.version}`) && readme.includes(`\`v${cli.version}\``),
   `README skill pin must name the current CLI tag v${cli.version}`,
 )
-for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md', 'docs/RELEASING.md']) {
+for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md', 'docs/RELEASING.md', 'docs/TRUST.md']) {
   requireValue(readFileSync(path.join(root, relative), 'utf8').trim().length > 0, `${relative} must not be empty`)
 }
 requireValue(rootLicense.includes('Apache License'), 'LICENSE must contain Apache-2.0')

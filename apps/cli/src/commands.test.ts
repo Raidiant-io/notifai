@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -113,6 +114,14 @@ const RELEASE_REF = `v${
     ) as { version: string }
   ).version
 }`
+const CLI_VERSION = RELEASE_REF.slice(1)
+
+const RELEASE_SKILL = fileURLToPath(new URL('../../../skills/notifai/', import.meta.url))
+
+function installCurrentSkill(destination: string): void {
+  mkdirSync(path.dirname(destination), { recursive: true })
+  cpSync(RELEASE_SKILL, destination, { recursive: true })
+}
 
 const currentSupport: SupportAssessment = {
   state: 'current',
@@ -4628,10 +4637,12 @@ describe('init', () => {
   }
 
   function managedSkill(scope: SkillScope, cwd: string): NativeSkill {
+    const skillPath = path.join(cwd, '.agents', 'skills', 'notifai')
+    if (!existsSync(skillPath)) installCurrentSkill(skillPath)
     return {
       name: 'notifai',
       scope,
-      path: path.join(cwd, '.agents', 'skills', 'notifai'),
+      path: skillPath,
       source: 'Raidiant-io/notifai',
       sourceType: 'github',
       sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
@@ -4884,6 +4895,8 @@ describe('init', () => {
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: [] }),
     } as unknown as ApiClient
+    const installedPath = path.join(cwd, '.agents', 'skills', 'notifai')
+    installCurrentSkill(installedPath)
     const nativeSkills: NativeSkills = {
       add: async () => 0,
       remove: async () => 0,
@@ -4894,7 +4907,7 @@ describe('init', () => {
                 {
                   name: 'notifai',
                   scope,
-                  path: path.join(cwd, '.agents', 'skills', 'notifai'),
+                  path: installedPath,
                   source: 'Raidiant-io/notifai',
                   sourceType: 'github',
                   sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
@@ -4910,7 +4923,7 @@ describe('init', () => {
     )
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'ready',
-      detail: `installed from ${SKILLS_SOURCE} in the project scope`,
+      detail: `installed in the project scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
     })
   })
 
@@ -4940,14 +4953,14 @@ describe('init', () => {
       )
       expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
         status: 'ready',
-        detail: `installed from ${SKILLS_SOURCE} in the ${scope} scope`,
+        detail: `installed in the ${scope} scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
       })
       expect(calls).toEqual(['project', 'global'])
     },
   )
 
   it.each(['project', 'global'] as const)(
-    'does not trust unmanaged same-path content in the %s scope',
+    'trusts exact installed content independently of mutable %s provenance metadata',
     async (scope) => {
       const cwd = mkdtempSync(path.join(os.tmpdir(), `init-unmanaged-${scope}-`))
       const io = new CapturedIo()
@@ -4972,8 +4985,8 @@ describe('init', () => {
         { skillScope: scope },
       )
       expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-        status: 'optional-gap',
-        detail: `not installed from ${SKILLS_SOURCE} in ${scope} scope`,
+        status: 'ready',
+        detail: `installed in the ${scope} scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
       })
     },
   )
@@ -5138,7 +5151,7 @@ describe('init', () => {
     expect([...present]).toEqual(['project'])
   })
 
-  it('updates the existing skill scope instead of adding a second copy', async () => {
+  it('does not reinstall content-current guidance because mutable ref metadata is stale', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-update-existing-'))
     const io = new InteractiveIo()
     const received: Array<SkillScope | undefined> = []
@@ -5160,8 +5173,7 @@ describe('init', () => {
         hooks: false,
       }),
     ).toBe(EXIT.ok)
-    expect(received).toEqual(['global'])
-    expect(io.outLines.join('\n')).toContain('global scope')
+    expect(received).toEqual([])
   })
 
   it('requires an explicit skill scope before unattended installation', async () => {
@@ -6456,6 +6468,7 @@ describe('readiness assessment cost', () => {
 
   it('treats a lock-file pin as installed without asking npx', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-'))
+    installCurrentSkill(path.join(cwd, '.agents', 'skills', 'notifai'))
     writeFileSync(
       path.join(cwd, 'skills-lock.json'),
       `${JSON.stringify({
@@ -6483,7 +6496,7 @@ describe('readiness assessment cost', () => {
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'ready',
-      detail: `installed from ${SKILLS_SOURCE} in the project scope`,
+      detail: `installed in the project scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
     })
   })
 
@@ -7170,6 +7183,7 @@ describe('asking before the hooks have ever run', () => {
             : [],
       }),
     }
+    installCurrentSkill(path.join(cwd, 'global-skills', 'notifai'))
     const deps = { ...makeDeps(io, client), cwd, env, nativeSkills }
 
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
@@ -7177,7 +7191,9 @@ describe('asking before the hooks have ever run', () => {
 
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     const said = io.outLines.join(' ')
-    expect(said).toContain(`installed from ${SKILLS_SOURCE} in the global scope`)
+    expect(said).toContain(
+      `installed in the global scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
+    )
     expect(said).toMatch(/active Codex/i)
     expect(said).toContain('notifai hooks install --harness codex')
   })

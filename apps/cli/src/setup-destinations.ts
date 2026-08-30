@@ -26,7 +26,7 @@ export function companionPlatformLabel(platform: CompanionPlatform): string {
  */
 function dashboardOrigin(baseUrl: string): string {
   const normalized = baseUrl.replace(/\/+$/, '')
-  if (normalized === 'https://api.notifai.sh' || normalized === 'https://notifai.fly.dev') {
+  if (normalized === 'https://api.notifai.sh') {
     return 'https://app.notifai.sh'
   }
   return normalized

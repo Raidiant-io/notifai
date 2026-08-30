@@ -12,7 +12,7 @@ import { ensurePrivateDirectory } from './atomic-file.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { personalProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
-import { SKILLS_INSTALLER_SPEC, type SkillScope } from './native-skills.js'
+import { type SkillScope } from './native-skills.js'
 import {
   firstRequiredBlocker,
   isOptionalAutomation,
@@ -196,8 +196,9 @@ async function closeGap(
       deps.io.err('Skill installation failed — the native `npx skills` flow is unavailable.')
       return 'failed'
     }
-    // Refuse rather than reach for a mutable ref: installing the skill from a
-    // moving branch is the one outcome the pin exists to prevent.
+    // Refuse rather than guess a release identity. The production adapter uses
+    // this only as a human label; it verifies and stages npm's bundled skill at
+    // a project-relative local path before it invokes the installer.
     if (SKILLS_SOURCE === null) {
       deps.io.err(
         'Skill installation failed — this build cannot determine its own version, so there is no release tag to install from.',
@@ -228,19 +229,19 @@ async function closeGap(
       }
     }
     deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${installScope} scope)...`)
-    const code = await deps.nativeSkills.add({
+    const operation = await deps.nativeSkills.add({
       source: SKILLS_SOURCE,
       skill: 'notifai',
       cwd: deps.cwd,
       env: deps.env,
       scope: installScope,
     })
+    const code = typeof operation === 'number' ? operation : operation.code
     if (code !== 0) {
-      deps.io.err('Skill installation failed — run it manually with:')
       deps.io.err(
-        `  npx -y ${SKILLS_INSTALLER_SPEC} add ${SKILLS_SOURCE} --skill notifai${
-          installScope === 'global' ? ' --global' : ''
-        } --yes`,
+        typeof operation === 'number'
+          ? 'Skill installation failed — rerun `notifai init --skills` after checking the network connection.'
+          : `Skill installation refused — ${operation.error}.`,
       )
     }
     return code === 0 ? 'closed' : 'failed'

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:93c5e0e543be8ad8fca1153183ab4350c0b47933f61237fd72c76eab3474c766",
+  "behavior_digest": "sha256:975d9c00ad88a2ddb4dc7f3dcabc9fa4883a65c7558e9595ffe0694707bcc7d1",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after lowering the public runtime floor from Node 22 to the dependency-justified Node 20.12 minimum. The startup diagnostic and package metadata now agree, while release evidence deliberately remains on Node 24. Existing Agent Guidance still routes missing CLI readiness through notifai init --json and does not promise or prescribe a different runtime floor, so no shipped guidance wording needed to change.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding first-party skill installation to the exact guidance shipped in the npm package. Init now verifies and stages that package-bound copy for the pinned native installer, removes the staging copy, and readiness re-hashes the conventional installed directory without trusting mutable lock metadata. The shipped skill's behavior clauses and setup commands remain unchanged; the stronger integrity and portability checks enforce the existing immutable-guidance promise without requiring new Agent Guidance wording.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -197,6 +197,11 @@ test('each created release tag dispatches protected publication at its exact SHA
   assert.doesNotMatch(publish, /\n  push:/)
   assert.match(publish, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
   assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/)
+  assert.match(publish, /- name: Require an immutable GitHub release/)
+  assert.match(publish, /node scripts\/check-public-provider-posture\.mjs/)
+  assert.match(publish, /--release-tag "\$GITHUB_REF_NAME"/)
+  assert.match(publish, /--expected-sha "\$\{\{ inputs\.expected_sha \}\}"/)
+  assert.match(ci, /- name: Verify public provider posture/)
   assert.match(publish, /environment: npm-release/)
   const windows = publishWorkflow.jobs['windows-cli']
   assert.deepEqual(windows.strategy.matrix.os, ['windows-2025', 'windows-11-arm'])
@@ -225,6 +230,28 @@ test('the publish workflow records the exact CLI version in GitHub output', () =
   } finally {
     rmSync(directory, {recursive: true, force: true})
   }
+})
+
+test('publication reuses the exact tarballs that passed boundary and install checks', () => {
+  const steps = publishWorkflow.jobs.npm.steps
+  const cleanCheckout = steps.find(candidate => candidate.name === 'Verify the clean release checkout')
+  const pack = steps.find(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
+  const publishProtocol = steps.find(candidate => candidate.name === 'Publish protocol with OIDC provenance')
+  const verifyProtocol = steps.find(candidate => candidate.name === 'Verify published protocol bytes and metadata')
+  const publishCli = steps.find(candidate => candidate.name === 'Publish CLI with OIDC provenance')
+  const verifyCli = steps.find(candidate => candidate.name === 'Verify published CLI bytes and metadata')
+
+  assert.doesNotMatch(cleanCheckout.run, /pnpm check:packed/)
+  assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/)
+  assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/)
+  assert.match(pack.run, /scripts\/verify-packed-install\.mjs/)
+  assert.match(pack.run, /--gitleaks gitleaks/)
+  assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/)
+  assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/)
+  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance')
+  assert.match(verifyProtocol.run, /--expected-tarball "\$PROTOCOL_TARBALL"/)
+  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance')
+  assert.match(verifyCli.run, /--expected-tarball "\$CLI_TARBALL"/)
 })
 
 test('the rootless combined manifest does not use an empty group title template', () => {
