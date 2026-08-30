@@ -52,11 +52,9 @@
   ],
   "files": [
     "dist",
-    "src",
-    "tsconfig.json",
     "CHANGELOG.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=20.12.0"
   }
 }
