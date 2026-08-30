@@ -55,6 +55,11 @@ export function resolveDraftInvocation(
     now: (deps.now ?? Date.now)(),
   })
   if (!source.ok) return source
+  if (source.generatedSessionLabel !== undefined) {
+    deps.io.err(
+      `Heads up (source.session_label): No semantic Agent Session title was available; using generated fallback "${source.generatedSessionLabel}". Pass --session-label with a concise task name when one is available.`,
+    )
+  }
   return {
     ok: true,
     invocation: {

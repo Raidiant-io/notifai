@@ -94,6 +94,7 @@ import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-
 import type { Tone } from './ui/theme.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { firstRequiredBlocker } from './readiness.js'
+import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
@@ -906,6 +907,9 @@ describe('command contracts', () => {
       harness: 'claude-code',
     })
     expect(submitted?.draft.source?.session_label).toBe('Rapid Antelope')
+    expect(io.errLines).toContain(
+      'Heads up (source.session_label): No semantic Agent Session title was available; using generated fallback "Rapid Antelope". Pass --session-label with a concise task name when one is available.',
+    )
     expect(io.outLines.join('\n')).not.toContain('opaque-claude-session-42')
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
   })
@@ -988,6 +992,73 @@ describe('command contracts', () => {
       session_label: 'Release verification',
       harness: 'codex',
     })
+  })
+
+  it('uses the exact Orca Agent Session task title instead of an Ash Rabbit fallback', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-agent-session-title-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const worktreeId = `repo-123::${cwd}`
+    const paneKey = 'tab-synthetic:leaf-title-fixture'
+    const orcaCommand: OrcaCommand = (_executable, args) => {
+      if (args[0] === 'worktree' && args[1] === 'ps') {
+        return JSON.stringify({
+          ok: true,
+          result: {
+            worktrees: [
+              {
+                worktreeId,
+                path: cwd,
+                agents: [
+                  {
+                    paneKey,
+                    taskTitle: 'Synthetic title fixture',
+                  },
+                ],
+              },
+            ],
+          },
+        })
+      }
+      return null
+    }
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_THREAD_ID: 'fixture-session-7409',
+      TERM_PROGRAM: 'Orca',
+      ORCA_WORKTREE_ID: worktreeId,
+      ORCA_PANE_KEY: paneKey,
+    }
+
+    expect(
+      await sendCommand(
+        {
+          ...makeDeps(io, client),
+          cwd,
+          env,
+          orcaSessionTitle: (sourceEnv) => readOrcaSessionTitle(sourceEnv, orcaCommand),
+        },
+        {
+          title: 'Synthetic fixture is ready',
+          body: 'The neutral regression fixture is complete.',
+          kind: 'done',
+        },
+      ),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'fixture-session-7409',
+      session_label: 'Synthetic title fixture',
+      harness: 'codex',
+    })
+    expect(io.errLines.join('\n')).not.toContain('generated fallback')
   })
 
   it('sends after isolating an invalid session-name record without losing valid names', async () => {

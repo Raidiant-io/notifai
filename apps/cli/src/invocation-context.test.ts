@@ -275,6 +275,7 @@ describe('buildSourceContext', () => {
     const sessionId = 'opaque-thread-1234567890'
     const expected = {
       ok: true,
+      generatedSessionLabel: 'Ivory Koala',
       source: {
         session_id: sessionId,
         session_label: 'Ivory Koala',
@@ -308,6 +309,7 @@ describe('buildSourceContext', () => {
       }),
     ).toEqual({
       ok: true,
+      generatedSessionLabel: 'Golden Lynx',
       source: {
         session_id: 'other-session',
         session_label: 'Golden Lynx',

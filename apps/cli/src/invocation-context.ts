@@ -147,7 +147,7 @@ export interface SourceContextInput {
 }
 
 export type SourceContextBuild =
-  | { ok: true; source?: SourceContextT }
+  | { ok: true; source?: SourceContextT; generatedSessionLabel?: string }
   | { ok: false; error: string }
 
 /** Resolve per-field Source Context precedence without fabricating Agent Session identity. */
@@ -193,5 +193,13 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
     ...(input.invocation.branch !== undefined ? { branch: input.invocation.branch } : {}),
     ...(input.invocation.worktree !== undefined ? { worktree: input.invocation.worktree } : {}),
   }
-  return Object.keys(source).length === 0 ? { ok: true } : { ok: true, source }
+  return Object.keys(source).length === 0
+    ? { ok: true }
+    : {
+        ok: true,
+        source,
+        ...(label !== undefined && label.ok && label.source === 'fallback'
+          ? { generatedSessionLabel: label.label }
+          : {}),
+      }
 }
