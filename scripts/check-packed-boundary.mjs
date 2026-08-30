@@ -29,8 +29,8 @@ const FORBIDDEN_CONTENT_PATTERNS = [
   [/@raidiant\/notifai-server/, 'private server package'],
   [/@raidiant\/notifai-contracts/, 'private contracts package'],
   [/@raidiant\/notifai-dashboard/, 'private dashboard package'],
-  [new RegExp(['server', 'internal'].join('-')), `private ${['server', 'internal'].join('-')} module`],
-  [new RegExp(['test', 'containers'].join(''), 'i'), 'private integration-test stack'],
+  [new RegExp(['server', 'internal'].join('-')), 'private server implementation module'],
+  [new RegExp(['test', 'containers'].join(''), 'i'), 'private integration-test dependency'],
   [/\b[a-z0-9-]+\.fly\.dev\b/i, 'hosting provider hostname'],
 ]
 
@@ -173,7 +173,7 @@ function runGitleaks(directory) {
   return []
 }
 
-export function scanPackedTarballs({ tarballs, scanWithGitleaks = false }) {
+export function scanPackedTarballs({ tarballs, scanSecrets = false }) {
   if (!Array.isArray(tarballs) || tarballs.length === 0) {
     throw new Error('at least one packed tarball is required')
   }
@@ -201,7 +201,7 @@ export function scanPackedTarballs({ tarballs, scanWithGitleaks = false }) {
         if (relative.endsWith('.map')) sourceMaps += 1
         failures.push(...contentFailures(relative, readFileSync(absolute)))
       }
-      if (scanWithGitleaks) {
+      if (scanSecrets) {
         failures.push(...runGitleaks(packageRoot))
       }
     }
@@ -233,7 +233,7 @@ function main() {
   try {
     const result = assertPackedTarballs({
       tarballs: argvValues('--tarball'),
-      scanWithGitleaks: process.argv.includes('--gitleaks'),
+      scanSecrets: process.argv.includes('--gitleaks'),
     })
     console.log(
       `Packed artifact boundary scan passed (${result.files} files, ${result.sourceMaps} source maps).`,

@@ -225,7 +225,7 @@ async function main() {
     try {
       const boundary = assertPackedTarballs({
         tarballs: [protocolTarball, cliTarball],
-        scanWithGitleaks: process.argv.includes('--gitleaks'),
+        scanSecrets: process.argv.includes('--gitleaks'),
       })
       console.log(
         `Packed boundary verified: ${boundary.files} files and ${boundary.sourceMaps} source maps.`,
