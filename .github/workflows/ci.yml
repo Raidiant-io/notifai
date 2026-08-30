@@ -203,6 +203,11 @@ jobs:
 
       - run: pnpm check:agent-guidance
 
+      - name: Verify public provider posture
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-public-provider-posture.mjs
+
   secret-history:
     needs: dispatch-integrity
     if: ${{ always() }}

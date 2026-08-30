@@ -42,6 +42,27 @@ describe('skillsAddArgv', () => {
     expect(argv).not.toContain('skills')
   })
 
+  it('accepts only a full content-addressed commit after release verification', () => {
+    const commit = 'a'.repeat(40)
+    expect(
+      skillsAddArgv({
+        source: `Raidiant-io/notifai#${commit}`,
+        skill: 'notifai',
+        cwd: '/tmp',
+        env: {},
+        scope: 'project',
+      }),
+    ).toEqual([
+      '-y',
+      SKILLS_INSTALLER_SPEC,
+      'add',
+      `Raidiant-io/notifai#${commit}`,
+      '--skill',
+      'notifai',
+      '--yes',
+    ])
+  })
+
   it('uninstalls one skill in the named scope without a prompt', () => {
     expect(
       skillsRemoveArgv({

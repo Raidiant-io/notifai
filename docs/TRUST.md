@@ -14,6 +14,27 @@ The controls below preserve explicit self-hosted and intranet workflows. Those
 workflows require a User-owned exact-origin exception; a repository cannot add
 one for itself.
 
+## First-party skill release integrity
+
+The optional `notifai` agent skill is content-bound to the CLI package that
+installs it. Every CLI tarball carries the complete reviewed skill plus a
+manifest covering the exact relative file list, each file's SHA-256 and Git
+blob identity, and one canonical tree digest. Before starting the external
+`skills` installer, the CLI:
+
+1. verifies its packaged skill against that manifest;
+2. resolves the matching `v<CLI version>` tag through GitHub to one full commit
+   SHA, including annotated-tag dereferencing;
+3. verifies the release commit's exact `skills/notifai` file list, Git objects,
+   and raw bytes against the packaged manifest; and
+4. gives the installer the full commit SHA, never the movable tag.
+
+Readiness verifies the installed tree against the packaged digest as well as
+the installer's GitHub provenance. A matching tag name or lock-file entry is
+not sufficient. Network failure, a moved tag, a truncated tree, an extra or
+missing file, changed bytes, a malformed package manifest, or an installer
+record without verified content all fail closed.
+
 ## Remote image URLs
 
 `notifai send --image` and question media accept a remote URL under this

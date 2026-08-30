@@ -197,6 +197,11 @@ test('each created release tag dispatches protected publication at its exact SHA
   assert.doesNotMatch(publish, /\n  push:/)
   assert.match(publish, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
   assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/)
+  assert.match(publish, /- name: Require an immutable GitHub release/)
+  assert.match(publish, /node scripts\/check-public-provider-posture\.mjs/)
+  assert.match(publish, /--release-tag "\$GITHUB_REF_NAME"/)
+  assert.match(publish, /--expected-sha "\$\{\{ inputs\.expected_sha \}\}"/)
+  assert.match(ci, /- name: Verify public provider posture/)
   assert.match(publish, /environment: npm-release/)
   const windows = publishWorkflow.jobs['windows-cli']
   assert.deepEqual(windows.strategy.matrix.os, ['windows-2025', 'windows-11-arm'])
