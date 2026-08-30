@@ -9,7 +9,7 @@ import {
 describe('focused setup destinations', () => {
   it('sends a hosted reader to the dashboard they can sign in to', () => {
     expect(setupAccessUrl('https://api.notifai.sh')).toBe('https://app.notifai.sh/setup/access')
-    expect(setupCompanionUrl('https://notifai.fly.dev')).toBe(
+    expect(setupCompanionUrl('https://api.notifai.sh')).toBe(
       'https://app.notifai.sh/setup/companion',
     )
   })

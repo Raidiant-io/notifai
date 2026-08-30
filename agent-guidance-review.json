@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:71dd13012069aa5e3d569a05b42fc9eb6e852e13e78171a432e4c71f79d17d90",
+  "behavior_digest": "sha256:3a27b27a251884ddd22d62688b7a35e1af6148942a11d876eb06fb0a953981a7",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding first-party skill installation to the exact guidance shipped in the npm package. Init now verifies and stages that package-bound copy for the pinned native installer, removes the staging copy, and readiness re-hashes the conventional installed directory without trusting mutable lock metadata. The shipped skill's behavior clauses and setup commands remain unchanged; the stronger integrity and portability checks enforce the existing immutable-guidance promise without requiring new Agent Guidance wording.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after removing the legacy infrastructure-alias rewrite from destination normalization and binding publication to the exact scanned npm tarballs. The canonical api.notifai.sh to app.notifai.sh migration remains unchanged, while newly built clients no longer embed the legacy provider hostname. The shipped skill's behavior clauses and setup commands remain unchanged, so no new Agent Guidance wording is required.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
