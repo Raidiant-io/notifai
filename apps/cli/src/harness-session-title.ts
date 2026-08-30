@@ -41,9 +41,11 @@ export function readCodexSessionTitle(
   if (!safeSessionId(sessionId)) return undefined
   const file = path.join(configHome(env, 'CODEX_HOME', '.codex'), 'session_index.jsonl')
   try {
-    const size = statSync(file).size
+    // CODEX_HOME is the active local harness's configuration authority and
+    // the basename is fixed; Notification Request input cannot select a path.
+    const size = statSync(file).size // lgtm[js/path-injection]
     if (size <= 0 || size > SESSION_INDEX_MAX_BYTES) return undefined
-    const lines = readFileSync(file, 'utf8').split(/\r?\n/u)
+    const lines = readFileSync(file, 'utf8').split(/\r?\n/u) // lgtm[js/path-injection]
     for (let index = lines.length - 1; index >= 0; index -= 1) {
       const line = lines[index]!.trim()
       if (line.length === 0) continue
