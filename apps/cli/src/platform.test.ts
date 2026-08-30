@@ -7,7 +7,6 @@ import {
   configHome,
   isWindowsAbsolute,
   npxLaunch,
-  quoteCmdArgument,
   stateHome,
   urlOpenLaunch,
   windowsNpxCli,
@@ -64,51 +63,16 @@ describe('npxLaunch', () => {
     expect(launch.options.cwd).toBe('C:\\proj')
   })
 
-  it('prefers an npm_execpath companion and ignores a pnpm lifecycle executable', () => {
-    const root = path.join(os.tmpdir(), `notifai-npm-execpath-${process.pid}`)
-    const npm = path.join(root, 'npm-cli.js')
-    const npx = path.join(root, 'npx-cli.js')
-    mkdirSync(root, { recursive: true })
-    writeFileSync(npx, '')
-    expect(windowsNpxCli({ npm_execpath: npm }, 'C:\\missing\\node.exe')).toBe(npx)
-    expect(
-      windowsNpxCli({ npm_execpath: path.join(root, 'pnpm.cjs') }, 'C:\\missing\\node.exe'),
-    ).toBeNull()
-  })
-
-  it('accepts an explicitly resolved npm entry point without cmd parsing', () => {
-    const launch = npxLaunch(args, {
-      cwd: 'C:\\proj',
-      env: { PATH: 'C:\\Windows\\system32' },
-      platform: 'win32',
-      nodeExecutable: 'C:\\Program Files\\nodejs\\node.exe',
-      npxCliPath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
-    })
-    expect(launch).toEqual({
-      file: 'C:\\Program Files\\nodejs\\node.exe',
-      args: ['C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js', ...args],
-      options: {
+  it('fails closed when a Windows Node installation does not expose npm itself', () => {
+    expect(windowsNpxCli('C:\\missing\\node.exe')).toBeNull()
+    expect(() =>
+      npxLaunch(['-y', 'skills', 'add', 'evil&calc.exe', '--skill', 'notifai'], {
         cwd: 'C:\\proj',
-        env: { PATH: 'C:\\Windows\\system32' },
-        stdio: 'inherit',
-        windowsHide: true,
-      },
-    })
-  })
-
-  it('quotes a hostile source in the cmd fallback so & cannot start a second command', () => {
-    const hostile = 'evil&calc.exe'
-    const launch = npxLaunch(['-y', 'skills', 'add', hostile, '--skill', 'notifai'], {
-      cwd: 'C:\\proj',
-      env: {},
-      nodeExecutable: 'C:\\missing\\node.exe',
-      platform: 'win32',
-      npxCliPath: null,
-    })
-    const script = launch.args[4] ?? ''
-    expect(script).toContain(quoteCmdArgument(hostile))
-    expect(script.startsWith('"') && script.endsWith('"')).toBe(true)
-    expect(launch.file).toBe('cmd.exe')
+        env: { ComSpec: 'C:\\attacker-controlled\\cmd.exe' },
+        nodeExecutable: 'C:\\missing\\node.exe',
+        platform: 'win32',
+      }),
+    ).toThrow(/does not include npm npx-cli\.js/)
   })
 
   it('spawns npx directly on POSIX without a shell', () => {

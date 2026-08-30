@@ -35,7 +35,7 @@
  * Usage:
  *   node scripts/verify-packed-install.mjs
  *   node scripts/verify-packed-install.mjs --cli-tarball a.tgz --protocol-tarball b.tgz
- *   node scripts/verify-packed-install.mjs ... --gitleaks gitleaks
+ *   node scripts/verify-packed-install.mjs ... --gitleaks
  *
  * The tarball flags skip the packing step and verify the given artifacts —
  * that is how the test fixture proves a stale pin fails.
@@ -225,7 +225,7 @@ async function main() {
     try {
       const boundary = assertPackedTarballs({
         tarballs: [protocolTarball, cliTarball],
-        gitleaksBinary: argvValue('--gitleaks'),
+        scanWithGitleaks: process.argv.includes('--gitleaks'),
       })
       console.log(
         `Packed boundary verified: ${boundary.files} files and ${boundary.sourceMaps} source maps.`,

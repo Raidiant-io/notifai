@@ -245,7 +245,7 @@ test('publication reuses the exact tarballs that passed boundary and install che
   assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/)
   assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/)
   assert.match(pack.run, /scripts\/verify-packed-install\.mjs/)
-  assert.match(pack.run, /--gitleaks gitleaks/)
+  assert.match(pack.run, /--gitleaks\s*$/m)
   assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/)
   assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/)
   assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance')

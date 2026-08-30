@@ -127,7 +127,13 @@ function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv):
 
 function run(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<number> {
   return new Promise((resolve) => {
-    const launch = npxLaunch(args, options)
+    let launch: ReturnType<typeof npxLaunch>
+    try {
+      launch = npxLaunch(args, options)
+    } catch {
+      resolve(1)
+      return
+    }
     const child = spawn(launch.file, launch.args, launch.options)
     child.on('error', () => resolve(1))
     child.on('exit', (code) => resolve(code ?? 1))

@@ -149,7 +149,7 @@ jobs:
           node scripts/verify-packed-install.mjs \
             --protocol-tarball "$protocol_tarball" \
             --cli-tarball "$cli_tarball" \
-            --gitleaks gitleaks
+            --gitleaks
 
       # Protocol must reach the registry before a CLI that pins it exactly.
       - name: Publish protocol with OIDC provenance

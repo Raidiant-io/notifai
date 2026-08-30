@@ -159,21 +159,21 @@ function contentFailures(relative, content) {
   return [...failures, ...sourceMapFailures(relative, content)]
 }
 
-function runGitleaks(directory, executable) {
+function runGitleaks(directory) {
   const result = spawnSync(
-    executable,
+    'gitleaks',
     ['dir', '--no-banner', '--redact', '--exit-code', '23', '.'],
     { cwd: directory, encoding: 'utf8' },
   )
   if (result.error) throw result.error
   if (result.status === 23) return ['secret scanner found a candidate in the packed artifact']
   if (result.status !== 0) {
-    throw new Error(`${executable} packed-artifact scan exited ${result.status}`)
+    throw new Error(`gitleaks packed-artifact scan exited ${result.status}`)
   }
   return []
 }
 
-export function scanPackedTarballs({ tarballs, gitleaksBinary }) {
+export function scanPackedTarballs({ tarballs, scanWithGitleaks = false }) {
   if (!Array.isArray(tarballs) || tarballs.length === 0) {
     throw new Error('at least one packed tarball is required')
   }
@@ -201,8 +201,8 @@ export function scanPackedTarballs({ tarballs, gitleaksBinary }) {
         if (relative.endsWith('.map')) sourceMaps += 1
         failures.push(...contentFailures(relative, readFileSync(absolute)))
       }
-      if (gitleaksBinary !== undefined) {
-        failures.push(...runGitleaks(packageRoot, gitleaksBinary))
+      if (scanWithGitleaks) {
+        failures.push(...runGitleaks(packageRoot))
       }
     }
     return { failures: [...new Set(failures)], files, sourceMaps }
@@ -233,7 +233,7 @@ function main() {
   try {
     const result = assertPackedTarballs({
       tarballs: argvValues('--tarball'),
-      gitleaksBinary: argvValues('--gitleaks')[0],
+      scanWithGitleaks: process.argv.includes('--gitleaks'),
     })
     console.log(
       `Packed artifact boundary scan passed (${result.files} files, ${result.sourceMaps} source maps).`,
