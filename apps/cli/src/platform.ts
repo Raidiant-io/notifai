@@ -115,80 +115,56 @@ export function openUrl(url: string, platform: NodeJS.Platform = process.platfor
 }
 
 /**
- * Quote one cmd.exe argument so it cannot start a second command.
- *
- * `%` expands even inside quotes, so it is doubled. Quotes themselves are
- * doubled. Everything else is inert once quoted, including `& | > < ^`.
+ * Resolve npm's JavaScript npx entry point when this Windows Node installation
+ * exposes it. Invoking that file with the current Node runtime avoids the
+ * cwd-sensitive relative paths embedded in some npx.cmd shims.
  */
-export function quoteCmdArgument(value: string): string {
-  return `"${value.replace(/%/g, '%%').replace(/"/g, '""')}"`
-}
-
-/**
- * A single `/c` argument for `cmd /d /s /c`.
- *
- * `/s` strips the first and last quote when both ends are quotes, so the
- * payload is wrapped once more around the already-quoted argv. What cmd then
- * runs is `"npx.cmd" "-y" …` with no unquoted metacharacters.
- */
-export function cmdScript(command: string, args: readonly string[]): string {
-  return `"${[command, ...args].map(quoteCmdArgument).join(' ')}"`
+export function windowsNpxCli(
+  nodeExecutable: string = process.execPath,
+): string | null {
+  const bundledWithNode = path.join(
+    path.dirname(nodeExecutable),
+    'node_modules',
+    'npm',
+    'bin',
+    'npx-cli.js',
+  )
+  return existsSync(bundledWithNode) ? bundledWithNode : null
 }
 
 /**
  * Launch `npx` without making its resolution depend on the target project.
  *
- * A standard Windows Node installation carries npm's JavaScript npx entrypoint
- * beside node.exe. Invoking that file directly survives an isolated cwd and
- * avoids cmd parsing. Non-standard installations retain the safely quoted
- * `.cmd` fallback; POSIX can execute `npx` directly.
+ * Prefer npm's JavaScript entry point, which avoids both CreateProcess's
+ * inability to run `.cmd` files and shims whose relative paths depend on the
+ * working directory. A nonstandard Windows Node layout fails closed instead
+ * of executing an environment-selected shell or command shim; POSIX can
+ * execute `npx` directly without a shell.
  */
 export function npxLaunch(
   args: readonly string[],
   options: {
     cwd: string
     env: NodeJS.ProcessEnv
+    nodeExecutable?: string
     platform?: NodeJS.Platform
     stdio?: SpawnOptions['stdio']
-    nodeExecutable?: string
-    npxCliPath?: string | null
   },
 ): ProcessLaunch {
   const platform = options.platform ?? process.platform
   const stdio = options.stdio ?? 'inherit'
   if (platform === 'win32') {
     const nodeExecutable = options.nodeExecutable ?? process.execPath
-    const detectedNpxCli = path.join(
-      path.dirname(nodeExecutable),
-      'node_modules',
-      'npm',
-      'bin',
-      'npx-cli.js',
-    )
-    const npxCli = options.npxCliPath === undefined
-      ? (existsSync(detectedNpxCli) ? detectedNpxCli : null)
-      : options.npxCliPath
-    if (npxCli !== null) {
-      return {
-        file: nodeExecutable,
-        args: [npxCli, ...args],
-        options: {
-          cwd: options.cwd,
-          env: options.env,
-          stdio,
-          windowsHide: true,
-        },
-      }
-    }
+    const npxCli = windowsNpxCli(nodeExecutable)
+    if (npxCli === null) throw new Error('the current Windows Node installation does not include npm npx-cli.js')
     return {
-      file: options.env['ComSpec'] && options.env['ComSpec'] !== '' ? options.env['ComSpec'] : 'cmd.exe',
-      args: ['/d', '/s', '/v:off', '/c', cmdScript('npx.cmd', args)],
+      file: nodeExecutable,
+      args: [npxCli, ...args],
       options: {
         cwd: options.cwd,
         env: options.env,
         stdio,
         windowsHide: true,
-        windowsVerbatimArguments: true,
       },
     }
   }

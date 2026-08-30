@@ -1,15 +1,15 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   accountHome,
-  cmdScript,
   configHome,
   isWindowsAbsolute,
   npxLaunch,
-  quoteCmdArgument,
   stateHome,
   urlOpenLaunch,
+  windowsNpxCli,
 } from './platform.js'
 import { globalConfigDir, stateDir } from './config.js'
 
@@ -43,60 +43,36 @@ describe('npxLaunch', () => {
   const source = 'Raidiant-io/notifai#v1.0.1'
   const args = ['-y', 'skills', 'add', source, '--skill', 'notifai', '--yes']
 
-  it('runs the .cmd shim through cmd on Windows with quoted arguments', () => {
+  it('runs npm\'s JavaScript npx entry point directly when Node bundles it on Windows', () => {
+    const root = path.join(os.tmpdir(), `notifai-npx-${process.pid}`)
+    const node = path.join(root, 'node.exe')
+    const npx = path.join(root, 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    mkdirSync(path.dirname(npx), { recursive: true })
+    writeFileSync(npx, '')
     const launch = npxLaunch(args, {
       cwd: 'C:\\proj',
       env: { ComSpec: 'C:\\Windows\\system32\\cmd.exe' },
+      nodeExecutable: node,
       platform: 'win32',
-      npxCliPath: null,
     })
-    expect(launch.file).toBe('C:\\Windows\\system32\\cmd.exe')
-    expect(launch.args.slice(0, 4)).toEqual(['/d', '/s', '/v:off', '/c'])
-    expect(launch.args).toHaveLength(5)
-    expect(launch.args[4]).toBe(cmdScript('npx.cmd', args))
-    expect(launch.args[4]).toContain('npx.cmd')
-    expect(launch.args[4]).toContain(quoteCmdArgument(source))
-    expect(launch.options.windowsVerbatimArguments).toBe(true)
+    expect(launch.file).toBe(node)
+    expect(launch.args).toEqual([npx, ...args])
+    expect(launch.options.windowsVerbatimArguments).toBeUndefined()
     expect(launch.options.windowsHide).toBe(true)
     expect(launch.options.stdio).toBe('inherit')
     expect(launch.options.cwd).toBe('C:\\proj')
   })
 
-  it('runs npm npx-cli.js directly on Windows when the Node installation provides it', () => {
-    const launch = npxLaunch(args, {
-      cwd: 'C:\\proj',
-      env: { PATH: 'C:\\Windows\\system32' },
-      platform: 'win32',
-      nodeExecutable: 'C:\\Program Files\\nodejs\\node.exe',
-      npxCliPath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
-    })
-    expect(launch).toEqual({
-      file: 'C:\\Program Files\\nodejs\\node.exe',
-      args: [
-        'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
-        ...args,
-      ],
-      options: {
+  it('fails closed when a Windows Node installation does not expose npm itself', () => {
+    expect(windowsNpxCli('C:\\missing\\node.exe')).toBeNull()
+    expect(() =>
+      npxLaunch(['-y', 'skills', 'add', 'evil&calc.exe', '--skill', 'notifai'], {
         cwd: 'C:\\proj',
-        env: { PATH: 'C:\\Windows\\system32' },
-        stdio: 'inherit',
-        windowsHide: true,
-      },
-    })
-  })
-
-  it('quotes a hostile source so cmd cannot treat & as a second command', () => {
-    const hostile = 'evil&calc.exe'
-    const launch = npxLaunch(['-y', 'skills', 'add', hostile, '--skill', 'notifai'], {
-      cwd: 'C:\\proj',
-      env: {},
-      platform: 'win32',
-      npxCliPath: null,
-    })
-    const script = launch.args[4] ?? ''
-    expect(script).toContain(quoteCmdArgument(hostile))
-    expect(script.startsWith('"') && script.endsWith('"')).toBe(true)
-    expect(launch.file).toBe('cmd.exe')
+        env: { ComSpec: 'C:\\attacker-controlled\\cmd.exe' },
+        nodeExecutable: 'C:\\missing\\node.exe',
+        platform: 'win32',
+      }),
+    ).toThrow(/does not include npm npx-cli\.js/)
   })
 
   it('spawns npx directly on POSIX without a shell', () => {
