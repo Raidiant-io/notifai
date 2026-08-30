@@ -994,6 +994,54 @@ describe('command contracts', () => {
     })
   })
 
+  it('uses the native Codex Desktop/CLI title when no Orca context exists', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-desktop-title-'))
+    const codexHome = path.join(cwd, 'codex-home')
+    mkdirSync(codexHome)
+    writeFileSync(
+      path.join(codexHome, 'session_index.jsonl'),
+      `${JSON.stringify({
+        id: 'fixture-session-7409',
+        thread_name: 'Synthetic desktop task',
+        updated_at: '2026-08-30T10:02:00Z',
+      })}\n`,
+    )
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_HOME: codexHome,
+        CODEX_THREAD_ID: 'fixture-session-7409',
+        TERM_PROGRAM: 'Apple_Terminal',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Resolver implemented',
+        body: 'Codex supplied the semantic session title directly.',
+        kind: 'done',
+      }),
+    ).toBe(EXIT.ok)
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'fixture-session-7409',
+      session_label: 'Synthetic desktop task',
+      session_label_source: 'semantic',
+      harness: 'codex',
+    })
+    expect(io.errLines.join('\n')).not.toContain('generated fallback')
+  })
+
   it('uses the exact Orca Agent Session task title instead of an Ash Rabbit fallback', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-agent-session-title-'))
     const io = new CapturedIo()

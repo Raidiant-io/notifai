@@ -5,26 +5,20 @@ import path from 'node:path'
 import { isRetryableReplyPollError, type ApiClient } from './client.js'
 import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
-import { readOrcaSessionTitle } from './orca-session-title.js'
+import { readHarnessSessionTitle } from './harness-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
 import { EXIT, reportError, type CommandDeps } from './commands-core.js'
 import type { ActiveHarnessSession } from './commands-harness-context.js'
 
 function managedSessionTitle(
   deps: CommandDeps,
-  flags: Pick<SendFlags, 'sessionLabel'>,
   active: ActiveHarnessSession | null,
 ): string | undefined {
-  if (active?.sessionLabel !== undefined) return active.sessionLabel
-  if (
-    active?.sessionId === undefined ||
-    flags.sessionLabel !== undefined ||
-    deps.env['NOTIFAI_SESSION_LABEL'] !== undefined
-  ) {
-    return undefined
-  }
   try {
-    return (deps.orcaSessionTitle ?? readOrcaSessionTitle)(deps.env)
+    return readHarnessSessionTitle(deps.env, active, {
+      ...(deps.orcaSessionTitle === undefined ? {} : { orca: deps.orcaSessionTitle }),
+      ...(deps.codexSessionTitle === undefined ? {} : { codex: deps.codexSessionTitle }),
+    })
   } catch {
     return undefined
   }
@@ -36,7 +30,7 @@ export function resolveDraftInvocation(
   active: ActiveHarnessSession | null,
 ): { ok: true; invocation: DraftInvocation } | { ok: false; error: string } {
   const inferred = inferInvocationContext(deps.cwd)
-  const sessionTitle = managedSessionTitle(deps, flags, active)
+  const sessionTitle = managedSessionTitle(deps, active)
   const source = buildSourceContext({
     env: deps.env,
     invocation: inferred,

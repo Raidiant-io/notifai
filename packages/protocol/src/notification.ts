@@ -86,6 +86,12 @@ export const SourceContext = Type.Object(
     session_label: Type.Optional(
       Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH }),
     ),
+    /** Provenance used to upgrade a generated fallback when a semantic name arrives. */
+    session_label_source: Type.Optional(
+      Type.Union([Type.Literal('fallback'), Type.Literal('semantic')]),
+    ),
+    /** Durable local proof that this machine's stored semantic label replaced a fallback. */
+    session_label_previous_source: Type.Optional(Type.Literal('fallback')),
     /** Open harness slug, set only when authoritatively known. */
     harness: Type.Optional(
       Type.String({ minLength: 1, maxLength: 32, pattern: '^[a-z][a-z0-9-]*$' }),

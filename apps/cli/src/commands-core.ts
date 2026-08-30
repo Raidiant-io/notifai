@@ -13,6 +13,7 @@ import type { CredentialStore, MachineCredential } from './credentials.js'
 import { type HookAdapterTarget } from './hook-adapter.js'
 import { logConfigResolved, logSettingsFrom, nullLogger, type Logger } from './logging.js'
 import type { NativeSkills } from './native-skills.js'
+import type { CodexSessionTitleLookup } from './harness-session-title.js'
 import type { OrcaSessionTitleLookup } from './orca-session-title.js'
 import type { QuestionSettlementLaunch } from './question-settlement-process.js'
 import { packageVersion } from './release.js'
@@ -88,6 +89,8 @@ export interface CommandDeps {
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-pane Agent Session title lookup. */
   orcaSessionTitle?: OrcaSessionTitleLookup
+  /** Test seam for Codex Desktop/CLI's native Agent Session title index. */
+  codexSessionTitle?: CodexSessionTitleLookup
   /** Test seam for registry reads; production uses fetch. */
   fetchImpl?: typeof fetch
   /**
