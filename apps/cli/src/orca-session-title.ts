@@ -37,6 +37,18 @@ function worktreePathFromId(value: string): string | null {
     : null
 }
 
+function opaqueSelector(value: string | undefined): string | null {
+  if (
+    value === undefined ||
+    value.length === 0 ||
+    value.length > 1_024 ||
+    containsControlCharacter(value)
+  ) {
+    return null
+  }
+  return value
+}
+
 function orcaExecutable(env: NodeJS.ProcessEnv): string | null {
   const configured = env['ORCA_CLI_COMMAND']?.trim()
   if (configured !== undefined && configured.length > 0) {
@@ -46,11 +58,12 @@ function orcaExecutable(env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
- * Read the User-facing task name assigned to this exact Orca worktree.
+ * Read the User-facing task name assigned to this exact Orca Agent Session.
  *
- * The environment contributes only an opaque selector. Orca must return that
- * exact id and its matching path before its display name becomes trusted; no
- * path component or identifier is ever promoted into an Agent Session label.
+ * The environment contributes only opaque selectors. Orca must return the
+ * exact worktree id and path plus the exact pane before its task title becomes
+ * trusted; Project, branch, path, worktree, and pane strings are never
+ * promoted into an Agent Session label.
  */
 export function readOrcaSessionTitle(
   env: NodeJS.ProcessEnv,
@@ -61,18 +74,14 @@ export function readOrcaSessionTitle(
   if (worktreeId === undefined) return undefined
   const expectedPath = worktreePathFromId(worktreeId)
   if (expectedPath === null) return undefined
+  const paneKey = opaqueSelector(env['ORCA_PANE_KEY'])
+  if (paneKey === null) return undefined
   const executable = orcaExecutable(env)
   if (executable === null) return undefined
 
   let output: string | null
   try {
-    output = command(executable, [
-      'worktree',
-      'show',
-      '--worktree',
-      `id:${worktreeId}`,
-      '--json',
-    ])
+    output = command(executable, ['worktree', 'ps', '--json'])
   } catch {
     return undefined
   }
@@ -87,17 +96,28 @@ export function readOrcaSessionTitle(
   if (typeof parsed !== 'object' || parsed === null) return undefined
   const response = parsed as {
     ok?: unknown
-    result?: { worktree?: { id?: unknown; path?: unknown; displayName?: unknown } }
+    result?: {
+      worktrees?: unknown
+    }
   }
-  const worktree = response.result?.worktree
-  if (
-    response.ok !== true ||
-    worktree?.id !== worktreeId ||
-    worktree.path !== expectedPath ||
-    typeof worktree.displayName !== 'string' ||
-    worktree.displayName.trim().length === 0
-  ) {
-    return undefined
-  }
-  return worktree.displayName
+  if (response.ok !== true || !Array.isArray(response.result?.worktrees)) return undefined
+
+  const worktrees = response.result.worktrees.filter(
+    (candidate): candidate is { worktreeId: string; path: string; agents?: unknown } =>
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      (candidate as { worktreeId?: unknown }).worktreeId === worktreeId &&
+      (candidate as { path?: unknown }).path === expectedPath,
+  )
+  if (worktrees.length !== 1 || !Array.isArray(worktrees[0]!.agents)) return undefined
+
+  const agents = worktrees[0]!.agents.filter(
+    (candidate): candidate is { paneKey: string; taskTitle?: unknown } =>
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      (candidate as { paneKey?: unknown }).paneKey === paneKey,
+  )
+  if (agents.length !== 1) return undefined
+  const taskTitle = agents[0]!.taskTitle
+  return typeof taskTitle === 'string' && taskTitle.trim().length > 0 ? taskTitle : undefined
 }

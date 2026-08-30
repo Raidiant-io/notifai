@@ -907,6 +907,9 @@ describe('command contracts', () => {
       harness: 'claude-code',
     })
     expect(submitted?.draft.source?.session_label).toBe('Rapid Antelope')
+    expect(io.errLines).toContain(
+      'Heads up (source.session_label): No semantic Agent Session title was available; using generated fallback "Rapid Antelope". Pass --session-label with a concise task name when one is available.',
+    )
     expect(io.outLines.join('\n')).not.toContain('opaque-claude-session-42')
     expect(io.errLines.join('\n')).not.toContain('opaque-claude-session-42')
   })
@@ -1002,14 +1005,8 @@ describe('command contracts', () => {
       },
     } as unknown as ApiClient
     const worktreeId = `repo-123::${cwd}`
-    const terminalHandle = 'term_synthetic_title_fixture'
+    const paneKey = 'tab-synthetic:leaf-title-fixture'
     const orcaCommand: OrcaCommand = (_executable, args) => {
-      if (args[0] === 'worktree' && args[1] === 'show') {
-        return JSON.stringify({
-          ok: true,
-          result: { worktree: { id: worktreeId, path: cwd, displayName: '' } },
-        })
-      }
       if (args[0] === 'worktree' && args[1] === 'ps') {
         return JSON.stringify({
           ok: true,
@@ -1017,9 +1014,10 @@ describe('command contracts', () => {
             worktrees: [
               {
                 worktreeId,
-                terminals: [
+                path: cwd,
+                agents: [
                   {
-                    handle: terminalHandle,
+                    paneKey,
                     taskTitle: 'Synthetic title fixture',
                   },
                 ],
@@ -1036,7 +1034,7 @@ describe('command contracts', () => {
       CODEX_THREAD_ID: 'fixture-session-7409',
       TERM_PROGRAM: 'Orca',
       ORCA_WORKTREE_ID: worktreeId,
-      ORCA_TERMINAL_HANDLE: terminalHandle,
+      ORCA_PANE_KEY: paneKey,
     }
 
     expect(
@@ -1060,6 +1058,7 @@ describe('command contracts', () => {
       session_label: 'Synthetic title fixture',
       harness: 'codex',
     })
+    expect(io.errLines.join('\n')).not.toContain('generated fallback')
   })
 
   it('sends after isolating an invalid session-name record without losing valid names', async () => {

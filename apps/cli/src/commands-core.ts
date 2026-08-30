@@ -86,7 +86,7 @@ export interface CommandDeps {
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
-  /** Test seam for Orca's exact-worktree task/session title lookup. */
+  /** Test seam for Orca's exact-pane Agent Session title lookup. */
   orcaSessionTitle?: OrcaSessionTitleLookup
   /** Test seam for registry reads; production uses fetch. */
   fetchImpl?: typeof fetch
