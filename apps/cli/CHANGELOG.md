@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.2](https://github.com/Raidiant-io/notifai/compare/v10.1.1...v10.1.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **cli:** bind skill installs to package contents ([#110](https://github.com/Raidiant-io/notifai/issues/110)) ([4250342](https://github.com/Raidiant-io/notifai/commit/4250342a183663693def462db5569e5d682e9fb5))
+* **cli:** preserve semantic Orca session titles ([#117](https://github.com/Raidiant-io/notifai/issues/117)) ([fb953d6](https://github.com/Raidiant-io/notifai/commit/fb953d694e9f8f57745cbf31238b9821a95316c4))
+* **cli:** stage package-bound skill installs ([#114](https://github.com/Raidiant-io/notifai/issues/114)) ([11885dd](https://github.com/Raidiant-io/notifai/commit/11885dd652c5e5358c27c247977a545b839207f9))
+* **cli:** support Node 20.12 and minimize package contents ([#108](https://github.com/Raidiant-io/notifai/issues/108)) ([316691b](https://github.com/Raidiant-io/notifai/commit/316691bac1e33562a6c95f76bed56a9d84201623))
+* **release:** close remaining integrity gaps ([#113](https://github.com/Raidiant-io/notifai/issues/113)) ([05b6184](https://github.com/Raidiant-io/notifai/commit/05b618441cae110770113eb6980816a47976fd47))
+* **release:** scan exact npm artifacts ([#115](https://github.com/Raidiant-io/notifai/issues/115)) ([c8a5f3c](https://github.com/Raidiant-io/notifai/commit/c8a5f3caf9798d13adcc935b87605335b7e4b335))
+* **security:** report local installer failures ([#116](https://github.com/Raidiant-io/notifai/issues/116)) ([23e0632](https://github.com/Raidiant-io/notifai/commit/23e0632a6ff874b567460ecd76425e6bd2dfb631))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.2 to 6.0.3
+
 ## [10.1.1](https://github.com/Raidiant-io/notifai/compare/v10.1.0...v10.1.1) (2026-08-29)
 
 
