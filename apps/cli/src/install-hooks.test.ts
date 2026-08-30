@@ -818,7 +818,7 @@ describe('finding what is installed', () => {
  * the harness ran both, and one question produced two notifications.
  */
 describe('two checkouts', () => {
-  const OTHER = '/Users/rafael/notifai-public/apps/cli/dist/main.js'
+  const OTHER = '/Users/example/notifai-public/apps/cli/dist/main.js'
 
   function documentWith(command: string): SettingsDocument {
     return { hooks: { Stop: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: 300 }] }] } }
