@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:975d9c00ad88a2ddb4dc7f3dcabc9fa4883a65c7558e9595ffe0694707bcc7d1",
+  "behavior_digest": "sha256:2c06581374d2df87dc956055cfa9eab8ff40ca9831ec8f761087273d34fc9741",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding first-party skill installation to the exact guidance shipped in the npm package. Init now verifies and stages that package-bound copy for the pinned native installer, removes the staging copy, and readiness re-hashes the conventional installed directory without trusting mutable lock metadata. The shipped skill's behavior clauses and setup commands remain unchanged; the stronger integrity and portability checks enforce the existing immutable-guidance promise without requiring new Agent Guidance wording.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding first-party skill installation to the exact guidance shipped in the npm package. Init now verifies and stages that package-bound copy for the pinned native installer, removes the staging copy, and readiness re-hashes the conventional installed directory without trusting mutable lock metadata. Windows now invokes npm's real npx JavaScript entry point when available, avoiding cwd-sensitive command shims while preserving the same pinned installer arguments and fallback behavior. The shipped skill's behavior clauses and setup commands remain unchanged; the stronger integrity and portability checks enforce the existing immutable-guidance promise without requiring new Agent Guidance wording.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
