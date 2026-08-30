@@ -48,6 +48,7 @@ describe('npxLaunch', () => {
       cwd: 'C:\\proj',
       env: { ComSpec: 'C:\\Windows\\system32\\cmd.exe' },
       platform: 'win32',
+      npxCliPath: null,
     })
     expect(launch.file).toBe('C:\\Windows\\system32\\cmd.exe')
     expect(launch.args.slice(0, 4)).toEqual(['/d', '/s', '/v:off', '/c'])
@@ -61,12 +62,36 @@ describe('npxLaunch', () => {
     expect(launch.options.cwd).toBe('C:\\proj')
   })
 
+  it('runs npm npx-cli.js directly on Windows when the Node installation provides it', () => {
+    const launch = npxLaunch(args, {
+      cwd: 'C:\\proj',
+      env: { PATH: 'C:\\Windows\\system32' },
+      platform: 'win32',
+      nodeExecutable: 'C:\\Program Files\\nodejs\\node.exe',
+      npxCliPath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
+    })
+    expect(launch).toEqual({
+      file: 'C:\\Program Files\\nodejs\\node.exe',
+      args: [
+        'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
+        ...args,
+      ],
+      options: {
+        cwd: 'C:\\proj',
+        env: { PATH: 'C:\\Windows\\system32' },
+        stdio: 'inherit',
+        windowsHide: true,
+      },
+    })
+  })
+
   it('quotes a hostile source so cmd cannot treat & as a second command', () => {
     const hostile = 'evil&calc.exe'
     const launch = npxLaunch(['-y', 'skills', 'add', hostile, '--skill', 'notifai'], {
       cwd: 'C:\\proj',
       env: {},
       platform: 'win32',
+      npxCliPath: null,
     })
     const script = launch.args[4] ?? ''
     expect(script).toContain(quoteCmdArgument(hostile))

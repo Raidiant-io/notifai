@@ -13,14 +13,6 @@ import type { CommandDeps } from './commands-core.js'
  */
 export const SKILLS_SOURCE: string | null = skillsSource()
 
-/**
- * How to refer to the pin in user-facing text.
- *
- * Only reached in a corrupted install, where naming the tag is impossible but
- * saying nothing would be worse — the sentence still has to read as English.
- */
-const SKILLS_SOURCE_LABEL = SKILLS_SOURCE ?? 'the public release tag matching this CLI'
-
 const SKILL_SCOPES: readonly SkillScope[] = ['project', 'global']
 
 function skillTreeDigest(root: string): string | null {
@@ -48,27 +40,10 @@ function developmentSkillMismatch(skill: NativeSkill): { checkout: string; insta
     : null
 }
 
-function skillSourceParts(): { source: string; ref: string } | null {
-  if (SKILLS_SOURCE === null) return null
-  const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE)
-  return match === null ? null : { source: match[1]!, ref: match[2]! }
-}
-
-function expectedSkillProvenance(skill: NativeSkill): boolean {
-  const expected = skillSourceParts()
-  return (
-    expected !== null &&
-    skill.name === 'notifai' &&
-    skill.source === expected.source &&
-    skill.sourceType === 'github' &&
-    (skill.ref === expected.ref || (skill.ref !== null && /^[0-9a-f]{40}$/.test(skill.ref)))
-  )
-}
-
 function expectedSkill(skill: NativeSkill): boolean {
   const expectedDigest = expectedSkillDigest()
   return (
-    expectedSkillProvenance(skill) &&
+    skill.name === 'notifai' &&
     expectedDigest !== null &&
     skillTreeDigest(skill.path) === expectedDigest
   )
@@ -153,8 +128,30 @@ export async function skillReadiness(
   const { installed, errors } = await listScopedNotifaiSkills(deps)
   if (installed.length > 1) return duplicateSkillState(installed, selectedScope)
 
-  const candidate = installed.find(expectedSkillProvenance)
+  const candidate = installed[0]
   if (candidate !== undefined) {
+    if (selectedScope !== undefined && candidate.scope !== selectedScope) {
+      return {
+        id: 'skill',
+        title: 'Agent guidance skill',
+        status: 'gap',
+        detail:
+          `installed in the ${candidate.scope} scope, but setup selected the ${selectedScope} scope. ` +
+          `Move the skill so the harness has one unambiguous copy.`,
+        technical: {
+          resolution: 'selected-scope-mismatch',
+          scope: candidate.scope,
+          selected_scope: selectedScope,
+          ref: candidate.ref,
+          path: candidate.path,
+        },
+        remedy: {
+          by: 'cli',
+          summary: `move the skill to the ${selectedScope} scope`,
+          command: `notifai init --skills --setup-scope ${selectedScope}`,
+        },
+      }
+    }
     const mismatch = developmentSkillMismatch(candidate)
     if (mismatch !== null) {
       return {
@@ -182,8 +179,7 @@ export async function skillReadiness(
         title: 'Agent guidance skill',
         status: 'gap',
         detail:
-          'the installer record names this release, but the installed guidance does not match ' +
-          'the content shipped inside this CLI package.',
+          'the installed guidance does not match the content shipped inside this CLI package.',
         technical: {
           resolution: 'installed-skill-content-mismatch',
           scope: candidate.scope,
@@ -205,7 +201,7 @@ export async function skillReadiness(
       status: 'ready',
       detail:
         `installed in the ${candidate.scope} scope and verified against the guidance ` +
-        `shipped with ${SKILLS_SOURCE_LABEL}`,
+        `shipped with CLI ${packageVersion() ?? 'of this version'}`,
     }
   }
 
@@ -217,7 +213,7 @@ export async function skillReadiness(
     detail:
       errors.length > 0
         ? `could not verify installer-managed state in ${scopeText} (${errors.join('; ')})`
-        : `not installed from ${SKILLS_SOURCE_LABEL} in ${scopeText}`,
+        : `not installed in ${scopeText}`,
     remedy: {
       by: 'cli',
       summary: 'install the skill agents follow when deciding to notify',

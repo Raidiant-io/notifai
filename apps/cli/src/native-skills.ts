@@ -3,13 +3,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { accountHome, npxLaunch } from './platform.js'
 import { packageVersion } from './release.js'
-import { verifiedReleaseSkillSource } from './skill-integrity.js'
+import { stageShippedSkillBundle } from './skill-integrity.js'
 
 /**
  * Exact reviewed version of the external `skills` installer.
  *
- * The GitHub skill source stays the immutable CLI version tag. The installer
- * program that fetches it must not float on `latest`.
+ * The installer program must not float on `latest`. Notifai gives this pinned
+ * version a verified local copy from the installed npm package.
  */
 export const SKILLS_INSTALLER_SPEC = 'skills@1.5.23'
 
@@ -68,7 +68,6 @@ interface LockEntry {
   sourceType?: unknown
   sourceUrl?: unknown
   ref?: unknown
-  skillPath?: unknown
 }
 
 interface LockFile {
@@ -112,10 +111,11 @@ function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv):
       {
         name,
         scope,
-        path:
-          typeof entry.skillPath === 'string' && entry.skillPath !== ''
-            ? entry.skillPath
-            : conventionalSkillPath(scope, name, cwd, env),
+        // skills@1.5.23 records the source-relative SKILL.md as `skillPath`.
+        // It is not the installed destination and is therefore not trusted for
+        // readiness. The installer contract puts skills at this conventional
+        // path for both scopes.
+        path: conventionalSkillPath(scope, name, cwd, env),
         source: typeof entry.source === 'string' ? entry.source : null,
         sourceType: typeof entry.sourceType === 'string' ? entry.sourceType : null,
         sourceUrl: typeof entry.sourceUrl === 'string' ? entry.sourceUrl : null,
@@ -139,8 +139,9 @@ export function skillsAddArgv(options: SkillsAddOptions): string[] {
   const args = ['-y', SKILLS_INSTALLER_SPEC, 'add', options.source, '--skill', options.skill]
   if (options.scope === 'global') args.push('--global')
   // An explicit scope is the unattended contract. Native `--yes` keeps all
-  // remaining installer prompts non-interactive after the scope is chosen.
-  if (options.scope !== undefined) args.push('--yes')
+  // remaining installer prompts non-interactive after the scope is chosen;
+  // `--copy` keeps the installed directory independent of temporary staging.
+  if (options.scope !== undefined) args.push('--copy', '--yes')
   return args
 }
 
@@ -159,12 +160,16 @@ export const nativeSkills: NativeSkills = {
     if (version === null) {
       return { code: 1, error: 'this CLI cannot establish which packaged skill belongs to it' }
     }
-    const verified = await verifiedReleaseSkillSource(options.source, version)
-    if (!verified.ok) return { code: 1, error: verified.error }
-    return run(skillsAddArgv({ ...options, source: verified.source }), {
-      cwd: options.cwd,
-      env: options.env,
-    })
+    const staged = stageShippedSkillBundle(options.cwd, version)
+    if (!staged.ok) return { code: 1, error: staged.error }
+    try {
+      return await run(skillsAddArgv({ ...options, source: staged.staged.source }), {
+        cwd: options.cwd,
+        env: options.env,
+      })
+    } finally {
+      staged.staged.cleanup()
+    }
   },
 
   async remove(options) {

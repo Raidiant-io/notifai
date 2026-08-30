@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { CommandDeps } from './commands-core.js'
-import { skillReadiness, SKILLS_SOURCE } from './commands-skill.js'
+import { skillReadiness } from './commands-skill.js'
 
 describe('development CLI skill parity', () => {
   it('reports an exact gap instead of calling a stale released skill ready', async () => {
@@ -11,8 +11,6 @@ describe('development CLI skill parity', () => {
     const installedPath = path.join(root, 'skills', 'notifai')
     mkdirSync(installedPath, { recursive: true })
     writeFileSync(path.join(installedPath, 'SKILL.md'), '# stale released skill\n')
-    const match = /^([^#]+)#(.+)$/.exec(SKILLS_SOURCE ?? '')
-    if (match === null) throw new Error('test build has no skill release pin')
     const deps = {
       cwd: root,
       env: {},
@@ -21,7 +19,7 @@ describe('development CLI skill parity', () => {
       nativeSkills: {
         list: async (scope: 'project' | 'global') => ({
           skills: scope === 'global'
-            ? [{ name: 'notifai', scope, path: installedPath, source: match[1]!, sourceType: 'github' as const, sourceUrl: `https://github.com/${match[1]}.git`, ref: match[2]! }]
+            ? [{ name: 'notifai', scope, path: installedPath, source: null, sourceType: null, sourceUrl: null, ref: null }]
             : [],
         }),
         add: async () => 0,
@@ -34,7 +32,7 @@ describe('development CLI skill parity', () => {
       status: 'gap',
       technical: {
         resolution: 'development-cli-skill-mismatch',
-        ref: match[2],
+        ref: null,
         checkout_digest: expect.stringMatching(/^sha256:/),
         installed_digest: expect.stringMatching(/^sha256:/),
       },

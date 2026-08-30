@@ -29,6 +29,7 @@ const root = repositoryRoot
 
 const TOP_LEVEL_ALLOWLIST = new Set([
   '.git',
+  '.gitattributes',
   '.gitignore',
   // CI only. Workflow files are scanned for forbidden content like any other
   // source, so this admits the directory without admitting what it may say —

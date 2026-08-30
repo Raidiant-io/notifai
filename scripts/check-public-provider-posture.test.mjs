@@ -10,6 +10,7 @@ function providerFetch({
   tagSha = commit,
   setting = true,
   tagRuleset = true,
+  excludes = [],
 } = {}) {
   return async (input) => {
     const url = String(input)
@@ -38,7 +39,7 @@ function providerFetch({
         conditions: {
           ref_name: {
             include: ['refs/tags/v*', 'refs/tags/protocol-v*', 'refs/tags/android-v*'],
-            exclude: [],
+            exclude: excludes,
           },
         },
         rules: [{ type: 'update' }, { type: 'deletion' }],
@@ -106,6 +107,16 @@ test('fails the deep posture check when historic release tags are not protected'
     checkPublicProviderPosture(
       { requireRepositoryImmutability: true },
       providerFetch({ tagRuleset: false }),
+    ),
+    /no active no-bypass ruleset/,
+  )
+})
+
+test('fails the deep posture check when the release-tag ruleset has an exclusion', async () => {
+  await assert.rejects(
+    checkPublicProviderPosture(
+      { requireRepositoryImmutability: true },
+      providerFetch({ excludes: ['refs/tags/v1.2.3'] }),
     ),
     /no active no-bypass ruleset/,
   )

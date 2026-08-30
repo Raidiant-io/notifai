@@ -196,9 +196,9 @@ async function closeGap(
       deps.io.err('Skill installation failed — the native `npx skills` flow is unavailable.')
       return 'failed'
     }
-    // Refuse rather than guess a release identity. The production adapter
-    // verifies this tag against npm's bundled skill and replaces it with the
-    // full commit SHA before it invokes the installer.
+    // Refuse rather than guess a release identity. The production adapter uses
+    // this only as a human label; it verifies and stages npm's bundled skill at
+    // a project-relative local path before it invokes the installer.
     if (SKILLS_SOURCE === null) {
       deps.io.err(
         'Skill installation failed — this build cannot determine its own version, so there is no release tag to install from.',

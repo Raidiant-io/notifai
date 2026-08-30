@@ -19,6 +19,11 @@ function requireValue(ok, message) {
 
 const rootManifest = readJson('package.json')
 const rootLicense = readFileSync(path.join(root, 'LICENSE'), 'utf8')
+const gitAttributes = readFileSync(path.join(root, '.gitattributes'), 'utf8')
+requireValue(
+  /^skills\/notifai\/\*\* text eol=lf$/m.test(gitAttributes),
+  '.gitattributes must force LF for the byte-verified skills/notifai tree',
+)
 const packages = [
   {
     directory: 'apps/cli',
