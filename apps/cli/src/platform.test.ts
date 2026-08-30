@@ -1,15 +1,16 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   accountHome,
-  cmdScript,
   configHome,
   isWindowsAbsolute,
   npxLaunch,
   quoteCmdArgument,
   stateHome,
   urlOpenLaunch,
+  windowsNpxCli,
 } from './platform.js'
 import { globalConfigDir, stateDir } from './config.js'
 
@@ -43,29 +44,44 @@ describe('npxLaunch', () => {
   const source = 'Raidiant-io/notifai#v1.0.1'
   const args = ['-y', 'skills', 'add', source, '--skill', 'notifai', '--yes']
 
-  it('runs the .cmd shim through cmd on Windows with quoted arguments', () => {
+  it('runs npm\'s JavaScript npx entry point directly when Node bundles it on Windows', () => {
+    const root = path.join(os.tmpdir(), `notifai-npx-${process.pid}`)
+    const node = path.join(root, 'node.exe')
+    const npx = path.join(root, 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    mkdirSync(path.dirname(npx), { recursive: true })
+    writeFileSync(npx, '')
     const launch = npxLaunch(args, {
       cwd: 'C:\\proj',
       env: { ComSpec: 'C:\\Windows\\system32\\cmd.exe' },
+      nodeExecutable: node,
       platform: 'win32',
     })
-    expect(launch.file).toBe('C:\\Windows\\system32\\cmd.exe')
-    expect(launch.args.slice(0, 4)).toEqual(['/d', '/s', '/v:off', '/c'])
-    expect(launch.args).toHaveLength(5)
-    expect(launch.args[4]).toBe(cmdScript('npx.cmd', args))
-    expect(launch.args[4]).toContain('npx.cmd')
-    expect(launch.args[4]).toContain(quoteCmdArgument(source))
-    expect(launch.options.windowsVerbatimArguments).toBe(true)
+    expect(launch.file).toBe(node)
+    expect(launch.args).toEqual([npx, ...args])
+    expect(launch.options.windowsVerbatimArguments).toBeUndefined()
     expect(launch.options.windowsHide).toBe(true)
     expect(launch.options.stdio).toBe('inherit')
     expect(launch.options.cwd).toBe('C:\\proj')
   })
 
-  it('quotes a hostile source so cmd cannot treat & as a second command', () => {
+  it('prefers an npm_execpath companion and ignores a pnpm lifecycle executable', () => {
+    const root = path.join(os.tmpdir(), `notifai-npm-execpath-${process.pid}`)
+    const npm = path.join(root, 'npm-cli.js')
+    const npx = path.join(root, 'npx-cli.js')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(npx, '')
+    expect(windowsNpxCli({ npm_execpath: npm }, 'C:\\missing\\node.exe')).toBe(npx)
+    expect(
+      windowsNpxCli({ npm_execpath: path.join(root, 'pnpm.cjs') }, 'C:\\missing\\node.exe'),
+    ).toBeNull()
+  })
+
+  it('quotes a hostile source in the cmd fallback so & cannot start a second command', () => {
     const hostile = 'evil&calc.exe'
     const launch = npxLaunch(['-y', 'skills', 'add', hostile, '--skill', 'notifai'], {
       cwd: 'C:\\proj',
       env: {},
+      nodeExecutable: 'C:\\missing\\node.exe',
       platform: 'win32',
     })
     const script = launch.args[4] ?? ''

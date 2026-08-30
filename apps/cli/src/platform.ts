@@ -1,4 +1,5 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -135,17 +136,47 @@ export function cmdScript(command: string, args: readonly string[]): string {
 }
 
 /**
- * Launch `npx` so Windows can run the `.cmd` shim.
+ * Resolve npm's JavaScript npx entry point when this Windows Node installation
+ * exposes it. Invoking that file with the current Node runtime avoids the
+ * cwd-sensitive relative paths embedded in some npx.cmd shims.
+ */
+export function windowsNpxCli(
+  env: NodeJS.ProcessEnv = process.env,
+  nodeExecutable: string = process.execPath,
+): string | null {
+  const npmExecutable = env['npm_execpath']
+  if (
+    typeof npmExecutable === 'string' &&
+    path.basename(npmExecutable).toLowerCase() === 'npm-cli.js'
+  ) {
+    const alongsideNpm = path.join(path.dirname(npmExecutable), 'npx-cli.js')
+    if (existsSync(alongsideNpm)) return alongsideNpm
+  }
+
+  const bundledWithNode = path.join(
+    path.dirname(nodeExecutable),
+    'node_modules',
+    'npm',
+    'bin',
+    'npx-cli.js',
+  )
+  return existsSync(bundledWithNode) ? bundledWithNode : null
+}
+
+/**
+ * Launch `npx` portably on Windows.
  *
- * `spawn('npx', …)` is CreateProcess of a file named `npx`, which does not
- * exist — npm installs `npx.cmd`. cmd.exe can run that shim; CreateProcess
- * cannot. Arguments stay in one quoted `/c` string rather than `shell: true`.
+ * Prefer npm's JavaScript entry point, which avoids both CreateProcess's
+ * inability to run `.cmd` files and shims whose relative paths depend on the
+ * working directory. Nonstandard Node layouts fall back to cmd.exe with every
+ * argument quoted in one `/c` string rather than using `shell: true`.
  */
 export function npxLaunch(
   args: readonly string[],
   options: {
     cwd: string
     env: NodeJS.ProcessEnv
+    nodeExecutable?: string
     platform?: NodeJS.Platform
     stdio?: SpawnOptions['stdio']
   },
@@ -153,6 +184,20 @@ export function npxLaunch(
   const platform = options.platform ?? process.platform
   const stdio = options.stdio ?? 'inherit'
   if (platform === 'win32') {
+    const nodeExecutable = options.nodeExecutable ?? process.execPath
+    const npxCli = windowsNpxCli(options.env, nodeExecutable)
+    if (npxCli !== null) {
+      return {
+        file: nodeExecutable,
+        args: [npxCli, ...args],
+        options: {
+          cwd: options.cwd,
+          env: options.env,
+          stdio,
+          windowsHide: true,
+        },
+      }
+    }
     return {
       file: options.env['ComSpec'] && options.env['ComSpec'] !== '' ? options.env['ComSpec'] : 'cmd.exe',
       args: ['/d', '/s', '/v:off', '/c', cmdScript('npx.cmd', args)],
