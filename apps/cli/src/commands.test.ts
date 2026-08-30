@@ -94,6 +94,7 @@ import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-
 import type { Tone } from './ui/theme.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { firstRequiredBlocker } from './readiness.js'
+import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
@@ -986,6 +987,77 @@ describe('command contracts', () => {
     expect(submitted?.draft.source).toMatchObject({
       session_id: 'orca-codex-thread',
       session_label: 'Release verification',
+      harness: 'codex',
+    })
+  })
+
+  it('uses the exact Orca Agent Session task title instead of an Ash Rabbit fallback', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-agent-session-title-'))
+    const io = new CapturedIo()
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const worktreeId = `repo-123::${cwd}`
+    const terminalHandle = 'term_synthetic_title_fixture'
+    const orcaCommand: OrcaCommand = (_executable, args) => {
+      if (args[0] === 'worktree' && args[1] === 'show') {
+        return JSON.stringify({
+          ok: true,
+          result: { worktree: { id: worktreeId, path: cwd, displayName: '' } },
+        })
+      }
+      if (args[0] === 'worktree' && args[1] === 'ps') {
+        return JSON.stringify({
+          ok: true,
+          result: {
+            worktrees: [
+              {
+                worktreeId,
+                terminals: [
+                  {
+                    handle: terminalHandle,
+                    taskTitle: 'Synthetic title fixture',
+                  },
+                ],
+              },
+            ],
+          },
+        })
+      }
+      return null
+    }
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      CODEX_THREAD_ID: 'fixture-session-7409',
+      TERM_PROGRAM: 'Orca',
+      ORCA_WORKTREE_ID: worktreeId,
+      ORCA_TERMINAL_HANDLE: terminalHandle,
+    }
+
+    expect(
+      await sendCommand(
+        {
+          ...makeDeps(io, client),
+          cwd,
+          env,
+          orcaSessionTitle: (sourceEnv) => readOrcaSessionTitle(sourceEnv, orcaCommand),
+        },
+        {
+          title: 'Synthetic fixture is ready',
+          body: 'The neutral regression fixture is complete.',
+          kind: 'done',
+        },
+      ),
+    ).toBe(EXIT.ok)
+
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'fixture-session-7409',
+      session_label: 'Synthetic title fixture',
       harness: 'codex',
     })
   })
