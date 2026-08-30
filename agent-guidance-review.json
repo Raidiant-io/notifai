@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:fb8be0eee4b81fe05343048a40b66b55d8166f5603e246f796da60c95608310a",
+  "behavior_digest": "sha256:8ed60087e8325e2626628ea5a4b600c65fe25adce5872061db9aad8a79887941",
   "outcome": "reviewed-no-impact",
   "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making semantic Agent Session title acquisition harness-neutral. The shipped skill already states the correct agent-facing contract: exact identity is inferred, a trusted environment title wins over a repeated explicit label, and only a generated fallback may later upgrade to semantic text. Codex Desktop and CLI now satisfy that generic contract through the active harness configuration root and fixed native session-index filename without requiring Orca, while Orca remains optional host enrichment and durable local provenance keeps ambiguous safe retries semantically identical without adding an agent decision. Server provenance remains internal implementation detail, so no Agent Guidance wording changes are needed.",
   "surfaces_reviewed": [
