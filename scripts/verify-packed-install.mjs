@@ -35,6 +35,7 @@
  * Usage:
  *   node scripts/verify-packed-install.mjs
  *   node scripts/verify-packed-install.mjs --cli-tarball a.tgz --protocol-tarball b.tgz
+ *   node scripts/verify-packed-install.mjs ... --gitleaks gitleaks
  *
  * The tarball flags skip the packing step and verify the given artifacts —
  * that is how the test fixture proves a stale pin fails.
@@ -46,6 +47,7 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { assertPackedTarballs } from './check-packed-boundary.mjs'
 import { commandInvocation, execCommand, repositoryRoot } from './cross-platform.mjs'
 
 const CLI_NAME = '@raidiant/notifai'
@@ -219,6 +221,18 @@ async function main() {
     }
     cliTarball = path.resolve(cliTarball)
     protocolTarball = path.resolve(protocolTarball)
+
+    try {
+      const boundary = assertPackedTarballs({
+        tarballs: [protocolTarball, cliTarball],
+        scanSecrets: process.argv.includes('--gitleaks'),
+      })
+      console.log(
+        `Packed boundary verified: ${boundary.files} files and ${boundary.sourceMaps} source maps.`,
+      )
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error))
+    }
 
     const packedCli = extractTarball(cliTarball, path.join(scratch, 'packed-cli'))
     const packedProtocol = extractTarball(protocolTarball, path.join(scratch, 'packed-protocol'))

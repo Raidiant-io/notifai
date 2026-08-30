@@ -57,10 +57,19 @@ offline size pre-flight) is an open decision tracked privately.
 4. Source imports of private packages, testcontainers, or any relative
    path escaping the repository.
 
+`pnpm check:packed` applies the boundary again to the exact npm tarballs after
+their generated `dist/` files exist. It rejects private-package and hosting
+identifiers, private-material filenames, owner-specific absolute home paths,
+links or unsafe archive paths, source maps with embedded `sourcesContent`, and
+source-map paths that are absolute URLs or resolve outside the package. Its
+tests include a canary that exists only in generated packed output, so a clean
+source tree cannot make this release path silently disappear.
+
 The private repository additionally scans this tree with patterns derived
-from its own deployment configuration before advancing its submodule
-pointer; that second check intentionally lives outside this repository so
-its patterns do not become public.
+from its own deployment configuration before advancing its submodule pointer.
+It scans the canonical remote's advertised HEAD, branches, and tags as well as
+the local candidate. That second check intentionally lives outside this
+repository so its patterns do not become public.
 
 ## Adding something new
 
