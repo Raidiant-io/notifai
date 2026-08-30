@@ -85,6 +85,7 @@ export async function checkPublicProviderPosture(
       if (typeof summary.id !== 'number') continue
       const ruleset = await readJson(fetchImpl, `/rulesets/${summary.id}`, token)
       const includes = ruleset?.conditions?.ref_name?.include
+      const excludes = ruleset?.conditions?.ref_name?.exclude
       const bypass = ruleset?.bypass_actors
       const ruleTypes = Array.isArray(ruleset?.rules)
         ? ruleset.rules.map((rule) => rule?.type).sort()
@@ -94,6 +95,8 @@ export async function checkPublicProviderPosture(
         includes.includes('refs/tags/v*') &&
         includes.includes('refs/tags/protocol-v*') &&
         includes.includes('refs/tags/android-v*') &&
+        Array.isArray(excludes) &&
+        excludes.length === 0 &&
         Array.isArray(bypass) &&
         bypass.length === 0 &&
         JSON.stringify(ruleTypes) === JSON.stringify(['deletion', 'update'])

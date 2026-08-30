@@ -114,6 +114,7 @@ const RELEASE_REF = `v${
     ) as { version: string }
   ).version
 }`
+const CLI_VERSION = RELEASE_REF.slice(1)
 
 const RELEASE_SKILL = fileURLToPath(new URL('../../../skills/notifai/', import.meta.url))
 
@@ -4922,7 +4923,7 @@ describe('init', () => {
     )
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'ready',
-      detail: `installed in the project scope and verified against the guidance shipped with ${SKILLS_SOURCE}`,
+      detail: `installed in the project scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
     })
   })
 
@@ -4952,14 +4953,14 @@ describe('init', () => {
       )
       expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
         status: 'ready',
-        detail: `installed in the ${scope} scope and verified against the guidance shipped with ${SKILLS_SOURCE}`,
+        detail: `installed in the ${scope} scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
       })
       expect(calls).toEqual(['project', 'global'])
     },
   )
 
   it.each(['project', 'global'] as const)(
-    'does not trust unmanaged same-path content in the %s scope',
+    'trusts exact installed content independently of mutable %s provenance metadata',
     async (scope) => {
       const cwd = mkdtempSync(path.join(os.tmpdir(), `init-unmanaged-${scope}-`))
       const io = new CapturedIo()
@@ -4984,8 +4985,8 @@ describe('init', () => {
         { skillScope: scope },
       )
       expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-        status: 'optional-gap',
-        detail: `not installed from ${SKILLS_SOURCE} in ${scope} scope`,
+        status: 'ready',
+        detail: `installed in the ${scope} scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
       })
     },
   )
@@ -5150,7 +5151,7 @@ describe('init', () => {
     expect([...present]).toEqual(['project'])
   })
 
-  it('updates the existing skill scope instead of adding a second copy', async () => {
+  it('does not reinstall content-current guidance because mutable ref metadata is stale', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-update-existing-'))
     const io = new InteractiveIo()
     const received: Array<SkillScope | undefined> = []
@@ -5172,8 +5173,7 @@ describe('init', () => {
         hooks: false,
       }),
     ).toBe(EXIT.ok)
-    expect(received).toEqual(['global'])
-    expect(io.outLines.join('\n')).toContain('global scope')
+    expect(received).toEqual([])
   })
 
   it('requires an explicit skill scope before unattended installation', async () => {
@@ -6496,7 +6496,7 @@ describe('readiness assessment cost', () => {
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'ready',
-      detail: `installed in the project scope and verified against the guidance shipped with ${SKILLS_SOURCE}`,
+      detail: `installed in the project scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
     })
   })
 
@@ -7192,7 +7192,7 @@ describe('asking before the hooks have ever run', () => {
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     const said = io.outLines.join(' ')
     expect(said).toContain(
-      `installed in the global scope and verified against the guidance shipped with ${SKILLS_SOURCE}`,
+      `installed in the global scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
     )
     expect(said).toMatch(/active Codex/i)
     expect(said).toContain('notifai hooks install --harness codex')

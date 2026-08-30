@@ -1,4 +1,5 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -135,11 +136,12 @@ export function cmdScript(command: string, args: readonly string[]): string {
 }
 
 /**
- * Launch `npx` so Windows can run the `.cmd` shim.
+ * Launch `npx` without making its resolution depend on the target project.
  *
- * `spawn('npx', …)` is CreateProcess of a file named `npx`, which does not
- * exist — npm installs `npx.cmd`. cmd.exe can run that shim; CreateProcess
- * cannot. Arguments stay in one quoted `/c` string rather than `shell: true`.
+ * A standard Windows Node installation carries npm's JavaScript npx entrypoint
+ * beside node.exe. Invoking that file directly survives an isolated cwd and
+ * avoids cmd parsing. Non-standard installations retain the safely quoted
+ * `.cmd` fallback; POSIX can execute `npx` directly.
  */
 export function npxLaunch(
   args: readonly string[],
@@ -148,11 +150,36 @@ export function npxLaunch(
     env: NodeJS.ProcessEnv
     platform?: NodeJS.Platform
     stdio?: SpawnOptions['stdio']
+    nodeExecutable?: string
+    npxCliPath?: string | null
   },
 ): ProcessLaunch {
   const platform = options.platform ?? process.platform
   const stdio = options.stdio ?? 'inherit'
   if (platform === 'win32') {
+    const nodeExecutable = options.nodeExecutable ?? process.execPath
+    const detectedNpxCli = path.join(
+      path.dirname(nodeExecutable),
+      'node_modules',
+      'npm',
+      'bin',
+      'npx-cli.js',
+    )
+    const npxCli = options.npxCliPath === undefined
+      ? (existsSync(detectedNpxCli) ? detectedNpxCli : null)
+      : options.npxCliPath
+    if (npxCli !== null) {
+      return {
+        file: nodeExecutable,
+        args: [npxCli, ...args],
+        options: {
+          cwd: options.cwd,
+          env: options.env,
+          stdio,
+          windowsHide: true,
+        },
+      }
+    }
     return {
       file: options.env['ComSpec'] && options.env['ComSpec'] !== '' ? options.env['ComSpec'] : 'cmd.exe',
       args: ['/d', '/s', '/v:off', '/c', cmdScript('npx.cmd', args)],

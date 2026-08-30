@@ -170,17 +170,19 @@ lands in the checkout it names and asks nothing. Installing the skill or the
 hooks places files elsewhere, so at a human terminal that — and only that —
 asks once whether it is for this project or for this machine.
 `notifai init --skills` verifies the complete first-party skill against the
-copy and digest manifest shipped inside the installed npm package, resolves the
-matching public release tag to its exact commit, and delegates placement to the
-native `npx skills` flow using that full commit SHA and the chosen scope.
+copy and digest manifest shipped inside the installed npm package, stages that
+verified copy at a short-lived project-relative path, and delegates placement
+to the pinned native `npx skills` flow using the chosen scope. The staging copy
+is removed afterward; readiness hashes the conventional installed directory.
 The `notifai` CLI binary is always a global install (`npm install -g
 @raidiant/notifai`); setup scope does not change it. The human-readable release
 identity is `v<!--x-release-please-start-notifai-->10.1.1<!--x-release-please-end-->`,
 written as `Raidiant-io/notifai#v<!--x-release-please-start-notifai-->10.1.1<!--x-release-please-end-->`
 in installer source grammar.
-The tag is never the install-time trust object: after the byte comparison, the
-installer receives `Raidiant-io/notifai#<full-commit-sha>`. A moved tag or a
-different file, extra file, or missing file is refused before installation.
+The tag is human-readable release identity, never the install-time trust
+object. A different, extra, or missing packaged file is refused before
+installation, and changed installed content fails readiness regardless of the
+mutable source/ref metadata in the installer's lock file.
 For unattended use, pass `--setup-scope project` or `--setup-scope global`.
 
 ## The installed hooks

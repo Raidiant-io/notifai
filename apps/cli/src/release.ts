@@ -37,10 +37,10 @@ export function packageVersion(): string | null {
  * Where `npx skills add` fetches the agent skill from, as printed to users.
  *
  * The human-readable release tag naming this exact build. The installer does
- * not trust this ref: it verifies the tag's complete skill tree against the
- * content manifest shipped in npm and then installs from the resolved commit
- * SHA. Deriving the label from the version keeps release identity from
- * drifting; it used to be maintained by hand in three places.
+ * not trust or fetch this ref: it installs the verified skill embedded in the
+ * npm package through a short-lived local source. Deriving the label from the
+ * version keeps release identity from drifting; it used to be maintained by
+ * hand in three places.
  *
  * In the skills CLI grammar `owner/repo#ref` selects a Git ref, while
  * `owner/repo@name` selects a skill — so the `#` here is load-bearing.

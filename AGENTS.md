@@ -57,12 +57,12 @@ commits are fine. The machine is documented in `docs/RELEASING.md`.
 The skill's human-readable release source (`SKILLS_SOURCE`) is derived at
 runtime from the package version in `apps/cli/src/release.ts`. Installation
 does not trust that tag: the npm package carries the complete reviewed skill
-and its digest manifest; the CLI verifies the tag tree and bytes against that
-copy, then gives the external installer the resolved full commit SHA. Do not
-reintroduce a literal source, omit the packaged bundle, or pass the tag itself
-to the installer; `check:release` fails on bundle drift. In the skills CLI
-grammar, `owner/repo#ref` selects a Git ref and `owner/repo@name` selects a
-skill.
+and its digest manifest; the CLI verifies and stages that package-bound copy at
+a short-lived project-relative path for the pinned external installer. It then
+deletes the staging copy and hashes the conventional installed directory for
+readiness. Do not reintroduce a literal source, omit the packaged bundle, or
+trust mutable lock-file source/ref metadata; `check:release` fails on bundle
+drift.
 
 ## Publishing must verify what actually shipped
 
