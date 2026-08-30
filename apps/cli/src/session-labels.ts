@@ -34,6 +34,8 @@ interface SessionLabelCandidate {
 interface StoredSessionLabel {
   label: string
   source: SessionLabelSource
+  /** Durable local proof used for safe retry after a fallback upgrade. */
+  previous_source?: 'fallback'
   first_seen_at: number
   harness?: SourceContextHarness
 }
@@ -62,7 +64,13 @@ export interface SessionLabelRenameInput {
 }
 
 export type SessionLabelResolution =
-  | { ok: true; label: string; source: SessionLabelSource }
+  | {
+      ok: true
+      label: string
+      source: SessionLabelSource
+      /** Durable proof that this stored semantic label replaced a fallback. */
+      previousSource?: 'fallback'
+    }
   | { ok: false; error: string }
 
 function storePath(env: NodeJS.ProcessEnv): string {
@@ -111,9 +119,11 @@ function storedRecord(candidate: unknown): StoredSessionLabel | null {
   }
   const harness = value.harness
   if (harness !== undefined && !Object.hasOwn(HARNESS_LABELS, harness)) return null
+  if (value.previous_source !== undefined && value.previous_source !== 'fallback') return null
   return {
     label: value.label,
     source: value.source as SessionLabelSource,
+    ...(value.previous_source === undefined ? {} : { previous_source: value.previous_source }),
     first_seen_at: value.first_seen_at,
     ...(harness === undefined ? {} : { harness }),
   }
@@ -364,19 +374,20 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
             .map(([, record]) => collisionKey(record.label)),
         )
         if (existing.source === 'fallback') {
-          const explicit = explicitCandidate(input.explicitLabel, input)
-          if (explicit !== null && 'error' in explicit) {
-            return { ok: false, error: explicit.error }
-          }
           const native = harnessLabelIsPending(input.harnessLabel, input)
             ? null
             : harnessCandidate(input.harnessLabel, input)
+          const explicit = native === null ? explicitCandidate(input.explicitLabel, input) : null
+          if (explicit !== null && 'error' in explicit) {
+            return { ok: false, error: explicit.error }
+          }
           const upgrade = native ?? explicit
           if (upgrade !== null) {
             const label = uniqueLabel(upgrade.label, upgrade.source, input.harness, now, used)
             store.sessions[key] = {
               label,
               source: upgrade.source,
+              previous_source: 'fallback',
               first_seen_at: existing.first_seen_at,
               ...(input.harness === undefined
                 ? existing.harness === undefined
@@ -385,11 +396,18 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
                 : { harness: input.harness }),
             }
             writeStore(file, store)
-            return { ok: true, label, source: upgrade.source }
+            return { ok: true, label, source: upgrade.source, previousSource: 'fallback' }
           }
         }
         if (!isLegacyDateFallback(existing)) {
-          return { ok: true, label: existing.label, source: existing.source }
+          return {
+            ok: true,
+            label: existing.label,
+            source: existing.source,
+            ...(existing.previous_source === undefined
+              ? {}
+              : { previousSource: existing.previous_source }),
+          }
         }
         const label = uniqueLabel(
           generatedSessionLabel(input.sessionId),
@@ -403,12 +421,12 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         return { ok: true, label, source: existing.source }
       }
 
-      const explicit = explicitCandidate(input.explicitLabel, input)
+      const nativePending = harnessLabelIsPending(input.harnessLabel, input)
+      const native = nativePending ? null : harnessCandidate(input.harnessLabel, input)
+      const explicit = native === null ? explicitCandidate(input.explicitLabel, input) : null
       if (explicit !== null && 'error' in explicit) {
         return { ok: false, error: explicit.error }
       }
-      const nativePending = harnessLabelIsPending(input.harnessLabel, input)
-      const native = nativePending ? null : harnessCandidate(input.harnessLabel, input)
       if (explicit === null && nativePending) {
         return {
           ok: false,

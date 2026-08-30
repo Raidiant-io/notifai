@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d95dc90a4909cff8f3a8970970c18d143cd6ba2973bf563c962f27b34cc24a8f",
+  "behavior_digest": "sha256:8ed60087e8325e2626628ea5a4b600c65fe25adce5872061db9aad8a79887941",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after correcting Orca Source Context to select the exact agent pane's semantic task title instead of a worktree display name, and after making the generated adjective-animal fallback visible through a self-explaining CLI warning. The shipped skill already tells agents to supply a concise session label when an exact Agent Session is available, states that a trusted environment-supplied name wins, and explains that only a generated fallback can later be replaced by a semantic name. The implementation now matches those clauses and the exceptional warning provides its own immediate recovery, so no Agent Guidance wording changes are needed.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making semantic Agent Session title acquisition harness-neutral. The shipped skill already states the correct agent-facing contract: exact identity is inferred, a trusted environment title wins over a repeated explicit label, and only a generated fallback may later upgrade to semantic text. Codex Desktop and CLI now satisfy that generic contract through the active harness configuration root and fixed native session-index filename without requiring Orca, while Orca remains optional host enrichment and durable local provenance keeps ambiguous safe retries semantically identical without adding an agent decision. Server provenance remains internal implementation detail, so no Agent Guidance wording changes are needed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

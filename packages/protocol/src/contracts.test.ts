@@ -431,6 +431,7 @@ describe('validateDraft', () => {
       source: {
         session_id: 'sess_abc123',
         session_label: 'Semantic session names',
+        session_label_source: 'semantic',
         harness: 'claude-code',
         branch: 'feature/context',
         worktree: 'context-worktree',
@@ -466,6 +467,55 @@ describe('validateDraft', () => {
     expect(validateDraft(draft({ source: { session_label: 'Invented Label' } }))).toMatchObject({
       ok: false,
       errors: [expect.objectContaining({ path: 'source.session_label' })],
+    })
+  })
+
+  it('accepts only known provenance attached to an Agent Session label', () => {
+    expect(
+      validateDraft(
+        draft({
+          source: {
+            session_id: 'sess_exact',
+            session_label: 'Generated fallback',
+            session_label_source: 'fallback',
+          },
+        }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_exact', session_label_source: 'semantic' } }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'source.session_label_source' })],
+    })
+    expect(
+      validateDraft(
+        draft({
+          source: {
+            session_id: 'sess_exact',
+            session_label: 'Semantic title',
+            session_label_source: 'semantic',
+            session_label_previous_source: 'fallback',
+          },
+        }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({
+          source: {
+            session_id: 'sess_exact',
+            session_label: 'Generated fallback',
+            session_label_source: 'fallback',
+            session_label_previous_source: 'fallback',
+          },
+        }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'source.session_label_previous_source' })],
     })
   })
 

@@ -183,6 +183,7 @@ describe('buildSourceContext', () => {
       source: {
         session_id: 'flag-id',
         session_label: 'Flag Label',
+        session_label_source: 'semantic',
         harness: 'claude-code',
         branch: 'main',
         worktree: 'topic',
@@ -206,6 +207,7 @@ describe('buildSourceContext', () => {
       source: {
         session_id: 'env-id',
         session_label: 'Environment Label',
+        session_label_source: 'semantic',
         harness: 'codex',
       },
     })
@@ -230,6 +232,7 @@ describe('buildSourceContext', () => {
       source: {
         session_id: sessionId,
         session_label: 'Semantic session names',
+        session_label_source: 'semantic',
         harness: 'opencode',
         branch: 'main',
       },
@@ -246,6 +249,7 @@ describe('buildSourceContext', () => {
       source: {
         session_id: sessionId,
         session_label: 'Semantic session names',
+        session_label_source: 'semantic',
         harness: 'opencode',
       },
     })
@@ -279,6 +283,7 @@ describe('buildSourceContext', () => {
       source: {
         session_id: sessionId,
         session_label: 'Ivory Koala',
+        session_label_source: 'fallback' as const,
         harness: 'opencode' as const,
         branch: 'main',
       },
@@ -292,6 +297,49 @@ describe('buildSourceContext', () => {
       }),
     ).toEqual(expected)
     expect(expected.source.session_label).not.toContain('1234567890')
+  })
+
+  it('keeps fallback-upgrade proof stable across safe retries', () => {
+    const env = stateEnv()
+    const sessionId = 'late-native-title'
+    expect(
+      buildSourceContext({
+        env,
+        invocation: { project: 'repo' },
+        activeHarness: { harness: 'codex', sessionId },
+        now,
+      }),
+    ).toMatchObject({
+      source: { session_label_source: 'fallback' },
+    })
+    expect(
+      buildSourceContext({
+        env,
+        invocation: { project: 'repo' },
+        activeHarness: { harness: 'codex', sessionId, sessionLabel: 'Native task title' },
+        now: now + 1_000,
+      }),
+    ).toMatchObject({
+      source: {
+        session_label: 'Native task title',
+        session_label_source: 'semantic',
+        session_label_previous_source: 'fallback',
+      },
+    })
+    expect(
+      buildSourceContext({
+        env,
+        invocation: { project: 'repo' },
+        activeHarness: { harness: 'codex', sessionId, sessionLabel: 'Changed native title' },
+        now: now + 2_000,
+      }),
+    ).toMatchObject({
+      source: {
+        session_label: 'Native task title',
+        session_label_source: 'semantic',
+        session_label_previous_source: 'fallback',
+      },
+    })
   })
 
   it('does not borrow harness identity or title for an explicit different session id', () => {
@@ -313,6 +361,7 @@ describe('buildSourceContext', () => {
       source: {
         session_id: 'other-session',
         session_label: 'Golden Lynx',
+        session_label_source: 'fallback',
       },
     })
   })

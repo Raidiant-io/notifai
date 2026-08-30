@@ -189,6 +189,12 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
   const source: SourceContextT = {
     ...(sessionId !== undefined ? { session_id: sessionId } : {}),
     ...(label !== undefined ? { session_label: label.label } : {}),
+    ...(label !== undefined
+      ? { session_label_source: label.source === 'fallback' ? 'fallback' : 'semantic' }
+      : {}),
+    ...(label?.previousSource === 'fallback'
+      ? { session_label_previous_source: 'fallback' as const }
+      : {}),
     ...(harness !== undefined ? { harness } : {}),
     ...(input.invocation.branch !== undefined ? { branch: input.invocation.branch } : {}),
     ...(input.invocation.worktree !== undefined ? { worktree: input.invocation.worktree } : {}),

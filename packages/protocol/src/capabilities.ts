@@ -502,6 +502,26 @@ export function validateDraft(
       message: 'An Agent Session label needs an opaque Agent Session id behind it; omit both when identity is unknown.',
     })
   }
+  if (
+    typed.source?.session_label_source !== undefined &&
+    typed.source.session_label === undefined
+  ) {
+    errors.push({
+      code: 'invalid_request',
+      path: 'source.session_label_source',
+      message: 'Agent Session label provenance is valid only when a label is present.',
+    })
+  }
+  if (
+    typed.source?.session_label_previous_source !== undefined &&
+    typed.source.session_label_source !== 'semantic'
+  ) {
+    errors.push({
+      code: 'invalid_request',
+      path: 'source.session_label_previous_source',
+      message: 'A prior fallback may accompany only the semantic label that replaced it.',
+    })
+  }
 
   const attachedMedia = new Set(typed.presentation.media?.map((item) => item.media_id) ?? [])
   const referencedMedia = new Set(

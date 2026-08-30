@@ -73,6 +73,20 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
   })
 
+  it('ignores an invalid repeated explicit label when a trusted harness title is available', () => {
+    const { env, now } = fixture()
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'managed-session-with-repeated-flag',
+        harness: 'codex',
+        harnessLabel: 'Native Codex title',
+        explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: true, label: 'Native Codex title', source: 'harness' })
+  })
+
   it('upgrades a frozen fallback to the environment title even when an explicit label rides along', () => {
     const { env, now } = fixture()
     const frozen = resolveSessionLabel({ env, now, sessionId: 'late-title' })
@@ -86,7 +100,12 @@ describe('semantic session labels', () => {
         harnessLabel: 'Worktree semantic title',
         explicitLabel: 'Agent-chosen name',
       }),
-    ).toEqual({ ok: true, label: 'Worktree semantic title', source: 'harness' })
+    ).toEqual({
+      ok: true,
+      label: 'Worktree semantic title',
+      source: 'harness',
+      previousSource: 'fallback',
+    })
   })
 
   it('uses a trusted harness title when no explicit task label exists', () => {
@@ -124,6 +143,7 @@ describe('semantic session labels', () => {
       ok: true,
       label: 'Worker - semantic session implementation',
       source: 'harness',
+      previousSource: 'fallback',
     })
   })
 
@@ -140,7 +160,12 @@ describe('semantic session labels', () => {
         harness: 'codex',
         explicitLabel: 'Fix checkout retries',
       }),
-    ).toEqual({ ok: true, label: 'Fix checkout retries', source: 'explicit' })
+    ).toEqual({
+      ok: true,
+      label: 'Fix checkout retries',
+      source: 'explicit',
+      previousSource: 'fallback',
+    })
     expect(
       resolveSessionLabel({
         env,
@@ -149,7 +174,12 @@ describe('semantic session labels', () => {
         harness: 'codex',
         explicitLabel: 'A different later name',
       }),
-    ).toEqual({ ok: true, label: 'Fix checkout retries', source: 'explicit' })
+    ).toEqual({
+      ok: true,
+      label: 'Fix checkout retries',
+      source: 'explicit',
+      previousSource: 'fallback',
+    })
   })
 
   it('disambiguates an upgraded name against every other stored session', () => {
@@ -174,7 +204,12 @@ describe('semantic session labels', () => {
         harness: 'codex',
         explicitLabel: 'Release preparation',
       }),
-    ).toEqual({ ok: true, label: 'Release preparation · Codex', source: 'explicit' })
+    ).toEqual({
+      ok: true,
+      label: 'Release preparation · Codex',
+      source: 'explicit',
+      previousSource: 'fallback',
+    })
   })
 
   it('rejects an invalid explicit name instead of silently keeping the fallback', () => {
@@ -295,7 +330,12 @@ describe('semantic session labels', () => {
         harness: 'codex',
         explicitLabel: 'Late semantic override',
       }),
-    ).toEqual({ ok: true, label: 'Late semantic override', source: 'explicit' })
+    ).toEqual({
+      ok: true,
+      label: 'Late semantic override',
+      source: 'explicit',
+      previousSource: 'fallback',
+    })
   })
 
   it('disambiguates repeated semantic titles without changing session identity', () => {
