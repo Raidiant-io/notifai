@@ -232,6 +232,28 @@ test('the publish workflow records the exact CLI version in GitHub output', () =
   }
 })
 
+test('publication reuses the exact tarballs that passed boundary and install checks', () => {
+  const steps = publishWorkflow.jobs.npm.steps
+  const cleanCheckout = steps.find(candidate => candidate.name === 'Verify the clean release checkout')
+  const pack = steps.find(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
+  const publishProtocol = steps.find(candidate => candidate.name === 'Publish protocol with OIDC provenance')
+  const verifyProtocol = steps.find(candidate => candidate.name === 'Verify published protocol bytes and metadata')
+  const publishCli = steps.find(candidate => candidate.name === 'Publish CLI with OIDC provenance')
+  const verifyCli = steps.find(candidate => candidate.name === 'Verify published CLI bytes and metadata')
+
+  assert.doesNotMatch(cleanCheckout.run, /pnpm check:packed/)
+  assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/)
+  assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/)
+  assert.match(pack.run, /scripts\/verify-packed-install\.mjs/)
+  assert.match(pack.run, /--gitleaks gitleaks/)
+  assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/)
+  assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/)
+  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance')
+  assert.match(verifyProtocol.run, /--expected-tarball "\$PROTOCOL_TARBALL"/)
+  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance')
+  assert.match(verifyCli.run, /--expected-tarball "\$CLI_TARBALL"/)
+})
+
 test('the rootless combined manifest does not use an empty group title template', () => {
   assert.equal(releaseConfig.packages['.'], undefined)
   assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)

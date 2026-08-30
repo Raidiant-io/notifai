@@ -126,8 +126,8 @@ open or green Release PR is only a candidate. Once authorized, squash-merge
 the combined PR. The next workflow run creates every applicable tag from that
 same merged commit:
 
-- CLI tag: `v<version>` (the CLI verifies its packaged skill against that tag,
-  then installs from `Raidiant-io/notifai#<full-commit-sha>`)
+- CLI tag: `v<version>` (the matching npm package embeds the exact reviewed
+  skill and installs it through a verified short-lived local source)
 - Protocol tag: `protocol-v<version>`
 
 release-please does not publish to npm. Tags created with `GITHUB_TOKEN` do not
@@ -136,10 +136,17 @@ once per created tag and binds the run to release-please's exact tag SHA. Only
 when the maintainer asked, the workflow waits at the protected `npm-release`
 environment. A maintainer approves that deployment;
 the workflow then validates a clean tag checkout, checks the packed install,
-publishes through npm trusted publishing with provenance, and verifies the
-registry bytes and resolution-shaping metadata. Protocol publishes before a
-CLI that pins it exactly. Concurrent tag runs are serialized and publication
-is idempotent: an already-published version is verified, never republished.
+and builds each npm tarball exactly once. Those two tarballs are scanned for
+secrets and public/private boundary violations, including generated source-map
+paths and embedded source, then installed together outside the workspace. The
+workflow passes those same tarball paths to `npm publish` through trusted
+publishing with provenance; it never asks npm to repack the package directory.
+After publication it downloads the registry tarball and requires its complete
+bytes to equal the staged, scanned tarball before checking compiled files and
+resolution-shaping metadata. Protocol publishes before a CLI that pins it
+exactly. Concurrent tag runs are serialized and publication is idempotent: an
+already-published version is verified against the deterministically rebuilt
+tarball, never republished.
 The verifier retries only a registry `E404` five times with exponential
 backoff (15 seconds total); other failures remain immediate, and a version that
 never appears still fails after the bounded attempt ceiling.
@@ -239,7 +246,8 @@ JSON
 
 Verify the returned object (or `gh api repos/Raidiant-io/notifai/rulesets`)
 names an active `tag` ruleset. Its detailed read-back must preserve all three ref
-patterns, an empty bypass list, and exactly the `update` and `deletion` rules.
+patterns, exactly zero excluded refs, an empty bypass list, and exactly the
+`update` and `deletion` rules.
 
 Ordinary CI runs `node scripts/check-public-provider-posture.mjs` with its
 read-only `GITHUB_TOKEN`; that continuously proves private vulnerability

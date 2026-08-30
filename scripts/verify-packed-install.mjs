@@ -35,17 +35,19 @@
  * Usage:
  *   node scripts/verify-packed-install.mjs
  *   node scripts/verify-packed-install.mjs --cli-tarball a.tgz --protocol-tarball b.tgz
+ *   node scripts/verify-packed-install.mjs ... --gitleaks gitleaks
  *
  * The tarball flags skip the packing step and verify the given artifacts —
  * that is how the test fixture proves a stale pin fails.
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { assertPackedTarballs } from './check-packed-boundary.mjs'
 import { commandInvocation, execCommand, repositoryRoot } from './cross-platform.mjs'
 
 const CLI_NAME = '@raidiant/notifai'
@@ -220,6 +222,18 @@ async function main() {
     cliTarball = path.resolve(cliTarball)
     protocolTarball = path.resolve(protocolTarball)
 
+    try {
+      const boundary = assertPackedTarballs({
+        tarballs: [protocolTarball, cliTarball],
+        gitleaksBinary: argvValue('--gitleaks'),
+      })
+      console.log(
+        `Packed boundary verified: ${boundary.files} files and ${boundary.sourceMaps} source maps.`,
+      )
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error))
+    }
+
     const packedCli = extractTarball(cliTarball, path.join(scratch, 'packed-cli'))
     const packedProtocol = extractTarball(protocolTarball, path.join(scratch, 'packed-protocol'))
     const cliManifest = readManifest(packedCli)
@@ -305,6 +319,101 @@ async function main() {
     } catch (error) {
       fail(`installed CLI skill bundle could not be verified (${String(error)})`)
     }
+
+    // Exercise the actual pinned third-party installer through the packed
+    // production adapter. This catches source grammar/version behavior that a
+    // mocked spawn cannot: skills@1.5.23 does not accept a raw commit SHA as a
+    // Git branch, but does support the verified local package source.
+    const skillProject = path.join(scratch, 'skill project Ω')
+    const skillHome = path.join(scratch, 'skill home')
+    mkdirSync(skillProject, { recursive: true })
+    mkdirSync(skillHome, { recursive: true })
+    writeFileSync(
+      path.join(skillProject, 'package.json'),
+      JSON.stringify({ name: 'notifai-skill-install-smoke', private: true }, null, 2),
+    )
+    const skillEnv = {
+      ...process.env,
+      HOME: skillHome,
+      USERPROFILE: skillHome,
+      XDG_CONFIG_HOME: path.join(skillHome, 'config'),
+      XDG_STATE_HOME: path.join(skillHome, 'state'),
+      npm_config_cache: path.join(scratch, 'npm-cache'),
+    }
+    try {
+      const native = await import(
+        pathToFileURL(path.join(installedCli, 'dist', 'native-skills.js')).href
+      )
+      const release = await import(
+        pathToFileURL(path.join(installedCli, 'dist', 'release.js')).href
+      )
+      const commandsSkill = await import(
+        pathToFileURL(path.join(installedCli, 'dist', 'commands-skill.js')).href
+      )
+      const sourceLabel = release.skillsSource()
+      if (typeof sourceLabel !== 'string') fail('packed CLI could not derive its skill release identity')
+      const operation = await native.nativeSkills.add({
+        source: sourceLabel,
+        skill: 'notifai',
+        scope: 'project',
+        cwd: skillProject,
+        env: skillEnv,
+      })
+      const code = typeof operation === 'number' ? operation : operation.code
+      if (code !== 0) {
+        fail(
+          `skills@1.5.23 rejected the verified packaged local source` +
+            (typeof operation === 'number' ? ` (exit ${code})` : ` (${operation.error})`),
+        )
+      }
+
+      const lockFile = path.join(skillProject, 'skills-lock.json')
+      const lockText = readFileSync(lockFile, 'utf8')
+      const lock = JSON.parse(lockText)
+      const lockSource = lock?.skills?.notifai?.source
+      if (
+        typeof lockSource !== 'string' ||
+        path.isAbsolute(lockSource) ||
+        /^[A-Za-z]:[\\/]/.test(lockSource) ||
+        lockSource.startsWith('\\\\')
+      ) {
+        fail(`skills@1.5.23 wrote a machine-specific skill source to its lock`)
+      }
+      for (const sensitivePath of [process.env.HOME, installDir, skillHome]) {
+        if (sensitivePath && lockText.includes(sensitivePath)) {
+          fail('skills@1.5.23 leaked a machine-specific path into its lock')
+        }
+      }
+      const stagingParent = path.join(skillProject, '.notifai')
+      if (
+        existsSync(stagingParent) &&
+        readdirSync(stagingParent).some((entry) => entry.startsWith('skill-source-'))
+      ) {
+        fail('packed CLI left its temporary skill source behind')
+      }
+
+      const readinessDeps = { nativeSkills: native.nativeSkills, cwd: skillProject, env: skillEnv }
+      const installedRoot = path.join(skillProject, '.agents', 'skills', 'notifai')
+      const installedStat = lstatSync(installedRoot)
+      if (!installedStat.isDirectory() || installedStat.isSymbolicLink()) {
+        fail('skills@1.5.23 did not leave the conventional installed skill as a regular copied tree')
+      }
+      const ready = await commandsSkill.skillReadiness(readinessDeps, 'project')
+      if (ready.status !== 'ready') {
+        fail(`freshly installed packaged skill was not ready (${JSON.stringify(ready.technical)})`)
+      }
+      const installedSkill = path.join(installedRoot, 'SKILL.md')
+      writeFileSync(installedSkill, `${readFileSync(installedSkill, 'utf8')}\n<!-- altered -->\n`)
+      const altered = await commandsSkill.skillReadiness(readinessDeps, 'project')
+      if (
+        altered.status !== 'gap' ||
+        altered.technical?.resolution !== 'installed-skill-content-mismatch'
+      ) {
+        fail(`altered installed skill did not fail content readiness (${JSON.stringify(altered)})`)
+      }
+    } catch (error) {
+      fail(`packed CLI native skill install/readiness check failed (${String(error)})`)
+    }
     const binRelative =
       typeof cliManifest.bin === 'string' ? cliManifest.bin : cliManifest.bin?.notifai
     if (typeof binRelative !== 'string') fail('packed CLI manifest declares no notifai bin')
@@ -331,7 +440,7 @@ async function main() {
 
     console.log(
       `Packed install verified: ${CLI_NAME}@${cliManifest.version} installs in isolation with ` +
-        `${PROTOCOL_NAME}@${protocolManifest.version} and the installed bin runs.`,
+        `${PROTOCOL_NAME}@${protocolManifest.version}; its bin and package-bound skill both run.`,
     )
   } finally {
     rmSync(scratch, { recursive: true, force: true })

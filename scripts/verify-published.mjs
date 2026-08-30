@@ -20,6 +20,7 @@
  * Usage:
  *   node scripts/verify-published.mjs                # every publishable package
  *   node scripts/verify-published.mjs @raidiant/notifai
+ *   node scripts/verify-published.mjs @raidiant/notifai --expected-tarball artifact.tgz
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -29,6 +30,7 @@ import path from 'node:path'
 import process from 'node:process'
 import {repositoryRoot} from './cross-platform.mjs'
 import {lookupPublishedTarball} from './npm-registry.mjs'
+import { expectedTarballFailure } from './tarball-integrity.mjs'
 
 const root = repositoryRoot
 const failures = []
@@ -39,14 +41,27 @@ const PACKAGES = [
   { name: '@raidiant/notifai-protocol', directory: 'packages/protocol' },
 ]
 
-const requested = process.argv.slice(2)
+const requested = []
+let expectedTarball
+for (let index = 2; index < process.argv.length; index += 1) {
+  const argument = process.argv[index]
+  if (argument === '--expected-tarball') {
+    expectedTarball = process.argv[index + 1]
+    index += 1
+    if (expectedTarball === undefined) failures.push('--expected-tarball requires a path')
+  } else {
+    requested.push(argument)
+  }
+}
+if (expectedTarball !== undefined && requested.length !== 1) {
+  failures.push('--expected-tarball requires exactly one package name')
+}
 const selected = requested.length === 0 ? PACKAGES : PACKAGES.filter((p) => requested.includes(p.name))
 for (const name of requested) {
   if (!PACKAGES.some((p) => p.name === name)) failures.push(`unknown package ${name}`)
 }
 
 const sha256 = (contents) => createHash('sha256').update(contents).digest('hex')
-
 /**
  * Manifest fields where published/local skew changes what an install resolves
  * or executes. `dependencies` is the field that already shipped a startup
@@ -117,7 +132,15 @@ for (const entry of selected) {
       failures.push(`${label}: could not download ${tarballUrl} (HTTP ${response.status})`)
       continue
     }
-    writeFileSync(path.join(scratch, 'package.tgz'), Buffer.from(await response.arrayBuffer()))
+    const publishedTarball = Buffer.from(await response.arrayBuffer())
+    writeFileSync(path.join(scratch, 'package.tgz'), publishedTarball)
+    if (expectedTarball !== undefined) {
+      const integrityFailure = expectedTarballFailure(
+        readFileSync(path.resolve(expectedTarball)),
+        publishedTarball,
+      )
+      if (integrityFailure !== null) failures.push(`${label}: ${integrityFailure}`)
+    }
     execFileSync('tar', ['xzf', 'package.tgz'], { cwd: scratch })
 
     const publishedDist = path.join(scratch, 'package', 'dist')
@@ -173,7 +196,7 @@ for (const entry of selected) {
 
     if (failures.length === 0) {
       notes.push(
-        `${label}: ${publishedFiles.length} compiled files and the resolution metadata match this checkout exactly`,
+        `${label}: registry bytes, ${publishedFiles.length} compiled files, and resolution metadata match exactly`,
       )
     }
   } catch (error) {
