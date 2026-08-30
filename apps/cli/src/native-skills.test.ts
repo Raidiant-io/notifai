@@ -105,6 +105,24 @@ describe('runSkillsCommand', () => {
         'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
     })
   })
+
+  it('preserves an actual process launch failure instead of misreporting the network', async () => {
+    const missingExecutable = path.join(
+      os.tmpdir(),
+      `notifai-missing-skills-installer-${process.pid}`,
+    )
+    const result = await runSkillsCommand([], { cwd: os.tmpdir(), env: {} }, () => ({
+      file: missingExecutable,
+      args: [],
+      options: { cwd: os.tmpdir(), env: {}, stdio: 'ignore' },
+    }))
+
+    expect(result).toEqual({
+      code: 1,
+      error:
+        'the native skills installer could not start on this machine; repair the local Node.js and npm installation, then rerun setup',
+    })
+  })
 })
 
 describe('nativeSkills.list', () => {

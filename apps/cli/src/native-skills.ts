@@ -142,7 +142,13 @@ export function runSkillsCommand(
       return
     }
     const child = spawn(launch.file, launch.args, launch.options)
-    child.on('error', () => resolve(1))
+    child.on('error', () => {
+      resolve({
+        code: 1,
+        error:
+          'the native skills installer could not start on this machine; repair the local Node.js and npm installation, then rerun setup',
+      })
+    })
     child.on('exit', (code) => resolve(code ?? 1))
   })
 }
