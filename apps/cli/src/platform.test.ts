@@ -72,7 +72,7 @@ describe('npxLaunch', () => {
         nodeExecutable: 'C:\\missing\\node.exe',
         platform: 'win32',
       }),
-    ).toThrow(/does not include npm npx-cli\.js/)
+    ).toThrow(/missing its bundled npm tools/)
   })
 
   it('spawns npx directly on POSIX without a shell', () => {

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:36af299624e8e697b86a5a38883f1069cc71ece94803b03f0afd2ab8aa3f60d0",
+  "behavior_digest": "sha256:bbaa2ca4897cb024324d00c2b70e5c120c81fbff7b12b92149ce6ce7dca47956",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding first-party skill installation to the exact guidance shipped in the npm package, binding publication to exact scanned npm tarballs, and removing the legacy infrastructure-alias rewrite. Windows now invokes npm's real npx JavaScript entry point from the running Node distribution, avoiding cwd-sensitive or environment-selected command shims and failing closed if npm is absent. The canonical api.notifai.sh to app.notifai.sh migration and the shipped skill's behavior clauses remain unchanged; the stronger integrity and portability checks require no new Agent Guidance wording.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding first-party skill installation to the exact guidance shipped in the npm package, binding publication to exact scanned npm tarballs, and removing the legacy infrastructure-alias rewrite. Windows now invokes npm's real npx JavaScript entry point adjacent to the running Node executable, avoiding cwd-sensitive or environment-selected command shims and failing closed with a specific repair path when that bundled npm tool is unavailable. The canonical api.notifai.sh to app.notifai.sh migration and the shipped skill's behavior clauses remain unchanged; the stronger integrity and portability checks require no new Agent Guidance wording.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

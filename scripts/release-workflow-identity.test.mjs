@@ -14,8 +14,10 @@ function readWorkflowText(path, read = readFileSync) {
 const release = readWorkflowText('.github/workflows/release-please.yml')
 const ci = readWorkflowText('.github/workflows/ci.yml')
 const publish = readWorkflowText('.github/workflows/publish.yml')
+const providerPosture = readWorkflowText('.github/workflows/provider-posture.yml')
 const ciWorkflow = parse(ci)
 const publishWorkflow = parse(publish)
+const providerPostureWorkflow = parse(providerPosture)
 const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
 const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
 
@@ -80,6 +82,14 @@ test('release automation has no separately managed write credential', () => {
   assert.doesNotMatch(release, /\bsecrets\.|\bvars\./)
   assert.match(release, /token: \$\{\{ github\.token \}\}/)
   assert.match(release, /persist-credentials: false/)
+})
+
+test('scheduled provider posture uses the documented read-only GitHub token', () => {
+  assert.deepEqual(providerPostureWorkflow.permissions, {contents: 'read'})
+  const step = providerPostureWorkflow.jobs['private-vulnerability-reporting'].steps.find(
+    candidate => candidate.run === 'node scripts/check-public-provider-posture.mjs',
+  )
+  assert.equal(step.env.GH_TOKEN, '${{ github.token }}')
 })
 
 test('the required commits job checks release PR metadata before merge', () => {

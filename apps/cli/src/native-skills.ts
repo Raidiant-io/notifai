@@ -125,17 +125,30 @@ function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv):
   })
 }
 
-function run(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<number> {
+export function runSkillsCommand(
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+  resolveLaunch: typeof npxLaunch = npxLaunch,
+): Promise<SkillsOperationResult> {
   return new Promise((resolve) => {
     let launch: ReturnType<typeof npxLaunch>
     try {
-      launch = npxLaunch(args, options)
-    } catch {
-      resolve(1)
+      launch = resolveLaunch(args, options)
+    } catch (error) {
+      resolve({
+        code: 1,
+        error: error instanceof Error ? error.message : 'the native skills installer could not start',
+      })
       return
     }
     const child = spawn(launch.file, launch.args, launch.options)
-    child.on('error', () => resolve(1))
+    child.on('error', () => {
+      resolve({
+        code: 1,
+        error:
+          'the native skills installer could not start on this machine; repair the local Node.js and npm installation, then rerun setup',
+      })
+    })
     child.on('exit', (code) => resolve(code ?? 1))
   })
 }
@@ -169,7 +182,7 @@ export const nativeSkills: NativeSkills = {
     const staged = stageShippedSkillBundle(options.cwd, version)
     if (!staged.ok) return { code: 1, error: staged.error }
     try {
-      return await run(skillsAddArgv({ ...options, source: staged.staged.source }), {
+      return await runSkillsCommand(skillsAddArgv({ ...options, source: staged.staged.source }), {
         cwd: options.cwd,
         env: options.env,
       })
@@ -179,7 +192,11 @@ export const nativeSkills: NativeSkills = {
   },
 
   async remove(options) {
-    return run(skillsRemoveArgv(options), { cwd: options.cwd, env: options.env })
+    const result = await runSkillsCommand(skillsRemoveArgv(options), {
+      cwd: options.cwd,
+      env: options.env,
+    })
+    return typeof result === 'number' ? result : result.code
   },
 
   async list(scope, cwd, env) {
