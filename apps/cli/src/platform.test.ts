@@ -76,6 +76,26 @@ describe('npxLaunch', () => {
     ).toBeNull()
   })
 
+  it('accepts an explicitly resolved npm entry point without cmd parsing', () => {
+    const launch = npxLaunch(args, {
+      cwd: 'C:\\proj',
+      env: { PATH: 'C:\\Windows\\system32' },
+      platform: 'win32',
+      nodeExecutable: 'C:\\Program Files\\nodejs\\node.exe',
+      npxCliPath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
+    })
+    expect(launch).toEqual({
+      file: 'C:\\Program Files\\nodejs\\node.exe',
+      args: ['C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js', ...args],
+      options: {
+        cwd: 'C:\\proj',
+        env: { PATH: 'C:\\Windows\\system32' },
+        stdio: 'inherit',
+        windowsHide: true,
+      },
+    })
+  })
+
   it('quotes a hostile source in the cmd fallback so & cannot start a second command', () => {
     const hostile = 'evil&calc.exe'
     const launch = npxLaunch(['-y', 'skills', 'add', hostile, '--skill', 'notifai'], {
@@ -83,6 +103,7 @@ describe('npxLaunch', () => {
       env: {},
       nodeExecutable: 'C:\\missing\\node.exe',
       platform: 'win32',
+      npxCliPath: null,
     })
     const script = launch.args[4] ?? ''
     expect(script).toContain(quoteCmdArgument(hostile))

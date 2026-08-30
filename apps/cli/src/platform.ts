@@ -164,12 +164,12 @@ export function windowsNpxCli(
 }
 
 /**
- * Launch `npx` portably on Windows.
+ * Launch `npx` without making its resolution depend on the target project.
  *
  * Prefer npm's JavaScript entry point, which avoids both CreateProcess's
  * inability to run `.cmd` files and shims whose relative paths depend on the
- * working directory. Nonstandard Node layouts fall back to cmd.exe with every
- * argument quoted in one `/c` string rather than using `shell: true`.
+ * working directory. Nonstandard Node layouts retain the safely quoted `.cmd`
+ * fallback; POSIX can execute `npx` directly.
  */
 export function npxLaunch(
   args: readonly string[],
@@ -179,13 +179,16 @@ export function npxLaunch(
     nodeExecutable?: string
     platform?: NodeJS.Platform
     stdio?: SpawnOptions['stdio']
+    npxCliPath?: string | null
   },
 ): ProcessLaunch {
   const platform = options.platform ?? process.platform
   const stdio = options.stdio ?? 'inherit'
   if (platform === 'win32') {
     const nodeExecutable = options.nodeExecutable ?? process.execPath
-    const npxCli = windowsNpxCli(options.env, nodeExecutable)
+    const npxCli = options.npxCliPath === undefined
+      ? windowsNpxCli(options.env, nodeExecutable)
+      : options.npxCliPath
     if (npxCli !== null) {
       return {
         file: nodeExecutable,
