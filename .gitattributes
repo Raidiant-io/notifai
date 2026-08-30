@@ -1,0 +1,3 @@
+# The packaged first-party skill is verified byte for byte. Keep its reviewed
+# source stable even when a contributor has core.autocrlf enabled.
+skills/notifai/** text eol=lf

@@ -18,22 +18,25 @@ one for itself.
 
 The optional `notifai` agent skill is content-bound to the CLI package that
 installs it. Every CLI tarball carries the complete reviewed skill plus a
-manifest covering the exact relative file list, each file's SHA-256 and Git
-blob identity, and one canonical tree digest. Before starting the external
+manifest covering the exact relative file list, each file's SHA-256, and one
+canonical tree digest. Before starting the external
 `skills` installer, the CLI:
 
 1. verifies its packaged skill against that manifest;
-2. resolves the matching `v<CLI version>` tag through GitHub to one full commit
-   SHA, including annotated-tag dereferencing;
-3. verifies the release commit's exact `skills/notifai` file list, Git objects,
-   and raw bytes against the packaged manifest; and
-4. gives the installer the full commit SHA, never the movable tag.
+2. copies the verified bundle to a short-lived path relative to the target
+   project, so no account or machine-specific absolute path reaches the
+   installer lock;
+3. gives that local copy to the exactly pinned native installer; and
+4. removes the staging copy after the installer exits.
 
-Readiness verifies the installed tree against the packaged digest as well as
-the installer's GitHub provenance. A matching tag name or lock-file entry is
-not sufficient. Network failure, a moved tag, a truncated tree, an extra or
-missing file, changed bytes, a malformed package manifest, or an installer
-record without verified content all fail closed.
+Readiness ignores mutable source/ref metadata and hashes the installer's
+conventional installed directory against the packaged digest. A lock-file
+entry alone is not sufficient. An extra or missing file, changed bytes, a
+malformed package manifest, or an installer record without verified content
+fails closed. This establishes content binding to the installed npm package;
+equal bytes do not independently prove which historical Git commit first
+contained them. Release and tag immutability protect that separate public
+source-history identity.
 
 ## Remote image URLs
 
