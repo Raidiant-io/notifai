@@ -118,10 +118,6 @@ jobs:
         id: plan
         run: node scripts/plan-publish.mjs
 
-      - name: Verify deployed service accepts this candidate
-        if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
-        run: node scripts/check-live-server-contract.mjs
-
       - name: Record the exact CLI version
         id: cli-version
         shell: bash
@@ -155,6 +151,10 @@ jobs:
             --protocol-tarball "$protocol_tarball" \
             --cli-tarball "$cli_tarball" \
             --gitleaks
+
+      - name: Verify deployed service accepts this candidate
+        if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
+        run: node scripts/check-live-server-contract.mjs
 
       # Protocol must reach the registry before a CLI that pins it exactly.
       - name: Publish protocol with OIDC provenance
