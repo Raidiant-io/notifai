@@ -100,7 +100,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'Optional delay before a question may reach your devices',
     detail:
-      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nThis controls when the question reaches devices, not how the harness keeps the Agent Session available afterward. Claude Code waits out of band; Codex holds the asking turn.',
+      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nThis controls when the question reaches devices, not how the harness keeps the Agent Session available afterward. Claude Code waits out of band on macOS/Linux; on Windows its Stop stays held, like Codex.',
     example: '0',
   },
 
@@ -111,7 +111,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'How long the service keeps accepting your answer to a question',
     detail:
-      'A question stays answerable for this long after it reaches the service. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nQuestion Routing keeps the exact Agent Session available for this complete window. Claude Code waits out of band and wakes the Agent Session; Codex keeps its turn held. This is separate from `--reply-timeout`, which controls how long a direct `send --reply` command blocks.',
+      'A question stays answerable for this long after it reaches the service. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nQuestion Routing keeps the exact Agent Session available for this complete window. Claude Code waits out of band and wakes the Agent Session on macOS/Linux; on Windows its Stop stays held and returns the answer as the same Agent Session continuation, like Codex. This is separate from `--reply-timeout`, which controls how long a direct `send --reply` command blocks.',
     example: '86400',
   },
 

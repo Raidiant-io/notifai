@@ -233,9 +233,10 @@ only this moment can tell that you were present for this turn.
 question with `notifai ask`, this is when that question can leave for your
 devices and when a device answer is handed back into the next turn. Question
 Routing keeps that exact return path alive for the complete answer window:
-Claude Code waits out of band and wakes the session, while Codex holds the
-asking turn. It has to run at Stop because that is the first moment the agent
-has finished its current work and is waiting for the answer.
+Claude Code waits out of band and wakes the session on macOS/Linux; on Windows
+its Stop stays held and returns the answer as the same Agent Session's
+continuation, like Codex. It has to run at Stop because that is the first
+moment the agent has finished its current work and is waiting for the answer.
 
 An `ask` success is a local registration, not a submitted Notification Request:
 it has no Provider Acceptance until question settlement promotes its stable

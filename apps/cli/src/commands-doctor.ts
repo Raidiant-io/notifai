@@ -11,10 +11,10 @@ import { ApiCallError, type ApiClient } from './client.js'
 import { inspectCodexResume } from './codex-wake.js'
 import { type CliConfig } from './config.js'
 import {
-  HARNESS_CAPABILITIES,
   HARNESS_LABELS,
   HERMES_QUESTION_ROUTING_UNAVAILABLE,
   isHookInstallableHarness,
+  questionRoutingCapability,
 } from './harnesses.js'
 import {
   hookAdapterTargetsArtifact,
@@ -996,13 +996,14 @@ function checkTitle(name: string): string {
           : ('gap' as const),
       detail: check.detail,
       ...(check.technical === undefined ? {} : { technical: check.technical }),
-      ...(check.ok
+      ...(check.ok || (check.reportOnly === true && check.remedy === undefined)
         ? {}
         : {
             remedy: {
               // The check's own remedy when it has one; the generic reinstall
               // line was wrong exactly where it mattered (an unfired pointer
-              // needs a prompt, not `hooks install`).
+              // needs a prompt, not `hooks install`). A report-only capability
+              // with no remedy is intentionally absent, not repairable.
               ...(check.remedy ?? {
                 summary: 'the detail above names what to change',
                 command: 'notifai hooks install',
@@ -1249,7 +1250,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok: shapeProblems.length === 0,
     detail:
       shapeProblems.length === 0
-        ? `every installed Stop handler declares the shape its harness needs: Claude Code async and Codex blocking with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
+        ? `every installed Stop handler declares the shape its harness and host need: Claude Code async on POSIX and blocking on Windows, Codex blocking, each with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
         : shapeProblems.join('; '),
   })
 
@@ -1454,7 +1455,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok:
       continuationHarnesses.length > 0 &&
       continuationHarnesses.every(
-        (harness) => HARNESS_CAPABILITIES[harness].stopContinuation !== 'unsupported',
+        (harness) =>
+          questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
+            .stopContinuation !== 'unsupported',
       ),
     reportOnly: active === null,
     detail:
@@ -1463,7 +1466,10 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           ? 'no installed harness route to assess'
           : `the active ${active.label} session has no matching continuation adapter`
         : continuationHarnesses
-            .map((harness) => `${harness}: ${HARNESS_CAPABILITIES[harness].deliveryContract}`)
+            .map(
+              (harness) =>
+                `${harness}: ${questionRoutingCapability(harness, deps.hookPlatform ?? process.platform).deliveryContract}`,
+            )
             .join('; '),
   })
 
@@ -1477,18 +1483,19 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
 }
 
 /**
- * Whether an answer arriving after this turn ends could actually reach this
- * exact session — the question `notifai ask` really turns on, and the one no
- * other check answers.
+ * Whether an answer arriving after this turn's ordinary continuation returns
+ * could start another turn in this exact session without a new User prompt.
+ * This is a named optional capability, separate from the held Stop
+ * continuation that already makes Question Routing usable.
  *
  * Read-only, and deliberately so: nothing here connects to a socket, takes a
  * lock, or sends a message. A diagnostic that wakes the agent it is diagnosing
  * would be its own bug report.
  *
- * Everything it can report negatively is a degradation rather than a failure —
- * the accepted journal still replays the answer at the session's next turn —
- * so this is never a blocker. What it buys is that the reason has a name
- * before the user notices the silence.
+ * Everything it can report negatively is optional rather than a routing
+ * failure: a held continuation can still return the answer, or the accepted
+ * journal can replay it at the session's next turn. What it buys is that the
+ * direct-wake capability and its limits have an explicit name.
  *
  * It never asks for `crossSessionInbound`. The poster is the session's own
  * hook child and takes the privileged own-child path, verified to be delivered
@@ -1503,9 +1510,19 @@ function wakeRouteCheck(
 ): HookCheck | null {
   if (active === null || activeInstallations.length === 0) return null
   if (active.harness === 'claude-code') {
+    const platform = deps.hookPlatform ?? process.platform
+    if (platform === 'win32') {
+      return {
+        name: 'hooks (wake route)',
+        ok: false,
+        reportOnly: true,
+        detail:
+          'direct inbox wake is unavailable on Windows; the held Stop still returns the answer to this same Agent Session without another User prompt',
+      }
+    }
     const readiness = inspectClaudeInbox({
       pid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
-      platform: deps.hookPlatform ?? process.platform,
+      platform,
       readDescriptor:
         deps.claudeWake?.readDescriptor ?? systemClaudeWakeAdapters(deps.env).readDescriptor,
       socketExists: (socketPath) => existsSync(socketPath),

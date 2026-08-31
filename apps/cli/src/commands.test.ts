@@ -100,7 +100,7 @@ import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './lo
 import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
 import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
-import { firstRequiredBlocker } from './readiness.js'
+import { firstRequiredBlocker, readinessJson } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 
 afterEach(() => {
@@ -3305,7 +3305,8 @@ describe('Codex hook representation', () => {
     expect(text).toContain('--owner notifai')
     expect(text).toContain('[[hooks.UserPromptSubmit]]')
     expect(io.outLines.join('\n')).toContain(toml)
-    expect(io.outLines.join('\n')).toMatch(/Stop and the existing one will both fire/i)
+    expect(io.outLines.join('\n')).toMatch(/Codex may run it alongside Notifai's handler/i)
+    expect(io.outLines.join('\n')).toMatch(/Notifai preserves it but has not assessed its behavior/i)
   })
 
   it('joins a populated hooks.json without introducing a second representation', () => {
@@ -3498,6 +3499,24 @@ describe('harness activation guidance', () => {
     expect(output).toContain('Installed claude-code hooks in')
     expect(output).toContain('Start one fresh Claude Code session, send one prompt, then run `notifai doctor`.')
     expect(output).not.toMatch(/timeout|asynchronous|600s/i)
+  })
+
+  it('describes an unassessed foreign Claude Code Stop handler without Codex claims', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-foreign-stop-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'peon-ping stop' }] }] },
+    })
+
+    expect(
+      hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+
+    const output = io.outLines.join('\n')
+    expect(output).toMatch(/Claude Code may run it alongside Notifai's handler/i)
+    expect(output).toMatch(/Notifai preserves it but has not assessed its behavior/i)
+    expect(output).not.toMatch(/Codex runs every matching handler|harmless/i)
   })
 
   it('names Codex trust and fresh-session activation in the correct order', () => {
@@ -8501,6 +8520,52 @@ describe('asking before the hooks have ever run', () => {
     expect(out).toContain('`--bare` binds no inbox socket')
     expect(out).toContain("at this session's next turn")
     expect(out).not.toMatch(/FAIL\s+Direct wake route/)
+  })
+
+  it('reports Windows Claude Question Routing ready through its held Stop', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-windows-claude-'))
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'windows-claude-current',
+    }
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      now: () => 42,
+      hookPlatform: 'win32' as NodeJS.Platform,
+    }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('windows-claude-current', env, {
+      harness: 'claude-code',
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(cwd, env, 'windows-claude-current', 42, 'claude-code')
+
+    const readiness = await assessReadiness(deps)
+    const result = readinessJson(readiness) as {
+      question_routing_ready: boolean
+      direct_wake_ready: boolean
+    }
+    const continuation = readiness.states.find(
+      (state) => state.id === 'hooks-answer-continuation',
+    )
+    const directWake = readiness.states.find((state) => state.id === 'hooks-wake-route')
+
+    expect(result.question_routing_ready).toBe(true)
+    expect(result.direct_wake_ready).toBe(false)
+    expect(continuation).toMatchObject({ status: 'ready' })
+    expect(continuation?.detail).toContain('held through the complete answer window')
+    expect(continuation?.detail).toContain('same Agent Session')
+    expect(directWake).toMatchObject({ status: 'optional-gap', title: 'Direct wake route' })
+    expect(directWake?.detail).toContain('held Stop still returns the answer')
+    expect(directWake?.detail).not.toContain("next turn rather than on their own")
+    expect(directWake?.remedy).toBeUndefined()
   })
 
   it('fails closed on an inbox protocol it does not recognise', async () => {

@@ -558,7 +558,8 @@ export async function hookRunCommand(
         outcome.settlementRequired === true &&
         envelope.session_id !== undefined &&
         harness !== undefined &&
-        questionRoutingCapability(harness).stopContinuation !== 'unsupported'
+        questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
+          .stopContinuation !== 'unsupported'
       ) {
         try {
           const launchSettlement = deps.spawnQuestionSettlement ?? spawnQuestionSettlement
@@ -1412,7 +1413,7 @@ export function activeQuestionRouteProblems(
     )
   }
   const capability = isHookInstallableHarness(active.harness)
-    ? questionRoutingCapability(active.harness)
+    ? questionRoutingCapability(active.harness, deps.hookPlatform ?? process.platform)
     : HERMES_QUESTION_ROUTING_UNAVAILABLE
   if (capability.stopContinuation === 'unsupported') {
     problems.push(`${active.label}: ${capability.deliveryContract}`)
@@ -2052,8 +2053,9 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   }
   if (flags.narrate !== false) printHooksInstallClose(deps, harness, installed.file)
   if (installed.foreignStopCount > 0) {
+    const label = HARNESS_LABELS[harness]
     deps.io.out(
-      "This layer already has a Stop handler. Codex runs every matching handler, so Notifai's Stop and the existing one will both fire.",
+      `This layer already has a Stop handler that Notifai does not own. ${label} may run it alongside Notifai's handler; Notifai preserves it but has not assessed its behavior.`,
     )
   }
   if (harness === 'codex') {

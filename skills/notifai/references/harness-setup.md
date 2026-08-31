@@ -62,8 +62,11 @@ the exact `remedy`, say the hooks need the User's trust or approval, and wait.
 Never bypass that gap with `notifai send --reply`.
 
 `hooks-wake-route` reports, without probing anything, whether an answer could
-start a turn in this exact Agent Session on its own. It never blocks: when it
-cannot, the answer is held and replayed at the Agent Session's next turn instead.
+start a turn in this exact Agent Session after its ordinary continuation has
+returned. It never blocks Question Routing. On Windows, Claude Code has no
+direct inbox wake because upstream exposes no inbox socket: its blocking Stop
+still holds the complete answer window and returns the answer to the same Agent
+Session without another User prompt.
 
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
@@ -151,13 +154,18 @@ can send with Source Context without those.
 The session that registered a question owns the answer's return. The last
 meter differs per harness:
 
-- **Claude Code:** the Stop hook is asynchronous. It returns at once, so the
-  turn is never held and the terminal stays the user's, and the same process
-  keeps waiting out of band for the complete answer window. When the answer
-  arrives it is posted to that Agent Session's own inbox socket: an idle Agent
-  Session starts a new turn with it, and a busy one receives it when its current
-  turn ends. An Agent Session that is provably gone is cold-resumed instead —
-  never one whose liveness probe cannot rule it out.
+- **Claude Code on POSIX:** the Stop hook is asynchronous. It returns at once,
+  so the turn is never held and the terminal stays the user's, and the same
+  process keeps waiting out of band for the complete answer window. When the
+  answer arrives it is posted to that Agent Session's own inbox socket: an idle
+  Agent Session starts a new turn with it, and a busy one receives it when its
+  current turn ends. An Agent Session that is provably gone is cold-resumed
+  instead — never one whose liveness probe cannot rule it out.
+- **Claude Code on Windows:** the Stop hook stays held through the complete
+  answer window. When the answer arrives it returns `decision: block`, starting
+  the successor turn in the same Agent Session without another User prompt.
+  Direct inbox wake is unavailable, but it is not needed while this exact Stop
+  continuation owns the answer.
 - **Codex:** the Stop hook is the waiter. It holds until the answer arrives or
   the complete answer window ends, then continues the session by returning
   `decision: block`.
@@ -219,9 +227,10 @@ preference that lasts only for one Agent Session.
 default and up to three.
 
 Those are three different controls and only the last one decides whether an
-answer is still wanted. Question Routing owns that complete window: Claude Code
-waits out of band and wakes the Agent Session, while Codex keeps the asking turn
-held. The journal is crash recovery, not the ordinary delivery path.
+answer is still wanted. Question Routing owns that complete window. Claude Code
+waits out of band and wakes the Agent Session on POSIX; on Windows its Stop
+stays held and returns the answer as the same Agent Session's continuation,
+like Codex. The journal is crash recovery, not the ordinary delivery path.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the

@@ -394,9 +394,14 @@ function quote(value: string): string {
 }
 
 function ensureManagedDirectories(homeDir: string, host: HookHostPlatform): void {
-  if (!existsSync(homeDir)) mkdirSync(homeDir, { recursive: true, mode: 0o700 })
+  mkdirSync(homeDir, { recursive: true, mode: 0o700 })
   for (const dir of [path.join(homeDir, '.notifai'), path.join(homeDir, '.notifai', 'bin')]) {
-    if (!existsSync(dir)) mkdirSync(dir, { mode: 0o700 })
+    // Recursive creation is deliberately idempotent. Several harness setup
+    // processes can reach this account-level adapter at once; an
+    // exists-then-create sequence lets one valid creator make another throw
+    // EEXIST. The lstat below remains the security postcondition: success from
+    // mkdir is not permission to trust a symlink or non-directory occupant.
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
     const stat = lstatSync(dir)
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new Error(`${dir} is not a regular directory; refusing to install the hook adapter.`)

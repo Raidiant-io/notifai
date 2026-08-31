@@ -327,6 +327,22 @@ describe('Notifai agent skill', () => {
     }
   })
 
+  it('distinguishes Claude Code inbox wake from the Windows held Stop continuation', () => {
+    const answerRoute = harnessReference.slice(
+      harnessReference.indexOf('## How the answer gets back to the agent'),
+      harnessReference.indexOf('## Bounded recovery'),
+    )
+
+    expect(answerRoute).toMatch(/Claude Code.*POSIX.*inbox socket/is)
+    const windowsRoute = answerRoute.slice(answerRoute.indexOf('Claude Code on Windows'))
+    expect(windowsRoute).toMatch(/Stop hook stays held through the complete\s+answer window/i)
+    expect(windowsRoute).toMatch(/same Agent Session/i)
+    expect(windowsRoute).toMatch(/direct inbox wake is unavailable/i)
+    expect(answerRoute).not.toMatch(/Claude Code:\*\* the Stop hook is asynchronous/i)
+    expect(skill).toMatch(/`direct_wake_ready`.*optional when a held continuation/is)
+    expect(skill).toMatch(/`direct_wake_ready`.*`null` when no direct-wake assessment/is)
+  })
+
   it('teaches that closed choices appear after pressing and holding', () => {
     const ask = section('## Ask a question')
     expect(ask).toMatch(/closed choices appear after pressing and holding the\s+notification/i)
