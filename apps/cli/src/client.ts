@@ -27,6 +27,7 @@ import type {
 import {
   CAPABILITIES_HEADER,
   CLI_VERSION_HEADER,
+  NOTIFICATION_CONTRACT_HEADER,
 } from '@raidiant/notifai-protocol'
 import type { Logger } from './logging.js'
 
@@ -140,6 +141,8 @@ export interface ClientOptions {
   /** Artifact identity and named jobs advertised only on authenticated traffic. */
   cliVersion?: string | null
   capabilities?: readonly ClientCapability[]
+  /** Complete Notification Request schema this authenticated client will submit. */
+  notificationContractFingerprint?: string | null
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
@@ -159,6 +162,9 @@ export function createClient(
         ...(options.cliVersion ? { [CLI_VERSION_HEADER]: options.cliVersion } : {}),
         ...(options.capabilities
           ? { [CAPABILITIES_HEADER]: options.capabilities.join(',') }
+          : {}),
+        ...(options.notificationContractFingerprint
+          ? { [NOTIFICATION_CONTRACT_HEADER]: options.notificationContractFingerprint }
           : {}),
       }
     : {}

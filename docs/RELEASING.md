@@ -136,11 +136,14 @@ once per created tag and binds the run to release-please's exact tag SHA. Only
 when the maintainer asked, the workflow waits at the protected `npm-release`
 environment. A maintainer approves that deployment;
 the workflow then validates a clean tag checkout, checks the packed install,
-and builds each npm tarball exactly once. Those two tarballs are scanned for
-secrets and public/private boundary violations, including generated source-map
-paths and embedded source, then installed together outside the workspace. The
-workflow passes those same tarball paths to `npm publish` through trusted
-publishing with provenance; it never asks npm to repack the package directory.
+and builds each npm tarball exactly once. Before a new package can publish, it
+also compares that candidate's Notification Request contract with the deployed
+production service and fails closed if the service has not been deployed first.
+Those two tarballs are scanned for secrets and public/private boundary
+violations, including generated source-map paths and embedded source, then
+installed together outside the workspace. The workflow passes those same
+tarball paths to `npm publish` through trusted publishing with provenance; it
+never asks npm to repack the package directory.
 After publication it downloads the registry tarball and requires its complete
 bytes to equal the staged, scanned tarball before checking compiled files and
 resolution-shaping metadata. Protocol publishes before a CLI that pins it

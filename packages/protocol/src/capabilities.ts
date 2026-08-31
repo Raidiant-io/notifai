@@ -10,6 +10,7 @@ import {
   COLLAPSE_KEY_MAX_BYTES,
   MEDIA_MAX_ITEMS,
   NOTIFICATION_IMAGE_MAX_BYTES,
+  NOTIFICATION_CONTRACT_FINGERPRINT,
   type ApplePlatform,
   type Platform,
 } from './notification.js'
@@ -36,6 +37,8 @@ export interface CapabilityField {
 export interface CapabilityDocument {
   schema_version: number
   platform: Platform
+  /** Opaque identity of the complete Notification Request schema this service accepts. */
+  notification_contract_fingerprint: string
   /** Provider payload ceiling in bytes for this platform. */
   payload_limit_bytes: number
   sounds: string[]
@@ -46,6 +49,7 @@ export interface CapabilityDocument {
 export const IOS_CAPABILITIES_V1: CapabilityDocument = {
   schema_version: 1,
   platform: 'ios',
+  notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
   payload_limit_bytes: 4096,
   sounds: [...IOS_SOUNDS],
   interruption_levels: [...INTERRUPTION_LEVELS],
@@ -151,6 +155,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
 export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
   schema_version: 1,
   platform: 'macos',
+  notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
   payload_limit_bytes: 4096,
   sounds: [...MACOS_SOUNDS],
   interruption_levels: [...INTERRUPTION_LEVELS],
@@ -240,6 +245,7 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
 export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
   schema_version: 1,
   platform: 'android',
+  notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
   payload_limit_bytes: 4096,
   sounds: [...ANDROID_SOUNDS],
   interruption_levels: [],

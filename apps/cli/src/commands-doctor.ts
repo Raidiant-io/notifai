@@ -1,4 +1,9 @@
-import { PLATFORMS, SHIPPED_CLI_CAPABILITIES, type RoutableDevice } from '@raidiant/notifai-protocol'
+import {
+  NOTIFICATION_CONTRACT_FINGERPRINT,
+  PLATFORMS,
+  SHIPPED_CLI_CAPABILITIES,
+  type RoutableDevice,
+} from '@raidiant/notifai-protocol'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
@@ -115,6 +120,15 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         (capability) => !serverCapabilities.has(capability),
       ),
     }
+    const notificationContract = {
+      local: NOTIFICATION_CONTRACT_FINGERPRINT,
+      mismatched_platforms: documents
+        .filter(
+          (document) =>
+            document.notification_contract_fingerprint !== NOTIFICATION_CONTRACT_FINGERPRINT,
+        )
+        .map((document) => document.platform),
+    }
     const technical = {
       local: {
         cli_version: packageVersion(),
@@ -124,8 +138,10 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
       capability_documents: documents.map((document) => ({
         platform: document.platform,
         schema_version: document.schema_version,
+        notification_contract_fingerprint: document.notification_contract_fingerprint,
       })),
       cli_capability_intersection: cliCapabilityIntersection,
+      notification_contract: notificationContract,
     }
     if (compatibility.cli.state === 'must_update') {
       return {
@@ -155,6 +171,20 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
           by: 'user-here',
           summary: 'update Notifai',
           command: updateCliCommand(deps),
+        },
+      }
+    }
+    if (notificationContract.mismatched_platforms.length > 0) {
+      return {
+        id: 'contract',
+        title: 'Notifai update',
+        status: 'optional-gap',
+        detail: 'The service is being updated; try again later.',
+        technical,
+        remedy: {
+          by: 'user-here',
+          summary: 'try again after the service update',
+          command: 'notifai doctor',
         },
       }
     }
