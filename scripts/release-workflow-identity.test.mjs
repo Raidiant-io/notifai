@@ -17,6 +17,7 @@ const publishWorkflow = parse(publish)
 const providerWorkflow = parse(provider)
 const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
 const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
+const protocolPackage = JSON.parse(readFileSync('packages/protocol/package.json', 'utf8'))
 
 test('all workflows stay LF-normalized, least-privilege, and action-SHA pinned', () => {
   for (const workflow of [release, ci, publish, provider]) {
@@ -165,6 +166,23 @@ test('publication retains immutable release, live service, and native Windows ev
     'windows-11-arm',
   ])
   assert.match(publish, /verify-published-windows\.mjs/u)
+})
+
+test('publication prepares the protocol artifact before reading its built contract export', () => {
+  const steps = publishWorkflow.jobs.npm.steps
+  const contractIndex = steps.findIndex(
+    candidate => candidate.name === 'Verify deployed service accepts this candidate',
+  )
+  const packIndex = steps.findIndex(
+    candidate => candidate.name === 'Pack once and verify the exact release artifacts',
+  )
+  const publishIndex = steps.findIndex(candidate => candidate.name === 'Publish protocol with OIDC provenance')
+
+  assert.ok(packIndex >= 0, 'artifact preparation step is missing')
+  assert.ok(contractIndex > packIndex, 'contract check must consume an already-built protocol export')
+  assert.ok(publishIndex > contractIndex, 'live compatibility must pass before the first npm mutation')
+  assert.match(steps[packIndex].run, /pnpm --filter @raidiant\/notifai-protocol pack/u)
+  assert.equal(protocolPackage.scripts.prepack, 'pnpm run build')
 })
 
 test('publication reuses the exact tarballs that passed boundary and install checks', () => {

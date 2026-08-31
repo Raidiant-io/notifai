@@ -12,4 +12,8 @@ import { CAPABILITIES_V1, validateDraft } from '@raidiant/notifai-protocol'
 The package has no service implementation or private configuration. Node-only
 helpers are available from `@raidiant/notifai-protocol/node`.
 
+The exported Notification Request contract fingerprint is generated during
+the package build. Release compatibility checks therefore prepare the candidate
+artifact before comparing that export with the deployed service.
+
 Licensed under Apache-2.0. See the repository-level `LICENSE` and `NOTICE`.
