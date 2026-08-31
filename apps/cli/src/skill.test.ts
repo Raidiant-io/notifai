@@ -28,6 +28,8 @@ const harnessReference = readFileSync(
   new URL('../../../skills/notifai/references/harness-setup.md', import.meta.url),
   'utf8',
 )
+const rootReadme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8')
+const cliReadme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
 
 /** Fenced blocks, so examples can be checked as commands rather than as text. */
 const examples = [...skill.matchAll(/```(?:bash|json)?\n([\s\S]*?)```/g)].map((match) => match[1]!)
@@ -263,6 +265,14 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/exit code 3/i)
   })
 
+  it('keeps exit 3 attached to the original bounded wait', () => {
+    const row = skill.match(/^\| 3 \|([^\n]+)$/m)?.[1] ?? ''
+    expect(row).toMatch(/bounded wait|timeout/i)
+    expect(row).toMatch(/(?:keep|preserve).*(?:id|identifier)/i)
+    expect(row).toMatch(/replies|status|inspect/i)
+    expect(row).not.toMatch(/collect it later/i)
+  })
+
   it('makes resumable ask the default when work needs an answer', () => {
     const ask = section('## Ask a question')
     const resumable = ask.indexOf('### Default: resume when they answer')
@@ -273,9 +283,48 @@ describe('Notifai agent skill', () => {
     expect(resumable).toBeLessThan(foreground)
     expect(ask).toMatch(/work needs.*User response.*`ask`/is)
     expect(ask).toMatch(/`send --reply`.*bounded foreground/is)
-    expect(ask).toMatch(/full answer window.*match.*`--reply-window`/is)
+    expect(ask).toMatch(/(?:full|complete) answer window.*(?:match|equal).*`--reply-window`/is)
     expect(ask).toMatch(/exit code 3.*does not.*resume/is)
     expect(ask).not.toMatch(/blocking briefly.*deliberate way.*pick the answer up later/is)
+  })
+
+  it('waits for User-owned hook approval instead of bypassing Question Routing', () => {
+    const ask = section('## Ask a question')
+    const paragraphs = ask.split(/\n\n+/)
+    const approval = paragraphs.find((paragraph) => /trust or permission/i.test(paragraph)) ?? ''
+    const disabled = paragraphs.find((paragraph) => /ask_notifications.*off/i.test(paragraph)) ?? ''
+
+    expect(approval).toMatch(/exact.*remedy/is)
+    expect(approval).toMatch(/hooks.*(?:trust|approval)/is)
+    expect(approval).toMatch(/wait/i)
+    expect(approval).toMatch(/(?:do not|never).*send --reply/is)
+    expect(disabled).toMatch(/deliberately/i)
+    expect(disabled).toMatch(/send --reply/i)
+    expect(skill).not.toContain('/hooks')
+    expect(harnessReference).toContain('/hooks')
+  })
+
+  it('gives an unsupported-harness fallback one full-window foreground owner', () => {
+    const ask = section('## Ask a question')
+    const example = ask.match(/```bash\n(notifai send --reply[\s\S]*?)```/)?.[1] ?? ''
+    const timeout = Number(example.match(/--reply-timeout\s+(\d+)/)?.[1])
+    const window = Number(example.match(/--reply-window\s+(\d+)/)?.[1])
+
+    expect(timeout).toBeGreaterThan(0)
+    expect(timeout).toBe(window)
+    expect(ask).toMatch(/foreground owner.*alive.*complete answer\s+window/is)
+    expect(ask).toContain('notifai status <question_id|request_id> --json')
+    expect(ask).toMatch(/notifai replies\s+<request_id> --json/)
+    expect(ask).toMatch(/never (?:create )?a duplicate/i)
+
+    expect(harnessReference).toMatch(/foreground owner.*alive.*complete answer window/is)
+    expect(harnessReference).toMatch(/`--reply-timeout`.*equal.*`--reply-window`/is)
+    expect(harnessReference).toContain('notifai replies <request_id> --json')
+    expect(harnessReference).toContain('notifai status <request_id> --json')
+    for (const [name, docs] of [['root README', rootReadme], ['CLI README', cliReadme]] as const) {
+      expect(docs, name).toMatch(/send --reply[\s\S]*complete answer window/is)
+      expect(docs, name).toMatch(/reply-timeout[\s\S]*equal[\s\S]*reply-window/is)
+    }
   })
 
   it('teaches that closed choices appear after pressing and holding', () => {
@@ -301,7 +350,7 @@ describe('Notifai agent skill', () => {
     expect(ask).toContain('notifai status <question_id> --json')
     expect(ask).toMatch(/local.*frozen.*live.*answered.*withdrawn.*retired/is)
     expect(ask).toMatch(/never call a question\s+sent\s+or\s+delivered\s+from registration alone/i)
-    expect(ask).toMatch(/inspect or close the original[\s\S]{0,160}do not register/i)
+    expect(ask).toMatch(/timeout or unavailable route[\s\S]{0,220}never create a duplicate/i)
   })
 
   it('requires an acknowledgement before any resumed work', () => {

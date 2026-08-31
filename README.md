@@ -88,9 +88,14 @@ part of the current public support claim.
 | Approved Machine CLI: login, configuration, send, ask, doctor | Supported | Supported | Supported |
 | Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; blocking Stop continuation because no live inbox socket exists |
 | Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
-| Cursor hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenCode hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenClaw hooks | Supported; use blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
+| Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenClaw hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
+
+Each `send --reply` fallback owns the complete answer window in its foreground
+process: keep it alive and set `--reply-timeout` equal to `--reply-window`.
+After a timeout, retain the request ID, inspect that original with `notifai
+replies` and `notifai status`, and never send a duplicate.
 
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
 journal

@@ -20,7 +20,7 @@ Branch on exit status:
 | 0 | it worked | carry on |
 | 1 | it failed; stderr names the code | act on that — a bare retry fails the same way |
 | 2 | usage *or* setup; stderr names what to fix | fix that. For `ask` this is usually routing or sign-in, not a flag |
-| 3 | no answer yet | not a failure — collect it later |
+| 3 | a bounded wait timed out | keep its ID; inspect the original with `replies`/`status`, never duplicate it |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
 | 5 | network | for `send`, make the semantic retry choice explicitly and rerun the exact command with `--retry` |
 
@@ -175,9 +175,6 @@ notification.
 `send --reply`, it is the *first line of the body* — the title is not the
 question — and context follows after a blank line.
 
-The two ways to ask differ in who owns continuation. Both use `--choice` once
-per answer and `--multi` when answers may combine.
-
 ### Default: resume when they answer
 
 When work needs a User response before it can continue, use `ask`. It preserves
@@ -219,8 +216,13 @@ registration or one they answer in the conversation — even before Stop pushes
 it — with
 `notifai close <question_id>` or `notifai close --pending`.
 
-If uncertain, inspect or close the original `question_id`; do not register it
-again. A replacement is independent and may coexist.
+Keep every ID after a timeout or unavailable route. Inspect the original with
+`notifai status <question_id|request_id> --json` and `notifai replies
+<request_id> --json`; never create a duplicate.
+
+If `ask --json` reports a User-owned harness trust or permission gap, relay its
+exact `remedy`, say the hooks need User trust or approval, and wait; never
+bypass Question Routing with `send --reply`.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
@@ -235,21 +237,17 @@ Question Routing unavailable and the owner can stay alive:
 
 ```bash
 notifai send --reply \
-  --title "Schema change ready to deploy" \
-  --body "Deploy the schema change to production now?
-
-It touches live order data; staging is green." \
+  --title "Schema change ready" \
+  --body "Deploy the schema change to production now?" \
   --choice "Deploy now" --choice "Wait for off-peak" \
-  --reply-timeout 900
+  --reply-window 86400 --reply-timeout 86400
 ```
 
-Two different clocks, and confusing them is the usual mistake:
-`--reply-timeout` is how long *this command* blocks (default 900s);
-`--reply-window` is how long the answer is still *accepted* (default a day, set
-by `reply_window_seconds`). A longer acceptance window does not make a timed-out
-foreground command resumable. If an unsupported-harness fallback must own the
-full answer window, make `--reply-timeout` match `--reply-window` before sending;
-do not end the turn while the answer is still required.
+The clocks differ: `--reply-timeout` is how long this command blocks (default
+900s); `--reply-window` is how long the answer is accepted (default a day,
+`reply_window_seconds`). A longer window cannot resume a timed-out command. For
+an unsupported-harness fallback, the foreground owner stays alive through the
+complete answer window and `--reply-timeout` equals `--reply-window`.
 
 `send --reply --json` prints the reply result and receipt. Exit code 3 means no
 answer arrived during the bounded foreground wait — not a Delivery failure —
@@ -329,11 +327,8 @@ Then gather the human-only steps its reported gap needs:
 - approving this machine in the browser (after **you** started `notifai login`)
 - installing the companion app, signing in, and allowing notifications
 
-For Codex `command: "/hooks"`, say exactly: “Open `/hooks` in Codex, approve or
-enable the Notifai handlers, then tell me when it is done. I will finish setup
-and verify a fresh session.” Never claim to approve hooks yourself.
-
-Never emulate them or claim an unlisted harness.
+Never emulate User-owned actions, claim to approve hooks yourself, or claim an
+unlisted harness. Harness-specific trust wording lives in the setup reference.
 
 Exit code 4 means this machine is not signed in. When sign-in looks fine but
 nothing sends, `notifai auth status --json` and `notifai auth access --json`

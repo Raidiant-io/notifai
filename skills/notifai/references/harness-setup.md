@@ -57,6 +57,9 @@ later upgrades must not require another.
 `code`, `check_id`, `exit_code`, and `remedy`; do not run a routine doctor pass
 first. Historical UserPromptSubmit and Stop evidence remains part of that
 fail-closed check. Ask exposes no `--session-id` override and will not guess one.
+When the failure includes a User-owned trust or permission `user_action`, relay
+the exact `remedy`, say the hooks need the User's trust or approval, and wait.
+Never bypass that gap with `notifai send --reply`.
 
 `hooks-wake-route` reports, without probing anything, whether an answer could
 start a turn in this exact Agent Session on its own. It never blocks: when it
@@ -69,6 +72,12 @@ The prepared User message for this human-only action is:
 
 > Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me
 > when it is done. I will finish setup and verify a fresh session.
+
+For a genuine unsupported-harness fallback, the blocking command is the
+foreground owner. Keep it alive for the complete answer window and set
+`--reply-timeout` equal to `--reply-window`. If it times out, preserve its
+request ID, inspect the original with `notifai replies <request_id> --json` and
+`notifai status <request_id> --json`, and never send a duplicate.
 
 ## Activation by harness
 
