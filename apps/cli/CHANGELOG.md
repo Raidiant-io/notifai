@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.6](https://github.com/Raidiant-io/notifai/compare/v10.1.5...v10.1.6) (2026-08-31)
+
+
+### Bug Fixes
+
+* **cli:** default required questions to resumable asks ([#127](https://github.com/Raidiant-io/notifai/issues/127)) ([8a0a2b2](https://github.com/Raidiant-io/notifai/commit/8a0a2b2fd79bf40abbd230ef2a27d7aed395a7bc))
+* **hooks:** reject stale Codex session definitions ([#128](https://github.com/Raidiant-io/notifai/issues/128)) ([3f720d7](https://github.com/Raidiant-io/notifai/commit/3f720d7e7331ecc630903366011e49d8b2cfb818))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.6 to 6.0.7
+
 ## [10.1.5](https://github.com/Raidiant-io/notifai/compare/v10.1.4...v10.1.5) (2026-08-31)
 
 
