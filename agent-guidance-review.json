@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a66abfa5809117502e78701228d225f88e3e3794eefa4b6b32f6f8621f53505a",
+  "behavior_digest": "sha256:1b7ece28c5d8600d88e9f38bd905e5d295d0c1ed1233e2fa54613140e21fb797",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making semantic Codex Agent Session title acquisition harness-neutral through the active harness configuration root and fixed session-index filename, and making a Codex trust refusal expose the existing structured /hooks User action. The shipped skill already states both contracts: exact identity and a trusted semantic title are inferred without requiring Orca, and agents must close a reported setup gap instead of bypassing it. The Agent Behavior Contract already distinguishes the direct reply wait, answer window, and Stop-hook budget, so the CLI now teaches the immediate recovery and timeout ownership without requiring broader guidance wording changes.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after adding an optional Notification Request contract fingerprint. Shipped clients that predate it still omit the header and remain accepted by an additive service; a newer client that gets ahead receives the existing wait-for-service recovery rather than a misleading validation failure. The skill's exit-code and retry guidance already tells agents to act on the named recovery instead of blindly retrying, and the setup, trust, and domain guidance remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
