@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.7](https://github.com/Raidiant-io/notifai/compare/v10.1.6...v10.1.7) (2026-08-31)
+
+
+### Bug Fixes
+
+* **cli:** make question routing fail closed ([bd16ba9](https://github.com/Raidiant-io/notifai/commit/bd16ba98ddb45dfc6038f44ce5e915034260e5e6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.7 to 6.0.8
+
 ## [10.1.6](https://github.com/Raidiant-io/notifai/compare/v10.1.5...v10.1.6) (2026-08-31)
 
 
