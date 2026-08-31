@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f395fd20d7289b888166e3798d634cbcbbd64005c8f3c41b76ddd5ea34b0cbfd",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after a supported Agent Session stranded an answer behind a bounded send --reply timeout. Supported sessions now default to resumable ask; User-owned hook trust or permission gaps relay the diagnosing remedy and wait instead of bypassing Question Routing, while deliberate ask_notifications disablement remains distinct. Genuine unsupported-harness fallbacks keep one foreground owner alive for the complete answer window, preserve the original identifiers for replies/status inspection, and never duplicate the question.",
+  "behavior_digest": "sha256:771e0fc296595cf8347c828d8eb34900e44145c5cc45d8562f88967fe11f9422",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding Codex question admission to the singular Stop definition loaded by the exact Agent Session. The CLI now fails closed before registration when that definition is stale, invalid, duplicated, or missing from the activation checkout, and its structured remedy distinguishes reinstalling hooks from starting a fresh Codex session. The shipped skill already requires agents to branch on the named ask failure and relay an exact User-owned action without bypassing Question Routing, while harness setup already owns Codex installation, trust approval, fresh activation, and doctor-guided recovery. No new agent decision or domain term is introduced, so broader guidance wording remains current.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

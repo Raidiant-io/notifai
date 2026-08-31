@@ -70,6 +70,7 @@ import {
   codexLayerDir,
   codexLayerPaths,
   codexRepresentationProblems,
+  codexStopDefinitionFingerprint,
   codexTrustProblems,
   detectHarness,
   detectedHarnesses,
@@ -322,7 +323,12 @@ export async function hookRunCommand(
     if (stdout !== undefined) deps.io.out(stdout)
     if (event === 'session-start' && envelope.session_id !== undefined) {
       try {
-        recordSessionStart(envelope.session_id, deps.env, harness, cwd)
+        const stopFingerprint = harness === 'codex'
+          ? codexStopDefinitionFingerprint(
+              findInstallations(cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform),
+            )
+          : undefined
+        recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint)
       } catch (err) {
         logger.error('hook.end', {
           hook: event,
@@ -741,6 +747,22 @@ export const CODEX_HOOK_APPROVAL_USER_ACTION = {
   action: 'approve_or_enable_notifai_hooks',
   message: 'Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me when it is done. I will finish setup and verify a fresh session.',
 } as const
+
+export const CODEX_FRESH_SESSION_USER_ACTION = {
+  code: 'codex_fresh_session_required',
+  harness: 'codex',
+  action: 'start_fresh_codex_session',
+  message: 'Start one fresh Codex session, send one prompt in it, then retry the question.',
+} as const
+
+export const CODEX_STALE_STOP_DEFINITION_PROBLEM =
+  'the exact Codex Agent Session activated before the current Stop definition; Codex can keep the earlier timeout in that session even when the file on disk is current. Start one fresh Codex session, send one prompt in it, then retry'
+
+export const CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM =
+  'the active Codex configuration does not contain exactly one Notifai Stop definition, so no singular turn-end owner can be proven'
+
+export const CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM =
+  'the exact Codex Agent Session activation checkout has no matching hook installation'
 
 /** One stable failure contract for every machine-readable ask refusal. */
 export function reportAskFailure(
@@ -1246,6 +1268,28 @@ export function askCommand(
       )
     }
     const routeProblems = activeQuestionRouteProblems(installationDeps, active, installations)
+    if (routeProblems.includes(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)) {
+      return askFailure(
+        deps,
+        flags,
+        'codex_stop_definition_invalid',
+        'hook_installation',
+        `Question routing is not ready: ${CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM}. This question was not registered.`,
+        'run `notifai hooks install --harness codex`, then re-run `notifai doctor`',
+      )
+    }
+    if (routeProblems.includes(CODEX_STALE_STOP_DEFINITION_PROBLEM)) {
+      return askFailure(
+        deps,
+        flags,
+        'codex_fresh_session_required',
+        'stop_hook',
+        `Question routing is not ready: ${CODEX_STALE_STOP_DEFINITION_PROBLEM}. This question was not registered.`,
+        'start one fresh Codex session, send one prompt in it, then retry `notifai ask --json`',
+        EXIT.usage,
+        { user_action: CODEX_FRESH_SESSION_USER_ACTION },
+      )
+    }
     if (routeProblems.length > 0) {
       return askFailure(
         deps,
@@ -1376,6 +1420,9 @@ export function activeQuestionRouteProblems(
   const matching = installations.filter(
     (installation) => installation.harness === active.harness,
   )
+  if (active.harness === 'codex' && matching.length === 0) {
+    problems.push(`${CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM}: ${deps.cwd}`)
+  }
   if (matching.length > 1) {
     problems.push(
       `${matching.length} ${active.label} definitions are active (${matching.map((entry) => entry.file).join(', ')}); keep either project or global routing`,
@@ -1399,6 +1446,19 @@ export function activeQuestionRouteProblems(
   }
   for (const installation of matching) problems.push(...stopShapeProblems(installation, deps.hookPlatform))
   problems.push(...codexTrustProblems(matching, deps.env))
+  if (active.harness === 'codex' && active.sessionId !== undefined) {
+    const state = readSessionState(active.sessionId, deps.env)
+    const currentFingerprint = codexStopDefinitionFingerprint(matching)
+    if (matching.length === 1 && currentFingerprint === undefined) {
+      problems.push(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)
+    } else if (
+      currentFingerprint !== undefined &&
+      state.harness === 'codex' &&
+      state.codex_stop_definition_fingerprint !== currentFingerprint
+    ) {
+      problems.push(CODEX_STALE_STOP_DEFINITION_PROBLEM)
+    }
+  }
   return [...new Set(problems)]
 }
 

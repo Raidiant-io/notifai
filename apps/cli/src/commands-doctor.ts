@@ -74,7 +74,11 @@ import {
 } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
 import {
+  CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM,
+  CODEX_FRESH_SESSION_USER_ACTION,
   CODEX_HOOK_APPROVAL_USER_ACTION,
+  CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM,
+  CODEX_STALE_STOP_DEFINITION_PROBLEM,
   HOOK_EVENTS,
   activeQuestionRouteProblems,
   hookActivationAdvice,
@@ -1307,7 +1311,26 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   if (active !== null && activeInstallations.length > 0) {
-    const admissionProblems = activeQuestionRouteProblems(deps, active, installations)
+    // Installation inventory belongs to the invocation checkout, while exact
+    // question admission belongs to the checkout whose definition activated
+    // this Agent Session. Keep those diagnostics separate just as ask does.
+    const activationCwd = active.sessionId === undefined
+      ? deps.cwd
+      : readSessionState(active.sessionId, deps.env).activation_cwd ?? deps.cwd
+    const admissionDeps = activationCwd === deps.cwd ? deps : { ...deps, cwd: activationCwd }
+    const admissionInstallations = activationCwd === deps.cwd
+      ? installations
+      : findInstallations(
+          activationCwd,
+          deps.env,
+          deps.hookAdapterHome,
+          deps.hookPlatform,
+        )
+    const admissionProblems = activeQuestionRouteProblems(
+      admissionDeps,
+      active,
+      admissionInstallations,
+    )
     checks.push({
       name: 'hooks (question admission)',
       ok: admissionProblems.length === 0,
@@ -1315,6 +1338,33 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         admissionProblems.length === 0
           ? `the active ${active.label} route is exact, current, singular, trusted where applicable, and bounded by a live owner`
           : admissionProblems.join('; '),
+      ...(admissionProblems.some((problem) =>
+        problem.startsWith(CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM),
+      )
+        ? {
+            remedy: {
+              by: 'cli' as const,
+              summary: `install Codex hooks from the Agent Session activation checkout ${activationCwd}`,
+              command: 'notifai hooks install --harness codex',
+            },
+          }
+        : admissionProblems.includes(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)
+        ? {
+            remedy: {
+              by: 'cli' as const,
+              summary: 'restore exactly one current Codex Stop definition',
+              command: 'notifai hooks install --harness codex',
+            },
+          }
+        : admissionProblems.includes(CODEX_STALE_STOP_DEFINITION_PROBLEM)
+        ? {
+            remedy: {
+              summary: 'start one fresh Codex session so it loads the current trusted Stop definition',
+              command: 'notifai doctor',
+              user_action: CODEX_FRESH_SESSION_USER_ACTION,
+            },
+          }
+        : {}),
     })
   }
 
