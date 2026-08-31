@@ -68,8 +68,11 @@ find out your reply landed and what it set in motion — not just that you sent
 it. Answering from your phone and wondering whether anything happened is the
 whole problem this solves.
 
-For a harness that cannot resume an idle agent turn, `notifai send
---reply` blocks and waits for the answer instead.
+For a harness that cannot resume an idle agent turn, `notifai send --reply`
+owns the complete answer window in the foreground: keep it alive and set
+`--reply-timeout` equal to `--reply-window`. After a timeout, retain the request
+ID and inspect that original with `notifai replies` and `notifai status`; never
+send a duplicate.
 
 ## Agent harnesses
 

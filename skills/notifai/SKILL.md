@@ -20,7 +20,7 @@ Branch on exit status:
 | 0 | it worked | carry on |
 | 1 | it failed; stderr names the code | act on that — a bare retry fails the same way |
 | 2 | usage *or* setup; stderr names what to fix | fix that. For `ask` this is usually routing or sign-in, not a flag |
-| 3 | no answer yet | not a failure — collect it later |
+| 3 | a bounded wait timed out | keep its ID; inspect the original with `replies`/`status`, never duplicate it |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
 | 5 | network | for `send`, make the semantic retry choice explicitly and rerun the exact command with `--retry` |
 
@@ -175,46 +175,11 @@ notification.
 `send --reply`, it is the *first line of the body* — the title is not the
 question — and context follows after a blank line.
 
-There are two ways to ask, and the difference is who waits. The question flags
-are the same on both: `--choice` once per answer, `--multi` when several may
-genuinely be combined.
+### Default: resume when they answer
 
-### Wait for the answer now
-
-When the current command cannot continue without the answer:
-
-```bash
-notifai send --reply \
-  --title "Schema change ready to deploy" \
-  --body "Deploy the schema change to production now?
-
-It touches live order data; staging is green." \
-  --choice "Deploy now" --choice "Wait for off-peak" \
-  --reply-timeout 900
-```
-
-Two different clocks, and confusing them is the usual mistake:
-`--reply-timeout` is how long *this command* blocks (default 900s);
-`--reply-window` is how long the answer is still *accepted* (default a day, set
-by `reply_window_seconds`). Blocking briefly against a long window is the
-deliberate way to stop waiting and pick the answer up later:
-
-```bash
-notifai replies <request_id>          # the answer, whenever it landed
-notifai close <request_id|question_id> # retire one question, including an unpushed ask id
-notifai close --pending               # retire this Agent Session's outstanding questions, including ones not yet pushed
-```
-
-`send --reply --json` prints one JSON object: the reply result, with the
-delivery receipt embedded under `receipt`.
-
-Exit code 3 means no answer yet — not a delivery failure. On exit 0 the answer
-comes back on stdout and you act on it in the same command.
-
-### Ask, end your turn, and resume when they answer
-
-When the answer should reach you at the start of your next turn, `ask` registers
-the question and returns immediately:
+When work needs a User response before it can continue, use `ask`. It preserves
+the exact return path for the complete answer window without making the
+foreground command its owner:
 
 ```bash
 notifai ask "Which environment should I roll out to?" \
@@ -251,13 +216,43 @@ registration or one they answer in the conversation — even before Stop pushes
 it — with
 `notifai close <question_id>` or `notifai close --pending`.
 
-If uncertain, inspect or close the original `question_id`; do not register it
-again. A replacement is independent and may coexist.
+Keep every ID after a timeout or unavailable route. Inspect the original with
+`notifai status <question_id|request_id> --json` and `notifai replies
+<request_id> --json`; never create a duplicate.
+
+If `ask --json` reports a User-owned harness trust or permission gap, relay its
+exact `remedy`, say the hooks need User trust or approval, and wait; never
+bypass Question Routing with `send --reply`.
 
 If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
 blocking `send --reply` — which that setting does not gate — when an answer
 cannot wait for their return.
+
+### Bounded foreground wait
+
+`send --reply` is a bounded foreground wait, not a resumable handoff. Use it
+only when this command will consume the answer before exit, or `ask` reports
+Question Routing unavailable and the owner can stay alive:
+
+```bash
+notifai send --reply \
+  --title "Schema change ready" \
+  --body "Deploy the schema change to production now?" \
+  --choice "Deploy now" --choice "Wait for off-peak" \
+  --reply-window 86400 --reply-timeout 86400
+```
+
+The clocks differ: `--reply-timeout` is how long this command blocks (default
+900s); `--reply-window` is how long the answer is accepted (default a day,
+`reply_window_seconds`). A longer window cannot resume a timed-out command. For
+an unsupported-harness fallback, the foreground owner stays alive through the
+complete answer window and `--reply-timeout` equals `--reply-window`.
+
+`send --reply --json` prints the reply result and receipt. Exit code 3 means no
+answer arrived during the bounded foreground wait — not a Delivery failure —
+and it does not resume the Agent Session later. Never create a duplicate. On
+exit 0, act on the returned answer.
 
 ## When the answer arrives
 
@@ -332,11 +327,8 @@ Then gather the human-only steps its reported gap needs:
 - approving this machine in the browser (after **you** started `notifai login`)
 - installing the companion app, signing in, and allowing notifications
 
-For Codex `command: "/hooks"`, say exactly: “Open `/hooks` in Codex, approve or
-enable the Notifai handlers, then tell me when it is done. I will finish setup
-and verify a fresh session.” Never claim to approve hooks yourself.
-
-Never emulate them or claim an unlisted harness.
+Never emulate User-owned actions, claim to approve hooks yourself, or claim an
+unlisted harness. Harness-specific trust wording lives in the setup reference.
 
 Exit code 4 means this machine is not signed in. When sign-in looks fine but
 nothing sends, `notifai auth status --json` and `notifai auth access --json`
