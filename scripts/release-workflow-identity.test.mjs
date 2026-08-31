@@ -12,6 +12,7 @@ const release = read('.github/workflows/release-please.yml')
 const ci = read('.github/workflows/ci.yml')
 const publish = read('.github/workflows/publish.yml')
 const provider = read('.github/workflows/provider-posture.yml')
+const releaseWorkflow = parse(release)
 const ciWorkflow = parse(ci)
 const publishWorkflow = parse(publish)
 const providerWorkflow = parse(provider)
@@ -129,7 +130,8 @@ test('release-please is explicit, exact-main guarded, and uses a verified predec
   assert.match(release, /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write/u)
   assert.match(release, /  dispatch:\n(?:.*\n)*?    permissions:\n      actions: write/u)
   const dispatch = release.slice(release.indexOf('\n  dispatch:'))
-  assert.doesNotMatch(dispatch, /actions\/checkout|contents:|pull-requests:/u)
+  assert.doesNotMatch(dispatch, /pull-requests:/u)
+  assert.match(dispatch, /persist-credentials: false/u)
 })
 
 test('release refs dispatch CI and publication at one exact SHA', () => {
@@ -137,6 +139,22 @@ test('release refs dispatch CI and publication at one exact SHA', () => {
   assert.match(release, /if \[ "\$returned_sha" != "\$expected_sha" \]/u)
   assert.match(release, /dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/u)
   assert.match(release, /dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/u)
+})
+
+test('release publication waits once for successful exact-SHA CI before dispatch', () => {
+  const job = releaseWorkflow.jobs.dispatch
+  const waitIndex = job.steps.findIndex(step => step.name === 'Wait for exact release CI evidence')
+  const dispatchIndex = job.steps.findIndex(step => step.name === 'Dispatch workflows at exact release refs')
+
+  assert.equal(job['timeout-minutes'], 20)
+  assert.deepEqual(job.permissions, {actions: 'write', contents: 'read'})
+  assert.ok(waitIndex >= 0, 'release dispatch must wait for CI evidence')
+  assert.ok(dispatchIndex > waitIndex, 'publication dispatch must follow the CI evidence wait')
+  assert.match(job.steps[waitIndex].if, /releases_created == 'true'/u)
+  assert.equal(
+    job.steps[waitIndex].run,
+    'node scripts/require-ci-evidence.mjs --expected-sha "${{ github.sha }}" --wait',
+  )
 })
 
 test('publication requires exact-SHA CI before the protected OIDC job', () => {

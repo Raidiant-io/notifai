@@ -85,7 +85,7 @@ release-please cannot perform those repository-wide repairs itself. Its
 `extra-files` updater cannot address `../` from a package, the README contains
 component-specific markers, and a manifest bump does not regenerate a pnpm
 lockfile. The repository-scoped `GITHUB_TOKEN` does not recursively start
-workflows when it pushes the repair commit, so a separate no-checkout job uses
+workflows when it pushes the repair commit, so a separate limited job uses
 the official `workflow_dispatch` API to start `ci.yml` at the repaired branch.
 Both the dispatch response and CI verify the exact expected commit SHA. Wait
 for those required checks, including `pnpm check:packed`, before considering
@@ -133,8 +133,10 @@ merged commit:
 - Protocol tag: `protocol-v<version>`
 
 release-please does not publish to npm. Tags created with `GITHUB_TOKEN` do not
-start tag-push workflows, so the no-checkout dispatch job starts `publish.yml`
-once per created tag and binds the run to release-please's exact tag SHA. Only
+start tag-push workflows, so the dispatch job waits once for the already-running
+exact-main CI run to succeed, then starts `publish.yml` once per created tag and
+binds the run to release-please's exact tag SHA. It never starts duplicate CI to
+bridge this ordering boundary. Only
 when the maintainer asked, the workflow waits at the protected `npm-release`
 environment. A maintainer approves that deployment;
 the workflow first requires successful `ci.yml` evidence at the exact tag SHA,
@@ -182,11 +184,12 @@ The exact non-secret permission envelope is:
 | `release-please` | `contents: write` | Create and update release branches, push the repository-wide repair commit, and create the exact release tags and GitHub Releases after an authorized Release PR merge. |
 | `release-please` | `pull-requests: write` | Create and update the combined Release PR. |
 | `dispatch` | `actions: write` | Call the official workflow-dispatch endpoint and read back each created run to verify its `head_sha`. |
+| `dispatch` | `contents: read` | Check out the exact workflow source used to wait for successful exact-SHA CI evidence before publication dispatch. |
 
 Job-level permissions make every unlisted permission `none`. The `dispatch`
-job has no checkout and no contents or pull-request access; the write-capable
-release token is not retained by checkout (`persist-credentials: false`). CI
-has only `contents: read`. The protected npm job has only `contents: read` and
+job has no pull-request access, and the write-capable release token is not
+retained by checkout (`persist-credentials: false`). CI has only
+`contents: read`. The protected npm job has only `contents: read` and
 `id-token: write` for trusted publishing.
 
 This design follows GitHub's documented
