@@ -50,8 +50,9 @@ instead of both a merge commit and the commits it contains.
 ## Cutting a release
 
 [release-please](https://github.com/googleapis/release-please) opens and
-updates one combined Release PR on every push to `main`. This is a repository
-choice, not a release-please requirement: `separate-pull-requests: false` and
+updates one combined Release PR only when a maintainer explicitly dispatches
+`release-please.yml` at an exact `main` SHA. This is a repository choice, not a
+release-please requirement: `separate-pull-requests: false` and
 the `node-workspace` plugin's default merge behavior keep both candidate
 releases in one branch while still calculating their versions independently.
 
@@ -99,7 +100,7 @@ package release, tag, and SHA outputs. A skipped or mismatched release therefore
 fails the release job, which prevents the dispatch job from turning the skip
 into a green workflow.
 
-Before merge, the required `commits` check also validates the Release PR's
+Before merge, the required `gates` check also validates the Release PR's
 GitHub title, body, and manifest delta through
 `scripts/verify-release-pr-metadata.mjs`. This is the metadata release-please
 reads after merge; editing only the eventual squash commit message cannot repair
@@ -118,13 +119,14 @@ create runs in an approval-required state. This release path does not depend on
 those runs. The repair push still cannot recurse; the dispatch job creates one
 explicit `workflow_dispatch` run at the repaired SHA; and `ci.yml` has only
 `contents: read`, so it cannot dispatch another workflow, update the PR, or
-push another commit. `release-please.yml` itself listens only to pushes on
-`main`, so CI dispatched on a release branch cannot re-enter release automation.
+push another commit. `release-please.yml` has no push trigger, so CI dispatched
+on a release branch cannot re-enter release automation.
 
 **Do not merge a Release PR unless the maintainer asked for a release.** An
 open or green Release PR is only a candidate. Once authorized, squash-merge
-the combined PR. The next workflow run creates every applicable tag from that
-same merged commit:
+the combined PR, then explicitly dispatch `release-please.yml` again with the
+exact merged `main` SHA. That run creates every applicable tag from the same
+merged commit:
 
 - CLI tag: `v<version>` (the matching npm package embeds the exact reviewed
   skill and installs it through a verified short-lived local source)
@@ -135,8 +137,9 @@ start tag-push workflows, so the no-checkout dispatch job starts `publish.yml`
 once per created tag and binds the run to release-please's exact tag SHA. Only
 when the maintainer asked, the workflow waits at the protected `npm-release`
 environment. A maintainer approves that deployment;
-the workflow then validates a clean tag checkout, checks the packed install,
-and builds each npm tarball exactly once. Before a new package can publish, it
+the workflow first requires successful `ci.yml` evidence at the exact tag SHA,
+then checks the packed install and builds each npm tarball exactly once. Before
+a new package can publish, it
 also compares that candidate's Notification Request contract with the deployed
 production service and fails closed if the service has not been deployed first.
 Those two tarballs are scanned for secrets and public/private boundary

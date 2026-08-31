@@ -35,9 +35,10 @@ pnpm check:release    # packed files, metadata, docs, licenses, CLI version
 pnpm check:packed     # isolated registry-shaped install of the packed CLI; needs registry access
 ```
 
-CI also runs `pnpm check:secrets` with its pinned gitleaks binary. That gate
-scans both the working tree and full Git history, after proving both paths with
-ephemeral positive controls.
+CI runs checksum-pinned gitleaks against the current tree and the complete
+changed commit range, after proving redacted detection with ephemeral positive
+controls. The scheduled and manual Provider posture workflow scans full Git
+history weekly. Local `pnpm check:secrets` retains the full tree/history form.
 
 If a change needs a new top-level entry, workspace package, or file kind,
 extend the allowlist in `scripts/check-boundary.mjs` in the same commit and

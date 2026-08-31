@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*', 'protocol-v*']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -15,10 +14,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  dispatch-integrity:
+  scope:
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 10
+    outputs:
+      ubuntu: ${{ steps.classify.outputs.ubuntu }}
+      macos: ${{ steps.classify.outputs.macos }}
+      windows: ${{ steps.classify.outputs.windows }}
+      dependencies: ${{ steps.classify.outputs.dependencies }}
     steps:
       - name: Reject a stale workflow dispatch
         if: github.event_name == 'workflow_dispatch'
@@ -37,198 +45,42 @@ jobs:
             exit 1
           fi
 
-  # Prove the public sending surface on the supported desktop hosts with the
-  # repository's CI runtime. Pin both Windows architectures so windows-latest
-  # image changes cannot silently redefine the release evidence.
-  platform:
-    needs: dispatch-integrity
-    if: ${{ always() }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-2025, windows-11-arm]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - name: Fail when dispatch integrity did not succeed
-        if: needs.dispatch-integrity.result != 'success'
-        shell: bash
-        run: |
-          echo "Dispatch integrity did not succeed; refusing to skip this required check" >&2
-          exit 1
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 10.34.5
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Protocol before CLI: the CLI resolves its built exports.
-      - run: pnpm build
-
-      - name: Record the native Windows evidence environment
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          "runner_image=$env:ImageOS"
-          "runner_image_version=$env:ImageVersion"
-          "windows=$([System.Environment]::OSVersion.VersionString)"
-          "process_arch=$(node -p process.arch)"
-          "node=$(node --version)"
-          "npm=$(npm --version)"
-          "pnpm=$(pnpm --version)"
-          "powershell=$($PSVersionTable.PSVersion)"
-          git --version
-
-      # Platform-agnostic suites run once on Ubuntu. The other hosts run the
-      # platform boundaries whose implementation can differ by OS. Windows
-      # additionally reaches the real CurrentUser DPAPI implementation.
-      - name: Run platform tests
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            pnpm -r test
-          elif [ "${{ runner.os }}" = "Windows" ]; then
-            pnpm --filter @raidiant/notifai-protocol test
-            pnpm --filter @raidiant/notifai test -- \
-              src/platform.test.ts \
-              src/credentials.test.ts \
-              src/ui/config-view.test.ts
-            pnpm --filter @raidiant/notifai test -- \
-              src/hook-adapter.test.ts \
-              src/install-hooks.test.ts \
-              --testNamePattern Windows
-          else
-            pnpm --filter @raidiant/notifai-protocol test
-            pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
-          fi
-
-      - run: pnpm -r typecheck
-
-      - run: pnpm lint
-
-      # Checks the actual pnpm pack file list, package metadata, license/docs,
-      # production dependency licenses, and CLI version single source.
-      - run: pnpm check:release
-
-      # On Windows this also exercises the installed npm shims through Windows
-      # PowerShell, PowerShell 7, cmd.exe, and Git Bash from a metacharacter and
-      # Unicode path outside the checkout.
-      - name: Verify the packed CLI on native Windows
-        if: runner.os == 'Windows'
-        run: pnpm check:packed
-
-  # Install the packed CLI outside the workspace, registry-shaped, and prove
-  # the installed bin starts. This is the only pre-publish gate that can catch
-  # the packed manifest pinning a protocol version other than the one packed
-  # beside it — workspace linking hides that from every other job. Needs
-  # registry access for the CLI's public dependencies; needs no credentials.
-  packed-install:
-    needs: dispatch-integrity
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Fail when dispatch integrity did not succeed
-        if: needs.dispatch-integrity.result != 'success'
-        run: |
-          echo "Dispatch integrity did not succeed; refusing to skip this check" >&2
-          exit 1
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 10.34.5
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm check:packed
-
-  # Platform-independent policy gates run once on the Node ceiling.
-  gates:
-    needs: [dispatch-integrity, packed-install]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Fail when a required dependency did not succeed
-        if: >-
-          needs.dispatch-integrity.result != 'success' ||
-          needs.packed-install.result != 'success'
-        run: |
-          echo "A required dependency did not succeed; refusing to skip this required check" >&2
-          exit 1
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 10.34.5
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level moderate
-
-      # First, because a boundary violation makes the rest moot.
-      - run: pnpm check:boundary:self-test
-
-      - run: pnpm check:boundary
-
-      - run: pnpm check:agent-guidance:test
-
-      - run: pnpm check:agent-guidance
-
-      - name: Verify public provider posture
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/check-public-provider-posture.mjs
-
-  secret-history:
-    needs: dispatch-integrity
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Fail when dispatch integrity did not succeed
-        if: needs.dispatch-integrity.result != 'success'
-        run: |
-          echo "Dispatch integrity did not succeed; refusing to skip this required check" >&2
-          exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Classify the complete change range
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) base_sha=$PR_BASE_SHA ;;
+            push) base_sha=$PUSH_BEFORE_SHA ;;
+            workflow_dispatch)
+              base_sha=$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD^)
+              ;;
+            *) base_sha= ;;
+          esac
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_ENV"
+          printf 'head_sha=%s\n' "$HEAD_SHA" >> "$GITHUB_ENV"
+          node scripts/ci-scope.mjs \
+            --event "$EVENT_NAME" --base "$base_sha" --head "$HEAD_SHA" \
+            --output "$GITHUB_OUTPUT"
+
       - name: Install verified gitleaks binary
         env:
           GITLEAKS_VERSION: 8.30.1
-          # SHA-256 of gitleaks_8.30.1_linux_x64.tar.gz, reviewed with the version pin.
           GITLEAKS_TARBALL_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         run: |
           mkdir -p "$RUNNER_TEMP/gitleaks"
@@ -240,22 +92,30 @@ jobs:
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
-      - run: node scripts/check-secrets.mjs
-
-  commits:
-    needs: dispatch-integrity
-    if: >-
-      always() &&
-      (github.event_name == 'pull_request' ||
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Fail when dispatch integrity did not succeed
-        if: needs.dispatch-integrity.result != 'success'
+      - name: Prove redacted tree, range, and history detection
+        shell: bash
         run: |
-          echo "Dispatch integrity did not succeed; refusing to skip this required check" >&2
+          set -euo pipefail
+          node scripts/check-secrets.mjs --mode controls
+          node scripts/check-secrets.mjs --mode tree
+          if [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] && \
+             [ "$base_sha" != 0000000000000000000000000000000000000000 ] && \
+             git cat-file -e "$base_sha^{commit}"; then
+            node scripts/check-secrets.mjs --mode range --base "$base_sha" --head "$head_sha"
+          else
+            node scripts/check-secrets.mjs --mode full
+          fi
+
+  gates:
+    needs: scope
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fail when scope or range security evidence did not succeed
+        if: needs.scope.result != 'success'
+        run: |
+          echo "Scope or changed-range security evidence did not succeed" >&2
           exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -274,8 +134,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # GitHub uses the PR title as the squash commit subject. Lint it before
-      # merge so every commit release-please sees on main is conventional.
       - name: Lint pull request title
         if: github.event_name == 'pull_request'
         env:
@@ -300,18 +158,179 @@ jobs:
             pnpm exec commitlint --from "${{ github.event.before }}" --to HEAD --verbose
           fi
 
+      - name: Build public packages
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm build
+
+      - name: Run public unit tests
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm -r test
+
+      - name: Typecheck public packages
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm -r typecheck
+
+      - name: Lint public packages
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm lint
+
+      - name: Audit production dependencies
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm audit --prod --audit-level moderate
+
+      - name: Prove public boundary canaries
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm check:boundary:self-test
+
+      - name: Verify public boundary
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm check:boundary
+
+      - name: Verify agent guidance tests
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm check:agent-guidance:test
+
+      - name: Verify agent guidance
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm check:agent-guidance
+
+      - name: Verify release metadata and package contents
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm check:release
+
+      - name: Verify registry-shaped packed installation
+        if: needs.scope.outputs.ubuntu == 'true'
+        run: pnpm check:packed
+
+      - name: Verify public provider posture
+        if: needs.scope.outputs.ubuntu == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-public-provider-posture.mjs
+
+  platform-macos:
+    name: platform (macos-latest)
+    needs: scope
+    if: >-
+      always() && needs.scope.result == 'success' &&
+      needs.scope.outputs.macos == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - name: Verify the macOS wake boundary
+        run: pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
+
+  platform-windows-x64:
+    name: platform (windows-2025)
+    needs: scope
+    if: >-
+      always() && needs.scope.result == 'success' &&
+      needs.scope.outputs.windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - name: Record the native Windows evidence environment
+        shell: pwsh
+        run: |
+          "runner_image=$env:ImageOS"
+          "runner_image_version=$env:ImageVersion"
+          "windows=$([System.Environment]::OSVersion.VersionString)"
+          "process_arch=$(node -p process.arch)"
+          "node=$(node --version)"
+          "npm=$(npm --version)"
+          "pnpm=$(pnpm --version)"
+          "powershell=$($PSVersionTable.PSVersion)"
+          git --version
+      - name: Run native Windows boundaries
+        shell: bash
+        run: |
+          pnpm --filter @raidiant/notifai-protocol test
+          pnpm --filter @raidiant/notifai test -- \
+            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts
+          pnpm --filter @raidiant/notifai test -- \
+            src/hook-adapter.test.ts src/install-hooks.test.ts \
+            --testNamePattern Windows
+      - name: Verify the packed CLI through native Windows shells
+        run: pnpm check:packed
+
+  platform-windows-arm:
+    name: platform (windows-11-arm)
+    needs: scope
+    if: >-
+      always() && needs.scope.result == 'success' &&
+      needs.scope.outputs.windows == 'true'
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - name: Record the native Windows evidence environment
+        shell: pwsh
+        run: |
+          "runner_image=$env:ImageOS"
+          "runner_image_version=$env:ImageVersion"
+          "windows=$([System.Environment]::OSVersion.VersionString)"
+          "process_arch=$(node -p process.arch)"
+          "node=$(node --version)"
+          "npm=$(npm --version)"
+          "pnpm=$(pnpm --version)"
+          "powershell=$($PSVersionTable.PSVersion)"
+          git --version
+      - name: Run native Windows boundaries
+        shell: bash
+        run: |
+          pnpm --filter @raidiant/notifai-protocol test
+          pnpm --filter @raidiant/notifai test -- \
+            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts
+          pnpm --filter @raidiant/notifai test -- \
+            src/hook-adapter.test.ts src/install-hooks.test.ts \
+            --testNamePattern Windows
+      - name: Verify the packed CLI through native Windows shells
+        run: pnpm check:packed
+
   dependency-review:
-    needs: dispatch-integrity
-    if: always() && github.event_name == 'pull_request'
+    needs: scope
+    if: >-
+      always() && needs.scope.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      needs.scope.outputs.dependencies == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail when dispatch integrity did not succeed
-        if: needs.dispatch-integrity.result != 'success'
-        run: |
-          echo "Dispatch integrity did not succeed; refusing to skip this check" >&2
-          exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
