@@ -1276,6 +1276,35 @@ export function codexTrustKey(
 }
 
 /**
+ * Stable identity of the one Codex Stop definition an Agent Session loaded.
+ *
+ * Codex materializes hook handlers into the session runtime. A later config
+ * change can therefore make the file on disk current while an older session
+ * keeps executing the definition it loaded at activation. Include Codex's
+ * source key as well as the normalized handler identity so moving an otherwise
+ * byte-identical definition between project and global layers also requires a
+ * fresh session.
+ */
+export function codexStopDefinitionFingerprint(
+  installations: Installation[],
+): string | undefined {
+  const candidates = installations
+    .filter((installation) => installation.harness === 'codex')
+    .flatMap((installation) =>
+      installation.handlers
+        .filter((handler) => handler.event === 'Stop')
+        .map((handler) => ({ installation, handler })),
+    )
+  if (candidates.length !== 1) return undefined
+  const candidate = candidates[0]
+  if (candidate === undefined) return undefined
+  const { installation, handler } = candidate
+  return createHash('sha256')
+    .update(`${codexTrustKey(installation, handler)}\0${codexHookIdentityHash(handler)}`)
+    .digest('hex')
+}
+
+/**
  * Trust defects that make installed Codex handlers look present while Codex
  * skips them. Trust is user-owned; the supported repair is Codex's `/hooks`
  * review UI, never writing the trust store on the user's behalf. Because the

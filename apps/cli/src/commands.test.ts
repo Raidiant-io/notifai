@@ -34,7 +34,7 @@ import type {
   SubmitNotificationRequestT,
   SupportAssessment,
 } from '@raidiant/notifai-protocol'
-import { parse as parseToml } from 'smol-toml'
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
@@ -79,6 +79,7 @@ import {
   buildHookConfig,
   hookCommand,
   codexHookIdentityHash,
+  codexStopDefinitionFingerprint,
   codexTrustKey,
   findInstallations,
   handlerEvent,
@@ -98,7 +99,7 @@ import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
 import { firstRequiredBlocker } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 
@@ -344,6 +345,23 @@ function trustInstalledCodexHooks(cwd: string, env: NodeJS.ProcessEnv): void {
   // file would delete the global handlers this helper is trying to trust.
   const existing = existsSync(file) ? readFileSync(file, 'utf8').trimEnd() : ''
   writeFileSync(file, [existing, ...sections].filter((block) => block.length > 0).join('\n') + '\n')
+}
+
+function writeCurrentCodexSessionState(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  sessionId: string,
+  state: Parameters<typeof writeSessionState>[2],
+): void {
+  const fingerprint = codexStopDefinitionFingerprint(findInstallations(cwd, env))
+  if (fingerprint === undefined) {
+    throw new Error('expected exactly one installed Codex Stop definition')
+  }
+  writeSessionState(sessionId, env, {
+    ...state,
+    harness: 'codex',
+    codex_stop_definition_fingerprint: fingerprint,
+  })
 }
 
 function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
@@ -6928,7 +6946,10 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     writeSessionState('claude-concurrent', env, { harness: 'claude-code', last_prompt_at: 43, last_stop_at: 43 })
     writeProjectSession(cwd, env, 'claude-concurrent', 43, 'claude-code')
@@ -6965,6 +6986,510 @@ describe('asking before the hooks have ever run', () => {
         request_id: null,
       },
     })
+  })
+
+  it('rejects a legacy Codex session without a Stop-definition fingerprint before uploading or registering', async () => {
+    const cwd = scratchDir('notifai-codex-legacy-stop-definition-')
+    const image = path.join(cwd, 'proof.png')
+    writeFileSync(image, 'proof')
+    const io = new PlainInteractiveIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CODEX_THREAD_ID: 'codex-legacy-definition',
+    }
+    let uploadGrants = 0
+    const client = {
+      createMediaUpload: async () => {
+        uploadGrants += 1
+        throw new Error('stale session must fail before upload')
+      },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeSessionState('codex-legacy-definition', env, {
+      harness: 'codex',
+      activation_cwd: cwd,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(cwd, env, 'codex-legacy-definition', 42, 'codex')
+    io.outLines = []
+    io.errLines = []
+
+    expect(await askCommand(deps, 'Ship it?', { image: [image], json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      ok: false,
+      registered: false,
+      code: 'codex_fresh_session_required',
+      check_id: 'stop_hook',
+      remedy: expect.stringMatching(/start one fresh Codex session.*send one prompt/i),
+      user_action: {
+        code: 'codex_fresh_session_required',
+        harness: 'codex',
+        action: 'start_fresh_codex_session',
+      },
+    })
+    expect(uploadGrants).toBe(0)
+    expect(readSessionState('codex-legacy-definition', env).pending).toBeUndefined()
+
+    io.outLines = []
+    await doctorCommand(deps, {})
+    const doctorOutput = io.outLines.join('\n')
+    expect(doctorOutput).toMatch(/FAIL\s+Question admission.*activated before the current Stop definition/is)
+    expect(doctorOutput).toMatch(/start one fresh Codex session/i)
+    expect(doctorOutput).not.toMatch(/Question admission.*hooks install/is)
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'hooks-question-admission')?.remedy)
+      .toMatchObject({
+        by: 'user-here',
+        summary: expect.stringMatching(/fresh Codex session/i),
+        command: 'notifai doctor',
+        user_action: {
+          code: 'codex_fresh_session_required',
+          harness: 'codex',
+          action: 'start_fresh_codex_session',
+        },
+      })
+  })
+
+  it('rejects a Codex session when the trusted Stop definition changes after SessionStart', async () => {
+    const cwd = scratchDir('notifai-codex-changed-stop-definition-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CODEX_THREAD_ID: 'codex-changed-definition',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "changed-definition"\n')
+    const binding = projectBinding(cwd, env, 'changed-definition')
+    expect(binding).not.toBeNull()
+    enableProject(binding!)
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    expect(
+      await hookRunCommand(
+        deps,
+        'session-start',
+        async () => JSON.stringify({ session_id: 'codex-changed-definition', cwd }),
+        'codex',
+      ),
+    ).toBe(EXIT.ok)
+    const activated = readSessionState('codex-changed-definition', env)
+    expect(activated.codex_stop_definition_fingerprint).toBe(
+      codexStopDefinitionFingerprint(findInstallations(cwd, env)),
+    )
+    writeSessionState('codex-changed-definition', env, {
+      ...activated,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(cwd, env, 'codex-changed-definition', 42, 'codex')
+
+    const installation = findInstallations(cwd, env)
+      .find((candidate) => candidate.harness === 'codex')
+    const oldStop = installation?.handlers.find((handler) => handler.event === 'Stop')
+    expect(installation).toBeDefined()
+    expect(oldStop).toBeDefined()
+    const definitionFile = path.join(cwd, '.codex', 'config.toml')
+    const document = parseToml(readFileSync(definitionFile, 'utf8')) as {
+      hooks?: { Stop?: Array<{ hooks?: Array<{ timeout?: number }> }> }
+    }
+    const changedStop = document.hooks?.Stop?.[0]?.hooks?.[0]
+    expect(changedStop).toBeDefined()
+    changedStop!.timeout = QUESTION_STOP_TIMEOUT_SECONDS + 1
+    writeFileSync(definitionFile, stringifyToml(document))
+    const newStop = findInstallations(cwd, env)
+      .find((installation) => installation.harness === 'codex')
+      ?.handlers.find((handler) => handler.event === 'Stop')
+    expect(newStop).toBeDefined()
+    const trustFile = path.join(cwd, 'home', '.codex', 'config.toml')
+    writeFileSync(
+      trustFile,
+      readFileSync(trustFile, 'utf8').replace(
+        codexHookIdentityHash(oldStop!),
+        codexHookIdentityHash(newStop!),
+      ),
+    )
+    expect(codexStopDefinitionFingerprint(findInstallations(cwd, env))).not.toBe(
+      activated.codex_stop_definition_fingerprint,
+    )
+    io.outLines = []
+    io.errLines = []
+
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      code: 'codex_fresh_session_required',
+      check_id: 'stop_hook',
+    })
+    expect(readSessionState('codex-changed-definition', env).pending).toBeUndefined()
+  })
+
+  it('clears prior Codex proof when SessionStart cannot prove one Stop definition', async () => {
+    const cwd = scratchDir('notifai-codex-unproven-resume-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CODEX_THREAD_ID: 'codex-unproven-resume',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "unproven-resume"\n')
+    const binding = projectBinding(cwd, env, 'unproven-resume')
+    expect(binding).not.toBeNull()
+    enableProject(binding!)
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeCurrentCodexSessionState(cwd, env, 'codex-unproven-resume', {
+      last_stop_at: 41,
+    })
+    const priorFingerprint = readSessionState(
+      'codex-unproven-resume',
+      env,
+    ).codex_stop_definition_fingerprint
+    expect(priorFingerprint).toBeDefined()
+
+    const installation = findInstallations(cwd, env)
+      .find((candidate) => candidate.harness === 'codex')
+    expect(installation).toBeDefined()
+    const definitionFile = path.join(cwd, '.codex', 'config.toml')
+    const originalDefinition = readFileSync(definitionFile, 'utf8')
+    const withoutStop = parseToml(originalDefinition) as {
+      hooks?: { Stop?: unknown }
+    }
+    if (withoutStop.hooks !== undefined) delete withoutStop.hooks.Stop
+    writeFileSync(definitionFile, stringifyToml(withoutStop))
+    expect(codexStopDefinitionFingerprint(findInstallations(cwd, env))).toBeUndefined()
+
+    expect(
+      await hookRunCommand(
+        deps,
+        'session-start',
+        async () => JSON.stringify({ session_id: 'codex-unproven-resume', cwd }),
+        'codex',
+      ),
+    ).toBe(EXIT.ok)
+    expect(
+      readSessionState('codex-unproven-resume', env).codex_stop_definition_fingerprint,
+    ).toBeUndefined()
+
+    // Repairing the file does not retroactively alter what this resumed
+    // runtime materialized. Doctor must fail closed before even a new prompt.
+    writeFileSync(definitionFile, originalDefinition)
+    expect(codexStopDefinitionFingerprint(findInstallations(cwd, env))).toBe(priorFingerprint)
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'hooks-question-admission'))
+      .toMatchObject({
+        status: 'gap',
+        detail: expect.stringMatching(/activated before the current Stop definition/i),
+        remedy: {
+          command: 'notifai doctor',
+          user_action: { action: 'start_fresh_codex_session' },
+        },
+      })
+
+    const resumed = readSessionState('codex-unproven-resume', env)
+    writeSessionState('codex-unproven-resume', env, {
+      ...resumed,
+      last_prompt_at: 42,
+    })
+    writeProjectSession(cwd, env, 'codex-unproven-resume', 42, 'codex')
+    io.outLines = []
+    io.errLines = []
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      code: 'codex_fresh_session_required',
+      check_id: 'stop_hook',
+    })
+    expect(readSessionState('codex-unproven-resume', env).pending).toBeUndefined()
+  })
+
+  it.each(['zero', 'two'] as const)(
+    'rejects %s Codex Stop handlers before upload or registration',
+    async (shape) => {
+      const cwd = scratchDir(`notifai-codex-${shape}-stop-handlers-`)
+      const image = path.join(cwd, 'proof.png')
+      writeFileSync(image, 'proof')
+      const io = new PlainInteractiveIo()
+      const env = {
+        ...isolatedEnv(cwd),
+        CODEX_THREAD_ID: `codex-${shape}-stop-handlers`,
+      }
+      let uploadGrants = 0
+      const client = {
+        createMediaUpload: async () => {
+          uploadGrants += 1
+          throw new Error('invalid Stop definition must fail before upload')
+        },
+      } as unknown as ApiClient
+      const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+      mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+      writeFileSync(
+        path.join(cwd, '.notifai', 'config.toml'),
+        `project = "${shape}-stop-handlers"\n`,
+      )
+      const binding = projectBinding(cwd, env, `${shape}-stop-handlers`)
+      expect(binding).not.toBeNull()
+      enableProject(binding!)
+
+      expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(
+        EXIT.ok,
+      )
+      trustInstalledCodexHooks(cwd, env)
+      writeCurrentCodexSessionState(cwd, env, env.CODEX_THREAD_ID!, {
+        last_stop_at: 41,
+      })
+      const installation = findInstallations(cwd, env)
+        .find((candidate) => candidate.harness === 'codex')
+      expect(installation).toBeDefined()
+      const definitionFile = path.join(cwd, '.codex', 'config.toml')
+      const document = parseToml(readFileSync(definitionFile, 'utf8')) as {
+        hooks?: { Stop?: Array<{ hooks?: Array<Record<string, unknown>> }> }
+      }
+      const stopGroups = document.hooks?.Stop
+      expect(stopGroups?.[0]).toBeDefined()
+      if (shape === 'zero') {
+        delete document.hooks!.Stop
+      } else {
+        stopGroups!.push(structuredClone(stopGroups![0]!))
+      }
+      writeFileSync(definitionFile, stringifyToml(document))
+      expect(codexStopDefinitionFingerprint(findInstallations(cwd, env))).toBeUndefined()
+
+      // Keep trust current so this exercises definition singularity, not the
+      // separate User-owned approval failure.
+      rmSync(path.join(cwd, 'home', '.codex', 'config.toml'), { force: true })
+      trustInstalledCodexHooks(cwd, env)
+      expect(
+        await hookRunCommand(
+          deps,
+          'session-start',
+          async () => JSON.stringify({ session_id: env.CODEX_THREAD_ID, cwd }),
+          'codex',
+        ),
+      ).toBe(EXIT.ok)
+      const activated = readSessionState(env.CODEX_THREAD_ID!, env)
+      expect(activated.codex_stop_definition_fingerprint).toBeUndefined()
+      writeSessionState(env.CODEX_THREAD_ID!, env, {
+        ...activated,
+        last_prompt_at: 42,
+      })
+      writeProjectSession(cwd, env, env.CODEX_THREAD_ID!, 42, 'codex')
+
+      const readiness = await assessReadiness(deps)
+      expect(readiness.states.find((state) => state.id === 'hooks-question-admission'))
+        .toMatchObject({
+          status: 'gap',
+          detail: expect.stringMatching(/exactly one Notifai Stop definition/i),
+          remedy: {
+            by: 'cli',
+            command: 'notifai hooks install --harness codex',
+          },
+        })
+      io.outLines = []
+      io.errLines = []
+      expect(
+        await askCommand(deps, 'Ship it?', { image: [image], json: true }),
+      ).toBe(EXIT.usage)
+      const failure = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
+      expect(failure).toMatchObject({
+        code: 'codex_stop_definition_invalid',
+        check_id: 'hook_installation',
+        remedy: 'run `notifai hooks install --harness codex`, then re-run `notifai doctor`',
+      })
+      expect(failure).not.toHaveProperty('user_action')
+      expect(String(failure.remedy)).not.toMatch(/fresh Codex session/i)
+      expect(uploadGrants).toBe(0)
+      expect(readSessionState(env.CODEX_THREAD_ID!, env).pending).toBeUndefined()
+    },
+  )
+
+  it('does not impose the Codex Stop-definition fingerprint on another harness', () => {
+    const cwd = scratchDir('notifai-claude-no-codex-fingerprint-')
+    const io = new CapturedIo()
+    const env = {
+      ...isolatedEnv(cwd),
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'claude-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    writeSessionState('claude-current', env, {
+      harness: 'claude-code',
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('claude-current', env).pending?.[0]).toMatchObject({
+      question: 'Ship it?',
+      source: { harness: 'claude-code', session_id: 'claude-current' },
+    })
+  })
+
+  it('uses the Codex activation checkout for Doctor admission and the invocation checkout for inventory', async () => {
+    const first = scratchDir('notifai-codex-doctor-activation-first-')
+    const second = scratchDir('notifai-codex-doctor-invocation-second-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      ...isolatedEnv(first),
+      CODEX_THREAD_ID: 'codex-cross-checkout',
+    }
+    const firstDeps = { ...makeDeps(io, {} as ApiClient), cwd: first, env, now: () => 42 }
+    const secondDeps = { ...firstDeps, cwd: second }
+
+    expect(
+      hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(first, env)
+    expect(
+      hooksInstallCommand(secondDeps, { harness: 'codex', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(second, env)
+    writeCurrentCodexSessionState(first, env, 'codex-cross-checkout', {
+      activation_cwd: first,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(first, env, 'codex-cross-checkout', 42, 'codex')
+    io.outLines = []
+
+    const readiness = await assessReadiness(secondDeps)
+    expect(readiness.states.find((state) => state.id === 'hooks-question-admission'))
+      .toMatchObject({ status: 'ready' })
+    expect(readiness.states.find((state) => state.id === 'hooks')?.detail).toContain(
+      settingsFile('codex', false, second, env),
+    )
+    expect(askCommand(secondDeps, 'Use the invocation Project?', {})).toBe(EXIT.ok)
+    expect(readSessionState('codex-cross-checkout', env).pending?.[0]?.question).toBe(
+      'Use the invocation Project?',
+    )
+  })
+
+  it('fails Doctor when the activation checkout lost its Codex installation', async () => {
+    const first = scratchDir('notifai-codex-missing-activation-first-')
+    const second = scratchDir('notifai-codex-installed-invocation-second-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      ...isolatedEnv(first),
+      CODEX_THREAD_ID: 'codex-missing-activation-install',
+    }
+    const firstDeps = { ...makeDeps(io, {} as ApiClient), cwd: first, env, now: () => 42 }
+    const secondDeps = { ...firstDeps, cwd: second }
+
+    expect(
+      hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(first, env)
+    writeCurrentCodexSessionState(first, env, env.CODEX_THREAD_ID!, {
+      activation_cwd: first,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(first, env, env.CODEX_THREAD_ID!, 42, 'codex')
+    rmSync(path.join(first, '.codex', 'config.toml'), { force: true })
+
+    expect(
+      hooksInstallCommand(secondDeps, { harness: 'codex', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(second, env)
+    io.outLines = []
+
+    const readiness = await assessReadiness(secondDeps)
+    expect(readiness.states.find((state) => state.id === 'hooks')).toMatchObject({
+      status: 'ready',
+      detail: expect.stringContaining(path.join(second, '.codex', 'config.toml')),
+    })
+    expect(readiness.states.find((state) => state.id === 'hooks-question-admission'))
+      .toMatchObject({
+        status: 'gap',
+        detail: expect.stringMatching(/activation checkout has no matching hook installation/i),
+        remedy: {
+          by: 'cli',
+          summary: expect.stringContaining(first),
+          command: 'notifai hooks install --harness codex',
+        },
+      })
+
+    expect(askCommand(secondDeps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
+      code: 'hooks_not_installed',
+      check_id: 'hook_installation',
+    })
+    expect(readSessionState(env.CODEX_THREAD_ID!, env).pending).toBeUndefined()
+  })
+
+  it('advances Codex activation checkout and definition together on resumed SessionStart', async () => {
+    const first = scratchDir('notifai-codex-resume-first-')
+    const second = scratchDir('notifai-codex-resume-second-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      ...isolatedEnv(first),
+      CODEX_THREAD_ID: 'codex-resumed-cross-checkout',
+    }
+    const firstDeps = { ...makeDeps(io, {} as ApiClient), cwd: first, env, now: () => 42 }
+    const secondDeps = { ...firstDeps, cwd: second }
+    mkdirSync(path.join(second, '.notifai'), { recursive: true })
+    writeFileSync(path.join(second, '.notifai', 'config.toml'), 'project = "resume-second"\n')
+    const secondBinding = projectBinding(second, env, 'resume-second')
+    expect(secondBinding).not.toBeNull()
+    enableProject(secondBinding!)
+
+    expect(
+      hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(first, env)
+    expect(
+      hooksInstallCommand(secondDeps, { harness: 'codex', execPath, scriptPath }),
+    ).toBe(EXIT.ok)
+    trustInstalledCodexHooks(second, env)
+    writeCurrentCodexSessionState(first, env, env.CODEX_THREAD_ID!, {
+      activation_cwd: first,
+      last_stop_at: 39,
+    })
+    const firstFingerprint = readSessionState(
+      env.CODEX_THREAD_ID!,
+      env,
+    ).codex_stop_definition_fingerprint
+
+    expect(
+      await hookRunCommand(
+        secondDeps,
+        'session-start',
+        async () => JSON.stringify({ session_id: env.CODEX_THREAD_ID, cwd: second }),
+        'codex',
+      ),
+    ).toBe(EXIT.ok)
+    const resumed = readSessionState(env.CODEX_THREAD_ID!, env)
+    expect(resumed.activation_cwd).toBe(second)
+    expect(resumed.codex_stop_definition_fingerprint).toBe(
+      codexStopDefinitionFingerprint(findInstallations(second, env)),
+    )
+    expect(resumed.codex_stop_definition_fingerprint).not.toBe(firstFingerprint)
+    writeSessionState(env.CODEX_THREAD_ID!, env, {
+      ...resumed,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
+    writeProjectSession(second, env, env.CODEX_THREAD_ID!, 42, 'codex')
+    io.outLines = []
+
+    const readiness = await assessReadiness(secondDeps)
+    expect(readiness.states.find((state) => state.id === 'hooks-question-admission'))
+      .toMatchObject({ status: 'ready' })
+    expect(askCommand(secondDeps, 'Continue after resume?', {})).toBe(EXIT.ok)
+    expect(readSessionState(env.CODEX_THREAD_ID!, env).pending?.[0]?.question).toBe(
+      'Continue after resume?',
+    )
   })
 
   it('uses exact lifecycle state across checkouts while Project stays invocation-owned', () => {
@@ -7044,7 +7569,10 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-media-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-media-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-media-thread', 42, 'codex')
     io.outLines = []
 
@@ -7095,7 +7623,10 @@ describe('asking before the hooks have ever run', () => {
       hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
     ).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
@@ -7188,7 +7719,10 @@ describe('asking before the hooks have ever run', () => {
       hooksInstallCommand(deps, { harness: 'claude-code', global: true, execPath, scriptPath }),
     ).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
 
     const readiness = await assessReadiness(deps)
@@ -7243,7 +7777,10 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-commitment-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-commitment-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-commitment-thread', 42, 'codex')
     io.outLines = []
 
@@ -7279,7 +7816,10 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-free-text-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-free-text-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-free-text-thread', 42, 'codex')
     io.outLines = []
 
@@ -7311,7 +7851,10 @@ describe('asking before the hooks have ever run', () => {
       configFile,
       readFileSync(configFile, 'utf8').replace(codexHookIdentityHash(stop!), 'sha256:obsolete'),
     )
-    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
@@ -7512,7 +8055,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('claude-last-writer', env).pending).toBeUndefined()
   })
 
-  it('rejects duplicate active Codex definitions before registration', () => {
+  it('rejects duplicate active Codex definitions before registration', async () => {
     const cwd = scratchDir('notifai-active-codex-duplicate-')
     const io = new CapturedIo()
     const env = {
@@ -7524,6 +8067,8 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    const activatedFingerprint = codexStopDefinitionFingerprint(findInstallations(cwd, env))
+    expect(activatedFingerprint).toBeDefined()
     mkdirSync(env.CODEX_HOME!, { recursive: true })
     applyPlan(path.join(env.CODEX_HOME!, 'config.toml'), {
       hooks: buildHookConfig({
@@ -7532,13 +8077,26 @@ describe('asking before the hooks have ever run', () => {
       }),
     })
     trustInstalledCodexHooks(cwd, env)
-    writeSessionState('codex-current-thread', env, { harness: 'codex', last_prompt_at: 42, last_stop_at: 41 })
+    writeSessionState('codex-current-thread', env, {
+      harness: 'codex',
+      codex_stop_definition_fingerprint: activatedFingerprint,
+      last_prompt_at: 42,
+      last_stop_at: 41,
+    })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/2 Codex definitions are active/i)
+    expect(io.errLines.join('\n')).toMatch(/keep either project or global routing/i)
     expect(readSessionState('codex-current-thread', env).pending).toBeUndefined()
+
+    const readiness = await assessReadiness(deps)
+    const admission = readiness.states.find((state) => state.id === 'hooks-question-admission')
+    expect(admission).toMatchObject({ status: 'gap' })
+    expect(admission?.detail).toMatch(/2 Codex definitions are active/i)
+    expect(admission?.detail).toMatch(/keep either project or global routing/i)
+    expect(admission?.detail).not.toMatch(/activated before the current Stop definition/i)
   })
 
   it('does not let UserPromptSubmit alone count as a working turn-end route', async () => {

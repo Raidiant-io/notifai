@@ -95,6 +95,8 @@ export interface SessionState {
   harness?: HookHarness
   /** Checkout whose hook definition activated this session; lifecycle diagnostics only. */
   activation_cwd?: string
+  /** Codex Stop definition observed when this exact Agent Session activated. */
+  codex_stop_definition_fingerprint?: string
   /** Cursor's documented session context path is lossy; bounded first-Stop fallback journal. */
   cursor_activation_claimed_at?: number
   cursor_activation_confirmed_at?: number
@@ -611,15 +613,30 @@ export function recordSessionStart(
   env: NodeJS.ProcessEnv,
   harness?: HookHarness,
   cwd?: string,
+  codexStopDefinitionFingerprint?: string,
 ): void {
   // Harnesses may reuse a session id only by explicitly starting that session
   // again. That lifecycle edge is the sole authority for clearing cancellation.
   clearSessionEndMarker(sessionId, env)
-  updateSessionState(sessionId, env, (current) => ({
-    ...current,
-    ...(harness === undefined ? {} : { harness }),
-    ...(cwd === undefined ? {} : { activation_cwd: current.activation_cwd ?? cwd }),
-  }))
+  updateSessionState(sessionId, env, (current) => {
+    const next: SessionState = {
+      ...current,
+      ...(harness === undefined ? {} : { harness }),
+      ...(cwd === undefined
+        ? {}
+        : { activation_cwd: harness === 'codex' ? cwd : current.activation_cwd ?? cwd }),
+    }
+    // A Codex SessionStart materializes one new runtime generation. Absence of
+    // singular proof must replace prior proof too; retaining it would let a
+    // resumed session borrow the definition loaded by an earlier runtime.
+    if (harness === 'codex') {
+      delete next.codex_stop_definition_fingerprint
+      if (codexStopDefinitionFingerprint !== undefined) {
+        next.codex_stop_definition_fingerprint = codexStopDefinitionFingerprint
+      }
+    }
+    return next
+  })
 }
 
 /** Atomically claim Cursor's first-Stop activation fallback once per conversation. */
