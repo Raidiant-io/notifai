@@ -1,4 +1,8 @@
-import { SHIPPED_CLI_CAPABILITIES, type RecoveryAction } from '@raidiant/notifai-protocol'
+import {
+  NOTIFICATION_CONTRACT_FINGERPRINT,
+  SHIPPED_CLI_CAPABILITIES,
+  type RecoveryAction,
+} from '@raidiant/notifai-protocol'
 import { type ClaudeWakeAdapters } from './claude-wake.js'
 import {
   ApiCallError,
@@ -137,6 +141,7 @@ export function makeClient(
     logger: log(deps),
     cliVersion: packageVersion(),
     capabilities: SHIPPED_CLI_CAPABILITIES,
+    notificationContractFingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
   })
 }
 

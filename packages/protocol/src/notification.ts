@@ -446,6 +446,26 @@ export type MacosOptionsT = Static<typeof MacosOptions>
 export type AndroidOptionsT = Static<typeof AndroidOptions>
 export type NotificationDraftT = Static<typeof NotificationDraft>
 
+/**
+ * Opaque deployment identity for the complete Notification Request schema.
+ *
+ * This is compatibility negotiation, not authentication or integrity. It is
+ * derived from the schema itself so an added, removed, or constrained field
+ * cannot silently keep the same identity. The private and public copies of
+ * this source are kept byte-identical by the contract-drift gate.
+ */
+function fnv1a64(value: string): string {
+  let hash = 0xcbf29ce484222325n
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+  return hash.toString(16).padStart(16, '0')
+}
+
+export const NOTIFICATION_CONTRACT_FINGERPRINT =
+  'notification-draft/' + fnv1a64(JSON.stringify(NotificationDraft))
+
 export function defaultDeliveryPolicy(): DeliveryPolicyT {
   return { ttl_seconds: 86400, collapse_key: null }
 }

@@ -14,7 +14,7 @@
     "check:boundary": "node scripts/check-boundary.mjs",
     "check:boundary:self-test": "node scripts/check-boundary.mjs --self-test",
     "check:commit": "commitlint --last --verbose",
-    "check:release": "node --test scripts/cross-platform.test.mjs scripts/chmod-cli-bin.test.mjs scripts/plan-publish.test.mjs scripts/check-npm-trusted-publishing.test.mjs scripts/check-public-provider-posture.test.mjs scripts/release-workflow-identity.test.mjs scripts/verify-release-pr-metadata.test.mjs scripts/verify-published-windows.test.mjs scripts/npm-registry.test.mjs && node scripts/check-release.mjs",
+    "check:release": "node --test scripts/cross-platform.test.mjs scripts/chmod-cli-bin.test.mjs scripts/plan-publish.test.mjs scripts/check-npm-trusted-publishing.test.mjs scripts/check-public-provider-posture.test.mjs scripts/check-live-server-contract.test.mjs scripts/release-workflow-identity.test.mjs scripts/verify-release-pr-metadata.test.mjs scripts/verify-published-windows.test.mjs scripts/npm-registry.test.mjs && node scripts/check-release.mjs",
     "check:packed": "node --test scripts/check-packed-boundary.test.mjs scripts/verify-packed-install.test.mjs scripts/verify-published.test.mjs && node scripts/verify-packed-install.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:agent-guidance": "node scripts/check-agent-guidance.mjs",

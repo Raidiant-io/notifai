@@ -1,4 +1,9 @@
-import { CAPABILITIES_V1, PLATFORMS, REPLY_MAX_QUESTIONS } from '@raidiant/notifai-protocol'
+import {
+  CAPABILITIES_V1,
+  NOTIFICATION_CONTRACT_FINGERPRINT,
+  PLATFORMS,
+  REPLY_MAX_QUESTIONS,
+} from '@raidiant/notifai-protocol'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -499,6 +504,7 @@ describe('command contracts', () => {
     const document: CapabilityDocument = {
       schema_version: 1,
       platform: 'ios',
+      notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
       payload_limit_bytes: 4096,
       sounds: ['default'],
       interruption_levels: ['passive', 'active', 'time_sensitive'],
@@ -521,6 +527,7 @@ describe('command contracts', () => {
     const document: CapabilityDocument = {
       schema_version: 1,
       platform: 'macos',
+      notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
       payload_limit_bytes: 4096,
       sounds: ['default'],
       interruption_levels: ['passive', 'active', 'time_sensitive'],
@@ -4667,6 +4674,42 @@ describe('compatibility-first update guidance', () => {
     ).toBe(EXIT.ok)
     expect(submissions).toBe(1)
     expect(sendIo.errLines).toEqual([])
+  })
+
+  it('reports a service that has not deployed this Notification Request contract', async () => {
+    const client = {
+      health: async () => true,
+      compatibility: async (): Promise<CompatibilityResponse> => currentCompatibility,
+      capabilities: async (platform: Platform = 'ios') => {
+        const document = CAPABILITIES_V1.describe(platform)
+        if (document === null) throw new Error(`missing ${platform} capability document`)
+        return {
+          ...document,
+          notification_contract_fingerprint: 'notification-draft/stale-service',
+        }
+      },
+      listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({ email: 'user@example.test' }),
+    } as unknown as ApiClient
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-contract-fingerprint-'))
+    const io = new PlainInteractiveIo()
+    const readiness = await assessReadiness({
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+    })
+    const contract = readiness.states.find((state) => state.id === 'contract')
+
+    expect(contract).toMatchObject({
+      status: 'optional-gap',
+      detail: 'The service is being updated; try again later.',
+      technical: {
+        notification_contract: {
+          local: NOTIFICATION_CONTRACT_FINGERPRINT,
+          mismatched_platforms: [...PLATFORMS],
+        },
+      },
+    })
   })
 })
 

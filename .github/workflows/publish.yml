@@ -117,6 +117,10 @@ jobs:
         id: plan
         run: node scripts/plan-publish.mjs
 
+      - name: Verify deployed service accepts this candidate
+        if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
+        run: node scripts/check-live-server-contract.mjs
+
       - name: Record the exact CLI version
         id: cli-version
         shell: bash

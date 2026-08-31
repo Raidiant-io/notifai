@@ -1,7 +1,11 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CAPABILITIES_HEADER, CLI_VERSION_HEADER } from '@raidiant/notifai-protocol'
+import {
+  CAPABILITIES_HEADER,
+  CLI_VERSION_HEADER,
+  NOTIFICATION_CONTRACT_HEADER,
+} from '@raidiant/notifai-protocol'
 import { ApiCallError, NetworkError, createClient } from './client.js'
 
 /**
@@ -307,12 +311,14 @@ describe('compatibility metadata transport', () => {
       url: string | undefined
       cliVersion: string | string[] | undefined
       capabilities: string | string[] | undefined
+      notificationContract: string | string[] | undefined
     }> = []
     const baseUrl = await serving((request, response) => {
       seen.push({
         url: request.url,
         cliVersion: request.headers[CLI_VERSION_HEADER],
         capabilities: request.headers[CAPABILITIES_HEADER],
+        notificationContract: request.headers[NOTIFICATION_CONTRACT_HEADER],
       })
       response.setHeader('content-type', 'application/json')
       response.end(
@@ -329,6 +335,7 @@ describe('compatibility metadata transport', () => {
     const options = {
       cliVersion: '5.0.0',
       capabilities: ['agent_acknowledgement'] as const,
+      notificationContractFingerprint: 'notification-draft/test',
     }
 
     await createClient(baseUrl, 'Bearer machine', options).capabilities('macos', '0.1.0', '42')
@@ -339,11 +346,13 @@ describe('compatibility metadata transport', () => {
         url: '/api/v1/capabilities/macos?app_version=0.1.0&app_build=42',
         cliVersion: '5.0.0',
         capabilities: 'agent_acknowledgement',
+        notificationContract: 'notification-draft/test',
       },
       {
         url: '/api/v1/capabilities/macos',
         cliVersion: undefined,
         capabilities: undefined,
+        notificationContract: undefined,
       },
     ])
   })

@@ -17,6 +17,8 @@ export const SHIPPED_COMPANION_CAPABILITIES = ['answer'] as const satisfies read
 
 export const CLI_VERSION_HEADER = 'x-notifai-cli-version'
 export const CAPABILITIES_HEADER = 'x-notifai-capabilities'
+/** The complete Notification Request contract this client will submit. */
+export const NOTIFICATION_CONTRACT_HEADER = 'x-notifai-notification-contract'
 
 export const SUPPORT_STATES = ['current', 'update_available', 'must_update'] as const
 export type SupportState = (typeof SUPPORT_STATES)[number]

@@ -213,6 +213,14 @@ test('each created release tag dispatches protected publication at its exact SHA
   assert.match(publish, /--expected-sha "\$\{\{ inputs\.expected_sha \}\}"/)
   assert.match(ci, /- name: Verify public provider posture/)
   assert.match(publish, /environment: npm-release/)
+  const serviceContract = publishWorkflow.jobs.npm.steps.find(
+    candidate => candidate.name === 'Verify deployed service accepts this candidate',
+  )
+  assert.equal(
+    serviceContract.if,
+    "${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}",
+  )
+  assert.equal(serviceContract.run, 'node scripts/check-live-server-contract.mjs')
   const windows = publishWorkflow.jobs['windows-cli']
   assert.deepEqual(windows.strategy.matrix.os, ['windows-2025', 'windows-11-arm'])
   assert.equal(windows.strategy.matrix.node, undefined)

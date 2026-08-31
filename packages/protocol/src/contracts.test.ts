@@ -15,6 +15,7 @@ import {
   estimateFcmPayloadBytes,
   IOS_CAPABILITIES_V1,
   MACOS_CAPABILITIES_V1,
+  NOTIFICATION_CONTRACT_FINGERPRINT,
   PLATFORMS,
   PairingProofRequest,
   PROVIDERS,
@@ -909,6 +910,15 @@ describe('validateDraft', () => {
     expect(CAPABILITIES_V1.describe('ios')?.platform).toBe('ios')
     expect(CAPABILITIES_V1.describe('macos')).toBe(MACOS_CAPABILITIES_V1)
     expect(CAPABILITIES_V1.describe('android')).toBe(ANDROID_CAPABILITIES_V1)
+    expect([
+      IOS_CAPABILITIES_V1,
+      MACOS_CAPABILITIES_V1,
+      ANDROID_CAPABILITIES_V1,
+    ].map((document) => document.notification_contract_fingerprint)).toEqual([
+      NOTIFICATION_CONTRACT_FINGERPRINT,
+      NOTIFICATION_CONTRACT_FINGERPRINT,
+      NOTIFICATION_CONTRACT_FINGERPRINT,
+    ])
     expect(MACOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
