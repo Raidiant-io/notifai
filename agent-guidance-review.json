@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e3606a5be8698242f047a29b550489350578e1edbdaac0c53fb3517325cc049f",
+  "behavior_digest": "sha256:562b2dffba2fd5a276a5e6f9abf467c3d16cf244d8401a0f0567cfa00b388cb8",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating exact-session Question Routing from optional direct wake on Windows. The held-Stop continuation and acknowledgement behavior remain unchanged; CLI readiness now serializes an unassessed direct-wake capability as null, and report-only absence carries no impossible reinstall remedy. The skill now teaches agents that direct_wake_ready is optional beside a held continuation and null until assessed, while harness setup already distinguishes POSIX inbox wake from the Windows held-Stop route. Existing Agent Session, Notification Request, and continuation vocabulary remains authoritative.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating exact-session Question Routing from optional direct wake on Windows. The held-Stop continuation and acknowledgement behavior remain unchanged; CLI readiness now serializes an unassessed direct-wake capability as null, and report-only absence carries no impossible reinstall remedy. The skill teaches that direct_wake_ready is optional beside a held continuation and null until assessed; this revision only condenses that wording to remain inside the shipped skill budget. Harness setup still distinguishes POSIX inbox wake from the Windows held-Stop route, and existing Agent Session, Notification Request, and continuation vocabulary remains authoritative.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
