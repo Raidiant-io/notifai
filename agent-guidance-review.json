@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:771e0fc296595cf8347c828d8eb34900e44145c5cc45d8562f88967fe11f9422",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after binding Codex question admission to the singular Stop definition loaded by the exact Agent Session. The CLI now fails closed before registration when that definition is stale, invalid, duplicated, or missing from the activation checkout, and its structured remedy distinguishes reinstalling hooks from starting a fresh Codex session. The shipped skill already requires agents to branch on the named ask failure and relay an exact User-owned action without bypassing Question Routing, while harness setup already owns Codex installation, trust approval, fresh activation, and doctor-guided recovery. No new agent decision or domain term is introduced, so broader guidance wording remains current.",
+  "behavior_digest": "sha256:562b2dffba2fd5a276a5e6f9abf467c3d16cf244d8401a0f0567cfa00b388cb8",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating exact-session Question Routing from optional direct wake on Windows. The held-Stop continuation and acknowledgement behavior remain unchanged; CLI readiness now serializes an unassessed direct-wake capability as null, and report-only absence carries no impossible reinstall remedy. The skill teaches that direct_wake_ready is optional beside a held continuation and null until assessed; this revision only condenses that wording to remain inside the shipped skill budget. Harness setup still distinguishes POSIX inbox wake from the Windows held-Stop route, and existing Agent Session, Notification Request, and continuation vocabulary remains authoritative.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

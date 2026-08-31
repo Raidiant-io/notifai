@@ -318,9 +318,13 @@ Pass both; never guess unattended:
 notifai init --setup-scope <project|global> <--hooks|--no-hooks> --json
 ```
 
-Branch on `states`, `can_send`, and `question_routing_ready`; a nonzero exit is
-a gap to close, never to bypass. Do not follow a successful structured init
-with doctor. `ask --json` performs its own exact-session admission check.
+Branch on `states`, `can_send`, and `question_routing_ready`.
+`direct_wake_ready` says if answers can start a turn after continuation ends;
+it is optional when a held continuation owns the answer,
+and `null` when no direct-wake assessment exists. A nonzero exit is a gap to
+close, never bypass.
+Do not follow a successful structured init with doctor. `ask --json` performs
+its own exact-session admission check.
 
 Then gather the human-only steps its reported gap needs:
 

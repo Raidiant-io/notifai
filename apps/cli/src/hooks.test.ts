@@ -5183,6 +5183,27 @@ describe('Codex Stop wake route', () => {
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
   })
 
+  it('continues a Windows Claude Code held Stop in the exact Agent Session', async () => {
+    const sessionId = 'windows-claude-held-stop'
+    const h = harness([reply({ text: 'Trim them' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, harness: 'claude-code' })
+    registerQuestion(sessionId, h.env, { question: 'Keep all permission rules?' }, NOW)
+
+    await hookRunCommand(
+      { ...h.deps, hookPlatform: 'win32' },
+      'stop',
+      stdin({ session_id: sessionId, cwd: h.deps.cwd }),
+      'claude-code',
+    )
+
+    expect(h.io.outLines).toHaveLength(1)
+    const decision = JSON.parse(h.io.outLines[0]!) as { decision: string; reason: string }
+    expect(decision).toMatchObject({ decision: 'block' })
+    expect(decision.reason).toContain('"Trim them"')
+    expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
+  })
+
   it('replays an answer journaled after the hold on the next Stop', async () => {
     const h = harness([])
     journaledAnswer(h)

@@ -55,9 +55,11 @@ notifai ask "Deploy the migration to production?" --choice Yes --choice No
 
 The agent registers the question, ends its work, and your answer comes back on
 its next turn. Question Routing keeps that exact session available for the
-complete answer window: Claude Code waits out of band and wakes it, while Codex
-holds the asking turn. On iPhone, press and hold the collapsed banner to answer;
-the choices appear on the expanded card, not on the lock screen.
+complete answer window: Claude Code waits out of band and wakes it on
+macOS/Linux; on Windows its Stop stays held and returns the answer as the same
+Agent Session's continuation, like Codex. On iPhone, press and hold the
+collapsed banner to answer; the choices appear on the expanded card, not on
+the lock screen.
 
 By default a question reaches your devices when the agent turn ends, whether or
 not you are at the keyboard (`ask_grace_seconds = 0`). Set a positive grace

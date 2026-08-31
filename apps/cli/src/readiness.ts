@@ -141,14 +141,28 @@ export function canSend(readiness: Readiness): boolean {
   })
 }
 
-/** This exact invocation has a fully evidenced asynchronous question route. */
+/** This exact invocation has a fully evidenced exact-session question route. */
 export function questionRoutingReady(readiness: Readiness): boolean {
   const relevant = readiness.states.filter(
     (state) =>
       state.id === 'question-routing-settings' ||
-      (state.id === 'hooks' || state.id.startsWith('hooks-')) && state.id !== 'hooks-detected',
+      (state.id === 'hooks' || state.id.startsWith('hooks-')) &&
+        state.id !== 'hooks-detected' &&
+        !(
+          state.id === 'hooks-wake-route' &&
+          typeof state.technical === 'object' &&
+          state.technical !== null &&
+          'held_stop_continuation' in state.technical &&
+          state.technical.held_stop_continuation === true
+        ),
   )
   return relevant.length > 0 && relevant.every((state) => state.status === 'ready')
+}
+
+/** Whether this invocation can start a turn after its ordinary continuation returns. */
+export function directWakeReady(readiness: Readiness): boolean | null {
+  const state = readiness.states.find((candidate) => candidate.id === 'hooks-wake-route')
+  return state === undefined ? null : state.status === 'ready'
 }
 
 /** Stable machine renderer shared by init and doctor. */
@@ -157,6 +171,7 @@ export function readinessJson(readiness: Readiness): object {
     ready: isReady(readiness),
     can_send: canSend(readiness),
     question_routing_ready: questionRoutingReady(readiness),
+    direct_wake_ready: directWakeReady(readiness),
     states: readiness.states.map((state) => ({
       id: state.id,
       title: state.title,

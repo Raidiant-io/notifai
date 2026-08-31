@@ -66,6 +66,13 @@ const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
     'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same session over its own inbox socket; a session that has stopped is resumed only once a liveness probe proves it stopped',
 }
 
+const CLAUDE_CODE_WINDOWS_CAPABILITY: HarnessCapability = {
+  stopContinuation: 'decision-block',
+  deliveryRoutes: ['hook-continuation', 'hold-for-next-turn'],
+  deliveryContract:
+    'the Stop hook keeps the turn held through the complete answer window, then returns the answer as a decision block that continues this same Agent Session; direct inbox wake is unavailable on Windows',
+}
+
 const CODEX_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['hook-continuation', 'cold-resume', 'hold-for-next-turn'],
@@ -158,7 +165,13 @@ export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapabil
   openclaw: OPENCLAW_CAPABILITY,
 }
 
-/** Question-routing capability for the active harness integration. */
-export function questionRoutingCapability(harness: HookInstallableHarness): HarnessCapability {
+/** Question-routing capability for the active harness integration on this host. */
+export function questionRoutingCapability(
+  harness: HookInstallableHarness,
+  platform: NodeJS.Platform = process.platform,
+): HarnessCapability {
+  if (harness === 'claude-code' && platform === 'win32') {
+    return CLAUDE_CODE_WINDOWS_CAPABILITY
+  }
   return HARNESS_CAPABILITIES[harness]
 }

@@ -106,6 +106,17 @@ describe('harness contract', () => {
     expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
   })
 
+  it('describes Windows Claude Code as a held Stop continuation without an inbox route', () => {
+    const capability = questionRoutingCapability('claude-code', 'win32')
+
+    expect(capability.stopContinuation).toBe('decision-block')
+    expect(capability.deliveryRoutes).toEqual(['hook-continuation', 'hold-for-next-turn'])
+    expect(capability.deliveryContract).toContain('held through the complete answer window')
+    expect(capability.deliveryContract).toContain('same Agent Session')
+    expect(capability.deliveryContract).not.toContain('inbox socket')
+    expect(capability.deliveryContract).not.toContain('returns at once')
+  })
+
   it('treats the pinned Hermes classic CLI/local trace as send-only', () => {
     expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.instance).toEqual(PINNED_HERMES_TRACE.instance)
     expect(PINNED_HERMES_TRACE.supported).toContain('deliberate-send')

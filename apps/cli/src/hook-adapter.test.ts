@@ -12,6 +12,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
 import { describe, expect, it } from 'vitest'
 import {
   hookAdapterPath,
@@ -334,7 +335,71 @@ describe('stable hook adapter', () => {
   })
 })
 
+const nativeWindowsIt = process.platform === 'win32' ? it : it.skip
+
 describe('Windows hook adapter', () => {
+  nativeWindowsIt(
+    'allows concurrent Windows installers to create one managed adapter directory',
+    async () => {
+    const { root, homeDir } = isolated()
+    const scriptPath = path.join(root, 'target.js')
+    writeFileSync(scriptPath, '')
+    const moduleUrl = new URL('../dist/hook-adapter.js', import.meta.url).href
+    const start = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
+    const workers = Array.from(
+      { length: 16 },
+      () =>
+        new Worker(
+          `
+            const { parentPort, workerData } = require('node:worker_threads')
+            ;(async () => {
+              const { installHookAdapter } = await import(workerData.moduleUrl)
+              parentPort.postMessage('ready')
+              Atomics.wait(new Int32Array(workerData.start), 0, 0)
+              installHookAdapter(
+                { execPath: workerData.execPath, scriptPath: workerData.scriptPath },
+                workerData.homeDir,
+                'win32',
+              )
+              parentPort.postMessage('done')
+            })().catch((error) => {
+              throw error
+            })
+          `,
+          {
+            eval: true,
+            workerData: { moduleUrl, start, execPath: process.execPath, scriptPath, homeDir },
+          },
+        ),
+    )
+
+    const completed = workers.map(
+      (worker) =>
+        new Promise<void>((resolve, reject) => {
+          worker.on('message', (message) => {
+            if (message === 'done') resolve()
+          })
+          worker.on('error', reject)
+          worker.on('exit', (code) => {
+            if (code !== 0) reject(new Error(`adapter installer worker exited ${code}`))
+          })
+        }),
+    )
+    await Promise.all(
+      workers.map(
+        (worker) =>
+          new Promise<void>((resolve) => {
+            worker.once('message', () => resolve())
+          }),
+      ),
+    )
+    Atomics.store(new Int32Array(start), 0, 1)
+    Atomics.notify(new Int32Array(start), 0)
+
+    await Promise.all(completed)
+    expect(inspectHookAdapter(homeDir, 'win32').problems).toEqual([])
+  })
+
   it('keeps POSIX adapter source bytes identical to the trusted /bin/sh form', () => {
     const target = {
       execPath: '/usr/local/bin/node',
