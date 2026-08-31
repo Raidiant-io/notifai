@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [10.1.5](https://github.com/Raidiant-io/notifai/compare/v10.1.4...v10.1.5) (2026-08-31)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.5 to 6.0.6
+
 ## [10.1.4](https://github.com/Raidiant-io/notifai/compare/v10.1.3...v10.1.4) (2026-08-31)
 
 
