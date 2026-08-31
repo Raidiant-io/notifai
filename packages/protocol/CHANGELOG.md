@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [6.0.5](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.4...protocol-v6.0.5) (2026-08-31)
+
+
+### Bug Fixes
+
+* **cli:** prevent service contract skew ([458e817](https://github.com/Raidiant-io/notifai/commit/458e817c4e0a134a1febdb3d42606bced21fe112))
+
 ## [6.0.4](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.3...protocol-v6.0.4) (2026-08-30)
 
 
