@@ -1,8 +1,12 @@
 name: release-please
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact main commit SHA that release automation may inspect
+        required: true
+        type: string
 
 jobs:
   release-please:
@@ -21,6 +25,33 @@ jobs:
       protocol_tag: ${{ steps.release-please.outputs['packages/protocol--tag_name'] }}
       protocol_sha: ${{ steps.release-please.outputs['packages/protocol--sha'] }}
     steps:
+      - name: Reject a stale or non-main release dispatch
+        id: predecessor
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "release-please must be dispatched at the exact current main commit" >&2
+            exit 1
+          fi
+          predecessor=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/git/commits/${ACTUAL_SHA}" \
+            --jq '.parents | if length == 1 then .[0].sha else error("main commit must have one verified predecessor") end')
+          if [[ ! "$predecessor" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not verify the exact main predecessor" >&2
+            exit 1
+          fi
+          printf 'sha=%s\n' "$predecessor" >> "$GITHUB_OUTPUT"
+
       # v4.4.1 bundles release-please 17.3.0. The config schema is pinned to
       # that executable version; evaluate action upgrades as separate changes.
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
@@ -53,7 +84,7 @@ jobs:
           PROTOCOL_RELEASE_CREATED: ${{ steps.release-please.outputs['packages/protocol--release_created'] }}
           PROTOCOL_TAG: ${{ steps.release-please.outputs['packages/protocol--tag_name'] }}
           PROTOCOL_SHA: ${{ steps.release-please.outputs['packages/protocol--sha'] }}
-        run: node scripts/verify-release-please-output.mjs "${{ github.event.before }}"
+        run: node scripts/verify-release-please-output.mjs "${{ steps.predecessor.outputs.sha }}"
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: ${{ steps.release-please.outputs.prs_created == 'true' }}
         with:

@@ -15,6 +15,9 @@ jobs:
   dispatch-integrity:
     runs-on: ubuntu-latest
     timeout-minutes: 1
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Reject a stale or non-tag dispatch
         env:
@@ -50,6 +53,11 @@ jobs:
           node scripts/check-public-provider-posture.mjs
           --release-tag "$GITHUB_REF_NAME"
           --expected-sha "${{ inputs.expected_sha }}"
+
+      - name: Require successful CI evidence at the exact release SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/require-ci-evidence.mjs --expected-sha "${{ inputs.expected_sha }}"
 
   npm:
     needs: dispatch-integrity
@@ -99,15 +107,8 @@ jobs:
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
-      - name: Verify the clean release checkout
+      - name: Verify release-specific artifact tooling
         run: |
-          pnpm check:boundary:self-test
-          pnpm check:boundary
-          pnpm build
-          pnpm -r test
-          pnpm lint
-          pnpm -r typecheck
-          pnpm check:release
           node --test \
             scripts/check-packed-boundary.test.mjs \
             scripts/verify-packed-install.test.mjs \

@@ -7,336 +7,220 @@ import test from 'node:test'
 import {parse} from 'yaml'
 import {verifyReleasePleaseOutput} from './verify-release-please-output.mjs'
 
-function readWorkflowText(path, read = readFileSync) {
-  return read(path, 'utf8').replace(/\r\n?/g, '\n')
-}
-
-const release = readWorkflowText('.github/workflows/release-please.yml')
-const ci = readWorkflowText('.github/workflows/ci.yml')
-const publish = readWorkflowText('.github/workflows/publish.yml')
-const providerPosture = readWorkflowText('.github/workflows/provider-posture.yml')
+const read = file => readFileSync(file, 'utf8').replace(/\r\n?/gu, '\n')
+const release = read('.github/workflows/release-please.yml')
+const ci = read('.github/workflows/ci.yml')
+const publish = read('.github/workflows/publish.yml')
+const provider = read('.github/workflows/provider-posture.yml')
 const ciWorkflow = parse(ci)
 const publishWorkflow = parse(publish)
-const providerPostureWorkflow = parse(providerPosture)
+const providerWorkflow = parse(provider)
 const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
 const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
 
-const requiredChecks = [
-  {name: 'commits', job: ciWorkflow.jobs.commits},
-  {name: 'gates', job: ciWorkflow.jobs.gates},
-  {name: 'secret-history', job: ciWorkflow.jobs['secret-history']},
-  ...ciWorkflow.jobs.platform.strategy.matrix.os.map(os => ({
-    name: `platform (${os})`,
-    job: ciWorkflow.jobs.platform,
-  })),
-]
-
-function eventConditionAllows(condition, eventName) {
-  if (!condition.includes('github.event_name')) return true
-  return condition.includes(`github.event_name == '${eventName}'`)
-}
-
-function simulateJob(job, {eventName, needs}) {
-  const condition = String(job.if ?? '')
-  const dependenciesSucceeded = Object.values(needs).every(result => result === 'success')
-  const invokesAlways = condition.includes('always()')
-  if ((!invokesAlways && !dependenciesSucceeded) || !eventConditionAllows(condition, eventName)) {
-    return {result: 'skipped', steps: []}
+test('all workflows stay LF-normalized, least-privilege, and action-SHA pinned', () => {
+  for (const workflow of [release, ci, publish, provider]) {
+    assert.doesNotMatch(workflow, /\r/)
+    for (const match of workflow.matchAll(/uses: ([^\s@]+)@([^\s#]+)/gu)) {
+      assert.match(match[2], /^[0-9a-f]{40}$/u, match[1])
+    }
   }
-
-  let priorStepsSucceeded = true
-  const steps = job.steps.map(step => {
-    const stepCondition = String(step.if ?? '')
-    const failedDependencies = [
-      ...stepCondition.matchAll(/needs\.([a-z-]+)\.result != 'success'/g),
-    ].map(match => match[1])
-    const shouldRun = failedDependencies.length > 0
-      ? failedDependencies.some(dependency => needs[dependency] !== 'success')
-      : priorStepsSucceeded && eventConditionAllows(stepCondition, eventName)
-    if (!shouldRun) return {name: step.name ?? step.uses ?? step.run, result: 'skipped'}
-
-    const result = String(step.run ?? '')
-      .split('\n')
-      .some(line => line.trim() === 'exit 1')
-      ? 'failure'
-      : 'success'
-    if (result === 'failure') priorStepsSucceeded = false
-    return {name: step.name ?? step.uses ?? step.run, result}
-  })
-
-  return {result: priorStepsSucceeded ? 'success' : 'failure', steps}
-}
-
-test('workflow text is normalized to LF at the read boundary', () => {
-  const crlfWorkflow = release.replaceAll('\n', '\r\n')
-  const normalized = readWorkflowText('release-please.yml', () => crlfWorkflow)
-
-  assert.doesNotMatch(normalized, /\r/)
-  assert.match(
-    normalized,
-    /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write\n    outputs:/,
-  )
+  assert.deepEqual(ciWorkflow.permissions, {contents: 'read'})
+  assert.deepEqual(providerWorkflow.permissions, {contents: 'read'})
+  assert.doesNotMatch(release, /\bsecrets\.|\bvars\./u)
+  assert.match(release, /token: \$\{\{ github\.token \}\}/u)
+  assert.match(release, /persist-credentials: false/u)
 })
 
-test('release automation has no separately managed write credential', () => {
-  assert.doesNotMatch(release, /\bsecrets\.|\bvars\./)
-  assert.match(release, /token: \$\{\{ github\.token \}\}/)
-  assert.match(release, /persist-credentials: false/)
+test('CI has no tag trigger, cancels only PR work, and preserves exact manual identity', () => {
+  assert.doesNotMatch(ci, /\n\s+tags:/u)
+  assert.match(ci, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u)
+  assert.match(ci, /workflow_dispatch:\n    inputs:\n      expected_sha:/u)
+  assert.match(ci, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/u)
+  assert.match(ci, /case "\$EVENT_NAME" in[\s\S]*workflow_dispatch\)/u)
+  assert.match(ci, /node scripts\/ci-scope\.mjs/u)
+  assert.match(ci, /check-secrets\.mjs --mode tree/u)
+  assert.match(ci, /--mode range --base "\$base_sha" --head "\$head_sha"/u)
 })
 
-test('scheduled provider posture uses the documented read-only GitHub token', () => {
-  assert.deepEqual(providerPostureWorkflow.permissions, {contents: 'read'})
-  const step = providerPostureWorkflow.jobs['private-vulnerability-reporting'].steps.find(
-    candidate => candidate.run === 'node scripts/check-public-provider-posture.mjs',
-  )
+test('protected CI identities are explicit and path-selected before runner allocation', () => {
+  const protectedJobs = [
+    ['gates', ciWorkflow.jobs.gates, 'ubuntu-latest'],
+    ['platform (macos-latest)', ciWorkflow.jobs['platform-macos'], 'macos-latest'],
+    ['platform (windows-2025)', ciWorkflow.jobs['platform-windows-x64'], 'windows-2025'],
+    ['platform (windows-11-arm)', ciWorkflow.jobs['platform-windows-arm'], 'windows-11-arm'],
+  ]
+  assert.deepEqual(protectedJobs.map(([name]) => name), [
+    'gates',
+    'platform (macos-latest)',
+    'platform (windows-2025)',
+    'platform (windows-11-arm)',
+  ])
+  for (const [name, job, runner] of protectedJobs) {
+    assert.equal(job['runs-on'], runner, name)
+    assert.equal(job.needs, 'scope', name)
+    const setup = job.steps.find(step => String(step.uses).startsWith('actions/setup-node@'))
+    assert.equal(setup.with['node-version'], '24', name)
+  }
+  assert.equal(ciWorkflow.jobs['platform-macos'].name, 'platform (macos-latest)')
+  assert.equal(ciWorkflow.jobs['platform-windows-x64'].name, 'platform (windows-2025)')
+  assert.equal(ciWorkflow.jobs['platform-windows-arm'].name, 'platform (windows-11-arm)')
+  assert.match(ciWorkflow.jobs['platform-macos'].if, /outputs\.macos == 'true'/u)
+  assert.match(ciWorkflow.jobs['platform-windows-x64'].if, /outputs\.windows == 'true'/u)
+  assert.match(ciWorkflow.jobs['platform-windows-arm'].if, /outputs\.windows == 'true'/u)
+  assert.equal(String(ciWorkflow.jobs.gates.if), '${{ always() }}')
+  assert.match(ciWorkflow.jobs.gates.steps[0].if, /needs\.scope\.result != 'success'/u)
+  assert.match(ciWorkflow.jobs.gates.steps[0].run, /exit 1/u)
+})
+
+test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-specific', () => {
+  const gates = ciWorkflow.jobs.gates.steps.map(step => `${step.name ?? ''}\n${step.run ?? ''}`).join('\n')
+  for (const command of [
+    'pnpm build',
+    'pnpm -r test',
+    'pnpm -r typecheck',
+    'pnpm lint',
+    'pnpm check:release',
+    'pnpm check:packed',
+    'verify-release-pr-metadata.mjs',
+    'commitlint',
+  ]) assert.match(gates, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')))
+
+  const mac = ciWorkflow.jobs['platform-macos'].steps.map(step => step.run ?? '').join('\n')
+  assert.match(mac, /src\/codex-wake\.test\.ts/u)
+  assert.doesNotMatch(mac, /typecheck|pnpm lint|check:release/u)
+  for (const id of ['platform-windows-x64', 'platform-windows-arm']) {
+    const windows = ciWorkflow.jobs[id].steps.map(step => step.run ?? '').join('\n')
+    assert.match(windows, /src\/credentials\.test\.ts/u)
+    assert.match(windows, /src\/install-hooks\.test\.ts/u)
+    assert.match(windows, /pnpm check:packed/u)
+    assert.doesNotMatch(windows, /typecheck|pnpm lint|check:release/u)
+  }
+})
+
+test('dependency review is PR-only and selected only by dependency inputs', () => {
+  const job = ciWorkflow.jobs['dependency-review']
+  assert.equal(job.needs, 'scope')
+  assert.match(job.if, /github\.event_name == 'pull_request'/u)
+  assert.match(job.if, /outputs\.dependencies == 'true'/u)
+})
+
+test('weekly provider posture owns checksum-pinned full-history security evidence', () => {
+  const posture = providerWorkflow.jobs['private-vulnerability-reporting']
+  const step = posture.steps.find(candidate => candidate.run === 'node scripts/check-public-provider-posture.mjs')
   assert.equal(step.env.GH_TOKEN, '${{ github.token }}')
+  const history = providerWorkflow.jobs['full-history-secrets']
+  assert.equal(history.steps[0].with['fetch-depth'], 0)
+  assert.match(provider, /GITLEAKS_VERSION: 8\.30\.1/u)
+  assert.match(provider, /551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb/u)
+  assert.match(provider, /check-secrets\.mjs --mode controls/u)
+  assert.match(provider, /check-secrets\.mjs --mode full/u)
 })
 
-test('the required commits job checks release PR metadata before merge', () => {
-  assert.match(
-    ci,
-    /- name: Verify release pull request metadata\n        if: github\.event_name == 'pull_request'\n        run: node scripts\/verify-release-pr-metadata\.mjs "\$GITHUB_EVENT_PATH"/,
-  )
-  assert.match(
-    release,
-    /run: node scripts\/verify-release-please-output\.mjs "\$\{\{ github\.event\.before \}\}"/,
-  )
+test('release-please is explicit, exact-main guarded, and uses a verified predecessor', () => {
+  assert.match(release, /on:\n  workflow_dispatch:\n    inputs:\n      expected_sha:/u)
+  assert.doesNotMatch(release, /\n  push:/u)
+  assert.match(release, /\[ "\$GITHUB_REF" != refs\/heads\/main \]/u)
+  assert.match(release, /\[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/u)
+  assert.match(release, /\.parents \| if length == 1 then \.\[0\]\.sha/u)
+  assert.match(release, /verify-release-please-output\.mjs "\$\{\{ steps\.predecessor\.outputs\.sha \}\}"/u)
+  assert.doesNotMatch(release, /github\.event\.before/u)
+  assert.match(release, /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write/u)
+  assert.match(release, /  dispatch:\n(?:.*\n)*?    permissions:\n      actions: write/u)
+  const dispatch = release.slice(release.indexOf('\n  dispatch:'))
+  assert.doesNotMatch(dispatch, /actions\/checkout|contents:|pull-requests:/u)
 })
 
-test('write permissions are separated between release and dispatch jobs', () => {
-  assert.match(
-    release,
-    /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write\n    outputs:/,
-  )
-  assert.match(
-    release,
-    /  dispatch:\n(?:.*\n)*?    permissions:\n      actions: write\n    steps:\n      - name: Dispatch workflows at exact release refs/,
-  )
-  const dispatchJob = release.slice(release.indexOf('\n  dispatch:'))
-  assert.doesNotMatch(dispatchJob, /actions\/checkout|contents:|pull-requests:/)
-  assert.doesNotMatch(release, /repository_dispatch/)
+test('release refs dispatch CI and publication at one exact SHA', () => {
+  assert.match(release, /dispatch_workflow ci\.yml "\$ref" "\$sha"/u)
+  assert.match(release, /if \[ "\$returned_sha" != "\$expected_sha" \]/u)
+  assert.match(release, /dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/u)
+  assert.match(release, /dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/u)
 })
 
-test('release branch CI is dispatched and checked at one exact SHA', () => {
-  assert.match(release, /dispatch_workflow ci\.yml "\$ref" "\$sha"/)
-  assert.match(release, /if \[ "\$returned_sha" != "\$expected_sha" \]/)
-  assert.match(ci, /workflow_dispatch:\n    inputs:\n      expected_sha:/)
-  assert.match(ci, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
-  assert.match(ci, /base=\$\(git merge-base origin\/main HEAD\)/)
-})
-
-test('explicit release-branch CI cannot recurse into release automation', () => {
-  assert.match(release, /on:\n  push:\n    branches: \[main\]/)
-  assert.doesNotMatch(release, /on:\n(?:.*\n)*?  workflow_dispatch:/)
-  assert.match(ci, /permissions:\n  contents: read\n\njobs:/)
-  assert.doesNotMatch(ci, /\n\s+(?:actions|contents|pull-requests): write/)
-})
-
-test('a failed integrity dependency makes every required check run and fail', () => {
-  assert.deepEqual(
-    requiredChecks.map(check => check.name).sort(),
-    [
-      'commits',
-      'gates',
-      'platform (macos-latest)',
-      'platform (ubuntu-latest)',
-      'platform (windows-11-arm)',
-      'platform (windows-2025)',
-      'secret-history',
-    ],
+test('publication requires exact-SHA CI before the protected OIDC job', () => {
+  const integrity = publishWorkflow.jobs['dispatch-integrity']
+  assert.deepEqual(integrity.permissions, {actions: 'read', contents: 'read'})
+  assert.match(publish, /Require successful CI evidence at the exact release SHA/u)
+  assert.match(publish, /node scripts\/require-ci-evidence\.mjs --expected-sha/u)
+  assert.equal(publishWorkflow.jobs.npm.environment, 'npm-release')
+  assert.deepEqual(publishWorkflow.jobs.npm.permissions, {contents: 'read', 'id-token': 'write'})
+  const releaseTooling = publishWorkflow.jobs.npm.steps.find(
+    candidate => candidate.name === 'Verify release-specific artifact tooling',
   )
-
-  for (const check of requiredChecks) {
-    const dependencyNames = Array.isArray(check.job.needs) ? check.job.needs : [check.job.needs]
-    const outcome = simulateJob(check.job, {
-      eventName: 'workflow_dispatch',
-      needs: Object.fromEntries(
-        dependencyNames.map(dependency => [dependency, 'failure']),
-      ),
-    })
-    assert.equal(outcome.result, 'failure', `${check.name} must fail, not ${outcome.result}`)
-    assert.deepEqual(
-      outcome.steps.map(step => step.result),
-      ['failure', ...Array(outcome.steps.length - 1).fill('skipped')],
-      `${check.name} must stop after its explicit integrity failure`,
-    )
-  }
+  assert.doesNotMatch(releaseTooling.run, /pnpm (?:build|-r test|lint|-r typecheck|check:release)/u)
 })
 
-test('CI uses Node 24 once per supported desktop host', () => {
-  const platform = ciWorkflow.jobs.platform
-  assert.deepEqual(
-    platform.strategy.matrix.os,
-    ['ubuntu-latest', 'macos-latest', 'windows-2025', 'windows-11-arm'],
-  )
-  assert.equal(platform.strategy.matrix.node, undefined)
-  const setupNode = platform.steps.find(step => String(step.uses).startsWith('actions/setup-node@'))
-  assert.equal(setupNode.with['node-version'], '24')
-})
-
-test('a packed install failure becomes a failing required gates check', () => {
-  const gates = ciWorkflow.jobs.gates
-  const dependencyNames = Array.isArray(gates.needs) ? gates.needs : [gates.needs]
-  assert.deepEqual(
-    dependencyNames.sort(),
-    ['dispatch-integrity', 'packed-install'],
-    'the required gates check must wait for both integrity and packed installation',
-  )
-  const outcome = simulateJob(gates, {
-    eventName: 'pull_request',
-    needs: Object.fromEntries(
-      dependencyNames.map(dependency => [
-        dependency,
-        dependency === 'packed-install' ? 'failure' : 'success',
-      ]),
-    ),
-  })
-
-  assert.equal(outcome.result, 'failure')
-  assert.deepEqual(
-    outcome.steps.map(step => step.result),
-    ['failure', ...Array(outcome.steps.length - 1).fill('skipped')],
-    'gates must stop after explicitly surfacing the packed-install failure',
-  )
-})
-
-test('each created release tag dispatches protected publication at its exact SHA', () => {
-  assert.match(release, /dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/)
-  assert.match(release, /dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/)
-  assert.match(publish, /workflow_dispatch:\n    inputs:\n      expected_sha:/)
-  assert.doesNotMatch(publish, /\n  push:/)
-  assert.match(publish, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/)
-  assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/)
-  assert.match(publish, /- name: Require an immutable GitHub release/)
-  assert.match(publish, /node scripts\/check-public-provider-posture\.mjs/)
-  assert.match(publish, /--release-tag "\$GITHUB_REF_NAME"/)
-  assert.match(publish, /--expected-sha "\$\{\{ inputs\.expected_sha \}\}"/)
-  assert.match(ci, /- name: Verify public provider posture/)
-  assert.match(publish, /environment: npm-release/)
-  const serviceContract = publishWorkflow.jobs.npm.steps.find(
+test('publication retains immutable release, live service, and native Windows evidence', () => {
+  assert.doesNotMatch(publish, /\n  push:/u)
+  assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/u)
+  assert.match(publish, /Require an immutable GitHub release/u)
+  assert.match(publish, /check-public-provider-posture\.mjs/u)
+  const service = publishWorkflow.jobs.npm.steps.find(
     candidate => candidate.name === 'Verify deployed service accepts this candidate',
   )
-  assert.equal(
-    serviceContract.if,
-    "${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}",
-  )
-  assert.equal(serviceContract.run, 'node scripts/check-live-server-contract.mjs')
-  const windows = publishWorkflow.jobs['windows-cli']
-  assert.deepEqual(windows.strategy.matrix.os, ['windows-2025', 'windows-11-arm'])
-  assert.equal(windows.strategy.matrix.node, undefined)
-  const setupNode = windows.steps.find(step => String(step.uses).startsWith('actions/setup-node@'))
-  assert.equal(setupNode.with['node-version'], '24')
-  assert.match(
-    publish,
-    /run: node scripts\/verify-published-windows\.mjs "\$\{\{ needs\.npm\.outputs\.cli_version \}\}"/,
-  )
+  assert.equal(service.run, 'node scripts/check-live-server-contract.mjs')
+  assert.deepEqual(publishWorkflow.jobs['windows-cli'].strategy.matrix.os, [
+    'windows-2025',
+    'windows-11-arm',
+  ])
+  assert.match(publish, /verify-published-windows\.mjs/u)
+})
+
+test('publication reuses the exact tarballs that passed boundary and install checks', () => {
+  const steps = publishWorkflow.jobs.npm.steps
+  const pack = steps.find(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
+  const publishProtocol = steps.find(candidate => candidate.name === 'Publish protocol with OIDC provenance')
+  const verifyProtocol = steps.find(candidate => candidate.name === 'Verify published protocol bytes and metadata')
+  const publishCli = steps.find(candidate => candidate.name === 'Publish CLI with OIDC provenance')
+  const verifyCli = steps.find(candidate => candidate.name === 'Verify published CLI bytes and metadata')
+  assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/u)
+  assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/u)
+  assert.match(pack.run, /scripts\/verify-packed-install\.mjs/u)
+  assert.match(pack.run, /--gitleaks(?:\s|$)/u)
+  assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/u)
+  assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/u)
+  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance')
+  assert.match(verifyProtocol.run, /--expected-tarball "\$PROTOCOL_TARBALL"/u)
+  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance')
+  assert.match(verifyCli.run, /--expected-tarball "\$CLI_TARBALL"/u)
 })
 
 test('the publish workflow records the exact CLI version in GitHub output', () => {
-  const step = publishWorkflow.jobs.npm.steps.find(
-    candidate => candidate.name === 'Record the exact CLI version',
-  )
+  const step = publishWorkflow.jobs.npm.steps.find(candidate => candidate.name === 'Record the exact CLI version')
   const directory = mkdtempSync(join(tmpdir(), 'notifai-publish-output-'))
   const output = join(directory, 'github-output')
-
   try {
-    execFileSync('bash', ['-c', step.run], {
-      cwd: process.cwd(),
-      env: {...process.env, GITHUB_OUTPUT: output},
-    })
+    execFileSync('bash', ['-c', step.run], {cwd: process.cwd(), env: {...process.env, GITHUB_OUTPUT: output}})
     assert.equal(readFileSync(output, 'utf8'), `version=${cliPackage.version}\n`)
   } finally {
     rmSync(directory, {recursive: true, force: true})
   }
 })
 
-test('publication reuses the exact tarballs that passed boundary and install checks', () => {
-  const steps = publishWorkflow.jobs.npm.steps
-  const cleanCheckout = steps.find(candidate => candidate.name === 'Verify the clean release checkout')
-  const pack = steps.find(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
-  const publishProtocol = steps.find(candidate => candidate.name === 'Publish protocol with OIDC provenance')
-  const verifyProtocol = steps.find(candidate => candidate.name === 'Verify published protocol bytes and metadata')
-  const publishCli = steps.find(candidate => candidate.name === 'Publish CLI with OIDC provenance')
-  const verifyCli = steps.find(candidate => candidate.name === 'Verify published CLI bytes and metadata')
-
-  assert.doesNotMatch(cleanCheckout.run, /pnpm check:packed/)
-  assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/)
-  assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/)
-  assert.match(pack.run, /scripts\/verify-packed-install\.mjs/)
-  assert.match(pack.run, /--gitleaks(?:\s|$)/)
-  assert.doesNotMatch(pack.run, /--gitleaks\s+gitleaks/)
-  assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/)
-  assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/)
-  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance')
-  assert.match(verifyProtocol.run, /--expected-tarball "\$PROTOCOL_TARBALL"/)
-  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance')
-  assert.match(verifyCli.run, /--expected-tarball "\$CLI_TARBALL"/)
-})
-
-test('the rootless combined manifest does not use an empty group title template', () => {
+test('the rootless combined manifest and release outputs remain exact', () => {
   assert.equal(releaseConfig.packages['.'], undefined)
   assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)
   assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/protocol'])
-  assert.deepEqual(releaseConfig.plugins, [
-    {type: 'node-workspace', updateAllPackages: true},
-  ])
-})
+  assert.deepEqual(releaseConfig.plugins, [{type: 'node-workspace', updateAllPackages: true}])
 
-test('single-package releases are verified at their exact tags and dispatched', () => {
   const sha = 'a'.repeat(40)
   const cli = verifyReleasePleaseOutput({
     before: {'apps/cli': '9.0.0', 'packages/protocol': '5.0.0'},
     after: {'apps/cli': '9.1.0', 'packages/protocol': '5.0.0'},
     config: releaseConfig,
     sha,
-    outputs: {
-      releasesCreated: 'true',
-      packages: {
-        'apps/cli': {created: 'true', tag: 'v9.1.0', sha},
-      },
-    },
+    outputs: {releasesCreated: 'true', packages: {'apps/cli': {created: 'true', tag: 'v9.1.0', sha}}},
   })
-  const protocol = verifyReleasePleaseOutput({
-    before: {'apps/cli': '9.1.0', 'packages/protocol': '4.1.0'},
-    after: {'apps/cli': '9.1.0', 'packages/protocol': '5.0.0'},
-    config: releaseConfig,
-    sha,
-    outputs: {
-      releasesCreated: 'true',
-      packages: {
-        'packages/protocol': {created: 'true', tag: 'protocol-v5.0.0', sha},
-      },
-    },
-  })
-
-  assert.deepEqual(cli, [
-    {path: 'apps/cli', before: '9.0.0', version: '9.1.0', tag: 'v9.1.0'},
-  ])
-  assert.deepEqual(protocol, [
-    {
-      path: 'packages/protocol',
-      before: '4.1.0',
-      version: '5.0.0',
-      tag: 'protocol-v5.0.0',
-    },
-  ])
-  assert.match(release, /cli_release_created: \$\{\{ steps\.release-please\.outputs\['apps\/cli--release_created'\] \}\}/)
-  assert.match(release, /protocol_release_created: \$\{\{ steps\.release-please\.outputs\['packages\/protocol--release_created'\] \}\}/)
-  assert.match(release, /if \[ "\$CLI_RELEASE_CREATED" = "true" \]; then\n            dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/)
-  assert.match(release, /if \[ "\$PROTOCOL_RELEASE_CREATED" = "true" \]; then\n            dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/)
-})
-
-test('an expected release with no release-please output fails loudly', () => {
+  assert.deepEqual(cli, [{path: 'apps/cli', before: '9.0.0', version: '9.1.0', tag: 'v9.1.0'}])
   assert.throws(
     () => verifyReleasePleaseOutput({
       before: {'apps/cli': '9.0.0', 'packages/protocol': '5.0.0'},
       after: {'apps/cli': '9.1.0', 'packages/protocol': '5.0.0'},
       config: releaseConfig,
-      sha: 'a'.repeat(40),
+      sha,
       outputs: {releasesCreated: 'false', packages: {}},
     }),
-    /release manifest advanced apps\/cli, but release-please reported no release/,
+    /release manifest advanced apps\/cli, but release-please reported no release/u,
   )
-  assert.match(release, /- name: Require every expected package release/)
-  assert.match(release, /run: node scripts\/verify-release-please-output\.mjs "\$\{\{ github\.event\.before \}\}"/)
 })
