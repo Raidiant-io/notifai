@@ -148,7 +148,13 @@ export function questionRoutingReady(readiness: Readiness): boolean {
       state.id === 'question-routing-settings' ||
       (state.id === 'hooks' || state.id.startsWith('hooks-')) &&
         state.id !== 'hooks-detected' &&
-        state.id !== 'hooks-wake-route',
+        !(
+          state.id === 'hooks-wake-route' &&
+          typeof state.technical === 'object' &&
+          state.technical !== null &&
+          'held_stop_continuation' in state.technical &&
+          state.technical.held_stop_continuation === true
+        ),
   )
   return relevant.length > 0 && relevant.every((state) => state.status === 'ready')
 }

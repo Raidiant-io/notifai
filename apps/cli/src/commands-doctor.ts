@@ -1516,6 +1516,7 @@ function wakeRouteCheck(
         name: 'hooks (wake route)',
         ok: false,
         reportOnly: true,
+        technical: { held_stop_continuation: true },
         detail:
           'direct inbox wake is unavailable on Windows; the held Stop still returns the answer to this same Agent Session without another User prompt',
       }
@@ -1546,6 +1547,7 @@ function wakeRouteCheck(
       name: 'hooks (wake route)',
       ok: readiness.state === 'ready',
       reportOnly: true,
+      technical: { held_stop_continuation: true },
       detail:
         readiness.state === 'ready'
           ? `the held Codex turn continues from its own hook, and after it returns ${readiness.lockDirectory} can prove a stopped thread unowned before resuming it`

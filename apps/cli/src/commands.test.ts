@@ -403,6 +403,7 @@ function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
   const home = path.join(cwd, 'home')
   return {
     HOME: home,
+    USERPROFILE: home,
     CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
     CODEX_HOME: path.join(home, '.codex'),
     OPENCODE_CONFIG_DIR: path.join(home, '.config', 'opencode'),
@@ -8556,13 +8557,13 @@ describe('asking before the hooks have ever run', () => {
       (state) => state.id === 'hooks-answer-continuation',
     )
     const directWake = readiness.states.find((state) => state.id === 'hooks-wake-route')
-
-    expect(result.question_routing_ready).toBe(true)
-    expect(result.direct_wake_ready).toBe(false)
     expect(continuation).toMatchObject({ status: 'ready' })
     expect(continuation?.detail).toContain('held through the complete answer window')
     expect(continuation?.detail).toContain('same Agent Session')
     expect(directWake).toMatchObject({ status: 'optional-gap', title: 'Direct wake route' })
+    expect(directWake?.technical).toEqual({ held_stop_continuation: true })
+    expect(result.question_routing_ready).toBe(true)
+    expect(result.direct_wake_ready).toBe(false)
     expect(directWake?.detail).toContain('held Stop still returns the answer')
     expect(directWake?.detail).not.toContain("next turn rather than on their own")
     expect(directWake?.remedy).toBeUndefined()

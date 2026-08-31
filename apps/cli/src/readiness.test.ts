@@ -51,11 +51,38 @@ describe('Question Routing readiness', () => {
           title: 'Direct wake route',
           status: 'optional-gap' as const,
           detail: 'the held Stop continuation remains available',
+          technical: { held_stop_continuation: true },
         },
       ],
     }) as { question_routing_ready: boolean; direct_wake_ready: boolean }
 
     expect(result.question_routing_ready).toBe(true)
+    expect(result.direct_wake_ready).toBe(false)
+  })
+
+  it('fails Question Routing closed when POSIX Claude has no wake route', () => {
+    const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
+    const result = readinessJson({
+      states: [
+        ready('question-routing-settings'),
+        ready('hooks'),
+        ready('hooks-active-harness'),
+        ready('hooks-active-session'),
+        ready('hooks-adapter'),
+        ready('hooks-question-admission'),
+        ready('hooks-stop-shape'),
+        ready('hooks-fired'),
+        ready('hooks-answer-continuation'),
+        {
+          id: 'hooks-wake-route',
+          title: 'Direct wake route',
+          status: 'optional-gap' as const,
+          detail: 'the out-of-band waiter cannot wake this Agent Session',
+        },
+      ],
+    }) as { question_routing_ready: boolean; direct_wake_ready: boolean }
+
+    expect(result.question_routing_ready).toBe(false)
     expect(result.direct_wake_ready).toBe(false)
   })
 })
