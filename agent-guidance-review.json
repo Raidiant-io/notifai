@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1b7ece28c5d8600d88e9f38bd905e5d295d0c1ed1233e2fa54613140e21fb797",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after adding an optional Notification Request contract fingerprint. Shipped clients that predate it still omit the header and remain accepted by an additive service; a newer client that gets ahead receives the existing wait-for-service recovery rather than a misleading validation failure. The skill's exit-code and retry guidance already tells agents to act on the named recovery instead of blindly retrying, and the setup, trust, and domain guidance remain unchanged.",
+  "behavior_digest": "sha256:29eb5fc404f9876edb795c94c43a863d9ba0a406d8cb6698dc93f505806de9f7",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after a supported Codex Agent Session stranded a later answer by choosing a bounded send --reply wait. The skill now makes registered ask the default when work needs the User's response, identifies send --reply as a foreground-only mechanism, and states that exit code 3 cannot resume the Agent Session later. Harness-specific continuation, setup, readiness, and domain language remain consistent with that distinction.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -263,6 +263,21 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/exit code 3/i)
   })
 
+  it('makes resumable ask the default when work needs an answer', () => {
+    const ask = section('## Ask a question')
+    const resumable = ask.indexOf('### Default: resume when they answer')
+    const foreground = ask.indexOf('### Bounded foreground wait')
+
+    expect(resumable).toBeGreaterThan(0)
+    expect(foreground).toBeGreaterThan(0)
+    expect(resumable).toBeLessThan(foreground)
+    expect(ask).toMatch(/work needs.*User response.*`ask`/is)
+    expect(ask).toMatch(/`send --reply`.*bounded foreground/is)
+    expect(ask).toMatch(/full answer window.*match.*`--reply-window`/is)
+    expect(ask).toMatch(/exit code 3.*does not.*resume/is)
+    expect(ask).not.toMatch(/blocking briefly.*deliberate way.*pick the answer up later/is)
+  })
+
   it('teaches that closed choices appear after pressing and holding', () => {
     const ask = section('## Ask a question')
     expect(ask).toMatch(/closed choices appear after pressing and holding the\s+notification/i)

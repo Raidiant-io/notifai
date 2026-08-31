@@ -175,46 +175,14 @@ notification.
 `send --reply`, it is the *first line of the body* — the title is not the
 question — and context follows after a blank line.
 
-There are two ways to ask, and the difference is who waits. The question flags
-are the same on both: `--choice` once per answer, `--multi` when several may
-genuinely be combined.
+The two ways to ask differ in who owns continuation. Both use `--choice` once
+per answer and `--multi` when answers may combine.
 
-### Wait for the answer now
+### Default: resume when they answer
 
-When the current command cannot continue without the answer:
-
-```bash
-notifai send --reply \
-  --title "Schema change ready to deploy" \
-  --body "Deploy the schema change to production now?
-
-It touches live order data; staging is green." \
-  --choice "Deploy now" --choice "Wait for off-peak" \
-  --reply-timeout 900
-```
-
-Two different clocks, and confusing them is the usual mistake:
-`--reply-timeout` is how long *this command* blocks (default 900s);
-`--reply-window` is how long the answer is still *accepted* (default a day, set
-by `reply_window_seconds`). Blocking briefly against a long window is the
-deliberate way to stop waiting and pick the answer up later:
-
-```bash
-notifai replies <request_id>          # the answer, whenever it landed
-notifai close <request_id|question_id> # retire one question, including an unpushed ask id
-notifai close --pending               # retire this Agent Session's outstanding questions, including ones not yet pushed
-```
-
-`send --reply --json` prints one JSON object: the reply result, with the
-delivery receipt embedded under `receipt`.
-
-Exit code 3 means no answer yet — not a delivery failure. On exit 0 the answer
-comes back on stdout and you act on it in the same command.
-
-### Ask, end your turn, and resume when they answer
-
-When the answer should reach you at the start of your next turn, `ask` registers
-the question and returns immediately:
+When work needs a User response before it can continue, use `ask`. It preserves
+the exact return path for the complete answer window without making the
+foreground command its owner:
 
 ```bash
 notifai ask "Which environment should I roll out to?" \
@@ -258,6 +226,35 @@ If `ask` refuses because `ask_notifications` is off, the user has deliberately
 turned question routing off for this scope. Tell them; use the terminal, or a
 blocking `send --reply` — which that setting does not gate — when an answer
 cannot wait for their return.
+
+### Bounded foreground wait
+
+`send --reply` is a bounded foreground wait, not a resumable handoff. Use it
+only when this command will consume the answer before exit, or `ask` reports
+Question Routing unavailable and the owner can stay alive:
+
+```bash
+notifai send --reply \
+  --title "Schema change ready to deploy" \
+  --body "Deploy the schema change to production now?
+
+It touches live order data; staging is green." \
+  --choice "Deploy now" --choice "Wait for off-peak" \
+  --reply-timeout 900
+```
+
+Two different clocks, and confusing them is the usual mistake:
+`--reply-timeout` is how long *this command* blocks (default 900s);
+`--reply-window` is how long the answer is still *accepted* (default a day, set
+by `reply_window_seconds`). A longer acceptance window does not make a timed-out
+foreground command resumable. If an unsupported-harness fallback must own the
+full answer window, make `--reply-timeout` match `--reply-window` before sending;
+do not end the turn while the answer is still required.
+
+`send --reply --json` prints the reply result and receipt. Exit code 3 means no
+answer arrived during the bounded foreground wait — not a Delivery failure —
+and it does not resume the Agent Session later. Never create a duplicate. On
+exit 0, act on the returned answer.
 
 ## When the answer arrives
 
