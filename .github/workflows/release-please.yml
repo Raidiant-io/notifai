@@ -135,10 +135,21 @@ jobs:
       (needs.release-please.outputs.release_refs != '' ||
       needs.release-please.outputs.releases_created == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       actions: write
+      contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait for exact release CI evidence
+        if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/require-ci-evidence.mjs --expected-sha "${{ github.sha }}" --wait
+
       - name: Dispatch workflows at exact release refs
         env:
           GH_TOKEN: ${{ github.token }}

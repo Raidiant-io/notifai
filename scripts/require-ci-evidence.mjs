@@ -8,6 +8,11 @@ const NATIVE_CHECKS = [
   'platform (windows-2025)',
   'platform (windows-11-arm)',
 ]
+const WAIT_TIMEOUT_MS = 18 * 60 * 1_000
+const WAIT_INTERVAL_MS = 10_000
+const PENDING_RUN_STATUSES = new Set(['queued', 'in_progress', 'pending', 'requested', 'waiting'])
+
+class PendingCiEvidenceError extends Error {}
 
 export function validateCiEvidence({runs, jobs, expectedSha}) {
   const successful = runs.filter(run =>
@@ -52,23 +57,21 @@ async function githubJson(path, token, fetcher) {
   return response.json()
 }
 
-export async function requireCiEvidence({repository, expectedSha, token, fetcher = fetch}) {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? '')) {
-    throw new Error('GITHUB_REPOSITORY must identify one owner/repository')
-  }
-  if (!SHA.test(expectedSha ?? '')) throw new Error('expected SHA must be a full lowercase commit SHA')
-  if (!token) throw new Error('GH_TOKEN is required to read exact-SHA CI evidence')
-
-  const query = new URLSearchParams({head_sha: expectedSha, status: 'completed', per_page: '100'})
+async function readCiEvidence({repository, expectedSha, token, fetcher}) {
+  const query = new URLSearchParams({head_sha: expectedSha, per_page: '100'})
   const runPayload = await githubJson(
     `/repos/${repository}/actions/workflows/ci.yml/runs?${query}`,
     token,
     fetcher,
   )
-  const candidates = (runPayload.workflow_runs ?? []).filter(run =>
-    run.head_sha === expectedSha && run.status === 'completed' && run.conclusion === 'success',
-  )
-  if (candidates.length !== 1) return validateCiEvidence({runs: candidates, jobs: [], expectedSha})
+  const exactRuns = (runPayload.workflow_runs ?? []).filter(run => run.head_sha === expectedSha)
+  const candidates = exactRuns.filter(run => run.status === 'completed' && run.conclusion === 'success')
+  if (candidates.length !== 1) {
+    if (candidates.length === 0 && (exactRuns.length === 0 || exactRuns.some(run => PENDING_RUN_STATUSES.has(run.status)))) {
+      throw new PendingCiEvidenceError('exact-SHA CI has not completed successfully yet')
+    }
+    return validateCiEvidence({runs: candidates, jobs: [], expectedSha})
+  }
 
   const jobsPayload = await githubJson(
     `/repos/${repository}/actions/runs/${candidates[0].id}/jobs?filter=latest&per_page=100`,
@@ -81,9 +84,49 @@ export async function requireCiEvidence({repository, expectedSha, token, fetcher
   return validateCiEvidence({runs: candidates, jobs: jobsPayload.jobs ?? [], expectedSha})
 }
 
+function validateInputs({repository, expectedSha, token}) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? '')) {
+    throw new Error('GITHUB_REPOSITORY must identify one owner/repository')
+  }
+  if (!SHA.test(expectedSha ?? '')) throw new Error('expected SHA must be a full lowercase commit SHA')
+  if (!token) throw new Error('GH_TOKEN is required to read exact-SHA CI evidence')
+}
+
+export async function requireCiEvidence({repository, expectedSha, token, fetcher = fetch}) {
+  validateInputs({repository, expectedSha, token})
+  return readCiEvidence({repository, expectedSha, token, fetcher})
+}
+
+export async function waitForCiEvidence({
+  repository,
+  expectedSha,
+  token,
+  fetcher = fetch,
+  timeoutMs = WAIT_TIMEOUT_MS,
+  intervalMs = WAIT_INTERVAL_MS,
+  now = Date.now,
+  sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+}) {
+  validateInputs({repository, expectedSha, token})
+  const startedAt = now()
+  while (true) {
+    try {
+      return await readCiEvidence({repository, expectedSha, token, fetcher})
+    } catch (error) {
+      if (!(error instanceof PendingCiEvidenceError)) throw error
+      const elapsed = now() - startedAt
+      if (elapsed >= timeoutMs) {
+        throw new Error(`timed out waiting for exact-SHA CI after ${Math.ceil(elapsed / 1_000)} seconds`)
+      }
+      await sleep(Math.min(intervalMs, timeoutMs - elapsed))
+    }
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const index = process.argv.indexOf('--expected-sha')
-  requireCiEvidence({
+  const operation = process.argv.includes('--wait') ? waitForCiEvidence : requireCiEvidence
+  operation({
     repository: process.env.GITHUB_REPOSITORY,
     expectedSha: index === -1 ? undefined : process.argv[index + 1],
     token: process.env.GH_TOKEN,
