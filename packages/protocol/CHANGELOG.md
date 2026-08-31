@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [6.0.6](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.5...protocol-v6.0.6) (2026-08-31)
+
+
+### Bug Fixes
+
+* **protocol:** restore publish contract ordering ([#124](https://github.com/Raidiant-io/notifai/issues/124)) ([6426c64](https://github.com/Raidiant-io/notifai/commit/6426c644bc02fe9c6f68afb98f0be52b0133d9ce))
+
 ## [6.0.5](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.4...protocol-v6.0.5) (2026-08-31)
 
 
