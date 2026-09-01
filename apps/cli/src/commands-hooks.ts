@@ -1593,11 +1593,11 @@ export async function closeCommand(
   flags: { json?: boolean; pending?: boolean } = {},
 ): Promise<number> {
   if (flags.pending === true && requestId !== undefined) {
-    deps.io.err('Pass a request id or --pending, not both.')
+    deps.io.err('Pass a question or request id or --pending, not both.')
     return EXIT.usage
   }
   if (flags.pending !== true && requestId === undefined) {
-    deps.io.err('Pass a request id or --pending.')
+    deps.io.err('Pass a question or request id or --pending.')
     return EXIT.usage
   }
 
