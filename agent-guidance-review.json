@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:562b2dffba2fd5a276a5e6f9abf467c3d16cf244d8401a0f0567cfa00b388cb8",
+  "behavior_digest": "sha256:75ac3104ec646ca9dd1d72e2851f48929636cbe18d86de4f0643d8ec8974ddb3",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating exact-session Question Routing from optional direct wake on Windows. The held-Stop continuation and acknowledgement behavior remain unchanged; CLI readiness now serializes an unassessed direct-wake capability as null, and report-only absence carries no impossible reinstall remedy. The skill teaches that direct_wake_ready is optional beside a held continuation and null until assessed; this revision only condenses that wording to remain inside the shipped skill budget. Harness setup still distinguishes POSIX inbox wake from the Windows held-Stop route, and existing Agent Session, Notification Request, and continuation vocabulary remains authoritative.",
+  "reason": "Reviewed the CLI agent surface after a maintainability audit. close now names question ids beside request ids in its positional and both usage errors, matching status and the skill's teaching that a held q_ id resolves without registering a duplicate question; the resolution order itself is unchanged. The push-envelope estimator reserves created_at so offline pre-flight agrees with the service's size check, and the unemitted billing_duplicate_channel code left the error vocabulary. Five exports with no callers and their orphaned imports were deleted; no lifecycle hook, skill wording, harness setup, readiness state, acknowledgement, or continuation behavior changed, and the skill text is untouched.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
