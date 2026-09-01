@@ -143,7 +143,7 @@ dashboard and the iPhone Companion App; the CLI never takes a payment.
 ## Status
 
 Notifai is published under Apache-2.0. The current packages are
-`@raidiant/notifai` <!--x-release-please-start-notifai-->10.1.6<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->6.0.7<!--x-release-please-end-->; their
+`@raidiant/notifai` <!--x-release-please-start-notifai-->10.1.7<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->6.0.8<!--x-release-please-end-->; their
 versions advance independently. Released clients keep ordinary notification
 workflows during the documented compatibility window; newer work is negotiated
 as named capabilities instead of making every version mismatch a product-wide
@@ -181,8 +181,8 @@ to the pinned native `npx skills` flow using the chosen scope. The staging copy
 is removed afterward; readiness hashes the conventional installed directory.
 The `notifai` CLI binary is always a global install (`npm install -g
 @raidiant/notifai`); setup scope does not change it. The human-readable release
-identity is `v<!--x-release-please-start-notifai-->10.1.6<!--x-release-please-end-->`,
-written as `Raidiant-io/notifai#v<!--x-release-please-start-notifai-->10.1.6<!--x-release-please-end-->`
+identity is `v<!--x-release-please-start-notifai-->10.1.7<!--x-release-please-end-->`,
+written as `Raidiant-io/notifai#v<!--x-release-please-start-notifai-->10.1.7<!--x-release-please-end-->`
 in installer source grammar.
 The tag is human-readable release identity, never the install-time trust
 object. A different, extra, or missing packaged file is refused before
