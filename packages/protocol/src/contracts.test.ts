@@ -379,6 +379,21 @@ describe('validateDraft', () => {
     })
   })
 
+  it('carries Notification Request created_at so companions can order by send time', () => {
+    const createdAt = new Date('2026-08-25T12:00:00.000Z')
+    const ids = { requestId: 'req_x', deliveryId: 'del_x', createdAt }
+    const alert = buildApnsEnvelope(draft(), ids, null)
+    expect((alert.payload['notifai'] as Record<string, unknown>)['created_at']).toBe(
+      createdAt.toISOString(),
+    )
+    const fcm = JSON.parse(
+      buildFcmDataEnvelope(draft(), ids, null).data.notifai,
+    ) as Record<string, unknown>
+    expect(fcm['created_at']).toBe(createdAt.toISOString())
+    const omitted = buildApnsEnvelope(draft(), { requestId: 'req_x', deliveryId: 'del_x' }, null)
+    expect((omitted.payload['notifai'] as Record<string, unknown>)['created_at']).toBeUndefined()
+  })
+
   it('carries the delivery receipt token on both alert and silent pushes', () => {
     // The extension authorizes its receipt with this and nothing else, so a
     // payload without it is an extension that cannot report.
@@ -1068,6 +1083,7 @@ describe('validateDraft', () => {
         requestId: 'req_00000000000000000000000000',
         deliveryId: 'del_00000000000000000000000000',
         receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+        createdAt: new Date(0),
       },
       mediaUrl,
     )
@@ -1117,6 +1133,7 @@ describe('validateDraft', () => {
         requestId: 'req_00000000000000000000000000',
         deliveryId: 'del_00000000000000000000000000',
         receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+        createdAt: new Date(0),
       },
       'https://x.invalid/'.padEnd(500, 'a'),
       {
@@ -1196,6 +1213,7 @@ describe('validateDraft', () => {
         requestId: 'req_00000000000000000000000000',
         deliveryId: 'del_00000000000000000000000000',
         receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+        createdAt: new Date(0),
       },
       null,
       'ios',
@@ -1231,6 +1249,7 @@ describe('validateDraft', () => {
         requestId: 'req_00000000000000000000000000',
         deliveryId: 'del_00000000000000000000000000',
         receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+        createdAt: new Date(0),
       },
       null,
       'macos',
