@@ -14,7 +14,7 @@ import {
   describeSource,
   formatValue,
 } from '../config-schema.js'
-import { glyph, pad, style, terminalWidth, width, wrap } from './theme.js'
+import { glyph, pad, style, terminalWidth, wrap } from './theme.js'
 
 /**
  * The full settings listing, grouped and explained.

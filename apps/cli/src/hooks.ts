@@ -34,7 +34,6 @@ import {
   type ApiClient,
 } from './client.js'
 import {
-  loadConfig,
   projectSessionPointerPath,
   sanitizeSessionId,
   sessionConfigPath,

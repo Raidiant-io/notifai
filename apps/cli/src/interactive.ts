@@ -44,7 +44,7 @@ import {
   sendCommand,
   type CommandDeps,
 } from './commands.js'
-import { CONFIG_KEYS, loadConfig, type CliConfig, type ConfigKey } from './config.js'
+import { loadConfig, type CliConfig, type ConfigKey } from './config.js'
 import {
   detectedHarnesses,
   findInstallations,
