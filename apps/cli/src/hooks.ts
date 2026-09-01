@@ -4018,11 +4018,3 @@ export function parseHookInput(raw: string): HookEnvelope {
     return {}
   }
 }
-
-export function resolveHookConfig(
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  sessionId: string | undefined,
-): CliConfig {
-  return loadConfig({ cwd, env, sessionId })
-}

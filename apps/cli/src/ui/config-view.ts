@@ -131,8 +131,3 @@ export function renderConfigPlain(config: CliConfig, explain: boolean): string[]
     return `${key} = ${JSON.stringify(entry.value)}${provenance}`
   })
 }
-
-/** Longest visible line, for callers that need to size a rule or a box. */
-export function widestLine(lines: readonly string[]): number {
-  return Math.max(0, ...lines.map((line) => width(line)))
-}
