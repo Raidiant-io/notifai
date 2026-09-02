@@ -1,6 +1,7 @@
 import type { CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
-import { findOwningSession, readProjectSession } from './hooks.js'
+import { readProjectSession } from './hook-project-sessions.js'
+import { findOwningSession } from './hook-session-state.js'
 
 export interface ResolvedCommandSession {
   sessionId: string

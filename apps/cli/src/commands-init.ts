@@ -41,7 +41,7 @@ import {
   type CompanionPlatform,
 } from './setup-destinations.js'
 import { assessReadiness, remedyLine } from './commands-doctor.js'
-import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hooks.js'
+import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hook-install.js'
 import {
   observedCompanionReceipt,
   readSetupProof,
@@ -58,7 +58,6 @@ import { installHookAdapter } from './hook-adapter.js'
 // ---------------------------------------------------------------------------
 // init
 // ---------------------------------------------------------------------------
-
 
 /** Derive a contract-valid project slug; init alone needs a non-empty fallback. */
 export function projectSlugFrom(name: string): string {
@@ -91,19 +90,16 @@ export interface InitFlags {
   hooks?: boolean
 }
 
-
 /** Long enough for a first controlled Companion install; keep-waiting extends another budget. */
 const DEVICE_BRIDGE_TIMEOUT_MS = 10 * 60 * 1000
 const DEVICE_BRIDGE_POLL_MS = 2_000
 const PROOF_TIMEOUT_MS = 30_000
 const PROOF_POLL_MS = 1_000
 
-
 function formatWaitBudget(milliseconds: number): string {
   const minutes = Math.round(milliseconds / 60_000)
   return minutes === 1 ? '1 minute' : `${minutes} minutes`
 }
-
 
 /**
  * The setup coordinator that observes each prerequisite and advances the ones
@@ -251,7 +247,6 @@ async function closeGap(
 
   return 'failed'
 }
-
 
 function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
   if (devices.length === 0) {

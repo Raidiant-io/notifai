@@ -26,18 +26,15 @@ export {
 } from './commands-send.js'
 /** @public The private service's CLI contract test drives replies through this. */
 export { waitForReply } from './commands-send-support.js'
+export { acknowledgeCommand } from './commands-acknowledge.js'
+export { askCommand, buildQuestions, reportAskFailure } from './commands-ask.js'
+export { closeCommand } from './commands-close.js'
 export {
-  acknowledgeCommand,
-  askCommand,
-  buildQuestions,
-  closeCommand,
   describeHookFailure,
   hookDefersDiagnosticsUntilAfterCleanup,
   hookRunCommand,
-  hooksInstallCommand,
-  hooksUninstallCommand,
-  reportAskFailure,
-} from './commands-hooks.js'
+} from './commands-hook-run.js'
+export { hooksInstallCommand, hooksUninstallCommand } from './commands-hook-install.js'
 export {
   configExplainCommand,
   configSetCommand,

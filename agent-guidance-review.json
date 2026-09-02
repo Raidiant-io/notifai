@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:9bdd0c2fa261fb19c975cab39925cf7cbde7f7c676a33b1a83677dda562ff8a5",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after integrating the protocol-wire alignment with unambiguous attached-image authoring. The protocol package remains the one declaration of the served REST wire, including access, pairing, content-media preview and dimension fields, project updates, push-envelope sizing, and the reduced error vocabulary; close still names both question and request ids. The skill now teaches standard Markdown image syntax, positional attachment references, gallery captions, standalone tiles, and inline thumbnails, while the CLI refuses bare, linked, unattached, and out-of-range media references before sending. Lifecycle hooks, harness setup, readiness states, Question Routing, acknowledgement, continuation behavior, and canonical User, Project, Agent Session, Notification Request, and Companion App vocabulary remain unchanged.",
+  "behavior_digest": "sha256:172b0aff5b423686b0a45c96e97e7ad30ea8082f52e1af8751a25fcd9465809b",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating hook command modules, consolidating shared runtime utilities, preserving baseline sends across service skew, and validating reciprocal Git metadata before targeting a linked worktree's main checkout. These changes preserve the existing Agent Event and Notification Request lifecycle, readiness and recovery instructions, Question Routing behavior, trust boundary, and canonical vocabulary; the worktree validation closes an implementation escape without changing the documented User-owned Project authority. Existing shipped guidance therefore remains accurate and needs no wording change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

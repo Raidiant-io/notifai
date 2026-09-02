@@ -3,6 +3,7 @@ import {
   CLAUDE_PEER_PROTOCOL,
   CLAUDE_POST_SEND_LIVENESS_MS,
   claudeWakeRoute,
+  inspectClaudeInbox,
   observeClaudeSession,
   type ClaudeSessionDescriptor,
   type ClaudeWakeAdapters,
@@ -145,6 +146,22 @@ describe('Claude session observation', () => {
   it('calls a session stopped only when the liveness probe returns no owner', async () => {
     await expect(observeClaudeSession(SESSION_ID, adapters({ agents: [] }))).resolves.toEqual({
       state: 'stopped',
+    })
+  })
+})
+
+describe('Claude inbox release floor', () => {
+  it('reports an unparseable descriptor version instead of treating it as zero', () => {
+    expect(
+      inspectClaudeInbox({
+        pid: 12345,
+        platform: 'darwin',
+        readDescriptor: () => descriptor({ version: '2.next.224' }),
+        socketExists: () => true,
+      }),
+    ).toEqual({
+      state: 'unavailable',
+      reason: 'the Claude Code version 2.next.224 is not a recognised release number',
     })
   })
 })

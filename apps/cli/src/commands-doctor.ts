@@ -24,8 +24,8 @@ import {
 import {
   readLiveProjectSessionPointers,
   readProjectSessionPointer,
-  readSessionState,
-} from './hooks.js'
+} from './hook-project-sessions.js'
+import { readSessionState } from './hook-session-state.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
@@ -79,11 +79,10 @@ import {
   CODEX_HOOK_APPROVAL_USER_ACTION,
   CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM,
   CODEX_STALE_STOP_DEFINITION_PROBLEM,
-  HOOK_EVENTS,
   activeQuestionRouteProblems,
   hookActivationAdvice,
-  requiredHookEvents,
-} from './commands-hooks.js'
+} from './commands-hook-diagnostics.js'
+import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
 import {
   latestPublishedCliVersion,
@@ -101,6 +100,7 @@ import {
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 
 // ---------------------------------------------------------------------------
 // doctor
@@ -169,7 +169,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         status: 'optional-gap',
         detail: scheduled
           ? 'Update Notifai soon to keep sending notifications.'
-          : 'A newer Notifai is available.',
+          : CLI_UPDATE_AVAILABLE,
         technical,
         remedy: {
           by: 'user-here',
@@ -183,7 +183,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         id: 'contract',
         title: 'Notifai update',
         status: 'optional-gap',
-        detail: 'The service is being updated; try again later.',
+        detail: SERVICE_UPDATE_IN_PROGRESS,
         technical,
         remedy: {
           by: 'user-here',
@@ -202,7 +202,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         id: 'contract',
         title: 'Notifai update',
         status: 'optional-gap',
-        detail: 'The service is being updated; try again later.',
+        detail: SERVICE_UPDATE_IN_PROGRESS,
         technical,
         remedy: {
           by: 'user-here',
@@ -223,7 +223,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
       id: 'contract',
       title: 'Notifai update',
       status: 'optional-gap',
-      detail: 'The service is being updated; try again later.',
+      detail: SERVICE_UPDATE_IN_PROGRESS,
       technical: {
         error: err instanceof ApiCallError
           ? { code: err.code, status: err.status }
@@ -666,7 +666,7 @@ async function applyRegistryRecommendation(
   const contract = states.find((state) => state.id === 'contract')
   if (contract === undefined || contract.status === 'gap') return
   contract.status = 'optional-gap'
-  contract.detail = 'A newer Notifai is available.'
+  contract.detail = CLI_UPDATE_AVAILABLE
   contract.remedy = {
     by: 'user-here',
     summary: 'update Notifai',
@@ -1015,7 +1015,6 @@ function checkTitle(name: string): string {
     settings,
   ]
 }
-
 
 interface HookCheck {
   /** No command closes this; only a turn that has not happened yet. */

@@ -22,7 +22,7 @@ import type { OrcaSessionTitleLookup } from './orca-session-title.js'
 import type { QuestionSettlementLaunch } from './question-settlement-process.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
-import { cliUpdateRecoveryCommand } from './cli-update-contract.js'
+import { SERVICE_UPDATE_IN_PROGRESS, cliUpdateRecoveryCommand } from './cli-contract.js'
 
 export interface CommandIo {
   out(line: string): void
@@ -235,7 +235,7 @@ function localRecovery(
         : 'next: Update Notifai on the affected devices.'
     }
     case 'wait_for_service':
-      return 'next: The service is being updated; try again later.'
+      return `next: ${SERVICE_UPDATE_IN_PROGRESS}`
     default:
       return null
   }

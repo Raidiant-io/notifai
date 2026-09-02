@@ -2,19 +2,18 @@ import {
   CAPABILITIES_V1,
   REPLY_MAX_WINDOW_SECONDS,
   validateDraft,
+  type CapabilityDocument,
   type EvidenceSnapshot,
   type ListRepliesResponse,
+  type NotificationDraftT,
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
-import {
-  MIN_REPLY_WINDOW_SECONDS,
-  inspectQuestionState,
-  readSessionState,
-  type QuestionStateView,
-} from './hooks.js'
+import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
+import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
+import { readSessionState } from './hook-session-state.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
@@ -53,6 +52,35 @@ import {
 // send / status
 // ---------------------------------------------------------------------------
 
+/**
+ * Servers from before Notification Request contract fingerprints already
+ * accepted Source Context, but did not persist label provenance. Omitting only
+ * those server-only provenance markers preserves their exact label behavior;
+ * every other contract difference remains an explicit service-skew failure.
+ */
+function draftForServerCapabilities(
+  draft: NotificationDraftT,
+  capabilities: CapabilityDocument,
+): NotificationDraftT {
+  const source = draft.source
+  const acceptsLegacySource = capabilities.fields.some(
+    (field) => field.path === 'source' && field.status === 'supported',
+  )
+  if (
+    capabilities.notification_contract_fingerprint !== undefined ||
+    !acceptsLegacySource ||
+    source === undefined ||
+    (source.session_label_source === undefined &&
+      source.session_label_previous_source === undefined)
+  ) {
+    return draft
+  }
+
+  const legacySource = { ...source }
+  delete legacySource.session_label_source
+  delete legacySource.session_label_previous_source
+  return { ...draft, source: legacySource }
+}
 
 export async function sendCommand(
   deps: CommandDeps,
@@ -226,6 +254,14 @@ export async function sendCommand(
   for (const warning of validation.warnings) {
     deps.io.err(`Heads up (${warning.path}): ${warning.message}`)
   }
+  let serverCapabilities: CapabilityDocument
+  try {
+    serverCapabilities = await authed.client.capabilities(build.platform)
+  } catch (err) {
+    settleSendAttempt(deps.env, attempt.attemptId)
+    return reportError(deps, err)
+  }
+  const submissionDraft = draftForServerCapabilities(build.draft, serverCapabilities)
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
@@ -248,7 +284,7 @@ export async function sendCommand(
   let receipt: SubmissionReceipt
   try {
     receipt = await authed.client.submit(
-      { idempotency_key: idempotencyKey, draft: build.draft },
+      { idempotency_key: idempotencyKey, draft: submissionDraft },
       waitSeconds,
     )
   } catch (err) {
@@ -566,7 +602,6 @@ export async function repliesCommand(
   }
 }
 
-
 function recordDegradedReplyWaits(deps: CommandDeps, requestIds: readonly string[]): void {
   if (requestIds.length === 0) return
   log(deps).error('cli.error', {
@@ -597,7 +632,6 @@ function degradedWaitWarning(requestId: string): string {
 function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0
 }
-
 
 /**
  * The one JSON object `send --reply --json` prints, whatever happens after the
@@ -647,7 +681,6 @@ function unansweredReplyResultJson(receipt: SubmissionReceipt, degraded: boolean
     degraded,
   }
 }
-
 
 function recordReplies(deps: CommandDeps, requestId: string, replies: readonly ReplyView[]): void {
   const logger = log(deps)

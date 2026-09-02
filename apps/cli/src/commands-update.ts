@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import {
   inspectCliInstallations,
@@ -13,7 +13,10 @@ import {
   isNpxAdapterTarget,
 } from './hook-adapter.js'
 import { packageVersion } from './release.js'
-import { compareCliSemVer } from './cli-release.js'
+import { CLI_PACKAGE_NAME } from './cli-contract.js'
+import { pathContainsDirectory } from './local-path.js'
+import { npmInvocation } from './npm-invocation.js'
+import { compareVersions } from './version.js'
 
 export interface CliUpdateFlags {
   json?: boolean
@@ -29,18 +32,15 @@ function npmRun(
   deps: CommandDeps,
   args: readonly string[],
 ): ReturnType<typeof spawnSync> {
-  const npmCli = deps.env['npm_execpath']
-  if (typeof npmCli === 'string' && npmCli !== '') {
-    return spawnSync(process.execPath, [npmCli, ...args], {
-      encoding: 'utf8',
-      env: deps.env,
-      windowsHide: true,
-    })
-  }
-  return spawnSync((deps.hookPlatform ?? process.platform) === 'win32' ? 'npm.cmd' : 'npm', args, {
+  const invocation = npmInvocation(args, {
+    platform: deps.hookPlatform ?? process.platform,
+    env: deps.env,
+    nodeExecutable: process.execPath,
+  })
+  return spawnSync(invocation.file, invocation.args, {
+    ...invocation.options,
     encoding: 'utf8',
     env: deps.env,
-    windowsHide: true,
   })
 }
 
@@ -56,23 +56,10 @@ function inspection(deps: CommandDeps): CliInstallationInspection {
   )
 }
 
-function sameLocalPath(left: string, right: string): boolean {
-  const canonical = (value: string) => {
-    try {
-      return realpathSync(value)
-    } catch {
-      return path.resolve(value)
-    }
-  }
-  return canonical(left) === canonical(right)
-}
-
 function prefixIsAddressable(deps: CommandDeps, prefix: string): boolean {
   const platform = deps.hookPlatform ?? process.platform
-  const raw = platform === 'win32' ? (deps.env['Path'] ?? deps.env['PATH'] ?? '') : (deps.env['PATH'] ?? '')
-  const delimiter = platform === 'win32' ? ';' : ':'
   const commandDirectory = platform === 'win32' ? prefix : path.join(prefix, 'bin')
-  return raw.split(delimiter).some((directory) => directory !== '' && sameLocalPath(directory, commandDirectory))
+  return pathContainsDirectory(deps.env, commandDirectory, platform)
 }
 
 function failed(
@@ -118,7 +105,7 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
     '--global',
     '--prefix',
     targetPrefix,
-    '@raidiant/notifai',
+    CLI_PACKAGE_NAME,
   ])
   if (install.status !== 0) {
     return failed(deps, flags, 'package_install_failed', before, packageManagerPrefix)
@@ -136,11 +123,10 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
   }
   const minimumCurrent = before.current.version
   const currentComparison = minimumCurrent === null
-    ? null
-    : compareCliSemVer(effective.version, minimumCurrent)
+    ? 'unparseable'
+    : compareVersions(effective.version, minimumCurrent)
   if (
-    currentComparison !== null &&
-    currentComparison < 0
+    currentComparison === 'before'
   ) {
     return failed(deps, flags, 'effective_command_still_older', before, packageManagerPrefix)
   }

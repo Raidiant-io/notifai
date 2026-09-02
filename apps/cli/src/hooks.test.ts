@@ -32,7 +32,14 @@ import {
   readLogRecords,
   type LogRecord,
 } from './logging.js'
-import { EXIT, askCommand, buildQuestions, hookRunCommand, type CommandDeps, type CommandIo } from './commands.js'
+import {
+  EXIT,
+  askCommand,
+  buildQuestions,
+  hookRunCommand,
+  type CommandDeps,
+  type CommandIo,
+} from './commands.js'
 import {
   loadConfig,
   personalProjectConfigPath,
@@ -42,29 +49,32 @@ import {
   stateDir,
 } from './config.js'
 import {
-  claimQuestionPush,
-  clearSessionState,
-  dropPendingQuestion,
-  drainRetirements,
-  drainOrphanRetirements,
   handleSessionEnd,
-  inspectQuestionState,
   runEscalationWaiter,
   MAX_CONTINUATION_COUNT,
   MAX_HELD_DELIVERIES,
-  orphanRetirements,
-  pendingAnsweredByPrompt,
-  pruneAbandonedSessions,
-  releaseQuestionPush,
+  registerQuestion as persistQuestion,
+} from './hook-lifecycle.js'
+import {
   readMatchingProjectSessionPointer,
   readProjectSession,
-  readSessionState,
-  registerQuestion as persistQuestion,
   writeProjectSession,
+} from './hook-project-sessions.js'
+import { claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import {
+  drainRetirements,
+  drainOrphanRetirements,
+  orphanRetirements,
+  pendingAnsweredByPrompt,
+} from './hook-question-retirement.js'
+import { dropPendingQuestion, inspectQuestionState } from './hook-question-state.js'
+import {
+  clearSessionState,
+  pruneAbandonedSessions,
+  readSessionState,
   writeSessionState as persistSessionState,
-  type PendingQuestion,
-  type SessionState,
-} from './hooks.js'
+} from './hook-session-state.js'
+import { type PendingQuestion, type SessionState } from './hook-types.js'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -5753,7 +5763,6 @@ describe('escalation waiter delivery seam', () => {
     releaseQuestionPush('waiter-failed-route', h.env)
   })
 })
-
 
 describe('session state across a prompt', () => {
   it('carries known and future session state across a typed prompt', async () => {

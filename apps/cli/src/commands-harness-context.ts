@@ -4,7 +4,8 @@ import {
   type HermesClassicCliLocalInstance,
   type SourceContextHarness,
 } from './harnesses.js'
-import { readLiveProjectSessionPointers, readSessionState } from './hooks.js'
+import { readLiveProjectSessionPointers } from './hook-project-sessions.js'
+import { readSessionState } from './hook-session-state.js'
 
 /**
  * Exact evidence that this shell command is running inside one supported

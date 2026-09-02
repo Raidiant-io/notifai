@@ -49,9 +49,10 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { assertPackedTarballs } from './check-packed-boundary.mjs'
 import { commandInvocation, execCommand, repositoryRoot } from './cross-platform.mjs'
+import { CLI_PACKAGE, PROTOCOL_PACKAGE } from './package-contract.mjs'
 
-const CLI_NAME = '@raidiant/notifai'
-const PROTOCOL_NAME = '@raidiant/notifai-protocol'
+const CLI_NAME = CLI_PACKAGE.name
+const PROTOCOL_NAME = PROTOCOL_PACKAGE.name
 
 /**
  * Why the packed CLI cannot ship with the protocol pin it carries, or null

@@ -381,6 +381,7 @@ describe('a Codex install run inside a git worktree', () => {
     mkdirSync(worktree, { recursive: true })
     writeFileSync(path.join(gitDir, 'commondir'), '../..\n')
     writeFileSync(path.join(worktree, '.git'), `gitdir: ${gitDir}\n`)
+    writeFileSync(path.join(gitDir, 'gitdir'), `${path.join(worktree, '.git')}\n`)
     return { main, worktree }
   }
 
@@ -397,6 +398,37 @@ describe('a Codex install run inside a git worktree', () => {
     mkdirSync(nested, { recursive: true })
 
     expect(codexProjectRoot(nested)).toBe(main)
+  })
+
+  it('rejects a forged gitfile that redirects the Codex layer outside the project', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'notifai-forged-wt-'))
+    const project = path.join(base, 'project')
+    const outside = path.join(base, 'outside')
+    const forgedGitDir = path.join(project, 'forged-admin')
+    const outsideCommonDir = path.join(outside, '.git')
+    mkdirSync(forgedGitDir, { recursive: true })
+    mkdirSync(path.join(outsideCommonDir, 'worktrees'), { recursive: true })
+    writeFileSync(path.join(project, '.git'), `gitdir: ${forgedGitDir}\n`)
+    writeFileSync(path.join(forgedGitDir, 'commondir'), `${outsideCommonDir}\n`)
+    writeFileSync(path.join(forgedGitDir, 'gitdir'), `${path.join(project, '.git')}\n`)
+
+    expect(codexProjectRoot(project)).toBe(project)
+    expect(settingsFile('codex', false, project, {})).toBe(
+      path.join(project, '.codex', 'config.toml'),
+    )
+  })
+
+  it('rejects a one-way gitfile without Git\'s reciprocal worktree backlink', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'notifai-one-way-wt-'))
+    const project = path.join(base, 'project')
+    const outsideMain = path.join(base, 'outside-main')
+    const forgedGitDir = path.join(outsideMain, '.git', 'worktrees', 'forged')
+    mkdirSync(project, { recursive: true })
+    mkdirSync(forgedGitDir, { recursive: true })
+    writeFileSync(path.join(project, '.git'), `gitdir: ${forgedGitDir}\n`)
+    writeFileSync(path.join(forgedGitDir, 'commondir'), '../..\n')
+
+    expect(codexProjectRoot(project)).toBe(project)
   })
 
   it('leaves an ordinary checkout alone', () => {

@@ -31,15 +31,13 @@ import process from 'node:process'
 import {repositoryRoot} from './cross-platform.mjs'
 import {lookupPublishedTarball} from './npm-registry.mjs'
 import { expectedTarballFailure } from './tarball-integrity.mjs'
+import { PUBLISHABLE_PACKAGES } from './package-contract.mjs'
 
 const root = repositoryRoot
 const failures = []
 const notes = []
 
-const PACKAGES = [
-  { name: '@raidiant/notifai', directory: 'apps/cli' },
-  { name: '@raidiant/notifai-protocol', directory: 'packages/protocol' },
-]
+const PACKAGES = PUBLISHABLE_PACKAGES
 
 const requested = []
 let expectedTarball

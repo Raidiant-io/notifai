@@ -5,6 +5,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { execCommand, repositoryRoot } from './cross-platform.mjs'
+import { isSemVer } from '../apps/cli/src/version.js'
 
 const root = repositoryRoot
 const failures = []
@@ -41,10 +42,9 @@ requireValue(rootManifest.private === true, 'root workspace must remain private'
 requireValue(rootManifest.version === undefined, 'root workspace must not advertise a package version')
 requireValue(rootManifest.engines?.node === '>=20.12.0', 'root Node support must be exactly >=20.12.0')
 
-const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const entry of packages) {
   const { manifest, directory } = entry
-  requireValue(semver.test(manifest.version), `${manifest.name}: version must be semver`)
+  requireValue(isSemVer(manifest.version), `${manifest.name}: version must be semver`)
   requireValue(manifest.license === 'Apache-2.0', `${manifest.name}: license must be Apache-2.0`)
   requireValue(manifest.engines?.node === '>=20.12.0', `${manifest.name}: Node support must be exactly >=20.12.0`)
   requireValue(manifest.publishConfig?.access === 'public', `${manifest.name}: publishConfig.access must be public`)
@@ -125,9 +125,9 @@ for (const entry of packages) {
   visitSources(path.join(root, directory, 'src'))
   const sources = new Set(
     sourceFiles
-      .filter((file) => file.endsWith('.ts'))
+      .filter((file) => file.endsWith('.ts') || file.endsWith('.js'))
       .filter((file) => !file.endsWith('.test.ts') && !file.endsWith('.d.ts'))
-      .map((file) => file.slice(0, -'.ts'.length)),
+      .map((file) => file.replace(/\.(?:ts|js)$/, '')),
   )
   const compiled = modules('dist', '.js')
   for (const name of sources) {

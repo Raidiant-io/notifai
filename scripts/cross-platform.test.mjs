@@ -5,8 +5,9 @@ import path from 'node:path'
 import process from 'node:process'
 import test from 'node:test'
 import { commandInvocation } from './cross-platform.mjs'
+import { CLI_PACKAGE } from './package-contract.mjs'
 
-const packArgs = ['--filter', '@raidiant/notifai', 'pack', '--dry-run', '--json']
+const packArgs = ['--filter', CLI_PACKAGE.name, 'pack', '--dry-run', '--json']
 
 test('reuses the active pnpm entry on Windows when the parent script names it', () => {
   const executable = 'C:\\pnpm\\10.34.5\\bin\\pnpm.cjs'

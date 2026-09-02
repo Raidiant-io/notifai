@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { globalConfigDir } from './config.js'
 import { inferInvocationContext } from './invocation-context.js'
+import { canonicalPath } from './local-path.js'
 
 interface ProjectEnablementMarker {
   version: 1
@@ -28,11 +29,7 @@ function gitCommonDirectory(cwd: string): string | null {
     }).trim()
     if (raw === '') return null
     const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw)
-    try {
-      return realpathSync(resolved)
-    } catch {
-      return path.resolve(resolved)
-    }
+    return canonicalPath(resolved)
   } catch {
     return null
   }

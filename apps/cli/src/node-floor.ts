@@ -11,24 +11,23 @@
  * turn away. Everything else is loaded after it passes.
  */
 
+import { compareVersions, parseVersion } from './version.js'
+
 export const NODE_MAJOR_FLOOR = 20
 export const NODE_MINOR_FLOOR = 12
 
 /** The major from a `process.version` string, or null when unrecognisable. */
 export function nodeMajor(version: string): number | null {
-  const match = /^v?(\d+)\./.exec(version)
-  if (match === null) return null
-  const major = Number(match[1])
-  return Number.isFinite(major) ? major : null
+  return parseVersion(version)?.[0] ?? null
 }
 
 export function belowNodeFloor(version: string): boolean {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version)
   // An unrecognisable version is not evidence of an old runtime, and refusing
   // to run on one would strand a reader whose Node is fine.
-  if (match === null) return false
-  const [major, minor] = [Number(match[1]), Number(match[2])]
-  return major < NODE_MAJOR_FLOOR || (major === NODE_MAJOR_FLOOR && minor < NODE_MINOR_FLOOR)
+  return compareVersions(
+    version,
+    `${NODE_MAJOR_FLOOR}.${NODE_MINOR_FLOOR}.0`,
+  ) === 'before'
 }
 
 /** One sentence for what is wrong, one for what to do about it. */

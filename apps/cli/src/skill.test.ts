@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_KINDS } from '@raidiant/notifai-protocol'
-import { GATE_REASONS } from './hooks.js'
+import { GATE_REASONS } from './hook-gates.js'
 
 /**
  * These tests assert what the skill has to teach, not the sentences it teaches

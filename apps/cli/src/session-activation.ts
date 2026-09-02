@@ -1,4 +1,4 @@
-import type { HookHarness } from './hooks.js'
+import type { HookHarness } from './hook-types.js'
 import { Buffer } from 'node:buffer'
 import { GUIDANCE_CONTEXT_MAX_BYTES, boundedEffectiveGuidance } from './guidance-render.js'
 

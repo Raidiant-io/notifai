@@ -14,9 +14,10 @@ import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { repositoryRoot } from './cross-platform.mjs'
+import { CLI_PACKAGE, PROTOCOL_PACKAGE } from './package-contract.mjs'
 
-const CLI_NAME = '@raidiant/notifai'
-const PROTOCOL_NAME = '@raidiant/notifai-protocol'
+const CLI_NAME = CLI_PACKAGE.name
+const PROTOCOL_NAME = PROTOCOL_PACKAGE.name
 
 export function planPublish({ head, refName, packages, tagCommits, published, verified }) {
   const trigger = packages.find((entry) => entry.tag === refName)

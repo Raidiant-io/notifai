@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { npmInvocation } from '../apps/cli/src/npm-invocation.js'
 
 /** Absolute directory containing this repository's scripts. */
 export const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -45,14 +46,14 @@ export function commandInvocation(
     }
   }
   if (command === 'npm') {
-    const npmCli = path.join(path.dirname(nodeExecutable), 'node_modules', 'npm', 'bin', 'npm-cli.js')
-    if (existsSync(npmCli)) {
-      return {
-        file: nodeExecutable,
-        args: [npmCli, ...args],
-        options: { windowsHide: true },
-      }
-    }
+    return npmInvocation(args, {
+      platform,
+      env,
+      nodeExecutable,
+      // Release scripts run under pnpm, whose npm_execpath names pnpm rather
+      // than npm. Resolve npm from Node instead of invoking the parent manager.
+      useActiveNpm: false,
+    })
   }
   return { file: `${command}.cmd`, args: [...args], options: { windowsHide: true } }
 }

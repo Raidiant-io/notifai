@@ -28,6 +28,7 @@ import {
 } from './openclaw-plugin.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { accountHome } from './platform.js'
+import { sameLocalPath } from './local-path.js'
 import {
   NON_ROUTING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
@@ -417,8 +418,7 @@ export function codexProjectRoot(cwd: string): string {
   if (entry === null) return cwd
   try {
     if (statSync(entry).isDirectory()) return path.dirname(entry)
-    const linked = worktreeGitDir(entry)
-    return linked === null ? cwd : path.dirname(commonGitDir(linked))
+    return linkedWorktreeMainRoot(entry) ?? cwd
   } catch {
     // An unreadable or exotic checkout is not worth failing an install over;
     // cwd is what we used to do and is right for every non-worktree case.
@@ -460,21 +460,61 @@ function findGitEntry(from: string): string | null {
   }
 }
 
-/** `.git` in a linked worktree is a file naming that worktree's git directory. */
-function worktreeGitDir(file: string): string | null {
-  const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(file, 'utf8'))
-  if (match === null) return null
-  return path.resolve(path.dirname(file), match[1]!.trim())
+/**
+ * Resolve the main checkout only from Git's reciprocal linked-worktree
+ * metadata. A repository can contain an arbitrary `.git` file, so its one-way
+ * `gitdir`/`commondir` claims are not authority to write outside the Project.
+ */
+function linkedWorktreeMainRoot(gitFile: string): string | null {
+  if (!isOwnedRegularFile(gitFile)) return null
+
+  const gitdirClaim = readPathMarker(gitFile, /^gitdir:[ \t]+([^\r\n]+)\r?\n?$/)
+  if (gitdirClaim === null) return null
+  const gitDir = path.resolve(path.dirname(gitFile), gitdirClaim)
+  if (!isOwnedDirectory(gitDir)) return null
+
+  const commonClaim = readPathMarker(path.join(gitDir, 'commondir'), /^([^\r\n]+)\r?\n?$/)
+  const backlinkClaim = readPathMarker(path.join(gitDir, 'gitdir'), /^([^\r\n]+)\r?\n?$/)
+  if (commonClaim === null || backlinkClaim === null) return null
+
+  const commonDir = path.resolve(gitDir, commonClaim)
+  const backlink = path.resolve(gitDir, backlinkClaim)
+  const worktreesDir = path.join(commonDir, 'worktrees')
+  if (
+    path.basename(commonDir).toLowerCase() !== '.git' ||
+    !isOwnedDirectory(commonDir) ||
+    !isOwnedDirectory(worktreesDir) ||
+    !sameLocalPath(path.dirname(realpathSync(gitDir)), realpathSync(worktreesDir)) ||
+    !sameLocalPath(backlink, gitFile)
+  ) {
+    return null
+  }
+
+  const mainRoot = path.dirname(commonDir)
+  return isOwnedDirectory(mainRoot) ? mainRoot : null
 }
 
-/**
- * A worktree's git directory records the shared one in `commondir`; that shared
- * directory is the main repository's `.git`, whose parent is its root.
- */
-function commonGitDir(gitDir: string): string {
-  const marker = path.join(gitDir, 'commondir')
-  if (!existsSync(marker)) return gitDir
-  return path.resolve(gitDir, readFileSync(marker, 'utf8').trim())
+function readPathMarker(file: string, pattern: RegExp): string | null {
+  if (!isOwnedRegularFile(file)) return null
+  const match = pattern.exec(readFileSync(file, 'utf8'))
+  const claim = match?.[1]?.trim()
+  return claim === undefined || claim === '' ? null : claim
+}
+
+function isOwnedRegularFile(file: string): boolean {
+  return isOwnedEntry(file, 'file')
+}
+
+function isOwnedDirectory(file: string): boolean {
+  return isOwnedEntry(file, 'directory')
+}
+
+function isOwnedEntry(file: string, kind: 'file' | 'directory'): boolean {
+  const metadata = lstatSync(file)
+  if (metadata.isSymbolicLink()) return false
+  if (kind === 'file' ? !metadata.isFile() : !metadata.isDirectory()) return false
+  const uid = process.getuid?.()
+  return uid === undefined || metadata.uid === uid
 }
 
 /**

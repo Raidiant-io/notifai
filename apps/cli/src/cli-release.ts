@@ -1,4 +1,6 @@
 import { packageVersion } from './release.js'
+import { cliDistTagsUrl } from './cli-contract.js'
+import { compareVersions } from './version.js'
 
 /**
  * The newest published CLI, read from the registry that publishes it.
@@ -8,26 +10,11 @@ import { packageVersion } from './release.js'
  * non-interactive or CI invocation — those callers already get structured
  * support state from the server when they are signed in.
  */
-const DIST_TAGS_URL = 'https://registry.npmjs.org/-/package/@raidiant/notifai/dist-tags'
+const DIST_TAGS_URL = cliDistTagsUrl()
 const REQUEST_TIMEOUT_MS = 2_000
 const CACHE_TTL_MS = 60 * 60 * 1000
 
 let cached: { value: string | null; at: number } | null = null
-
-export function compareCliSemVer(left: string, right: string): number | null {
-  const parse = (value: string): [number, number, number] | null => {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value)
-    if (!match) return null
-    return [Number(match[1]), Number(match[2]), Number(match[3])]
-  }
-  const a = parse(left)
-  const b = parse(right)
-  if (a === null || b === null) return null
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index]! - b[index]!
-  }
-  return 0
-}
 
 export function shouldConsultCliRegistry(input: {
   interactive?: boolean
@@ -53,7 +40,7 @@ export async function latestPublishedCliVersion(
     const body: unknown = await response.json()
     if (typeof body !== 'object' || body === null) return cached?.value ?? null
     const latest = (body as { latest?: unknown }).latest
-    if (typeof latest !== 'string' || compareCliSemVer(latest, '0.0.0') === null) {
+    if (typeof latest !== 'string' || compareVersions(latest, '0.0.0') === 'unparseable') {
       return cached?.value ?? null
     }
     cached = { value: latest, at: Date.now() }
@@ -65,8 +52,7 @@ export async function latestPublishedCliVersion(
 
 export function newerPublishedCli(local: string | null, latest: string | null): string | null {
   if (local === null || latest === null) return null
-  const comparison = compareCliSemVer(latest, local)
-  return comparison !== null && comparison > 0 ? latest : null
+  return compareVersions(latest, local) === 'after' ? latest : null
 }
 
 export function thisCliVersion(): string | null {

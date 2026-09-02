@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { MAX_LIVE_QUESTIONS, MAX_PENDING_QUESTIONS, registerQuestion } from './hooks.js'
+import { MAX_LIVE_QUESTIONS, MAX_PENDING_QUESTIONS, registerQuestion } from './hook-lifecycle.js'
 
 /**
  * `registerQuestion` decides how many questions one session may hold, and these
