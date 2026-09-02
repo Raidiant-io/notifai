@@ -21,8 +21,6 @@ const INBOX_PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'linux'])
 /** macOS verifies own-child ancestry only while the posting process is alive. */
 export const CLAUDE_POST_SEND_LIVENESS_MS = 8_000
 
-export type ClaudeLiveStatus = 'idle' | 'busy'
-
 export interface ClaudeSessionDescriptor {
   pid: number
   sessionId: string

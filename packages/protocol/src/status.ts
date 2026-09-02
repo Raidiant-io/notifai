@@ -88,7 +88,6 @@ export const ERROR_CODES = [
   'usage_limit_reached',
   'billing_unavailable',
   'billing_pending',
-  'billing_duplicate_channel',
   'idempotency_conflict',
   'invalid_signature',
   'not_found',

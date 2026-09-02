@@ -1,6 +1,5 @@
 export {
   EXIT,
-  log,
   updateCliCommand,
   type CommandDeps,
   type CommandIo,
@@ -25,9 +24,9 @@ export {
   sendCommand,
   statusCommand,
 } from './commands-send.js'
+/** @public The private service's CLI contract test drives replies through this. */
 export { waitForReply } from './commands-send-support.js'
 export {
-  HOOK_EVENTS,
   acknowledgeCommand,
   askCommand,
   buildQuestions,
@@ -37,12 +36,7 @@ export {
   hookRunCommand,
   hooksInstallCommand,
   hooksUninstallCommand,
-  runningViaNpx,
   reportAskFailure,
-  type AskFlags,
-  type BuiltQuestions,
-  type HookEvent,
-  type HooksInstallFlags,
 } from './commands-hooks.js'
 export {
   configExplainCommand,
@@ -55,23 +49,15 @@ export {
   guidanceShowCommand,
   guidanceUnsetCommand,
 } from './commands-guidance.js'
-export { logsCommand, parseSince, type LogsFlags } from './commands-logs.js'
+export { logsCommand, parseSince } from './commands-logs.js'
 export { SKILLS_SOURCE } from './commands-skill.js'
-export {
-  initCommand,
-  projectSlugFrom,
-  type InitFlags,
-  type SetupScope,
-} from './commands-init.js'
+export { initCommand, projectSlugFrom } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
-export { cliUpdateCommand, type CliUpdateFlags } from './commands-update.js'
+export { cliUpdateCommand } from './commands-update.js'
 export {
   projectDisableCommand,
   projectEnableCommand,
   projectStatusCommand,
 } from './commands-project.js'
-export {
-  agentSessionRenameCommand,
-  type AgentSessionRenameFlags,
-} from './commands-agent-sessions.js'
+export { agentSessionRenameCommand } from './commands-agent-sessions.js'
 export { realIo } from './commands-io.js'

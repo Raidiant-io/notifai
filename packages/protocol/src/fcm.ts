@@ -45,11 +45,13 @@ export function buildFcmDataEnvelope(
     request_id: ids.requestId,
     delivery_id: ids.deliveryId,
     ...(ids.receiptToken != null ? { receipt_token: ids.receiptToken } : {}),
+    ...(ids.createdAt != null ? { created_at: ids.createdAt.toISOString() } : {}),
     title: draft.presentation.title,
     banner_excerpt: excerpt,
     ...(draft.presentation.subtitle !== undefined
       ? { subtitle: draft.presentation.subtitle }
       : {}),
+
     // Android always receives the effective value because it selects the
     // product-owned channel even when the author omitted the default kind.
     kind,

@@ -78,11 +78,11 @@ send a duplicate.
 
 ## Agent harnesses
 
-The CLI and managed hook adapters support macOS, Linux, and Windows. The first
-public Companion App release is iPhone-only. An Android Companion App is active
-for invited external testing through Firebase App Distribution; it is not a
-public release or a Google Play promise. Native desktop Companion Apps are not
-shipped.
+The CLI and managed hook adapters support macOS, Linux, and Windows. iPhone
+and Android Companion Apps are both active: Android is distributed as a
+directly downloadable signed APK (no Google Play listing yet), with a separate
+invitation-only Firebase App Distribution test lane. Native desktop Companion
+Apps are not shipped.
 
 ```sh
 notifai hooks install

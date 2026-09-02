@@ -160,14 +160,6 @@ export function resolveActiveHarness(
   return { active: first, contested: candidates }
 }
 
-export function activeHarnessSession(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-  now: number,
-): ActiveHarnessSession | null {
-  return resolveActiveHarness(env, cwd, now).active
-}
-
 /**
  * Source Context attribution. Hook-installable nesting still uses declared
  * order when nothing has fired — that existing send behavior is preserved.

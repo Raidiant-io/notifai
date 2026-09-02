@@ -183,11 +183,6 @@ export function readinessJson(readiness: Readiness): object {
   }
 }
 
-/** Everything that could still be done, blocking or not, in dependency order. */
-export function openItems(readiness: Readiness): ReadinessState[] {
-  return readiness.states.filter((s) => s.status === 'gap' || s.status === 'optional-gap')
-}
-
 /**
  * Work an assessment can do.
  *

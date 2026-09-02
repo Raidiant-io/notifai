@@ -648,6 +648,8 @@ const ESTIMATED_ENVELOPE_IDS = {
   // Fixed width by construction (a truncated HMAC), so a placeholder reserves
   // exactly the room the real token will take.
   receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+  // ISO-8601 instants are fixed width, so any date reserves the real send time.
+  createdAt: new Date(0),
 } as const
 const ESTIMATED_MEDIA_URL = 'https://x.invalid/'.padEnd(500, 'a')
 const ESTIMATED_PROJECT_IDENTITY = {

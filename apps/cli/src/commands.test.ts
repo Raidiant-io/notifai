@@ -2381,7 +2381,7 @@ describe('command contracts', () => {
     const io = new CapturedIo()
     const client = {} as unknown as ApiClient
     expect(await closeCommand(makeDeps(io, client), undefined, {})).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toContain('Pass a request id or --pending.')
+    expect(io.errLines.join('\n')).toContain('Pass a question or request id or --pending.')
   })
 
   it('passes the replies cursor and prints replies for later retrieval', async () => {

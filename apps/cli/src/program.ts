@@ -617,7 +617,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     })
 
   program
-    .command('close [request_id]')
+    .command('close [question_or_request_id]')
     .helpGroup(GROUP.agent)
     .summary('Retire a question so late answers are rejected')
     .description(

@@ -35,6 +35,8 @@ export interface EnvelopeIds {
   requestId: string
   deliveryId: string
   receiptToken?: string | null
+  /** Server accept time of the Notification Request; companions order the stream by this, not APNs arrival. */
+  createdAt?: Date | null
 }
 
 /** Service-owned metadata for the original reply-enabled Notification Request. */
@@ -218,6 +220,7 @@ function notifaiKey(
     request_id: ids.requestId,
     delivery_id: ids.deliveryId,
     ...(ids.receiptToken != null ? { receipt_token: ids.receiptToken } : {}),
+    ...(ids.createdAt != null ? { created_at: ids.createdAt.toISOString() } : {}),
     ...(kind !== DEFAULT_NOTIFICATION_KIND ? { kind } : {}),
     ...(draft.lifecycle !== undefined ? { lifecycle: draft.lifecycle } : {}),
     ...(draft.lifecycle?.tier === 'done' && draft.lifecycle.retires_request_id !== undefined

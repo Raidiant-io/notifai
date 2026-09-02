@@ -34,7 +34,6 @@ import {
   type ApiClient,
 } from './client.js'
 import {
-  loadConfig,
   projectSessionPointerPath,
   sanitizeSessionId,
   sessionConfigPath,
@@ -4017,12 +4016,4 @@ export function parseHookInput(raw: string): HookEnvelope {
   } catch {
     return {}
   }
-}
-
-export function resolveHookConfig(
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  sessionId: string | undefined,
-): CliConfig {
-  return loadConfig({ cwd, env, sessionId })
 }

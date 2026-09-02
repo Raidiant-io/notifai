@@ -15,11 +15,12 @@ describe('public onboarding docs', () => {
     expect(using.slice(install, firstInvocation)).toContain('@raidiant/notifai')
   })
 
-  it('states the active Android external-test boundary without promising a public release', () => {
+  it('states the active Android distribution without promising a Google Play listing', () => {
     const harnesses = cliReadme.slice(cliReadme.indexOf('## Agent harnesses'))
 
-    expect(harnesses).toMatch(/Android Companion App is active[\s\S]*external testing/i)
+    expect(harnesses).toMatch(/iPhone\s+and Android Companion Apps are both active/i)
+    expect(harnesses).toMatch(/directly downloadable signed APK/i)
+    expect(harnesses).toMatch(/no Google Play listing yet/i)
     expect(harnesses).toMatch(/Firebase App Distribution/i)
-    expect(harnesses).toMatch(/not a\s+public release or a Google Play promise/i)
   })
 })

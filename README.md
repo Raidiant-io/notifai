@@ -70,18 +70,17 @@ unless a human is demonstrably there.
 
 ## Platform support
 
-The sending CLI runs on macOS, Linux, and Windows. The first public Companion
-App release remains iPhone-only. The public protocol and CLI also model Android
-as a first-class, pre-public external-test surface (`android:fcm`), including
-capability inspection, Device Installation filtering, authoring, and offline
-validation. That active test lane does not make Android part of the first public
-Companion App release.
+The sending CLI runs on macOS, Linux, and Windows. iPhone and Android are both
+active Companion Apps. The public protocol and CLI model Android as a
+first-class surface (`android:fcm`), including capability inspection, Device
+Installation filtering, authoring, and offline validation.
 
 Android support starts at Android 6/API 23 and requires Google Play services:
 a physical supported device has the Google Play Store, while emulators use a
-Google APIs image. There is no non-GMS compatibility promise and no Google Play
-production release. Native Mac receiving remains explicitly deferred and is not
-part of the current public support claim.
+Google APIs image. There is no non-GMS compatibility promise. The Android app
+is distributed as a directly downloadable signed APK while Google Play
+publication is paused. Native Mac receiving remains explicitly deferred and is
+not part of the current public support claim.
 
 | Surface | macOS | Linux | Windows |
 | --- | --- | --- | --- |
@@ -118,18 +117,19 @@ TestFlight app, install Notifai, then open it once, sign in with the same Accoun
 as the CLI, and allow notifications. There is no public App Store link or public
 TestFlight link yet.
 
-The pre-public Android external-test lane is distributed only to invited testers
-through Firebase App Distribution as a consistently signed APK. Testers install
-it on a compatible Google Play services device, open it, sign in with the same
-Account, and allow notifications. There is no public Firebase invitation and no
-Google Play listing; access to this lane is controlled separately from Notifai
-Account access.
+The Android Companion App is distributed as a directly downloadable signed APK
+from <https://app.notifai.sh/download/android>. Install it on a compatible
+Google Play services device, open it, sign in with the same Account, and allow
+notifications. There is no Google Play listing yet. A separate invitation-only
+external-test lane continues through Firebase App Distribution for invited
+testers; access to that lane is controlled separately from Notifai Account
+access.
 
 ## Subscription
 
 Notifai is launching as a paid service. When public purchase opens, one
-individual subscription will cover the dashboard, this CLI, and the iPhone
-Companion App on a single Account, with a free trial offered once per person.
+individual subscription will cover the dashboard, this CLI, and the Companion
+Apps on a single Account, with a free trial offered once per person.
 Purchase is not open yet: access today is by invitation, and there is nothing
 to buy. Prices, trial length, renewal, cancellation, and where the service is
 sold are on the pricing page. Subscriptions will be sold and managed from the

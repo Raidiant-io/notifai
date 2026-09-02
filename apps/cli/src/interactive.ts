@@ -44,7 +44,7 @@ import {
   sendCommand,
   type CommandDeps,
 } from './commands.js'
-import { CONFIG_KEYS, loadConfig, type CliConfig, type ConfigKey } from './config.js'
+import { loadConfig, type CliConfig, type ConfigKey } from './config.js'
 import {
   detectedHarnesses,
   findInstallations,
@@ -853,6 +853,3 @@ async function accountScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   await loginCommand(deps, {})
   return true
 }
-
-/** Exported for the settings command to reuse the same key vocabulary. */
-export const INTERACTIVE_CONFIG_KEYS = CONFIG_KEYS

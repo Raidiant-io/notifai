@@ -14,7 +14,7 @@ import {
   describeSource,
   formatValue,
 } from '../config-schema.js'
-import { glyph, pad, style, terminalWidth, width, wrap } from './theme.js'
+import { glyph, pad, style, terminalWidth, wrap } from './theme.js'
 
 /**
  * The full settings listing, grouped and explained.
@@ -130,9 +130,4 @@ export function renderConfigPlain(config: CliConfig, explain: boolean): string[]
     const provenance = explain ? `  [${entry.source}]` : ''
     return `${key} = ${JSON.stringify(entry.value)}${provenance}`
   })
-}
-
-/** Longest visible line, for callers that need to size a rule or a box. */
-export function widestLine(lines: readonly string[]): number {
-  return Math.max(0, ...lines.map((line) => width(line)))
 }

@@ -16,13 +16,13 @@ everything in this repository is fully known.**
   validation, and the small hashing helper shared with clients.
 - Public docs, fixtures, and the boundary tooling itself.
 
-`packages/protocol/src/apns.ts` and `packages/protocol/src/fcm.ts` are deliberate
-special cases: they model the application-visible notification envelopes so
-offline validation can estimate payload size against each provider limit. Their
-content is fully observable on any device that receives a notification, so they
-reveal no server secret — but they are **not exported** from the package's public
-API, and whether they should leave the public source entirely (at the cost of
-offline size pre-flight) is an open decision tracked privately.
+`packages/protocol/src/apns.ts` and `packages/protocol/src/fcm.ts` model the
+application-visible notification envelopes so offline validation can estimate
+payload size against each provider limit. Their content is fully observable on
+any device that receives a notification, so they reveal no server secret. They
+are exported so the service renders from the same code the estimate runs;
+whether they should leave the public source entirely (at the cost of offline
+size pre-flight) is an open decision tracked privately.
 
 ## What must never enter this repository
 

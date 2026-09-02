@@ -4,13 +4,13 @@ import {
   KindSoundMap,
   NotificationDraft,
   NOTIFICATION_IMAGE_MAX_BYTES,
-  NOTIFICATION_SOUND_MEDIA_TYPE,
   NotificationMediaTypeSchema,
   PlatformSchema,
   REPLY_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
-  SESSION_LABEL_MAX_LENGTH,
+  NOTIFICATION_SOUND_MEDIA_TYPE,
   SOUND_NAME_MAX_LENGTH,
+  SESSION_LABEL_MAX_LENGTH,
   type NotificationMediaType,
   type Platform,
 } from './notification.js'
@@ -30,7 +30,13 @@ import {
   type SupportState,
 } from './compatibility.js'
 
-/** REST v1 wire contract shared by server, CLI, dashboard, and Companion App. */
+/**
+ * REST v1 wire contract shared by server, CLI, dashboard, and Companion App.
+ *
+ * This is the one declaration of the served wire. The private contracts
+ * package re-exports it and adds only the shapes clients never exchange, so
+ * a field documented here is a field the server accepts or returns.
+ */
 
 // ---------------------------------------------------------------------------
 // Account preferences
@@ -115,28 +121,6 @@ export interface AccountAccessResponse {
   public_v1_cutover: boolean
 }
 
-/**
- * Whether this Account has already asked for access, and when.
- *
- * A no-access Account has three states, not two: nothing asked, asked and
- * waiting, and active. Without the middle one every surface tells someone who
- * asked yesterday to ask again, indefinitely — the wait is fulfilled by a
- * person, so there is nothing else to observe.
- *
- * A machine may read this. It may never create it: asking for access is the
- * User's decision, and an agent filing it on their behalf is not consent.
- */
-export interface AccountAccessRequestView {
-  status: 'requested'
-  /** ISO-8601. What "waiting since" means on every surface that shows it. */
-  requested_at: string
-  updated_at: string
-}
-
-export interface AccountAccessRequestResponse {
-  request: AccountAccessRequestView | null
-}
-
 // ---------------------------------------------------------------------------
 // Machine pairing (Machine Access seam)
 // ---------------------------------------------------------------------------
@@ -175,10 +159,14 @@ export type PollPairingRequestT = Static<typeof PollPairingRequest>
  * short code is human-checkable; the high-entropy secret is transported only
  * in the approval URL fragment and is never sent by a browser GET.
  */
+export const PAIRING_CODE_PATTERN_SOURCE =
+  '^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{3}-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{3}$'
+export const PAIRING_CONFIRMATION_SECRET_PATTERN_SOURCE = '^[A-Za-z0-9_-]{43}$'
+
 export const PairingProofRequest = Type.Object(
   {
-    code: Type.String({ pattern: '^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{3}-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{3}$' }),
-    confirmation_secret: Type.String({ pattern: '^[A-Za-z0-9_-]{43}$' }),
+    code: Type.String({ pattern: PAIRING_CODE_PATTERN_SOURCE }),
+    confirmation_secret: Type.String({ pattern: PAIRING_CONFIRMATION_SECRET_PATTERN_SOURCE }),
   },
   { additionalProperties: false },
 )
@@ -198,11 +186,68 @@ export interface PollPairingResponse {
   next_action?: string
 }
 
+// ---------------------------------------------------------------------------
+// Alpha access request (the no-access errand)
+// ---------------------------------------------------------------------------
+
+export const ALPHA_ACCESS_DISTRIBUTION_LANES = [
+  'iphone_testflight',
+  'android_firebase',
+] as const
+export type AlphaAccessDistributionLane = (typeof ALPHA_ACCESS_DISTRIBUTION_LANES)[number]
+
+/** Dashboard Account query key that may preselect one Distribution Lane. */
+export const ALPHA_ACCESS_LANE_QUERY_PARAM = 'distribution_lane' as const
+
+export const AlphaAccessDistributionLaneSchema = Type.Union([
+  Type.Literal('iphone_testflight'),
+  Type.Literal('android_firebase'),
+])
+
+/** Accept only the two active lanes; unknown or absent values preselect nothing. */
+export function parseAlphaAccessLaneHint(
+  value: string | null | undefined,
+): AlphaAccessDistributionLane | null {
+  if (value === 'iphone_testflight' || value === 'android_firebase') return value
+  return null
+}
+
+export const RequestAlphaAccessRequest = Type.Object(
+  {
+    distribution_lanes: Type.Array(AlphaAccessDistributionLaneSchema, {
+      minItems: 1,
+      maxItems: ALPHA_ACCESS_DISTRIBUTION_LANES.length,
+      uniqueItems: true,
+    }),
+    pairing: Type.Optional(PairingProofRequest),
+  },
+  { additionalProperties: false },
+)
+export type RequestAlphaAccessRequestT = Static<typeof RequestAlphaAccessRequest>
+
+export interface AlphaAccessRequestView {
+  status: 'requested'
+  distribution_lanes: AlphaAccessDistributionLane[]
+  requested_at: string
+  updated_at: string
+}
+
+export interface AlphaAccessRequestResponse {
+  public_v1_cutover: boolean
+  request: AlphaAccessRequestView | null
+}
+
+/**
+ * `stopped` means the originating CLI was told this handshake could not
+ * continue and exited without storing a credential. Approving afterwards would
+ * mint an Approved Machine nobody holds, so the browser must neither offer it
+ * nor claim the terminal will pick it up.
+ */
 export interface PairingDetailsResponse {
   pairing_id: string
   machine_name: string
   code: string
-  status: 'pending' | 'approved' | 'expired' | 'denied'
+  status: 'pending' | 'approved' | 'expired' | 'denied' | 'stopped'
   expires_at: string
 }
 
@@ -599,21 +644,6 @@ export const CreateMediaUploadRequest = Type.Object(
 )
 export type CreateMediaUploadRequestT = Static<typeof CreateMediaUploadRequest>
 
-export interface CreateMediaUploadResponse {
-  media_id: string
-  upload_url: string
-  /** Headers the client must send with the PUT upload. */
-  upload_headers: Record<string, string>
-  expires_at: string
-}
-
-export interface FinalizeMediaUploadResponse {
-  media_id: string
-  /** Storage-provider-observed bytes used for quota accounting. */
-  size_bytes: number
-  status: 'ready'
-}
-
 export const BeginSoundUploadRequest = Type.Object(
   {
     media_type: Type.Literal(NOTIFICATION_SOUND_MEDIA_TYPE),
@@ -660,20 +690,47 @@ export interface ListSoundsResponse {
   sounds: SoundView[]
 }
 
-/** One ordered image in the authenticated full-content response. */
+export interface CreateMediaUploadResponse {
+  media_id: string
+  upload_url: string
+  /** Headers the client must send with the PUT upload. */
+  upload_headers: Record<string, string>
+  expires_at: string
+}
+
+export interface FinalizeMediaUploadResponse {
+  media_id: string
+  /** Storage-provider-observed bytes used for quota accounting. */
+  size_bytes: number
+  status: 'ready'
+}
+
+// ---------------------------------------------------------------------------
+// Canonical notification content (fetched by Companion Apps on open)
+// ---------------------------------------------------------------------------
+
 export interface NotificationContentMediaItem {
   media_id: string
-  /** Zero-based collection position. */
+  /** Zero-based collection position; presentation.media order is semantic. */
   position: number
   media_type: NotificationMediaType
   alt: string | null
-  /** Fresh signed URL, or null once the asset is no longer available. */
+  /** Fresh one-hour signed URL of the original, or null when this item is unavailable. */
   url: string | null
+  /**
+   * Fresh one-hour signed URL of the server-generated WebP preview variant
+   * (longest side 1024px), or null when the asset has no preview.
+   */
+  preview_url: string | null
+  /** Oriented pixel width of the original, or null when never decoded. */
+  width: number | null
+  /** Oriented pixel height of the original, or null when never decoded. */
+  height: number | null
 }
 
-/** Full canonical content fetched by a Companion App when a notification opens. */
 export interface NotificationContentResponse {
   request_id: string
+  /** The one full author-facing body, always interpreted as Markdown. */
   body: string
   media: NotificationContentMediaItem[]
 }
@@ -686,10 +743,6 @@ export const UpdateProjectRequest = Type.Object(
   {
     display_name: Type.Optional(
       Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()]),
-    ),
-    /** A ready media id to use as the avatar, or null to clear it. */
-    image_media_id: Type.Optional(
-      Type.Union([Type.String({ pattern: '^med_[A-Za-z0-9_-]+$' }), Type.Null()]),
     ),
   },
   { additionalProperties: false },
