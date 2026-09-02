@@ -113,7 +113,10 @@ describe('hook config', () => {
     })
     expect(codex['SessionStart']?.[0]?.hooks[0]).toMatchObject({
       command: hookCommand(ADAPTER, 'session-start', 'codex'),
+      timeout: 5,
+      additionalContextLimit: 0,
     })
+    expect(claude['SessionStart']?.[0]?.hooks[0]).not.toHaveProperty('additionalContextLimit')
     expect(cursor['sessionStart']?.[0]).toMatchObject({
       command: hookCommand(ADAPTER, 'session-start', 'cursor'),
     })
@@ -839,6 +842,52 @@ describe('finding what is installed', () => {
     )
     expect(codexTrustProblems(installations, env)).toEqual(
       expect.arrayContaining([expect.stringMatching(/Stop.*disabled.*\/hooks/i)]),
+    )
+  })
+
+  it('hashes Codex additionalContextLimit except the 2,500-token default', () => {
+    const sessionStart = {
+      event: 'SessionStart',
+      groupIndex: 0,
+      handlerIndex: 0,
+      command: hookCommand(ADAPTER, 'session-start', 'codex'),
+      timeout: 5,
+    }
+    const omitted = codexHookIdentityHash(sessionStart)
+    const explicitDefault = codexHookIdentityHash({
+      ...sessionStart,
+      additionalContextLimit: 2_500,
+    })
+    const unlimited = codexHookIdentityHash({
+      ...sessionStart,
+      additionalContextLimit: 0,
+    })
+    expect(explicitDefault).toBe(omitted)
+    expect(unlimited).not.toBe(omitted)
+  })
+
+  it('round-trips Codex SessionStart additionalContextLimit so doctor matches /hooks', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-spill-limit-'))
+    const home = path.join(cwd, 'home')
+    const env = { HOME: home, CODEX_HOME: path.join(home, '.codex') }
+    const hookFile = path.join(env.CODEX_HOME, 'hooks.json')
+    mkdirSync(path.dirname(hookFile), { recursive: true })
+    applyPlan(hookFile, { hooks: buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' }) })
+
+    const installations = findInstallations(cwd, env)
+    const sessionStart = installations
+      .find((installation) => installation.harness === 'codex')
+      ?.handlers.find((handler) => handler.event === 'SessionStart')
+    expect(sessionStart?.additionalContextLimit).toBe(0)
+    expect(codexHookIdentityHash(sessionStart!)).toBe(
+      codexHookIdentityHash({
+        event: 'SessionStart',
+        groupIndex: 0,
+        handlerIndex: 0,
+        command: sessionStart!.command,
+        timeout: 5,
+        additionalContextLimit: 0,
+      }),
     )
   })
 

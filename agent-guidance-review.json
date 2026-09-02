@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:172b0aff5b423686b0a45c96e97e7ad30ea8082f52e1af8751a25fcd9465809b",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating hook command modules, consolidating shared runtime utilities, preserving baseline sends across service skew, and validating reciprocal Git metadata before targeting a linked worktree's main checkout. These changes preserve the existing Agent Event and Notification Request lifecycle, readiness and recovery instructions, Question Routing behavior, trust boundary, and canonical vocabulary; the worktree validation closes an implementation escape without changing the documented User-owned Project authority. Existing shipped guidance therefore remains accurate and needs no wording change.",
+  "behavior_digest": "sha256:c0011666bc45e9712b97449661c60dd406c2f5ac077066ba02cdee63fa5535ae",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after setting additionalContextLimit 0 on the Codex SessionStart handler. Codex spills hook additionalContext above roughly 2,500 tokens to a preview file and shows the model that preview plus a path; Notifai's activation context may reach 24,000 bytes, so Codex agents could read a truncated preview instead of the effective guidance. The guidance wording is unchanged; what changed is that Codex now receives it whole, which is why this is guidance-updated rather than reviewed-no-impact. Codex hashes the new field, so an existing Codex installation needs one /hooks re-approval; the shipped skill already states that migrating an older Codex definition costs one unavoidable /hooks approval, so no skill text changed. codexHookIdentityHash mirrors the field and omits Codex's 2,500 default so an explicit default still matches. Agent-facing commands, readiness JSON, harness-setup recovery, and domain language are otherwise unchanged; the CLI and stable hook adapter remain the only runtime authority and npx skills remains skill-install authority.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
