@@ -68,6 +68,11 @@ export interface HookHandler {
   timeout?: number
   async?: boolean
   statusMessage?: string
+  /**
+   * Codex-only. Approximate token threshold for spilling `additionalContext`.
+   * Unset uses Codex's 2,500-token default; `0` passes the full context.
+   */
+  additionalContextLimit?: number
 }
 
 export interface HookGroup {
@@ -241,6 +246,10 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
             command: hookCommand(adapterPath, 'session-start', options.harness, commandOptions),
             // Activation is local context only: no config, credentials, or network.
             timeout: 5,
+            // Codex spills additionalContext above ~2,500 tokens to a preview
+            // file. SessionStart may emit up to 24,000 bytes, so pass the full
+            // context. Changing this field requires one `/hooks` re-approval.
+            ...(options.harness === 'codex' ? { additionalContextLimit: 0 } : {}),
           },
         ],
       },
@@ -1229,6 +1238,7 @@ export interface InstalledHandler {
   timeout?: number
   async?: boolean
   statusMessage?: string
+  additionalContextLimit?: number
 }
 
 export interface Installation {
@@ -1258,10 +1268,17 @@ function canonicalValue(value: unknown): unknown {
 
 /**
  * Best-effort mirror of the identity current Codex builds compare with
- * `hooks.state.*.trusted_hash`. This persisted format is diagnostic evidence,
- * not an API: Codex's `/hooks` UI remains authoritative and Notifai never
- * writes the trust store.
+ * `hooks.state.*.trusted_hash`. Codex hashes `type`, `command`, `timeout`,
+ * `async`, `statusMessage`, and `additionalContextLimit` (omitting the 2,500
+ * default). This persisted format is diagnostic evidence, not an API: Codex's
+ * `/hooks` UI remains authoritative and Notifai never writes the trust store.
  */
+/**
+ * Codex's default additionalContext spill threshold, in approximate tokens.
+ * Codex strips this value before hashing, so an explicit 2,500 matches omit.
+ */
+const CODEX_DEFAULT_ADDITIONAL_CONTEXT_LIMIT = 2_500
+
 export function codexHookIdentityHash(handler: InstalledHandler): string {
   const command = {
     type: 'command',
@@ -1269,6 +1286,12 @@ export function codexHookIdentityHash(handler: InstalledHandler): string {
     timeout: Math.max(1, handler.timeout ?? 600),
     async: handler.async ?? false,
     ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
+    ...(
+      handler.additionalContextLimit === undefined
+      || handler.additionalContextLimit === CODEX_DEFAULT_ADDITIONAL_CONTEXT_LIMIT
+        ? {}
+        : { additionalContextLimit: handler.additionalContextLimit }
+    ),
   }
   const normalized = canonicalValue({
     event_name: codexEventName(handler.event),
@@ -1532,6 +1555,9 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
           ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
           ...(handler.async === undefined ? {} : { async: handler.async }),
           ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
+          ...(typeof handler.additionalContextLimit === 'number'
+            ? { additionalContextLimit: handler.additionalContextLimit }
+            : {}),
         })
       })
     })
