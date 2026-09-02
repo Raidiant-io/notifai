@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b5cde8cab015083312239ac0bce75fb94e0ebddef38c3a699ed7a9a8b729d1a8",
+  "behavior_digest": "sha256:172b0aff5b423686b0a45c96e97e7ad30ea8082f52e1af8751a25fcd9465809b",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making send capability-aware for a pre-fingerprint service. The CLI still sends the exact Agent Session id, semantic label, and harness; it omits only label-provenance markers that the older service cannot persist, while every other contract mismatch remains an explicit service-skew failure. Existing guidance already describes Source Context and service-update recovery at the correct agent-facing altitude, and lifecycle activation, Question Routing, setup, readiness, trust, and canonical domain vocabulary are unchanged, so no shipped wording change is needed.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after separating hook command modules, consolidating shared runtime utilities, preserving baseline sends across service skew, and validating reciprocal Git metadata before targeting a linked worktree's main checkout. These changes preserve the existing Agent Event and Notification Request lifecycle, readiness and recovery instructions, Question Routing behavior, trust boundary, and canonical vocabulary; the worktree validation closes an implementation escape without changing the documented User-owned Project authority. Existing shipped guidance therefore remains accurate and needs no wording change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
