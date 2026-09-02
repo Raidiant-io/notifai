@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3572edf732ad143249c7d65e7d98a039bfe704d3b7d57e1531ac2399914e18fa",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after consolidating local PATH, npm invocation, release-version, wake-outcome, package-spec, and compatibility-copy utilities. The public README now names the project enable, disable, and status group plus the devices command, while preserving the distinction between User-owned Project Enablement, hook installation, sending authorization, and per-request Routing Selection. The refactor preserves Question Routing delivery and cancellation outcomes, makes malformed release versions fail closed where capability evidence is required, and keeps the exact optional CLI-update and service-update sentences unchanged. No skill wording change is needed because the skill already makes command help authoritative, teaches Project Enablement and device routing at the correct altitude, and retains the canonical User, Project, Agent Session, Notification Request, Device Installation, and Companion App vocabulary.",
+  "behavior_digest": "sha256:b5cde8cab015083312239ac0bce75fb94e0ebddef38c3a699ed7a9a8b729d1a8",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making send capability-aware for a pre-fingerprint service. The CLI still sends the exact Agent Session id, semantic label, and harness; it omits only label-provenance markers that the older service cannot persist, while every other contract mismatch remains an explicit service-skew failure. Existing guidance already describes Source Context and service-update recovery at the correct agent-facing altitude, and lifecycle activation, Question Routing, setup, readiness, trust, and canonical domain vocabulary are unchanged, so no shipped wording change is needed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

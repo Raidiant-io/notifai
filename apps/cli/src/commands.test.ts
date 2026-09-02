@@ -1077,6 +1077,53 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).not.toContain('generated fallback')
   })
 
+  it('keeps semantic Source Context compatible with a pre-fingerprint server', async () => {
+    const currentDocument = CAPABILITIES_V1.describe('ios')
+    if (currentDocument === null) throw new Error('missing iOS capability document')
+    const legacyDocument = { ...currentDocument }
+    delete (legacyDocument as Partial<CapabilityDocument>).notification_contract_fingerprint
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-legacy-source-context-'))
+    let submitted: SubmitNotificationRequestT | undefined
+    const capabilityLookups: Platform[] = []
+    const client = {
+      capabilities: async (platform: Platform = 'ios') => {
+        capabilityLookups.push(platform)
+        return legacyDocument as CapabilityDocument
+      },
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(new CapturedIo(), client),
+      cwd,
+      env: {
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        CODEX_THREAD_ID: 'legacy-service-session',
+      },
+    }
+
+    expect(
+      await sendCommand(deps, {
+        title: 'Compatibility restored',
+        body: 'The baseline request still works.',
+        kind: 'done',
+        sessionId: 'legacy-service-session',
+        sessionLabel: 'Pinned old server compatibility',
+      }),
+    ).toBe(EXIT.ok)
+    expect(capabilityLookups).toEqual(['ios'])
+    expect(submitted?.draft.source).toMatchObject({
+      session_id: 'legacy-service-session',
+      session_label: 'Pinned old server compatibility',
+      harness: 'codex',
+    })
+    expect(submitted?.draft.source).not.toHaveProperty('session_label_source')
+    expect(submitted?.draft.source).not.toHaveProperty('session_label_previous_source')
+  })
+
   it('uses the exact Orca Agent Session task title instead of an Ash Rabbit fallback', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-agent-session-title-'))
     const io = new CapturedIo()

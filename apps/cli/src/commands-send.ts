@@ -2,8 +2,10 @@ import {
   CAPABILITIES_V1,
   REPLY_MAX_WINDOW_SECONDS,
   validateDraft,
+  type CapabilityDocument,
   type EvidenceSnapshot,
   type ListRepliesResponse,
+  type NotificationDraftT,
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
@@ -49,6 +51,36 @@ import {
 // ---------------------------------------------------------------------------
 // send / status
 // ---------------------------------------------------------------------------
+
+/**
+ * Servers from before Notification Request contract fingerprints already
+ * accepted Source Context, but did not persist label provenance. Omitting only
+ * those server-only provenance markers preserves their exact label behavior;
+ * every other contract difference remains an explicit service-skew failure.
+ */
+function draftForServerCapabilities(
+  draft: NotificationDraftT,
+  capabilities: CapabilityDocument,
+): NotificationDraftT {
+  const source = draft.source
+  const acceptsLegacySource = capabilities.fields.some(
+    (field) => field.path === 'source' && field.status === 'supported',
+  )
+  if (
+    capabilities.notification_contract_fingerprint !== undefined ||
+    !acceptsLegacySource ||
+    source === undefined ||
+    (source.session_label_source === undefined &&
+      source.session_label_previous_source === undefined)
+  ) {
+    return draft
+  }
+
+  const legacySource = { ...source }
+  delete legacySource.session_label_source
+  delete legacySource.session_label_previous_source
+  return { ...draft, source: legacySource }
+}
 
 export async function sendCommand(
   deps: CommandDeps,
@@ -222,6 +254,14 @@ export async function sendCommand(
   for (const warning of validation.warnings) {
     deps.io.err(`Heads up (${warning.path}): ${warning.message}`)
   }
+  let serverCapabilities: CapabilityDocument
+  try {
+    serverCapabilities = await authed.client.capabilities(build.platform)
+  } catch (err) {
+    settleSendAttempt(deps.env, attempt.attemptId)
+    return reportError(deps, err)
+  }
+  const submissionDraft = draftForServerCapabilities(build.draft, serverCapabilities)
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
@@ -244,7 +284,7 @@ export async function sendCommand(
   let receipt: SubmissionReceipt
   try {
     receipt = await authed.client.submit(
-      { idempotency_key: idempotencyKey, draft: build.draft },
+      { idempotency_key: idempotencyKey, draft: submissionDraft },
       waitSeconds,
     )
   } catch (err) {
