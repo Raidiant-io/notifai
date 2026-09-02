@@ -3,7 +3,10 @@ import { Value } from '@sinclair/typebox/value'
 import {
   AccountPreferences,
   AGENT_ACKNOWLEDGEMENT_MAX_LENGTH,
+  ALPHA_ACCESS_DISTRIBUTION_LANES,
+  ALPHA_ACCESS_LANE_QUERY_PARAM,
   ANDROID_CAPABILITIES_V1,
+  BANNER_EXCERPT_MAX_LENGTH,
   BODY_MAX_LENGTH,
   BeginPairingRequest,
   CAPABILITIES_V1,
@@ -15,7 +18,10 @@ import {
   estimateFcmPayloadBytes,
   IOS_CAPABILITIES_V1,
   MACOS_CAPABILITIES_V1,
+  MEDIA_MAX_ITEMS,
   NOTIFICATION_CONTRACT_FINGERPRINT,
+  NOTIFICATION_IMAGE_MAX_BYTES,
+  parseAlphaAccessLaneHint,
   PLATFORMS,
   PairingProofRequest,
   PROVIDERS,
@@ -1452,5 +1458,402 @@ describe('summarizeOverall', () => {
   })
   it('is pending for the empty set', () => {
     expect(summarizeOverall([])).toBe('pending')
+  })
+})
+
+describe('APNs envelope rendering', () => {
+  it('marks every APNs envelope as mutable so the NSE can record history', () => {
+    const alert = buildApnsEnvelope(draft(), { requestId: 'req_x', deliveryId: 'del_x' }, null)
+    expect((alert.payload['aps'] as Record<string, unknown>)['mutable-content']).toBe(1)
+
+    const retirement = buildApnsEnvelope(
+      draft({ lifecycle: { tier: 'done', retires_request_id: 'req_old' } }),
+      { requestId: 'req_x', deliveryId: 'del_x' },
+      null,
+    )
+    expect((retirement.payload['aps'] as Record<string, unknown>)['mutable-content']).toBe(1)
+  })
+
+  it('carries structured source context without copying opaque ids into the alert', () => {
+    const withSource = draft({
+      project: 'my-app',
+      source: {
+        session_id: 'sess_abc123',
+        session_label: 'Amber Falcon',
+        harness: 'claude-code',
+        branch: 'feature/content',
+        worktree: 'content-pass',
+      },
+    })
+    expect(validateDraft(withSource).ok).toBe(true)
+    const envelope = buildApnsEnvelope(
+      withSource,
+      { requestId: 'req_x', deliveryId: 'del_x' },
+      null,
+    )
+    const notifai = envelope.payload['notifai'] as Record<string, unknown>
+    expect(notifai).toMatchObject({
+      session_id: 'sess_abc123',
+      session_label: 'Amber Falcon',
+      harness: 'claude-code',
+      branch: 'feature/content',
+      worktree: 'content-pass',
+    })
+    expect(JSON.stringify((envelope.payload['aps'] as Record<string, unknown>)['alert'])).not.toContain(
+      'sess_abc123',
+    )
+  })
+
+  it('warns when macOS delivery omits a requested image', () => {
+    const withImage = draft({
+      presentation: { title: 'Hi', body: 'Body', media: [{ media_id: 'med_example' }] },
+    })
+
+    expect(validateDraft(withImage, MACOS_CAPABILITIES_V1)).toMatchObject({
+      ok: true,
+      errors: [],
+      warnings: [
+        {
+          path: 'presentation.media',
+          message: expect.stringContaining('macOS banner omits'),
+        },
+      ],
+    })
+    expect(validateDraft(withImage, IOS_CAPABILITIES_V1).warnings).toEqual([])
+  })
+
+  it('uses the same excerpt, media, and Source Context rules for estimation and rendering', () => {
+    const withContent = draft({
+      source: {
+        session_id: 'sess_exact',
+        session_label: 'Amber Falcon',
+        harness: 'codex',
+        branch: 'feature/content',
+        worktree: 'content-pass',
+      },
+      presentation: {
+        title: 'Hi',
+        body: '# Result\n\nAll **checks** passed.',
+        media: [{ media_id: 'med_example' }, { media_id: 'med_second', alt: 'Graph' }],
+      },
+      platform: { ios: {} },
+    })
+    const mediaUrl = 'https://x.invalid/'.padEnd(500, 'a')
+    const envelope = buildApnsEnvelope(
+      withContent,
+      {
+        requestId: 'req_00000000000000000000000000',
+        deliveryId: 'del_00000000000000000000000000',
+        // Every real dispatch carries one, so the estimate reserves its width.
+        receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+        createdAt: new Date(0),
+      },
+      mediaUrl,
+    )
+    const aps = envelope.payload['aps'] as Record<string, unknown>
+    const notifai = envelope.payload['notifai'] as Record<string, unknown>
+
+    expect(aps['interruption-level']).toBe('active')
+    expect(aps['mutable-content']).toBe(1)
+    expect((aps['alert'] as Record<string, unknown>)['body']).toBe('Result\nAll checks passed.')
+    expect(notifai).toMatchObject({
+      session_id: 'sess_exact',
+      session_label: 'Amber Falcon',
+      harness: 'codex',
+      branch: 'feature/content',
+      worktree: 'content-pass',
+      has_full_body: true,
+      media_count: 2,
+      media_url: mediaUrl,
+    })
+    expect(estimateApnsPayloadBytes(withContent)).toBe(
+      new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
+    )
+  })
+
+  it('adds only server-derived answer context to a retirement envelope', () => {
+    const envelope = buildApnsEnvelope(
+      draft({ lifecycle: { tier: 'done', state: 'answered_elsewhere', retires_request_id: 'req_old' } }),
+      { requestId: 'req_x', deliveryId: 'del_x' },
+      null,
+      'ios',
+      null,
+      null,
+      { answeredVia: 'the paired iPhone', answer: 'Ship it' },
+    )
+    const notifai = envelope.payload['notifai'] as Record<string, unknown>
+    expect(notifai['answered_via']).toBe('the paired iPhone')
+    expect(notifai['answer']).toBe('Ship it')
+  })
+
+  it('accepts failed and blocked without coupling kind to banner text', () => {
+    for (const kind of ['failed', 'blocked'] as const) {
+      const typed = draft({ kind })
+      expect(validateDraft(typed).ok).toBe(true)
+      const envelope = buildApnsEnvelope(
+        typed,
+        { requestId: 'req_kind', deliveryId: 'del_kind' },
+        null,
+      )
+      expect((envelope.payload['notifai'] as Record<string, unknown>)['kind']).toBe(kind)
+      expect((envelope.payload['aps'] as Record<string, unknown>)['alert']).toEqual({
+        title: 'Build finished',
+        body: 'All checks passed.',
+      })
+      expect((envelope.payload['aps'] as Record<string, unknown>)['sound']).toBe(
+        kind === 'failed' ? 'alert.caf' : 'attention.caf',
+      )
+      expect(typed.platform).toBeUndefined()
+    }
+  })
+
+  it('names custom APNs sounds as notifai-<id>.wav', () => {
+    const envelope = buildApnsEnvelope(
+      draft({ platform: { ios: { sound: 'snd_chime' } } }),
+      { requestId: 'req_custom_sound', deliveryId: 'del_custom_sound' },
+      null,
+    )
+    expect((envelope.payload['aps'] as Record<string, unknown>)['sound']).toBe('notifai-snd_chime.wav')
+  })
+})
+
+describe('unified content and Source Context schema', () => {
+  it('accepts the body, media, alt, and source upper bounds', () => {
+    const media = Array.from({ length: MEDIA_MAX_ITEMS }, (_, index) => ({
+      media_id: `med_${index}`,
+      alt: 'a'.repeat(256),
+    }))
+    expect(
+      validateDraft(
+        draft({
+          presentation: { title: 'T', body: 'b'.repeat(BODY_MAX_LENGTH), media },
+          source: {
+            session_id: 's'.repeat(128),
+            session_label: 'l'.repeat(64),
+            session_label_source: 'semantic',
+            harness: 'claude-code',
+            branch: 'b'.repeat(128),
+            worktree: 'w'.repeat(64),
+          },
+        }),
+      ).ok,
+    ).toBe(true)
+  })
+
+  it('enforces the session label bound for astral characters', () => {
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_emoji', session_label: '😀'.repeat(32) } }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_emoji', session_label: '😀'.repeat(33) } }),
+      ).ok,
+    ).toBe(false)
+  })
+
+  it('rejects every bound just beyond its limit', () => {
+    expect(
+      validateDraft(
+        draft({ presentation: { title: 'T', body: 'b'.repeat(BODY_MAX_LENGTH + 1) } }),
+      ).ok,
+    ).toBe(false)
+    expect(
+      validateDraft(
+        draft({
+          presentation: {
+            title: 'T',
+            body: 'B',
+            media: Array.from({ length: MEDIA_MAX_ITEMS + 1 }, (_, index) => ({
+              media_id: `med_${index}`,
+            })),
+          },
+        }),
+      ).ok,
+    ).toBe(false)
+    expect(
+      validateDraft(
+        draft({
+          presentation: {
+            title: 'T',
+            body: 'B',
+            media: [{ media_id: 'med_1', alt: 'a'.repeat(257) }],
+          },
+        }),
+      ).ok,
+    ).toBe(false)
+    expect(validateDraft(draft({ source: { session_id: 's'.repeat(129) } })).ok).toBe(false)
+    expect(
+      validateDraft(draft({ source: { session_id: 's', harness: 'Claude Code' } })).ok,
+    ).toBe(false)
+  })
+
+  it('requires a real session identity behind a human label but permits an id alone', () => {
+    expect(validateDraft(draft({ source: { session_id: 'sess_exact' } })).ok).toBe(true)
+    expect(validateDraft(draft({ source: { session_label: 'Amber Falcon' } }))).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'source.session_label' })],
+    })
+  })
+
+  it('requires label provenance to accompany an Agent Session label', () => {
+    expect(
+      validateDraft(
+        draft({
+          source: {
+            session_id: 'sess_exact',
+            session_label: 'Generated fallback',
+            session_label_source: 'fallback',
+          },
+        }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({ source: { session_id: 'sess_exact', session_label_source: 'semantic' } }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'source.session_label_source' })],
+    })
+    expect(
+      validateDraft(
+        draft({
+          source: {
+            session_id: 'sess_exact',
+            session_label: 'Semantic title',
+            session_label_source: 'semantic',
+            session_label_previous_source: 'fallback',
+          },
+        }),
+      ).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(
+        draft({
+          source: {
+            session_id: 'sess_exact',
+            session_label: 'Generated fallback',
+            session_label_source: 'fallback',
+            session_label_previous_source: 'fallback',
+          },
+        }),
+      ),
+    ).toMatchObject({
+      ok: false,
+      errors: [expect.objectContaining({ path: 'source.session_label_previous_source' })],
+    })
+  })
+
+  it('warns for unattached canonical media references and accepts attached ones', () => {
+    const unattached = validateDraft(
+      draft({
+        presentation: {
+          title: 'T',
+          body: '![Graph](media:med_missing)',
+          media: [{ media_id: 'med_other' }],
+        },
+      }),
+    )
+    expect(unattached.ok).toBe(true)
+    expect(unattached.warnings).toEqual([
+      expect.objectContaining({
+        path: 'presentation.body',
+        message: expect.stringContaining('med_missing'),
+      }),
+    ])
+
+    expect(
+      validateDraft(
+        draft({
+          presentation: {
+            title: 'T',
+            body: '![Graph](media:med_attached)',
+            media: [{ media_id: 'med_attached', alt: 'Graph' }],
+          },
+        }),
+      ).warnings,
+    ).toEqual([])
+  })
+
+  it('rejects deleted detail, singular image, and top-level session fields', () => {
+    for (const legacy of [
+      { presentation: { title: 'T', body: 'B', detail: 'legacy' } },
+      { presentation: { title: 'T', body: 'B', image: { media_id: 'med_legacy' } } },
+      { session: 'sess_legacy' },
+    ]) {
+      expect(validateDraft({ ...draft(), ...legacy }).ok).toBe(false)
+    }
+  })
+
+  it('publishes the canonical capability entries and downgrade', () => {
+    expect(IOS_CAPABILITIES_V1.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'presentation.body',
+          constraints: expect.objectContaining({
+            max_length: BODY_MAX_LENGTH,
+            format: 'markdown',
+            excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+          }),
+        }),
+        expect.objectContaining({
+          path: 'presentation.media',
+          status: 'supported',
+          constraints: expect.objectContaining({
+            max_items: MEDIA_MAX_ITEMS,
+            max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
+            media_types: ['jpeg', 'png', 'gif'],
+            representative: 'first resolvable',
+            banner_shows: 'one representative + count',
+          }),
+        }),
+        expect.objectContaining({ path: 'source', status: 'supported' }),
+      ]),
+    )
+    expect(MACOS_CAPABILITIES_V1.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'presentation.media',
+          status: 'downgraded',
+          constraints: expect.objectContaining({
+            max_items: MEDIA_MAX_ITEMS,
+            max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
+            media_types: ['jpeg', 'png', 'gif'],
+            representative: 'first resolvable',
+            banner_shows: 'none',
+          }),
+        }),
+        expect.objectContaining({ path: 'source', status: 'supported' }),
+      ]),
+    )
+    expect(IOS_CAPABILITIES_V1.fields.some((field) => field.path === 'presentation.detail')).toBe(
+      false,
+    )
+    expect(IOS_CAPABILITIES_V1.fields.some((field) => field.path === 'presentation.image')).toBe(
+      false,
+    )
+  })
+})
+
+describe('Alpha access Distribution Lane query hint', () => {
+  it('names the singular dashboard query key', () => {
+    expect(ALPHA_ACCESS_LANE_QUERY_PARAM).toBe('distribution_lane')
+  })
+
+  it('accepts only the two active lanes', () => {
+    expect(parseAlphaAccessLaneHint('iphone_testflight')).toBe('iphone_testflight')
+    expect(parseAlphaAccessLaneHint('android_firebase')).toBe('android_firebase')
+    expect(ALPHA_ACCESS_DISTRIBUTION_LANES).toEqual(['iphone_testflight', 'android_firebase'])
+  })
+
+  it('rejects unknown, empty, and absent values', () => {
+    expect(parseAlphaAccessLaneHint('mac_testflight')).toBeNull()
+    expect(parseAlphaAccessLaneHint('IPHONE_TESTFLIGHT')).toBeNull()
+    expect(parseAlphaAccessLaneHint('iphone_testflight,android_firebase')).toBeNull()
+    expect(parseAlphaAccessLaneHint('')).toBeNull()
+    expect(parseAlphaAccessLaneHint(null)).toBeNull()
+    expect(parseAlphaAccessLaneHint(undefined)).toBeNull()
   })
 })

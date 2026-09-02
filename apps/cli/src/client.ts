@@ -1,6 +1,6 @@
 import type {
   ApiErrorBody,
-  AccountAccessRequestResponse,
+  AlphaAccessRequestResponse,
   AccountAccessResponse,
   BeginPairingResponse,
   CapabilityDocument,
@@ -84,7 +84,7 @@ export interface ApiClient {
    * Read-only. There is no client-side write: filing this errand is the
    * User's decision, and the server refuses it from a machine credential.
    */
-  accessRequest(): Promise<AccountAccessRequestResponse>
+  accessRequest(): Promise<AlphaAccessRequestResponse>
   listDevices(): Promise<ListDevicesResponse>
   listSounds(): Promise<ListSoundsResponse>
   capabilities(

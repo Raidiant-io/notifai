@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:75ac3104ec646ca9dd1d72e2851f48929636cbe18d86de4f0643d8ec8974ddb3",
+  "behavior_digest": "sha256:76ab0b5a53af744138c26b11997555f27c8a894505debf6bf0d4a739f1594496",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the CLI agent surface after a maintainability audit. close now names question ids beside request ids in its positional and both usage errors, matching status and the skill's teaching that a held q_ id resolves without registering a duplicate question; the resolution order itself is unchanged. The push-envelope estimator reserves created_at so offline pre-flight agrees with the service's size check, and the unemitted billing_duplicate_channel code left the error vocabulary. Five exports with no callers and their orphaned imports were deleted; no lifecycle hook, skill wording, harness setup, readiness state, acknowledgement, or continuation behavior changed, and the skill text is untouched.",
+  "reason": "Reviewed the CLI agent surface after the protocol package became the one declaration of the served REST wire. api.ts now carries what the service actually accepts and returns: the alpha access request view with its distribution lanes and public-purchase flag replaces the narrower account-access view, pairing details admit the stopped status, content media items expose preview and dimension fields, and the project update request drops an image field the service never accepted; the CLI's client type import follows the one rename. close names question ids beside request ids in its positional and usage errors, matching status and the skill's teaching that a held q_ id resolves without registering a duplicate question. The push-envelope estimator reserves created_at so offline pre-flight agrees with the service's size check, and the unemitted billing_duplicate_channel code left the error vocabulary. Unused exports and their orphaned imports were deleted. No lifecycle hook, skill wording, harness setup, readiness state, acknowledgement, or continuation behavior changed, and the skill text is untouched.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

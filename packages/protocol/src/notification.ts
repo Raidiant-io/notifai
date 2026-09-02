@@ -451,8 +451,8 @@ export type NotificationDraftT = Static<typeof NotificationDraft>
  *
  * This is compatibility negotiation, not authentication or integrity. It is
  * derived from the schema itself so an added, removed, or constrained field
- * cannot silently keep the same identity. The private and public copies of
- * this source are kept byte-identical by the contract-drift gate.
+ * cannot silently keep the same identity. This is the only copy of the
+ * schema: the private contracts package re-exports it rather than mirroring it.
  */
 function fnv1a64(value: string): string {
   let hash = 0xcbf29ce484222325n
