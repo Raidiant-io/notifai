@@ -3,11 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createConnection } from 'node:net'
-import type {
-  ContinuationEvent,
-  DeliveryOutcome,
-  EscalationDeliveryRoute,
-} from './hooks.js'
+import type { ContinuationEvent, DeliveryOutcome, EscalationDeliveryRoute } from './hook-types.js'
 
 /** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
 export const CLAUDE_PEER_PROTOCOL = 1

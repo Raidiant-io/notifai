@@ -2,12 +2,12 @@ import { spawn } from 'node:child_process'
 import { closeSync, constants, existsSync, openSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
+import { hookContinuationRoute } from './hook-lifecycle.js'
 import {
-  hookContinuationRoute,
   type ContinuationEvent,
   type DeliveryOutcome,
   type EscalationDeliveryRoute,
-} from './hooks.js'
+} from './hook-types.js'
 
 /** Codex's per-thread writer lock directory, relative to `$CODEX_HOME`. */
 export const CODEX_THREAD_LOCK_DIR = 'thread-writer-locks'

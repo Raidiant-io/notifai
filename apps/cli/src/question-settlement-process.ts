@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import type { HookInstallableHarness } from './harnesses.js'
-import type { HookEnvelope } from './hooks.js'
+import type { HookEnvelope } from './hook-types.js'
 
 /** Private handoff from the short prompt hook to its detached question owner. */
 export const QUESTION_SETTLEMENT_INPUT_ENV = 'NOTIFAI_INTERNAL_QUESTION_SETTLEMENT_INPUT'

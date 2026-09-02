@@ -24,8 +24,8 @@ import {
 import {
   readLiveProjectSessionPointers,
   readProjectSessionPointer,
-  readSessionState,
-} from './hooks.js'
+} from './hook-project-sessions.js'
+import { readSessionState } from './hook-session-state.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
@@ -79,11 +79,10 @@ import {
   CODEX_HOOK_APPROVAL_USER_ACTION,
   CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM,
   CODEX_STALE_STOP_DEFINITION_PROBLEM,
-  HOOK_EVENTS,
   activeQuestionRouteProblems,
   hookActivationAdvice,
-  requiredHookEvents,
-} from './commands-hooks.js'
+} from './commands-hook-diagnostics.js'
+import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
 import {
   latestPublishedCliVersion,
@@ -1015,7 +1014,6 @@ function checkTitle(name: string): string {
     settings,
   ]
 }
-
 
 interface HookCheck {
   /** No command closes this; only a turn that has not happened yet. */

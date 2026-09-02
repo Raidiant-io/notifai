@@ -86,14 +86,22 @@ import {
   QUESTION_STOP_TIMEOUT_SECONDS,
   settingsFile,
 } from './install-hooks.js'
+import { writeProjectSession } from './hook-project-sessions.js'
+import { inspectQuestionState } from './hook-question-state.js'
+import { readSessionState, writeSessionState } from './hook-session-state.js'
 import {
-  inspectQuestionState,
-  readSessionState,
-  writeProjectSession,
-  writeSessionState,
-} from './hooks.js'
-import { nativeSkills as realNativeSkills, type NativeSkill, type NativeSkills, type SkillScope } from './native-skills.js'
-import { CONFIG_KEYS, loadConfig, personalProjectConfigPath, sessionConfigPath, stateDir } from './config.js'
+  nativeSkills as realNativeSkills,
+  type NativeSkill,
+  type NativeSkills,
+  type SkillScope,
+} from './native-skills.js'
+import {
+  CONFIG_KEYS,
+  loadConfig,
+  personalProjectConfigPath,
+  sessionConfigPath,
+  stateDir,
+} from './config.js'
 import { SETUP_PROOF_STALE_MS, writeSetupProof } from './commands-setup-proof.js'
 import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'

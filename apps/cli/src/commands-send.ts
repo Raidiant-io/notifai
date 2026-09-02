@@ -9,12 +9,9 @@ import {
 } from '@raidiant/notifai-protocol'
 import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
-import {
-  MIN_REPLY_WINDOW_SECONDS,
-  inspectQuestionState,
-  readSessionState,
-  type QuestionStateView,
-} from './hooks.js'
+import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
+import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
+import { readSessionState } from './hook-session-state.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
@@ -52,7 +49,6 @@ import {
 // ---------------------------------------------------------------------------
 // send / status
 // ---------------------------------------------------------------------------
-
 
 export async function sendCommand(
   deps: CommandDeps,
@@ -566,7 +562,6 @@ export async function repliesCommand(
   }
 }
 
-
 function recordDegradedReplyWaits(deps: CommandDeps, requestIds: readonly string[]): void {
   if (requestIds.length === 0) return
   log(deps).error('cli.error', {
@@ -597,7 +592,6 @@ function degradedWaitWarning(requestId: string): string {
 function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0
 }
-
 
 /**
  * The one JSON object `send --reply --json` prints, whatever happens after the
@@ -647,7 +641,6 @@ function unansweredReplyResultJson(receipt: SubmissionReceipt, degraded: boolean
     degraded,
   }
 }
-
 
 function recordReplies(deps: CommandDeps, requestId: string, replies: readonly ReplyView[]): void {
   const logger = log(deps)
