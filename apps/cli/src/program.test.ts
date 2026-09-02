@@ -181,14 +181,25 @@ describe('program argv parsing', () => {
     expect(seen).not.toHaveProperty('wait')
   })
 
-  it('maps init --setup-scope onto the command flags', async () => {
+  it('maps init --skills-scope onto the command flags', async () => {
     let seen: Record<string, unknown> | undefined
     const { exitCode } = await parse(
-      ['init', '--skills', '--setup-scope', 'global', '--no-hooks'],
+      ['init', '--skills', '--skills-scope', 'global', '--no-hooks'],
       { init: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['init'] },
     )
     expect(exitCode).toBe(0)
-    expect(seen).toMatchObject({ skills: true, setupScope: 'global', hooks: false })
+    expect(seen).toMatchObject({ skills: true, skillsScope: 'global', hooks: false })
+  })
+
+  it('has no install-scope flag on hooks install or uninstall', async () => {
+    const install = await parse(['hooks', 'install', '--global'], {
+      hooksInstall: (() => 0) as ProgramRunners['hooksInstall'],
+    })
+    expect(install.exitCode).not.toBe(0)
+    const uninstall = await parse(['hooks', 'uninstall', '--global'], {
+      hooksUninstall: (() => 0) as ProgramRunners['hooksUninstall'],
+    })
+    expect(uninstall.exitCode).not.toBe(0)
   })
 
   it('dispatches update --json onto the local CLI recovery', async () => {

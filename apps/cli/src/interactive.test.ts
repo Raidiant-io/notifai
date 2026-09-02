@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from './client.js'
 import { EXIT, type CommandDeps } from './commands.js'
-import { findInstallations } from './install-hooks.js'
+import { findInstallations, findLegacyProjectInstallations } from './install-hooks.js'
 
 const CANCEL = Symbol.for('notifai-clack-cancel')
 
@@ -40,7 +40,7 @@ vi.mock('@clack/prompts', () => ({
   spinner: () => ({ start: () => {}, stop: () => {} }),
 }))
 
-const { interactiveCommand, routingHookActions, uninstallScopeOptions } = await import('./interactive.js')
+const { interactiveCommand, routingHookActions } = await import('./interactive.js')
 const clack = await import('@clack/prompts')
 
 function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
@@ -149,8 +149,7 @@ describe('routingHookActions', () => {
   it('hides install and uninstall when this directory cannot apply hooks', () => {
     const options = routingHookActions({
       canInstall: false,
-      projectInstallations: [],
-      machineInstallations: [],
+      installations: [],
       hooksReady: false,
     })
     expect(options.map((option) => option.value)).toEqual(['settings', 'back'])
@@ -159,59 +158,27 @@ describe('routingHookActions', () => {
   it('offers install labeled as hooks, without uninstall, when nothing is wired', () => {
     const options = routingHookActions({
       canInstall: true,
-      projectInstallations: [],
-      machineInstallations: [],
+      installations: [],
       hooksReady: false,
     })
     expect(options.find((option) => option.value === 'install')).toMatchObject({
       label: 'Install hooks',
-      hint: 'this project or this machine',
+      hint: 'this machine; enable or disable Notifai per project separately',
     })
     expect(options.some((option) => option.value === 'uninstall')).toBe(false)
   })
 
-  it('names the project scope when only project hooks exist', () => {
+  it('names the one machine installation it would remove', () => {
     const options = routingHookActions({
       canInstall: true,
-      projectInstallations: [{ harness: 'claude-code' }],
-      machineInstallations: [],
+      installations: [{ harness: 'claude-code' }, { harness: 'codex' }],
       hooksReady: true,
     })
     expect(options.find((option) => option.value === 'install')?.label).toBe('Re-install hooks')
     expect(options.find((option) => option.value === 'uninstall')).toMatchObject({
-      label: 'Uninstall hooks for this project',
-      hint: 'claude-code',
-    })
-  })
-
-  it('names the machine scope when only machine hooks exist', () => {
-    const options = routingHookActions({
-      canInstall: false,
-      projectInstallations: [],
-      machineInstallations: [{ harness: 'claude-code' }],
-      hooksReady: true,
-    })
-    expect(options.some((option) => option.value === 'install')).toBe(false)
-    expect(options.find((option) => option.value === 'uninstall')).toMatchObject({
       label: 'Uninstall hooks on this machine',
+      hint: 'claude-code, codex',
     })
-  })
-
-  it('asks which scope to remove when both are present', () => {
-    const options = routingHookActions({
-      canInstall: true,
-      projectInstallations: [{ harness: 'claude-code' }],
-      machineInstallations: [{ harness: 'claude-code' }],
-      hooksReady: true,
-    })
-    expect(options.find((option) => option.value === 'uninstall')).toMatchObject({
-      label: 'Uninstall hooks',
-      hint: 'this project or this machine',
-    })
-    expect(uninstallScopeOptions([{ harness: 'claude-code' }], [{ harness: 'codex' }])).toEqual([
-      { value: 'project', label: 'This project', hint: 'remove hooks from this directory' },
-      { value: 'machine', label: 'This machine', hint: 'remove hooks for every project here' },
-    ])
   })
 })
 
@@ -285,16 +252,19 @@ describe('interactiveCommand', () => {
     expect(clack.outro).toHaveBeenCalledOnce()
   })
 
-  it('does not install hooks when Escape is pressed on the install scope picker', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-install-esc-'))
+  it('never asks where hooks should go — there is one place they can go', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-install-scope-'))
     markClaudeProject(cwd)
-    const deps = makeDeps(cwd)
-    answers = ['routing', 'install', CANCEL, 'quit']
+    const env = isolatedEnv(cwd)
+    const deps = makeDeps(cwd, env)
+    answers = ['routing', 'install', 'quit']
 
     expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
-    expect(findInstallations(cwd, deps.env, deps.hookAdapterHome)).toEqual([])
-    expect(promptLog.some((entry) => entry.message === 'Install hooks for')).toBe(true)
-    expect(promptLog.filter((entry) => entry.message === 'What would you like to do?')).toHaveLength(2)
+    expect(promptLog.some((entry) => entry.message === 'Install hooks for')).toBe(false)
+    const installed = findInstallations(env, deps.hookAdapterHome)
+    expect(installed.map((item) => item.file)).toEqual([
+      path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json'),
+    ])
   })
 
   it('offers install hooks when a harness applies here and omits uninstall when none are wired', async () => {
@@ -320,47 +290,28 @@ describe('interactiveCommand', () => {
     const env = isolatedEnv(cwd)
     const deps = makeDeps(cwd, env)
     writeClaudeHooks(path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json'))
-    expect(findInstallations(cwd, env, deps.hookAdapterHome).some((item) => item.global)).toBe(true)
+    expect(findInstallations(env, deps.hookAdapterHome)).toHaveLength(1)
 
     answers = ['routing', CANCEL, 'quit']
     expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
     expect(optionLabels(routingCall())).toContain('Uninstall hooks on this machine')
-    expect(findInstallations(cwd, env, deps.hookAdapterHome).some((item) => item.global)).toBe(true)
+    expect(findInstallations(env, deps.hookAdapterHome)).toHaveLength(1)
   })
 
-  it('uninstalls only the named project scope and leaves machine hooks', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-scope-'))
+  it('clears a leftover Project-scoped copy along with the Machine one', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-legacy-'))
     markClaudeProject(cwd)
     const env = isolatedEnv(cwd)
     const deps = makeDeps(cwd, env)
     writeClaudeHooks(path.join(cwd, '.claude', 'settings.local.json'))
     writeClaudeHooks(path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json'))
 
-    answers = ['routing', 'uninstall', 'project', 'quit']
+    answers = ['routing', 'uninstall', 'quit']
     expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
 
-    const remaining = findInstallations(cwd, env, deps.hookAdapterHome)
-    expect(remaining.some((item) => !item.global && item.harness === 'claude-code')).toBe(false)
-    expect(remaining.some((item) => item.global && item.harness === 'claude-code')).toBe(true)
-    const scopeCall = promptLog.find((entry) => entry.message === 'Uninstall hooks from')
-    expect(scopeCall).toBeDefined()
-    expect(optionLabels(scopeCall!)).toEqual(['This project', 'This machine', '← Back'])
-  })
-
-  it('does not strip either scope when Escape is pressed on the uninstall picker', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-uninstall-esc-'))
-    markClaudeProject(cwd)
-    const env = isolatedEnv(cwd)
-    const deps = makeDeps(cwd, env)
-    writeClaudeHooks(path.join(cwd, '.claude', 'settings.local.json'))
-    writeClaudeHooks(path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json'))
-
-    answers = ['routing', 'uninstall', CANCEL, 'quit']
-    expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
-
-    const remaining = findInstallations(cwd, env, deps.hookAdapterHome)
-    expect(remaining.some((item) => !item.global && item.harness === 'claude-code')).toBe(true)
-    expect(remaining.some((item) => item.global && item.harness === 'claude-code')).toBe(true)
+    expect(findInstallations(env, deps.hookAdapterHome)).toEqual([])
+    expect(findLegacyProjectInstallations(cwd, env, deps.hookAdapterHome)).toEqual([])
+    expect(promptLog.some((entry) => entry.message === 'Uninstall hooks from')).toBe(false)
   })
 
   it('goes back from a test notification prompt instead of quitting', async () => {
@@ -373,7 +324,7 @@ describe('interactiveCommand', () => {
     expect(clack.outro).toHaveBeenCalledOnce()
   })
 
-  it('uninstalls machine hooks only after that scope is chosen by name', async () => {
+  it('uninstalls machine hooks from the one named action', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-machine-remove-'))
     const env = isolatedEnv(cwd)
     const deps = makeDeps(cwd, env)
@@ -382,6 +333,6 @@ describe('interactiveCommand', () => {
     answers = ['routing', 'uninstall', 'quit']
     expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
     expect(optionLabels(routingCall())).toContain('Uninstall hooks on this machine')
-    expect(findInstallations(cwd, env, deps.hookAdapterHome)).toEqual([])
+    expect(findInstallations(env, deps.hookAdapterHome)).toEqual([])
   })
 })

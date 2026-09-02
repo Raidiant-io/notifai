@@ -63,23 +63,26 @@ export function openclawConfigPath(
 }
 
 export function openclawPluginDir(
-  global: boolean,
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
-  return global
-    ? path.join(openclawStateDir(env, platform), 'extensions', OPENCLAW_PLUGIN_ID)
-    : path.join(cwd, '.openclaw', 'extensions', OPENCLAW_PLUGIN_ID)
+  return path.join(openclawStateDir(env, platform), 'extensions', OPENCLAW_PLUGIN_ID)
 }
 
 export function openclawPluginPath(
-  global: boolean,
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
-  return path.join(openclawPluginDir(global, cwd, env, platform), OPENCLAW_PLUGIN_FILENAME)
+  return path.join(openclawPluginDir(env, platform), OPENCLAW_PLUGIN_FILENAME)
+}
+
+/** A Project-scoped plugin directory an older build wrote; removal only. */
+export function legacyOpenclawProjectPluginDir(cwd: string): string {
+  return path.join(cwd, '.openclaw', 'extensions', OPENCLAW_PLUGIN_ID)
+}
+
+export function legacyOpenclawProjectPluginPath(cwd: string): string {
+  return path.join(legacyOpenclawProjectPluginDir(cwd), OPENCLAW_PLUGIN_FILENAME)
 }
 
 export interface OpenclawPluginOptions {
@@ -322,8 +325,6 @@ export function parseOpenclawConfig(source: string): Record<string, unknown> {
 
 export function mergeOpenclawNotifaiEntry(
   config: Record<string, unknown>,
-  pluginDir: string,
-  global: boolean,
 ): Record<string, unknown> {
   const plugins =
     config.plugins !== null && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
@@ -349,17 +350,37 @@ export function mergeOpenclawNotifaiEntry(
     hooks: { ...hooks, allowConversationAccess: true },
   }
   plugins.entries = entries
-  if (!global) {
-    const load =
-      plugins.load !== null && typeof plugins.load === 'object' && !Array.isArray(plugins.load)
-        ? { ...(plugins.load as Record<string, unknown>) }
-        : {}
-    const paths = Array.isArray(load.paths) ? [...load.paths] : []
-    if (!paths.includes(pluginDir)) paths.push(pluginDir)
-    load.paths = paths
-    plugins.load = load
-  }
   return { ...config, plugins }
+}
+
+/**
+ * Drop a Project-scoped plugin directory from OpenClaw's explicit load paths,
+ * leaving the shared `entries` record — and therefore the Machine plugin —
+ * exactly as it was.
+ */
+export function removeOpenclawLoadPath(
+  config: Record<string, unknown>,
+  pluginDir: string,
+): Record<string, unknown> {
+  const plugins =
+    config.plugins !== null && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
+      ? { ...(config.plugins as Record<string, unknown>) }
+      : {}
+  const load =
+    plugins.load !== null && typeof plugins.load === 'object' && !Array.isArray(plugins.load)
+      ? { ...(plugins.load as Record<string, unknown>) }
+      : {}
+  if (!Array.isArray(load.paths)) return config
+  const paths = load.paths.filter((value) => value !== pluginDir)
+  if (paths.length === load.paths.length) return config
+  if (paths.length > 0) load.paths = paths
+  else delete load.paths
+  if (Object.keys(load).length > 0) plugins.load = load
+  else delete plugins.load
+  if (Object.keys(plugins).length > 0) return { ...config, plugins }
+  const next = { ...config }
+  delete next.plugins
+  return next
 }
 
 export function removeOpenclawNotifaiEntry(

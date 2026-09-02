@@ -116,7 +116,7 @@ function duplicateSkillState(installed: NativeSkill[], selectedScope?: SkillScop
         : {
             by: 'cli',
             summary: `keep the ${selectedScope} skill and uninstall the other`,
-            command: `notifai init --skills --setup-scope ${selectedScope}`,
+            command: `notifai init --skills --skills-scope ${selectedScope}`,
           },
   }
 }
@@ -148,7 +148,7 @@ export async function skillReadiness(
         remedy: {
           by: 'cli',
           summary: `move the skill to the ${selectedScope} scope`,
-          command: `notifai init --skills --setup-scope ${selectedScope}`,
+          command: `notifai init --skills --skills-scope ${selectedScope}`,
         },
       }
     }
@@ -191,7 +191,7 @@ export async function skillReadiness(
         remedy: {
           by: 'cli',
           summary: 'reinstall the content-verified skill shipped with this CLI',
-          command: `notifai init --skills --setup-scope ${candidate.scope}`,
+          command: `notifai init --skills --skills-scope ${candidate.scope}`,
         },
       }
     }
@@ -219,8 +219,8 @@ export async function skillReadiness(
       summary: 'install the skill agents follow when deciding to notify',
       command:
         selectedScope === undefined
-          ? 'notifai init --skills --setup-scope project'
-          : `notifai init --skills --setup-scope ${selectedScope}`,
+          ? 'notifai init --skills --skills-scope project'
+          : `notifai init --skills --skills-scope ${selectedScope}`,
     },
   }
 }

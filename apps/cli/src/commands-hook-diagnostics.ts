@@ -36,9 +36,6 @@ export const CODEX_STALE_STOP_DEFINITION_PROBLEM =
 export const CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM =
   'the active Codex configuration does not contain exactly one Notifai Stop definition, so no singular turn-end owner can be proven'
 
-export const CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM =
-  'the exact Codex Agent Session activation checkout has no matching hook installation'
-
 /**
  * One fail-closed admission gate shared by every active harness route.
  * Finding a file is not readiness: the exact session, one current definition,
@@ -65,12 +62,9 @@ export function activeQuestionRouteProblems(
   const matching = installations.filter(
     (installation) => installation.harness === active.harness,
   )
-  if (active.harness === 'codex' && matching.length === 0) {
-    problems.push(`${CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM}: ${deps.cwd}`)
-  }
   if (matching.length > 1) {
     problems.push(
-      `${matching.length} ${active.label} definitions are active (${matching.map((entry) => entry.file).join(', ')}); keep either project or global routing`,
+      `${matching.length} ${active.label} definitions are active (${matching.map((entry) => entry.file).join(', ')}); reinstall so exactly one remains`,
     )
   }
   for (const installation of matching) {
@@ -111,35 +105,13 @@ export function activeQuestionRouteProblems(
 export function hookActivationAdvice(installations: Installation[]): string {
   const harnesses = new Set(installations.map((installation) => installation.harness))
   const advice: string[] = []
-  if (
-    installations.some(
-      (installation) => installation.harness === 'claude-code' && !installation.global,
-    )
-  ) {
+  if (harnesses.has('claude-code')) {
     advice.push('Claude Code: start one fresh session, send one prompt, then run `notifai doctor`')
   }
-  if (
-    installations.some(
-      (installation) => installation.harness === 'claude-code' && installation.global,
-    )
-  ) {
-    advice.push('Claude Code global hooks: start one fresh session, send one prompt, then run `notifai doctor`')
-  }
-  if (
-    installations.some(
-      (installation) => installation.harness === 'cursor' && !installation.global,
-    )
-  ) {
+  if (harnesses.has('cursor')) {
     advice.push(
       'Cursor: start one fresh conversation, send one prompt, finish its first turn, then run `notifai doctor`',
     )
-  }
-  if (
-    installations.some(
-      (installation) => installation.harness === 'cursor' && installation.global,
-    )
-  ) {
-    advice.push('Cursor global hooks: start one fresh conversation, send one prompt, finish its first turn, then run `notifai doctor`')
   }
   if (harnesses.has('codex')) {
     advice.push(

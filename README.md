@@ -180,8 +180,9 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 The Notifai agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates project configuration,
 sign-in, optional harness hooks, and device readiness. Project configuration
-lands in the checkout it names and asks nothing. Installing the skill or the
-hooks places files elsewhere, so at a human terminal that — and only that —
+lands in the checkout it names and asks nothing. Harness hooks have no scope to
+ask about: they are installed once per harness for this machine. Installing the
+skill does place files elsewhere, so at a human terminal that — and only that —
 asks once whether it is for this project or for this machine.
 `notifai init --skills` verifies the complete first-party skill against the
 copy and digest manifest shipped inside the installed npm package, stages that
@@ -189,7 +190,7 @@ verified copy at a short-lived project-relative path, and delegates placement
 to the pinned native `npx skills` flow using the chosen scope. The staging copy
 is removed afterward; readiness hashes the conventional installed directory.
 The `notifai` CLI binary is always a global install (`npm install -g
-@raidiant/notifai`); setup scope does not change it. The human-readable release
+@raidiant/notifai`); the skill scope does not change it. The human-readable release
 identity is `v<!--x-release-please-start-notifai-->10.1.7<!--x-release-please-end-->`,
 written as `Raidiant-io/notifai#v<!--x-release-please-start-notifai-->10.1.7<!--x-release-please-end-->`
 in installer source grammar.
@@ -197,16 +198,20 @@ The tag is human-readable release identity, never the install-time trust
 object. A different, extra, or missing packaged file is refused before
 installation, and changed installed content fails readiness regardless of the
 mutable source/ref metadata in the installer's lock file.
-For unattended use, pass `--setup-scope project` or `--setup-scope global`.
+For unattended use, pass `--skills-scope project` or `--skills-scope global`.
 
 ## The installed hooks
 
 `notifai hooks install` wires Agent Session activation, the prompt the user
 submits, the end of the agent's turn, and the end of the Agent Session into the
-harness.
-How they appear depends on the harness — Claude Code and Codex name
-them in a hook file, Cursor uses its own hook shapes, and OpenCode and OpenClaw
-get a generated plugin. They are how a question reaches your devices and how the
+harness. It installs one owned mechanism per harness, in the current user's
+account and that harness's active home; whether Notifai acts in a project is
+`notifai project enable` / `notifai project disable`, not a second install.
+How they appear depends on the harness — Claude Code names them in
+`~/.claude/settings.json`, Codex in `~/.codex/hooks.json` (or inline
+`[hooks]` in that layer's `config.toml`, when the user's own hooks already live
+there), Cursor uses its own hook shapes, and OpenCode and OpenClaw get a
+generated plugin. They are how a question reaches your devices and how the
 answer comes back, without the agent keeping any of that in its context.
 
 **SessionStart** (`session-start`) gives the main owner the small model-visible

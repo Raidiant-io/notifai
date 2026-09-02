@@ -293,17 +293,26 @@ function findGitRoot(startDir: string): string | null {
 }
 
 /**
- * Stable identity for personal project preferences.
+ * The directory one Project is identified by, from anywhere inside it.
  *
  * Prefer the directory that owns the shared `.notifai/config.toml`, then the
- * git checkout root, then cwd. Subdirectories of one project therefore share
- * one personal file, and nothing is written inside the repository.
+ * git checkout root, then cwd. Subdirectories of one project therefore resolve
+ * to one root, and nothing is written inside the repository.
+ *
+ * Everything keyed per Project — personal preferences, Project Enablement —
+ * uses this one answer, so enabling a Project from its root and running a hook
+ * from a nested directory cannot disagree about which Project they are in.
  */
-export function personalProjectIdentity(cwd: string): string {
+export function projectIdentityRoot(cwd: string): string {
   const projectConfig = findProjectConfigPath(cwd)
-  const root =
-    projectConfig !== null ? path.dirname(path.dirname(projectConfig)) : (findGitRoot(cwd) ?? cwd)
-  return createHash('sha256').update(canonicalDir(root)).digest('hex').slice(0, 32)
+  return canonicalDir(
+    projectConfig !== null ? path.dirname(path.dirname(projectConfig)) : (findGitRoot(cwd) ?? cwd),
+  )
+}
+
+/** Stable identity for personal project preferences. */
+export function personalProjectIdentity(cwd: string): string {
+  return createHash('sha256').update(projectIdentityRoot(cwd)).digest('hex').slice(0, 32)
 }
 
 /** Personal project layer: `$XDG_CONFIG_HOME/notifai/projects/<identity>.toml`. */
