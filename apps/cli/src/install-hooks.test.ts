@@ -31,6 +31,7 @@ import {
   openclawPluginSource,
   openclawPluginTarget,
   parseOpenclawConfig,
+  removeOpenclawLoadPath,
   removeOpenclawNotifaiEntry,
 } from './openclaw-plugin.js'
 import {
@@ -46,9 +47,10 @@ import {
   detectedHarnesses,
   buildCursorHookConfig,
   buildHookConfig,
-  codexLayerDir,
+  codexLegacyProjectLayers,
   codexProjectRoot,
   findInstallations,
+  findLegacyProjectInstallations,
   codexHookIdentityHash,
   codexCoexistenceNotes,
   codexHomeNote,
@@ -291,89 +293,96 @@ describe('merging into existing settings', () => {
 })
 
 describe('settings locations', () => {
-  it('writes a project install to the gitignored file, not the shared one', () => {
-    expect(settingsFile('claude-code', false, '/repo', {})).toBe('/repo/.claude/settings.local.json')
-    expect(settingsFile('claude-code', true, '/repo', {})).toBe(
+  it('installs one Machine copy per harness, in the active harness home', () => {
+    expect(settingsFile('claude-code', {})).toBe(
       path.join(os.homedir(), '.claude', 'settings.json'),
     )
+    expect(settingsFile('cursor', {})).toBe(path.join(os.homedir(), '.cursor', 'hooks.json'))
   })
 
   it('keeps ambient global settings inside the test account', () => {
     expect(os.homedir()).toBe(process.env['HOME'])
     expect(os.homedir()).toBe(process.env['NOTIFAI_TEST_HOME'])
-    expect(settingsFile('claude-code', true, '/repo', {})).toBe(
+    expect(settingsFile('claude-code', {})).toBe(
       path.join(process.env['HOME']!, '.claude', 'settings.json'),
     )
   })
 
-  it('uses inline Codex hooks for a new layer', () => {
-    expect(settingsFile('codex', false, '/repo', {})).toBe('/repo/.codex/config.toml')
-    expect(settingsFile('codex', true, '/repo', {})).toBe(
-      path.join(os.homedir(), '.codex', 'config.toml'),
+  it('follows the active harness home, which a session manager can relocate', () => {
+    expect(settingsFile('codex', { HOME: '/user', CODEX_HOME: '/managed/codex' })).toBe(
+      '/managed/codex/hooks.json',
+    )
+    expect(settingsFile('claude-code', { CLAUDE_CONFIG_DIR: '/managed/claude' })).toBe(
+      '/managed/claude/settings.json',
     )
   })
 
-  it('keeps a Notifai-only hooks.json instead of rewriting config.toml', () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-json-'))
-    mkdirSync(path.join(repo, '.codex'), { recursive: true })
-    applyPlan(path.join(repo, '.codex', 'hooks.json'), { hooks: ours() })
+  it('writes Codex hooks.json for a layer with no hooks of its own', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-fresh-'))
+    const codexHome = path.join(home, '.codex')
+    mkdirSync(codexHome, { recursive: true })
+    writeFileSync(path.join(codexHome, 'config.toml'), 'model = "gpt-5.6"\n')
 
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(repo, '.codex', 'hooks.json'))
+    expect(settingsFile('codex', { HOME: home, CODEX_HOME: codexHome })).toBe(
+      path.join(codexHome, 'hooks.json'),
+    )
   })
 
-  it('joins the only populated hook representation without special-casing its owner', () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
-    const layer = path.join(repo, '.codex')
-    mkdirSync(layer, { recursive: true })
+  it('joins inline config.toml only when the User has hooks of their own there', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-user-inline-'))
+    const codexHome = path.join(home, '.codex')
+    mkdirSync(codexHome, { recursive: true })
     writeFileSync(
-      path.join(layer, 'config.toml'),
-      `[hooks.state."${layer}/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+      path.join(codexHome, 'config.toml'),
+      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
+        '\n',
+      ),
     )
-    applyPlan(path.join(layer, 'hooks.json'), {
-      hooks: {
-        Stop: [{ hooks: [{ type: 'command', command: 'gdh-stop' }] }],
-      },
+
+    expect(settingsFile('codex', { HOME: home, CODEX_HOME: codexHome })).toBe(
+      path.join(codexHome, 'config.toml'),
+    )
+  })
+
+  it('moves Notifai-only inline handlers to hooks.json rather than staying put', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-ours-inline-'))
+    const codexHome = path.join(home, '.codex')
+    mkdirSync(codexHome, { recursive: true })
+    writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
+    )
+
+    expect(settingsFile('codex', { HOME: home, CODEX_HOME: codexHome })).toBe(
+      path.join(codexHome, 'hooks.json'),
+    )
+  })
+
+  it('keeps hooks.json when someone else already owns that representation', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-json-'))
+    const codexHome = path.join(home, '.codex')
+    mkdirSync(codexHome, { recursive: true })
+    writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      `[hooks.state."${codexHome}/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:abc"\n`,
+    )
+    applyPlan(path.join(codexHome, 'hooks.json'), {
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'gdh-stop' }] }] },
     })
 
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'hooks.json'))
-  })
-
-  it('keeps inline hooks when config.toml is the only populated representation', () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-toml-'))
-    const layer = path.join(repo, '.codex')
-    mkdirSync(layer, { recursive: true })
-    writeFileSync(
-      path.join(layer, 'config.toml'),
-      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
-        '\n',
-      ),
+    expect(settingsFile('codex', { HOME: home, CODEX_HOME: codexHome })).toBe(
+      path.join(codexHome, 'hooks.json'),
     )
-
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'config.toml'))
-  })
-
-  it('does not migrate our hooks when both representations already exist', () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-both-'))
-    const layer = path.join(repo, '.codex')
-    mkdirSync(layer, { recursive: true })
-    writeFileSync(
-      path.join(layer, 'config.toml'),
-      ['[[hooks.Stop]]', '', '[[hooks.Stop.hooks]]', 'type = "command"', 'command = "gdh-stop"', ''].join(
-        '\n',
-      ),
-    )
-    applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
-
-    expect(settingsFile('codex', false, repo, {})).toBe(path.join(layer, 'hooks.json'))
   })
 })
 
 /**
- * Codex resolves project hooks against the main repository, so an install run
- * inside a worktree used to write a file Codex never reads — and reported
- * success. Proven against the real binary 2026-08-03.
+ * Project-scoped Codex files are no longer an install target, but a previous
+ * build wrote them and they still fire. Codex resolves a project hook file
+ * against the main repository, so a worktree has two directories worth
+ * enumerating for removal.
  */
-describe('a Codex install run inside a git worktree', () => {
+describe('legacy Project-scoped Codex layers', () => {
   /** The on-disk shape `git worktree add` produces, verified against real git. */
   function repoWithWorktree(): { main: string; worktree: string } {
     const base = mkdtempSync(path.join(os.tmpdir(), 'notifai-wt-'))
@@ -388,10 +397,13 @@ describe('a Codex install run inside a git worktree', () => {
     return { main, worktree }
   }
 
-  it('targets the main repository, which is the file Codex actually reads', () => {
+  it('enumerates the main repository Codex reads and the worktree it does not', () => {
     const { main, worktree } = repoWithWorktree()
 
-    expect(settingsFile('codex', false, worktree, {})).toBe(path.join(main, '.codex', 'config.toml'))
+    expect(codexLegacyProjectLayers(worktree).map((layer) => layer.dir)).toEqual([
+      path.join(main, '.codex'),
+      path.join(worktree, '.codex'),
+    ])
     expect(codexProjectRoot(worktree)).toBe(main)
   })
 
@@ -416,9 +428,9 @@ describe('a Codex install run inside a git worktree', () => {
     writeFileSync(path.join(forgedGitDir, 'gitdir'), `${path.join(project, '.git')}\n`)
 
     expect(codexProjectRoot(project)).toBe(project)
-    expect(settingsFile('codex', false, project, {})).toBe(
-      path.join(project, '.codex', 'config.toml'),
-    )
+    expect(codexLegacyProjectLayers(project).map((layer) => layer.dir)).toEqual([
+      path.join(project, '.codex'),
+    ])
   })
 
   it('rejects a one-way gitfile without Git\'s reciprocal worktree backlink', () => {
@@ -442,58 +454,40 @@ describe('a Codex install run inside a git worktree', () => {
 
     expect(codexProjectRoot(base)).toBe(base)
     expect(codexProjectRoot(nested)).toBe(base)
+    expect(codexLegacyProjectLayers(base).map((layer) => layer.dir)).toEqual([
+      path.join(base, '.codex'),
+    ])
   })
 
   it('falls back to the working directory outside a repository', () => {
-    // Not every project is a git checkout, and an install there should still
-    // land somewhere predictable rather than walking off to the filesystem root.
+    // Not every project is a git checkout, and legacy discovery there should
+    // still land somewhere predictable rather than walking to the filesystem root.
     const base = mkdtempSync(path.join(os.tmpdir(), 'notifai-bare-'))
 
     expect(codexProjectRoot(base)).toBe(base)
   })
 
-  it('names the directory Codex needs before it will look for project hooks', () => {
-    // Writing the main repository's file is not enough: Codex only loads the
-    // project layer when a `.codex` directory sits at or above cwd, and in a
-    // worktree there is nothing to find. An empty directory was the difference
-    // between the handler running and nothing running.
-    const { worktree } = repoWithWorktree()
+  it('finds a Notifai handler an older build left in a Project file', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-legacy-project-'))
+    mkdirSync(path.join(cwd, '.claude'), { recursive: true })
+    applyPlan(path.join(cwd, '.claude', 'settings.local.json'), { hooks: ours() })
+    const env = { HOME: path.join(cwd, 'isolated-home') }
 
-    expect(codexLayerDir(worktree)).toBe(path.join(worktree, '.codex'))
+    expect(findInstallations(env)).toEqual([])
+    const legacy = findLegacyProjectInstallations(cwd, env)
+    expect(legacy.map((installation) => installation.file)).toEqual([
+      path.join(cwd, '.claude', 'settings.local.json'),
+    ])
   })
 
-  it('anchors that directory at the worktree root so subdirectories are covered', () => {
-    const { worktree } = repoWithWorktree()
-    const nested = path.join(worktree, 'apps', 'cli')
-    mkdirSync(nested, { recursive: true })
+  it('never reports the Machine installation as Project residue', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-home-as-project-'))
+    const env = { HOME: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude') }
+    mkdirSync(path.join(home, '.claude'), { recursive: true })
+    applyPlan(path.join(home, '.claude', 'settings.json'), { hooks: ours() })
 
-    // Codex walks up from cwd looking for it, so one at the root serves every
-    // directory an agent might run from.
-    expect(codexLayerDir(nested)).toBe(path.join(worktree, '.codex'))
-  })
-
-  it('asks for nothing extra in an ordinary checkout, where both halves agree', () => {
-    const base = mkdtempSync(path.join(os.tmpdir(), 'notifai-plain-'))
-    mkdirSync(path.join(base, '.git'), { recursive: true })
-
-    expect(codexLayerDir(base)).toBeNull()
-  })
-
-  it('does not redirect Claude Code, which reads the worktree it runs in', () => {
-    const { worktree } = repoWithWorktree()
-
-    expect(settingsFile('claude-code', false, worktree, {})).toBe(
-      path.join(worktree, '.claude', 'settings.local.json'),
-    )
-  })
-
-  it('follows the active harness home for global hook install', () => {
-    expect(settingsFile('codex', true, '/repo', { HOME: '/user', CODEX_HOME: '/managed/codex' })).toBe(
-      '/managed/codex/config.toml',
-    )
-    expect(settingsFile('claude-code', true, '/repo', { CLAUDE_CONFIG_DIR: '/managed/claude' })).toBe(
-      '/managed/claude/settings.json',
-    )
+    expect(findInstallations(env)).toHaveLength(1)
+    expect(findLegacyProjectInstallations(home, env)).toEqual([])
   })
 })
 
@@ -625,8 +619,8 @@ describe('writing the settings file', () => {
 
 describe('finding what is installed', () => {
   it('reports Notifai handlers written as inline Codex [hooks]', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-find-toml-'))
-    const file = path.join(cwd, '.codex', 'config.toml')
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-find-toml-'))
+    const file = path.join(home, '.codex', 'config.toml')
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(
       file,
@@ -646,8 +640,8 @@ describe('finding what is installed', () => {
       ].join('\n'),
     )
 
-    const found = findInstallations(cwd, { HOME: path.join(cwd, 'isolated-home') })
-    const codex = found.find((installation) => installation.harness === 'codex' && !installation.global)
+    const found = findInstallations({ HOME: home })
+    const codex = found.find((installation) => installation.harness === 'codex')
     expect(codex?.file).toBe(file)
     expect(codex?.handlers.map((handler) => handler.event)).toEqual(['Stop'])
     expect(codex?.handlers[0]?.handlerIndex).toBe(0)
@@ -661,8 +655,8 @@ describe('finding what is installed', () => {
    * users to hand-edit a file another program regenerates — for nothing.
    */
   it('says nothing when the other representation holds only foreign hooks', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreign-rep-'))
-    const layer = path.join(cwd, '.codex')
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreign-rep-'))
+    const layer = path.join(home, '.codex')
     mkdirSync(layer, { recursive: true })
     applyPlan(path.join(layer, 'hooks.json'), {
       hooks: {
@@ -677,12 +671,12 @@ describe('finding what is installed', () => {
       stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
     )
 
-    expect(codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })).toEqual([])
+    expect(codexRepresentationProblems({ HOME: home })).toEqual([])
   })
 
   it('names the foreign file and says Notifai will not touch it', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-coexist-'))
-    const layer = path.join(cwd, '.codex')
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-coexist-'))
+    const layer = path.join(home, '.codex')
     mkdirSync(layer, { recursive: true })
     applyPlan(path.join(layer, 'hooks.json'), {
       hooks: {
@@ -694,7 +688,7 @@ describe('finding what is installed', () => {
       stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
     )
 
-    const notes = codexCoexistenceNotes(cwd, { HOME: path.join(cwd, 'isolated-home') })
+    const notes = codexCoexistenceNotes({ HOME: home })
     expect(notes).toHaveLength(1)
     expect(notes[0]).toContain(path.join(layer, 'hooks.json'))
     expect(notes[0]).toContain('Notifai will not modify it')
@@ -703,20 +697,20 @@ describe('finding what is installed', () => {
   })
 
   it('says nothing when Notifai is the only thing in the layer', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-coexist-alone-'))
-    const layer = path.join(cwd, '.codex')
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-coexist-alone-'))
+    const layer = path.join(home, '.codex')
     mkdirSync(layer, { recursive: true })
     writeFileSync(
       path.join(layer, 'config.toml'),
       stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
     )
 
-    expect(codexCoexistenceNotes(cwd, { HOME: path.join(cwd, 'isolated-home') })).toEqual([])
+    expect(codexCoexistenceNotes({ HOME: home })).toEqual([])
   })
 
   it('names the events a Notifai copy in each file would notify twice for', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-dual-rep-'))
-    const layer = path.join(cwd, '.codex')
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-dual-rep-'))
+    const layer = path.join(home, '.codex')
     mkdirSync(layer, { recursive: true })
     applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
     writeFileSync(
@@ -724,7 +718,7 @@ describe('finding what is installed', () => {
       stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
     )
 
-    const problems = codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })
+    const problems = codexRepresentationProblems({ HOME: home })
     expect(problems).toHaveLength(1)
     expect(problems[0]).toContain(path.join(layer, 'hooks.json'))
     expect(problems[0]).toContain(path.join(layer, 'config.toml'))
@@ -737,8 +731,8 @@ describe('finding what is installed', () => {
   })
 
   it('reports Notifai split across both files, where only one copy stays current', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-split-rep-'))
-    const layer = path.join(cwd, '.codex')
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-split-rep-'))
+    const layer = path.join(home, '.codex')
     mkdirSync(layer, { recursive: true })
     const { Stop, ...rest } = ours()
     applyPlan(path.join(layer, 'hooks.json'), { hooks: { Stop: Stop! } })
@@ -747,7 +741,7 @@ describe('finding what is installed', () => {
       stringifyToml({ hooks: rest as unknown as Record<string, unknown> }),
     )
 
-    const problems = codexRepresentationProblems(cwd, { HOME: path.join(cwd, 'isolated-home') })
+    const problems = codexRepresentationProblems({ HOME: home })
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatch(/split between them/)
     expect(problems[0]).toMatch(/Stop/)
@@ -755,30 +749,13 @@ describe('finding what is installed', () => {
     expect(problems[0]).not.toMatch(/twice per turn/)
   })
 
-  it('scopes the remedy to the global layer it found the duplicate in', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-global-rep-'))
-    const home = path.join(cwd, 'isolated-home')
-    const layer = path.join(home, '.codex')
-    mkdirSync(layer, { recursive: true })
-    applyPlan(path.join(layer, 'hooks.json'), { hooks: ours() })
-    writeFileSync(
-      path.join(layer, 'config.toml'),
-      stringifyToml({ hooks: ours() as unknown as Record<string, unknown> }),
-    )
-
-    const problems = codexRepresentationProblems(cwd, { HOME: home })
-    expect(problems).toHaveLength(1)
-    expect(problems[0]).toMatch(/notifai hooks uninstall --harness codex --global/)
-    expect(problems[0]).toMatch(/notifai hooks install --harness codex --global/)
-  })
-
   it('reports handlers from either harness with their positions', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-find-'))
-    mkdirSync(path.join(cwd, '.claude'), { recursive: true })
-    applyPlan(path.join(cwd, '.claude', 'settings.local.json'), { hooks: ours() })
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-find-'))
+    mkdirSync(path.join(home, '.claude'), { recursive: true })
+    applyPlan(path.join(home, '.claude', 'settings.json'), { hooks: ours() })
 
-    const found = findInstallations(cwd, { HOME: path.join(cwd, 'isolated-home') })
-    const claude = found.find((i) => i.harness === 'claude-code' && !i.global)
+    const found = findInstallations({ HOME: home })
+    const claude = found.find((i) => i.harness === 'claude-code')
 
     expect(claude).toBeDefined()
     expect(claude?.handlers.map((h) => h.event).sort()).toEqual([
@@ -802,10 +779,10 @@ describe('finding what is installed', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-trust-'))
     const home = path.join(cwd, 'home')
     const env = { HOME: home }
-    const hookFile = path.join(cwd, '.codex', 'hooks.json')
+    const hookFile = path.join(home, '.codex', 'hooks.json')
     mkdirSync(path.dirname(hookFile), { recursive: true })
     applyPlan(hookFile, { hooks: ours() })
-    const installations = findInstallations(cwd, env)
+    const installations = findInstallations(env)
     const codex = installations.find((installation) => installation.harness === 'codex')
     const stop = codex?.handlers.find((handler) => handler.event === 'Stop')
     expect(stop).toBeDefined()
@@ -874,7 +851,7 @@ describe('finding what is installed', () => {
     mkdirSync(path.dirname(hookFile), { recursive: true })
     applyPlan(hookFile, { hooks: buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' }) })
 
-    const installations = findInstallations(cwd, env)
+    const installations = findInstallations(env)
     const sessionStart = installations
       .find((installation) => installation.harness === 'codex')
       ?.handlers.find((handler) => handler.event === 'SessionStart')
@@ -1130,16 +1107,15 @@ describe('the OpenCode adapter', () => {
   })
 
   it('installs beside the config rather than into it', () => {
-    const local = opencodePluginPath(false, '/repo', {})
-    expect(local).toBe(path.join('/repo', '.opencode', 'plugins', 'notifai.js'))
-    const global = opencodePluginPath(true, '/repo', { OPENCODE_CONFIG_DIR: '/cfg/opencode' })
-    expect(global).toBe(path.join('/cfg/opencode', 'plugins', 'notifai.js'))
+    expect(opencodePluginPath({ OPENCODE_CONFIG_DIR: '/cfg/opencode' })).toBe(
+      path.join('/cfg/opencode', 'plugins', 'notifai.js'),
+    )
   })
 
   it('is a harness `hooks install` knows about', () => {
     expect(HOOK_INSTALLABLE_HARNESSES).toContain('opencode')
     expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
-    expect(settingsFile('opencode', false, '/repo', {})).toContain('notifai.js')
+    expect(settingsFile('opencode', {})).toContain('notifai.js')
   })
 
   it('reports the same stable adapter identity as command-hook harnesses', () => {
@@ -1270,15 +1246,14 @@ describe('the OpenClaw adapter', () => {
   })
 
   it('installs beside the OpenClaw config rather than into a hook document', () => {
-    const local = openclawPluginPath(false, '/repo', {})
-    expect(local).toBe(path.join('/repo', '.openclaw', 'extensions', 'notifai', 'index.js'))
-    const global = openclawPluginPath(true, '/repo', { OPENCLAW_STATE_DIR: '/cfg/openclaw' })
-    expect(global).toBe(path.join('/cfg/openclaw', 'extensions', 'notifai', 'index.js'))
+    expect(openclawPluginPath({ OPENCLAW_STATE_DIR: '/cfg/openclaw' })).toBe(
+      path.join('/cfg/openclaw', 'extensions', 'notifai', 'index.js'),
+    )
   })
 
   it('is a harness `hooks install` knows about', () => {
     expect(HOOK_INSTALLABLE_HARNESSES).toContain('openclaw')
-    expect(settingsFile('openclaw', false, '/repo', {})).toContain('index.js')
+    expect(settingsFile('openclaw', {})).toContain('index.js')
   })
 
   it('reports the same stable adapter identity as command-hook harnesses', () => {
@@ -1296,11 +1271,10 @@ describe('the OpenClaw adapter', () => {
   })
 
   it('merges only the Notifai plugin entry into OpenClaw config', () => {
-    const merged = mergeOpenclawNotifaiEntry(
-      { gateway: { port: 18789 }, plugins: { entries: { memory: { enabled: true } } } },
-      '/repo/.openclaw/extensions/notifai',
-      false,
-    )
+    const merged = mergeOpenclawNotifaiEntry({
+      gateway: { port: 18789 },
+      plugins: { entries: { memory: { enabled: true } } },
+    })
     expect(merged).toMatchObject({
       gateway: { port: 18789 },
       plugins: {
@@ -1308,13 +1282,27 @@ describe('the OpenClaw adapter', () => {
           memory: { enabled: true },
           notifai: { enabled: true, hooks: { allowConversationAccess: true } },
         },
-        load: { paths: ['/repo/.openclaw/extensions/notifai'] },
       },
     })
+    // The Machine plugin lives in OpenClaw's own extensions directory, so it
+    // needs no explicit load path — only a legacy Project copy ever had one.
+    expect((merged.plugins as { load?: unknown }).load).toBeUndefined()
     const stripped = removeOpenclawNotifaiEntry(merged, '/repo/.openclaw/extensions/notifai')
     expect(stripped).toEqual({
       gateway: { port: 18789 },
       plugins: { entries: { memory: { enabled: true } } },
+    })
+  })
+
+  it('drops only a legacy Project load path, leaving the Machine entry enabled', () => {
+    const config = mergeOpenclawNotifaiEntry({
+      plugins: { load: { paths: ['/repo/.openclaw/extensions/notifai', '/other'] } },
+    })
+    expect(removeOpenclawLoadPath(config, '/repo/.openclaw/extensions/notifai')).toEqual({
+      plugins: {
+        entries: { notifai: { enabled: true, hooks: { allowConversationAccess: true } } },
+        load: { paths: ['/other'] },
+      },
     })
   })
 
@@ -1463,8 +1451,9 @@ describe('Windows hook commands and discovery', () => {
     writeFileSync(script, '')
     installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir, 'win32')
     const adapter = hookAdapterPath(homeDir)
-    mkdirSync(path.join(cwd, '.claude'), { recursive: true })
-    applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
+    const claudeHome = path.join(homeDir, '.claude')
+    mkdirSync(claudeHome, { recursive: true })
+    applyPlan(path.join(claudeHome, 'settings.json'), {
       hooks: buildHookConfig({
         adapterPath: adapter,
         harness: 'claude-code',
@@ -1474,8 +1463,7 @@ describe('Windows hook commands and discovery', () => {
     })
 
     const found = findInstallations(
-      cwd,
-      { HOME: homeDir, USERPROFILE: 'C:\\Users\\Ada' },
+      { HOME: homeDir, USERPROFILE: 'C:\\Users\\Ada', CLAUDE_CONFIG_DIR: claudeHome },
       homeDir,
       'win32',
     )
@@ -1490,16 +1478,16 @@ describe('Windows hook commands and discovery', () => {
   it('prefers a Windows-absolute USERPROFILE over an MSYS HOME', () => {
     const env = { HOME: '/c/Users/msys', USERPROFILE: 'C:\\Users\\Ada' }
     expect(harnessAccountHome(env, 'win32')).toBe('C:\\Users\\Ada')
-    expect(settingsFile('cursor', true, '/repo', env, 'win32')).toBe(
+    expect(settingsFile('cursor', env, 'win32')).toBe(
       path.join('C:\\Users\\Ada', '.cursor', 'hooks.json'),
     )
-    expect(settingsFile('claude-code', true, '/repo', env, 'win32')).toBe(
+    expect(settingsFile('claude-code', env, 'win32')).toBe(
       path.join('C:\\Users\\Ada', '.claude', 'settings.json'),
     )
-    expect(opencodePluginPath(true, '/repo', env, 'win32')).toBe(
+    expect(opencodePluginPath(env, 'win32')).toBe(
       path.join('C:\\Users\\Ada', '.config', 'opencode', 'plugins', 'notifai.js'),
     )
-    expect(openclawPluginPath(true, '/repo', env, 'win32')).toBe(
+    expect(openclawPluginPath(env, 'win32')).toBe(
       path.join('C:\\Users\\Ada', '.openclaw', 'extensions', 'notifai', 'index.js'),
     )
   })

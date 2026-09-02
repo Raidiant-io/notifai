@@ -38,23 +38,17 @@ export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 const OPENCODE_ADAPTER_VERSION = 12
 
 export function opencodePluginDir(
-  global: boolean,
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
-  return global
-    ? path.join(configHome(env, 'OPENCODE_CONFIG_DIR', '.config/opencode', platform), 'plugins')
-    : path.join(cwd, '.opencode', 'plugins')
+  return path.join(configHome(env, 'OPENCODE_CONFIG_DIR', '.config/opencode', platform), 'plugins')
 }
 
 export function opencodePluginPath(
-  global: boolean,
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
-  return path.join(opencodePluginDir(global, cwd, env, platform), OPENCODE_PLUGIN_FILENAME)
+  return path.join(opencodePluginDir(env, platform), OPENCODE_PLUGIN_FILENAME)
 }
 
 export interface OpencodePluginOptions {

@@ -8,9 +8,8 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
-import { ensurePrivateDirectory } from './atomic-file.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import { personalProjectConfigPath, type CliConfig } from './config.js'
+import { type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { type SkillScope } from './native-skills.js'
 import {
@@ -64,9 +63,6 @@ export function projectSlugFrom(name: string): string {
   return inferredProjectSlugFrom(name) ?? 'project'
 }
 
-/** Project checkout vs this machine. Drives skill, hooks, and config together. */
-export type SetupScope = SkillScope
-
 export interface InitFlags {
   /** Emit the final shared readiness model and never prompt. */
   json?: boolean
@@ -79,12 +75,9 @@ export interface InitFlags {
    */
   skills?: boolean
   /**
-   * One setup-scope for skill, hooks, and config. The unattended answer to
-   * init's single project-vs-machine question. Pairing, devices, and the CLI
-   * binary are not this flag.
+   * Where the agent guidance skill is installed. `npx skills` owns this
+   * choice; lifecycle wiring has no scope of its own and never reads it.
    */
-  setupScope?: SetupScope
-  /** Alias of `--setup-scope` when installing the skill unattended. */
   skillsScope?: SkillScope
   /** Same tri-state, for the harness hooks. */
   hooks?: boolean
@@ -130,21 +123,15 @@ async function closeGap(
   flags: InitFlags,
 ): Promise<GapCloseResult> {
   if (state.id === 'project') {
-    // Naming this checkout is local bookkeeping, not skill or hook placement,
-    // so it does not wait on the scope question. Without an explicit answer the
-    // name lands in the checkout it describes, which is the answer a User who
-    // never sees the question would have given.
+    // Naming this checkout is local bookkeeping, and the name describes the
+    // checkout it sits in, so it lands there without a question.
     const slug = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
-    const configPath =
-      flags.setupScope === 'global'
-        ? personalProjectConfigPath(deps.cwd, deps.env)
-        : path.join(deps.cwd, '.notifai', 'config.toml')
+    const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
     const existing = existsSync(configPath)
       ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
       : {}
     existing['project'] = slug
-    if (flags.setupScope === 'global') ensurePrivateDirectory(path.dirname(configPath))
-    else mkdirSync(path.dirname(configPath), { recursive: true })
+    mkdirSync(path.dirname(configPath), { recursive: true })
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
     return 'closed'
   }
@@ -161,9 +148,8 @@ async function closeGap(
     const harnesses = await pickHarnessesToInstall(deps)
     if (harnesses === null || harnesses.length === 0) return 'failed'
     let ok = true
-    const hookFlags = flags.setupScope === 'global' ? { global: true as const } : {}
     for (const harness of harnesses) {
-      if (hooksInstallCommand(deps, { harness, ...hookFlags, narrate: false }) !== EXIT.ok) ok = false
+      if (hooksInstallCommand(deps, { harness, narrate: false }) !== EXIT.ok) ok = false
     }
     return ok ? 'closed' : 'failed'
   }
@@ -201,10 +187,10 @@ async function closeGap(
       )
       return 'failed'
     }
-    const installScope = flags.setupScope ?? flags.skillsScope
+    const installScope = flags.skillsScope
     if (installScope === undefined) {
       deps.io.err(
-        'Skill installation refused — choose a setup scope: `notifai init --skills --setup-scope project` or `... global`.',
+        'Skill installation refused — choose a skill scope: `notifai init --skills --skills-scope project` or `... global`.',
       )
       return 'failed'
     }
@@ -662,99 +648,80 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   return deps.io.confirm(question, true)
 }
 
-/** The two states whose remedy actually places files the scope question is about. */
-function needsInstallScope(state: ReadinessState): boolean {
-  return state.id === 'hooks' || state.id === 'skill'
+/** The one state whose remedy places files a scope choice is about. */
+function needsSkillScope(state: ReadinessState): boolean {
+  return state.id === 'skill'
 }
 
-function isSetupScope(value: string | undefined): value is SetupScope {
+function isSkillScope(value: string | undefined): value is SkillScope {
   return value === 'project' || value === 'global'
 }
 
 /**
- * Scope flags are checked before anything runs, because a contradiction is a
- * usage error and reporting it after half a setup is worse than reporting it
- * now. Answering the question is a separate step (`scopeForLocalInstall`).
+ * Skill-scope flags are checked before anything runs, because a contradiction
+ * is a usage error and reporting it after half a setup is worse than reporting
+ * it now. Answering the question is a separate step (`scopeForSkillInstall`).
+ *
+ * Lifecycle wiring has no scope: it is installed for this machine, and whether
+ * it does anything in a Project is Project Enablement's question.
  */
-function checkSetupScopeFlags(deps: CommandDeps, flags: InitFlags): SetupScope | undefined | 'usage' {
-  if (flags.setupScope !== undefined && !isSetupScope(flags.setupScope)) {
-    deps.io.err('Invalid setup scope. Choose `project` or `global`.')
-    return 'usage'
-  }
-  if (flags.skillsScope !== undefined && !isSetupScope(flags.skillsScope)) {
+function checkSkillScopeFlags(deps: CommandDeps, flags: InitFlags): SkillScope | undefined | 'usage' {
+  if (flags.skillsScope !== undefined && !isSkillScope(flags.skillsScope)) {
     deps.io.err('Invalid skill scope. Choose `project` or `global`.')
     return 'usage'
   }
-  if (
-    flags.setupScope !== undefined &&
-    flags.skillsScope !== undefined &&
-    flags.setupScope !== flags.skillsScope
-  ) {
-    deps.io.err('`--setup-scope` and `--skills-scope` disagree. Pass one, or pass the same value twice.')
-    return 'usage'
-  }
   if (flags.skillsScope !== undefined && flags.skills !== true) {
-    deps.io.err('`--skills-scope` requires `--skills`. Use `--setup-scope` to choose project or machine for the whole setup.')
+    deps.io.err('`--skills-scope` requires `--skills`.')
     return 'usage'
   }
-  const fromFlags = flags.setupScope ?? flags.skillsScope
   // Asking for an install nobody can be asked about is a usage error, and it
   // is knowable from the flags alone — so it is reported before a setup runs
   // half way rather than after.
-  if (
-    fromFlags === undefined &&
-    deps.io.interactive !== true &&
-    (flags.skills === true || flags.hooks === true)
-  ) {
+  if (flags.skillsScope === undefined && deps.io.interactive !== true && flags.skills === true) {
     deps.io.err(
-      'Unattended setup changes require an explicit scope: pass `--setup-scope project` or `--setup-scope global`.',
+      'Unattended skill installation requires an explicit scope: pass `--skills-scope project` or `--skills-scope global`.',
     )
     return 'usage'
   }
-  return fromFlags
+  return flags.skillsScope
 }
 
 /**
- * Where a skill or hook install should land, asked at the moment one is about
- * to happen and not before.
+ * Where the agent guidance skill should land, asked at the moment it is about
+ * to be installed and not before.
  *
- * It used to be the first thing the product ever said, in front of the
- * assessment, sign-in and every other gate — a question about skill, hook and
- * shared-config placement put to someone who had met none of those words and
- * might never reach the step it decides. Worse, project identity and Project
- * Enablement were gated on the answer, so an unattended run that could not
- * produce one advanced nothing at all.
- *
- * Now nothing depends on it except the two installs it actually describes.
+ * It used to be the first thing the product ever said, as one question
+ * covering skill, hook and shared-config placement, put to someone who had met
+ * none of those words. Hooks and config no longer have a scope at all, and
+ * what remains belongs to `npx skills`.
  */
-async function scopeForLocalInstall(
+async function scopeForSkillInstall(
   deps: CommandDeps,
   flags: InitFlags,
-): Promise<SetupScope | 'declined'> {
-  const fromFlags = flags.setupScope ?? flags.skillsScope
-  if (fromFlags !== undefined) return fromFlags
+): Promise<SkillScope | 'declined'> {
+  if (flags.skillsScope !== undefined) return flags.skillsScope
   if (deps.io.interactive === true && deps.io.select) {
     const selected = await deps.io.select(
-      'Should this Notifai setup apply to this project only, or to every project on this machine?',
+      'Should the agent guidance skill be installed for this project only, or for every project on this machine?',
       [
         {
           value: 'project',
           label: 'This project',
-          hint: 'skill, hooks, and shared config stay in this checkout',
+          hint: 'the skill stays in this checkout',
         },
         {
           value: 'global',
           label: 'This machine',
-          hint: 'skill and hooks follow you into every repo',
+          hint: 'the skill follows you into every repo',
         },
       ],
     )
     if (selected === 'project' || selected === 'global') return selected
-    deps.io.err('No setup scope selected. Pass `--setup-scope project` or `--setup-scope global`.')
+    deps.io.err('No skill scope selected. Pass `--skills-scope project` or `--skills-scope global`.')
     return 'declined'
   }
   deps.io.err(
-    'Unattended setup changes require an explicit scope: pass `--setup-scope project` or `--setup-scope global`.',
+    'Unattended skill installation requires an explicit scope: pass `--skills-scope project` or `--skills-scope global`.',
   )
   return 'declined'
 }
@@ -788,17 +755,12 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         },
       }
     : deps
-  const scopeFromFlags = checkSetupScopeFlags(workingDeps, flags)
+  const scopeFromFlags = checkSkillScopeFlags(workingDeps, flags)
   if (scopeFromFlags === 'usage') return EXIT.usage
-  let resolved: InitFlags = {
-    ...flags,
-    ...(scopeFromFlags === undefined
-      ? {}
-      : { setupScope: scopeFromFlags, skillsScope: flags.skillsScope ?? scopeFromFlags }),
-  }
+  let resolved: InitFlags = { ...flags }
   await workingDeps.io.intro?.('Notifai setup')
 
-  const skillOpts = resolved.setupScope === undefined ? {} : { skillScope: resolved.setupScope }
+  const skillOpts = resolved.skillsScope === undefined ? {} : { skillScope: resolved.skillsScope }
   let readiness = await assessReadiness(workingDeps, { ...skillOpts, ...(flags.json === true ? { json: true } : {}) })
   const reassess = (refresh?: readonly ReadinessRefresh[]) =>
     assessReadiness(workingDeps, {
@@ -845,13 +807,13 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
       if (state.status === 'optional-gap') {
         if (remedy.by !== 'cli' || !(await wantsOptional(workingDeps, state, resolved))) continue
-        if (needsInstallScope(state)) {
-          const scope = await scopeForLocalInstall(workingDeps, resolved)
+        if (needsSkillScope(state)) {
+          const scope = await scopeForSkillInstall(workingDeps, resolved)
           if (scope === 'declined') {
             attempted.add(state.id)
             continue
           }
-          resolved = { ...resolved, setupScope: scope, skillsScope: resolved.skillsScope ?? scope }
+          resolved = { ...resolved, skillsScope: scope }
         }
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)
@@ -871,14 +833,14 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (remedy.by === 'cli') {
-        if (needsInstallScope(state)) {
-          const scope = await scopeForLocalInstall(workingDeps, resolved)
+        if (needsSkillScope(state)) {
+          const scope = await scopeForSkillInstall(workingDeps, resolved)
           if (scope === 'declined') {
             attempted.add(state.id)
             if (halt()) break
             continue
           }
-          resolved = { ...resolved, setupScope: scope, skillsScope: resolved.skillsScope ?? scope }
+          resolved = { ...resolved, skillsScope: scope }
         }
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)

@@ -28,6 +28,37 @@ describe('Project enablement', () => {
     expect(projectEnabled(binding)).toBe(false)
   })
 
+  it('covers a nested directory of a non-Git Project the User enabled at its root', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-nested-'))
+    const project = path.join(root, 'workspace')
+    const nested = path.join(project, 'apps', 'cli')
+    mkdirSync(path.join(project, '.notifai'), { recursive: true })
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'project = "workspace"\n')
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+
+    const atRoot = projectBinding(project, env)
+    expect(atRoot).not.toBeNull()
+    enableProject(atRoot!, new Date('2026-09-02T00:00:00.000Z'))
+
+    // The hook fires wherever the agent happens to be standing.
+    expect(projectEnabled(projectBinding(nested, env))).toBe(true)
+  })
+
+  it('does not extend that decision to an unrelated directory', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-unrelated-'))
+    const project = path.join(root, 'workspace')
+    const unrelated = path.join(root, 'elsewhere')
+    mkdirSync(path.join(project, '.notifai'), { recursive: true })
+    mkdirSync(unrelated, { recursive: true })
+    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'project = "workspace"\n')
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+
+    enableProject(projectBinding(project, env)!, new Date('2026-09-02T00:00:00.000Z'))
+
+    expect(projectEnabled(projectBinding(unrelated, env))).toBe(false)
+  })
+
   it('shares one decision across linked worktrees but not unrelated checkouts with the same name', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-git-'))
     const repo = path.join(root, 'same-name')
@@ -46,10 +77,38 @@ describe('Project enablement', () => {
     }
     git(repo, 'worktree', 'add', linked, '-b', 'linked')
     const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+    const nested = path.join(repo, 'apps', 'cli')
+    mkdirSync(nested, { recursive: true })
     const mainBinding = projectBinding(repo, env)
     const linkedBinding = projectBinding(linked, env)
+    const nestedBinding = projectBinding(nested, env)
     const unrelatedBinding = projectBinding(unrelated, env)
     expect(linkedBinding?.markerPath).toBe(mainBinding?.markerPath)
+    expect(nestedBinding?.markerPath).toBe(mainBinding?.markerPath)
     expect(unrelatedBinding?.markerPath).not.toBe(mainBinding?.markerPath)
+
+    enableProject(mainBinding!, new Date('2026-09-02T00:00:00.000Z'))
+    expect(projectEnabled(linkedBinding)).toBe(true)
+    expect(projectEnabled(nestedBinding)).toBe(true)
+    expect(projectEnabled(unrelatedBinding)).toBe(false)
+  })
+
+  it('does not share a decision with a second clone of the same repository', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-clone-'))
+    const origin = path.join(root, 'origin')
+    const clone = path.join(root, 'clone')
+    mkdirSync(origin, { recursive: true })
+    git(origin, 'init')
+    git(origin, 'config', 'user.email', 'test@example.invalid')
+    git(origin, 'config', 'user.name', 'Test')
+    writeFileSync(path.join(origin, 'file'), 'x')
+    git(origin, 'add', 'file')
+    git(origin, 'commit', '-m', 'fixture')
+    execFileSync('git', ['clone', origin, clone], { stdio: 'ignore' })
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+
+    enableProject(projectBinding(origin, env)!, new Date('2026-09-02T00:00:00.000Z'))
+
+    expect(projectEnabled(projectBinding(clone, env))).toBe(false)
   })
 })

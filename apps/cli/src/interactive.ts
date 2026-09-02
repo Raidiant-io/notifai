@@ -48,7 +48,6 @@ import { loadConfig, type CliConfig, type ConfigKey } from './config.js'
 import {
   detectedHarnesses,
   findInstallations,
-  type Installation,
 } from './install-hooks.js'
 import {
   CONFIG_GROUPS,
@@ -75,8 +74,6 @@ function cancelled(value: unknown): value is symbol {
   return clack.isCancel(value)
 }
 
-export type HookScope = 'project' | 'machine'
-
 export type RoutingAction = 'install' | 'uninstall' | 'settings' | 'back'
 
 export interface MenuOption<Value extends string> {
@@ -89,46 +86,30 @@ export interface MenuOption<Value extends string> {
  * Which hook actions this directory and setup can actually perform.
  *
  * Install is offered only when a harness is detectable here. Uninstall is
- * offered only for a scope that already has Notifai hooks, and the label names
- * that scope so a machine-wide install is never stripped from a random folder
- * under a generic "uninstall".
+ * offered only when Notifai is actually wired, and it names what it removes:
+ * there is one installation per harness, for this machine.
  */
 export function routingHookActions(input: {
   canInstall: boolean
-  projectInstallations: readonly { harness: string }[]
-  machineInstallations: readonly { harness: string }[]
+  installations: readonly { harness: string }[]
   hooksReady: boolean
 }): MenuOption<RoutingAction>[] {
   const options: MenuOption<RoutingAction>[] = []
-  const hasProject = input.projectInstallations.length > 0
-  const hasMachine = input.machineInstallations.length > 0
-  const hasAny = hasProject || hasMachine
+  const wired = input.installations.length > 0
 
   if (input.canInstall) {
     options.push({
       value: 'install',
-      label: input.hooksReady || hasAny ? 'Re-install hooks' : 'Install hooks',
-      hint: 'this project or this machine',
+      label: input.hooksReady || wired ? 'Re-install hooks' : 'Install hooks',
+      hint: 'this machine; enable or disable Notifai per project separately',
     })
   }
 
-  if (hasProject && hasMachine) {
-    options.push({
-      value: 'uninstall',
-      label: 'Uninstall hooks',
-      hint: 'this project or this machine',
-    })
-  } else if (hasProject) {
-    options.push({
-      value: 'uninstall',
-      label: 'Uninstall hooks for this project',
-      hint: harnessHint(input.projectInstallations),
-    })
-  } else if (hasMachine) {
+  if (wired) {
     options.push({
       value: 'uninstall',
       label: 'Uninstall hooks on this machine',
-      hint: harnessHint(input.machineInstallations),
+      hint: harnessHint(input.installations),
     })
   }
 
@@ -136,29 +117,6 @@ export function routingHookActions(input: {
     { value: 'settings', label: 'Change question settings', hint: 'when a question may leave this terminal' },
     { value: 'back', label: '← Back' },
   )
-  return options
-}
-
-/** Scope choices that would actually remove something. Project first. */
-export function uninstallScopeOptions(
-  projectInstallations: readonly { harness: string }[],
-  machineInstallations: readonly { harness: string }[],
-): MenuOption<HookScope>[] {
-  const options: MenuOption<HookScope>[] = []
-  if (projectInstallations.length > 0) {
-    options.push({
-      value: 'project',
-      label: 'This project',
-      hint: 'remove hooks from this directory',
-    })
-  }
-  if (machineInstallations.length > 0) {
-    options.push({
-      value: 'machine',
-      label: 'This machine',
-      hint: 'remove hooks for every project here',
-    })
-  }
   return options
 }
 
@@ -729,9 +687,7 @@ function wiringSummary(hooks: ReadinessState | undefined): string {
 async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<boolean> {
   const hooks = stateById(readiness, 'hooks')
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome)
-  const projectInstallations = installations.filter((installation) => !installation.global)
-  const machineInstallations = installations.filter((installation) => installation.global)
+  const installations = findInstallations(deps.env, deps.hookAdapterHome)
 
   const row = (label: string, value: string): string => `${style.dim(label.padEnd(16))}${value}`
   clack.note(
@@ -752,8 +708,7 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
     message: 'Question routing',
     options: routingHookActions({
       canInstall: detectedHarnesses(deps.cwd, deps.env).length > 0,
-      projectInstallations,
-      machineInstallations,
+      installations,
       hooksReady: hooks?.status === 'ready',
     }),
   })
@@ -764,50 +719,12 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
     return true
   }
 
-  if (action === 'install') return await installHooksInteractively(deps)
-  return await uninstallHooksInteractively(deps, projectInstallations, machineInstallations)
-}
-
-async function installHooksInteractively(deps: CommandDeps): Promise<boolean> {
-  const scope = await clack.select<HookScope>({
-    message: 'Install hooks for',
-    options: [
-      { value: 'project', label: 'This project', hint: 'hooks only in this directory' },
-      { value: 'machine', label: 'This machine', hint: 'hooks for every project here' },
-    ],
-    initialValue: 'project',
-  })
-  if (cancelled(scope)) return false
-  hooksInstallCommand(deps, scope === 'machine' ? { global: true } : {})
-  return true
-}
-
-async function uninstallHooksInteractively(
-  deps: CommandDeps,
-  projectInstallations: Installation[],
-  machineInstallations: Installation[],
-): Promise<boolean> {
-  const scopes = uninstallScopeOptions(projectInstallations, machineInstallations)
-  if (scopes.length === 0) return false
-
-  let scope: HookScope
-  if (scopes.length === 1) {
-    scope = scopes[0]!.value
-  } else {
-    const picked = await clack.select<HookScope | 'back'>({
-      message: 'Uninstall hooks from',
-      options: [...scopes, { value: 'back', label: '← Back' }],
-    })
-    if (cancelled(picked) || picked === 'back') return false
-    scope = picked
+  if (action === 'install') {
+    hooksInstallCommand(deps, {})
+    return true
   }
-
-  const targets = scope === 'machine' ? machineInstallations : projectInstallations
-  for (const installation of targets) {
-    hooksUninstallCommand(deps, {
-      harness: installation.harness,
-      global: installation.global,
-    })
+  for (const installation of installations) {
+    hooksUninstallCommand(deps, { harness: installation.harness })
   }
   return true
 }

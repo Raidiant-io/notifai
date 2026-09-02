@@ -305,17 +305,14 @@ user to run a command you could have run yourself.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-For setup not authorized by an explicit Notification Request, run flagless
-`notifai init --json` first: it asks nothing and reaches delivery proof.
-Only hooks and the skill need both user decisions:
-
-- setup scope — this project or every project here
-- Question Routing — devices or terminal only
-
-Pass both; never guess unattended:
+Otherwise run flagless `notifai init --json` first: it asks nothing and reaches
+delivery proof. Two independent decisions remain: Question Routing — devices or
+terminal only — and the skill: this project or every project here.
+Lifecycle wiring has no scope: one install per harness for this machine;
+`notifai project enable` is the per-project switch. Never guess unattended:
 
 ```bash
-notifai init --setup-scope <project|global> <--hooks|--no-hooks> --json
+notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --json
 ```
 
 Branch on `states`, `can_send`, and `question_routing_ready`.
@@ -332,12 +329,12 @@ Then gather the human-only steps its reported gap needs:
 - installing the companion app, signing in, and allowing notifications
 
 Never emulate User-owned actions, claim to approve hooks yourself, or claim an
-unlisted harness. Harness-specific trust wording lives in the setup reference.
+unlisted harness. Harness trust wording lives in the setup reference.
 
-Exit code 4 means this machine is not signed in. When sign-in looks fine but
-nothing sends, `notifai auth status --json` and `notifai auth access --json`
-separate a pairing problem from an account without an active plan — report which
-one it is instead of calling it a delivery failure.
+When sign-in looks fine but nothing sends, `notifai auth status --json` and
+`notifai auth access --json` separate a pairing problem from an account without
+an active plan — report which one it is instead of calling it a delivery
+failure.
 
 On `no_active_devices`, run `notifai init --json`, close its gap, then repeat the
 exact original send with `--retry`. A verification Notification does not deliver

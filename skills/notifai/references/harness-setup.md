@@ -30,17 +30,25 @@ either as broken.
 ## Install deliberately
 
 Flagless `notifai init --json` needs no answer and closes everything before
-this point. Hooks place files, so this is where a question belongs: ask setup
-scope and whether they want questions routed, in the same structured question.
-If they do, let init install and assess the hooks in their chosen scope. Never
-tell the user to run setup commands themselves.
+this point. Hooks place files, so this is where a question belongs: ask whether
+they want questions routed. There is no scope to ask about — Notifai installs
+one lifecycle mechanism per harness, for this machine, and whether it acts in a
+project is `notifai project enable`. Never tell the user to run setup commands
+themselves.
 
 ```bash
-notifai init --hooks --setup-scope <project|global> --json
+notifai init --hooks --json
 ```
 
-A machine-global Notifai skill is guidance, not routing evidence. The active
-harness needs its own installed hook and a current session pointer.
+Installing the agent guidance skill keeps its own independent placement choice,
+which belongs to `npx skills` and says nothing about where hooks land:
+
+```bash
+notifai init --skills --skills-scope <project|global> --json
+```
+
+A machine-wide Notifai skill is guidance, not routing evidence. The active
+harness needs its installed hook and a current session pointer.
 
 Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
@@ -98,10 +106,12 @@ request ID, inspect the original with `notifai replies <request_id> --json` and
   SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same
   reporting-only worker contract and explicit textual delegation rule as
-  Claude. Codex resolves project hooks from the main repository. In a
-  linked worktree, the installer writes the shared file to
-  the main checkout and creates the project-layer `.codex` directory in the
-  current worktree; run it once in each new worktree.
+  Claude. Notifai writes the Machine layer's `~/.codex/hooks.json`, and joins
+  inline `[hooks]` in that layer's `config.toml` only when the User's own hooks
+  already live there. One install covers every project and every worktree, so
+  there is nothing to repeat in a new checkout; a Project-scoped `.codex` hook
+  file from an older Notifai is removed once the Machine copy is proven
+  current.
 - **Cursor:** start one fresh conversation, send one prompt, and let the first
   completed or errored turn finish. Cursor's `SessionStart` context is currently
   lossy, so one visible synthetic follow-up activates Notifai through its native
@@ -196,9 +206,11 @@ If a companion device is missing, ask the user to open a supported companion
 build, sign in, and grant notification permission. Do not emulate that, and do
 not treat Provider Acceptance as Companion Receipt proof.
 
-To stop routing questions from this project, `notifai hooks uninstall`; add
-`--global` to remove a machine-wide install, and `--harness <name>` to name one
-when several are wired.
+To stop Notifai acting in one project while leaving other projects wired, run
+`notifai project disable` — that is the per-project switch. `notifai hooks
+uninstall` removes the machine's lifecycle wiring for every project; pass
+`--harness <name>` to name one when several are wired. Uninstall also clears
+any Project-scoped hook file an older Notifai left in this checkout.
 
 ## Reading the record
 

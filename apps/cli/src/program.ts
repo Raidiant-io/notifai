@@ -235,10 +235,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--skills', 'install/update the agent skill from its pinned public release')
     .option('--no-skills', 'suppress the optional agent-skill status line')
     .option(
-      '--setup-scope <scope>',
-      'unattended setup scope: project or global (skill, hooks, and config). The CLI binary is always a global install',
+      '--skills-scope <scope>',
+      'unattended agent-skill scope: project or global. Lifecycle wiring has no scope — it is installed for this machine',
     )
-    .option('--skills-scope <scope>', 'unattended skill scope; same values as --setup-scope')
     .option('--hooks', 'install harness hooks for registered-question routing')
     .option('--no-hooks', 'skip the hooks without being asked')
     .action(
@@ -246,7 +245,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         projectId?: string
         json?: boolean
         skills?: boolean
-        setupScope?: SkillScope
         skillsScope?: SkillScope
         hooks?: boolean
       }) => {
@@ -658,26 +656,27 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
 
   const hooks = program
     .command('hooks')
-    .description('Install harness hooks for registered-question routing')
+    .description('Install harness hooks for registered-question routing, once per machine')
     .summary('Wire a harness to route questions to your devices')
     .helpGroup(GROUP.advanced)
   hooks
     .command('install')
-    .description('Wire this harness to route registered questions to your devices')
+    .description(
+      'Wire this harness, for this machine, to route registered questions to your devices. ' +
+        'Whether Notifai acts in a project is `notifai project enable`, not an install scope',
+    )
     .option(
       '--harness <name>',
       'claude-code | codex | cursor | opencode | openclaw (default: every detected harness)',
     )
-    .option('--global', 'install for every project instead of just this one')
-    .action((opts: { harness?: string; global?: boolean }) => {
+    .action((opts: { harness?: string }) => {
       exit(runners.hooksInstall(deps, opts))
     })
   hooks
     .command('uninstall')
-    .description('Remove the hooks this CLI installed')
+    .description('Remove the hooks this CLI installed for this machine')
     .option('--harness <name>', 'claude-code | codex | cursor | opencode | openclaw (default: detected)')
-    .option('--global', 'remove the machine-wide install')
-    .action((opts: { harness?: string; global?: boolean }) => {
+    .action((opts: { harness?: string }) => {
       exit(runners.hooksUninstall(deps, opts))
     })
 

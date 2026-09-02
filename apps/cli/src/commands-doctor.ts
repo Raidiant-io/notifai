@@ -5,7 +5,6 @@ import {
   type RoutableDevice,
 } from '@raidiant/notifai-protocol'
 import { existsSync } from 'node:fs'
-import path from 'node:path'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, type ApiClient } from './client.js'
 import { inspectCodexResume } from './codex-wake.js'
@@ -31,15 +30,12 @@ import {
   QUESTION_STOP_TIMEOUT_SECONDS,
   codexCoexistenceNotes,
   codexHomeNote,
-  codexLayerDir,
-  codexLayerPaths,
-  codexProjectRoot,
   codexRepresentationProblems,
   codexTrustProblems,
   detectedHarnesses,
   findInstallations,
+  findLegacyProjectInstallations,
   handlerEvent,
-  inspectCodexLayer,
   type Installation,
 } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
@@ -74,7 +70,6 @@ import {
 } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
 import {
-  CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM,
   CODEX_FRESH_SESSION_USER_ACTION,
   CODEX_HOOK_APPROVAL_USER_ACTION,
   CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM,
@@ -886,7 +881,7 @@ export function remedyLine(state: ReadinessState): string {
  * a remedy.
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
+  const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
   const { active, contested } = resolveActiveHarness(
     deps.env,
     deps.cwd,
@@ -973,7 +968,7 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (adapter)': 'Hook adapter',
   'hooks (trust)': 'Codex hook trust',
   'hooks (stop shape)': 'Turn-end hook shape',
-  'hooks (duplicates)': 'Duplicate hook installs',
+  'hooks (legacy project install)': 'Leftover project hook install',
   'hooks (codex representation)': 'Codex hook representation',
   'hooks (question admission)': 'Question admission',
   'hooks (fired)': 'Hooks have run here',
@@ -1034,7 +1029,7 @@ interface HookCheck {
 
 function hookChecks(deps: CommandDeps): HookCheck[] {
   const checks: HookCheck[] = []
-  const installations = findInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
+  const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
 
   // Not having hooks is a setup someone chose, not a fault: `send` works
   // without them. A setup that cannot work is what deserves to go red.
@@ -1049,9 +1044,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   checks.push({
     name: 'hooks',
     ok: true,
-    detail: installations
-      .map((i) => `${i.harness} ${i.global ? 'global' : 'project'} (${i.file})`)
-      .join(', '),
+    detail: installations.map((i) => `${i.harness} (${i.file})`).join(', '),
   })
 
   const wired = new Set(installations.map((installation) => installation.harness))
@@ -1200,9 +1193,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     checks.push({
       name: 'hooks (adapter)',
       ok: false,
-      // A machine-global install for a harness that is not active in this
-      // project is useful diagnosis, but it is not this project's failure.
-      reportOnly: active === null && installations.every((installation) => installation.global),
+      // The adapter is one Machine-level file every harness runs through, so
+      // a defect in it is always this machine's to fix and always fixable.
       detail: adapterProblems.join('; '),
       ...(adapterMismatch
         ? { technical: { effective_cli_artifact: effectiveArtifact, registered_target: sharedAdapter.target } }
@@ -1241,7 +1233,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const shapeProblems = installations.flatMap((installation) =>
     stopShapeProblems(installation, deps.hookPlatform).map(
       (problem) =>
-        `${problem} — run \`notifai hooks install --harness ${installation.harness}${installation.global ? ' --global' : ''}\``,
+        `${problem} — run \`notifai hooks install --harness ${installation.harness}\``,
     ),
   )
   checks.push({
@@ -1253,41 +1245,36 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         : shapeProblems.join('; '),
   })
 
-  // Project and global definitions for one harness both fire. Stable adapter
-  // identity deliberately makes their command bytes equal, so comparing
-  // command targets would now hide this duplicate rather than diagnose it.
-  // Cursor is the exception to harness independence because it may also load
-  // Claude's user hook file. The shared adapter detects Cursor's hook-only
-  // environment and makes that compatibility copy a no-op; the native Cursor
-  // definition remains the single routing owner.
-  const duplicated = [...new Set(installations.map((i) => i.harness))]
-    .map((harness) => ({
-      harness,
-      installations: installations.filter((i) => i.harness === harness),
-    }))
-    .filter(
-      (entry) =>
-        entry.installations.some((installation) => installation.global) &&
-        entry.installations.some((installation) => !installation.global),
-    )
-  if (duplicated.length > 0) {
+  // A Project-scoped definition an older build wrote still fires beside the
+  // Machine one, so each event runs twice and the Project copy keeps serving a
+  // definition no install refreshes. Notifai no longer creates these and never
+  // accepts one as a working route: it is a gap with an exact removal command.
+  const legacy = findLegacyProjectInstallations(
+    deps.cwd,
+    deps.env,
+    deps.hookAdapterHome,
+    deps.hookPlatform,
+  )
+  if (legacy.length > 0) {
+    const harnesses = [...new Set(legacy.map((installation) => installation.harness))]
+    const command = harnesses
+      .map((harness) => `notifai hooks install --harness ${harness}`)
+      .join(' && ')
     checks.push({
-      name: 'hooks (duplicates)',
+      name: 'hooks (legacy project install)',
       ok: false,
-      detail: duplicated
-        .map(
-          (entry) =>
-            `${entry.harness}: ${entry.installations.length} hook definitions are active, so each event will fire all of them. Keep either project or global routing and uninstall the other: ${entry.installations.map((installation) => installation.file).join(', ')}`,
-        )
-        .join('; '),
+      detail: `${legacy
+        .map((installation) => `${installation.harness} (${installation.file})`)
+        .join(', ')} — Notifai installs for this machine only, and a leftover Project copy fires beside it. Run \`${command}\` to remove it`,
+      remedy: {
+        by: 'cli' as const,
+        summary: 'remove the leftover Project-scoped Notifai hooks',
+        command,
+      },
     })
   }
 
-  const representationProblems = codexRepresentationProblems(
-    deps.cwd,
-    deps.env,
-    deps.hookPlatform,
-  )
+  const representationProblems = codexRepresentationProblems(deps.env, deps.hookPlatform)
   if (representationProblems.length > 0) {
     checks.push({
       name: 'hooks (codex representation)',
@@ -1295,7 +1282,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       detail: representationProblems.join('; '),
     })
   } else {
-    const coexistence = codexCoexistenceNotes(deps.cwd, deps.env, deps.hookPlatform)
+    const coexistence = codexCoexistenceNotes(deps.env, deps.hookPlatform)
     if (coexistence.length > 0) {
       checks.push({
         name: 'hooks (codex representation)',
@@ -1311,26 +1298,10 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   if (active !== null && activeInstallations.length > 0) {
-    // Installation inventory belongs to the invocation checkout, while exact
-    // question admission belongs to the checkout whose definition activated
-    // this Agent Session. Keep those diagnostics separate just as ask does.
-    const activationCwd = active.sessionId === undefined
-      ? deps.cwd
-      : readSessionState(active.sessionId, deps.env).activation_cwd ?? deps.cwd
-    const admissionDeps = activationCwd === deps.cwd ? deps : { ...deps, cwd: activationCwd }
-    const admissionInstallations = activationCwd === deps.cwd
-      ? installations
-      : findInstallations(
-          activationCwd,
-          deps.env,
-          deps.hookAdapterHome,
-          deps.hookPlatform,
-        )
-    const admissionProblems = activeQuestionRouteProblems(
-      admissionDeps,
-      active,
-      admissionInstallations,
-    )
+    // One Machine installation per harness means the inventory no longer
+    // depends on which checkout activated the session, so admission reads the
+    // same installations doctor already listed.
+    const admissionProblems = activeQuestionRouteProblems(deps, active, installations)
     checks.push({
       name: 'hooks (question admission)',
       ok: admissionProblems.length === 0,
@@ -1338,17 +1309,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         admissionProblems.length === 0
           ? `the active ${active.label} route is exact, current, singular, trusted where applicable, and bounded by a live owner`
           : admissionProblems.join('; '),
-      ...(admissionProblems.some((problem) =>
-        problem.startsWith(CODEX_ACTIVATION_INSTALLATION_MISSING_PROBLEM),
-      )
-        ? {
-            remedy: {
-              by: 'cli' as const,
-              summary: `install Codex hooks from the Agent Session activation checkout ${activationCwd}`,
-              command: 'notifai hooks install --harness codex',
-            },
-          }
-        : admissionProblems.includes(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)
+      ...(admissionProblems.includes(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)
         ? {
             remedy: {
               by: 'cli' as const,
@@ -1475,9 +1436,6 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const wakeRoute = wakeRouteCheck(deps, active, activeInstallations)
   if (wakeRoute !== null) checks.push(wakeRoute)
 
-  const stray = codexStrayWorktreeCheck(deps)
-  if (stray !== null) checks.push(stray)
-
   return checks
 }
 
@@ -1554,42 +1512,4 @@ function wakeRouteCheck(
     }
   }
   return null
-}
-
-/**
- * A Codex hooks file sitting in a worktree, which Codex will never read.
- *
- * `settingsFile` now writes to the main repository, so this only fires for a
- * file an older build left behind — but that file is indistinguishable from a
- * working install if you go looking, and it is exactly what made this bug take
- * a day to find. Omitted entirely when there is nothing to say.
- */
-function codexStrayWorktreeCheck(
-  deps: CommandDeps,
-): { name: string; ok: boolean; detail: string } | null {
-  const layer = codexLayerDir(deps.cwd)
-  if (layer === null) return null
-  const root = codexProjectRoot(deps.cwd)
-  const project = inspectCodexLayer(codexLayerPaths(false, deps.cwd, deps.env))
-  if (project.jsonEvents.length === 0 && project.tomlEvents.length === 0) return null
-  const strayJson = path.join(path.dirname(layer), '.codex', 'hooks.json')
-  const strayToml = path.join(path.dirname(layer), '.codex', 'config.toml')
-  const problems: string[] = []
-  if (!existsSync(layer)) {
-    problems.push(`${layer} is missing, so Codex never looks for project hooks here`)
-  }
-  if (existsSync(strayJson) && path.resolve(strayJson) !== path.resolve(project.paths.hooksJson)) {
-    problems.push(`${strayJson} is never read — Codex reads ${project.writeTarget} instead`)
-  }
-  if (existsSync(strayToml) && path.resolve(strayToml) !== path.resolve(project.paths.configToml)) {
-    problems.push(`${strayToml} is never read — Codex reads ${project.writeTarget} instead`)
-  }
-  return {
-    name: 'hooks (codex worktree)',
-    ok: problems.length === 0,
-    detail:
-      problems.length === 0
-        ? `worktree wired to the main repository at ${root}`
-        : `${problems.join('; ')}. Re-run \`notifai hooks install\` to fix.`,
-  }
 }

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { globalConfigDir } from './config.js'
+import { globalConfigDir, projectIdentityRoot } from './config.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { canonicalPath } from './local-path.js'
 
@@ -41,15 +41,22 @@ function gitCommonDirectory(cwd: string): string | null {
  * The opaque key binds the semantic Project id to Git's shared common
  * directory. Linked worktrees therefore share one decision, while another
  * checkout cannot borrow it merely by committing the same Project id.
+ *
+ * Outside Git the key falls back to the same canonical root Project config
+ * resolves against, and the Project id is inferred from that root rather than
+ * from the working directory. A hook fired in a nested directory would
+ * otherwise compute a different key *and* a different Project name than the
+ * `notifai project enable` run at the root, and read the Project as disabled.
  */
 export function projectBinding(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   explicitProject?: string | null,
 ): ProjectBinding | null {
-  const project = explicitProject ?? inferInvocationContext(cwd).project
+  const root = projectIdentityRoot(cwd)
+  const project = explicitProject ?? inferInvocationContext(root).project
   if (project === null) return null
-  const repository = gitCommonDirectory(cwd) ?? path.resolve(cwd)
+  const repository = gitCommonDirectory(cwd) ?? root
   const key = createHash('sha256')
     .update('notifai-project-enablement-v1\0')
     .update(repository)

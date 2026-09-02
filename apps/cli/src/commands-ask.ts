@@ -523,12 +523,7 @@ export function askCommand(
         'use a blocking `notifai send --reply` question',
       )
     }
-    const exactState = active.sessionId === undefined
-      ? null
-      : readSessionState(active.sessionId, deps.env)
-    const installationCwd = exactState?.activation_cwd ?? deps.cwd
-    const installationDeps = installationCwd === deps.cwd ? deps : { ...deps, cwd: installationCwd }
-    const installations = findInstallations(installationCwd, deps.env, deps.hookAdapterHome, deps.hookPlatform)
+    const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
     const activeInstalled = installations.some(
       (installation) => installation.harness === active.harness,
     )
@@ -570,7 +565,7 @@ export function askCommand(
         { user_action: CODEX_HOOK_APPROVAL_USER_ACTION },
       )
     }
-    const routeProblems = activeQuestionRouteProblems(installationDeps, active, installations)
+    const routeProblems = activeQuestionRouteProblems(deps, active, installations)
     if (routeProblems.includes(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)) {
       return askFailure(
         deps,
@@ -603,7 +598,7 @@ export function askCommand(
         'run `notifai init --json` and follow its question-routing remedy',
       )
     }
-    const state = exactState ?? readSessionState(active.sessionId, deps.env)
+    const state = readSessionState(active.sessionId, deps.env)
     if (state.harness !== active.harness || state.last_prompt_at === undefined) {
       return askFailure(
         deps,

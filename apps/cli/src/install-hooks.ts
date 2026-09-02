@@ -19,9 +19,14 @@ import {
   inspectHookAdapter,
   type HookHostPlatform,
 } from './hook-adapter.js'
-import { opencodePluginPath, opencodePluginTarget } from './opencode-plugin.js'
+import {
+  OPENCODE_PLUGIN_FILENAME,
+  opencodePluginPath,
+  opencodePluginTarget,
+} from './opencode-plugin.js'
 import {
   OPENCLAW_EVENTS,
+  legacyOpenclawProjectPluginPath,
   openclawHasGlobalEvidence,
   openclawPluginPath,
   openclawPluginTarget,
@@ -48,14 +53,19 @@ const OPENCODE_EVENTS = [
 /**
  * Harness hook installation.
  *
+ * Notifai owns exactly one lifecycle mechanism per harness, in the current
+ * User's account and that harness's active home. There is no second install
+ * scope: whether Notifai activates in a Project is Project Enablement's
+ * question, and Project-scoped hook files are read only as migration evidence
+ * to remove.
+ *
  * Claude Code's `settings.json` and Codex's hook files use the same shape —
  * `hooks` maps an event name to matcher groups, each holding command handlers
  * with an optional timeout — so one generator serves both. Only the file
  * location and the event set differ. Codex supports either a dedicated
- * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`.
- * We default a hook-empty layer to inline config and preserve whichever single
- * representation a populated layer already uses. Notifai lives in one of them,
- * never both.
+ * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`;
+ * Notifai writes `hooks.json` and only joins `config.toml` when the User's own
+ * hooks already live there. Notifai lives in one of them, never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -355,14 +365,11 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
 }
 
 /**
- * Where each harness reads hooks from. Project installs deliberately target the
- * gitignored file where one exists: which devices a person wants their
- * questions pushed to is not a property of the repository.
+ * The one file each harness reads Notifai's lifecycle wiring from: the current
+ * User's account, in that harness's active home.
  */
 export function settingsFile(
   harness: HookInstallableHarness,
-  global: boolean,
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
@@ -370,21 +377,44 @@ export function settingsFile(
     // OpenCode has no settings document to merge into — its adapter is a
     // generated plugin module, so it owns a whole file instead.
     case 'opencode':
-      return opencodePluginPath(global, cwd, env, platform)
+      return opencodePluginPath(env, platform)
     case 'openclaw':
-      return openclawPluginPath(global, cwd, env, platform)
-    case 'cursor': {
-      const home = harnessAccountHome(env, platform)
-      return global
-        ? path.join(home, '.cursor', 'hooks.json')
-        : path.join(cwd, '.cursor', 'hooks.json')
-    }
+      return openclawPluginPath(env, platform)
+    case 'cursor':
+      return path.join(harnessAccountHome(env, platform), '.cursor', 'hooks.json')
     case 'claude-code':
-      return global
-        ? path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude', platform), 'settings.json')
-        : path.join(cwd, '.claude', 'settings.local.json')
+      return path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude', platform), 'settings.json')
     case 'codex':
-      return inspectCodexLayer(codexLayerPaths(global, cwd, env, platform)).writeTarget
+      return inspectCodexLayer(codexMachineLayerPaths(env, platform)).writeTarget
+    default:
+      return assertNeverHarness(harness)
+  }
+}
+
+/**
+ * Files an older build may have left inside this Project, which Notifai now
+ * only ever reads in order to remove.
+ *
+ * Nothing installs here any more. Every path is still enumerated because a
+ * leftover Project-scoped handler keeps firing beside the Machine one, and
+ * silently leaving it would be exactly the duplicate-routing defect dropping
+ * the second scope was meant to end.
+ */
+export function legacyProjectHookFiles(
+  harness: HookInstallableHarness,
+  cwd: string,
+): string[] {
+  switch (harness) {
+    case 'opencode':
+      return [path.join(cwd, '.opencode', 'plugins', OPENCODE_PLUGIN_FILENAME)]
+    case 'openclaw':
+      return [legacyOpenclawProjectPluginPath(cwd)]
+    case 'cursor':
+      return [path.join(cwd, '.cursor', 'hooks.json')]
+    case 'claude-code':
+      return [path.join(cwd, '.claude', 'settings.local.json')]
+    case 'codex':
+      return codexLegacyProjectLayers(cwd).flatMap((paths) => [paths.hooksJson, paths.configToml])
     default:
       return assertNeverHarness(harness)
   }
@@ -433,28 +463,6 @@ export function codexProjectRoot(cwd: string): string {
     // cwd is what we used to do and is right for every non-worktree case.
     return cwd
   }
-}
-
-/**
- * The `.codex` directory that has to exist for Codex to load project hooks at
- * all, or null when nothing extra is needed.
- *
- * Codex splits the two halves of "which project am I in": it discovers the
- * project layer by walking up from cwd for a `.codex` directory, but resolves
- * the hook file inside that layer against the main repository. In an ordinary
- * checkout both land on the same directory and the split is invisible. In a
- * worktree they diverge, and writing only the main repository's file leaves it
- * unread — Codex never looks, because nothing at or above cwd told it there was
- * a project layer to load. Proven 2026-08-03: with cwd in a worktree, an *empty*
- * `.codex` directory there was the difference between the main repository's
- * handler running and nothing running.
- */
-export function codexLayerDir(cwd: string): string | null {
-  const entry = findGitEntry(cwd)
-  if (entry === null) return null
-  const worktreeRoot = path.dirname(entry)
-  if (path.resolve(worktreeRoot) === path.resolve(codexProjectRoot(cwd))) return null
-  return path.join(worktreeRoot, '.codex')
 }
 
 /** The nearest `.git` at or above `from`, or null outside a repository. */
@@ -570,21 +578,40 @@ export interface CodexLayerPaths {
   configToml: string
 }
 
-/** The two files Codex will look at for one config layer. */
-export function codexLayerPaths(
-  global: boolean,
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform | HookHostPlatform = process.platform,
-): CodexLayerPaths {
-  const dir = global
-    ? codexGlobalDir(env, platform)
-    : path.join(codexProjectRoot(cwd), '.codex')
+function codexLayerPathsIn(dir: string): CodexLayerPaths {
   return {
     dir,
     hooksJson: path.join(dir, 'hooks.json'),
     configToml: path.join(dir, 'config.toml'),
   }
+}
+
+/** The two files Codex will look at in the Machine layer Notifai installs into. */
+export function codexMachineLayerPaths(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): CodexLayerPaths {
+  return codexLayerPathsIn(codexGlobalDir(env, platform))
+}
+
+/**
+ * Project layers an older build may have written into, for removal only.
+ *
+ * Codex resolves a project hook file against the main repository, so a linked
+ * worktree has two candidate directories: the main checkout's `.codex`, which
+ * Codex reads, and the worktree's own, which older builds sometimes created and
+ * Codex never reads. Both are legacy residue and both are enumerated here.
+ */
+export function codexLegacyProjectLayers(cwd: string): CodexLayerPaths[] {
+  const dirs = [path.join(codexProjectRoot(cwd), '.codex')]
+  const entry = findGitEntry(cwd)
+  if (entry !== null) {
+    const worktreeLayer = path.join(path.dirname(entry), '.codex')
+    if (!dirs.some((dir) => path.resolve(dir) === path.resolve(worktreeLayer))) {
+      dirs.push(worktreeLayer)
+    }
+  }
+  return dirs.map(codexLayerPathsIn)
 }
 
 export interface CodexLayerInspection {
@@ -595,47 +622,42 @@ export interface CodexLayerInspection {
   /** The subset of those events whose handlers are Notifai's own. */
   ourJsonEvents: string[]
   ourTomlEvents: string[]
+  /** Whether `config.toml` holds at least one hook handler Notifai does not own. */
+  foreignTomlHooks: boolean
   writeTarget: string
 }
 
 /**
- * Where Notifai writes in this Codex layer: wherever Notifai already is, then
- * whichever single hook representation the layer already uses, and inline
- * `config.toml` for a hook-empty or already-mixed layer.
+ * Where Notifai writes in this Codex layer: `hooks.json`, unless the User's own
+ * hooks already live inline in the same layer's `config.toml`.
  *
- * Codex supports `hooks.json` and inline `[hooks]` side by side, loads both,
- * and runs every matching handler. Reusing the one populated representation is
- * the generic layer contract: it avoids creating Codex's dual-representation
- * warning and, for a managed layer, writes through the same authority that
- * persists the layer rather than a sibling file it may regenerate away.
+ * `config.toml` is the User's whole Codex configuration and Codex rewrites it
+ * itself for `[hooks.state]`; keeping Notifai out of it bounds the blast radius
+ * to hooks, removes a second writer racing those trust records, and replaces
+ * TOML splicing with the same JSON merge Claude Code uses. Joining an inline
+ * layer that already has the User's handlers is the one exception, and it
+ * exists only so Codex never prints its dual-representation warning.
  *
- * Staying put where Notifai already is also keeps reinstalls idempotent and
- * preserves the `[hooks.state]` trust hash, which Codex keys by file path and
- * handler index. `[hooks.state]` is the trust store, not a hook definition, so
- * it does not count as a representation.
+ * Notifai's *own* inline handlers are not a reason to stay: the installer moves
+ * them to `hooks.json` and strips them from `config.toml`. `[hooks.state]` is
+ * the trust store rather than a hook definition, so it never counts as a
+ * representation and is preserved through every write.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
   const jsonDocument = tryLoadSettings(paths.hooksJson)
   const tomlDocument = tryLoadSettings(paths.configToml)
-  const jsonEvents = hookEventNames(jsonDocument?.hooks)
-  const tomlEvents = hookEventNames(tomlDocument?.hooks)
-  const ourJsonEvents = ourHandlerEvents(jsonDocument)
   const ourTomlEvents = ourHandlerEvents(tomlDocument)
-  const writeTarget =
-    ourJsonEvents.length > 0 && ourTomlEvents.length === 0
-      ? paths.hooksJson
-      : ourTomlEvents.length > 0
-        ? paths.configToml
-        : jsonEvents.length > 0 && tomlEvents.length === 0
-          ? paths.hooksJson
-          : paths.configToml
+  const foreignTomlHooks =
+    tomlDocument !== null &&
+    locateAllHandlers(tomlDocument).some((handler) => !isNotifaiCommand(handler.command))
   return {
     paths,
-    jsonEvents,
-    tomlEvents,
-    ourJsonEvents,
+    jsonEvents: hookEventNames(jsonDocument?.hooks),
+    tomlEvents: hookEventNames(tomlDocument?.hooks),
+    ourJsonEvents: ourHandlerEvents(jsonDocument),
     ourTomlEvents,
-    writeTarget,
+    foreignTomlHooks,
+    writeTarget: foreignTomlHooks ? paths.configToml : paths.hooksJson,
   }
 }
 
@@ -650,21 +672,19 @@ export function withCodexLayerTransaction<T>(
   return withTargetFileLock(paths.configToml, () => action(inspectCodexLayer(paths)))
 }
 
-/** Every file in this layer Codex might already be reading hooks from. */
-export function hookDefinitionFiles(
+/** Every Machine-layer file this harness might already be reading hooks from. */
+export function machineHookFiles(
   harness: HookInstallableHarness,
-  global: boolean,
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string[] {
-  if (harness !== 'codex') return [settingsFile(harness, global, cwd, env, platform)]
-  const paths = codexLayerPaths(global, cwd, env, platform)
+  if (harness !== 'codex') return [settingsFile(harness, env, platform)]
+  const paths = codexMachineLayerPaths(env, platform)
   return [paths.hooksJson, paths.configToml]
 }
 
 /**
- * Layers where *Notifai* is installed in both Codex representations.
+ * The Machine layer with *Notifai* installed in both Codex representations.
  *
  * A layer that uses `hooks.json` and inline `[hooks]` at once is not by itself
  * a Notifai fault: Codex supports both, loads both, runs every matching
@@ -681,27 +701,24 @@ export function hookDefinitionFiles(
  * exact — and it never touches a foreign handler.
  */
 export function codexRepresentationProblems(
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string[] {
-  return [false, true].flatMap((global) => {
-    const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env, platform))
-    if (layer.ourJsonEvents.length === 0 || layer.ourTomlEvents.length === 0) return []
-    const doubled = layer.ourJsonEvents.filter((event) => layer.ourTomlEvents.includes(event))
-    const consequence =
-      doubled.length > 0
-        ? `Codex runs every matching handler, so this layer notifies twice per turn for ${doubled.join(', ')}`
-        : `Codex runs both files, so this layer's Notifai handlers are split between them (${[...new Set([...layer.ourJsonEvents, ...layer.ourTomlEvents])].join(', ')}) and the next install refreshes only one file`
-    const scope = global ? ' --global' : ''
-    return [
-      `Notifai hooks are installed in both ${layer.paths.hooksJson} and ${layer.paths.configToml}; ${consequence}. Run \`notifai hooks uninstall --harness codex${scope}\` and then \`notifai hooks install --harness codex${scope}\` to leave exactly one copy; foreign hooks in either file are left alone.`,
-    ]
-  })
+  const layer = inspectCodexLayer(codexMachineLayerPaths(env, platform))
+  if (layer.ourJsonEvents.length === 0 || layer.ourTomlEvents.length === 0) return []
+  const doubled = layer.ourJsonEvents.filter((event) => layer.ourTomlEvents.includes(event))
+  const consequence =
+    doubled.length > 0
+      ? `Codex runs every matching handler, so this layer notifies twice per turn for ${doubled.join(', ')}`
+      : `Codex runs both files, so this layer's Notifai handlers are split between them (${[...new Set([...layer.ourJsonEvents, ...layer.ourTomlEvents])].join(', ')}) and the next install refreshes only one file`
+  return [
+    `Notifai hooks are installed in both ${layer.paths.hooksJson} and ${layer.paths.configToml}; ${consequence}. Run \`notifai hooks uninstall --harness codex\` and then \`notifai hooks install --harness codex\` to leave exactly one copy; foreign hooks in either file are left alone.`,
+  ]
 }
 
 /**
- * Layers where Notifai and someone else each own one Codex representation.
+ * The Machine layer where Notifai and someone else each own one Codex
+ * representation.
  *
  * This is not a fault and never fails a check. Codex loads `hooks.json` and
  * inline `[hooks]` together and runs every matching handler, so both sets fire
@@ -711,26 +728,23 @@ export function codexRepresentationProblems(
  * own. Saying nothing here is what made the warning look like Notifai's bug.
  */
 export function codexCoexistenceNotes(
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string[] {
-  return [false, true].flatMap((global) => {
-    const layer = inspectCodexLayer(codexLayerPaths(global, cwd, env, platform))
-    const inJson = layer.ourJsonEvents.length > 0
-    const inToml = layer.ourTomlEvents.length > 0
-    if (inJson === inToml) return []
-    const ours = inJson ? layer.paths.hooksJson : layer.paths.configToml
-    const theirs = inJson ? layer.paths.configToml : layer.paths.hooksJson
-    const theirEvents = inJson ? layer.tomlEvents : layer.jsonEvents
-    if (theirEvents.length === 0) return []
-    const stop = theirEvents.includes('Stop')
-      ? " That file's Stop handler can end a turn before Notifai's answer arrives, because Codex lets any Stop handler stop continuation."
-      : ''
-    return [
-      `Notifai's Codex hooks are in ${ours}. ${theirs} defines hooks Notifai does not own (${theirEvents.join(', ')}) and Notifai will not modify it. Codex loads both files and runs every matching handler, so each set fires exactly once; its "prefer one representation per layer" startup warning is reporting that, not a Notifai fault.${stop}`,
-    ]
-  })
+  const layer = inspectCodexLayer(codexMachineLayerPaths(env, platform))
+  const inJson = layer.ourJsonEvents.length > 0
+  const inToml = layer.ourTomlEvents.length > 0
+  if (inJson === inToml) return []
+  const ours = inJson ? layer.paths.hooksJson : layer.paths.configToml
+  const theirs = inJson ? layer.paths.configToml : layer.paths.hooksJson
+  const theirEvents = inJson ? layer.tomlEvents : layer.jsonEvents
+  if (theirEvents.length === 0) return []
+  const stop = theirEvents.includes('Stop')
+    ? " That file's Stop handler can end a turn before Notifai's answer arrives, because Codex lets any Stop handler stop continuation."
+    : ''
+  return [
+    `Notifai's Codex hooks are in ${ours}. ${theirs} defines hooks Notifai does not own (${theirEvents.join(', ')}) and Notifai will not modify it. Codex loads both files and runs every matching handler, so each set fires exactly once; its "prefer one representation per layer" startup warning is reporting that, not a Notifai fault.${stop}`,
+  ]
 }
 
 /**
@@ -933,7 +947,13 @@ export function removeCursorHooks(
     if (foreign.length !== handlers.length) replaced.push(event)
     if (foreign.length > 0) hooks[event] = foreign
   }
-  return { document: { ...existing, version: 1, hooks }, added: [], replaced, removed: [] }
+  const document: CursorSettingsDocument = { ...existing }
+  if (Object.keys(hooks).length > 0) document.hooks = hooks
+  else delete document.hooks
+  // `version` is Cursor's schema marker, which Notifai writes only because it
+  // is writing hooks. Alone it is residue, not settings.
+  if (Object.keys(document).length === 1 && document.version !== undefined) delete document.version
+  return { document, added: [], replaced, removed: [] }
 }
 
 function readSettings(file: string): SettingsDocument {
@@ -1055,8 +1075,11 @@ export function applyPlan(file: string, document: SettingsDocument | CursorSetti
   const body = isTomlSettingsPath(file)
     ? tomlBody(file, document as SettingsDocument)
     : `${JSON.stringify(document, null, 2)}\n`
+  // A document with nothing left in it is a file Notifai created and has just
+  // emptied. Keeping it would leave `{}` behind as the visible residue of an
+  // uninstall; a file that still holds anything of the User's is never empty.
   if (
-    (path.basename(file) === 'hooks.json' && isEmptyJsonDocument(body)) ||
+    (!isTomlSettingsPath(file) && isEmptyJsonDocument(body)) ||
     (isTomlSettingsPath(file) && body.trim() === '')
   ) {
     if (existsSync(file)) rmSync(file, { force: true })
@@ -1244,7 +1267,6 @@ export interface InstalledHandler {
 export interface Installation {
   harness: HookInstallableHarness
   file: string
-  global: boolean
   handlers: InstalledHandler[]
   /** Structural defects that require reinstalling this generated adapter. */
   problems?: string[]
@@ -1409,12 +1431,54 @@ function isNotifaiCommand(command: string): boolean {
   return / hook (session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\b/.test(command)
 }
 
-/** Every place either harness would read a Notifai handler from. */
+/**
+ * The one Machine installation each harness would read a Notifai handler from.
+ */
 export function findInstallations(
+  env: NodeJS.ProcessEnv = process.env,
+  adapterHome?: string,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): Installation[] {
+  return HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
+    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform),
+  )
+}
+
+/**
+ * Notifai handlers a previous build left in Project-scoped files.
+ *
+ * These are never an install target and never a fallback: they are residue to
+ * report and remove once the Machine installation is proven current. Foreign
+ * handlers sharing those files are not returned and are never touched.
+ */
+export function findLegacyProjectInstallations(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   adapterHome?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): Installation[] {
+  const machine = new Set(
+    HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
+      machineHookFiles(harness, env, platform).map((file) => path.resolve(file)),
+    ),
+  )
+  return HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
+    collectInstallations(
+      harness,
+      // A Project checkout that happens to be the harness home would otherwise
+      // report the Machine installation as legacy residue and delete it.
+      legacyProjectHookFiles(harness, cwd).filter((file) => !machine.has(path.resolve(file))),
+      adapterHome,
+      platform,
+    ),
+  )
+}
+
+function collectInstallations(
+  harness: HookInstallableHarness,
+  files: readonly string[],
+  adapterHome: string | undefined,
+  platform: NodeJS.Platform | HookHostPlatform,
 ): Installation[] {
   const nodePath = inspectHookAdapter(adapterHome, platform).target?.execPath
   const commandOptions: HookCommandOptions = {
@@ -1422,80 +1486,74 @@ export function findInstallations(
     ...(nodePath === undefined ? {} : { nodePath }),
   }
   const found: Installation[] = []
-  for (const harness of HOOK_INSTALLABLE_HARNESSES) {
-    for (const global of [false, true]) {
-      const files = hookDefinitionFiles(harness, global, cwd, env, platform)
-      for (const file of files) {
-      if (!existsSync(file)) continue
-      // OpenCode's adapter is a plugin module, not a settings document, so it
-      // is reported as one installation covering all three events rather than
-      // parsed for handlers.
-      if (harness === 'opencode' || harness === 'openclaw') {
-        let source: string
-        try {
-          source = readOwnedRegularFile(file)
-        } catch {
-          continue
-        }
-        const target =
-          harness === 'openclaw' ? openclawPluginTarget(source) : opencodePluginTarget(source)
-        if (target === null) continue
-        const label = harness === 'openclaw' ? 'OpenClaw' : 'OpenCode'
-        const problems = [
-          ...(!target.current
-            ? [`obsolete ${label} event wiring; rerun \`notifai hooks install --harness ${harness}\``]
-            : []),
-          ...(target.adapter !== hookAdapterPath(adapterHome)
-            ? [
-                `${label} still names a mutable CLI or runtime path; rerun \`notifai hooks install --harness ${harness}\``,
-              ]
-            : []),
-        ]
-        const events = harness === 'openclaw' ? OPENCLAW_EVENTS : OPENCODE_EVENTS
-        found.push({
-          harness,
-          file,
-          global,
-          ...(problems.length > 0 ? { problems } : {}),
-          handlers: events.map(([event, hookEvent]) => ({
-            event,
-            groupIndex: 0,
-            handlerIndex: 0,
-            command: hookCommand(target.adapter, hookEvent, harness, {
-              ...commandOptions,
-              ...(target.nodePath === undefined ? {} : { nodePath: target.nodePath }),
-            }),
-            ...(target.timeoutSeconds === undefined ? {} : { timeout: target.timeoutSeconds }),
-          })),
-        })
-        continue
-      }
-      if (harness === 'cursor') {
-        let document: CursorSettingsDocument
-        try {
-          document = readCursorSettings(file)
-        } catch {
-          continue
-        }
-        const handlers = locateCursorHandlers(document)
-        if (handlers.length > 0) {
-          const problems = harnessMarkerProblems(harness, handlers, adapterHome, commandOptions)
-          found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
-        }
-        continue
-      }
-      let document: SettingsDocument
+  for (const file of files) {
+    if (!existsSync(file)) continue
+    // OpenCode's adapter is a plugin module, not a settings document, so it
+    // is reported as one installation covering all three events rather than
+    // parsed for handlers.
+    if (harness === 'opencode' || harness === 'openclaw') {
+      let source: string
       try {
-        document = loadSettings(file)
+        source = readOwnedRegularFile(file)
       } catch {
         continue
       }
-      const handlers = locateHandlers(document)
+      const target =
+        harness === 'openclaw' ? openclawPluginTarget(source) : opencodePluginTarget(source)
+      if (target === null) continue
+      const label = harness === 'openclaw' ? 'OpenClaw' : 'OpenCode'
+      const problems = [
+        ...(!target.current
+          ? [`obsolete ${label} event wiring; rerun \`notifai hooks install --harness ${harness}\``]
+          : []),
+        ...(target.adapter !== hookAdapterPath(adapterHome)
+          ? [
+              `${label} still names a mutable CLI or runtime path; rerun \`notifai hooks install --harness ${harness}\``,
+            ]
+          : []),
+      ]
+      const events = harness === 'openclaw' ? OPENCLAW_EVENTS : OPENCODE_EVENTS
+      found.push({
+        harness,
+        file,
+        ...(problems.length > 0 ? { problems } : {}),
+        handlers: events.map(([event, hookEvent]) => ({
+          event,
+          groupIndex: 0,
+          handlerIndex: 0,
+          command: hookCommand(target.adapter, hookEvent, harness, {
+            ...commandOptions,
+            ...(target.nodePath === undefined ? {} : { nodePath: target.nodePath }),
+          }),
+          ...(target.timeoutSeconds === undefined ? {} : { timeout: target.timeoutSeconds }),
+        })),
+      })
+      continue
+    }
+    if (harness === 'cursor') {
+      let document: CursorSettingsDocument
+      try {
+        document = readCursorSettings(file)
+      } catch {
+        continue
+      }
+      const handlers = locateCursorHandlers(document)
       if (handlers.length > 0) {
         const problems = harnessMarkerProblems(harness, handlers, adapterHome, commandOptions)
-        found.push({ harness, file, global, handlers, ...(problems.length > 0 ? { problems } : {}) })
+        found.push({ harness, file, handlers, ...(problems.length > 0 ? { problems } : {}) })
       }
-      }
+      continue
+    }
+    let document: SettingsDocument
+    try {
+      document = loadSettings(file)
+    } catch {
+      continue
+    }
+    const handlers = locateHandlers(document)
+    if (handlers.length > 0) {
+      const problems = harnessMarkerProblems(harness, handlers, adapterHome, commandOptions)
+      found.push({ harness, file, handlers, ...(problems.length > 0 ? { problems } : {}) })
     }
   }
   return found

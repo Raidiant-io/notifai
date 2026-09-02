@@ -200,7 +200,7 @@ export async function hookRunCommand(
       try {
         const stopFingerprint = harness === 'codex'
           ? codexStopDefinitionFingerprint(
-              findInstallations(cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform),
+              findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform),
             )
           : undefined
         recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint)
