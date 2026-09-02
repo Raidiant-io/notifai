@@ -1,0 +1,41 @@
+# CodeQL configuration for the Notifai public CLI.
+#
+# Why this file exists: the repository analyses JavaScript/TypeScript under the
+# `remote_and_local` threat model, which is the right choice for this product.
+# Notifai reads repository-controlled content — project configuration, guidance
+# topics, image URLs — and the hostile-repository trust policy in docs/TRUST.md
+# treats that content as untrusted. Keeping file reads as taint sources is what
+# lets CodeQL reason about it, so the threat model stays as it is.
+#
+# `js/path-injection` is the one query that model makes unusable here. Notifai
+# is a local CLI whose purpose is to write into the invoking user's own harness
+# homes: every finding is `path.join()` of `cwd`, `$HOME`, `$CODEX_HOME`, or
+# `$CLAUDE_CONFIG_DIR` with literal segments such as `.codex/hooks.json`. Those
+# values are supplied by the person running the command, who already owns the
+# filesystem, so no privilege boundary is crossed and no segment is ever
+# attacker-chosen. Reviewed 2026-09-02 across ~150 findings: no true positive.
+#
+# Excluding it is deliberate, and the safety property it would otherwise cover
+# is enforced directly instead: Notifai only writes paths it composes from a
+# harness's own documented location, removes a file only once it holds nothing
+# but Notifai's own handlers, and never deletes foreign content. Those are
+# asserted by the install-hooks and hook-install test suites.
+#
+# If a future change composes a path from network input, a notification payload,
+# or repository-authored text, remove this exclusion rather than widening it.
+name: Notifai CodeQL config
+
+# Advanced setup defaults JavaScript to the `remote` threat model. The default
+# setup this replaces used `remote_and_local`; keep it, so file reads and
+# environment values stay taint sources for every query except the one excluded
+# below.
+threat-models:
+  - local
+
+query-filters:
+  - exclude:
+      id: js/path-injection
+
+paths-ignore:
+  - '**/*.test.ts'
+  - '**/*.test.mjs'
