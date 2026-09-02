@@ -32,8 +32,6 @@ function supportsTrueColor(env: NodeJS.ProcessEnv = process.env): boolean {
   return env['TERM_PROGRAM'] === 'iTerm.app' || env['TERM_PROGRAM'] === 'vscode'
 }
 
-export const color = pc
-
 /**
  * Brand ramp, shared with the companion app icon: pink → coral → rose →
  * magenta. Used for the wordmark and for accenting the surfaces a human sees.

@@ -76,15 +76,6 @@ export interface HookGroup {
 
 export type HookConfig = Record<string, HookGroup[]>
 
-export interface InstallPlan {
-  harness: HookInstallableHarness
-  /** Absolute path of the settings file that will be written. */
-  file: string
-  /** True when the file is machine-wide rather than per-project. */
-  global: boolean
-  config: HookConfig
-}
-
 export interface HookCommandOptions {
   platform?: NodeJS.Platform | HookHostPlatform
   /** Registered Node used to interpret the Windows adapter. Ignored on POSIX. */
