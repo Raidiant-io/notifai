@@ -1449,7 +1449,7 @@ describe('command contracts', () => {
       await sendCommand(makeDeps(new CapturedIo(), client), { kind: 'update',
         title: 'Visual comparison is ready',
         body:
-          '![first](media:1) ![second](media:2) ![ready](media:med_existing)',
+          '![first](media:1) ![second](media:2) ![ready](media:med_attached_only)',
         image: [first, second, 'med_attached_only'],
         imageAlt: ['First state', 'Second state'],
       }),
@@ -1462,7 +1462,7 @@ describe('command contracts', () => {
       { media_id: 'med_attached_only' },
     ])
     expect(submitted?.draft.presentation.body).toBe(
-      '![first](media:med_uploaded_1) ![second](media:med_uploaded_2) ![ready](media:med_existing)',
+      '![first](media:med_uploaded_1) ![second](media:med_uploaded_2) ![ready](media:med_attached_only)',
     )
     expect(submitted?.draft.presentation.body).not.toMatch(/media:[1-8](?!\d)/)
   })

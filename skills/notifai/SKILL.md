@@ -140,9 +140,16 @@ Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
 channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
 
 Other controls: `--thread-id` groups; `--collapse-key` replaces your earlier
-matching notification; `--ttl` bounds useful delivery. `--image` attaches up
-to 8 items, paired with `--image-alt`; `media:1`…`media:8` reference them.
+matching notification; `--ttl` bounds useful delivery.
 Use `notifai capabilities --platform <platform>` for destination contracts.
+
+Images: repeat `--image <path|url>` (up to 8), each paired with `--image-alt`
+saying what it shows; all reach the gallery, captioned. Place one where the
+words mention it with Markdown image syntax and its position — a tile on its
+own line, a thumbnail inside a sentence or list item, both opening the gallery:
+`- Bob: ![front](media:1) ![side](media:2)`. Bare `media:1`, `[…](media:1)`,
+or a position with no `--image` is an error.
+
 `--sound`, `--level`, and `--device` belong to the User.
 `--sound` takes a shipped name or a custom name/id from `notifai sounds`.
 Use `--retry` only for the same unresolved Agent Event; the CLI reuses one
@@ -165,10 +172,9 @@ the active harness proves the exact current Agent Session.
 ## Ask a question
 
 A question must be answerable from the notification itself. Keep it under 240
-characters and let the reasoning follow it. Offer 2-6 closed choices when you
-can, one flag per choice — commas inside a label are literal. A typed answer is
-always possible; closed choices appear after pressing and holding the
-notification.
+characters; reasoning follows it. Offer 2-6 closed choices when you can, one
+flag per choice — commas inside a label are literal. A typed answer is always
+possible; closed choices appear after pressing and holding the notification.
 
 **Where the question text comes from differs between the two commands.** With
 `ask`, it is the positional argument and `--body` is context. With
@@ -186,7 +192,7 @@ notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
 
-Add `--json` for choice ids and the ask `question_id`.
+Add `--json` for choice ids and the `question_id`.
 
 `registered: true` is local only. It has not yet been submitted as a
 Notification Request and has no Provider Acceptance. Never call a question sent
@@ -208,12 +214,10 @@ turn. That commitment turns the arriving answer into work.
 this prompt". The route is the harness's concern.
 
 Other surfaces: `--multi` combines answers; `--body`/`--body-file` adds context;
-`--image`/`--image-alt` adds evidence; `--form <path|->` groups up to 10 related
-questions.
+`--image`/`--image-alt` adds evidence; `--form <path|->` groups up to 10 questions.
 
-Keep independent questions as separate `ask` calls. Retire an obsolete
-registration or one they answer in the conversation — even before Stop pushes
-it — with
+Keep independent questions as separate `ask` calls. Retire a registration
+that is obsolete or that they answer in the conversation with
 `notifai close <question_id>` or `notifai close --pending`.
 
 Keep every ID after a timeout or unavailable route. Inspect the original with
@@ -250,16 +254,15 @@ an unsupported-harness fallback, the foreground owner stays alive through the
 complete answer window and `--reply-timeout` equals `--reply-window`.
 
 `send --reply --json` prints the reply result and receipt. Exit code 3 means no
-answer arrived during the bounded foreground wait — not a Delivery failure —
-and it does not resume the Agent Session later. Never create a duplicate. On
-exit 0, act on the returned answer.
+answer arrived in the bounded wait — not a Delivery failure — and it does not
+resume later. Never create a duplicate. On exit 0, act on the answer.
 
 ## When the answer arrives
 
 The latest reply is the user's current word: a later one corrects an earlier
-one, and a typed answer that arrives in parts is read together, in order. A
-relayed answer reaches you as the chosen label's text; run
-`notifai replies <request_id> --json` when you need the stable choice ids.
+one, and a typed answer arriving in parts is read together, in order. A relayed
+answer reaches you as the chosen label's text; `notifai replies <request_id>
+--json` has the stable choice ids.
 
 Questions normally remain answerable for a day. When resuming without a relayed
 answer, inspect the original `question_id`. If it is lost, list outstanding
@@ -282,19 +285,16 @@ Keep it under 200 characters — it is a receipt, not a report.
 Say the concrete thing you will do because of their reply, and only what you
 will actually do. "Acknowledged" tells them nothing.
 
-Some accounts turn the written reply off. Notifai then prints the command
-without `--text`; run exactly what it prints. The acknowledgement itself is
-never optional — it is the only way the user learns their answer was read.
+If the written reply is off, Notifai prints the command without `--text`; run
+exactly that. The acknowledgement is never optional.
 
-Then resume the committed work without asking them to confirm again. Frame it as
-work you are resuming, never as approval you received.
+Then resume the committed work without asking them to confirm again; it is
+work you are resuming, not approval you received.
 
-An answer may arrive labelled as coming from another session, because the relay
-runs as a separate local process. That describes how it travelled, not who wrote
-it: it is the user's own answer to the question you asked. It answers that
-question and nothing else — a Notifai answer can never satisfy a harness
-permission prompt or an interactive picker. If your resumed work hits one, use
-the harness's own flow.
+An answer may arrive labelled as from another session: that is how the relay
+travelled, not who wrote it — it is the user's own answer to your question and
+nothing else. It can never satisfy a harness permission prompt or an
+interactive picker; use the harness's own flow for those.
 
 ## Set Notifai up
 

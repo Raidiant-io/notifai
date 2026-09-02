@@ -356,13 +356,13 @@ describe('draft building', () => {
     const config = loadConfig({ cwd: base.cwd, env: base.env })
     const build = buildDraft(config, {
       title: 'Visual result',
-      body: '![first](media:1) then ![second](media:2) and ![existing](media:med_keep)',
+      body: '![first](media:1) then ![second](media:2) and ![existing](media:med_attached)',
       image: ['med_first', 'med_second', 'med_attached'],
       imageAlt: ['First image', 'Second image'],
     })
     if (!build.ok) throw new Error(build.error)
     expect(build.draft.presentation.body).toBe(
-      '![first](media:med_first) then ![second](media:med_second) and ![existing](media:med_keep)',
+      '![first](media:med_first) then ![second](media:med_second) and ![existing](media:med_attached)',
     )
     expect(build.draft.presentation.body).not.toMatch(/media:[1-8](?!\d)/)
     expect(build.draft.presentation.media).toEqual([
@@ -401,6 +401,106 @@ describe('draft building', () => {
       ok: false,
       error: 'Body reference "media:3" has no matching --image occurrence.',
     })
+  })
+
+  it('refuses a bare media reference so raw ids never reach the User', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, {
+      title: 'Visual result',
+      body: 'Layered bob: media:1, media:2',
+      image: ['med_first', 'med_second'],
+    })
+    expect(build).toEqual({
+      ok: false,
+      error:
+        'Body reference "media:1" is not a Markdown image. Write ![what it shows](media:1) — ' +
+        'a bare or linked media reference is never rendered.',
+    })
+  })
+
+  it('refuses a media link, which companions render as plain words', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, {
+      title: 'Visual result',
+      body: 'See [the front view](media:1).',
+      image: ['med_first'],
+    })
+    expect(build).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('"media:1" is not a Markdown image'),
+    })
+  })
+
+  it('refuses an image reference to a media id that is not attached', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, {
+      title: 'Visual result',
+      body: '![old capture](media:med_elsewhere)',
+      image: ['med_first'],
+    })
+    expect(build).toEqual({
+      ok: false,
+      error: 'Body reference "media:med_elsewhere" is not attached; pass it with --image.',
+    })
+    expect(
+      buildDraft(config, { title: 'T', body: 'Only prose mentions media:med_elsewhere', image: ['med_first'] }),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('"media:med_elsewhere" is not a Markdown image') })
+  })
+
+  it('leaves code literal and ordinary prose about media untouched', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const body = [
+      'Social media: nothing changed. Use `media:1` literally, and ![front](media:1) here.',
+      '',
+      '```md',
+      '![example](media:1) media:2',
+      '```',
+      '',
+      '- Tousled: ![front](media:2), ![three-quarter](media:1)',
+    ].join('\n')
+    const build = buildDraft(config, {
+      title: 'Visual result',
+      body,
+      image: ['med_first', 'med_second'],
+    })
+    if (!build.ok) throw new Error(build.error)
+    expect(build.draft.presentation.body).toBe(
+      [
+        'Social media: nothing changed. Use `media:1` literally, and ![front](media:med_first) here.',
+        '',
+        '```md',
+        '![example](media:1) media:2',
+        '```',
+        '',
+        '- Tousled: ![front](media:med_second), ![three-quarter](media:med_first)',
+      ].join('\n'),
+    )
+  })
+
+  it('accepts an image reference with an empty alt and a quoted title', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const build = buildDraft(config, {
+      title: 'Visual result',
+      body: '![](media:1 "Front view")',
+      image: ['med_first'],
+      imageAlt: ['Front view'],
+    })
+    if (!build.ok) throw new Error(build.error)
+    expect(build.draft.presentation.body).toBe('![](media:med_first "Front view")')
+  })
+
+  it('preserves authored private-use characters while rewriting an image reference', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const body = 'Sentinel: \uE0000\uE000 and ![front](media:1).'
+    const build = buildDraft(config, {
+      title: 'Visual result',
+      body,
+      image: ['med_first'],
+    })
+    if (!build.ok) throw new Error(build.error)
+    expect(build.draft.presentation.body).toBe(
+      'Sentinel: \uE0000\uE000 and ![front](media:med_first).',
+    )
   })
 
   it('validates media cardinality and alt pairing', () => {
