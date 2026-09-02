@@ -1,9 +1,10 @@
-import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createConnection } from 'node:net'
 import type { ContinuationEvent, DeliveryOutcome, EscalationDeliveryRoute } from './hook-types.js'
+import { compareVersions } from './version.js'
+import { cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
 
 /** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
 export const CLAUDE_PEER_PROTOCOL = 1
@@ -193,20 +194,6 @@ export type ClaudeInboxReadiness =
   | { state: 'ready'; socketPath: string; version: string }
   | { state: 'unavailable'; reason: string }
 
-/** Ordered comparison of dotted release numbers, ignoring any suffix. */
-function versionAtLeast(version: string, minimum: string): boolean {
-  const parse = (value: string): number[] =>
-    value.split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const left = parse(version)
-  const right = parse(minimum)
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const a = left[index] ?? 0
-    const b = right[index] ?? 0
-    if (a !== b) return a > b
-  }
-  return true
-}
-
 /**
  * Whether an answer could reach this exact Claude session over its inbox
  * socket, decided from evidence already on disk.
@@ -256,7 +243,14 @@ export function inspectClaudeInbox(options: {
       reason: `this session speaks inbox protocol ${descriptor.peerProtocol}, and only ${CLAUDE_PEER_PROTOCOL} is known; refusing to guess at an undocumented wire format`,
     }
   }
-  if (!versionAtLeast(descriptor.version, CLAUDE_MIN_INBOX_VERSION)) {
+  const versionComparison = compareVersions(descriptor.version, CLAUDE_MIN_INBOX_VERSION)
+  if (versionComparison === 'unparseable') {
+    return {
+      state: 'unavailable',
+      reason: `the Claude Code version ${descriptor.version} is not a recognised release number`,
+    }
+  }
+  if (versionComparison === 'before') {
     return {
       state: 'unavailable',
       reason: `Claude Code ${descriptor.version} is older than ${CLAUDE_MIN_INBOX_VERSION}, which is where the inbox socket starts`,
@@ -322,19 +316,11 @@ export function claudeWakeRoute(options: {
     async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
       const observation = await observeClaudeSession(options.sessionId, adapters)
       if (observation.state === 'unknown') {
-        return {
-          notes: [`holding the accepted answer for the next turn: ${observation.reason}`],
-          log: { route: 'hold-for-next-turn', stage: 'queued', reason: observation.reason },
-          acknowledgement: 'held',
-        }
+        return holdForNextTurn(observation.reason)
       }
       if (sourceDescriptor === null) {
         const reason = 'the Stop-hook process cannot prove exact Claude session ownership'
-        return {
-          notes: [`holding the accepted answer for the next turn: ${reason}`],
-          log: { route: 'hold-for-next-turn', stage: 'queued', reason },
-          acknowledgement: 'held',
-        }
+        return holdForNextTurn(reason)
       }
       if (observation.state === 'stopped') {
         // Probe immediately before spawn. A prior descriptor or dead socket is
@@ -345,11 +331,7 @@ export function claudeWakeRoute(options: {
             confirmed.state === 'unknown'
               ? confirmed.reason
               : 'the Claude session became live before cold resume'
-          return {
-            notes: [`holding the accepted answer for the next turn: ${reason}`],
-            log: { route: 'hold-for-next-turn', stage: 'queued', reason },
-            acknowledgement: 'held',
-          }
+          return holdForNextTurn(reason)
         }
         if (!event.commitDelivery()) return cancelledDelivery()
         await adapters.resume(options.sessionId, sourceDescriptor.cwd, event.context)
@@ -365,11 +347,7 @@ export function claudeWakeRoute(options: {
         sourceDescriptor.startedAt !== observation.descriptor.startedAt
       ) {
         const reason = 'the Stop-hook process is not the observed exact Claude session child'
-        return {
-          notes: [`holding the accepted answer for the next turn: ${reason}`],
-          log: { route: 'hold-for-next-turn', stage: 'queued', reason },
-          acknowledgement: 'held',
-        }
+        return holdForNextTurn(reason)
       }
       if (!event.commitDelivery()) return cancelledDelivery()
       await adapters.sendSocket(
@@ -396,38 +374,8 @@ export function claudeWakeRoute(options: {
   }
 }
 
-function cancelledDelivery(): DeliveryOutcome {
-  return {
-    notes: ['the Agent Session ended before answer delivery; stopping this observer'],
-    log: { route: 'hold-for-next-turn', stage: 'queued', reason: 'session-ended' },
-    acknowledgement: 'held',
-  }
-}
-
 function runClaude(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('claude', args, {
-      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      ...(options.env === undefined ? {} : { env: options.env }),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
-    child.stdout?.on('data', (chunk: Buffer | string) => stdout.push(Buffer.from(chunk)))
-    child.stderr?.on('data', (chunk: Buffer | string) => stderr.push(Buffer.from(chunk)))
-    child.once('error', reject)
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolve(Buffer.concat(stdout).toString())
-        return
-      }
-      reject(
-        new Error(
-          `claude ${args[0] ?? ''} exited ${code === null ? `on ${String(signal)}` : String(code)}: ${Buffer.concat(stderr).toString().trim()}`,
-        ),
-      )
-    })
-  })
+  return runWakeCommand('claude', args, options)
 }
 
 function coldResumeEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

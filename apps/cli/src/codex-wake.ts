@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process'
 import { closeSync, constants, existsSync, openSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
@@ -8,6 +7,7 @@ import {
   type DeliveryOutcome,
   type EscalationDeliveryRoute,
 } from './hook-types.js'
+import { cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
 
 /** Codex's per-thread writer lock directory, relative to `$CODEX_HOME`. */
 export const CODEX_THREAD_LOCK_DIR = 'thread-writer-locks'
@@ -154,10 +154,10 @@ export function codexWakeRoute(options: {
       // answer: ownership is a kernel fact that can change between two syscalls,
       // and resuming a thread someone else owns is the disqualifying failure.
       const observed = observeCodexThread(options.threadId, env, adapters)
-      const held = holdForNextTurn(observed)
+      const held = holdCodexObservation(observed)
       if (held !== null) return held
       const confirmed = observeCodexThread(options.threadId, env, adapters)
-      const raced = holdForNextTurn(confirmed)
+      const raced = holdCodexObservation(confirmed)
       if (raced !== null) return raced
 
       if (!event.commitDelivery()) return cancelledDelivery()
@@ -173,26 +173,14 @@ export function codexWakeRoute(options: {
   }
 }
 
-function cancelledDelivery(): DeliveryOutcome {
-  return {
-    notes: ['the Agent Session ended before answer delivery; stopping this observer'],
-    log: { route: 'hold-for-next-turn', stage: 'queued', reason: 'session-ended' },
-    acknowledgement: 'held',
-  }
-}
-
 /** The journal, with the exact reason the thread could not be resumed. */
-function holdForNextTurn(observation: CodexWakeObservation): DeliveryOutcome | null {
+function holdCodexObservation(observation: CodexWakeObservation): DeliveryOutcome | null {
   if (observation.state === 'stopped') return null
   const reason =
     observation.state === 'live'
       ? 'a live writer owns the Codex thread and this hook can no longer continue it'
       : observation.reason
-  return {
-    notes: [`holding the accepted answer for the next turn: ${reason}`],
-    log: { route: 'hold-for-next-turn', stage: 'queued', reason },
-    acknowledgement: 'held',
-  }
+  return holdForNextTurn(reason)
 }
 
 /**
@@ -237,29 +225,7 @@ function runCodex(
   args: string[],
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('codex', args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
-    child.stdout?.on('data', (chunk: Buffer | string) => stdout.push(Buffer.from(chunk)))
-    child.stderr?.on('data', (chunk: Buffer | string) => stderr.push(Buffer.from(chunk)))
-    child.once('error', reject)
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolve(Buffer.concat(stdout).toString())
-        return
-      }
-      reject(
-        new Error(
-          `codex ${args[0] ?? ''} exited ${code === null ? `on ${String(signal)}` : String(code)}: ${Buffer.concat(stderr).toString().trim()}`,
-        ),
-      )
-    })
-  })
+  return runWakeCommand('codex', args, options)
 }
 
 /**

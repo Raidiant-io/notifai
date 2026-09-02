@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  compareCliSemVer,
   latestPublishedCliVersion,
   newerPublishedCli,
   resetLatestPublishedCliVersionForTest,
   shouldConsultCliRegistry,
 } from './cli-release.js'
+import { compareVersions } from './version.js'
 
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
@@ -41,6 +41,6 @@ describe('CLI registry recommendation', () => {
     expect(newerPublishedCli('8.0.0', '8.0.1')).toBe('8.0.1')
     expect(newerPublishedCli('8.0.0', '8.0.0')).toBeNull()
     expect(newerPublishedCli('8.0.1', '8.0.0')).toBeNull()
-    expect(compareCliSemVer('8.0.0', '7.0.2')).toBeGreaterThan(0)
+    expect(compareVersions('8.0.0', '7.0.2')).toBe('after')
   })
 })

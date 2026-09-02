@@ -100,6 +100,7 @@ import {
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 
 // ---------------------------------------------------------------------------
 // doctor
@@ -168,7 +169,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         status: 'optional-gap',
         detail: scheduled
           ? 'Update Notifai soon to keep sending notifications.'
-          : 'A newer Notifai is available.',
+          : CLI_UPDATE_AVAILABLE,
         technical,
         remedy: {
           by: 'user-here',
@@ -182,7 +183,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         id: 'contract',
         title: 'Notifai update',
         status: 'optional-gap',
-        detail: 'The service is being updated; try again later.',
+        detail: SERVICE_UPDATE_IN_PROGRESS,
         technical,
         remedy: {
           by: 'user-here',
@@ -201,7 +202,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         id: 'contract',
         title: 'Notifai update',
         status: 'optional-gap',
-        detail: 'The service is being updated; try again later.',
+        detail: SERVICE_UPDATE_IN_PROGRESS,
         technical,
         remedy: {
           by: 'user-here',
@@ -222,7 +223,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
       id: 'contract',
       title: 'Notifai update',
       status: 'optional-gap',
-      detail: 'The service is being updated; try again later.',
+      detail: SERVICE_UPDATE_IN_PROGRESS,
       technical: {
         error: err instanceof ApiCallError
           ? { code: err.code, status: err.status }
@@ -665,7 +666,7 @@ async function applyRegistryRecommendation(
   const contract = states.find((state) => state.id === 'contract')
   if (contract === undefined || contract.status === 'gap') return
   contract.status = 'optional-gap'
-  contract.detail = 'A newer Notifai is available.'
+  contract.detail = CLI_UPDATE_AVAILABLE
   contract.remedy = {
     by: 'user-here',
     summary: 'update Notifai',

@@ -8,12 +8,14 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { commandInvocation } from './cross-platform.mjs'
 import { verifyWindowsShims } from './verify-packed-install.mjs'
+import { CLI_PACKAGE } from './package-contract.mjs'
+import { isSemVer } from '../apps/cli/src/version.js'
 
-const CLI_NAME = '@raidiant/notifai'
+const CLI_NAME = CLI_PACKAGE.name
 
 export function publishedVersionArgument(argv) {
   const version = argv[2]
-  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  if (typeof version !== 'string' || !isSemVer(version)) {
     throw new Error('usage: node scripts/verify-published-windows.mjs <exact-version>')
   }
   return version

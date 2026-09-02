@@ -60,6 +60,8 @@ import {
 } from './openclaw-plugin.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
+import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
+import { activeNpmCli } from './npm-invocation.js'
 export interface HooksInstallFlags {
   harness?: string
   global?: boolean
@@ -92,18 +94,18 @@ function resolveHookAdapterTarget(deps: CommandDeps, flags: HooksInstallFlags): 
   const scriptPath = flags.scriptPath ?? fileTarget?.scriptPath ?? process.argv[1] ?? 'notifai'
   if (runningViaNpx(deps.env, scriptPath)) {
     const version = packageVersion()
-    const npmCli = deps.env['npm_execpath']
+    const npmCli = activeNpmCli(deps.env)
     if (version === null) {
       throw new Error(
-        'Could not read this CLI version, so an npx hook target cannot be pinned. Install `@raidiant/notifai` globally and rerun `notifai hooks install`.',
+        `Could not read this CLI version, so an npx hook target cannot be pinned. Install \`${CLI_PACKAGE_NAME}\` globally and rerun \`notifai hooks install\`.`,
       )
     }
-    if (typeof npmCli !== 'string' || npmCli === '') {
+    if (npmCli === null) {
       throw new Error(
-        'This process looks like npx but npm_execpath is missing. Install `@raidiant/notifai` globally and rerun `notifai hooks install`.',
+        `This process looks like npx but npm_execpath is missing. Install \`${CLI_PACKAGE_NAME}\` globally and rerun \`notifai hooks install\`.`,
       )
     }
-    return { kind: 'npx', execPath, npmCli, spec: `@raidiant/notifai@${version}` }
+    return { kind: 'npx', execPath, npmCli, spec: cliPackageSpec(version) }
   }
   return { execPath, scriptPath }
 }

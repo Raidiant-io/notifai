@@ -3,8 +3,9 @@ import {
   REPLY_MAX_WINDOW_SECONDS,
 } from '@raidiant/notifai-protocol'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { canonicalPath } from './local-path.js'
 import { parse as parseToml } from 'smol-toml'
 import { configHome, stateHome } from './platform.js'
 import { isCliSoundRef } from './sound-ref.js'
@@ -261,11 +262,7 @@ export function projectSessionPointerPath(cwd: string, env: NodeJS.ProcessEnv = 
  * had just written.
  */
 function canonicalDir(dir: string): string {
-  try {
-    return realpathSync(path.resolve(dir))
-  } catch {
-    return path.resolve(dir)
-  }
+  return canonicalPath(path.resolve(dir))
 }
 
 /** Walk up from cwd looking for .notifai/<name> (Project Override). */

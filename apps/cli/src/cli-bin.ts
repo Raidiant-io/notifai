@@ -9,7 +9,8 @@ import {
 import path from 'node:path'
 import type { ReadinessState } from './readiness.js'
 import { packageVersion } from './release.js'
-import { cliUpdateRecoveryCommand } from './cli-update-contract.js'
+import { cliUpdateRecoveryCommand } from './cli-contract.js'
+import { canonicalPath, pathDirectories } from './local-path.js'
 
 const POSIX_NAMES = ['notifai']
 const WINDOWS_NAMES = ['notifai.cmd', 'notifai.exe', 'notifai']
@@ -37,12 +38,9 @@ export function pathNotifaiEntries(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
 ): string[] {
-  const raw = platform === 'win32' ? (env['Path'] ?? env['PATH'] ?? '') : (env['PATH'] ?? '')
-  const delimiter = platform === 'win32' ? ';' : ':'
   const names = platform === 'win32' ? WINDOWS_NAMES : POSIX_NAMES
   const found: string[] = []
-  for (const directory of raw.split(delimiter)) {
-    if (directory === '') continue
+  for (const directory of pathDirectories(env, platform)) {
     for (const name of names) {
       const candidate = path.join(directory, name)
       if (!existsSync(candidate)) continue
@@ -61,14 +59,6 @@ export function isExecutablePath(file: string, platform: NodeJS.Platform = proce
     return true
   } catch {
     return false
-  }
-}
-
-function canonicalPath(file: string): string {
-  try {
-    return realpathSync(file)
-  } catch {
-    return path.resolve(file)
   }
 }
 

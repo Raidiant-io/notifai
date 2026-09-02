@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { cliBinReadiness, isExecutablePath, pathNotifaiEntries } from './cli-bin.js'
-import { cliUpdateRecoveryCommand } from './cli-update-contract.js'
+import { cliUpdateRecoveryCommand } from './cli-contract.js'
 
 describe('PATH notifai diagnosis', () => {
   function posixInstall(root: string, name: string, version: string) {
