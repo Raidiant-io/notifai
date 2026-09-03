@@ -18,6 +18,19 @@ export interface FcmDataEnvelope {
   priority: 'HIGH' | 'NORMAL'
 }
 
+/** Silent Android library-refresh message consumed before visible-envelope parsing. */
+export function buildFcmSoundLibrarySyncEnvelope(): FcmDataEnvelope {
+  return {
+    data: {
+      notifai: JSON.stringify({
+        schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
+        sync: 'sound_library',
+      }),
+    },
+    priority: 'NORMAL',
+  }
+}
+
 /**
  * Pure client-visible FCM data assembly shared by Android payload estimation and
  * the provider renderer. Provider authentication, project ids, and message

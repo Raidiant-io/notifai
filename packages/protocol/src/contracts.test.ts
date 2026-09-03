@@ -26,6 +26,7 @@ import {
   PairingProofRequest,
   PROVIDERS,
   PutRegistrationRequest,
+  ReportSoundLibraryReceiptRequest,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   REPLY_SOURCES,
@@ -48,7 +49,7 @@ import {
   collapsedChoiceAlert,
   RECEIPT_TOKEN_LENGTH,
 } from './apns.js'
-import { buildFcmDataEnvelope } from './fcm.js'
+import { buildFcmDataEnvelope, buildFcmSoundLibrarySyncEnvelope } from './fcm.js'
 
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
   return {
@@ -79,6 +80,41 @@ describe('Project identity contract', () => {
   it('carries a stable avatar revision separately from its URL', () => {
     expect(projectViewFixture.avatar_revision).toBe('generated:v1')
     expect(projectViewFixture.image_url).toContain('/avatar.png')
+  })
+})
+
+describe('Sound library bridge contract', () => {
+  const manifest = [
+    {
+      sound_id: 'snd_legacy',
+      content_hash: 'a'.repeat(64),
+      contract_marker: 'notification-sound/wav-pcm16-mono-48k/v1',
+    },
+    {
+      sound_id: 'snd_current',
+      content_hash: 'b'.repeat(64),
+      contract_marker: 'notification-sound/wav-pcm16-mono-48k/v2',
+    },
+  ]
+
+  it('carries the artifact marker needed for version-aware cache validation', () => {
+    expect(
+      Value.Check(ReportSoundLibraryReceiptRequest, { sounds: manifest }),
+    ).toBe(true)
+    expect(
+      Value.Check(ReportSoundLibraryReceiptRequest, {
+        sounds: [{ ...manifest[0], contract_marker: 'notification-sound/unknown' }],
+      }),
+    ).toBe(false)
+  })
+
+  it('emits Android sound-library sync as a silent normal-priority data message', () => {
+    expect(buildFcmSoundLibrarySyncEnvelope()).toEqual({
+      data: {
+        notifai: JSON.stringify({ schema_version: 1, sync: 'sound_library' }),
+      },
+      priority: 'NORMAL',
+    })
   })
 })
 
