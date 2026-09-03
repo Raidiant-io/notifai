@@ -202,8 +202,6 @@ export interface PendingQuestion {
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */
   question: string
-  /** Authored native title, separate from what the question asks. */
-  title: string
   /** Purpose-written plain text for native banners and notification lists. */
   summary: string
   /**

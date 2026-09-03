@@ -97,7 +97,6 @@ function registerQuestion(
     sessionId,
     env,
     {
-      title: question.title ?? question.question,
       summary: question.summary ?? question.question,
       ...question,
     },
@@ -116,7 +115,6 @@ function writeSessionState(
       ? {}
       : {
           pending: state.pending.map((entry) => ({
-            title: entry.title ?? entry.question,
             summary: entry.summary ?? entry.question,
             ...entry,
           })),
@@ -2682,7 +2680,7 @@ describe('ask registration', () => {
     const h = harness()
     // Inside a hook, a rejection is only a stderr note the agent never reads —
     // so it would look registered and then silently never ask.
-    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship', choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
     expect(readSessionState('a1', h.env).pending).toBeUndefined()
   })
 
@@ -2722,7 +2720,6 @@ describe('ask registration', () => {
     if (!built.ok) return
     registerQuestion('form1', h.env, {
       question: built.questions[0]!.text,
-      title: 'Choose deployment details',
       summary: built.summary,
       questions: built.questions,
       ...(built.body !== undefined ? { body: built.body } : {}),
@@ -2733,7 +2730,7 @@ describe('ask registration', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
     const draft = h.recorder.submitted[0]?.draft
-    expect(draft?.presentation.title).toBe('Choose deployment details')
+    expect(draft?.presentation.title).toBe('Deploy where?')
     expect(draft?.presentation.summary).toBe('Choose deployment details.')
     // Questions travel structured while Body remains standalone focused detail.
     expect(draft?.presentation.body).toBe('## Context\nThe long story.')
@@ -2831,14 +2828,14 @@ describe('ask registration', () => {
 
   it('does not let an explicit session bypass exact active-harness proof', () => {
     const h = harness()
-    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship', sessionId: 'guessed' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { sessionId: 'guessed' })).toBe(EXIT.usage)
     expect(readSessionState('guessed', h.env).pending).toBeUndefined()
   })
 
   it('does not route from NOTIFAI_SESSION where no exact harness has spoken', () => {
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
-    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(readSessionState('solo-session', h.env).pending).toBeUndefined()
   })
 

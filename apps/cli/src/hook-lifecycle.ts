@@ -149,7 +149,6 @@ const CLAIM_HANDOFF_POLL_MS = 1_000
 async function prepareQuestionSubmission(
   ctx: HookContext,
   options: {
-    title: string
     summary: string
     body?: string
     questions: QuestionT[]
@@ -172,7 +171,7 @@ async function prepareQuestionSubmission(
   const build = buildDraft(
     ctx.config,
     {
-      title: options.title,
+      title: options.questions[0]!.text,
       summary: options.summary,
       ...(options.body !== undefined ? { body: options.body } : {}),
       lifecycle: { tier: 'needs_you' },
@@ -1369,7 +1368,6 @@ async function escalate(
     let intent = entry.submission
     if (intent === undefined) {
       const prepared = await prepareQuestionSubmission(ctx, {
-        title: entry.title,
         summary: entry.summary,
         ...(entry.body !== undefined ? { body: entry.body } : {}),
         questions,
@@ -1446,7 +1444,6 @@ async function escalate(
           )
           clearFrozenSubmission(sessionId, ctx.env, entry)
           const reminted = await prepareQuestionSubmission(ctx, {
-            title: entry.title,
             summary: entry.summary,
             ...(entry.body !== undefined ? { body: entry.body } : {}),
             questions,

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:13aa451667e641d6da0ec3f91ec3d1f94efb08a288643878cd8a08cc9678fd8c",
+  "behavior_digest": "sha256:90538d6a212fed3878b30320186eba7349037b66dd60379c2517703f18929da8",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making inferred Project identity write-free and sharing personal Project Overrides across linked worktrees. README and shipped skill guidance now distinguish Machine-Global Configuration, personal Project Overrides outside the repository, and explicit tracked shared `.notifai/config.toml`; they also tell agents to author shared changes in the active checkout and merge them through Git. Question ownership, acknowledgements, trust, notification authoring, and harness return-path rules remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after removing the separately authored ask title. The positional single question now supplies both the exact Summary and the notification title; forms retain their authored set Summary while the first exact question supplies the notification title. No compatibility flag or persisted legacy title remains. Question ownership, acknowledgements, trust, notification authoring, and harness return-path rules are otherwise unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

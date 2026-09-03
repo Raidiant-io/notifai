@@ -58,7 +58,6 @@ A bare `media:1` or a link to it is refused before sending.
 
 ```sh
 notifai ask "Deploy the migration to production?" \
-  --title "Choose migration timing" \
   --choice Yes --choice No
 ```
 

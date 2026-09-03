@@ -141,16 +141,12 @@ function sendCommand(
   })
 }
 
-/** Keep routing cases terse; the real argv boundary requires an authored title. */
 function askCommand(
   deps: CommandDeps,
   question: string | undefined,
-  flags: Omit<AskFlags, 'title'> & { title?: string },
+  flags: AskFlags,
 ) {
-  return askAuthoredCommand(deps, question, {
-    title: flags.title ?? 'Need your answer',
-    ...flags,
-  })
+  return askAuthoredCommand(deps, question, flags)
 }
 
 /**

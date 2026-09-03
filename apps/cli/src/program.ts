@@ -525,7 +525,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Register a question, then end the turn')
     .description('Register a question for the turn-end hook to route to your devices, subject to your question-routing settings')
-    .option('--title <title>', 'optional brief title; defaults to the question')
     .option(
       '--choice <label>',
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',
@@ -559,7 +558,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       choice?: string[]
       multi?: boolean
       json?: boolean
-      title: string
       body?: string
       bodyFile?: string
       literalBackslashN?: boolean
@@ -602,7 +600,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       }
       // Commander collectors default to []; an empty list means "not passed".
       const flags: Parameters<typeof askCommand>[2] = {
-        title: opts.title,
         ...(opts.choice?.length ? { choice: opts.choice } : {}),
         ...(opts.multi ? { multi: true } : {}),
         ...(body !== undefined ? { body } : {}),
