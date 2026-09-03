@@ -19,7 +19,9 @@ bin, `npx --yes @raidiant/notifai@<version>` is supported. Pin the version.
 adapter. This is slower than a real install and is not the default path.
 
 Use `notifai update` for later global updates. It repairs the installation the
-shell actually selects and keeps the stable hook adapter on that same CLI.
+shell actually selects and keeps the stable hook adapter on that same CLI. It
+fails instead of moving the command to a different PATH slot when it cannot
+verify the selected installation or retarget an existing adapter safely.
 
 `init` walks the setup one step at a time and tells you the single next
 thing to do. Run it again after each step; it works out what remains.
