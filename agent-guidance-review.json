@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:edc5cde95fe778ba0106528fd19b666e7d2a5b86ea6143870e8134fe08f12c49",
+  "behavior_digest": "sha256:f24979b34b43ecaea87eebed368d9a148829ae3c4498cd9b6ed0e5f58604df0d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after replacing derived banner excerpts with an authored Summary and optional standalone Markdown Body. The capability catalog now states the exact Summary and Body surface contract, leaves the dormant Mac content epoch unsupported, and the ask help preserves the simple positional-question workflow while allowing an optional authored title. Existing guidance already teaches purpose-written Summary, standalone Markdown Body, Summary-only fallback, proportional Markdown, and multi-media references; ownership, acknowledgement, trust, setup, and harness return-path rules remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making inferred Project identity write-free and sharing personal Project Overrides across linked worktrees. README and shipped skill guidance now distinguish Machine-Global Configuration, personal Project Overrides outside the repository, and explicit tracked shared `.notifai/config.toml`; they also tell agents to author shared changes in the active checkout and merge them through Git. Question ownership, acknowledgements, trust, notification authoring, and harness return-path rules remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

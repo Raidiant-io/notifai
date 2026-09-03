@@ -237,6 +237,15 @@ setting; `notifai config show --explain` includes advanced keys and the file
 each value came from. Beyond the usual scopes, `--session <id>` writes a
 preference that lasts only for one Agent Session.
 
+With no scope flag, `notifai config set` writes Machine-Global Configuration.
+`--local` writes a personal Project Override under the user's configuration
+directory; one local Git checkout and all its linked worktrees resolve to the
+same file. `--project` is deliberately different: it writes the tracked shared
+`.notifai/config.toml` at the repository root. Do not create that repository
+file during setup or to preserve personal state, and do not reach into another
+worktree to write it—make the explicit shared change in the active checkout and
+merge it through Git.
+
 `ask_notifications` is the setting that turns question routing off for a scope;
 `ask_grace_seconds` is the terminal-first window described above;
 `reply_window_seconds` is how long an answer is still accepted, a day by

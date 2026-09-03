@@ -316,6 +316,13 @@ Lifecycle wiring has no scope: one install per harness for this machine;
 notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --json
 ```
 
+Ordinary setup and inferred Project identity are write-free: do not create
+`.notifai/config.toml`. Configuration defaults to this machine, and a personal
+Project Override stays in the user's configuration directory, shared by linked
+worktrees. Use the repository file only when the user deliberately wants a
+tracked setting shared with every clone; author it in the active checkout and
+let Git review and merge it normally.
+
 Branch on `states`, `can_send`, and `question_routing_ready`.
 `direct_wake_ready` says if answers can start a turn after continuation ends;
 it is optional when a held continuation owns the answer,

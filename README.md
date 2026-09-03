@@ -178,12 +178,17 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 ## The agent skill
 
 The Notifai agent guidance skill lives in `skills/notifai/` and is never
-installed by default. `notifai init` coordinates project configuration,
-sign-in, optional harness hooks, and device readiness. Project configuration
-lands in the checkout it names and asks nothing. Harness hooks have no scope to
-ask about: they are installed once per harness for this machine. Installing the
-skill does place files elsewhere, so at a human terminal that — and only that —
-asks once whether it is for this project or for this machine.
+installed by default. `notifai init` coordinates sign-in, optional harness
+hooks, and device readiness. Project identity is inferred from Git or the
+current directory and ordinary setup writes nothing into the repository.
+Machine settings live in the user's configuration directory; personal Project
+Overrides live there too and are shared across linked worktrees. A repository
+`.notifai/config.toml` is only an explicit, tracked shared override and is
+authored in the active checkout so it can be reviewed and merged normally.
+Harness hooks have no scope to ask about: they are installed once per harness
+for this machine. Installing the skill does place files elsewhere, so at a
+human terminal that — and only that — asks once whether it is for this project
+or for this machine.
 `notifai init --skills` verifies the complete first-party skill against the
 copy and digest manifest shipped inside the installed npm package, stages that
 verified copy at a short-lived project-relative path, and delegates placement
