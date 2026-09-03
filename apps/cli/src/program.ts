@@ -525,7 +525,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Register a question, then end the turn')
     .description('Register a question for the turn-end hook to route to your devices, subject to your question-routing settings')
-    .requiredOption('--title <title>', 'brief title whose substance is immediately understandable')
+    .option('--title <title>', 'optional brief title; defaults to the question')
     .option(
       '--choice <label>',
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',

@@ -1008,7 +1008,8 @@ describe('validateDraft', () => {
     expect(MACOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
-        expect.objectContaining({ path: 'presentation.body', status: 'supported' }),
+        expect.objectContaining({ path: 'presentation.summary', status: 'unsupported' }),
+        expect.objectContaining({ path: 'presentation.body', status: 'unsupported' }),
         expect.objectContaining({ path: 'source', status: 'supported' }),
         expect.objectContaining({ path: 'reply', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
@@ -1174,6 +1175,39 @@ describe('validateDraft', () => {
     expect(estimateApnsPayloadBytes(withMedia)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
     )
+  })
+
+  it('never projects the original 286-character Markdown Body as a broken 256-character prefix', () => {
+    const body = `${'A'.repeat(252)}**critical**${'B'.repeat(22)}`
+    const brokenPrefix = body.slice(0, 256)
+    expect(body).toHaveLength(286)
+    expect(brokenPrefix.endsWith('**cr')).toBe(true)
+
+    const rich = draft({
+      presentation: {
+        title: 'Found the launch issue',
+        summary: 'The launch issue is understood and the complete diagnosis is ready.',
+        body,
+      },
+    })
+    const identifiers = {
+      requestId: 'req_00000000000000000000000000',
+      deliveryId: 'del_00000000000000000000000000',
+      receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+      createdAt: new Date(0),
+    }
+    const apns = buildApnsEnvelope(rich, identifiers)
+    const alert = (apns.payload['aps'] as Record<string, unknown>)['alert'] as Record<string, unknown>
+    const apnsMetadata = apns.payload['notifai'] as Record<string, unknown>
+    const fcmMetadata = JSON.parse(
+      buildFcmDataEnvelope(rich, identifiers).data.notifai,
+    ) as Record<string, unknown>
+
+    expect(alert['body']).toBe(rich.presentation.summary)
+    expect(apnsMetadata).toMatchObject({ summary: rich.presentation.summary, has_body: true })
+    expect(fcmMetadata).toMatchObject({ summary: rich.presentation.summary, has_body: true })
+    expect(JSON.stringify(apns.payload)).not.toContain(brokenPrefix)
+    expect(JSON.stringify(fcmMetadata)).not.toContain(brokenPrefix)
   })
 
   it('serializes the application-owned Android envelope once inside FCM data', () => {
@@ -1865,18 +1899,20 @@ describe('unified content and Source Context schema', () => {
         expect.objectContaining({
           path: 'presentation.summary',
           constraints: expect.objectContaining({
+            required: true,
             max_length: SUMMARY_MAX_LENGTH,
-            format: 'plain-text',
-            lines: 1,
+            format: 'plain_text',
+            surfaces: ['banner', 'list', 'focused_fallback'],
           }),
         }),
         expect.objectContaining({
           path: 'presentation.body',
           constraints: expect.objectContaining({
+            required: false,
             max_length: BODY_MAX_LENGTH,
             format: 'markdown',
-            optional: true,
-            focused: true,
+            surface: 'focused',
+            remote_images: 'not fetched',
           }),
         }),
         expect.objectContaining({

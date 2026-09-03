@@ -58,16 +58,21 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'presentation.summary',
       status: 'supported',
-      constraints: { max_length: SUMMARY_MAX_LENGTH, format: 'plain-text', lines: 1 },
+      constraints: {
+        required: true,
+        max_length: SUMMARY_MAX_LENGTH,
+        format: 'plain_text',
+        surfaces: ['banner', 'list', 'focused_fallback'],
+      },
     },
     {
       path: 'presentation.body',
       status: 'supported',
       constraints: {
+        required: false,
         max_length: BODY_MAX_LENGTH,
         format: 'markdown',
-        optional: true,
-        focused: true,
+        surface: 'focused',
         remote_images: 'not fetched',
       },
     },
@@ -167,19 +172,26 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
     { path: 'presentation.title', status: 'supported' },
     {
       path: 'presentation.summary',
-      status: 'supported',
-      constraints: { max_length: SUMMARY_MAX_LENGTH, format: 'plain-text', lines: 1 },
+      status: 'unsupported',
+      constraints: {
+        required: true,
+        max_length: SUMMARY_MAX_LENGTH,
+        format: 'plain_text',
+        surfaces: ['banner', 'list', 'focused_fallback'],
+      },
+      reason: 'The dormant Mac Companion App is not maintained or verified for this content epoch.',
     },
     {
       path: 'presentation.body',
-      status: 'supported',
+      status: 'unsupported',
       constraints: {
+        required: false,
         max_length: BODY_MAX_LENGTH,
         format: 'markdown',
-        optional: true,
-        focused: true,
+        surface: 'focused',
         remote_images: 'not fetched',
       },
+      reason: 'Focused Markdown Body loading is not maintained on the dormant Mac Companion App.',
     },
     {
       path: 'source',
@@ -262,16 +274,22 @@ export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
     {
       path: 'presentation.summary',
       status: 'supported',
-      constraints: { max_length: SUMMARY_MAX_LENGTH, format: 'plain-text', lines: 1 },
+      constraints: {
+        required: true,
+        max_length: SUMMARY_MAX_LENGTH,
+        format: 'plain_text',
+        surfaces: ['banner', 'list', 'focused_fallback'],
+      },
     },
     {
       path: 'presentation.body',
       status: 'supported',
       constraints: {
+        required: false,
         max_length: BODY_MAX_LENGTH,
         format: 'markdown',
-        optional: true,
-        focused: true,
+        surface: 'focused',
+        remote_images: 'not fetched',
       },
     },
     {

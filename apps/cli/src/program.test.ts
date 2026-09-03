@@ -275,6 +275,10 @@ describe('program argv parsing', () => {
 
     await parse(['ask', 'Free text?', '--title', 'Need a detail'], { ask })
     expect(seenFlags).toEqual({ title: 'Need a detail' })
+
+    await parse(['ask', 'Ship now?', '--choice', 'Ship now', '--choice', 'Wait'], { ask })
+    expect(seenQuestion).toBe('Ship now?')
+    expect(seenFlags).toEqual({ choice: ['Ship now', 'Wait'] })
   })
 
   it('rejects --no-block as unknown: the flag is gone, not tombstoned', async () => {

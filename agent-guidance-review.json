@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b47b990ff2e327b1e0d8dcd0a982b7509fc70fc86c6b6f6b03686c5a2a1e7204",
+  "behavior_digest": "sha256:edc5cde95fe778ba0106528fd19b666e7d2a5b86ea6143870e8134fe08f12c49",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after replacing derived banner excerpts with an authored Summary and optional standalone Markdown Body. The skill and the renamed content Guidance Topic now teach their separate roles, the Summary-only fallback, proportional Markdown, and multi-media references. Send, ask, form, and turn-end question examples all use authored content; no agent is taught to infer or truncate a question from Body, and the 240-code-point question boundary matches Summary. Ownership, acknowledgement, trust, setup, and harness return-path rules remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after replacing derived banner excerpts with an authored Summary and optional standalone Markdown Body. The capability catalog now states the exact Summary and Body surface contract, leaves the dormant Mac content epoch unsupported, and the ask help preserves the simple positional-question workflow while allowing an optional authored title. Existing guidance already teaches purpose-written Summary, standalone Markdown Body, Summary-only fallback, proportional Markdown, and multi-media references; ownership, acknowledgement, trust, setup, and harness return-path rules remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
