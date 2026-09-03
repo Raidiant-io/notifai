@@ -63,8 +63,12 @@ later upgrades must not require another.
 
 `notifai ask --json` owns its admission check. On failure, branch on its stable
 `code`, `check_id`, `exit_code`, and `remedy`; do not run a routine doctor pass
-first. Historical UserPromptSubmit and Stop evidence remains part of that
-fail-closed check. Ask exposes no `--session-id` override and will not guess one.
+first. The current Agent Session's UserPromptSubmit observation proves that the
+exact session owns this turn. A historical Stop observation is diagnostic
+telemetry, not an admission prerequisite: the installed, trusted, current,
+singular Stop definition and its continuation owner establish that the asking
+turn can route the question. Ask exposes no `--session-id` override and will
+not guess one.
 When the failure includes a User-owned trust or permission `user_action`, relay
 the exact `remedy`, say the hooks need the User's trust or approval, and wait.
 Never bypass that gap with `notifai send --reply`.

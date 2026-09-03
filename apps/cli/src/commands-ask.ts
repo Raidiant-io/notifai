@@ -73,6 +73,12 @@ export function reportAskFailure(
   flags: Pick<AskFlags, 'json'>,
   failure: Omit<AskFailure, 'ok' | 'registered'>,
 ): number {
+  log(deps).error('cli.error', {
+    kind: 'ask_admission',
+    code: failure.code,
+    check_id: failure.check_id,
+    exit: failure.exit_code,
+  })
   if (flags.json === true) {
     deps.io.out(JSON.stringify({ ok: false, registered: false, ...failure }, null, 2))
   } else {
@@ -294,7 +300,6 @@ function recordRegisteredQuestion(
       (deps.now ?? Date.now)(),
     )
   } catch (err) {
-    log(deps).error('ask.registered', { ok: false, session: sessionId, message: String(err) })
     return askFailure(
       deps,
       { json },
@@ -533,7 +538,7 @@ export function askCommand(
         flags,
         'hooks_not_installed',
         'hook_installation',
-        `Notifai ${active.label} hooks are not installed for this project.`,
+        `Notifai ${active.label} hooks are not installed in this active harness home.`,
         `run \`notifai init --json\` from this ${active.label} session`,
       )
     }
@@ -607,16 +612,6 @@ export function askCommand(
         'user_prompt_submit',
         `This exact ${active.label} session has not fired UserPromptSubmit.`,
         `send one prompt in this ${active.label} session, then retry \`notifai ask --json\``,
-      )
-    }
-    if (state.last_stop_at === undefined) {
-      return askFailure(
-        deps,
-        flags,
-        'stop_not_observed',
-        'stop_hook',
-        `This exact ${active.label} session has fired UserPromptSubmit, but its Stop hook has not been observed.`,
-        `end one harmless turn, send a new prompt, then retry \`notifai ask --json\``,
       )
     }
     sessionId = active.sessionId

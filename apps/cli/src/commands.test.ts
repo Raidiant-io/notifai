@@ -7054,6 +7054,7 @@ describe('asking before the hooks have ever run', () => {
       CODEX_THREAD_ID: 'codex-current-thread',
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    deps.logger = createLogger({ env, cmd: 'ask' })
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
@@ -7061,21 +7062,54 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-other-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/exact Codex session has not fired UserPromptSubmit/i)
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
+      ok: false,
+      registered: false,
+      code: 'session_not_activated',
+      check_id: 'user_prompt_submit',
+      exit_code: EXIT.usage,
+    })
+    expect(readLogRecords(env, { event: ['cli.error'] }).records.at(-1)?.data).toMatchObject({
+      kind: 'ask_admission',
+      code: 'session_not_activated',
+      check_id: 'user_prompt_submit',
+      exit: EXIT.usage,
+    })
     expect(io.outLines).not.toContain(
       'Question registered. Ask it in the conversation as usual and end your turn.',
     )
   })
 
-  it('registers only when the active Codex thread owns the project pointer', () => {
-    const cwd = scratchDir('notifai-active-codex-matching-')
+  it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {
+    const root = scratchDir('notifai-active-codex-matching-')
+    const repo = path.join(root, 'repo')
+    const worktree = path.join(root, 'linked-worktree')
+    mkdirSync(repo)
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' })
+    git('init')
+    git('config', 'user.email', 'test@example.invalid')
+    git('config', 'user.name', 'Test')
+    git('config', 'commit.gpgsign', 'false')
+    writeFileSync(path.join(repo, 'file'), 'x')
+    git('add', 'file')
+    git('commit', '-m', 'fixture')
+    git('worktree', 'add', worktree, '-b', 'feature/first-turn-ask')
+    mkdirSync(path.join(worktree, '.notifai'), { recursive: true })
+    writeFileSync(
+      path.join(worktree, '.notifai', 'config.toml'),
+      'project = "linked-first-turn"\n',
+    )
+    const cwd = path.join(worktree, 'nested')
+    mkdirSync(cwd)
     const io = new CapturedIo()
+    const accountHome = path.join(root, 'account-home')
+    const codexHome = path.join(root, 'codex-account-home')
     const env = {
-      XDG_CONFIG_HOME: path.join(cwd, 'config'),
-      XDG_STATE_HOME: path.join(cwd, 'state'),
-      HOME: path.join(cwd, 'home'),
-      CODEX_HOME: path.join(cwd, 'codex-home'),
+      XDG_CONFIG_HOME: path.join(accountHome, 'config'),
+      XDG_STATE_HOME: path.join(accountHome, 'state'),
+      HOME: accountHome,
+      CODEX_HOME: codexHome,
       CODEX_THREAD_ID: 'codex-current-thread',
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
@@ -7084,7 +7118,6 @@ describe('asking before the hooks have ever run', () => {
     trustInstalledCodexHooks(cwd, env)
     writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {
       last_prompt_at: 42,
-      last_stop_at: 41,
     })
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     writeSessionState('claude-concurrent', env, { harness: 'claude-code', last_prompt_at: 43, last_stop_at: 43 })
@@ -7097,9 +7130,22 @@ describe('asking before the hooks have ever run', () => {
       session_id: 'codex-current-thread',
       harness: 'codex',
     })
+    expect(readSessionState('codex-current-thread', env).pending?.[0]?.project).toBe(
+      'linked-first-turn',
+    )
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
     ).toBe('Gentle Salmon')
+    expect(settingsFile('codex', env)).toBe(path.join(codexHome, 'hooks.json'))
+    expect(existsSync(path.join(repo, '.codex'))).toBe(false)
+    expect(existsSync(path.join(worktree, '.codex'))).toBe(false)
+
+    const readiness = await assessReadiness(deps)
+    const fired = readiness.states.find((state) => state.id === 'hooks-fired')
+    expect(fired).toMatchObject({ status: 'ready' })
+    expect(fired?.detail).toMatch(/UserPromptSubmit.*ready for this turn's Stop/i)
+    expect((readinessJson(readiness) as { question_routing_ready: boolean })
+      .question_routing_ready).toBe(true)
 
     io.outLines = []
     expect(askCommand(deps, 'Wait?', { json: true })).toBe(EXIT.ok)
@@ -8217,7 +8263,7 @@ describe('asking before the hooks have ever run', () => {
     expect(admission?.detail).not.toMatch(/activated before the current Stop definition/i)
   })
 
-  it('does not let UserPromptSubmit alone count as a working turn-end route', async () => {
+  it('registers after UserPromptSubmit without requiring a historical Stop', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-prompt-only-'))
     const io = new CapturedIo()
     const env = {
@@ -8235,15 +8281,13 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/Stop hook has not been observed/)
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('claude-current', env).pending?.[0]?.question).toBe('Ship it?')
 
     const readiness = await assessReadiness(deps)
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
-    // Reported, never a blocker: the only thing that closes this is a turn
-    // ending, which the agent standing inside that turn cannot supply.
-    expect(fired?.status).toBe('optional-gap')
-    expect(fired?.detail).toMatch(/UserPromptSubmit.*Stop has not been observed/)
+    expect(fired?.status).toBe('ready')
+    expect(fired?.detail).toMatch(/UserPromptSubmit.*ready for this turn's Stop/i)
     expect(firstRequiredBlocker(readiness)?.id).not.toBe('hooks-fired')
   })
 
