@@ -1348,7 +1348,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
   const promptFired = firedState?.last_prompt_at !== undefined
   const stopFired = firedState?.last_stop_at !== undefined
-  const fired = firedPointer !== null && promptFired && stopFired
+  const fired = firedPointer !== null && promptFired
   // Installations for other harnesses are irrelevant to the active one, and an
   // active harness with none of its own has nothing to activate: say that
   // instead of advising a prompt in some other harness. When the environment
@@ -1373,14 +1373,15 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   checks.push({
     name: 'hooks (fired)',
     ok: fired,
-    // Nothing here is a command. Whether the pointer is absent or the turn is
-    // half-finished, the only thing that closes this is a turn ending — which
-    // an agent running `init` inside that very turn cannot supply.
+    // UserPromptSubmit proves that this exact session reached the installed
+    // lifecycle path. A historical Stop is only telemetry: requiring one made
+    // a first-turn question impossible even after the current Stop definition,
+    // trust, shape, and continuation owner had all been proven above.
     reportOnly: true,
     detail: fired
       ? active === null
-        ? 'a session in this directory has run UserPromptSubmit and Stop'
-        : `the active ${active.label} session has run UserPromptSubmit and Stop`
+        ? `a session in this directory has run UserPromptSubmit and is ready for this turn's Stop${stopFired ? '; an earlier Stop was also observed' : ''}`
+        : `the active ${active.label} session has run UserPromptSubmit and is ready for this turn's Stop${stopFired ? '; an earlier Stop was also observed' : ''}`
       : firedPointer === null
         ? `no ${
             contested.length > 1
@@ -1391,7 +1392,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
                 ? 'session pointer'
                 : `${active.label} session pointer`
           } from the last 24 hours — ${activationAdvice}`
-        : `the routed session has fired ${promptFired ? 'UserPromptSubmit' : 'neither required event'}, but Stop has not been observed — end one harmless turn, send a new prompt, then check again`,
+        : `the routed session has not fired UserPromptSubmit — send one prompt, then check again`,
     ...(fired
       ? {}
       : {
@@ -1399,7 +1400,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
             summary:
               firedPointer === null
                 ? `send one ${active === null || contested.length > 1 ? '' : `${active.label} `}prompt in a session here, then re-check`
-                : 'end one harmless turn, send a new prompt, then re-check',
+                : 'send one prompt in the routed session, then re-check',
             command: 'notifai doctor',
           },
         }),

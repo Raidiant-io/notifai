@@ -149,7 +149,8 @@ async function prepareQuestionSubmission(
   ctx: HookContext,
   options: {
     title: string
-    body: string
+    summary: string
+    body?: string
     questions: QuestionT[]
     media?: MediaItemT[] | undefined
     project?: string | undefined
@@ -171,7 +172,8 @@ async function prepareQuestionSubmission(
     ctx.config,
     {
       title: options.title,
-      body: options.body,
+      summary: options.summary,
+      ...(options.body !== undefined ? { body: options.body } : {}),
       lifecycle: { tier: 'needs_you' },
       ...(options.project !== undefined ? { project: options.project } : {}),
       ...(options.media !== undefined ? { media: options.media } : {}),
@@ -1320,14 +1322,10 @@ async function escalate(
     const eventSource = sourceContextAtHookEvent(entry.source, envelope.cwd)
     let intent = entry.submission
     if (intent === undefined) {
-      if (entry.body === undefined) {
-        notes.push('registered question has no canonical body; register it again with this CLI')
-        continue
-      }
       const prepared = await prepareQuestionSubmission(ctx, {
-        // Type and Project have their own fields; the title is only substance.
-        title: questions[0]!.text,
-        body: entry.body,
+        title: entry.title,
+        summary: entry.summary,
+        ...(entry.body !== undefined ? { body: entry.body } : {}),
         questions,
         ...(entry.media !== undefined ? { media: entry.media } : {}),
         ...(entry.project !== undefined ? { project: entry.project } : {}),
@@ -1401,14 +1399,10 @@ async function escalate(
             `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
           )
           clearFrozenSubmission(sessionId, ctx.env, entry)
-          if (entry.body === undefined) {
-            dropPendingQuestion(sessionId, ctx.env, entry)
-            notes.push('registered question has no canonical body; retired the frozen draft instead of retrying it')
-            continue
-          }
           const reminted = await prepareQuestionSubmission(ctx, {
-            title: questions[0]!.text,
-            body: entry.body,
+            title: entry.title,
+            summary: entry.summary,
+            ...(entry.body !== undefined ? { body: entry.body } : {}),
             questions,
             ...(entry.media !== undefined ? { media: entry.media } : {}),
             ...(entry.project !== undefined ? { project: entry.project } : {}),

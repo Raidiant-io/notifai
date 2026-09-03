@@ -108,7 +108,7 @@ describe('Notifai agent skill', () => {
     // first step and user layers authoritative.
     const decide = section('## Decide whether to notify')
     expect(decide).toContain('notifai guidance')
-    for (const topic of ['when-to-notify', 'titles', 'bodies', 'questions', 'acknowledgements']) {
+    for (const topic of ['when-to-notify', 'titles', 'content', 'questions', 'acknowledgements']) {
       expect(decide).toContain(`\`${topic}\``)
     }
     const authorityOrder = ['from=you', 'from=this repository', 'from=shipped default'].map(
@@ -217,11 +217,12 @@ describe('Notifai agent skill', () => {
     }
   })
 
-  it('teaches the summary line, the one canonical body, and ordered evidence', () => {
+  it('teaches the required Summary, optional Markdown Body, and ordered evidence', () => {
     const send = section('## Send')
-    expect(send).toContain('--subtitle')
+    expect(send).toContain('--summary')
+    expect(send).not.toContain('--subtitle')
     expect(send).toContain('--body-file')
-    expect(send).toMatch(/one canonical Markdown body/i)
+    expect(send).toMatch(/optional standalone Markdown for focused detail/i)
     expect(send).toContain('media:1')
     // Type and project are structured fields, never title text.
     expect(send).toMatch(/kind and the project travel as their own\s+fields, never in it/i)

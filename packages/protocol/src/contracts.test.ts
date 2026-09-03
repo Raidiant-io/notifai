@@ -6,7 +6,6 @@ import {
   ALPHA_ACCESS_DISTRIBUTION_LANES,
   ALPHA_ACCESS_LANE_QUERY_PARAM,
   ANDROID_CAPABILITIES_V1,
-  BANNER_EXCERPT_MAX_LENGTH,
   BODY_MAX_LENGTH,
   BeginPairingRequest,
   CAPABILITIES_V1,
@@ -26,9 +25,11 @@ import {
   PairingProofRequest,
   PROVIDERS,
   PutRegistrationRequest,
+  ReportSoundLibraryReceiptRequest,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   REPLY_SOURCES,
+  SUMMARY_MAX_LENGTH,
   RegisterInstallationRequest,
   summarizeOverall,
   SubmitFeedbackRequest,
@@ -45,18 +46,23 @@ import {
 import {
   buildApnsEnvelope,
   buildSoundLibrarySyncEnvelope,
-  collapsedChoiceAlert,
   RECEIPT_TOKEN_LENGTH,
 } from './apns.js'
-import { buildFcmDataEnvelope } from './fcm.js'
+import { buildFcmDataEnvelope, buildFcmSoundLibrarySyncEnvelope } from './fcm.js'
 
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
+  const { presentation, ...rest } = overrides
   return {
     schema_version: 1,
-    presentation: { title: 'Build finished', body: 'All checks passed.' },
+    presentation: {
+      title: 'Build finished',
+      summary: 'All checks passed.',
+      body: 'All checks passed.',
+      ...presentation,
+    },
     targets: { mode: 'all' },
     delivery: defaultDeliveryPolicy(),
-    ...overrides,
+    ...rest,
   }
 }
 
@@ -79,6 +85,49 @@ describe('Project identity contract', () => {
   it('carries a stable avatar revision separately from its URL', () => {
     expect(projectViewFixture.avatar_revision).toBe('generated:v1')
     expect(projectViewFixture.image_url).toContain('/avatar.png')
+  })
+})
+
+describe('Sound library bridge contract', () => {
+  const manifest = [
+    {
+      sound_id: 'snd_legacy',
+      content_hash: 'a'.repeat(64),
+      contract_marker: 'notification-sound/wav-pcm16-mono-48k/v1',
+    },
+    {
+      sound_id: 'snd_current',
+      content_hash: 'b'.repeat(64),
+      contract_marker: 'notification-sound/wav-pcm16-mono-48k/v2',
+    },
+  ]
+
+  it('carries the artifact marker needed for version-aware cache validation', () => {
+    expect(
+      Value.Check(ReportSoundLibraryReceiptRequest, {
+        receipt_challenge: 'A'.repeat(22),
+        sounds: manifest,
+      }),
+    ).toBe(true)
+    expect(
+      Value.Check(ReportSoundLibraryReceiptRequest, {
+        receipt_challenge: 'A'.repeat(22),
+        sounds: [{ ...manifest[0], contract_marker: 'notification-sound/unknown' }],
+      }),
+    ).toBe(false)
+  })
+
+  it('emits Android sound-library sync as a silent normal-priority data message', () => {
+    expect(buildFcmSoundLibrarySyncEnvelope('A'.repeat(22))).toEqual({
+      data: {
+        notifai: JSON.stringify({
+          schema_version: 1,
+          sync: 'sound_library',
+          receipt_challenge: 'A'.repeat(22),
+        }),
+      },
+      priority: 'NORMAL',
+    })
   })
 })
 
@@ -548,7 +597,10 @@ describe('validateDraft', () => {
   })
 
   it('rejects schema violations with invalid_request', () => {
-    const report = validateDraft({ ...draft(), presentation: { title: '', body: 'x' } })
+    const report = validateDraft({
+      ...draft(),
+      presentation: { title: '', summary: 'x', body: 'x' },
+    })
     expect(report.ok).toBe(false)
     expect(report.errors[0]?.code).toBe('invalid_request')
   })
@@ -559,7 +611,7 @@ describe('validateDraft', () => {
     expect(report.errors[0]?.code).toBe('invalid_request')
   })
 
-  it('accepts the canonical Markdown body bound and rejects one character more', () => {
+  it('accepts the optional Markdown Body bound and rejects one character more', () => {
     expect(
       validateDraft(
         draft({ presentation: { title: 'Bound', body: 'x'.repeat(BODY_MAX_LENGTH) } }),
@@ -570,6 +622,28 @@ describe('validateDraft', () => {
         draft({ presentation: { title: 'Bound', body: 'x'.repeat(BODY_MAX_LENGTH + 1) } }),
       ).ok,
     ).toBe(false)
+  })
+
+  it('requires a one-line plain-text Summary bounded by Unicode code points', () => {
+    expect(
+      validateDraft(draft({ presentation: { summary: '😀'.repeat(SUMMARY_MAX_LENGTH) } })).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(draft({ presentation: { summary: '😀'.repeat(SUMMARY_MAX_LENGTH + 1) } })).ok,
+    ).toBe(false)
+    for (const summary of ['two\nlines', 'tab\tseparated', `hidden${String.fromCodePoint(0x7f)}control`]) {
+      expect(validateDraft(draft({ presentation: { summary } })).ok).toBe(false)
+    }
+    expect(validateDraft(draft({ presentation: { summary: '**literal punctuation**' } })).ok).toBe(
+      true,
+    )
+  })
+
+  it('accepts a Summary-only Notification Request and rejects an empty Body', () => {
+    expect(validateDraft(draft({ presentation: { body: undefined } })).ok).toBe(true)
+    expect(validateDraft(draft({ presentation: { body: '' } })).ok).toBe(false)
+    expect(validateDraft(draft({ presentation: { body: '   \n' } })).ok).toBe(false)
+    expect(validateDraft(draft({ presentation: { summary: '   ' } })).ok).toBe(false)
   })
 
   it('accepts up to eight ordered media items with bounded alt text', () => {
@@ -642,7 +716,11 @@ describe('validateDraft', () => {
   it('reports oversized payloads with payload_too_large', () => {
     const report = validateDraft(
       draft({
-        presentation: { title: 'T'.repeat(500), body: 'B'.repeat(2000), subtitle: 'S'.repeat(500) },
+        presentation: {
+          title: 'T'.repeat(500),
+          summary: 'S'.repeat(SUMMARY_MAX_LENGTH),
+          body: 'B'.repeat(2000),
+        },
         platform: { ios: { custom_data: Object.fromEntries(
           Array.from({ length: 16 }, (_, i) => [`key_${i}`, 'v'.repeat(512)]),
         ) } },
@@ -799,7 +877,7 @@ describe('validateDraft', () => {
     ]
     const questionBody = 'The API key in .env.example is live. What now?'
     const question = draft({
-      presentation: { title: 'API key is live', body: questionBody },
+      presentation: { title: 'API key is live', summary: questionBody, body: questionBody },
       reply: { expires_in_seconds: 3600, questions },
     })
 
@@ -830,19 +908,6 @@ describe('validateDraft', () => {
       unknown
     >
     expect(JSON.stringify(fcm)).not.toContain(CLOSED_CHOICE_BANNER_AFFORDANCE)
-
-    const withSubtitle = draft({
-      presentation: {
-        title: 'API key is live',
-        subtitle: 'It is in the example file',
-        body: questionBody,
-      },
-      reply: { expires_in_seconds: 3600, questions },
-    })
-    const subtitled = collapsedChoiceAlert(withSubtitle, 'ios')
-    expect(subtitled.subtitle).toBe('It is in the example file')
-    expect(subtitled.body).toBe(`${questionBody}\n${CLOSED_CHOICE_BANNER_AFFORDANCE}`)
-    expect(JSON.stringify(subtitled)).not.toContain(secretLabel)
 
     const freeText = buildApnsEnvelope(draft({ reply: freeTextReply() }), ids, null)
     const freeTextAlert = (freeText.payload['aps'] as Record<string, unknown>)['alert'] as Record<
@@ -943,7 +1008,8 @@ describe('validateDraft', () => {
     expect(MACOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
-        expect.objectContaining({ path: 'presentation.body', status: 'supported' }),
+        expect.objectContaining({ path: 'presentation.summary', status: 'unsupported' }),
+        expect.objectContaining({ path: 'presentation.body', status: 'unsupported' }),
         expect.objectContaining({ path: 'source', status: 'supported' }),
         expect.objectContaining({ path: 'reply', status: 'supported' }),
         expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
@@ -1077,6 +1143,7 @@ describe('validateDraft', () => {
       },
       presentation: {
         title: 'All checks passed',
+        summary: 'All checks passed. See the attached graph.',
         body: '**All checks passed.**\n\nSee the attached graph.',
         media: [{ media_id: 'med_example', alt: 'Build graph' }],
       },
@@ -1097,13 +1164,50 @@ describe('validateDraft', () => {
     const alert = aps['alert'] as Record<string, unknown>
     const notifai = envelope.payload['notifai'] as Record<string, unknown>
 
-    expect(alert['body']).toBe('All checks passed.\nSee the attached graph.')
+    expect(alert['body']).toBe('All checks passed. See the attached graph.')
     expect(aps['interruption-level']).toBe('active')
     expect(aps['mutable-content']).toBe(1)
-    expect(notifai).toMatchObject({ has_full_body: true, media_count: 1 })
+    expect(notifai).toMatchObject({
+      summary: 'All checks passed. See the attached graph.',
+      has_body: true,
+      media_count: 1,
+    })
     expect(estimateApnsPayloadBytes(withMedia)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
     )
+  })
+
+  it('never projects the original 286-character Markdown Body as a broken 256-character prefix', () => {
+    const body = `${'A'.repeat(252)}**critical**${'B'.repeat(22)}`
+    const brokenPrefix = body.slice(0, 256)
+    expect(body).toHaveLength(286)
+    expect(brokenPrefix.endsWith('**cr')).toBe(true)
+
+    const rich = draft({
+      presentation: {
+        title: 'Found the launch issue',
+        summary: 'The launch issue is understood and the complete diagnosis is ready.',
+        body,
+      },
+    })
+    const identifiers = {
+      requestId: 'req_00000000000000000000000000',
+      deliveryId: 'del_00000000000000000000000000',
+      receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+      createdAt: new Date(0),
+    }
+    const apns = buildApnsEnvelope(rich, identifiers)
+    const alert = (apns.payload['aps'] as Record<string, unknown>)['alert'] as Record<string, unknown>
+    const apnsMetadata = apns.payload['notifai'] as Record<string, unknown>
+    const fcmMetadata = JSON.parse(
+      buildFcmDataEnvelope(rich, identifiers).data.notifai,
+    ) as Record<string, unknown>
+
+    expect(alert['body']).toBe(rich.presentation.summary)
+    expect(apnsMetadata).toMatchObject({ summary: rich.presentation.summary, has_body: true })
+    expect(fcmMetadata).toMatchObject({ summary: rich.presentation.summary, has_body: true })
+    expect(JSON.stringify(apns.payload)).not.toContain(brokenPrefix)
+    expect(JSON.stringify(fcmMetadata)).not.toContain(brokenPrefix)
   })
 
   it('serializes the application-owned Android envelope once inside FCM data', () => {
@@ -1119,7 +1223,7 @@ describe('validateDraft', () => {
       },
       presentation: {
         title: 'All checks passed',
-        subtitle: 'Android lane',
+        summary: 'All checks passed. See the attached graph.',
         body: '**All checks passed.**\n\nSee the attached graph.',
         media: [{ media_id: 'med_example', alt: 'Build graph' }],
       },
@@ -1162,13 +1266,13 @@ describe('validateDraft', () => {
       delivery_id: 'del_00000000000000000000000000',
       kind: 'question',
       title: 'All checks passed',
-      banner_excerpt: 'All checks passed.\nSee the attached graph.',
+      summary: 'All checks passed. See the attached graph.',
       collapse_key: 'android-builds',
       sound: 'done',
       thread_id: 'builds',
       custom_data: { run_id: '42' },
       media_count: 1,
-      has_full_body: true,
+      has_body: true,
       project_avatar_revision: 'a'.repeat(128),
     })
     expect(estimateFcmPayloadBytes(androidDraft)).toBe(
@@ -1180,7 +1284,7 @@ describe('validateDraft', () => {
     const oversized = draft({
       presentation: {
         title: 'T'.repeat(512),
-        subtitle: 'S'.repeat(512),
+        summary: 'S'.repeat(SUMMARY_MAX_LENGTH),
         body: 'B'.repeat(2048),
       },
       platform: {
@@ -1207,7 +1311,7 @@ describe('validateDraft', () => {
     const maximum = draft({
       presentation: {
         title: 'T'.repeat(512),
-        subtitle: 'S'.repeat(512),
+        summary: 'S'.repeat(SUMMARY_MAX_LENGTH),
         body: 'B'.repeat(2048),
       },
       lifecycle: { tier: 'done', retires_request_id: 'req_original' },
@@ -1429,10 +1533,10 @@ describe('notification kind', () => {
   })
 
   it('emits a distinct silent sound-library sync without alert, sound, or badge', () => {
-    expect(buildSoundLibrarySyncEnvelope()).toEqual({
+    expect(buildSoundLibrarySyncEnvelope('A'.repeat(22))).toEqual({
       payload: {
         aps: { 'content-available': 1 },
-        notifai: { sync: 'sound_library' },
+        notifai: { sync: 'sound_library', receipt_challenge: 'A'.repeat(22) },
       },
       priority: 5,
       pushType: 'background',
@@ -1533,6 +1637,7 @@ describe('APNs envelope rendering', () => {
       },
       presentation: {
         title: 'Hi',
+        summary: 'Result: all checks passed.',
         body: '# Result\n\nAll **checks** passed.',
         media: [{ media_id: 'med_example' }, { media_id: 'med_second', alt: 'Graph' }],
       },
@@ -1555,14 +1660,15 @@ describe('APNs envelope rendering', () => {
 
     expect(aps['interruption-level']).toBe('active')
     expect(aps['mutable-content']).toBe(1)
-    expect((aps['alert'] as Record<string, unknown>)['body']).toBe('Result\nAll checks passed.')
+    expect((aps['alert'] as Record<string, unknown>)['body']).toBe('Result: all checks passed.')
     expect(notifai).toMatchObject({
       session_id: 'sess_exact',
       session_label: 'Amber Falcon',
       harness: 'codex',
       branch: 'feature/content',
       worktree: 'content-pass',
-      has_full_body: true,
+      summary: 'Result: all checks passed.',
+      has_body: true,
       media_count: 2,
       media_url: mediaUrl,
     })
@@ -1791,11 +1897,22 @@ describe('unified content and Source Context schema', () => {
     expect(IOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          path: 'presentation.summary',
+          constraints: expect.objectContaining({
+            required: true,
+            max_length: SUMMARY_MAX_LENGTH,
+            format: 'plain_text',
+            surfaces: ['banner', 'list', 'focused_fallback'],
+          }),
+        }),
+        expect.objectContaining({
           path: 'presentation.body',
           constraints: expect.objectContaining({
+            required: false,
             max_length: BODY_MAX_LENGTH,
             format: 'markdown',
-            excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+            surface: 'focused',
+            remote_images: 'not fetched',
           }),
         }),
         expect.objectContaining({

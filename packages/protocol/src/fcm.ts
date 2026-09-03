@@ -1,4 +1,3 @@
-import { bannerExcerpt } from './content.js'
 import { defaultSoundForKind, effectiveKind, type NotificationDraftT } from './notification.js'
 import type {
   AgentAcknowledgementSync,
@@ -16,6 +15,20 @@ export interface FcmDataEnvelope {
   data: { notifai: string }
   /** Visible Notification Requests are high priority; silent state sync is normal priority. */
   priority: 'HIGH' | 'NORMAL'
+}
+
+/** Silent Android library-refresh message consumed before visible-envelope parsing. */
+export function buildFcmSoundLibrarySyncEnvelope(receiptChallenge?: string): FcmDataEnvelope {
+  return {
+    data: {
+      notifai: JSON.stringify({
+        schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
+        sync: 'sound_library',
+        ...(receiptChallenge === undefined ? {} : { receipt_challenge: receiptChallenge }),
+      }),
+    },
+    priority: 'NORMAL',
+  }
 }
 
 /**
@@ -37,7 +50,6 @@ export function buildFcmDataEnvelope(
 ): FcmDataEnvelope {
   const options = draft.platform?.android
   const kind = effectiveKind(draft)
-  const excerpt = bannerExcerpt(draft.presentation.body)
   const kindFallback = defaultSoundForKind(kind)
   const resolvedSound = options?.sound === undefined ? kindFallback : options.sound
   const envelope = {
@@ -47,10 +59,7 @@ export function buildFcmDataEnvelope(
     ...(ids.receiptToken != null ? { receipt_token: ids.receiptToken } : {}),
     ...(ids.createdAt != null ? { created_at: ids.createdAt.toISOString() } : {}),
     title: draft.presentation.title,
-    banner_excerpt: excerpt,
-    ...(draft.presentation.subtitle !== undefined
-      ? { subtitle: draft.presentation.subtitle }
-      : {}),
+    summary: draft.presentation.summary,
 
     // Android always receives the effective value because it selects the
     // product-owned channel even when the author omitted the default kind.
@@ -98,7 +107,7 @@ export function buildFcmDataEnvelope(
     ...(draft.presentation.media !== undefined
       ? { media_count: draft.presentation.media.length }
       : {}),
-    ...(excerpt !== draft.presentation.body ? { has_full_body: true } : {}),
+    ...(draft.presentation.body !== undefined ? { has_body: true } : {}),
     ...(draft.reply !== undefined && replyExpiresAt !== null
       ? { reply_expires_at: replyExpiresAt.toISOString() }
       : {}),

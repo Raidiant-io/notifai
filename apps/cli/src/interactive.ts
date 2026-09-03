@@ -373,12 +373,12 @@ async function testNotificationScreen(deps: CommandDeps): Promise<void> {
   })
   if (cancelled(title)) return
 
-  const body = await clack.text({
-    message: 'Body',
+  const summary = await clack.text({
+    message: 'Summary',
     placeholder: 'If you can read this on your device, it works.',
     defaultValue: 'If you can read this on your device, it works.',
   })
-  if (cancelled(body)) return
+  if (cancelled(summary)) return
 
   const kind = await clack.select<string>({
     message: 'Kind',
@@ -393,7 +393,7 @@ async function testNotificationScreen(deps: CommandDeps): Promise<void> {
   clack.log.step('Sending, then waiting for your devices to confirm…')
   const code = await sendCommand(deps, {
     title: String(title),
-    body: String(body),
+    summary: String(summary),
     kind: String(kind),
     ...(project !== null ? { project } : {}),
   })

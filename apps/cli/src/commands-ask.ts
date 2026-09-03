@@ -39,7 +39,9 @@ export interface AskFlags {
   choice?: string[]
   /** The single question is multi-select: several answers may be chosen. */
   multi?: boolean
-  /** Optional Markdown context appended after the question block. */
+  /** Optional authored title whose substance is understandable without the question. */
+  title?: string
+  /** Optional standalone Markdown Body for focused detail. */
   body?: string
   /** Allow visible backslash-n sequences in `--body`. */
   literalBackslashN?: boolean
@@ -73,6 +75,12 @@ export function reportAskFailure(
   flags: Pick<AskFlags, 'json'>,
   failure: Omit<AskFailure, 'ok' | 'registered'>,
 ): number {
+  log(deps).error('cli.error', {
+    kind: 'ask_admission',
+    code: failure.code,
+    check_id: failure.check_id,
+    exit: failure.exit_code,
+  })
   if (flags.json === true) {
     deps.io.out(JSON.stringify({ ok: false, registered: false, ...failure }, null, 2))
   } else {
@@ -84,7 +92,7 @@ export function reportAskFailure(
 
 function askFailure(
   deps: CommandDeps,
-  flags: AskFlags,
+  flags: Pick<AskFlags, 'json'>,
   code: string,
   checkId: string,
   message: string,
@@ -111,24 +119,20 @@ interface AskFormQuestion {
 
 export interface BuiltQuestions {
   questions: QuestionT[]
-  /**
-   * Canonical Markdown body. The question already travels as the notification
-   * title and as structured questions, so the body carries only the context —
-   * repeating the question there put it on the lock screen and the reply
-   * screen twice. Only when there is no context does the question text stand
-   * in, because the wire requires a body.
-   */
-  body: string
+  /** Purpose-written plain text for the collapsed banner and list surfaces. */
+  summary: string
+  /** Optional standalone Markdown Body for focused detail. */
+  body?: string
 }
 
 /**
- * Turn ask input into questions plus their canonical body. Everything is
+ * Turn ask input into questions plus authored presentation content. Everything is
  * validated at registration because a later hook failure is easy to miss.
  */
 export function buildQuestions(
   flags: AskFlags,
   question: string | undefined,
-): { ok: true; questions: QuestionT[]; body: string } | { ok: false; error: string } {
+): { ok: true; questions: QuestionT[]; summary: string; body?: string } | { ok: false; error: string } {
   if (flags.form !== undefined) {
     if (question !== undefined || flags.choice?.length || flags.multi) {
       return { ok: false, error: '--form replaces the positional question, --choice, and --multi.' }
@@ -139,22 +143,27 @@ export function buildQuestions(
     } catch {
       return {
         ok: false,
-        error: '--form must be JSON: {"questions": [{"text", "choices"?, "multi"?}], "body"?}.',
+        error: '--form must be JSON: {"summary": "...", "questions": [{"text", "choices"?, "multi"?}], "body"?}.',
       }
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return { ok: false, error: `--form needs a "questions" array (1-${REPLY_MAX_QUESTIONS} entries).` }
     }
     const record = parsed as Record<string, unknown>
-    const unknownKeys = Object.keys(record).filter((key) => key !== 'questions' && key !== 'body')
+    const unknownKeys = Object.keys(record).filter(
+      (key) => key !== 'summary' && key !== 'questions' && key !== 'body',
+    )
     if (unknownKeys.length > 0) {
       return {
         ok: false,
-        error: `Unknown --form ${unknownKeys.length === 1 ? 'key' : 'keys'}: ${unknownKeys.join(', ')}. Use "body" for Markdown context.`,
+        error: `Unknown --form ${unknownKeys.length === 1 ? 'key' : 'keys'}: ${unknownKeys.join(', ')}.`,
       }
     }
     if (!Array.isArray(record['questions'])) {
       return { ok: false, error: `--form needs a "questions" array (1-${REPLY_MAX_QUESTIONS} entries).` }
+    }
+    if (typeof record['summary'] !== 'string' || record['summary'].trim() === '') {
+      return { ok: false, error: '--form needs a non-empty one-line "summary" string.' }
     }
     const formQuestions = record['questions']
     if (formQuestions.length < 1 || formQuestions.length > REPLY_MAX_QUESTIONS) {
@@ -167,7 +176,7 @@ export function buildQuestions(
       return { ok: false, error: '"body" must be a Markdown string.' }
     }
     if (flags.body !== undefined && record['body'] !== undefined) {
-      return { ok: false, error: 'Pass form context in either --body or the form "body" key, not both.' }
+      return { ok: false, error: 'Pass the Markdown Body in either --body or the form "body" key, not both.' }
     }
     const questions: QuestionT[] = []
     const usedIds = new Set<string>()
@@ -180,14 +189,12 @@ export function buildQuestions(
       if ('error' in built) return { ok: false, error: `Question ${index + 1}: ${built.error}` }
       questions.push(built.question)
     }
-    const context = flags.body ?? (record['body'] as string | undefined)
+    const body = flags.body ?? (record['body'] as string | undefined)
     return {
       ok: true,
       questions,
-      body:
-        context !== undefined && context.trim() !== ''
-          ? context
-          : questions.map((entry, index) => `${index + 1}. ${entry.text}`).join('\n'),
+      summary: record['summary'],
+      ...(body !== undefined ? { body } : {}),
     }
   }
 
@@ -196,11 +203,11 @@ export function buildQuestions(
   }
   const built = buildOneQuestion(question, flags.choice, flags.multi === true, 0, new Set())
   if ('error' in built) return { ok: false, error: built.error }
-  const context = flags.body
   return {
     ok: true,
     questions: [built.question],
-    body: context !== undefined && context.trim() !== '' ? context : built.question.text,
+    summary: built.question.text,
+    ...(flags.body !== undefined ? { body: flags.body } : {}),
   }
 }
 
@@ -213,11 +220,11 @@ function buildOneQuestion(
 ): { question: QuestionT } | { error: string } {
   const trimmed = text.trim()
   if (trimmed === '') return { error: 'the question text cannot be empty.' }
-  if (trimmed.length > QUESTION_TEXT_MAX_LENGTH) {
+  if ([...trimmed].length > QUESTION_TEXT_MAX_LENGTH) {
     return {
       error:
         `a question must be readable where it is answered: keep it within ` +
-        `${QUESTION_TEXT_MAX_LENGTH} characters and put the longer context in --body.`,
+        `${QUESTION_TEXT_MAX_LENGTH} characters and put the longer explanation in --body.`,
     }
   }
   const choices = parseChoices(choiceLabels)
@@ -248,8 +255,9 @@ function buildAskDraft(
   const result = buildDraft(
     config,
     {
-      title: built.questions[0]!.text,
-      body: built.body,
+      title: flags.title ?? built.questions[0]!.text,
+      summary: built.summary,
+      ...(built.body !== undefined ? { body: built.body } : {}),
       ...(flags.project !== undefined ? { project: flags.project } : {}),
       ...(mediaIds.length > 0 ? { image: mediaIds } : {}),
       ...(flags.imageAlt !== undefined ? { imageAlt: flags.imageAlt } : {}),
@@ -285,8 +293,10 @@ function recordRegisteredQuestion(
       deps.env,
       {
         question: built.questions[0]!.text,
+        title: draft.presentation.title,
+        summary: draft.presentation.summary,
         questions: built.questions,
-        body: draft.presentation.body,
+        ...(draft.presentation.body !== undefined ? { body: draft.presentation.body } : {}),
         ...(draft.project !== undefined ? { project: draft.project } : {}),
         ...(draft.source !== undefined ? { source: draft.source } : {}),
         ...(draft.presentation.media !== undefined ? { media: draft.presentation.media } : {}),
@@ -294,7 +304,6 @@ function recordRegisteredQuestion(
       (deps.now ?? Date.now)(),
     )
   } catch (err) {
-    log(deps).error('ask.registered', { ok: false, session: sessionId, message: String(err) })
     return askFailure(
       deps,
       { json },
@@ -533,7 +542,7 @@ export function askCommand(
         flags,
         'hooks_not_installed',
         'hook_installation',
-        `Notifai ${active.label} hooks are not installed for this project.`,
+        `Notifai ${active.label} hooks are not installed in this active harness home.`,
         `run \`notifai init --json\` from this ${active.label} session`,
       )
     }
@@ -607,16 +616,6 @@ export function askCommand(
         'user_prompt_submit',
         `This exact ${active.label} session has not fired UserPromptSubmit.`,
         `send one prompt in this ${active.label} session, then retry \`notifai ask --json\``,
-      )
-    }
-    if (state.last_stop_at === undefined) {
-      return askFailure(
-        deps,
-        flags,
-        'stop_not_observed',
-        'stop_hook',
-        `This exact ${active.label} session has fired UserPromptSubmit, but its Stop hook has not been observed.`,
-        `end one harmless turn, send a new prompt, then retry \`notifai ask --json\``,
       )
     }
     sessionId = active.sessionId

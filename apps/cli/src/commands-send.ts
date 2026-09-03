@@ -265,7 +265,7 @@ export async function sendCommand(
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
-    (flags.title.trim().endsWith('?') || flags.body.trim().endsWith('?'))
+    (flags.title.trim().endsWith('?') || flags.summary.trim().endsWith('?'))
   ) {
     deps.io.err(
       'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --choice) so it can be answered from the notification.',

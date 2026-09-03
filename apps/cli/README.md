@@ -36,14 +36,19 @@ the user config directory and never require a `.gitignore` edit.
 ## Telling you something happened
 
 ```sh
-notifai send --title "Deploy finished" --body "staging, 2m14s" --kind done
+notifai send --kind done \
+  --title "Deploy finished" \
+  --summary "The staging deployment is live." \
+  --body "The staging deployment is live and ready for review."
 ```
 
 Write a brief title whose substance is immediately understandable; type lives
 in `--kind`, and Project identity is inferred from the invocation directory.
-The one body is always Markdown. Native banners show a bounded readable
-plain-text excerpt from it, while Companion Apps render the complete body. Use
-`--body-file <path|->` for long content. Repeat `--image` for an ordered image
+Every Notification Request has a purpose-written, one-line plain-text Summary
+for native banners and list views. It is required and limited to 240 Unicode
+characters. Body is optional standalone Markdown for focused detail; when it is
+absent, the focused view shows Summary. Use `--body-file <path|->` for long
+content. Repeat `--image` for an ordered image
 collection (up to eight) and pair each with `--image-alt`. Every attached
 image appears in the gallery; to place one where the words refer to it, write
 Markdown image syntax with its 1-based position, `![what it shows](media:1)`.
@@ -52,7 +57,9 @@ A bare `media:1` or a link to it is refused before sending.
 ## Asking you a question
 
 ```sh
-notifai ask "Deploy the migration to production?" --choice Yes --choice No
+notifai ask "Deploy the migration to production?" \
+  --title "Choose migration timing" \
+  --choice Yes --choice No
 ```
 
 The agent registers the question, ends its work, and your answer comes back on

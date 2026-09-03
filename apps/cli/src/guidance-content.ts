@@ -99,12 +99,31 @@ Bad:
 - \`Exit code 1\` — mechanics, not meaning
 `
 
-const BODIES = `# Bodies
+const CONTENT = `# Content
 
-The first sentence is what the lock screen shows — make it say what this means
-for the user. The rest is what changes for them and what is needed from them,
-never how many tests ran, how long a step took, or which internal stage
-produced it. Keep wording channel-neutral: no device names, no gestures.
+Every Notification Request has two distinct content roles:
+
+- **Summary** is required one-line plain text for native banners and notification
+  lists. Write it specifically for that constrained surface: short, high-level,
+  immediately understandable, and useful without Markdown. It has a hard limit
+  of 240 Unicode characters; aim for one short sentence rather than filling it.
+- **Body** is optional standalone Markdown for focused detail. Use it when the
+  User needs more than the Summary. It must communicate everything the Summary
+  communicates, information-wise, then add the useful detail. It need not repeat
+  the Summary literally.
+
+The focused view shows the Body when one exists, otherwise the Summary. It never
+shows both together, so do not write a Body that depends on the Summary sitting
+above it. Never put partial Markdown in Summary.
+
+Use Markdown proportionately to make a Body easy to scan: paragraphs for simple
+prose; headings, lists, links, tables, code, and media references when those
+structures genuinely clarify the content. All attached media may be referenced
+from the Body. Summary contains no media markup.
+
+Keep both fields about what changes for the User and what is needed from them,
+never how many tests ran, how long a step took, or which internal stage produced
+it. Keep wording channel-neutral: no device names, no gestures.
 
 Work finished:
 
@@ -128,15 +147,10 @@ Blocked:
 >
 > There is nothing for you to answer; I will confirm when it is live.
 
-Bad bodies: a build report (\`42/42 green, coverage 87%, rebased onto main\`)
+Bad content: a build report (\`42/42 green, coverage 87%, rebased onto main\`)
 where the news is "users can now create accounts"; the journey ("first I
 tried…") instead of the result; a log with the conclusion at the bottom; "see
 terminal for details".
-
-Add a summary line only when the body is long enough that its first line is
-not a fair summary of what is inside: one short line answering what the title
-raises, such as \`Rolled back cleanly; production is untouched\` over a long
-failure report.
 `
 
 const QUESTIONS = `# Questions
@@ -147,7 +161,8 @@ reply would resume. If the User must act and then tell you it is ready, that
 readiness is an answer — ask for it.
 
 A question is answerable from the notification alone, in the user's terms, not
-the machinery's. One askable sentence; reasoning and stakes follow as context.
+the machinery's. Its one askable sentence is the Summary. Put reasoning and
+stakes in an optional standalone Markdown Body when they are needed.
 Offer closed choices whose wording carries its own consequence.
 
 Good:
@@ -205,9 +220,9 @@ export const SHIPPED_GUIDANCE: readonly GuidanceTopic[] = [
     content: TITLES,
   },
   {
-    name: 'bodies',
-    summary: 'What a body and its summary line carry, with examples',
-    content: BODIES,
+    name: 'content',
+    summary: 'How the required Summary and optional Markdown Body differ',
+    content: CONTENT,
   },
   {
     name: 'questions',

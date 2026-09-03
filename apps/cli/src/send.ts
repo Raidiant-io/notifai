@@ -4,7 +4,7 @@ import {
   MEDIA_MAX_ITEMS,
   NOTIFICATION_SCHEMA_VERSION,
   QUESTION_TEXT_MAX_LENGTH,
-  bannerExcerpt,
+  SUMMARY_MAX_LENGTH,
   type AndroidOptionsT,
   type IosOptionsT,
   type LifecycleT,
@@ -23,9 +23,10 @@ import { isCliSoundRef, unknownSoundMessage } from './sound-ref.js'
 
 export interface SendFlags {
   title: string
-  /** The one canonical Markdown body. */
-  body: string
-  subtitle?: string
+  /** Purpose-written plain text for native banners and notification lists. */
+  summary: string
+  /** Optional standalone focused content. Always interpreted as Markdown. */
+  body?: string
   /** What this notification is; absent means update. */
   kind?: string
   project?: string
@@ -278,7 +279,18 @@ export function buildDraft(
   flags: SendFlags,
   invocation: DraftInvocation = {},
 ): DraftBuild {
-  if (!flags.title || !flags.body) return { ok: false, error: 'Both --title and --body are required.' }
+  if (!flags.title || !flags.summary || flags.summary.trim() === '') {
+    return { ok: false, error: 'Both --title and --summary are required.' }
+  }
+  if (Array.from(flags.summary).length > SUMMARY_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `--summary must be at most ${SUMMARY_MAX_LENGTH} Unicode characters.`,
+    }
+  }
+  if (/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/u.test(flags.summary)) {
+    return { ok: false, error: '--summary must be one line of plain text.' }
+  }
   const platform = resolvePlatform(flags.platform)
   if (!platform) {
     return { ok: false, error: `Unknown platform "${flags.platform}" — use ${PLATFORMS.join(' or ')}.` }
@@ -300,8 +312,11 @@ export function buildDraft(
       media_id,
       ...(imageAlts[index] !== undefined ? { alt: imageAlts[index] } : {}),
     }))
-  const body = rewriteMediaReferences(flags.body, imageIds)
-  if (!body.ok) return body
+  const body =
+    flags.body === undefined
+      ? undefined
+      : rewriteMediaReferences(flags.body, imageIds)
+  if (body !== undefined && !body.ok) return body
 
   const deviceIds = flags.all ? null : (flags.device?.length ? flags.device : config.devices.value)
   const targets: NotificationDraftT['targets'] =
@@ -404,19 +419,16 @@ export function buildDraft(
   if (flags.multi && choices === null && flags.questions === undefined) {
     return { ok: false, error: '--multi needs answers to select between; add --choice.' }
   }
-  // A single reply question is the first readable block of the canonical body.
-  // Context may follow after a blank line without changing what the user answers.
-  const derivedQuestion = bannerExcerpt(body.body).split('\n', 1)[0]!.trim()
   if (
     flags.reply &&
     flags.questions === undefined &&
-    derivedQuestion.length > QUESTION_TEXT_MAX_LENGTH
+    Array.from(flags.summary).length > QUESTION_TEXT_MAX_LENGTH
   ) {
     return {
       ok: false,
       error:
         `Keep the question within ${QUESTION_TEXT_MAX_LENGTH} characters and put ` +
-        'the longer context after a blank line — the first paragraph is the question.',
+        'the longer explanation in the optional Markdown Body.',
     }
   }
 
@@ -447,8 +459,8 @@ export function buildDraft(
     ...(invocation.source !== undefined ? { source: invocation.source } : {}),
     presentation: {
       title: flags.title,
-      body: body.body,
-      ...(flags.subtitle !== undefined ? { subtitle: flags.subtitle } : {}),
+      summary: flags.summary,
+      ...(body !== undefined ? { body: body.body } : {}),
       ...(media.length > 0 ? { media } : {}),
     },
     targets,
@@ -460,7 +472,7 @@ export function buildDraft(
             questions: flags.questions ?? [
               {
                 id: 'q1',
-                text: derivedQuestion,
+                text: flags.summary,
                 ...(choices !== null ? { choices } : {}),
                 ...(flags.multi ? { multi: true } : {}),
               },

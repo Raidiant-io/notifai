@@ -1,5 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { BODY_MAX_LENGTH } from './content.js'
+import { BODY_MAX_LENGTH, SUMMARY_MAX_LENGTH } from './content.js'
 import { LIFECYCLE_END_STATES, LIFECYCLE_TIERS } from './lifecycle.js'
 
 /**
@@ -67,9 +67,23 @@ export const MEDIA_MAX_ITEMS = 8
 export const Presentation = Type.Object(
   {
     title: Type.String({ minLength: 1, maxLength: 512 }),
-    subtitle: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
-    /** The one canonical body. Always interpreted as Markdown. */
-    body: Type.String({ minLength: 1, maxLength: BODY_MAX_LENGTH }),
+    /** Purpose-written plain text for native banners and notification lists. */
+    summary: Type.String({
+      // TypeBox's in-process maxLength counts UTF-16 units, while the wire
+      // contract is Unicode code points. This pattern counts a valid surrogate
+      // pair as one and also excludes line/control characters mechanically.
+      pattern:
+        `^(?=.*\\S)(?:(?:[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF])|` +
+        `(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])){1,${SUMMARY_MAX_LENGTH}}$`,
+    }),
+    /** Optional standalone focused content. Always interpreted as Markdown. */
+    body: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: BODY_MAX_LENGTH,
+        pattern: '^(?=[\\s\\S]*\\S)[\\s\\S]+$',
+      }),
+    ),
     /** Ordered image attachments. Order is meaning: first is representative. */
     media: Type.Optional(Type.Array(MediaItem, { minItems: 1, maxItems: MEDIA_MAX_ITEMS })),
   },
@@ -153,9 +167,8 @@ export const REPLY_MAX_QUESTIONS = 10
 
 /**
  * One question must be readable in full on the surface that offers the answers,
- * which is a notification the user reads at a glance. This bound sits under the
- * banner excerpt so a question always fits the surface it arrives on; longer
- * context follows it in the canonical Markdown body.
+ * which is a notification the user reads at a glance. It shares the authored
+ * Summary bound; longer explanation belongs in the optional Markdown Body.
  */
 export const QUESTION_TEXT_MAX_LENGTH = 240
 

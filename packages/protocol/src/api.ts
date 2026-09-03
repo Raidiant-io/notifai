@@ -1,6 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
 import {
   CUSTOM_SOUND_MAX_BYTES,
+  CUSTOM_SOUND_LIBRARY_LIMIT,
   KindSoundMap,
   NotificationDraft,
   NOTIFICATION_IMAGE_MAX_BYTES,
@@ -683,12 +684,41 @@ export interface SoundView {
   name: string
   duration_ms: number
   content_hash: string
+  /** Temporary cutover discriminator; cleanup removes v1 after receipt proof. */
+  contract_marker: SoundArtifactContractMarker
   url: string
 }
 
 export interface ListSoundsResponse {
   sounds: SoundView[]
 }
+
+export const SoundArtifactContractMarker = Type.Union([
+  Type.Literal('notification-sound/wav-pcm16-mono-48k/v1'),
+  Type.Literal('notification-sound/wav-pcm16-mono-48k/v2'),
+])
+export type SoundArtifactContractMarker = Static<typeof SoundArtifactContractMarker>
+
+export const SoundLibraryManifestEntry = Type.Object(
+  {
+    sound_id: Type.String({ pattern: '^snd_[A-Za-z0-9_-]+$' }),
+    content_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+    contract_marker: SoundArtifactContractMarker,
+  },
+  { additionalProperties: false },
+)
+export type SoundLibraryManifestEntryT = Static<typeof SoundLibraryManifestEntry>
+
+/** Exact locally installed Sound set reported by one Device Installation. */
+export const ReportSoundLibraryReceiptRequest = Type.Object(
+  {
+    /** One-time Device Installation challenge delivered by the current sync round. */
+    receipt_challenge: Type.String({ pattern: '^[A-Za-z0-9_-]{22}$' }),
+    sounds: Type.Array(SoundLibraryManifestEntry, { maxItems: CUSTOM_SOUND_LIBRARY_LIMIT }),
+  },
+  { additionalProperties: false },
+)
+export type ReportSoundLibraryReceiptRequestT = Static<typeof ReportSoundLibraryReceiptRequest>
 
 export interface CreateMediaUploadResponse {
   media_id: string
@@ -730,8 +760,10 @@ export interface NotificationContentMediaItem {
 
 export interface NotificationContentResponse {
   request_id: string
-  /** The one full author-facing body, always interpreted as Markdown. */
-  body: string
+  /** Purpose-written plain text used when the request has no Markdown Body. */
+  summary: string
+  /** Standalone focused content, always interpreted as Markdown when present. */
+  body: string | null
   media: NotificationContentMediaItem[]
 }
 
