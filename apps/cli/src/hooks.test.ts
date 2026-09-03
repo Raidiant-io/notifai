@@ -97,7 +97,6 @@ function registerQuestion(
     sessionId,
     env,
     {
-      title: question.title ?? question.question,
       summary: question.summary ?? question.question,
       ...question,
     },
@@ -116,7 +115,6 @@ function writeSessionState(
       ? {}
       : {
           pending: state.pending.map((entry) => ({
-            title: entry.title ?? entry.question,
             summary: entry.summary ?? entry.question,
             ...entry,
           })),
@@ -1202,6 +1200,74 @@ describe('late answer collection', () => {
     ).toHaveLength(0)
     expect(readSessionState('late-prompt', h.env).pending).toBeUndefined()
     expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
+  })
+
+  it('injects a journaled answer at Codex prompt start and replays it until acknowledged', async () => {
+    const h = harness([])
+    const acceptedReply = reply({ text: 'Revise the silhouette' })
+    writeSessionState('prompt-answer', h.env, {
+      accepted: {
+        answers: [{
+          pending: {
+            question: 'Ship this version?',
+            request_id: 'req_prompt_answer',
+            collapse_key: 'collapse-prompt-answer',
+            device_ids: ['dev_iphone'],
+          },
+          reply: acceptedReply,
+          replies: [acceptedReply],
+          agent_acknowledgement_required: true,
+          agent_acknowledgement_text_required: true,
+        }],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+      acknowledgement_due: [{
+        request_id: 'req_prompt_answer',
+        recorded_at: NOW,
+        text_required: true,
+      }],
+    })
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd, prompt: 'Any update?' }),
+      'codex',
+    )
+
+    const first = JSON.parse(h.io.outLines.at(-1) ?? '{}') as {
+      hookSpecificOutput?: { hookEventName?: string; additionalContext?: string }
+    }
+    expect(first.hookSpecificOutput).toMatchObject({
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: expect.stringContaining('Revise the silhouette'),
+    })
+    expect(first.hookSpecificOutput?.additionalContext).toContain(
+      'notifai acknowledge req_prompt_answer --text <text>',
+    )
+    expect(readSessionState('prompt-answer', h.env).accepted).toBeDefined()
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd, prompt: 'Still there?' }),
+      'codex',
+    )
+    expect(h.io.outLines).toHaveLength(2)
+
+    const acknowledged = readSessionState('prompt-answer', h.env)
+    delete acknowledged.acknowledgement_due
+    writeSessionState('prompt-answer', h.env, acknowledged)
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toHaveLength(2)
+    expect(readSessionState('prompt-answer', h.env).accepted).toBeUndefined()
   })
 })
 
@@ -2614,7 +2680,7 @@ describe('ask registration', () => {
     const h = harness()
     // Inside a hook, a rejection is only a stderr note the agent never reads —
     // so it would look registered and then silently never ask.
-    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship', choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
     expect(readSessionState('a1', h.env).pending).toBeUndefined()
   })
 
@@ -2654,7 +2720,6 @@ describe('ask registration', () => {
     if (!built.ok) return
     registerQuestion('form1', h.env, {
       question: built.questions[0]!.text,
-      title: 'Choose deployment details',
       summary: built.summary,
       questions: built.questions,
       ...(built.body !== undefined ? { body: built.body } : {}),
@@ -2665,7 +2730,7 @@ describe('ask registration', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
     const draft = h.recorder.submitted[0]?.draft
-    expect(draft?.presentation.title).toBe('Choose deployment details')
+    expect(draft?.presentation.title).toBe('Deploy where?')
     expect(draft?.presentation.summary).toBe('Choose deployment details.')
     // Questions travel structured while Body remains standalone focused detail.
     expect(draft?.presentation.body).toBe('## Context\nThe long story.')
@@ -2763,14 +2828,14 @@ describe('ask registration', () => {
 
   it('does not let an explicit session bypass exact active-harness proof', () => {
     const h = harness()
-    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship', sessionId: 'guessed' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { sessionId: 'guessed' })).toBe(EXIT.usage)
     expect(readSessionState('guessed', h.env).pending).toBeUndefined()
   })
 
   it('does not route from NOTIFAI_SESSION where no exact harness has spoken', () => {
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
-    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(readSessionState('solo-session', h.env).pending).toBeUndefined()
   })
 

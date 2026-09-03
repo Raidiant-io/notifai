@@ -39,8 +39,6 @@ export interface AskFlags {
   choice?: string[]
   /** The single question is multi-select: several answers may be chosen. */
   multi?: boolean
-  /** Optional authored title whose substance is understandable without the question. */
-  title?: string
   /** Optional standalone Markdown Body for focused detail. */
   body?: string
   /** Allow visible backslash-n sequences in `--body`. */
@@ -255,7 +253,7 @@ function buildAskDraft(
   const result = buildDraft(
     config,
     {
-      title: flags.title ?? built.questions[0]!.text,
+      title: built.questions[0]!.text,
       summary: built.summary,
       ...(built.body !== undefined ? { body: built.body } : {}),
       ...(flags.project !== undefined ? { project: flags.project } : {}),
@@ -293,7 +291,6 @@ function recordRegisteredQuestion(
       deps.env,
       {
         question: built.questions[0]!.text,
-        title: draft.presentation.title,
         summary: draft.presentation.summary,
         questions: built.questions,
         ...(draft.presentation.body !== undefined ? { body: draft.presentation.body } : {}),

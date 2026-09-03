@@ -247,6 +247,63 @@ describe('rendezvous contention', () => {
   })
 })
 
+describe('directory-entry races', () => {
+  it('rechecks a transient EPERM and accepts that the entry vanished', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-entry-race-'))
+    const lock = path.join(root, 'shared.lock')
+    const vanished = path.join(lock, 'ticket-1-999999-deadbeef')
+    mkdirSync(lock)
+    writeFileSync(vanished, '')
+    let attempts = 0
+
+    try {
+      let entered = false
+      withFileLock(lock, () => { entered = true }, {
+        lstatEntry(file) {
+          if (file === vanished && attempts === 0) {
+            attempts += 1
+            rmSync(file)
+            throw Object.assign(new Error('entry is being removed'), { code: 'EPERM' })
+          }
+          return statSync(file)
+        },
+      })
+
+      expect(attempts).toBe(1)
+      expect(entered).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still fails closed when EPERM persists', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-entry-race-'))
+    const lock = path.join(root, 'shared.lock')
+    const inaccessible = path.join(lock, 'ticket-1-999999-deadbeef')
+    mkdirSync(lock)
+    writeFileSync(inaccessible, '')
+    let attempts = 0
+
+    try {
+      expect(() =>
+        withFileLock(lock, () => {}, {
+          waitMs: 20,
+          lstatEntry(file) {
+            if (file === inaccessible) {
+              attempts += 1
+              throw Object.assign(new Error('entry remains inaccessible'), { code: 'EPERM' })
+            }
+            return statSync(file)
+          },
+        }),
+      ).toThrow(/entry remains inaccessible/)
+      expect(attempts).toBeGreaterThan(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('target file transaction lock', () => {
   it('refuses a symlinked target parent before publishing a contender', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-target-lock-'))

@@ -262,23 +262,31 @@ describe('program argv parsing', () => {
     }) as ProgramRunners['ask']
 
     await parse(
-      ['ask', 'Deploy where?', '--title', 'Choose a deployment target', '--choice', 'Staging', '--choice', 'Production', '--session-label', 'release run', '--json'],
+      ['ask', 'Deploy where?', '--choice', 'Staging', '--choice', 'Production', '--session-label', 'release run', '--json'],
       { ask },
     )
     expect(seenQuestion).toBe('Deploy where?')
     expect(seenFlags).toEqual({
       choice: ['Staging', 'Production'],
-      title: 'Choose a deployment target',
       sessionLabel: 'release run',
       json: true,
     })
 
-    await parse(['ask', 'Free text?', '--title', 'Need a detail'], { ask })
-    expect(seenFlags).toEqual({ title: 'Need a detail' })
+    await parse(['ask', 'Free text?'], { ask })
+    expect(seenFlags).toEqual({})
 
     await parse(['ask', 'Ship now?', '--choice', 'Ship now', '--choice', 'Wait'], { ask })
     expect(seenQuestion).toBe('Ship now?')
     expect(seenFlags).toEqual({ choice: ['Ship now', 'Wait'] })
+  })
+
+  it('rejects the removed ask --title flag instead of preserving a compatibility shim', async () => {
+    const { exitCode, deps } = await parse(
+      ['ask', 'Deploy where?', '--title', 'Choose a deployment target'],
+      { ask: (async () => 0) as ProgramRunners['ask'] },
+    )
+    expect(exitCode).toBe(2)
+    expect(deps.errLines).toHaveLength(0)
   })
 
   it('rejects --no-block as unknown: the flag is gone, not tombstoned', async () => {

@@ -172,8 +172,8 @@ the active harness proves the exact current Agent Session.
 ## Ask a question
 
 A question must be answerable from the notification itself. The positional
-question is its Summary (under 240 characters); `--title` names what needs the
-User. Put reasoning in the optional standalone Markdown Body. Offer 2-6 closed choices, one
+question is its Summary (under 240 characters) and supplies the notification
+title. Put reasoning in the optional standalone Markdown Body. Offer 2-6 closed choices, one
 flag per choice — commas inside a label are literal. A typed answer is always
 possible; closed choices appear after pressing and holding the notification.
 
@@ -188,7 +188,6 @@ foreground command its owner:
 
 ```bash
 notifai ask "Which environment should I roll out to?" \
-  --title "Choose the rollout target" \
   --choice Staging --choice Production --choice Cancel
 ```
 

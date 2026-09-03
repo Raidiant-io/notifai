@@ -10,6 +10,7 @@ import {
   renameSync,
   rmdirSync,
   unlinkSync,
+  type Stats,
 } from 'node:fs'
 import path from 'node:path'
 
@@ -51,6 +52,8 @@ interface FileLockOptions {
   observe?: (observation: FileLockObservation) => void
   /** Installer transactions report lock replacement after a successful action. */
   strictRelease?: boolean
+  /** Test seam for native directory-entry races. */
+  lstatEntry?: (file: string) => Stats
 }
 
 interface FileIdentity {
@@ -179,24 +182,48 @@ function sameEntryIdentity(file: string, expected: EntryIdentity): boolean {
 }
 
 /** Live protocol entries, pruning only unique paths whose process is gone. */
+function liveEntryStat(
+  entryPath: string,
+  lstatEntry: NonNullable<FileLockOptions['lstatEntry']>,
+  deadline: number,
+): Stats | null {
+  for (;;) {
+    try {
+      return lstatEntry(entryPath)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return null
+      if (code !== 'EPERM') throw err
+      // Windows can report EPERM while another contender's just-renamed or
+      // just-unlinked entry is still leaving the directory. Retry only within
+      // the lock's existing acquisition budget; a persistently inaccessible
+      // entry remains a hard failure rather than disappearing from ordering.
+      if (Date.now() >= deadline) throw err
+      Atomics.wait(
+        lockSleep,
+        0,
+        0,
+        Math.min(FILE_LOCK_POLL_MS, Math.max(1, deadline - Date.now())),
+      )
+    }
+  }
+}
+
 function liveEntries(
   directory: string,
   directoryIdentity: FileIdentity,
-  observe: FileLockOptions['observe'],
+  options: FileLockOptions,
+  deadline: number,
 ): LockEntry[] {
   assertSameDirectory(directory, directoryIdentity)
   const live: LockEntry[] = []
+  const lstatEntry = options.lstatEntry ?? ((file: string) => lstatSync(file))
   for (const name of readdirSync(directory)) {
     const entry = parseEntry(name)
     if (entry === null) continue
     const entryPath = path.join(directory, name)
-    let stat
-    try {
-      stat = lstatSync(entryPath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw err
-    }
+    const stat = liveEntryStat(entryPath, lstatEntry, deadline)
+    if (stat === null) continue
     const uid = currentUid()
     if (stat.isSymbolicLink() || !stat.isFile() || (uid !== undefined && stat.uid !== uid)) {
       throw new Error(`${entryPath} is not a current-user-owned regular file-lock entry.`)
@@ -205,7 +232,7 @@ function liveEntries(
       live.push(entry)
       continue
     }
-    observe?.({ phase: 'stale-entry', entry: name })
+    options.observe?.({ phase: 'stale-entry', entry: name })
     try {
       // Recheck the unique dead owner's inode so delayed recovery cannot reap
       // a replacement published at the same path by external interference.
@@ -249,7 +276,7 @@ function publishChoosing(
   directory: string,
   name: string,
   deadline: number,
-  observe: FileLockOptions['observe'],
+  options: FileLockOptions,
 ): { file: string; fileIdentity: EntryIdentity; directoryIdentity: FileIdentity } {
   const file = path.join(directory, name)
   for (;;) {
@@ -259,8 +286,8 @@ function publishChoosing(
       chmodSync(directory, 0o700)
       // Recover before registration so a delayed stale cleanup can only name an
       // old owner's unique path, never this contender's future one.
-      liveEntries(directory, registrar, observe)
-      observe?.({ phase: 'registering', entry: name })
+      liveEntries(directory, registrar, options, deadline)
+      options.observe?.({ phase: 'registering', entry: name })
       const fileIdentity = publishEmpty(file)
       // Pin the rendezvous that holds the entry, not the one scanned before it
       // existed. `open` resolves the path atomically, so the entry lands in
@@ -306,13 +333,13 @@ export function withFileLock<T>(file: string, action: () => T, options: FileLock
   let operationFailed = false
 
   try {
-    const published = publishChoosing(file, choosingName, deadline, options.observe)
+    const published = publishChoosing(file, choosingName, deadline, options)
     ownedPath = published.file
     ownedIdentity = published.fileIdentity
     directoryIdentity = published.directoryIdentity
     options.observe?.({ phase: 'choosing-published', entry: choosingName })
     let highest = 0n
-    for (const entry of liveEntries(file, directoryIdentity, options.observe)) {
+    for (const entry of liveEntries(file, directoryIdentity, options, deadline)) {
       if (entry.kind === 'ticket' && entry.ticket > highest) highest = entry.ticket
     }
     const ticket = highest + 1n
@@ -327,7 +354,7 @@ export function withFileLock<T>(file: string, action: () => T, options: FileLock
 
     for (;;) {
       const blockers: string[] = []
-      for (const entry of liveEntries(file, directoryIdentity, options.observe)) {
+      for (const entry of liveEntries(file, directoryIdentity, options, deadline)) {
         if (entry.pid === pid && entry.token === token) continue
         if (entry.kind === 'choosing' || comesBefore(entry, ticket, pid, token)) {
           blockers.push(entry.name)

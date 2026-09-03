@@ -56,6 +56,7 @@ import {
   writeSessionState,
   writeSessionStateUnlocked,
 } from './hook-session-state.js'
+import { userPromptContextOutput } from './session-activation.js'
 import type {
   AcceptedAnswerDelivery,
   AnsweredPending,
@@ -148,7 +149,6 @@ const CLAIM_HANDOFF_POLL_MS = 1_000
 async function prepareQuestionSubmission(
   ctx: HookContext,
   options: {
-    title: string
     summary: string
     body?: string
     questions: QuestionT[]
@@ -171,7 +171,7 @@ async function prepareQuestionSubmission(
   const build = buildDraft(
     ctx.config,
     {
-      title: options.title,
+      title: options.questions[0]!.text,
       summary: options.summary,
       ...(options.body !== undefined ? { body: options.body } : {}),
       lifecycle: { tier: 'needs_you' },
@@ -559,11 +559,26 @@ export async function handleUserPromptSubmit(
     if (envelope.cwd !== undefined && ctx.harness !== undefined) {
       writeProjectSession(envelope.cwd, ctx.env, sessionId, ctx.now(), ctx.harness)
     }
-    notes.push(
-      state.accepted.delivered_at === undefined
-        ? 'a device answer is safely journaled; the next Stop will deliver it'
-        : 'a device answer has already been delivered; the next Stop will close it out',
+    const stdout = userPromptContextOutput(
+      ctx.harness,
+      answersContext(state.accepted.answers, state.accepted.remaining),
     )
+    if (stdout !== undefined) {
+      notes.push('the journaled device answer was added to the user\'s new turn')
+      return {
+        stdout,
+        decided: false,
+        notes,
+        log: {
+          stage: 'context-added',
+          route: 'user-prompt-submit',
+          request_ids: state.accepted.answers.flatMap(({ pending }) =>
+            pending.request_id === undefined ? [] : [pending.request_id],
+          ),
+        },
+      }
+    }
+    notes.push('a device answer is safely journaled; the next Stop will deliver it')
     return { notes }
   }
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
@@ -684,12 +699,30 @@ export async function handleUserPromptSubmit(
   }
 
   if (lateAnswers.length > 0) {
-    // UserPromptSubmit has no later hook field proving its stdout reached the
-    // model. Keep the journal and let the next Stop use its acknowledged
-    // continuation channel instead of recreating the crash-before-stdout gap.
-    notes.push('the late device answer will continue the agent at this turn’s Stop')
+    // UserPromptSubmit can add context to the turn already beginning. Keep the
+    // accepted-answer journal until the agent acknowledges: if this process or
+    // host dies around stdout, a later prompt or Stop safely replays it.
+    const stdout = userPromptContextOutput(
+      ctx.harness,
+      answersContext(lateAnswers, 0),
+    )
+    if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
+    else notes.push('the late device answer will continue the agent at this turn’s Stop')
     return {
       notes,
+      ...(stdout === undefined
+        ? {}
+        : {
+            stdout,
+            decided: false,
+            log: {
+              stage: 'context-added',
+              route: 'user-prompt-submit',
+              request_ids: lateAnswers.flatMap(({ pending }) =>
+                pending.request_id === undefined ? [] : [pending.request_id],
+              ),
+            },
+          }),
       settlementRequired: pendingList(updated).some((entry) => entry.request_id === undefined),
     }
   }
@@ -843,8 +876,20 @@ export async function runEscalationWaiter(
       // on the answer — delivery is not consumption — but nothing later can
       // prove more, and an answer redelivered without end is strictly worse
       // than one settled on delivery. So a recorded delivery settles.
+      const acknowledgementProvesDelivery =
+        accepted.answers.length > 0 &&
+        accepted.answers.every(
+          ({ pending, agent_acknowledgement_required }) =>
+            agent_acknowledgement_required === true &&
+            pending.request_id !== undefined &&
+            !(state.acknowledgement_due ?? []).some(
+              (entry) => entry.request_id === pending.request_id,
+            ),
+        )
       const deliveryProven =
-        accepted.delivered_at !== undefined || envelope.stop_hook_active === true
+        accepted.delivered_at !== undefined ||
+        envelope.stop_hook_active === true ||
+        acknowledgementProvesDelivery
       if (!deliveryProven) {
         for (const answer of accepted.answers) reportAnswer(ctx, notes, answer, true)
         return await deliverAcceptedAnswers(
@@ -1323,7 +1368,6 @@ async function escalate(
     let intent = entry.submission
     if (intent === undefined) {
       const prepared = await prepareQuestionSubmission(ctx, {
-        title: entry.title,
         summary: entry.summary,
         ...(entry.body !== undefined ? { body: entry.body } : {}),
         questions,
@@ -1400,7 +1444,6 @@ async function escalate(
           )
           clearFrozenSubmission(sessionId, ctx.env, entry)
           const reminted = await prepareQuestionSubmission(ctx, {
-            title: entry.title,
             summary: entry.summary,
             ...(entry.body !== undefined ? { body: entry.body } : {}),
             questions,
