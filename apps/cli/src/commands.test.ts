@@ -4463,6 +4463,26 @@ describe('config surfaces', () => {
       source: expect.stringMatching(/^project:/),
     })
   })
+
+  it('writes an explicit shared override at the Git root from a nested directory', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+    execFileSync('git', ['-C', deps.cwd, 'init'], { stdio: 'ignore' })
+    const nested = path.join(deps.cwd, 'packages', 'app')
+    mkdirSync(nested, { recursive: true })
+
+    expect(
+      await configSetCommand({ ...deps, cwd: nested }, 'wait_seconds', '20', {
+        project: true,
+        yes: true,
+      }),
+    ).toBe(EXIT.ok)
+
+    expect(readFileSync(path.join(deps.cwd, '.notifai', 'config.toml'), 'utf8')).toContain(
+      'wait_seconds = 20',
+    )
+    expect(existsSync(path.join(nested, '.notifai', 'config.toml'))).toBe(false)
+  })
 })
 
 describe('interactive command UX', () => {
@@ -4657,8 +4677,8 @@ describe('interactive command UX', () => {
     expect(tone('This machine:')).toBe('bad')
     // Never evaluated: the account cannot be checked without a credential.
     expect(tone('Account:')).toBe('pending')
-    // Legitimately declined rather than broken.
-    expect(tone('Project identity:')).toBe('warn')
+    // Inference is the ready, write-free default.
+    expect(tone('Project identity:')).toBe('ok')
   })
 
   it('keeps doctor JSON as one machine-readable stdout document', async () => {
@@ -5072,7 +5092,7 @@ describe('init', () => {
     }
   }
 
-  it('writes the project identifier into .notifai/config.toml and is idempotent', async () => {
+  it('keeps inferred Project identity write-free across repeated init runs', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'My Project-'))
     const io = new CapturedIo()
     const deps: CommandDeps = {
@@ -5083,7 +5103,7 @@ describe('init', () => {
 
     expect(await initCommand(deps, {})).toBe(EXIT.failed)
     const configPath = path.join(cwd, '.notifai', 'config.toml')
-    expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
+    expect(existsSync(configPath)).toBe(false)
     // Safe by default: without an explicit --skills opt-in, init only writes
     // configuration and never spawns the skill installer.
     expect(io.outLines.join('\n')).not.toContain('Installing the notifai agent skill')
@@ -5091,11 +5111,10 @@ describe('init', () => {
 
     io.outLines = []
     expect(await initCommand(deps, { skills: false })).toBe(EXIT.failed)
-    // Idempotent: the second run re-derives the same slug and does not reprint
-    // doctor's ready-state dump.
+    // Idempotent: the second run reuses inference and still writes nothing.
     expect(io.outLines.join('\n')).toMatch(/^Next:/m)
     expect(io.outLines.join('\n')).not.toContain('Project identity:')
-    expect(readFileSync(configPath, 'utf8')).toContain('project = "my-project-')
+    expect(existsSync(configPath)).toBe(false)
   })
 
   it('resumes the same init after a required CLI update becomes current', async () => {
@@ -5247,15 +5266,13 @@ describe('init', () => {
     )
   })
 
-  it('closes what a process can close when no scope was passed, and asks nothing', async () => {
+  it('accepts inferred Project identity when no scope was passed, and writes nothing', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
     expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
-    // Naming this checkout is not skill or hook placement, so it no longer
-    // waits on a scope question nobody can answer here.
-    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain('project = "')
+    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
     const result = JSON.parse(io.outLines[0] ?? '{}') as {
       states: Array<{ id: string; status: string; remedy: { command?: string } | null }>
     }
@@ -5650,7 +5667,7 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
-  it('stamps project identity into this checkout without asking about scope', async () => {
+  it('uses inferred Project identity without writing repository config', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-project-identity-'))
     const io = new CapturedIo()
     const deps: CommandDeps = {
@@ -5661,7 +5678,7 @@ describe('init', () => {
     }
 
     expect(await initCommand(deps, { skills: false, hooks: false })).toBe(EXIT.failed)
-    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toMatch(/project = "/)
+    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
     expect(io.outLines.concat(io.errLines).join('\n')).not.toMatch(/setup scope|--setup-scope/)
   })
 
@@ -6762,7 +6779,7 @@ describe('init', () => {
 })
 
 describe('readiness assessment cost', () => {
-  it('does not re-probe the service after init closes a local-only gap', async () => {
+  it('does not re-probe the service while accepting inferred Project identity', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-local-reassess-'))
     const io = new CapturedIo()
     let healthCalls = 0
@@ -6782,7 +6799,7 @@ describe('readiness assessment cost', () => {
 
     expect(await initCommand(deps, {})).toBe(EXIT.failed)
     expect(healthCalls).toBe(1)
-    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain('project =')
+    expect(existsSync(path.join(cwd, '.notifai', 'config.toml'))).toBe(false)
   })
 
   it('reuses remote probes when only local state could have changed', async () => {

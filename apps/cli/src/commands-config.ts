@@ -17,9 +17,9 @@ import {
   USER_OWNED_CONFIG_KEYS,
   configBounds,
   configDefaultValue,
-  findProjectConfigPath,
   globalConfigPath,
   personalProjectConfigPath,
+  sharedProjectConfigPath,
   sessionConfigPath,
   type ConfigKey,
 } from './config.js'
@@ -293,7 +293,7 @@ async function configMutationTarget(
     : layer === 'local'
       ? personalProjectConfigPath(deps.cwd, deps.env)
       : layer === 'project'
-        ? (findProjectConfigPath(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'config.toml'))
+        ? sharedProjectConfigPath(deps.cwd)
         : globalConfigPath(deps.env)
   return {
     path: targetPath,

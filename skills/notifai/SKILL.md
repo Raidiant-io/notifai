@@ -306,8 +306,8 @@ user to run a command you could have run yourself.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-Otherwise run flagless `notifai init --json` first: it asks nothing and reaches
-delivery proof. Two independent decisions remain: Question Routing — devices or
+Flagless `notifai init --json` asks nothing and reaches delivery
+proof. Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.
 Lifecycle wiring has no scope: one install per harness for this machine;
 `notifai project enable` is the per-project switch. Never guess unattended:
@@ -315,6 +315,9 @@ Lifecycle wiring has no scope: one install per harness for this machine;
 ```bash
 notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --json
 ```
+
+`init` never creates `.notifai/config.toml`; use it only for tracked shared
+overrides.
 
 Branch on `states`, `can_send`, and `question_routing_ready`.
 `direct_wake_ready` says if answers can start a turn after continuation ends;
