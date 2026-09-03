@@ -2,6 +2,7 @@ import {
   CAPABILITIES_V1,
   NOTIFICATION_CONTRACT_FINGERPRINT,
   PLATFORMS,
+  QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
 } from '@raidiant/notifai-protocol'
 import { execFileSync } from 'node:child_process'
@@ -40,7 +41,7 @@ import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
   acknowledgeCommand,
-  askCommand,
+  askCommand as askAuthoredCommand,
   accessStatusCommand,
   authStatusCommand,
   buildQuestions,
@@ -66,7 +67,7 @@ import {
   parseSince,
   projectSlugFrom,
   repliesCommand,
-  sendCommand,
+  sendCommand as sendAuthoredCommand,
   statusCommand,
   updateCliCommand,
   agentSessionRenameCommand,
@@ -74,6 +75,8 @@ import {
   type CommandIo,
   type CommandSpinner,
 } from './commands.js'
+import type { SendFlags } from './send.js'
+import type { AskFlags } from './commands-ask.js'
 import {
   applyPlan,
   buildHookConfig,
@@ -117,6 +120,38 @@ import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 afterEach(() => {
   resetLatestPublishedCliVersionForTest()
 })
+
+/** Keep unrelated command cases focused while exercising the current authored shape. */
+function sendCommand(
+  deps: CommandDeps,
+  flags: Omit<SendFlags, 'summary'> & {
+    summary?: string
+    json?: boolean
+    wait?: number
+    noWait?: boolean
+    replyTimeout?: number
+    idempotencyKey?: string
+    retry?: boolean
+    baseUrl?: string
+  },
+) {
+  return sendAuthoredCommand(deps, {
+    summary: flags.summary ?? flags.body ?? flags.title,
+    ...flags,
+  })
+}
+
+/** Keep routing cases terse; the real argv boundary requires an authored title. */
+function askCommand(
+  deps: CommandDeps,
+  question: string | undefined,
+  flags: Omit<AskFlags, 'title'> & { title?: string },
+) {
+  return askAuthoredCommand(deps, question, {
+    title: flags.title ?? 'Need your answer',
+    ...flags,
+  })
+}
 
 /**
  * The release tag this build pins the agent skill to.
@@ -1691,8 +1726,13 @@ describe('command contracts', () => {
   })
 
   it.each([
-    { kind: 'update', title: 'Deploy?   ', body: 'Ready.' },
-    { kind: 'update', title: 'Deployment', body: 'Should I deploy?\n' },
+    { kind: 'update', title: 'Deploy?   ', summary: 'Ready.', body: 'Ready.' },
+    {
+      kind: 'update',
+      title: 'Deployment',
+      summary: 'Should I deploy?',
+      body: 'Should I deploy?\n',
+    },
   ])('warns on stderr when $title / $body ends in a question after trimming', async (flags) => {
     const io = new CapturedIo()
     const client = { submit: async () => receipt } as unknown as ApiClient
@@ -6264,13 +6304,13 @@ describe('init', () => {
     // None of the vocabulary of the check that produced it: the reader has not
     // met "verification", a "proof", or the distinction between a real
     // notification and any other kind.
-    const copy = `${presentation.title} ${presentation.body}`
+    const copy = `${presentation.title} ${presentation.summary}`
     expect(copy).not.toMatch(/verification|verify|proof|receipt|real notification|test/i)
     // And nothing about where it landed or what to do to it.
     expect(copy).not.toMatch(/iPhone|Android|phone|tap|swipe|banner|lock screen/i)
 
-    expect(presentation.body).toContain('orders-api')
-    expect(presentation.body).toMatch(/^Notifai setup is finished/)
+    expect(presentation.summary).toContain('orders-api')
+    expect(presentation.summary).toMatch(/^Notifai setup is finished/)
 
     // Still the same bar: a real send whose Companion Receipt was observed.
     expect(io.outLines.join('\n')).toContain(
@@ -9095,7 +9135,7 @@ describe('question sets', () => {
     expect(submitted?.draft.reply?.questions?.[0]?.choices).toHaveLength(3)
   })
 
-  it('derives the answerable question from the first banner block', async () => {
+  it('uses the authored Summary as the answerable question without inspecting the Body', async () => {
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
     const client = {
@@ -9110,6 +9150,7 @@ describe('question sets', () => {
     expect(
       await sendCommand(makeDeps(io, client), {
         title: 'Choose the deployment environment',
+        summary: 'Which environment?',
         body,
         reply: true,
         replyTimeout: 30,
@@ -9119,10 +9160,7 @@ describe('question sets', () => {
     expect(submitted?.draft.reply?.questions[0]?.text).toBe('Which environment?')
   })
 
-  it('keeps the question out of a body that carries context', () => {
-    // The question already travels as the title and as structured questions;
-    // repeating it in the body showed it twice on the lock screen and the
-    // reply screen.
+  it('keeps the authored Body separate from the question Summary', () => {
     expect(
       buildQuestions(
         { body: '## Why\nThe release window closes today.' },
@@ -9130,25 +9168,41 @@ describe('question sets', () => {
       ),
     ).toMatchObject({
       ok: true,
+      summary: 'Which environment?',
       body: '## Why\nThe release window closes today.',
       questions: [{ text: 'Which environment?' }],
     })
   })
 
-  it('lets the question stand in for the body only when there is no context', () => {
+  it('omits the Body when the question Summary is sufficient', () => {
     expect(buildQuestions({}, 'Which environment?')).toMatchObject({
       ok: true,
-      body: 'Which environment?',
+      summary: 'Which environment?',
     })
+    expect(buildQuestions({}, 'Which environment?')).not.toHaveProperty('body')
     expect(
       buildQuestions(
-        { form: JSON.stringify({ questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }] }) },
+        {
+          form: JSON.stringify({
+            summary: 'Choose deployment and monitoring details.',
+            questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }],
+          }),
+        },
         undefined,
       ),
     ).toMatchObject({
       ok: true,
-      body: '1. Deploy where?\n2. What should I monitor?',
+      summary: 'Choose deployment and monitoring details.',
     })
+  })
+
+  it('counts single-question length in Unicode code points', () => {
+    expect(buildQuestions({} as AskFlags, '😀'.repeat(QUESTION_TEXT_MAX_LENGTH))).toMatchObject({
+      ok: true,
+    })
+    expect(
+      buildQuestions({} as AskFlags, '😀'.repeat(QUESTION_TEXT_MAX_LENGTH + 1)),
+    ).toMatchObject({ ok: false })
   })
 
   it('keeps form questions out of a body that carries form context', () => {
@@ -9156,6 +9210,7 @@ describe('question sets', () => {
       buildQuestions(
         {
           form: JSON.stringify({
+            summary: 'Choose deployment and monitoring details.',
             questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }],
             body: '## Context\nTraffic is elevated.',
           }),
@@ -9164,6 +9219,7 @@ describe('question sets', () => {
       ),
     ).toMatchObject({
       ok: true,
+      summary: 'Choose deployment and monitoring details.',
       body: '## Context\nTraffic is elevated.',
     })
   })
@@ -9173,6 +9229,7 @@ describe('question sets', () => {
       buildQuestions(
         {
           form: JSON.stringify({
+            summary: 'Choose whether to deploy.',
             questions: [{ text: 'Deploy?' }],
             detail: 'legacy context',
           }),
@@ -9189,6 +9246,7 @@ describe('question sets', () => {
     const built = buildQuestions(
       {
         form: JSON.stringify({
+          summary: 'Say whether each item is ready.',
           questions: [{ text: 'Ready?' }, { text: 'Ready?' }],
         }),
       },
@@ -9214,12 +9272,13 @@ describe('question sets', () => {
   it('rejects forms outside the documented shape', () => {
     expect(buildQuestions({ form: 'not json' }, undefined)).toMatchObject({ ok: false })
     expect(
-      buildQuestions({ form: JSON.stringify({ questions: [] }) }, undefined),
+      buildQuestions({ form: JSON.stringify({ summary: 'Empty form.', questions: [] }) }, undefined),
     ).toMatchObject({ ok: false })
     expect(
       buildQuestions(
         {
           form: JSON.stringify({
+            summary: 'Answer this form.',
             questions: Array.from({ length: REPLY_MAX_QUESTIONS + 1 }, (_, i) => ({ text: `Q${i}?` })),
           }),
         },
@@ -9228,13 +9287,13 @@ describe('question sets', () => {
     ).toMatchObject({ ok: false, error: expect.stringContaining(`1-${REPLY_MAX_QUESTIONS}`) })
     expect(
       buildQuestions(
-        { form: JSON.stringify({ questions: [{ text: 'Pick?', multi: true }] }) },
+        { form: JSON.stringify({ summary: 'Pick an option.', questions: [{ text: 'Pick?', multi: true }] }) },
         undefined,
       ),
     ).toMatchObject({ ok: false, error: expect.stringContaining('--choice') })
     // --form replaces the flag surface; mixing them is a usage error.
     expect(
-      buildQuestions({ form: JSON.stringify({ questions: [{ text: 'Q?' }] }) }, 'Also a question?'),
+      buildQuestions({ form: JSON.stringify({ summary: 'Answer this.', questions: [{ text: 'Q?' }] }) }, 'Also a question?'),
     ).toMatchObject({ ok: false })
   })
 })

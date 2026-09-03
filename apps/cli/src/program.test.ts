@@ -77,6 +77,7 @@ describe('program argv parsing', () => {
         'send',
         '--kind', 'done',
         '--title', 'Build finished',
+        '--summary', 'All green.',
         '--body', 'All green.',
         '--choice', 'Ship it',
         '--choice', 'Hold',
@@ -90,6 +91,7 @@ describe('program argv parsing', () => {
     expect(seen).toMatchObject({
       kind: 'done',
       title: 'Build finished',
+      summary: 'All green.',
       body: 'All green.',
       choice: ['Ship it', 'Hold'],
       multi: true,
@@ -102,7 +104,7 @@ describe('program argv parsing', () => {
   it('preserves deliberate Projectless send intent at the argv boundary', async () => {
     let seen: Record<string, unknown> | undefined
     await parse(
-      ['send', '--kind', 'done', '--title', 'T', '--body', 'B', '--projectless'],
+      ['send', '--kind', 'done', '--title', 'T', '--summary', 'B', '--body', 'B', '--projectless'],
       { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
     )
     expect(seen).toMatchObject({ projectless: true })
@@ -162,7 +164,7 @@ describe('program argv parsing', () => {
   it('passes a custom sound name through --sound', async () => {
     let seen: Record<string, unknown> | undefined
     await parse(
-      ['send', '--kind', 'done', '--title', 'T', '--body', 'B', '--sound', 'Kitchen timer'],
+      ['send', '--kind', 'done', '--title', 'T', '--summary', 'B', '--body', 'B', '--sound', 'Kitchen timer'],
       { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
     )
     expect(seen).toMatchObject({ sound: 'Kitchen timer' })
@@ -171,7 +173,7 @@ describe('program argv parsing', () => {
   it('drops empty collector defaults so "not passed" stays absent', async () => {
     let seen: Record<string, unknown> | undefined
     await parse(
-      ['send', '--kind', 'update', '--title', 'T', '--body', 'B'],
+      ['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B'],
       { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
     )
     expect(seen).toBeDefined()
@@ -216,8 +218,8 @@ describe('program argv parsing', () => {
     const capture = (sink: Record<string, unknown>[]): ProgramRunners['send'] =>
       (async (_deps, flags) => (sink.push(flags as Record<string, unknown>), 0)) as ProgramRunners['send']
     const seen: Record<string, unknown>[] = []
-    await parse(['send', '--kind', 'update', '--title', 'T', '--body', 'B', '--no-wait'], { send: capture(seen) })
-    await parse(['send', '--kind', 'update', '--title', 'T', '--body', 'B', '--wait', '5'], { send: capture(seen) })
+    await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--no-wait'], { send: capture(seen) })
+    await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--wait', '5'], { send: capture(seen) })
     expect(seen[0]).toMatchObject({ noWait: true })
     expect(seen[0]).not.toHaveProperty('wait')
     expect(seen[1]).toMatchObject({ noWait: false, wait: 5 })
@@ -230,20 +232,20 @@ describe('program argv parsing', () => {
     let seen: Record<string, unknown> | undefined
     const send = (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send']
 
-    const ok = await parse(['send', '--kind', 'update', '--title', 'T', '--body-file', file], { send })
+    const ok = await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'From a file.', '--body-file', file], { send })
     expect(ok.exitCode).toBe(0)
     expect(seen).toMatchObject({ body: 'From a file.\n' })
     expect(seen).not.toHaveProperty('bodyFile')
 
     const both = await parse(
-      ['send', '--kind', 'update', '--title', 'T', '--body', 'B', '--body-file', file],
+      ['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--body-file', file],
       { send },
     )
     expect(both.exitCode).toBe(2)
     expect(both.deps.errLines.join('\n')).toContain('either --body or --body-file')
 
     const missing = await parse(
-      ['send', '--kind', 'update', '--title', 'T', '--body-file', path.join(dir, 'absent.md')],
+      ['send', '--kind', 'update', '--title', 'T', '--summary', 'Missing body.', '--body-file', path.join(dir, 'absent.md')],
       { send },
     )
     expect(missing.exitCode).toBe(2)
@@ -260,23 +262,24 @@ describe('program argv parsing', () => {
     }) as ProgramRunners['ask']
 
     await parse(
-      ['ask', 'Deploy where?', '--choice', 'Staging', '--choice', 'Production', '--session-label', 'release run', '--json'],
+      ['ask', 'Deploy where?', '--title', 'Choose a deployment target', '--choice', 'Staging', '--choice', 'Production', '--session-label', 'release run', '--json'],
       { ask },
     )
     expect(seenQuestion).toBe('Deploy where?')
     expect(seenFlags).toEqual({
       choice: ['Staging', 'Production'],
+      title: 'Choose a deployment target',
       sessionLabel: 'release run',
       json: true,
     })
 
-    await parse(['ask', 'Free text?'], { ask })
-    expect(seenFlags).toEqual({})
+    await parse(['ask', 'Free text?', '--title', 'Need a detail'], { ask })
+    expect(seenFlags).toEqual({ title: 'Need a detail' })
   })
 
   it('rejects --no-block as unknown: the flag is gone, not tombstoned', async () => {
     const { exitCode, deps } = await parse(
-      ['send', '--kind', 'update', '--title', 'T', '--body', 'B', '--no-block'],
+      ['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--no-block'],
       { send: (async () => 0) as ProgramRunners['send'] },
     )
     expect(exitCode).toBe(2)

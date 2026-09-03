@@ -760,8 +760,10 @@ export interface NotificationContentMediaItem {
 
 export interface NotificationContentResponse {
   request_id: string
-  /** The one full author-facing body, always interpreted as Markdown. */
-  body: string
+  /** Purpose-written plain text used when the request has no Markdown Body. */
+  summary: string
+  /** Standalone focused content, always interpreted as Markdown when present. */
+  body: string | null
   media: NotificationContentMediaItem[]
 }
 

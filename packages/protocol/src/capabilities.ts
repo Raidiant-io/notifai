@@ -14,7 +14,7 @@ import {
   type ApplePlatform,
   type Platform,
 } from './notification.js'
-import { BANNER_EXCERPT_MAX_LENGTH, BODY_MAX_LENGTH } from './content.js'
+import { BODY_MAX_LENGTH, SUMMARY_MAX_LENGTH } from './content.js'
 import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
 import { buildFcmDataEnvelope } from './fcm.js'
 
@@ -56,17 +56,21 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
   fields: [
     { path: 'presentation.title', status: 'supported' },
     {
+      path: 'presentation.summary',
+      status: 'supported',
+      constraints: { max_length: SUMMARY_MAX_LENGTH, format: 'plain-text', lines: 1 },
+    },
+    {
       path: 'presentation.body',
       status: 'supported',
       constraints: {
         max_length: BODY_MAX_LENGTH,
         format: 'markdown',
-        banner: 'plain-text excerpt',
-        excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+        optional: true,
+        focused: true,
         remote_images: 'not fetched',
       },
     },
-    { path: 'presentation.subtitle', status: 'supported' },
     {
       path: 'source',
       status: 'supported',
@@ -162,17 +166,21 @@ export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
   fields: [
     { path: 'presentation.title', status: 'supported' },
     {
+      path: 'presentation.summary',
+      status: 'supported',
+      constraints: { max_length: SUMMARY_MAX_LENGTH, format: 'plain-text', lines: 1 },
+    },
+    {
       path: 'presentation.body',
       status: 'supported',
       constraints: {
         max_length: BODY_MAX_LENGTH,
         format: 'markdown',
-        banner: 'plain-text excerpt',
-        excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+        optional: true,
+        focused: true,
         remote_images: 'not fetched',
       },
     },
-    { path: 'presentation.subtitle', status: 'supported' },
     {
       path: 'source',
       status: 'supported',
@@ -252,17 +260,20 @@ export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
   fields: [
     { path: 'presentation.title', status: 'supported' },
     {
+      path: 'presentation.summary',
+      status: 'supported',
+      constraints: { max_length: SUMMARY_MAX_LENGTH, format: 'plain-text', lines: 1 },
+    },
+    {
       path: 'presentation.body',
       status: 'supported',
       constraints: {
         max_length: BODY_MAX_LENGTH,
         format: 'markdown',
-        banner: 'plain-text excerpt',
-        excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
-        full_body: 'in app',
+        optional: true,
+        focused: true,
       },
     },
-    { path: 'presentation.subtitle', status: 'supported' },
     {
       path: 'source',
       status: 'supported',
@@ -284,7 +295,7 @@ export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
         max_items: MEDIA_MAX_ITEMS,
         max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
         media_types: ['jpeg', 'png', 'gif'],
-        initial_banner: 'plain-text excerpt',
+        initial_banner: 'summary',
         representative: 'may update later',
         full_collection: 'in app',
       },
@@ -531,7 +542,9 @@ export function validateDraft(
 
   const attachedMedia = new Set(typed.presentation.media?.map((item) => item.media_id) ?? [])
   const referencedMedia = new Set(
-    [...typed.presentation.body.matchAll(/media:(med_[A-Za-z0-9_-]+)/g)].map((match) => match[1]!),
+    [...(typed.presentation.body ?? '').matchAll(/media:(med_[A-Za-z0-9_-]+)/g)].map(
+      (match) => match[1]!,
+    ),
   )
   for (const mediaId of referencedMedia) {
     if (!attachedMedia.has(mediaId)) {

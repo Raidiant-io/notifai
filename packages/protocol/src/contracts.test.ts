@@ -6,7 +6,6 @@ import {
   ALPHA_ACCESS_DISTRIBUTION_LANES,
   ALPHA_ACCESS_LANE_QUERY_PARAM,
   ANDROID_CAPABILITIES_V1,
-  BANNER_EXCERPT_MAX_LENGTH,
   BODY_MAX_LENGTH,
   BeginPairingRequest,
   CAPABILITIES_V1,
@@ -30,6 +29,7 @@ import {
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   REPLY_SOURCES,
+  SUMMARY_MAX_LENGTH,
   RegisterInstallationRequest,
   summarizeOverall,
   SubmitFeedbackRequest,
@@ -46,18 +46,23 @@ import {
 import {
   buildApnsEnvelope,
   buildSoundLibrarySyncEnvelope,
-  collapsedChoiceAlert,
   RECEIPT_TOKEN_LENGTH,
 } from './apns.js'
 import { buildFcmDataEnvelope, buildFcmSoundLibrarySyncEnvelope } from './fcm.js'
 
 function draft(overrides: Partial<NotificationDraftT> = {}): NotificationDraftT {
+  const { presentation, ...rest } = overrides
   return {
     schema_version: 1,
-    presentation: { title: 'Build finished', body: 'All checks passed.' },
+    presentation: {
+      title: 'Build finished',
+      summary: 'All checks passed.',
+      body: 'All checks passed.',
+      ...presentation,
+    },
     targets: { mode: 'all' },
     delivery: defaultDeliveryPolicy(),
-    ...overrides,
+    ...rest,
   }
 }
 
@@ -592,7 +597,10 @@ describe('validateDraft', () => {
   })
 
   it('rejects schema violations with invalid_request', () => {
-    const report = validateDraft({ ...draft(), presentation: { title: '', body: 'x' } })
+    const report = validateDraft({
+      ...draft(),
+      presentation: { title: '', summary: 'x', body: 'x' },
+    })
     expect(report.ok).toBe(false)
     expect(report.errors[0]?.code).toBe('invalid_request')
   })
@@ -603,7 +611,7 @@ describe('validateDraft', () => {
     expect(report.errors[0]?.code).toBe('invalid_request')
   })
 
-  it('accepts the canonical Markdown body bound and rejects one character more', () => {
+  it('accepts the optional Markdown Body bound and rejects one character more', () => {
     expect(
       validateDraft(
         draft({ presentation: { title: 'Bound', body: 'x'.repeat(BODY_MAX_LENGTH) } }),
@@ -614,6 +622,28 @@ describe('validateDraft', () => {
         draft({ presentation: { title: 'Bound', body: 'x'.repeat(BODY_MAX_LENGTH + 1) } }),
       ).ok,
     ).toBe(false)
+  })
+
+  it('requires a one-line plain-text Summary bounded by Unicode code points', () => {
+    expect(
+      validateDraft(draft({ presentation: { summary: '😀'.repeat(SUMMARY_MAX_LENGTH) } })).ok,
+    ).toBe(true)
+    expect(
+      validateDraft(draft({ presentation: { summary: '😀'.repeat(SUMMARY_MAX_LENGTH + 1) } })).ok,
+    ).toBe(false)
+    for (const summary of ['two\nlines', 'tab\tseparated', `hidden${String.fromCodePoint(0x7f)}control`]) {
+      expect(validateDraft(draft({ presentation: { summary } })).ok).toBe(false)
+    }
+    expect(validateDraft(draft({ presentation: { summary: '**literal punctuation**' } })).ok).toBe(
+      true,
+    )
+  })
+
+  it('accepts a Summary-only Notification Request and rejects an empty Body', () => {
+    expect(validateDraft(draft({ presentation: { body: undefined } })).ok).toBe(true)
+    expect(validateDraft(draft({ presentation: { body: '' } })).ok).toBe(false)
+    expect(validateDraft(draft({ presentation: { body: '   \n' } })).ok).toBe(false)
+    expect(validateDraft(draft({ presentation: { summary: '   ' } })).ok).toBe(false)
   })
 
   it('accepts up to eight ordered media items with bounded alt text', () => {
@@ -686,7 +716,11 @@ describe('validateDraft', () => {
   it('reports oversized payloads with payload_too_large', () => {
     const report = validateDraft(
       draft({
-        presentation: { title: 'T'.repeat(500), body: 'B'.repeat(2000), subtitle: 'S'.repeat(500) },
+        presentation: {
+          title: 'T'.repeat(500),
+          summary: 'S'.repeat(SUMMARY_MAX_LENGTH),
+          body: 'B'.repeat(2000),
+        },
         platform: { ios: { custom_data: Object.fromEntries(
           Array.from({ length: 16 }, (_, i) => [`key_${i}`, 'v'.repeat(512)]),
         ) } },
@@ -843,7 +877,7 @@ describe('validateDraft', () => {
     ]
     const questionBody = 'The API key in .env.example is live. What now?'
     const question = draft({
-      presentation: { title: 'API key is live', body: questionBody },
+      presentation: { title: 'API key is live', summary: questionBody, body: questionBody },
       reply: { expires_in_seconds: 3600, questions },
     })
 
@@ -874,19 +908,6 @@ describe('validateDraft', () => {
       unknown
     >
     expect(JSON.stringify(fcm)).not.toContain(CLOSED_CHOICE_BANNER_AFFORDANCE)
-
-    const withSubtitle = draft({
-      presentation: {
-        title: 'API key is live',
-        subtitle: 'It is in the example file',
-        body: questionBody,
-      },
-      reply: { expires_in_seconds: 3600, questions },
-    })
-    const subtitled = collapsedChoiceAlert(withSubtitle, 'ios')
-    expect(subtitled.subtitle).toBe('It is in the example file')
-    expect(subtitled.body).toBe(`${questionBody}\n${CLOSED_CHOICE_BANNER_AFFORDANCE}`)
-    expect(JSON.stringify(subtitled)).not.toContain(secretLabel)
 
     const freeText = buildApnsEnvelope(draft({ reply: freeTextReply() }), ids, null)
     const freeTextAlert = (freeText.payload['aps'] as Record<string, unknown>)['alert'] as Record<
@@ -1121,6 +1142,7 @@ describe('validateDraft', () => {
       },
       presentation: {
         title: 'All checks passed',
+        summary: 'All checks passed. See the attached graph.',
         body: '**All checks passed.**\n\nSee the attached graph.',
         media: [{ media_id: 'med_example', alt: 'Build graph' }],
       },
@@ -1141,10 +1163,14 @@ describe('validateDraft', () => {
     const alert = aps['alert'] as Record<string, unknown>
     const notifai = envelope.payload['notifai'] as Record<string, unknown>
 
-    expect(alert['body']).toBe('All checks passed.\nSee the attached graph.')
+    expect(alert['body']).toBe('All checks passed. See the attached graph.')
     expect(aps['interruption-level']).toBe('active')
     expect(aps['mutable-content']).toBe(1)
-    expect(notifai).toMatchObject({ has_full_body: true, media_count: 1 })
+    expect(notifai).toMatchObject({
+      summary: 'All checks passed. See the attached graph.',
+      has_body: true,
+      media_count: 1,
+    })
     expect(estimateApnsPayloadBytes(withMedia)).toBe(
       new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
     )
@@ -1163,7 +1189,7 @@ describe('validateDraft', () => {
       },
       presentation: {
         title: 'All checks passed',
-        subtitle: 'Android lane',
+        summary: 'All checks passed. See the attached graph.',
         body: '**All checks passed.**\n\nSee the attached graph.',
         media: [{ media_id: 'med_example', alt: 'Build graph' }],
       },
@@ -1206,13 +1232,13 @@ describe('validateDraft', () => {
       delivery_id: 'del_00000000000000000000000000',
       kind: 'question',
       title: 'All checks passed',
-      banner_excerpt: 'All checks passed.\nSee the attached graph.',
+      summary: 'All checks passed. See the attached graph.',
       collapse_key: 'android-builds',
       sound: 'done',
       thread_id: 'builds',
       custom_data: { run_id: '42' },
       media_count: 1,
-      has_full_body: true,
+      has_body: true,
       project_avatar_revision: 'a'.repeat(128),
     })
     expect(estimateFcmPayloadBytes(androidDraft)).toBe(
@@ -1224,7 +1250,7 @@ describe('validateDraft', () => {
     const oversized = draft({
       presentation: {
         title: 'T'.repeat(512),
-        subtitle: 'S'.repeat(512),
+        summary: 'S'.repeat(SUMMARY_MAX_LENGTH),
         body: 'B'.repeat(2048),
       },
       platform: {
@@ -1251,7 +1277,7 @@ describe('validateDraft', () => {
     const maximum = draft({
       presentation: {
         title: 'T'.repeat(512),
-        subtitle: 'S'.repeat(512),
+        summary: 'S'.repeat(SUMMARY_MAX_LENGTH),
         body: 'B'.repeat(2048),
       },
       lifecycle: { tier: 'done', retires_request_id: 'req_original' },
@@ -1577,6 +1603,7 @@ describe('APNs envelope rendering', () => {
       },
       presentation: {
         title: 'Hi',
+        summary: 'Result: all checks passed.',
         body: '# Result\n\nAll **checks** passed.',
         media: [{ media_id: 'med_example' }, { media_id: 'med_second', alt: 'Graph' }],
       },
@@ -1599,14 +1626,15 @@ describe('APNs envelope rendering', () => {
 
     expect(aps['interruption-level']).toBe('active')
     expect(aps['mutable-content']).toBe(1)
-    expect((aps['alert'] as Record<string, unknown>)['body']).toBe('Result\nAll checks passed.')
+    expect((aps['alert'] as Record<string, unknown>)['body']).toBe('Result: all checks passed.')
     expect(notifai).toMatchObject({
       session_id: 'sess_exact',
       session_label: 'Amber Falcon',
       harness: 'codex',
       branch: 'feature/content',
       worktree: 'content-pass',
-      has_full_body: true,
+      summary: 'Result: all checks passed.',
+      has_body: true,
       media_count: 2,
       media_url: mediaUrl,
     })
@@ -1835,11 +1863,20 @@ describe('unified content and Source Context schema', () => {
     expect(IOS_CAPABILITIES_V1.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          path: 'presentation.summary',
+          constraints: expect.objectContaining({
+            max_length: SUMMARY_MAX_LENGTH,
+            format: 'plain-text',
+            lines: 1,
+          }),
+        }),
+        expect.objectContaining({
           path: 'presentation.body',
           constraints: expect.objectContaining({
             max_length: BODY_MAX_LENGTH,
             format: 'markdown',
-            excerpt_max_length: BANNER_EXCERPT_MAX_LENGTH,
+            optional: true,
+            focused: true,
           }),
         }),
         expect.objectContaining({

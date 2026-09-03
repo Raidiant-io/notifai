@@ -16,4 +16,9 @@ The exported Notification Request contract fingerprint is generated during
 the package build. Release compatibility checks therefore prepare the candidate
 artifact before comparing that export with the deployed service.
 
+Presentation content has two separate roles: `summary` is required one-line
+plain text (maximum 240 Unicode code points) for banners and list surfaces;
+`body` is optional non-empty Markdown for focused detail. Provider envelopes
+carry `summary` and `has_body`, never a derived or truncated Body excerpt.
+
 Licensed under Apache-2.0. See the repository-level `LICENSE` and `NOTICE`.

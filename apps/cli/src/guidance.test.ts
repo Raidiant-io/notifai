@@ -53,7 +53,7 @@ describe('shipped guidance content', () => {
     expect(SHIPPED_GUIDANCE.map((topic) => topic.name)).toEqual([
       'when-to-notify',
       'titles',
-      'bodies',
+      'content',
       'questions',
       'acknowledgements',
     ])
@@ -84,7 +84,7 @@ describe('shipped guidance content', () => {
     // do the work but provides no reply path to report readiness.
     const content = [
       shippedGuidanceTopic('when-to-notify')!.content,
-      shippedGuidanceTopic('bodies')!.content,
+      shippedGuidanceTopic('content')!.content,
       shippedGuidanceTopic('questions')!.content,
     ].join('\n')
     expect(content).toMatch(/work needs a User response[\s\S]{0,120}answerable\s+question/i)
@@ -102,12 +102,17 @@ describe('shipped guidance content', () => {
     expect(content).toContain('Task complete')
   })
 
-  it('teaches the leading sentence, user-facing detail only, and channel neutrality', () => {
-    const content = shippedGuidanceTopic('bodies')!.content
-    expect(content).toMatch(/first sentence is what the lock screen shows/i)
+  it('teaches distinct authored Summary and optional standalone Markdown Body roles', () => {
+    const content = shippedGuidanceTopic('content')!.content
+    expect(content).toMatch(/Summary\*\* is required one-line plain text/i)
+    expect(content).toMatch(/hard limit\s+of 240 Unicode characters/i)
+    expect(content).toMatch(/Body\*\* is optional standalone Markdown/i)
+    expect(content).toMatch(/everything the Summary[\s\S]{0,20}communicates, information-wise/i)
+    expect(content).toMatch(/never\s+shows both together/i)
+    expect(content).toMatch(/otherwise the Summary/i)
+    expect(content).toMatch(/all attached media may be referenced/i)
     expect(content).toMatch(/never how many tests ran/i)
     expect(content).toMatch(/channel-neutral/i)
-    expect(content).toMatch(/summary line only when/i)
   })
 
   it('teaches questions answerable alone, with meaningful choices and no route', () => {
@@ -138,7 +143,7 @@ describe('guidance layers', () => {
 
   it('lets a layer replace one topic and orders project-local over project over global', () => {
     const { env, cwd } = setup({
-      global: { 'titles.md': 'global titles\n', 'bodies.md': 'global bodies\n' },
+      global: { 'titles.md': 'global titles\n', 'content.md': 'global content\n' },
       project: { 'titles.md': 'project titles\n' },
       projectLocal: { 'titles.md': 'personal titles\n' },
     })
@@ -148,8 +153,8 @@ describe('guidance layers', () => {
       content: 'personal titles\n',
       source: expect.stringMatching(/^project-local:/),
     })
-    expect(byName.get('bodies')).toMatchObject({
-      content: 'global bodies\n',
+    expect(byName.get('content')).toMatchObject({
+      content: 'global content\n',
       source: expect.stringMatching(/^global:/),
     })
     // A replaced topic keeps its place in reading order.

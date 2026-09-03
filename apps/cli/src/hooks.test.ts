@@ -86,7 +86,7 @@ import {
   projectEnabled,
 } from './project-enablement.js'
 
-/** New-format test fixtures always carry the canonical body explicitly. */
+/** Keep unrelated lifecycle fixtures valid under the authored content contract. */
 function registerQuestion(
   sessionId: string,
   env: NodeJS.ProcessEnv,
@@ -96,7 +96,11 @@ function registerQuestion(
   persistQuestion(
     sessionId,
     env,
-    { ...question, body: question.body ?? question.question },
+    {
+      title: question.title ?? question.question,
+      summary: question.summary ?? question.question,
+      ...question,
+    },
     now,
   )
 }
@@ -112,8 +116,9 @@ function writeSessionState(
       ? {}
       : {
           pending: state.pending.map((entry) => ({
+            title: entry.title ?? entry.question,
+            summary: entry.summary ?? entry.question,
             ...entry,
-            body: entry.body ?? entry.question,
           })),
         }),
   })
@@ -571,7 +576,7 @@ describe('pushing a registered question', () => {
     })
     expect(h.recorder.submitted[0]?.draft.presentation).toMatchObject({
       title: 'Ship it?',
-      body: 'Ship it?',
+      summary: 'Ship it?',
     })
     // Kind default sounds are resolved server-side; stamping one here would
     // skip Account and Project maps.
@@ -1088,7 +1093,7 @@ describe('nagging guards', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3', stop_hook_active: true }))
 
     const questions = h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))
-    expect(questions.map((entry) => entry.draft.presentation.body)).toEqual([
+    expect(questions.map((entry) => entry.draft.presentation.summary)).toEqual([
       'First question?',
       'Follow-up question?',
     ])
@@ -1804,7 +1809,7 @@ describe('the waiter owning one question to the end', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'after-degraded' }))
 
     const questions = h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))
-    expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['New question?'])
+    expect(questions.map((entry) => entry.draft.presentation.summary)).toEqual(['New question?'])
     expect(readSessionState('after-degraded', h.env).pending?.map((entry) => entry.question)).toEqual(
       ['Earlier question?'],
     )
@@ -2043,7 +2048,7 @@ describe('several questions in flight', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'multi1' }))
 
     const questions = h.recorder.submitted.filter((s) => isQuestionSubmit(s))
-    expect(questions.map((s) => s.draft.presentation.body)).toEqual(['Ship it?', 'Deploy where?'])
+    expect(questions.map((s) => s.draft.presentation.summary)).toEqual(['Ship it?', 'Deploy where?'])
     // Each is its own notification with its own collapse key — one ask never
     // stands in for, or replaces, another.
     expect(new Set(questions.map((s) => s.draft.delivery.collapse_key)).size).toBe(2)
@@ -2061,6 +2066,7 @@ describe('several questions in flight', () => {
     writeSessionState('codex-form', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions(
       { form: JSON.stringify({
+          summary: 'Choose launch ownership and region.',
           questions: [
             { text: 'Start personally?', choices: ['Yes', 'No'] },
             { text: 'Which region?', choices: ['US', 'EU'] },
@@ -2608,7 +2614,7 @@ describe('ask registration', () => {
     const h = harness()
     // Inside a hook, a rejection is only a stderr note the agent never reads —
     // so it would look registered and then silently never ask.
-    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship', choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
     expect(readSessionState('a1', h.env).pending).toBeUndefined()
   })
 
@@ -2635,6 +2641,7 @@ describe('ask registration', () => {
     writeSessionState('form1', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions(
       { form: JSON.stringify({
+          summary: 'Choose deployment details.',
           questions: [
             { text: 'Deploy where?', choices: ['Staging', 'Production'], multi: true },
             { text: 'Anything to watch?' },
@@ -2647,8 +2654,10 @@ describe('ask registration', () => {
     if (!built.ok) return
     registerQuestion('form1', h.env, {
       question: built.questions[0]!.text,
+      title: 'Choose deployment details',
+      summary: built.summary,
       questions: built.questions,
-      body: built.body,
+      ...(built.body !== undefined ? { body: built.body } : {}),
     })
     const pending = readSessionState('form1', h.env).pending?.[0]
     expect(pending?.questions).toHaveLength(2)
@@ -2656,9 +2665,9 @@ describe('ask registration', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
     const draft = h.recorder.submitted[0]?.draft
-    expect(draft?.presentation.title).toBe('Deploy where?')
-    // The questions travel structured and the first one is the title; the
-    // body carries only the context so nothing renders twice.
+    expect(draft?.presentation.title).toBe('Choose deployment details')
+    expect(draft?.presentation.summary).toBe('Choose deployment details.')
+    // Questions travel structured while Body remains standalone focused detail.
     expect(draft?.presentation.body).toBe('## Context\nThe long story.')
     expect(draft?.reply?.questions).toEqual([
       {
@@ -2754,14 +2763,14 @@ describe('ask registration', () => {
 
   it('does not let an explicit session bypass exact active-harness proof', () => {
     const h = harness()
-    expect(askCommand(h.deps, 'Ship it?', { sessionId: 'guessed' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship', sessionId: 'guessed' })).toBe(EXIT.usage)
     expect(readSessionState('guessed', h.env).pending).toBeUndefined()
   })
 
   it('does not route from NOTIFAI_SESSION where no exact harness has spoken', () => {
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
-    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { title: 'Choose whether to ship' })).toBe(EXIT.usage)
     expect(readSessionState('solo-session', h.env).pending).toBeUndefined()
   })
 
@@ -2859,7 +2868,7 @@ describe('session-start hook', () => {
     const guidance = path.join(h.deps.cwd, '.notifai', 'guidance')
     mkdirSync(guidance, { recursive: true })
     writeFileSync(path.join(guidance, 'titles.md'), `private-start-${'x'.repeat(16_000)}`)
-    writeFileSync(path.join(guidance, 'bodies.md'), `private-end-${'y'.repeat(16_000)}`)
+    writeFileSync(path.join(guidance, 'content.md'), `private-end-${'y'.repeat(16_000)}`)
 
     await hookRunCommand(
       h.deps,
@@ -2908,7 +2917,7 @@ describe('session-start hook', () => {
       },
     })
     expect(h.io.outLines.at(-1)).not.toContain('topic=titles')
-    expect(h.io.outLines.at(-1)).not.toContain('topic=bodies')
+    expect(h.io.outLines.at(-1)).not.toContain('topic=content')
   })
 
   it('uses Cursor native Stop follow-up once when its SessionStart context is lossy', async () => {
@@ -3478,7 +3487,7 @@ describe('reconciling a conversation answer', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'stale-then-new' }))
 
     const questions = h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))
-    expect(questions.map((entry) => entry.draft.presentation.body)).toEqual(['Which ASN endpoint?'])
+    expect(questions.map((entry) => entry.draft.presentation.summary)).toEqual(['Which ASN endpoint?'])
   })
 
   it('reserves a close-fence budget when the owner deadline is nearly now', async () => {
@@ -4002,7 +4011,7 @@ describe('telling concurrent agents apart', () => {
     const draft = h.recorder.submitted[0]?.draft
     expect(draft?.source?.session_label).toBe('Migration Worktree')
     expect(draft?.presentation.title).not.toContain('sess-abc')
-    expect(draft?.presentation.body).not.toContain('sess-abc')
+    expect(draft?.presentation.summary).not.toContain('sess-abc')
   })
 })
 
@@ -4469,7 +4478,7 @@ describe('two hooks racing one question', () => {
 
     const sent = h.recorder.submitted
       .filter((entry) => isQuestionSubmit(entry))
-      .map((entry) => entry.draft.presentation.body)
+      .map((entry) => entry.draft.presentation.summary)
     expect(sent).toEqual(['Older question?', 'Newer question?'])
     expect(h.io.outLines.join('\n')).toContain('Answer the newer question')
     expect(h.io.errLines.join('\n')).toContain('yielding the answer owner')

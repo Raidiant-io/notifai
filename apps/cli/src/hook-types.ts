@@ -202,6 +202,10 @@ export interface PendingQuestion {
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */
   question: string
+  /** Authored native title, separate from what the question asks. */
+  title: string
+  /** Purpose-written plain text for native banners and notification lists. */
+  summary: string
   /**
    * Epoch ms when `notifai ask` registered this. The grace window runs from
    * here, not from the turn's end: a question the agent asked five minutes ago
@@ -213,7 +217,7 @@ export interface PendingQuestion {
    * texts, choices, multi flags. What actually rides the push.
    */
   questions?: QuestionT[]
-  /** Canonical Markdown body composed when the question was registered. */
+  /** Optional standalone Markdown Body composed when the question was registered. */
   body?: string
   /** Final ordered media collection; uploads complete before registration. */
   media?: MediaItemT[]

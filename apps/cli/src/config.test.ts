@@ -3,7 +3,20 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { loadConfig, personalProjectConfigPath, sessionConfigPath } from './config.js'
-import { buildDraft } from './send.js'
+import { buildDraft as buildAuthoredDraft, type SendFlags } from './send.js'
+
+/** Keep unrelated config cases terse while exercising the current authored shape. */
+function buildDraft(
+  config: Parameters<typeof buildAuthoredDraft>[0],
+  flags: Omit<SendFlags, 'summary'> & { summary?: string },
+  invocation?: Parameters<typeof buildAuthoredDraft>[2],
+) {
+  return buildAuthoredDraft(
+    config,
+    { summary: flags.summary ?? flags.body ?? flags.title, ...flags },
+    invocation,
+  )
+}
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'notifai-cli-'))
 afterAll(() => rmSync(tmp, { recursive: true, force: true }))
@@ -211,7 +224,7 @@ describe('draft building', () => {
     if (!build.ok) throw new Error(build.error)
     expect(build.draft).toEqual({
       schema_version: 1,
-      presentation: { title: 'T', body: 'B' },
+      presentation: { title: 'T', summary: 'B', body: 'B' },
       targets: { mode: 'all' },
       delivery: { ttl_seconds: 86400, collapse_key: null },
     })
@@ -460,6 +473,7 @@ describe('draft building', () => {
     ].join('\n')
     const build = buildDraft(config, {
       title: 'Visual result',
+      summary: 'The visual comparison is ready.',
       body,
       image: ['med_first', 'med_second'],
     })

@@ -384,13 +384,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('Send a notification')
     .optionsGroup(SEND_GROUP.content)
     .requiredOption('--title <title>', 'brief title whose substance is immediately understandable')
-    .option('--body <markdown>', 'canonical Markdown body')
-    .option('--body-file <path>', 'read the canonical Markdown body from a file (use - for stdin)')
+    .requiredOption('--summary <text>', 'short one-line plain-text summary for banners and lists')
+    .option('--body <markdown>', 'optional standalone Markdown body for focused detail')
+    .option('--body-file <path>', 'read the optional standalone Markdown body from a file (use - for stdin)')
     .option(
       '--literal-backslash-n',
       'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
     )
-    .option('--subtitle <subtitle>', 'a plain-text line between the title and body')
     .option(
       '--image <path|url|media_id>',
       'upload or attach an image in collection order (repeatable, maximum 8)',
@@ -525,6 +525,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Register a question, then end the turn')
     .description('Register a question for the turn-end hook to route to your devices, subject to your question-routing settings')
+    .requiredOption('--title <title>', 'brief title whose substance is immediately understandable')
     .option(
       '--choice <label>',
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',
@@ -532,8 +533,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--multi', 'with --choice, several answers may be selected')
     .option('--json', 'machine-readable output')
-    .option('--body <markdown>', 'optional Markdown context appended after the question block')
-    .option('--body-file <path>', 'read optional Markdown context from a file (use - for stdin)')
+    .option('--body <markdown>', 'optional standalone Markdown body for focused detail')
+    .option('--body-file <path>', 'read the optional standalone Markdown body from a file (use - for stdin)')
     .option(
       '--literal-backslash-n',
       'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
@@ -558,6 +559,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       choice?: string[]
       multi?: boolean
       json?: boolean
+      title: string
       body?: string
       bodyFile?: string
       literalBackslashN?: boolean
@@ -600,6 +602,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       }
       // Commander collectors default to []; an empty list means "not passed".
       const flags: Parameters<typeof askCommand>[2] = {
+        title: opts.title,
         ...(opts.choice?.length ? { choice: opts.choice } : {}),
         ...(opts.multi ? { multi: true } : {}),
         ...(body !== undefined ? { body } : {}),

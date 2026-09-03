@@ -1,4 +1,3 @@
-import { bannerExcerpt } from './content.js'
 import {
   CLOSED_CHOICE_BANNER_AFFORDANCE,
   DEFAULT_NOTIFICATION_KIND,
@@ -75,25 +74,18 @@ export function collapsedChoiceAlert(
   draft: NotificationDraftT,
   platform: ApplePlatform = 'ios',
 ): { title: string; subtitle?: string; body: string } {
-  const excerpt = bannerExcerpt(draft.presentation.body)
-  const subtitle = draft.presentation.subtitle
   const alert: { title: string; subtitle?: string; body: string } = {
     title: draft.presentation.title,
-    ...(subtitle !== undefined ? { subtitle } : {}),
-    body: excerpt,
+    body: draft.presentation.summary,
   }
   if (platform !== 'ios' || !replyUsesCard(draft)) return alert
 
-  const alreadyVisible = [alert.title, alert.subtitle ?? '', alert.body].some((value) =>
+  const alreadyVisible = [alert.title, alert.body].some((value) =>
     value.includes(CLOSED_CHOICE_BANNER_AFFORDANCE),
   )
   if (alreadyVisible) return alert
 
-  if (alert.subtitle === undefined) {
-    alert.subtitle = CLOSED_CHOICE_BANNER_AFFORDANCE
-    return alert
-  }
-  alert.body = `${excerpt}\n${CLOSED_CHOICE_BANNER_AFFORDANCE}`
+  alert.subtitle = CLOSED_CHOICE_BANNER_AFFORDANCE
   return alert
 }
 
@@ -218,7 +210,6 @@ function notifaiKey(
   agentAcknowledgementSync?: AgentAcknowledgementSync | null,
 ): Record<string, unknown> {
   const kind = effectiveKind(draft)
-  const excerpt = bannerExcerpt(draft.presentation.body)
   return {
     request_id: ids.requestId,
     delivery_id: ids.deliveryId,
@@ -249,12 +240,13 @@ function notifaiKey(
     ...(projectIdentity?.avatarRevision != null
       ? { project_avatar_revision: projectIdentity.avatarRevision }
       : {}),
+    summary: draft.presentation.summary,
     ...(options?.custom_data !== undefined ? { data: options.custom_data } : {}),
     ...(mediaUrl !== null ? { media_url: mediaUrl } : {}),
     ...(draft.presentation.media !== undefined
       ? { media_count: draft.presentation.media.length }
       : {}),
-    ...(excerpt !== draft.presentation.body ? { has_full_body: true } : {}),
+    ...(draft.presentation.body !== undefined ? { has_body: true } : {}),
     ...(draft.reply !== undefined && replyExpiresAt !== null
       ? { reply_expires_at: replyExpiresAt.toISOString() }
       : {}),

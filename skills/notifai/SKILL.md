@@ -47,7 +47,7 @@ says the guidance exceeded its bound, read it once before judging an Agent Event
 notifai guidance
 ```
 
-`notifai guidance` prints `when-to-notify`, `titles`, `bodies`, `questions`, and
+`notifai guidance` prints `when-to-notify`, `titles`, `content`, `questions`, and
 `acknowledgements` under `from=you`, `from=this repository`, then
 `from=shipped default`. The first decides whether to notify; the others own the words.
 
@@ -95,6 +95,7 @@ and carry only Project context:
 notifai send --kind done \
   --session-label "Account creation" \
   --title "Users can now create accounts" \
+  --summary "Sign-up, verification, and login now work on staging." \
   --body "Sign-up, email verification, and login work end to end on staging. Next: password reset, unless you want something else first."
 ```
 
@@ -119,34 +120,33 @@ Work needs a User response to continue? Ask an answerable question — even if
 blocked. Use one-way blocked only when no User reply would resume the work.
 Reporting ready is a response.
 
-The words come from the guidance — `titles` and `bodies` own what a title,
-body, and summary line carry. The shape on the wire:
+`titles` and `content` guidance own each field. The wire shape:
 
 - **Title** — stands alone; the kind and the Project travel as their own
   fields, never in it.
-- **Body** — one canonical Markdown body; the banner excerpt is taken from the
-  top of it.
-- **`--subtitle`** — one short line between title and body, for when the body
-  is long enough that its first line is not a fair summary of what is inside.
+- **Summary** — required purpose-written one-line plain text for banners and
+  lists, hard limit 240 Unicode characters.
+- **Body** — optional standalone Markdown for focused detail. It contains the
+  Summary's information plus useful detail; focused views show Body or Summary,
+  never both. Omit it when Summary is enough.
+
+Use readable Markdown structure. Summary has no Markdown or media markup.
 
 ```bash
 notifai send --kind failed \
   --title "The pricing page isn't live" \
-  --subtitle "Deploy failed; rolled back, the old page still shows" \
+  --summary "Rolled back cleanly; production still shows the old page." \
   --body-file ./deploy-report.md
 ```
 
-Use `--body-file <path|->` for a long body from a file or stdin. Keep wording
-channel-neutral: never assume a phone, a desktop, or a gesture like "tap here".
+Use `--body-file <path|->` for long content. Keep wording channel-neutral.
 
 Other controls: `--thread-id` groups; `--collapse-key` replaces your earlier
 matching notification; `--ttl` bounds useful delivery.
 Use `notifai capabilities --platform <platform>` for destination contracts.
 
-Images: repeat `--image <path|url>` (up to 8), each paired with `--image-alt`
-saying what it shows; all reach the gallery, captioned. Place one where the
-words mention it with Markdown image syntax and its position — a tile on its
-own line, a thumbnail inside a sentence or list item, both opening the gallery:
+Repeat `--image <path|url>` (up to 8), paired with `--image-alt`; all reach the
+gallery. Reference any or all in Body with Markdown image syntax:
 `- Bob: ![front](media:1) ![side](media:2)`. Bare `media:1`, `[…](media:1)`,
 or a position with no `--image` is an error.
 
@@ -171,15 +171,14 @@ the active harness proves the exact current Agent Session.
 
 ## Ask a question
 
-A question must be answerable from the notification itself. Keep it under 240
-characters; reasoning follows it. Offer 2-6 closed choices when you can, one
+A question must be answerable from the notification itself. The positional
+question is its Summary (under 240 characters); `--title` names what needs the
+User. Put reasoning in the optional standalone Markdown Body. Offer 2-6 closed choices, one
 flag per choice — commas inside a label are literal. A typed answer is always
 possible; closed choices appear after pressing and holding the notification.
 
-**Where the question text comes from differs between the two commands.** With
-`ask`, it is the positional argument and `--body` is context. With
-`send --reply`, it is the *first line of the body* — the title is not the
-question — and context follows after a blank line.
+For both `ask` and `send --reply`, the Summary is the exact answerable question.
+Notifai never infers or truncates it from Body.
 
 ### Default: resume when they answer
 
@@ -189,6 +188,7 @@ foreground command its owner:
 
 ```bash
 notifai ask "Which environment should I roll out to?" \
+  --title "Choose the rollout target" \
   --choice Staging --choice Production --choice Cancel
 ```
 
@@ -213,8 +213,9 @@ turn. That commitment turns the arriving answer into work.
 **Never say where the answer must arrive:** not "tell me here" or "type it at
 this prompt". The route is the harness's concern.
 
-Other surfaces: `--multi` combines answers; `--body`/`--body-file` adds context;
-`--image`/`--image-alt` adds evidence; `--form <path|->` groups up to 10 questions.
+Other surfaces: `--multi` combines answers; `--body`/`--body-file` adds Body;
+`--image`/`--image-alt` adds evidence; `--form <path|->` groups up to 10
+questions and requires a set-level `summary`.
 
 Keep independent questions as separate `ask` calls. Retire a registration
 that is obsolete or that they answer in the conversation with
@@ -242,7 +243,7 @@ Question Routing unavailable and the owner can stay alive:
 ```bash
 notifai send --reply \
   --title "Schema change ready" \
-  --body "Deploy the schema change to production now?" \
+  --summary "Deploy the schema change to production now?" \
   --choice "Deploy now" --choice "Wait for off-peak" \
   --reply-window 86400 --reply-timeout 86400
 ```

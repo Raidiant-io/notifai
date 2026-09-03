@@ -420,7 +420,7 @@ function setupProofDraft(
   const project = config.project.value
   return buildDraft(config, {
     title: 'Your agents can reach you',
-    body:
+    summary:
       project === null
         ? 'Notifai setup is finished. Notifications from your agents will arrive like this one.'
         : `Notifai setup is finished for ${project}. Notifications from your agents will arrive like this one.`,
