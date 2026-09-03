@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -20,6 +21,10 @@ function buildDraft(
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'notifai-cli-'))
 afterAll(() => rmSync(tmp, { recursive: true, force: true }))
+
+function git(cwd: string, ...args: string[]): void {
+  execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' })
+}
 
 function setup(options: {
   globalToml?: string
@@ -57,6 +62,23 @@ function setup(options: {
 }
 
 describe('harness config layers', () => {
+  it('uses one personal Project Override across linked worktrees', () => {
+    const root = path.join(tmp, `linked-${Math.random().toString(36).slice(2)}`)
+    const repo = path.join(root, 'repo')
+    const linked = path.join(root, 'linked')
+    mkdirSync(repo, { recursive: true })
+    git(repo, 'init')
+    git(repo, 'config', 'user.email', 'test@example.invalid')
+    git(repo, 'config', 'user.name', 'Test')
+    writeFileSync(path.join(repo, 'file'), 'x')
+    git(repo, 'add', 'file')
+    git(repo, 'commit', '-m', 'fixture')
+    git(repo, 'worktree', 'add', linked, '-b', 'linked')
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+
+    expect(personalProjectConfigPath(linked, env)).toBe(personalProjectConfigPath(repo, env))
+  })
+
   it('orders session over project-local over project over global', () => {
     const { env, cwd } = setup({
       globalToml: 'ask_grace_seconds = 10\n',

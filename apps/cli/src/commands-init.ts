@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import { type CliConfig } from './config.js'
+import { sharedProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { type SkillScope } from './native-skills.js'
 import {
@@ -122,20 +122,6 @@ async function closeGap(
   state: ReadinessState,
   flags: InitFlags,
 ): Promise<GapCloseResult> {
-  if (state.id === 'project') {
-    // Naming this checkout is local bookkeeping, and the name describes the
-    // checkout it sits in, so it lands there without a question.
-    const slug = projectSlugFrom(flags.projectId ?? path.basename(deps.cwd))
-    const configPath = path.join(deps.cwd, '.notifai', 'config.toml')
-    const existing = existsSync(configPath)
-      ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
-      : {}
-    existing['project'] = slug
-    mkdirSync(path.dirname(configPath), { recursive: true })
-    writeFileSync(configPath, `${stringifyToml(existing)}\n`)
-    return 'closed'
-  }
-
   if (state.id === 'project-enablement') {
     const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
     const binding = projectBinding(deps.cwd, deps.env, config.project.value)
@@ -617,7 +603,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
 
 /** Closing a local gap cannot have changed the service, the keychain, or devices. */
 function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined {
-  return id === 'project' || id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings'
+  return id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings'
     ? ['local']
     : undefined
 }
@@ -627,10 +613,7 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   // Optional CLI updates are surfaced by doctor or when a missing feature is
   // relevant. Init does not turn them into setup work.
   if (state.id === 'contract') return Promise.resolve(false)
-  // Naming the project is init's whole reason to touch the filesystem, costs
-  // nothing, and is undone by editing one line — so it is done rather than
-  // asked about, for a human and an agent alike.
-  if (state.id === 'project') return Promise.resolve(true)
+  if (state.id === 'project') return Promise.resolve(false)
   if (state.id === 'project-enablement') return Promise.resolve(true)
   // Every other hook sub-state is a report line about routing, not an errand
   // with a yes/no question of its own; offering the hooks question for one of
@@ -759,6 +742,19 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   if (scopeFromFlags === 'usage') return EXIT.usage
   let resolved: InitFlags = { ...flags }
   await workingDeps.io.intro?.('Notifai setup')
+
+  // Project inference is the default and writes nothing. An explicit id is a
+  // deliberate shared repository override, authored in this checkout so Git
+  // can review and merge it like every other tracked project policy change.
+  if (resolved.projectId !== undefined) {
+    const configPath = sharedProjectConfigPath(workingDeps.cwd)
+    const existing = existsSync(configPath)
+      ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
+      : {}
+    existing['project'] = projectSlugFrom(resolved.projectId)
+    mkdirSync(path.dirname(configPath), { recursive: true })
+    writeFileSync(configPath, `${stringifyToml(existing)}\n`)
+  }
 
   const skillOpts = resolved.skillsScope === undefined ? {} : { skillScope: resolved.skillsScope }
   let readiness = await assessReadiness(workingDeps, { ...skillOpts, ...(flags.json === true ? { json: true } : {}) })

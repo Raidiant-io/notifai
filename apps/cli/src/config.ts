@@ -2,6 +2,7 @@ import {
   INTERRUPTION_LEVELS,
   REPLY_MAX_WINDOW_SECONDS,
 } from '@raidiant/notifai-protocol'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -60,7 +61,7 @@ export interface CliConfig {
   devices: ResolvedValue<string[] | null>
   sound: ResolvedValue<string | null>
   interruption_level: ResolvedValue<CliInterruptionLevel | null>
-  /** Project identifier stamped on sends; typically set in .notifai/config.toml. */
+  /** Project identifier stamped on sends; inferred unless explicitly shared in .notifai/config.toml. */
   project: ResolvedValue<string | null>
   /** Whether a registered agent question may reach companion devices at all. */
   ask_notifications: ResolvedValue<boolean>
@@ -265,6 +266,22 @@ function canonicalDir(dir: string): string {
   return canonicalPath(path.resolve(dir))
 }
 
+/** Git-owned anchor shared by every linked worktree of one local checkout. */
+export function gitCommonDirectory(cwd: string): string | null {
+  try {
+    const raw = execFileSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2_000,
+      windowsHide: true,
+    }).trim()
+    if (raw === '') return null
+    return canonicalDir(path.isAbsolute(raw) ? raw : path.resolve(cwd, raw))
+  } catch {
+    return null
+  }
+}
+
 /** Walk up from cwd looking for .notifai/<name> (Project Override). */
 function findProjectFile(startDir: string, name: string): string | null {
   let dir = path.resolve(startDir)
@@ -292,6 +309,11 @@ function findGitRoot(startDir: string): string | null {
   }
 }
 
+/** Explicit shared configuration is authored in this checkout and merged through Git. */
+export function sharedProjectConfigPath(cwd: string): string {
+  return findProjectConfigPath(cwd) ?? path.join(findGitRoot(cwd) ?? canonicalDir(cwd), '.notifai', 'config.toml')
+}
+
 /**
  * The directory one Project is identified by, from anywhere inside it.
  *
@@ -312,7 +334,8 @@ export function projectIdentityRoot(cwd: string): string {
 
 /** Stable identity for personal project preferences. */
 export function personalProjectIdentity(cwd: string): string {
-  return createHash('sha256').update(projectIdentityRoot(cwd)).digest('hex').slice(0, 32)
+  const anchor = gitCommonDirectory(cwd) ?? projectIdentityRoot(cwd)
+  return createHash('sha256').update(anchor).digest('hex').slice(0, 32)
 }
 
 /** Personal project layer: `$XDG_CONFIG_HOME/notifai/projects/<identity>.toml`. */

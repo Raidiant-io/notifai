@@ -248,13 +248,8 @@ function projectReadiness(deps: CommandDeps, config: CliConfig): ReadinessState 
     return {
       id: 'project',
       title: 'Project identity',
-      status: 'optional-gap',
-      detail: `"${inferred}" is inferred for each send; init can stamp it into shared config`,
-      remedy: {
-        by: 'cli',
-        summary: 'make the inferred Project identity explicit for every checkout',
-        command: 'notifai init',
-      },
+      status: 'ready',
+      detail: `"${inferred}" (inferred from Git or the current directory)`,
     }
   }
   return {
