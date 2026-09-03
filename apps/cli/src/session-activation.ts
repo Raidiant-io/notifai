@@ -46,6 +46,24 @@ export function sessionActivationOutput(
   return undefined
 }
 
+/** Inject a journaled device answer into the User's new turn. */
+export function userPromptContextOutput(
+  harness: HookHarness | undefined,
+  context: string,
+): string | undefined {
+  if (harness === 'opencode' || harness === 'openclaw') return context
+  if (harness === 'cursor') return JSON.stringify({ additional_context: context })
+  if (harness === 'claude-code' || harness === 'codex') {
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: context,
+      },
+    })
+  }
+  return undefined
+}
+
 /**
  * Cursor currently accepts sessionStart context without reliably delivering it
  * to the model. Its native post-Stop follow-up is the narrow fallback and is

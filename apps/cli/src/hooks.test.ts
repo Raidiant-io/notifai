@@ -1203,6 +1203,74 @@ describe('late answer collection', () => {
     expect(readSessionState('late-prompt', h.env).pending).toBeUndefined()
     expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
   })
+
+  it('injects a journaled answer at Codex prompt start and replays it until acknowledged', async () => {
+    const h = harness([])
+    const acceptedReply = reply({ text: 'Revise the silhouette' })
+    writeSessionState('prompt-answer', h.env, {
+      accepted: {
+        answers: [{
+          pending: {
+            question: 'Ship this version?',
+            request_id: 'req_prompt_answer',
+            collapse_key: 'collapse-prompt-answer',
+            device_ids: ['dev_iphone'],
+          },
+          reply: acceptedReply,
+          replies: [acceptedReply],
+          agent_acknowledgement_required: true,
+          agent_acknowledgement_text_required: true,
+        }],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+      acknowledgement_due: [{
+        request_id: 'req_prompt_answer',
+        recorded_at: NOW,
+        text_required: true,
+      }],
+    })
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd, prompt: 'Any update?' }),
+      'codex',
+    )
+
+    const first = JSON.parse(h.io.outLines.at(-1) ?? '{}') as {
+      hookSpecificOutput?: { hookEventName?: string; additionalContext?: string }
+    }
+    expect(first.hookSpecificOutput).toMatchObject({
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: expect.stringContaining('Revise the silhouette'),
+    })
+    expect(first.hookSpecificOutput?.additionalContext).toContain(
+      'notifai acknowledge req_prompt_answer --text <text>',
+    )
+    expect(readSessionState('prompt-answer', h.env).accepted).toBeDefined()
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd, prompt: 'Still there?' }),
+      'codex',
+    )
+    expect(h.io.outLines).toHaveLength(2)
+
+    const acknowledged = readSessionState('prompt-answer', h.env)
+    delete acknowledged.acknowledgement_due
+    writeSessionState('prompt-answer', h.env, acknowledged)
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd }),
+      'codex',
+    )
+
+    expect(h.io.outLines).toHaveLength(2)
+    expect(readSessionState('prompt-answer', h.env).accepted).toBeUndefined()
+  })
 })
 
 describe('OpenCode answer continuation', () => {
