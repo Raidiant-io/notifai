@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f24979b34b43ecaea87eebed368d9a148829ae3c4498cd9b6ed0e5f58604df0d",
+  "behavior_digest": "sha256:13aa451667e641d6da0ec3f91ec3d1f94efb08a288643878cd8a08cc9678fd8c",
   "outcome": "guidance-updated",
   "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making inferred Project identity write-free and sharing personal Project Overrides across linked worktrees. README and shipped skill guidance now distinguish Machine-Global Configuration, personal Project Overrides outside the repository, and explicit tracked shared `.notifai/config.toml`; they also tell agents to author shared changes in the active checkout and merge them through Git. Question ownership, acknowledgements, trust, notification authoring, and harness return-path rules remain unchanged.",
   "surfaces_reviewed": [
