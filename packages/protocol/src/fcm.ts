@@ -19,12 +19,13 @@ export interface FcmDataEnvelope {
 }
 
 /** Silent Android library-refresh message consumed before visible-envelope parsing. */
-export function buildFcmSoundLibrarySyncEnvelope(): FcmDataEnvelope {
+export function buildFcmSoundLibrarySyncEnvelope(receiptChallenge?: string): FcmDataEnvelope {
   return {
     data: {
       notifai: JSON.stringify({
         schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
         sync: 'sound_library',
+        ...(receiptChallenge === undefined ? {} : { receipt_challenge: receiptChallenge }),
       }),
     },
     priority: 'NORMAL',

@@ -712,6 +712,8 @@ export type SoundLibraryManifestEntryT = Static<typeof SoundLibraryManifestEntry
 /** Exact locally installed Sound set reported by one Device Installation. */
 export const ReportSoundLibraryReceiptRequest = Type.Object(
   {
+    /** One-time Device Installation challenge delivered by the current sync round. */
+    receipt_challenge: Type.String({ pattern: '^[A-Za-z0-9_-]{22}$' }),
     sounds: Type.Array(SoundLibraryManifestEntry, { maxItems: CUSTOM_SOUND_LIBRARY_LIMIT }),
   },
   { additionalProperties: false },
