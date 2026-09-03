@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.0.0](https://github.com/Raidiant-io/notifai/compare/v10.1.7...v11.0.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `notifai init --setup-scope` and the `--global` flag on `notifai hooks install` and `notifai hooks uninstall` are removed. Lifecycle wiring is installed for the machine; `notifai project enable` and `notifai project disable` are the per-project switch.
+
+### Features
+
+* add authored notification summaries ([#138](https://github.com/Raidiant-io/notifai/issues/138)) ([b9a27a1](https://github.com/Raidiant-io/notifai/commit/b9a27a1e3787b645a62dd20ceef7c9997963ca63))
+* **cli:** install lifecycle wiring for the machine only ([#136](https://github.com/Raidiant-io/notifai/issues/136)) ([e92f5f2](https://github.com/Raidiant-io/notifai/commit/e92f5f2d2aa9865a8e5173cca0b3952db42ef566))
+
+
+### Bug Fixes
+
+* align the protocol wire, close usage, and distribution docs ([#132](https://github.com/Raidiant-io/notifai/issues/132)) ([58d9feb](https://github.com/Raidiant-io/notifai/commit/58d9feb6295bc9cdf04efd6226df59b76abed529))
+* **cli:** deliver pending answers and harden file locks ([#141](https://github.com/Raidiant-io/notifai/issues/141)) ([75e57eb](https://github.com/Raidiant-io/notifai/commit/75e57ebfadbfaf127d2322f4c8e9d57aa2b327b0))
+* **cli:** pass Codex SessionStart guidance without hook-output spill ([#135](https://github.com/Raidiant-io/notifai/issues/135)) ([5a8ef4d](https://github.com/Raidiant-io/notifai/commit/5a8ef4d949d2414ae0cc14641a767a9f900e4bef))
+* **cli:** reject unrenderable media references ([#133](https://github.com/Raidiant-io/notifai/issues/133)) ([3db3b0a](https://github.com/Raidiant-io/notifai/commit/3db3b0a344663ede842b34eacdb2e6ec889cb2c4))
+* keep project config stable across worktrees ([#139](https://github.com/Raidiant-io/notifai/issues/139)) ([ad2a8b7](https://github.com/Raidiant-io/notifai/commit/ad2a8b7d8005dd86552944f4f6afb5fc4ec26d61))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.0.8 to 6.1.0
+
 ## [10.1.7](https://github.com/Raidiant-io/notifai/compare/v10.1.6...v10.1.7) (2026-08-31)
 
 

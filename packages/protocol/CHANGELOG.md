@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [6.1.0](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.8...protocol-v6.1.0) (2026-09-03)
+
+
+### Features
+
+* add authored notification summaries ([#138](https://github.com/Raidiant-io/notifai/issues/138)) ([b9a27a1](https://github.com/Raidiant-io/notifai/commit/b9a27a1e3787b645a62dd20ceef7c9997963ca63))
+
+
+### Bug Fixes
+
+* align the protocol wire, close usage, and distribution docs ([#132](https://github.com/Raidiant-io/notifai/issues/132)) ([58d9feb](https://github.com/Raidiant-io/notifai/commit/58d9feb6295bc9cdf04efd6226df59b76abed529))
+
 ## [6.0.8](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.7...protocol-v6.0.8) (2026-08-31)
 
 ## [6.0.7](https://github.com/Raidiant-io/notifai/compare/protocol-v6.0.6...protocol-v6.0.7) (2026-08-31)
