@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.0.2](https://github.com/Raidiant-io/notifai/compare/v11.0.1...v11.0.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **cli:** preserve Codex hook trust across updates ([#145](https://github.com/Raidiant-io/notifai/issues/145)) ([bd4f32f](https://github.com/Raidiant-io/notifai/commit/bd4f32f9eb6e719a81a3b4aa16937117815f0e00))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.1.1 to 6.1.2
+
 ## [11.0.1](https://github.com/Raidiant-io/notifai/compare/v11.0.0...v11.0.1) (2026-09-03)
 
 
