@@ -58,6 +58,9 @@ changes. Stop definitions differ by harness: Claude Code's runs asynchronously
 with an explicit timeout above the longest answer window (POSIX hosts only — on
 Windows it blocks like the others), and Codex declares the same full-window
 timeout; prompt-submit and session-end retain fixed short limits on both.
+Codex SessionStart stays within the harness's built-in inline-context budget;
+Notifai does not add an output-limit override that would create a second trust
+identity. Upgrades preserve both the source file and the approved definition.
 Migrating an older Codex definition requires one unavoidable `/hooks` approval;
 later upgrades must not require another.
 
@@ -112,8 +115,9 @@ request ID, inspect the original with `notifai replies <request_id> --json` and
   reporting-only worker contract and explicit textual delegation rule as
   Claude. A fresh install writes the Machine layer's `~/.codex/hooks.json`, or
   joins inline `[hooks]` when that is the layer's existing representation.
-  Upgrades preserve whichever source already owns Notifai's approved handlers,
-  because moving the same definition between files creates a new Codex trust
+  Upgrades preserve whichever source already owns Notifai's approved handlers
+  and keep the default SessionStart output-limit identity, because moving the
+  definition or adding identity-bearing fields creates a new Codex trust
   identity. One install covers every project and every worktree, so there is
   nothing to repeat in a new checkout; a Project-scoped `.codex` hook file from
   an older Notifai is removed once the Machine copy is proven current.

@@ -257,10 +257,6 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
             command: hookCommand(adapterPath, 'session-start', options.harness, commandOptions),
             // Activation is local context only: no config, credentials, or network.
             timeout: 5,
-            // Codex spills additionalContext above ~2,500 tokens to a preview
-            // file. SessionStart may emit up to 24,000 bytes, so pass the full
-            // context. Changing this field requires one `/hooks` re-approval.
-            ...(options.harness === 'codex' ? { additionalContextLimit: 0 } : {}),
           },
         ],
       },

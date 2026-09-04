@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:af9f6f145f3cb92cac396074a20cfa6cb1e0d2334be69461dc902600962f1998",
+  "behavior_digest": "sha256:197e4555a62a0215d7b5599ce6443692cc872d290fc992c3acfe0731f4f6b9c6",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making Codex hook repairs preserve their existing source file. Harness guidance now states why the source remains stable, install output distinguishes preserved approval from a real approval requirement, and generic activation advice no longer mixes fresh-session work with trust remediation. The stable adapter, one-owned-representation rule, question ownership, acknowledgements, notification authoring, and harness return paths are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making Codex hook upgrades preserve both the existing source file and the approved handler identity. SessionStart guidance is now capped at Codex's built-in inline-context budget, so no identity-bearing output-limit override is needed and oversized guidance falls back whole instead of arriving partially. Install output continues to distinguish preserved approval from a real approval requirement, and generic activation advice remains separate from trust remediation. Question ownership, acknowledgements, notification authoring, and harness return paths are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

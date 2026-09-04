@@ -112,10 +112,14 @@ configuration directories, and notification preferences are resolved behind
 it, so upgrades and configuration changes do not rewrite trusted hook
 definitions. Windows invokes its JavaScript adapter through the registered Node
 executable; macOS/Linux retain the POSIX adapter and its stable command bytes.
+Codex SessionStart guidance stays within Codex's built-in inline-context budget,
+so its stable definition does not need an output-limit override that would
+create a different approval identity.
 Claude Code Stop returns immediately into the live inbox route on macOS/Linux;
 on Windows, where upstream exposes no inbox socket, Stop stays open and returns
 the accepted answer through the harness continuation. The first migration may
-require one Codex `/hooks` approval; later repairs keep the same identity.
+require one Codex `/hooks` approval; later repairs keep the same source and
+definition identity.
 Codex's Stop definition declares the full-window timeout explicitly; that
 one-time definition change is why the migration needs approval. Prompt-submit
 and session-end retain fixed short limits.
