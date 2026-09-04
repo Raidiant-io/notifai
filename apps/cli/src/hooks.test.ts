@@ -34,6 +34,7 @@ import {
 } from './logging.js'
 import {
   EXIT,
+  acknowledgeCommand,
   askCommand,
   buildQuestions,
   hookRunCommand,
@@ -2453,7 +2454,7 @@ describe('several questions in flight', () => {
     expect(h.io.outLines).toEqual([])
   })
 
-  it('records only the requests whose immutable snapshot requires acknowledgement', async () => {
+  it('requires acknowledgement for every answered request despite a legacy disabled flag', async () => {
     const h = harness([])
     repliesByRequest(
       h,
@@ -2473,10 +2474,11 @@ describe('several questions in flight', () => {
     const state = readSessionState('ack-mixed', h.env)
     expect(state.acknowledgement_due?.map((entry) => entry.request_id)).toEqual([
       h.recorder.receipts[0],
+      h.recorder.receipts[1],
     ])
     const output = JSON.parse(h.io.outLines[0] ?? '{}') as { reason?: string }
     expect(output.reason).toContain(h.recorder.receipts[0]!)
-    expect(output.reason).not.toContain(h.recorder.receipts[1]!)
+    expect(output.reason).toContain(h.recorder.receipts[1]!)
   })
 
   it('lists every required request and command in a multi-answer continuation', async () => {
@@ -4643,7 +4645,6 @@ describe('Claude Code Stop wake route', () => {
 
   it('settles a pre-Stop registration through the detached Claude owner', async () => {
     const h = harness([reply({ text: 'Ship it' })])
-    h.recorder.acknowledgementRequiredFor = () => false
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     registerQuestion('claude-route', h.env, { question: 'Ship it?' }, NOW)
     const wake = claudeWake()
@@ -4678,6 +4679,10 @@ describe('Claude Code Stop wake route', () => {
     expect(wake.sent).toHaveLength(1)
     expect(wake.resumed).toEqual([])
     expect(h.io.outLines).toEqual([])
+
+    expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
+      text: 'Shipping the chosen change now.',
+    })).toBe(EXIT.ok)
 
     await hookRunCommand(
       deps,
@@ -5115,7 +5120,6 @@ describe('Codex Stop wake route', () => {
 
   it('settles once when UserPromptSubmit overtakes the asking turn Stop', async () => {
     const h = harness([reply({ text: 'Ship it' })])
-    h.recorder.acknowledgementRequiredFor = () => false
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
     registerQuestion(CODEX_THREAD, h.env, { question: 'Ship it?' }, NOW)
@@ -5173,6 +5177,10 @@ describe('Codex Stop wake route', () => {
     expect(h.io.outLines.map((line) => JSON.parse(line))).toEqual([
       expect.objectContaining({ decision: 'block' }),
     ])
+
+    expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
+      text: 'Shipping the chosen change now.',
+    })).toBe(EXIT.ok)
 
     await hookRunCommand(
       deps,

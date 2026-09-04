@@ -10,7 +10,7 @@ export const WORKER_ACTIVATION_CONTEXT =
   'Notifai worker context: an Agent Event is a meaningful occurrence in your work; a Notification Request is a deliberate User-visible message about one. Report Agent Events to the parent and do not send Notification Requests unless the parent explicitly delegated that ownership. If delegated, load the Notifai skill and run `notifai guidance` before composing one.'
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
-  'Notifai is active, but lifecycle guidance could not be loaded. Run `notifai guidance` once before deciding whether or how to send a Notification Request.'
+  'Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai init --json` to check setup, then `notifai guidance` before deciding whether or how to send a Notification Request.'
 
 function rootActivationContext(cwd: string, env: NodeJS.ProcessEnv): string {
   const guidance = boundedEffectiveGuidance({

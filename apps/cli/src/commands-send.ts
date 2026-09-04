@@ -649,12 +649,11 @@ function replyResultJson(
     request_id: response.request_id,
     reply_expires_at: response.reply_expires_at,
     replies: response.replies,
-    agent_acknowledgement_required: response.agent_acknowledgement_required,
+    agent_acknowledgement_required: response.replies.length > 0 || response.agent_acknowledgement_required,
     agent_acknowledgement: response.agent_acknowledgement,
     agent_acknowledgement_text_required: response.agent_acknowledgement_text_required,
     acknowledgement_command: acknowledgementCommand(
       response.request_id,
-      response.agent_acknowledgement_required,
       response.agent_acknowledgement_text_required,
       response.agent_acknowledgement,
       response.replies.length > 0,

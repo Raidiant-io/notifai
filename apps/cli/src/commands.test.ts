@@ -2314,15 +2314,15 @@ describe('command contracts', () => {
     expect(io.outLines.join('\n')).not.toContain('notifai acknowledge')
   })
 
-  it('exposes disabled acknowledgement state without a follow-up command', async () => {
+  it('requires acknowledgement for an answer despite a legacy disabled flag', async () => {
     const io = new CapturedIo()
     const client = {
       replies: async () => replyResponse([reply], { required: false }),
     } as unknown as ApiClient
 
     expect(await repliesCommand(makeDeps(io, client), receipt.request_id, {})).toBe(EXIT.ok)
-    expect(io.outLines).toContain('Agent Acknowledgement: not required for this request.')
-    expect(io.outLines.join('\n')).not.toContain('notifai acknowledge')
+    expect(io.outLines).toContain('Agent Acknowledgement required.')
+    expect(io.outLines.join('\n')).toContain('notifai acknowledge')
   })
 
   it('exposes an existing acknowledgement without repeating the follow-up command', async () => {
@@ -7915,8 +7915,8 @@ describe('asking before the hooks have ever run', () => {
   // harness sees its parent's markers alongside its own. Neither order between
   // two markers can be right, and both nestings are ordinary: an orchestrator
   // running inside Claude Code starts Codex, and the reverse happens just as
-  // often. The environment cannot settle it; the pointer index can.
-  it('routes to the live Codex thread when a Claude Code orchestrator started it', () => {
+  // often. Neither a pointer nor the newest timestamp proves shell ownership.
+  it('rejects ambiguous inherited markers even when only Codex has lifecycle evidence', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-under-claude-'))
     const io = new CapturedIo()
     const env = {
@@ -7942,15 +7942,13 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('codex-current-thread', env).pending?.[0]).toMatchObject({
-      question: 'Ship it?',
-      source: { session_id: 'codex-current-thread', harness: 'codex' },
-    })
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines[0]!).code).toBe('session_identity_ambiguous')
+    expect(readSessionState('codex-current-thread', env).pending).toBeUndefined()
     expect(readSessionState('claude-orchestrator', env).pending).toBeUndefined()
   })
 
-  it('routes to the live Claude Code session when a Codex orchestrator started it', () => {
+  it('does not let newer Claude activity steal a shell with inherited Codex identity', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-under-codex-'))
     const io = new CapturedIo()
     const env = {
@@ -7974,11 +7972,9 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(readSessionState('claude-current', env).pending?.[0]).toMatchObject({
-      question: 'Ship it?',
-      source: { session_id: 'claude-current', harness: 'claude-code' },
-    })
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines[0]!).code).toBe('session_identity_ambiguous')
+    expect(readSessionState('claude-current', env).pending).toBeUndefined()
     expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
   })
 
@@ -8015,7 +8011,7 @@ describe('asking before the hooks have ever run', () => {
       .toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
   })
 
-  it('judges the fired check against the active harness, not a global installation of another', async () => {
+  it('does not attribute routing readiness from one candidate historical hook', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-fired-active-harness-'))
     const io = new CapturedIo()
     const env = {
@@ -8039,12 +8035,9 @@ describe('asking before the hooks have ever run', () => {
 
     const readiness = await assessReadiness(deps)
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
-    // The Codex hooks fired. A missing Claude Code pointer says nothing about
-    // that, and telling this agent to send a Claude Code prompt is advice it
-    // cannot act on: it would refuse to ask, forever.
-    expect(fired?.status).toBe('ready')
-    expect(fired?.detail).toMatch(/active Codex session/i)
-    expect(fired?.detail).not.toMatch(/Claude Code/i)
+    expect(fired?.status).not.toBe('ready')
+    expect(fired?.detail).toMatch(/Codex/i)
+    expect(fired?.detail).toMatch(/Claude Code/i)
   })
 
   it('advises every harness whose markers are present when none of them has fired here', async () => {
@@ -8748,8 +8741,6 @@ describe('asking before the hooks have ever run', () => {
     const out = io.outLines.join('\n')
     expect(out).toMatch(/FAIL\s+Turn\-end hook shape/)
     expect(out).toContain('needs `async: true`')
-    expect(out).toContain('kills the backgrounded waiter silently before the complete answer window')
-    expect(out).toContain(`needs an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s`)
   })
 
   /** A configured Claude Code project with one live session claiming `pid`. */

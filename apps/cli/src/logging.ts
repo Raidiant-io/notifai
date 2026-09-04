@@ -160,7 +160,7 @@ const MAX_DEPTH = 4
 const SECRET_KEY_PATTERN = /secret|token|password|authorization|credential|verifier|api[_-]?key/i
 const MACHINE_TOKEN_PATTERN = /nfm_[A-Za-z0-9._-]{6,}/g
 /** Notification and question content: persist length, never the words. */
-const CONTENT_STRING_KEYS = new Set(['title', 'subtitle', 'body', 'text', 'question'])
+const CONTENT_STRING_KEYS = new Set(['title', 'subtitle', 'summary', 'body', 'text', 'question'])
 /** Choice labels, reply answers, and raw argv: persist counts, never values. */
 const CONTENT_LIST_KEYS = new Set(['answers', 'choices', 'argv'])
 

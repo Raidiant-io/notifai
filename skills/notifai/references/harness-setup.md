@@ -97,6 +97,11 @@ foreground owner. Keep it alive for the complete answer window and set
 request ID, inspect the original with `notifai replies <request_id> --json` and
 `notifai status <request_id> --json`, and never send a duplicate.
 
+Conflicting inherited harness markers also require that foreground flow.
+Historical hook timestamps cannot prove which nested Agent Session owns a
+shell. Do not strip markers or borrow another Agent Session's identity to make
+`ask` pass; basic sending remains available without guessed Source Context.
+
 ## Activation by harness
 
 - **Claude Code:** run the installer if needed, start one fresh Agent Session,
@@ -138,6 +143,9 @@ request ID, inspect the original with `notifai replies <request_id> --json` and
   lookup fails or returns unusable data it also fails safe as a non-sending
   worker; only a proven parent Agent Session receives owner context. Explicit textual
   delegation promotes that worker through the same skill-and-guidance rule.
+  Each model request receives current guidance when the Project is enabled,
+  including after compaction. Disabled Projects add no context; enabling one
+  takes effect on a subsequent request in the same Agent Session.
   OpenCode has no locally proven exactly-once continuation after `session.idle`,
   so `notifai ask` fails closed instead of accepting an answer into a void.
   Use a blocking `notifai send --reply` question when its answer must return to

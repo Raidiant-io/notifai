@@ -101,9 +101,7 @@ describe('Hermes classic CLI/local Source Context seam', () => {
     expect(sourceContextHarnessSession(env, cwd, 42)).toBeNull()
   })
 
-  it('does not apply the send-only mix rule to a Hermes-free Claude/Codex nest', () => {
-    // Existing send attribution still uses declared order when nothing has
-    // fired. Live-evidence ownership for ask lives in commands.test.ts.
+  it('does not guess Source Context for a Claude/Codex nest', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-codex-pair-'))
     const env = {
       CLAUDECODE: '1',
@@ -115,7 +113,7 @@ describe('Hermes classic CLI/local Source Context seam', () => {
       'claude-code',
       'codex',
     ])
-    expect(sourceContextHarnessSession(env, cwd, 42)?.harness).toBe('claude-code')
+    expect(sourceContextHarnessSession(env, cwd, 42)).toBeNull()
   })
 
   it('builds Source Context from HERMES_SESSION_ID plus invocation cwd git/worktree', () => {
@@ -274,7 +272,7 @@ describe('OpenClaw agent-local Source Context seam', () => {
     }
   })
 
-  it('treats nested OpenClaw and Claude markers as contested until live evidence exists', () => {
+  it('keeps nested OpenClaw and Claude markers contested without process ownership', () => {
     const env = stateEnv({
       ...PINNED_OPENCLAW.observedPluginEnv,
       CLAUDECODE: '1',

@@ -1,11 +1,8 @@
 import {
   hermesClassicCliLocalInstance,
-  isHookInstallableHarness,
   type HermesClassicCliLocalInstance,
   type SourceContextHarness,
 } from './harnesses.js'
-import { readLiveProjectSessionPointers } from './hook-project-sessions.js'
-import { readSessionState } from './hook-session-state.js'
 
 /**
  * Exact evidence that this shell command is running inside one supported
@@ -33,10 +30,10 @@ export interface ActiveHarnessSession {
 /**
  * Every harness marker present in this environment, in declared order.
  *
- * Order here is a last resort, not an answer. A harness exports its markers
+ * Order is only for diagnostic display. A harness exports its markers
  * into every process it starts, so a nested harness inherits its parent's
  * markers alongside its own and the environment alone cannot say which of them
- * owns this shell; `resolveActiveHarness` settles that with live evidence.
+ * owns this shell; `resolveActiveHarness` preserves that ambiguity.
  */
 function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   const candidates: ActiveHarnessSession[] = []
@@ -89,93 +86,38 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
 interface ActiveHarnessResolution {
   active: ActiveHarnessSession | null
   /**
-   * Markers of harnesses that could equally own this shell, present only when
-   * nothing here has fired yet and declared order had to pick. Whatever is
-   * reported then has to hold for every one of them.
+   * Markers of harnesses that could equally own this shell. Lifecycle activity
+   * cannot establish which inherited marker owns the invoking process.
    */
   contested: ActiveHarnessSession[]
 }
 
 /**
- * Which Agent Session owns this shell, when several claim to.
- *
- * Nesting is ordinary: an orchestrator running inside Claude Code starts a
- * Codex session, and that Codex process inherits `CLAUDECODE` and
- * `CLAUDE_CODE_SESSION_ID` on top of its own `CODEX_THREAD_ID`. The mirror is
- * just as ordinary, so no fixed precedence between two markers can be right —
- * whichever one it favours is wrong in the opposite nesting, and the cost is
- * silent: `ask` looks up a session that is not this one, and every remedy the
- * agent is told to try addresses a harness that is not running here.
- *
- * The general rule is to prefer the most specific *live* signal over inherited
- * environment. An inherited marker is a claim about some ancestor process; a
- * session id that names an entry in this directory's live pointer index is
- * evidence that that exact session fired a hook here and its state still
- * exists. Live evidence therefore wins over declared order, and the most
- * recently active pointer wins between two live candidates: the harness whose
- * turn is running is the one that fired last, while its parent sits blocked on
- * the child it started. Declared order decides only when nothing here has
- * fired yet, and it says so — every route fails closed there anyway.
+ * Environment markers identify an uncontested Agent Session. With several
+ * inherited markers, neither lifecycle timestamps nor a directory pointer
+ * proves which process owns this shell: a parent may resume while its child
+ * still works, and activity can come from another concurrent invocation.
+ * Keep that concrete ambiguity visible instead of routing to the latest writer.
  */
 export function resolveActiveHarness(
   env: NodeJS.ProcessEnv,
-  cwd: string,
-  now: number,
+  _cwd: string,
+  _now: number,
 ): ActiveHarnessResolution {
   const candidates = harnessEnvCandidates(env)
   const first = candidates[0]
   if (first === undefined) return { active: null, contested: [] }
-  if (candidates.length === 1) return { active: first, contested: [] }
-
-  // A send-only harness has no hook evidence, so live pointer/state of a
-  // hook-installable parent cannot prove which nested process owns this
-  // shell. Mixing Hermes with another marker therefore stays contested.
-  const mixedWithSendOnly = candidates.some((candidate) => !isHookInstallableHarness(candidate.harness))
-  if (mixedWithSendOnly) return { active: first, contested: candidates }
-
-  // Exact lifecycle state is machine-global and survives a command moving to
-  // another linked checkout. Prefer it before the checkout-local
-  // pointer. A unique newest hook event proves which nested harness owns this
-  // shell; ties and missing evidence remain contested and fail closed.
-  const evidenced = candidates.flatMap((candidate) => {
-    if (candidate.sessionId === undefined) return []
-    const state = readSessionState(candidate.sessionId, env)
-    if (state.harness !== candidate.harness) return []
-    const activity = Math.max(state.last_prompt_at ?? 0, state.last_stop_at ?? 0)
-    return activity > 0 ? [{ candidate, activity }] : []
-  })
-  if (evidenced.length > 0) {
-    evidenced.sort((left, right) => right.activity - left.activity)
-    if (evidenced.length === 1 || evidenced[0]!.activity > evidenced[1]!.activity) {
-      return { active: evidenced[0]!.candidate, contested: [] }
-    }
-    return { active: first, contested: candidates }
-  }
-  for (const pointer of readLiveProjectSessionPointers(cwd, env, now)) {
-    const owner = candidates.find(
-      (candidate) =>
-        candidate.harness === pointer.harness && candidate.sessionId === pointer.sessionId,
-    )
-    if (owner !== undefined) return { active: owner, contested: [] }
-  }
-  return { active: first, contested: candidates }
+  return { active: first, contested: candidates.length > 1 ? candidates : [] }
 }
 
-/**
- * Source Context attribution. Hook-installable nesting still uses declared
- * order when nothing has fired — that existing send behavior is preserved.
- * A contested mix that includes a send-only harness (Hermes) fails closed:
- * the wrong Agent Session would otherwise be named as the owner.
- */
+/** Source Context must not attribute a request to a guessed Agent Session. */
 export function sourceContextHarnessSession(
   env: NodeJS.ProcessEnv,
   cwd: string,
   now: number,
 ): ActiveHarnessSession | null {
   const { active, contested } = resolveActiveHarness(env, cwd, now)
-  if (contested.some((candidate) => !isHookInstallableHarness(candidate.harness))) {
-    return null
-  }
+  if (contested.length > 1) return null
   if (active?.harness === 'hermes' && active.integrationInstance === undefined) return null
   return active
 }

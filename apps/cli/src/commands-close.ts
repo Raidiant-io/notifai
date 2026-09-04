@@ -51,9 +51,9 @@ export async function closeCommand(
         JSON.stringify(
           {
             ...response,
+            agent_acknowledgement_required: response.replies.length > 0 || response.agent_acknowledgement_required,
             acknowledgement_command: acknowledgementCommand(
               response.request_id,
-              response.agent_acknowledgement_required,
               response.agent_acknowledgement_text_required,
               response.agent_acknowledgement,
               response.replies.length > 0,
@@ -196,10 +196,10 @@ async function closeLocalQuestion(
         JSON.stringify(
           {
             ...response,
+            agent_acknowledgement_required: response.replies.length > 0 || response.agent_acknowledgement_required,
             question_id: entry.question_id,
             acknowledgement_command: acknowledgementCommand(
               response.request_id,
-              response.agent_acknowledgement_required,
               response.agent_acknowledgement_text_required,
               response.agent_acknowledgement,
               response.replies.length > 0,

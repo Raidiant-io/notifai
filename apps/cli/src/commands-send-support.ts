@@ -156,18 +156,17 @@ function acknowledgeInvocation(requestId: string, textRequired: boolean): string
 
 export function acknowledgementCommand(
   requestId: string,
-  required: boolean,
   textRequired: boolean,
   acknowledgement: ListRepliesResponse['agent_acknowledgement'],
   hasReply = true,
 ): string | null {
-  return required && acknowledgement === null && hasReply
+  return acknowledgement === null && hasReply
     ? acknowledgeInvocation(requestId, textRequired)
     : null
 }
 
 export function printAcknowledgementStatus(deps: CommandDeps, response: ListRepliesResponse): void {
-  if (!response.agent_acknowledgement_required) {
+  if (!response.agent_acknowledgement_required && response.replies.length === 0) {
     deps.io.out('Agent Acknowledgement: not required for this request.')
     return
   }
