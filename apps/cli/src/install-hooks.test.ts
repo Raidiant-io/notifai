@@ -1231,7 +1231,7 @@ describe('the OpenClaw adapter', () => {
     expect(source).not.toContain('PATH:')
   })
 
-  it('activates a parent session only once', async () => {
+  it('retries failed guidance loading on the next parent prompt', async () => {
     const handlers = handlersOf(await loadPlugin())
     const activate = handlers.get('before_prompt_build') as (
       event: object,
@@ -1240,7 +1240,7 @@ describe('the OpenClaw adapter', () => {
     const first = await activate({}, { sessionKey: 'agent:main:main' })
     const second = await activate({}, { sessionKey: 'agent:main:main' })
     expect(first?.prependContext).toBe(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)
-    expect(second).toBeUndefined()
+    expect(second?.prependContext).toBe(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)
   })
 
   it('carries the ownership marker so a second checkout replaces it', () => {

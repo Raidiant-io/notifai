@@ -194,6 +194,7 @@ describe('redaction', () => {
     logger.debug('cli.start', {
       argv: ['send', '--title', 'SECRET_TITLE', '--body', 'SECRET_BODY'],
       title: 'SECRET_TITLE',
+      summary: 'SECRET_SUMMARY',
       body: 'SECRET_BODY',
       question: 'SECRET_QUESTION',
       text: 'SECRET_REPLY',
@@ -203,6 +204,7 @@ describe('redaction', () => {
 
     const raw = readFileSync(activeLogPath(env), 'utf8')
     expect(raw).not.toContain('SECRET_TITLE')
+    expect(raw).not.toContain('SECRET_SUMMARY')
     expect(raw).not.toContain('SECRET_BODY')
     expect(raw).not.toContain('SECRET_QUESTION')
     expect(raw).not.toContain('SECRET_REPLY')
@@ -211,6 +213,7 @@ describe('redaction', () => {
     const record = JSON.parse(raw) as LogRecord
     expect(record.data).toMatchObject({
       title_chars: 'SECRET_TITLE'.length,
+      summary_chars: 'SECRET_SUMMARY'.length,
       body_chars: 'SECRET_BODY'.length,
       question_chars: 'SECRET_QUESTION'.length,
       text_chars: 'SECRET_REPLY'.length,

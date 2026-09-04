@@ -515,7 +515,7 @@ export function askCommand(
         'session_identity_ambiguous',
         'exact_session',
         `Several harness sessions could own this shell (${contested.map((candidate) => candidate.label).join(', ')}).`,
-        'run the ask from a shell with one exact active harness session',
+        'use the documented foreground `notifai send --reply` flow with --reply-timeout equal to --reply-window, or run ask from an unambiguous harness session',
       )
     }
     if (!isHookInstallableHarness(active.harness)) {

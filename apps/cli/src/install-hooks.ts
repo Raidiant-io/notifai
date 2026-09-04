@@ -78,6 +78,7 @@ export interface HookHandler {
   command: string
   timeout?: number
   async?: boolean
+  asyncRewake?: boolean
   statusMessage?: string
   /**
    * Codex-only. Approximate token threshold for spilling `additionalContext`.
@@ -1267,6 +1268,7 @@ export interface InstalledHandler {
   /** Declared process lifetime, used to detect config/install drift. */
   timeout?: number
   async?: boolean
+  asyncRewake?: boolean
   statusMessage?: string
   additionalContextLimit?: number
 }
@@ -1619,6 +1621,7 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
           command: handler.command,
           ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
           ...(handler.async === undefined ? {} : { async: handler.async }),
+          ...(handler.asyncRewake === undefined ? {} : { asyncRewake: handler.asyncRewake }),
           ...(handler.statusMessage === undefined ? {} : { statusMessage: handler.statusMessage }),
           ...(typeof handler.additionalContextLimit === 'number'
             ? { additionalContextLimit: handler.additionalContextLimit }

@@ -35,7 +35,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 12
+const OPENCODE_ADAPTER_VERSION = 13
 
 export function opencodePluginDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -144,7 +144,7 @@ function runHook(event, envelope) {
     // Hook stderr is diagnostics, not plugin output; discard it here.
     child.stderr?.resume()
     child.on("error", () => finish(null))
-    child.on("close", () => finish(stdout))
+    child.on("close", (code) => finish(code === 0 ? stdout : null))
 
     try {
       child.stdin?.end(JSON.stringify(envelope))
@@ -156,14 +156,12 @@ function runHook(event, envelope) {
 
 export const NotifAIPlugin = async ({ directory, client }) => {
   const cwd = typeof directory === "string" && directory.length > 0 ? directory : process.cwd()
-  const activated = new Set()
 
   return {
     /** Model-visible activation, independent of CLI setup and delivery state. */
     "experimental.chat.system.transform": async (input, output) => {
       const sessionID = input?.sessionID
       if (typeof sessionID !== "string" || sessionID.length === 0) return
-      if (activated.has(sessionID)) return
       // OpenCode represents delegated work as child sessions. Missing or
       // malformed relationship data must fail closed as worker context: it is
       // safe to suppress a notification, never safe to let a child duplicate
@@ -184,15 +182,20 @@ export const NotifAIPlugin = async ({ directory, client }) => {
         cwd,
         hook_event_name: hookEventName,
       })
+      // Successful empty output is the runtime's deliberate disabled-Project
+      // no-op. Recheck on every request so later enablement takes effect.
+      if (resolved !== null && resolved.trim().length === 0) return
       const context = typeof resolved === "string" && resolved.trim().length > 0
         ? resolved.trim()
         : worker ? WORKER_ACTIVATION_CONTEXT : MISSING_LIFECYCLE_GUIDANCE_CONTEXT
+      // OpenCode rebuilds system[] per model request. Do not latch activation
+      // per session; only deduplicate callbacks sharing this same array.
+      if (output.system.some((part) => part.includes(context))) return
       if (output.system.length === 0) {
         output.system.push(context)
       } else {
         output.system[0] = output.system[0] + "\\n\\n" + context
       }
-      activated.add(sessionID)
     },
 
     /** Exact active-harness identity and first-party title for agent shell commands. */

@@ -14,7 +14,7 @@ import {
  * commands every other harness invokes, so presence, activation, and
  * retirement stay in the CLI.
  *
- *   before_prompt_build -> session-start / subagent-start  (first owner/worker)
+ *   before_prompt_build -> session-start / subagent-start  (current owner/worker guidance)
  *   message_received    -> user-prompt-submit              (User is present)
  *   agent_end           -> stop                            (the turn ended)
  *   session_end         -> session-end                     (retire local state)
@@ -30,7 +30,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 1
+const OPENCLAW_ADAPTER_VERSION = 2
 
 export const OPENCLAW_EVENTS = [
   ['SessionStart', 'session-start'],
@@ -173,7 +173,7 @@ function runHook(event, envelope) {
     })
     child.stderr?.resume()
     child.on("error", () => finish(null))
-    child.on("close", () => finish(stdout))
+    child.on("close", (code) => finish(code === 0 ? stdout : null))
 
     try {
       child.stdin?.end(JSON.stringify(envelope))
@@ -211,21 +211,21 @@ function isUserMessage(event, ctx) {
 }
 
 function register(api) {
-  const activated = new Set()
   api.on("before_prompt_build", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return { prependContext: WORKER_ACTIVATION_CONTEXT }
-    if (activated.has(sessionKey)) return
     const worker = isWorkerSession(sessionKey, ctx)
     const resolved = await runHook(worker ? "subagent-start" : "session-start", {
       session_id: sessionKey,
       cwd: workspaceDirOf(event, ctx),
       hook_event_name: worker ? "SubagentStart" : "SessionStart",
     })
+    // Successful empty output means this Project is disabled. A later prompt
+    // rechecks enablement and supplies context after compaction or re-enable.
+    if (resolved !== null && resolved.trim().length === 0) return
     const context = typeof resolved === "string" && resolved.trim().length > 0
       ? resolved.trim()
       : worker ? WORKER_ACTIVATION_CONTEXT : MISSING_LIFECYCLE_GUIDANCE_CONTEXT
-    activated.add(sessionKey)
     return { prependContext: context }
   })
 
@@ -253,7 +253,6 @@ function register(api) {
   api.on("session_end", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return
-    activated.delete(sessionKey)
     await runHook("session-end", {
       session_id: sessionKey,
       cwd: workspaceDirOf(event, ctx),

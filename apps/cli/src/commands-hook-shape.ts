@@ -14,9 +14,9 @@ import {
  *
  *   - Claude Code's handler must be `async: true`, or the waiter holds the
  *     user's turn for its whole wait instead of returning at once. It must
- *     also declare a `timeout`, because the harness default is 600 s and the
- *     kill is silent — the backgrounded waiter vanishes and the answer the
- *     user already gave is never delivered.
+ *     retain its own full-window lifetime: Claude does not enforce `timeout`
+ *     after an ordinary async hook backgrounds. A short configured timeout
+ *     alone therefore cannot prove that this route will lose its waiter.
  *   - Codex must declare the same full-window timeout. That changes its trusted
  *     definition and deliberately requires the User to approve it once.
  *   - Everything else cannot own asynchronous Question Routing; it receives
@@ -31,14 +31,14 @@ export function stopShapeProblems(
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
     if (stopHandlerIsDetached(installation.harness, platform)) {
+      if (handler.asyncRewake === true) {
+        problems.push(
+          `${installation.file} enables \`asyncRewake\`, but the Claude Code inbox route requires ordinary \`async: true\`; reinstall the Claude Code hooks`,
+        )
+      }
       if (handler.async !== true) {
         problems.push(
           `${installation.file} declares a blocking Stop handler; the Claude Code wake route needs \`async: true\` so the turn ends while the waiter runs`,
-        )
-      }
-      if (handler.timeout === undefined || handler.timeout < QUESTION_STOP_TIMEOUT_SECONDS) {
-        problems.push(
-          `${installation.file} gives Stop ${handler.timeout ?? 'no'} declared seconds; Claude Code then kills the backgrounded waiter silently before the complete answer window, so it needs an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s`,
         )
       }
       continue

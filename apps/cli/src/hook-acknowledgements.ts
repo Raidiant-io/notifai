@@ -74,8 +74,7 @@ function acknowledgementDemand(textRequired: boolean): string {
 
 function acknowledgementContext(answered: AnsweredPending[]): string {
   const due = answered.filter(
-    (entry) =>
-      entry.agent_acknowledgement_required === true && entry.pending.request_id !== undefined,
+    (entry) => entry.pending.request_id !== undefined,
   )
   if (due.length === 0) {
     return ' Agent Acknowledgement is not required for the answered request(s).'
@@ -144,7 +143,13 @@ export function stageAcceptedAnswers(
   remaining: number,
 ): AcceptedAnswerDelivery {
   const accepted: AcceptedAnswerDelivery = {
-    answers: answered,
+    // This is the effective obligation, including responses whose server flag
+    // predates mandatory acknowledgement. Persist it with the debt so absence
+    // of debt cannot turn an unclassified recovery journal into delivery proof.
+    answers: answered.map((answer) => ({
+      ...answer,
+      agent_acknowledgement_required: answer.pending.request_id !== undefined,
+    })),
     remaining,
     recorded_at: ctx.now(),
   }
@@ -156,7 +161,6 @@ export function stageAcceptedAnswers(
     for (const answer of answered) {
       const requestId = answer.pending.request_id
       if (
-        answer.agent_acknowledgement_required === true &&
         requestId !== undefined &&
         !acknowledgementDue.some((entry) => entry.request_id === requestId)
       ) {
@@ -338,7 +342,6 @@ export async function reconcileAcknowledgementObligations(
         waitSeconds: 0,
       })
       if (
-        snapshot.agent_acknowledgement_required === false ||
         snapshot.agent_acknowledgement !== null
       ) {
         clearAcknowledgementObligation(sessionId, ctx.env, obligation.request_id)

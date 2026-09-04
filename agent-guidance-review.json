@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:197e4555a62a0215d7b5599ce6443692cc872d290fc992c3acfe0731f4f6b9c6",
+  "behavior_digest": "sha256:3ededc5a2a0871d5fbd377117e7628e61d53bb0884963870230b9e87e00af0e5",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making Codex hook upgrades preserve both the existing source file and the approved handler identity. SessionStart guidance is now capped at Codex's built-in inline-context budget, so no identity-bearing output-limit override is needed and oversized guidance falls back whole instead of arriving partially. Install output continues to distinguish preserved approval from a real approval requirement, and generic activation advice remains separate from trust remediation. Question ownership, acknowledgements, notification authoring, and harness return paths are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms against current harness contracts. Detached Claude admission now distinguishes ordinary async from asyncRewake and blocking lifetimes; inherited conflicting session markers receive foreground recovery without guessed attribution. Every answered request carries an Agent Acknowledgement obligation even when response metadata says optional. Generated OpenCode and OpenClaw adapters preserve disabled-Project silence and refresh guidance for each model request; failed activation reports unverified enablement with supported recovery. Runtime authority, worker ownership, no-native-plugin distribution, and inactive Mac scope remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
