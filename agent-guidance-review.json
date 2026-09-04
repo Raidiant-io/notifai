@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:90538d6a212fed3878b30320186eba7349037b66dd60379c2517703f18929da8",
+  "behavior_digest": "sha256:af9f6f145f3cb92cac396074a20cfa6cb1e0d2334be69461dc902600962f1998",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after removing the separately authored ask title. The positional single question now supplies both the exact Summary and the notification title; forms retain their authored set Summary while the first exact question supplies the notification title. No compatibility flag or persisted legacy title remains. Question ownership, acknowledgements, trust, notification authoring, and harness return-path rules are otherwise unchanged.",
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms after making Codex hook repairs preserve their existing source file. Harness guidance now states why the source remains stable, install output distinguishes preserved approval from a real approval requirement, and generic activation advice no longer mixes fresh-session work with trust remediation. The stable adapter, one-owned-representation rule, question ownership, acknowledgements, notification authoring, and harness return paths are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

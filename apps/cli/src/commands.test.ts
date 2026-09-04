@@ -84,6 +84,7 @@ import {
   codexHookIdentityHash,
   codexStopDefinitionFingerprint,
   codexTrustKey,
+  codexTrustProblems,
   findInstallations,
   findLegacyProjectInstallations,
   loadSettings,
@@ -3433,12 +3434,11 @@ describe('Codex hook representation', () => {
   })
 
   /**
-   * The 2026-09-02 amendment: Notifai's own inline handlers are moved, not
-   * preserved. Everything the User wrote outside `[hooks...]` — and every
-   * `[hooks.state]` trust record, which is Codex's, not a hook definition —
-   * survives the move.
+   * The exact Orca coexistence shape from 2026-09-04: Orca owns hooks.json,
+   * Notifai was already approved inline, and reinstall must not manufacture a
+   * new trust identity by moving the same handlers between source files.
    */
-  it('moves its own inline handlers into hooks.json and strips them from config.toml', () => {
+  it('refreshes its approved inline handlers without moving their trusted source', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-migrate-inline-'))
     const io = new CapturedIo()
     const env = isolatedEnv(cwd)
@@ -3460,27 +3460,41 @@ describe('Codex hook representation', () => {
         scriptPath,
       ).document,
     )
-    const trustKey = `${codexHome(env)}/config.toml:stop:0:0`
+    const beforeInstallations = findInstallations(env, deps.hookAdapterHome).filter(
+      (installation) => installation.harness === 'codex',
+    )
+    const trustTables = beforeInstallations.flatMap((installation) =>
+      installation.handlers.map(
+        (handler) =>
+          `[hooks.state.${JSON.stringify(codexTrustKey(installation, handler))}]\n` +
+          `trusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
+      ),
+    )
     writeFileSync(
       toml,
-      `${readFileSync(toml, 'utf8')}\n[hooks.state.${JSON.stringify(trustKey)}]\ntrusted_hash = "sha256:abc"\n`,
+      `${readFileSync(toml, 'utf8')}\n${trustTables.join('\n')}`,
     )
+    const json = path.join(codexHome(env), 'hooks.json')
+    applyPlan(json, {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'orca-stop', timeout: 10 }] }],
+      },
+    })
+    const jsonBefore = readFileSync(json, 'utf8')
     expect(readFileSync(toml, 'utf8')).toContain('--owner notifai')
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
 
-    const json = path.join(codexHome(env), 'hooks.json')
-    expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
+    expect(readFileSync(json, 'utf8')).toBe(jsonBefore)
     const after = readFileSync(toml, 'utf8')
-    expect(after).not.toContain('--owner notifai')
-    expect(after).not.toContain('[[hooks.')
+    expect(after).toContain('--owner notifai')
     expect(after).toContain('# keep this comment')
     expect(after).toContain('model = "gpt-5.6"')
-    expect(after).toContain('trusted_hash = "sha256:abc"')
     const installations = findInstallations(env, deps.hookAdapterHome).filter(
       (installation) => installation.harness === 'codex',
     )
-    expect(installations.map((installation) => installation.file)).toEqual([json])
+    expect(installations.map((installation) => installation.file)).toEqual([toml])
+    expect(codexTrustProblems(installations, env)).toEqual([])
   })
 
   it('leaves config.toml byte-identical when uninstall finds no Notifai hooks', () => {
@@ -3585,13 +3599,11 @@ describe('Codex hook representation', () => {
   })
 
   /**
-   * The state an earlier release left behind: Notifai in `hooks.json`, the
-   * User's own hooks inline. Every handler still fires exactly once, so doctor
-   * reports it rather than failing — but reinstalling consolidates into the
-   * representation the User already uses, which is the whole point of the
-   * inline exception: one layer, one representation, no Codex warning.
+   * The mirror coexistence shape: Notifai is already approved in hooks.json
+   * while the User's own hooks are inline. Reinstall must preserve both source
+   * files because moving Notifai inline would manufacture a new trust identity.
    */
-  it('reports a foreign coexistence, then consolidates into the User\'s representation', async () => {
+  it('reports foreign coexistence and keeps Notifai in its trusted source', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-foreign-rep-'))
     const env = isolatedEnv(cwd)
     const toml = writeMachineConfig(env, INLINE_FOREIGN_STOP)
@@ -3610,6 +3622,7 @@ describe('Codex hook representation', () => {
         harness: 'codex',
       }),
     })
+    const inlineBefore = readFileSync(toml, 'utf8')
 
     io.outLines = []
     await doctorCommand(deps, {})
@@ -3620,17 +3633,15 @@ describe('Codex hook representation', () => {
 
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    const inline = readFileSync(toml, 'utf8')
-    expect(inline).toContain('gdh-stop')
-    expect(inline).toContain('--owner notifai')
-    expect(existsSync(json)).toBe(false)
+    expect(readFileSync(toml, 'utf8')).toBe(inlineBefore)
+    expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
     expect(io.outLines.join('\n')).not.toMatch(/installed in both/i)
 
     const installations = findInstallations(env, deps.hookAdapterHome).filter(
       (installation) => installation.harness === 'codex',
     )
     expect(installations).toHaveLength(1)
-    expect(installations[0]?.file).toBe(toml)
+    expect(installations[0]?.file).toBe(json)
   })
 
   it('fails doctor when Notifai itself is installed in both representations', async () => {
@@ -3716,7 +3727,7 @@ describe('harness activation guidance', () => {
     expect(output).not.toMatch(/Codex runs every matching handler|harmless/i)
   })
 
-  it('names Codex trust and fresh-session activation in the correct order', () => {
+  it('names required Codex trust and fresh-session activation in the correct order', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-activation-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
@@ -3726,8 +3737,29 @@ describe('harness activation guidance', () => {
     )
 
     const output = io.outLines.join('\n')
-    expect(output).toContain('Approve the Notifai handlers in `/hooks` if Codex asks')
-    expect(output).toMatch(/approve[\s\S]*start one fresh Codex session[\s\S]*`notifai doctor`/i)
+    expect(output).toContain('The changed Notifai handlers need approval')
+    expect(output).toMatch(/open `\/hooks`[\s\S]*start one fresh Codex session[\s\S]*`notifai doctor`/i)
+  })
+
+  it('says existing Codex approval still matches after an idempotent repair', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-approved-repair-'))
+    const env = isolatedEnv(cwd)
+    const firstIo = new CapturedIo()
+    const firstDeps = { ...makeDeps(firstIo, {} as ApiClient), cwd, env }
+
+    expect(hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    trustInstalledCodexHooks(cwd, env)
+
+    firstIo.outLines = []
+    expect(hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+
+    const output = firstIo.outLines.join('\n')
+    expect(output).toContain('Your existing Codex hook approvals still match')
+    expect(output).not.toMatch(/need approval|approve or enable/i)
   })
 
   it('names the installed harness in the close, never a different one', () => {
@@ -7973,7 +8005,8 @@ describe('asking before the hooks have ever run', () => {
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
     expect(fired?.status).toBe('optional-gap')
     expect(fired?.detail).toMatch(/Claude Code/)
-    expect(fired?.detail).toMatch(/Codex: approve[\s\S]*start one fresh session/i)
+    expect(fired?.detail).toMatch(/Codex: start one fresh session/i)
+    expect(fired?.detail).not.toMatch(/approve.*start/i)
 
     io.errLines = []
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)

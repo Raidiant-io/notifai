@@ -64,8 +64,9 @@ const OPENCODE_EVENTS = [
  * with an optional timeout — so one generator serves both. Only the file
  * location and the event set differ. Codex supports either a dedicated
  * `hooks.json` or inline `[hooks]` tables in the same layer's `config.toml`;
- * Notifai writes `hooks.json` and only joins `config.toml` when the User's own
- * hooks already live there. Notifai lives in one of them, never both.
+ * Notifai preserves whichever one already owns its approved handlers. A fresh
+ * install writes `hooks.json`, except when the User's own hooks already live
+ * inline. Notifai lives in one of them, never both.
  *
  * Cursor's native format is flat and lower-camel-cased, while OpenCode's
  * extension point is a JavaScript plugin module. Each therefore has a bounded
@@ -628,8 +629,10 @@ export interface CodexLayerInspection {
 }
 
 /**
- * Where Notifai writes in this Codex layer: `hooks.json`, unless the User's own
- * hooks already live inline in the same layer's `config.toml`.
+ * Where Notifai writes in this Codex layer. An existing single Notifai
+ * representation is stable: upgrades refresh it in place because Codex keys
+ * approval by both handler identity and source path. Only a fresh installation
+ * chooses between `hooks.json` and inline `config.toml`.
  *
  * `config.toml` is the User's whole Codex configuration and Codex rewrites it
  * itself for `[hooks.state]`; keeping Notifai out of it bounds the blast radius
@@ -638,14 +641,15 @@ export interface CodexLayerInspection {
  * layer that already has the User's handlers is the one exception, and it
  * exists only so Codex never prints its dual-representation warning.
  *
- * Notifai's *own* inline handlers are not a reason to stay: the installer moves
- * them to `hooks.json` and strips them from `config.toml`. `[hooks.state]` is
- * the trust store rather than a hook definition, so it never counts as a
+ * A fresh installation uses `hooks.json` unless foreign inline handlers make
+ * `config.toml` the layer's established representation. `[hooks.state]` is the
+ * trust store rather than a hook definition, so it never counts as a
  * representation and is preserved through every write.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
   const jsonDocument = tryLoadSettings(paths.hooksJson)
   const tomlDocument = tryLoadSettings(paths.configToml)
+  const ourJsonEvents = ourHandlerEvents(jsonDocument)
   const ourTomlEvents = ourHandlerEvents(tomlDocument)
   const foreignTomlHooks =
     tomlDocument !== null &&
@@ -654,10 +658,17 @@ export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection 
     paths,
     jsonEvents: hookEventNames(jsonDocument?.hooks),
     tomlEvents: hookEventNames(tomlDocument?.hooks),
-    ourJsonEvents: ourHandlerEvents(jsonDocument),
+    ourJsonEvents,
     ourTomlEvents,
     foreignTomlHooks,
-    writeTarget: foreignTomlHooks ? paths.configToml : paths.hooksJson,
+    writeTarget:
+      ourTomlEvents.length > 0 && ourJsonEvents.length === 0
+        ? paths.configToml
+        : ourJsonEvents.length > 0 && ourTomlEvents.length === 0
+          ? paths.hooksJson
+          : foreignTomlHooks
+            ? paths.configToml
+            : paths.hooksJson,
   }
 }
 

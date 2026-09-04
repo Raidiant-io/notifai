@@ -344,7 +344,7 @@ describe('settings locations', () => {
     )
   })
 
-  it('moves Notifai-only inline handlers to hooks.json rather than staying put', () => {
+  it('keeps existing Notifai inline handlers in their already-trusted source', () => {
     const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-ours-inline-'))
     const codexHome = path.join(home, '.codex')
     mkdirSync(codexHome, { recursive: true })
@@ -354,7 +354,7 @@ describe('settings locations', () => {
     )
 
     expect(settingsFile('codex', { HOME: home, CODEX_HOME: codexHome })).toBe(
-      path.join(codexHome, 'hooks.json'),
+      path.join(codexHome, 'config.toml'),
     )
   })
 
