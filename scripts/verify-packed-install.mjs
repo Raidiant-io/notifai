@@ -24,13 +24,19 @@
  *   3. The installed protocol must be byte-for-byte the packed one — if the
  *      installer quietly fetched a published version of the same number
  *      instead, this run would be vouching for the wrong bytes.
- *   4. The installed bin must run: `notifai --version` has to report the
+ *   4. The installed CLI must still carry the reviewed skill bundle, and it
+ *      must be able to stage that bundle as a portable local source. This is
+ *      the deterministic proof that the tarball contains and installs the
+ *      intended skill. It does not spawn the third-party `skills` installer;
+ *      that integration smoke is `scripts/verify-packed-skill-install.mjs`.
+ *   5. The installed bin must run: `notifai --version` has to report the
  *      packed version, and `notifai config show` has to exit 0. Startup
  *      resolves the CLI's static protocol imports, so a protocol missing an
  *      export the CLI names fails both commands at module link time.
  *
  * Needs registry access for the CLI's public dependencies; needs no
- * credentials and never publishes anything.
+ * credentials and never publishes anything. Every external process has a
+ * short explicit timeout so a stalled npm cannot consume a runner budget.
  *
  * Usage:
  *   node scripts/verify-packed-install.mjs
@@ -40,7 +46,6 @@
  * The tarball flags skip the packing step and verify the given artifacts —
  * that is how the test fixture proves a stale pin fails.
  */
-import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -48,11 +53,14 @@ import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { assertPackedTarballs } from './check-packed-boundary.mjs'
-import { commandInvocation, execCommand, repositoryRoot } from './cross-platform.mjs'
+import { commandInvocation, repositoryRoot } from './cross-platform.mjs'
+import { PACKED_SKILL_SMOKE_TIMEOUTS } from './packed-skill-smoke.mjs'
 import { CLI_PACKAGE, PROTOCOL_PACKAGE } from './package-contract.mjs'
+import { requireStatus, runExternal } from './run-external.mjs'
 
 const CLI_NAME = CLI_PACKAGE.name
 const PROTOCOL_NAME = PROTOCOL_PACKAGE.name
+const TIMEOUTS = PACKED_SKILL_SMOKE_TIMEOUTS
 
 /**
  * Why the packed CLI cannot ship with the protocol pin it carries, or null
@@ -94,12 +102,20 @@ function treeFiles(directory) {
   return out.sort()
 }
 
+function runPhase(file, args, options) {
+  return requireStatus(runExternal(file, args, options))
+}
+
 /** Pack one workspace package and return the tarball path. */
-function packPackage(name, destination) {
+function packPackage(name, destination, phase) {
   mkdirSync(destination, { recursive: true })
-  execCommand('pnpm', ['--filter', name, 'pack', '--pack-destination', destination], {
+  const invocation = commandInvocation('pnpm', ['--filter', name, 'pack', '--pack-destination', destination])
+  runPhase(invocation.file, invocation.args, {
+    ...invocation.options,
     cwd: repositoryRoot,
-    stdio: ['ignore', 'ignore', 'inherit'],
+    timeoutMs: TIMEOUTS.pack,
+    phase,
+    stdio: ['ignore', 'pipe', 'inherit'],
   })
   const tarballs = readdirSync(destination).filter((entry) => entry.endsWith('.tgz'))
   if (tarballs.length !== 1) {
@@ -109,9 +125,13 @@ function packPackage(name, destination) {
 }
 
 /** Extract a packed tarball and return its `package/` directory. */
-function extractTarball(tarball, destination) {
+function extractTarball(tarball, destination, phase) {
   mkdirSync(destination, { recursive: true })
-  execFileSync('tar', ['xzf', tarball], { cwd: destination })
+  runPhase('tar', ['xzf', tarball], {
+    cwd: destination,
+    timeoutMs: TIMEOUTS.extract,
+    phase,
+  })
   return path.join(destination, 'package')
 }
 
@@ -166,11 +186,12 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
   writeFileSync(cmdRunner, '@call "%NOTIFAI_CMD_SHIM%" --version\r\n', 'ascii')
   try {
     verifyVersionOutput('notifai.cmd through cmd.exe', expectedVersion, () =>
-      execFileSync('cmd.exe', ['/d', '/v:off', '/c', path.basename(cmdRunner)], {
+      runPhase('cmd.exe', ['/d', '/v:off', '/c', path.basename(cmdRunner)], {
         cwd: installDir,
         env: shellEnv,
-        encoding: 'utf8',
-      }),
+        timeoutMs: TIMEOUTS.cliCommand,
+        phase: 'windows-cmd-shim',
+      }).stdout,
     )
   } finally {
     rmSync(cmdRunner, { force: true })
@@ -187,11 +208,12 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
   ]
   for (const executable of ['powershell.exe', 'pwsh.exe']) {
     verifyVersionOutput(`notifai.ps1 through ${executable}`, expectedVersion, () =>
-      execFileSync(executable, powershellArgs, {
+      runPhase(executable, powershellArgs, {
         cwd: installDir,
         env: shellEnv,
-        encoding: 'utf8',
-      }),
+        timeoutMs: TIMEOUTS.cliCommand,
+        phase: `windows-ps-shim-${executable}`,
+      }).stdout,
     )
   }
 
@@ -199,231 +221,173 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
   const gitBash = path.join(programFiles, 'Git', 'bin', 'bash.exe')
   if (!existsSync(gitBash)) fail(`Git Bash is missing at ${gitBash}`)
   verifyVersionOutput('notifai POSIX shim through Git Bash', expectedVersion, () =>
-    execFileSync(
+    runPhase(
       gitBash,
       ['-lc', 'shim_path=$(cygpath -u "$NOTIFAI_BASH_SHIM"); "$shim_path" --version'],
-      { cwd: installDir, env: shellEnv, encoding: 'utf8' },
-    ),
+      { cwd: installDir, env: shellEnv, timeoutMs: TIMEOUTS.cliCommand, phase: 'windows-bash-shim' },
+    ).stdout,
   )
+}
+
+/**
+ * Pack (unless tarball paths are supplied), install both tarballs outside the
+ * workspace, and prove the packed protocol bytes and skill bundle survived.
+ */
+export async function preparePackedCli(scratch, options = {}) {
+  let cliTarball = options.cliTarball
+  let protocolTarball = options.protocolTarball
+  if ((cliTarball === undefined) !== (protocolTarball === undefined)) {
+    throw new Error('pass both --cli-tarball and --protocol-tarball, or neither')
+  }
+  if (cliTarball === undefined) {
+    // Protocol first: its prepack build writes the dist/ the CLI compiles against.
+    protocolTarball = packPackage(PROTOCOL_NAME, path.join(scratch, 'pack-protocol'), 'pack-protocol')
+    cliTarball = packPackage(CLI_NAME, path.join(scratch, 'pack-cli'), 'pack-cli')
+  }
+  cliTarball = path.resolve(cliTarball)
+  protocolTarball = path.resolve(protocolTarball)
+
+  const boundary = assertPackedTarballs({
+    tarballs: [protocolTarball, cliTarball],
+    scanSecrets: options.scanSecrets === true,
+  })
+  console.log(
+    `Packed boundary verified: ${boundary.files} files and ${boundary.sourceMaps} source maps.`,
+  )
+
+  const packedCli = extractTarball(cliTarball, path.join(scratch, 'packed-cli'), 'extract-cli')
+  const packedProtocol = extractTarball(
+    protocolTarball,
+    path.join(scratch, 'packed-protocol'),
+    'extract-protocol',
+  )
+  const cliManifest = readManifest(packedCli)
+  const protocolManifest = readManifest(packedProtocol)
+  if (cliManifest.name !== CLI_NAME) {
+    throw new Error(`CLI tarball manifest names ${cliManifest.name}, expected ${CLI_NAME}`)
+  }
+  if (protocolManifest.name !== PROTOCOL_NAME) {
+    throw new Error(`protocol tarball manifest names ${protocolManifest.name}, expected ${PROTOCOL_NAME}`)
+  }
+
+  const pinFailure = protocolPinFailure(cliManifest, protocolManifest.version)
+  if (pinFailure !== null) throw new Error(pinFailure)
+  if (process.platform !== 'win32') {
+    const packedBin = path.join(packedCli, 'dist/main.js')
+    const packedMode = statSync(packedBin).mode & 0o111
+    if (packedMode === 0) {
+      throw new Error(`packed dist/main.js is not executable (mode ${(statSync(packedBin).mode & 0o777).toString(8)})`)
+    }
+  }
+  console.log(
+    `Pin verified: packed ${CLI_NAME}@${cliManifest.version} depends on ${PROTOCOL_NAME}@${protocolManifest.version}.`,
+  )
+
+  // The isolated install lives in the OS temp directory, outside any
+  // workspace, so nothing can fall back to workspace resolution. A private
+  // manifest keeps npm from treating the directory as publishable.
+  // Keep tar extraction in the plain scratch root because Windows bsdtar
+  // cannot open every Unicode archive path. The installed package and shims
+  // still live under the hostile path whose quoting behavior is the claim.
+  const installDir = path.join(scratch, 'outside checkout Ω', 'install')
+  mkdirSync(installDir, { recursive: true })
+  writeFileSync(
+    path.join(installDir, 'package.json'),
+    JSON.stringify({ name: 'notifai-packed-install-smoke', version: '0.0.0', private: true }, null, 2),
+  )
+  // Both tarballs install together: npm satisfies the CLI's protocol pin by
+  // deduplicating onto the top-level protocol tarball (the pin equality
+  // proved above makes that resolution valid), and resolves every other
+  // dependency from the registry per the packed metadata.
+  const install = commandInvocation('npm', [
+    'install',
+    '--no-audit',
+    '--no-fund',
+    '--loglevel=error',
+    protocolTarball,
+    cliTarball,
+  ])
+  console.log('phase packed-npm-install: installing packed tarballs outside the workspace')
+  runPhase(install.file, install.args, {
+    ...install.options,
+    cwd: installDir,
+    timeoutMs: TIMEOUTS.npmInstall,
+    phase: 'packed-npm-install',
+  })
+
+  // Prove the pin was satisfied by the packed protocol, not a same-numbered
+  // published one: the installed protocol must match the tarball byte for byte.
+  const installedProtocol = path.join(installDir, 'node_modules', PROTOCOL_NAME)
+  const packedProtocolFiles = treeFiles(packedProtocol)
+  for (const file of packedProtocolFiles) {
+    const installedFile = path.join(installedProtocol, file)
+    let installedBytes
+    try {
+      installedBytes = readFileSync(installedFile)
+    } catch {
+      throw new Error(`installed protocol is missing ${file} — the pin was not satisfied by the packed tarball`)
+    }
+    if (sha256(installedBytes) !== sha256(readFileSync(path.join(packedProtocol, file)))) {
+      throw new Error(`installed protocol ${file} differs from the packed tarball — the pin resolved to different bytes`)
+    }
+  }
+
+  const home = path.join(scratch, 'home')
+  mkdirSync(home, { recursive: true })
+  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: undefined, XDG_STATE_HOME: undefined }
+  const installedCli = path.join(installDir, 'node_modules', CLI_NAME)
+  const integrity = await import(pathToFileURL(path.join(installedCli, 'dist', 'skill-integrity.js')).href)
+  const bundle = integrity.shippedSkillBundle(cliManifest.version)
+  if (!bundle.ok) throw new Error(`installed CLI skill bundle is invalid (${bundle.error})`)
+
+  const staged = integrity.stageShippedSkillBundle(installDir, cliManifest.version)
+  if (!staged.ok) throw new Error(`installed CLI could not stage its packaged skill (${staged.error})`)
+  try {
+    if (path.isAbsolute(staged.staged.source) || staged.staged.source.includes(installDir)) {
+      throw new Error('staged packaged skill source is not machine-neutral')
+    }
+    const stagedRoot = path.resolve(installDir, staged.staged.source)
+    if (!lstatSync(path.join(stagedRoot, 'notifai')).isDirectory()) {
+      throw new Error('staged packaged skill is missing the notifai tree')
+    }
+  } finally {
+    staged.staged.cleanup()
+  }
+  if (existsSync(path.join(installDir, '.notifai')) &&
+    readdirSync(path.join(installDir, '.notifai')).some((entry) => entry.startsWith('skill-source-'))) {
+    throw new Error('packed CLI left its temporary skill source behind')
+  }
+
+  console.log(
+    `Packed skill bundle verified: ${CLI_NAME}@${cliManifest.version} contains and stages the reviewed skill.`,
+  )
+
+  return { installDir, installedCli, cliManifest, protocolManifest, env, cliTarball, protocolTarball }
 }
 
 async function main() {
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-install-'))
   try {
-    let cliTarball = argvValue('--cli-tarball')
-    let protocolTarball = argvValue('--protocol-tarball')
-    if ((cliTarball === undefined) !== (protocolTarball === undefined)) {
-      fail('pass both --cli-tarball and --protocol-tarball, or neither')
-    }
-    if (cliTarball === undefined) {
-      // Protocol first: its prepack build writes the dist/ the CLI compiles against.
-      protocolTarball = packPackage(PROTOCOL_NAME, path.join(scratch, 'pack-protocol'))
-      cliTarball = packPackage(CLI_NAME, path.join(scratch, 'pack-cli'))
-    }
-    cliTarball = path.resolve(cliTarball)
-    protocolTarball = path.resolve(protocolTarball)
-
-    try {
-      const boundary = assertPackedTarballs({
-        tarballs: [protocolTarball, cliTarball],
-        scanSecrets: process.argv.includes('--gitleaks'),
-      })
-      console.log(
-        `Packed boundary verified: ${boundary.files} files and ${boundary.sourceMaps} source maps.`,
-      )
-    } catch (error) {
-      fail(error instanceof Error ? error.message : String(error))
-    }
-
-    const packedCli = extractTarball(cliTarball, path.join(scratch, 'packed-cli'))
-    const packedProtocol = extractTarball(protocolTarball, path.join(scratch, 'packed-protocol'))
-    const cliManifest = readManifest(packedCli)
-    const protocolManifest = readManifest(packedProtocol)
-    if (cliManifest.name !== CLI_NAME) fail(`CLI tarball manifest names ${cliManifest.name}, expected ${CLI_NAME}`)
-    if (protocolManifest.name !== PROTOCOL_NAME) {
-      fail(`protocol tarball manifest names ${protocolManifest.name}, expected ${PROTOCOL_NAME}`)
-    }
-
-    const pinFailure = protocolPinFailure(cliManifest, protocolManifest.version)
-    if (pinFailure !== null) fail(pinFailure)
-    if (process.platform !== 'win32') {
-      const packedBin = path.join(packedCli, 'dist/main.js')
-      const packedMode = statSync(packedBin).mode & 0o111
-      if (packedMode === 0) {
-        fail(`packed dist/main.js is not executable (mode ${(statSync(packedBin).mode & 0o777).toString(8)})`)
-      }
-    }
-    console.log(
-      `Pin verified: packed ${CLI_NAME}@${cliManifest.version} depends on ${PROTOCOL_NAME}@${protocolManifest.version}.`,
-    )
-
-    // The isolated install lives in the OS temp directory, outside any
-    // workspace, so nothing can fall back to workspace resolution. A private
-    // manifest keeps npm from treating the directory as publishable.
-    // Keep tar extraction in the plain scratch root because Windows bsdtar
-    // cannot open every Unicode archive path. The installed package and shims
-    // still live under the hostile path whose quoting behavior is the claim.
-    const installDir = path.join(scratch, 'outside checkout Ω', 'install')
-    mkdirSync(installDir, { recursive: true })
-    writeFileSync(
-      path.join(installDir, 'package.json'),
-      JSON.stringify({ name: 'notifai-packed-install-smoke', version: '0.0.0', private: true }, null, 2),
-    )
-    // Both tarballs install together: npm satisfies the CLI's protocol pin by
-    // deduplicating onto the top-level protocol tarball (the pin equality
-    // proved above makes that resolution valid), and resolves every other
-    // dependency from the registry per the packed metadata.
-    const install = commandInvocation('npm', [
-      'install',
-      '--no-audit',
-      '--no-fund',
-      '--loglevel=error',
-      protocolTarball,
-      cliTarball,
-    ])
-    execFileSync(install.file, install.args, {
-      ...install.options,
-      cwd: installDir,
-      stdio: ['ignore', 'ignore', 'inherit'],
+    const prepared = await preparePackedCli(scratch, {
+      cliTarball: argvValue('--cli-tarball'),
+      protocolTarball: argvValue('--protocol-tarball'),
+      scanSecrets: process.argv.includes('--gitleaks'),
     })
-
-    // Prove the pin was satisfied by the packed protocol, not a same-numbered
-    // published one: the installed protocol must match the tarball byte for byte.
-    const installedProtocol = path.join(installDir, 'node_modules', PROTOCOL_NAME)
-    const packedProtocolFiles = treeFiles(packedProtocol)
-    for (const file of packedProtocolFiles) {
-      const installedFile = path.join(installedProtocol, file)
-      let installedBytes
-      try {
-        installedBytes = readFileSync(installedFile)
-      } catch {
-        fail(`installed protocol is missing ${file} — the pin was not satisfied by the packed tarball`)
-      }
-      if (sha256(installedBytes) !== sha256(readFileSync(path.join(packedProtocol, file)))) {
-        fail(`installed protocol ${file} differs from the packed tarball — the pin resolved to different bytes`)
-      }
-    }
-
-    // Execute the installed bin in an environment whose home is the scratch
-    // directory, so the smoke commands can never read or write this user's
-    // real configuration, credentials, or logs.
-    const home = path.join(scratch, 'home')
-    mkdirSync(home, { recursive: true })
-    const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: undefined, XDG_STATE_HOME: undefined }
-    const installedCli = path.join(installDir, 'node_modules', CLI_NAME)
-    try {
-      const integrity = await import(
-        pathToFileURL(path.join(installedCli, 'dist', 'skill-integrity.js')).href
-      )
-      const bundle = integrity.shippedSkillBundle(cliManifest.version)
-      if (!bundle.ok) fail(`installed CLI skill bundle is invalid (${bundle.error})`)
-    } catch (error) {
-      fail(`installed CLI skill bundle could not be verified (${String(error)})`)
-    }
-
-    // Exercise the actual pinned third-party installer through the packed
-    // production adapter. This catches source grammar/version behavior that a
-    // mocked spawn cannot: skills@1.5.23 does not accept a raw commit SHA as a
-    // Git branch, but does support the verified local package source.
-    const skillProject = path.join(scratch, 'skill project Ω')
-    const skillHome = path.join(scratch, 'skill home')
-    mkdirSync(skillProject, { recursive: true })
-    mkdirSync(skillHome, { recursive: true })
-    writeFileSync(
-      path.join(skillProject, 'package.json'),
-      JSON.stringify({ name: 'notifai-skill-install-smoke', private: true }, null, 2),
-    )
-    const skillEnv = {
-      ...process.env,
-      HOME: skillHome,
-      USERPROFILE: skillHome,
-      XDG_CONFIG_HOME: path.join(skillHome, 'config'),
-      XDG_STATE_HOME: path.join(skillHome, 'state'),
-      npm_config_cache: path.join(scratch, 'npm-cache'),
-    }
-    try {
-      const native = await import(
-        pathToFileURL(path.join(installedCli, 'dist', 'native-skills.js')).href
-      )
-      const release = await import(
-        pathToFileURL(path.join(installedCli, 'dist', 'release.js')).href
-      )
-      const commandsSkill = await import(
-        pathToFileURL(path.join(installedCli, 'dist', 'commands-skill.js')).href
-      )
-      const sourceLabel = release.skillsSource()
-      if (typeof sourceLabel !== 'string') fail('packed CLI could not derive its skill release identity')
-      const operation = await native.nativeSkills.add({
-        source: sourceLabel,
-        skill: 'notifai',
-        scope: 'project',
-        cwd: skillProject,
-        env: skillEnv,
-      })
-      const code = typeof operation === 'number' ? operation : operation.code
-      if (code !== 0) {
-        fail(
-          `skills@1.5.23 rejected the verified packaged local source` +
-            (typeof operation === 'number' ? ` (exit ${code})` : ` (${operation.error})`),
-        )
-      }
-
-      const lockFile = path.join(skillProject, 'skills-lock.json')
-      const lockText = readFileSync(lockFile, 'utf8')
-      const lock = JSON.parse(lockText)
-      const lockSource = lock?.skills?.notifai?.source
-      if (
-        typeof lockSource !== 'string' ||
-        path.isAbsolute(lockSource) ||
-        /^[A-Za-z]:[\\/]/.test(lockSource) ||
-        lockSource.startsWith('\\\\')
-      ) {
-        fail(`skills@1.5.23 wrote a machine-specific skill source to its lock`)
-      }
-      for (const sensitivePath of [process.env.HOME, installDir, skillHome]) {
-        if (sensitivePath && lockText.includes(sensitivePath)) {
-          fail('skills@1.5.23 leaked a machine-specific path into its lock')
-        }
-      }
-      const stagingParent = path.join(skillProject, '.notifai')
-      if (
-        existsSync(stagingParent) &&
-        readdirSync(stagingParent).some((entry) => entry.startsWith('skill-source-'))
-      ) {
-        fail('packed CLI left its temporary skill source behind')
-      }
-
-      const readinessDeps = { nativeSkills: native.nativeSkills, cwd: skillProject, env: skillEnv }
-      const installedRoot = path.join(skillProject, '.agents', 'skills', 'notifai')
-      const installedStat = lstatSync(installedRoot)
-      if (!installedStat.isDirectory() || installedStat.isSymbolicLink()) {
-        fail('skills@1.5.23 did not leave the conventional installed skill as a regular copied tree')
-      }
-      const ready = await commandsSkill.skillReadiness(readinessDeps, 'project')
-      if (ready.status !== 'ready') {
-        fail(`freshly installed packaged skill was not ready (${JSON.stringify(ready.technical)})`)
-      }
-      const installedSkill = path.join(installedRoot, 'SKILL.md')
-      writeFileSync(installedSkill, `${readFileSync(installedSkill, 'utf8')}\n<!-- altered -->\n`)
-      const altered = await commandsSkill.skillReadiness(readinessDeps, 'project')
-      if (
-        altered.status !== 'gap' ||
-        altered.technical?.resolution !== 'installed-skill-content-mismatch'
-      ) {
-        fail(`altered installed skill did not fail content readiness (${JSON.stringify(altered)})`)
-      }
-    } catch (error) {
-      fail(`packed CLI native skill install/readiness check failed (${String(error)})`)
-    }
+    const { installDir, installedCli, cliManifest, protocolManifest, env } = prepared
     const binRelative =
       typeof cliManifest.bin === 'string' ? cliManifest.bin : cliManifest.bin?.notifai
     if (typeof binRelative !== 'string') fail('packed CLI manifest declares no notifai bin')
     const bin = path.join(installedCli, binRelative)
-    const runInstalled = (args) =>
-      execFileSync(process.execPath, [bin, ...args], { cwd: installDir, env, encoding: 'utf8' })
+    const runInstalled = (args, phase) =>
+      runPhase(process.execPath, [bin, ...args], {
+        cwd: installDir,
+        env,
+        timeoutMs: TIMEOUTS.cliCommand,
+        phase,
+      }).stdout
 
     verifyVersionOutput('installed notifai --version', cliManifest.version, () =>
-      runInstalled(['--version']),
+      runInstalled(['--version'], 'packed-cli-version'),
     )
 
     if (process.platform === 'win32') {
@@ -434,15 +398,17 @@ async function main() {
     // requires startup to link every static protocol import the CLI names —
     // the exact step a stale protocol dependency breaks.
     try {
-      runInstalled(['config', 'show'])
+      runInstalled(['config', 'show'], 'packed-cli-config')
     } catch (error) {
       fail(`installed notifai config show failed (${String(error)})`)
     }
 
     console.log(
       `Packed install verified: ${CLI_NAME}@${cliManifest.version} installs in isolation with ` +
-        `${PROTOCOL_NAME}@${protocolManifest.version}; its bin and package-bound skill both run.`,
+        `${PROTOCOL_NAME}@${protocolManifest.version}; its bin runs and its packaged skill is present.`,
     )
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error))
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

@@ -79,6 +79,7 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
     'pnpm lint',
     'pnpm check:release',
     'pnpm check:packed',
+    'pnpm check:packed-skill-smoke -- --if-changed',
     'commitlint',
   ]) assert.match(gates, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')))
 
@@ -198,6 +199,8 @@ test('publication reuses the exact tarballs that passed boundary and install che
   assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/u)
   assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/u)
   assert.match(pack.run, /scripts\/verify-packed-install\.mjs/u)
+  assert.match(pack.run, /scripts\/verify-packed-skill-install\.mjs/u)
+  assert.doesNotMatch(pack.run, /--if-changed/u)
   assert.match(pack.run, /--gitleaks(?:\s|$)/u)
   assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/u)
   assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/u)

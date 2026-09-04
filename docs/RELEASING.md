@@ -64,7 +64,11 @@ exact protocol version released beside it. Separate candidates can each be
 internally plausible while neither is installable: one can pin an unpublished
 protocol version and the other can leave the CLI pinned to the old version.
 `pnpm check:packed` installs both tarballs outside the workspace and enforces
-the exact-pair invariant that workspace linking otherwise hides.
+the exact-pair invariant that workspace linking otherwise hides. It also
+proves the packed CLI still contains and can stage the reviewed skill. It does
+not spawn the third-party skills installer; that proof is
+`pnpm check:packed-skill-smoke`, run when the adapter, pin, or bundle changes
+and always as publication evidence.
 
 The `node-workspace` plugin therefore uses `updateAllPackages: true`. A change
 to either package advances both packages by at least a patch and keeps the
@@ -92,8 +96,11 @@ workflows when it pushes the repair commit, and routine branch changes
 intentionally have no CI trigger. A separate limited job uses the official
 `workflow_dispatch` API to start `ci.yml` at the repaired release branch.
 Both the dispatch response and CI verify the exact expected commit SHA. Wait
-for that release evidence, including `pnpm check:packed`, before considering
-the Release PR ready.
+for that release evidence, including `pnpm check:packed` and, when the adapter,
+pin, or bundle changed, `pnpm check:packed-skill-smoke`, before considering
+the Release PR ready. Publication always reruns the skill-installer smoke
+against the exact packed tarballs. Every external process in those gates has a
+short timeout and a named phase.
 
 The combined manifest deliberately has no root (`.`) package. Do not add a
 `group-pull-request-title-pattern` that references `${component}` or
