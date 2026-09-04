@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs'
+import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import test from 'node:test'
@@ -11,41 +11,36 @@ const read = file => readFileSync(file, 'utf8').replace(/\r\n?/gu, '\n')
 const release = read('.github/workflows/release-please.yml')
 const ci = read('.github/workflows/ci.yml')
 const publish = read('.github/workflows/publish.yml')
-const provider = read('.github/workflows/provider-posture.yml')
 const releaseWorkflow = parse(release)
 const ciWorkflow = parse(ci)
 const publishWorkflow = parse(publish)
-const providerWorkflow = parse(provider)
 const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
 const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
 const protocolPackage = JSON.parse(readFileSync('packages/protocol/package.json', 'utf8'))
 
 test('all workflows stay LF-normalized, least-privilege, and action-SHA pinned', () => {
-  for (const workflow of [release, ci, publish, provider]) {
+  for (const workflow of [release, ci, publish]) {
     assert.doesNotMatch(workflow, /\r/)
     for (const match of workflow.matchAll(/uses: ([^\s@]+)@([^\s#]+)/gu)) {
       assert.match(match[2], /^[0-9a-f]{40}$/u, match[1])
     }
   }
   assert.deepEqual(ciWorkflow.permissions, {contents: 'read'})
-  assert.deepEqual(providerWorkflow.permissions, {contents: 'read'})
   assert.doesNotMatch(release, /\bsecrets\.|\bvars\./u)
   assert.match(release, /token: \$\{\{ github\.token \}\}/u)
   assert.match(release, /persist-credentials: false/u)
 })
 
-test('CI has no tag trigger, cancels only PR work, and preserves exact manual identity', () => {
-  assert.doesNotMatch(ci, /\n\s+tags:/u)
-  assert.match(ci, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u)
+test('CI runs only for an exact release candidate', () => {
+  assert.doesNotMatch(ci, /\n  (?:pull_request|push|schedule):/u)
+  assert.match(ci, /cancel-in-progress: false/u)
   assert.match(ci, /workflow_dispatch:\n    inputs:\n      expected_sha:/u)
   assert.match(ci, /if \[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/u)
-  assert.match(ci, /case "\$EVENT_NAME" in[\s\S]*workflow_dispatch\)/u)
-  assert.match(ci, /node scripts\/ci-scope\.mjs/u)
-  assert.match(ci, /check-secrets\.mjs --mode tree/u)
-  assert.match(ci, /--mode range --base "\$base_sha" --head "\$head_sha"/u)
+  assert.match(ci, /check-secrets\.mjs --mode full/u)
+  assert.doesNotMatch(ci, /node scripts\/ci-scope\.mjs/u)
 })
 
-test('protected CI identities are explicit and path-selected before runner allocation', () => {
+test('release CI identities are explicit and all depend on exact candidate admission', () => {
   const protectedJobs = [
     ['gates', ciWorkflow.jobs.gates, 'ubuntu-latest'],
     ['platform (macos-latest)', ciWorkflow.jobs['platform-macos'], 'macos-latest'],
@@ -67,9 +62,9 @@ test('protected CI identities are explicit and path-selected before runner alloc
   assert.equal(ciWorkflow.jobs['platform-macos'].name, 'platform (macos-latest)')
   assert.equal(ciWorkflow.jobs['platform-windows-x64'].name, 'platform (windows-2025)')
   assert.equal(ciWorkflow.jobs['platform-windows-arm'].name, 'platform (windows-11-arm)')
-  assert.match(ciWorkflow.jobs['platform-macos'].if, /outputs\.macos == 'true'/u)
-  assert.match(ciWorkflow.jobs['platform-windows-x64'].if, /outputs\.windows == 'true'/u)
-  assert.match(ciWorkflow.jobs['platform-windows-arm'].if, /outputs\.windows == 'true'/u)
+  assert.match(ciWorkflow.jobs['platform-macos'].if, /needs\.scope\.result == 'success'/u)
+  assert.match(ciWorkflow.jobs['platform-windows-x64'].if, /needs\.scope\.result == 'success'/u)
+  assert.match(ciWorkflow.jobs['platform-windows-arm'].if, /needs\.scope\.result == 'success'/u)
   assert.equal(String(ciWorkflow.jobs.gates.if), '${{ always() }}')
   assert.match(ciWorkflow.jobs.gates.steps[0].if, /needs\.scope\.result != 'success'/u)
   assert.match(ciWorkflow.jobs.gates.steps[0].run, /exit 1/u)
@@ -84,7 +79,6 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
     'pnpm lint',
     'pnpm check:release',
     'pnpm check:packed',
-    'verify-release-pr-metadata.mjs',
     'commitlint',
   ]) assert.match(gates, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')))
 
@@ -100,23 +94,12 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
   }
 })
 
-test('dependency review is PR-only and selected only by dependency inputs', () => {
-  const job = ciWorkflow.jobs['dependency-review']
-  assert.equal(job.needs, 'scope')
-  assert.match(job.if, /github\.event_name == 'pull_request'/u)
-  assert.match(job.if, /outputs\.dependencies == 'true'/u)
-})
-
-test('weekly provider posture owns checksum-pinned full-history security evidence', () => {
-  const posture = providerWorkflow.jobs['private-vulnerability-reporting']
-  const step = posture.steps.find(candidate => candidate.run === 'node scripts/check-public-provider-posture.mjs')
-  assert.equal(step.env.GH_TOKEN, '${{ github.token }}')
-  const history = providerWorkflow.jobs['full-history-secrets']
-  assert.equal(history.steps[0].with['fetch-depth'], 0)
-  assert.match(provider, /GITLEAKS_VERSION: 8\.30\.1/u)
-  assert.match(provider, /551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb/u)
-  assert.match(provider, /check-secrets\.mjs --mode controls/u)
-  assert.match(provider, /check-secrets\.mjs --mode full/u)
+test('public hosted workflows exist only for release preparation and publication', () => {
+  assert.deepEqual(
+    ['ci.yml', 'publish.yml', 'release-please.yml'],
+    readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).sort(),
+  )
+  assert.equal(ciWorkflow.jobs['dependency-review'], undefined)
 })
 
 test('release-please is explicit, exact-main guarded, and uses a verified predecessor', () => {
@@ -126,6 +109,8 @@ test('release-please is explicit, exact-main guarded, and uses a verified predec
   assert.match(release, /\[ "\$ACTUAL_SHA" != "\$EXPECTED_SHA" \]/u)
   assert.match(release, /\.parents \| if length == 1 then \.\[0\]\.sha/u)
   assert.match(release, /verify-release-please-output\.mjs "\$\{\{ steps\.predecessor\.outputs\.sha \}\}"/u)
+  assert.match(release, /Verify generated release pull request metadata/u)
+  assert.match(release, /node scripts\/verify-release-pr-metadata\.mjs "\$event_path"/u)
   assert.doesNotMatch(release, /github\.event\.before/u)
   assert.match(release, /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write/u)
   assert.match(release, /  dispatch:\n(?:.*\n)*?    permissions:\n      actions: write/u)
@@ -141,19 +126,19 @@ test('release refs dispatch CI and publication at one exact SHA', () => {
   assert.match(release, /dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/u)
 })
 
-test('release publication waits once for successful exact-SHA CI before dispatch', () => {
+test('release publication dispatches and waits for exact-SHA CI before publish', () => {
   const job = releaseWorkflow.jobs.dispatch
-  const waitIndex = job.steps.findIndex(step => step.name === 'Wait for exact release CI evidence')
-  const dispatchIndex = job.steps.findIndex(step => step.name === 'Dispatch workflows at exact release refs')
+  const dispatchIndex = job.steps.findIndex(step => step.name === 'Dispatch release evidence and publication')
 
-  assert.equal(job['timeout-minutes'], 20)
+  assert.equal(job['timeout-minutes'], 30)
   assert.deepEqual(job.permissions, {actions: 'write', contents: 'read'})
-  assert.ok(waitIndex >= 0, 'release dispatch must wait for CI evidence')
-  assert.ok(dispatchIndex > waitIndex, 'publication dispatch must follow the CI evidence wait')
-  assert.match(job.steps[waitIndex].if, /releases_created == 'true'/u)
-  assert.equal(
-    job.steps[waitIndex].run,
-    'node scripts/require-ci-evidence.mjs --expected-sha "${{ github.sha }}" --wait',
+  assert.ok(dispatchIndex >= 0, 'release dispatch step is missing')
+  const command = job.steps[dispatchIndex].run
+  assert.match(command, /dispatch_workflow ci\.yml "\$GITHUB_REF_NAME" "\$GITHUB_SHA"/u)
+  assert.match(command, /require-ci-evidence\.mjs --expected-sha "\$GITHUB_SHA" --wait/u)
+  assert.ok(
+    command.indexOf('require-ci-evidence.mjs') < command.indexOf('dispatch_workflow publish.yml'),
+    'publication must follow exact-SHA CI evidence',
   )
 })
 

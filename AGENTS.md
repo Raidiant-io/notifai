@@ -35,10 +35,12 @@ pnpm check:release    # packed files, metadata, docs, licenses, CLI version
 pnpm check:packed     # isolated registry-shaped install of the packed CLI; needs registry access
 ```
 
-CI runs checksum-pinned gitleaks against the current tree and the complete
-changed commit range, after proving redacted detection with ephemeral positive
-controls. The scheduled and manual Provider posture workflow scans full Git
-history weekly. Local `pnpm check:secrets` retains the full tree/history form.
+GitHub-hosted CI is release evidence, not the development feedback loop. It
+runs only when release automation explicitly dispatches an exact-SHA candidate,
+and scans that candidate's current tree and full Git history after proving
+redacted detection with ephemeral positive controls. Routine commits, pull
+requests, pushes, and clocks do not start hosted workflows. Local
+`pnpm check:secrets` retains the same tree/history evidence for ordinary work.
 
 If a change needs a new top-level entry, workspace package, or file kind,
 extend the allowlist in `scripts/check-boundary.mjs` in the same commit and

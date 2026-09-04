@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       expected_sha:
@@ -15,21 +12,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-ci-${{ inputs.expected_sha }}
+  cancel-in-progress: false
 
 jobs:
   scope:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    outputs:
-      ubuntu: ${{ steps.classify.outputs.ubuntu }}
-      macos: ${{ steps.classify.outputs.macos }}
-      windows: ${{ steps.classify.outputs.windows }}
-      dependencies: ${{ steps.classify.outputs.dependencies }}
     steps:
-      - name: Reject a stale workflow dispatch
-        if: github.event_name == 'workflow_dispatch'
+      - name: Reject a stale release candidate
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           ACTUAL_SHA: ${{ github.sha }}
@@ -54,30 +45,6 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Classify the complete change range
-        id: classify
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$EVENT_NAME" in
-            pull_request) base_sha=$PR_BASE_SHA ;;
-            push) base_sha=$PUSH_BEFORE_SHA ;;
-            workflow_dispatch)
-              base_sha=$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD^)
-              ;;
-            *) base_sha= ;;
-          esac
-          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_ENV"
-          printf 'head_sha=%s\n' "$HEAD_SHA" >> "$GITHUB_ENV"
-          node scripts/ci-scope.mjs \
-            --event "$EVENT_NAME" --base "$base_sha" --head "$HEAD_SHA" \
-            --output "$GITHUB_OUTPUT"
-
       - name: Install verified gitleaks binary
         env:
           GITLEAKS_VERSION: 8.30.1
@@ -92,19 +59,13 @@ jobs:
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
-      - name: Prove redacted tree, range, and history detection
+      - name: Prove redacted detection and scan the release history
         shell: bash
         run: |
           set -euo pipefail
           node scripts/check-secrets.mjs --mode controls
           node scripts/check-secrets.mjs --mode tree
-          if [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] && \
-             [ "$base_sha" != 0000000000000000000000000000000000000000 ] && \
-             git cat-file -e "$base_sha^{commit}"; then
-            node scripts/check-secrets.mjs --mode range --base "$base_sha" --head "$head_sha"
-          else
-            node scripts/check-secrets.mjs --mode full
-          fi
+          node scripts/check-secrets.mjs --mode full
 
   gates:
     needs: scope
@@ -112,10 +73,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Fail when scope or range security evidence did not succeed
+      - name: Fail when exact candidate admission did not succeed
         if: needs.scope.result != 'success'
         run: |
-          echo "Scope or changed-range security evidence did not succeed" >&2
+          echo "Exact release candidate admission did not succeed" >&2
           exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,76 +95,50 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Lint pull request title
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint --verbose
-
-      - name: Verify release pull request metadata
-        if: github.event_name == 'pull_request'
-        run: node scripts/verify-release-pr-metadata.mjs "$GITHUB_EVENT_PATH"
-
       - name: Lint commit messages
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            pnpm exec commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            base=$(git merge-base origin/main HEAD)
-            pnpm exec commitlint --from "$base" --to HEAD --verbose
-          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
             pnpm check:commit
           else
-            pnpm exec commitlint --from "${{ github.event.before }}" --to HEAD --verbose
+            base=$(git merge-base origin/main HEAD)
+            pnpm exec commitlint --from "$base" --to HEAD --verbose
           fi
 
       - name: Build public packages
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm build
 
       - name: Run public unit tests
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm -r test
 
       - name: Typecheck public packages
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm -r typecheck
 
       - name: Lint public packages
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm lint
 
       - name: Audit production dependencies
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm audit --prod --audit-level moderate --ignore-registry-errors
 
       - name: Prove public boundary canaries
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm check:boundary:self-test
 
       - name: Verify public boundary
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm check:boundary
 
       - name: Verify agent guidance tests
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm check:agent-guidance:test
 
       - name: Verify agent guidance
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm check:agent-guidance
 
       - name: Verify release metadata and package contents
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm check:release
 
       - name: Verify registry-shaped packed installation
-        if: needs.scope.outputs.ubuntu == 'true'
         run: pnpm check:packed
 
       - name: Verify public provider posture
-        if: needs.scope.outputs.ubuntu == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/check-public-provider-posture.mjs
@@ -212,8 +147,7 @@ jobs:
     name: platform (macos-latest)
     needs: scope
     if: >-
-      always() && needs.scope.result == 'success' &&
-      needs.scope.outputs.macos == 'true'
+      always() && needs.scope.result == 'success'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -236,8 +170,7 @@ jobs:
     name: platform (windows-2025)
     needs: scope
     if: >-
-      always() && needs.scope.result == 'success' &&
-      needs.scope.outputs.windows == 'true'
+      always() && needs.scope.result == 'success'
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -292,8 +225,7 @@ jobs:
     name: platform (windows-11-arm)
     needs: scope
     if: >-
-      always() && needs.scope.result == 'success' &&
-      needs.scope.outputs.windows == 'true'
+      always() && needs.scope.result == 'success'
     runs-on: windows-11-arm
     timeout-minutes: 30
     steps:
@@ -332,20 +264,3 @@ jobs:
             --testNamePattern Windows
       - name: Verify the packed CLI through native Windows shells
         run: pnpm check:packed
-
-  dependency-review:
-    needs: scope
-    if: >-
-      always() && needs.scope.result == 'success' &&
-      github.event_name == 'pull_request' &&
-      needs.scope.outputs.dependencies == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-severity: moderate
-          allow-licenses: Apache-2.0, BSD-3-Clause, ISC, MIT
