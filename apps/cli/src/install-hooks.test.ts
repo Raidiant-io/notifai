@@ -116,8 +116,8 @@ describe('hook config', () => {
     expect(codex['SessionStart']?.[0]?.hooks[0]).toMatchObject({
       command: hookCommand(ADAPTER, 'session-start', 'codex'),
       timeout: 5,
-      additionalContextLimit: 0,
     })
+    expect(codex['SessionStart']?.[0]?.hooks[0]).not.toHaveProperty('additionalContextLimit')
     expect(claude['SessionStart']?.[0]?.hooks[0]).not.toHaveProperty('additionalContextLimit')
     expect(cursor['sessionStart']?.[0]).toMatchObject({
       command: hookCommand(ADAPTER, 'session-start', 'cursor'),
@@ -849,19 +849,23 @@ describe('finding what is installed', () => {
     const env = { HOME: home, CODEX_HOME: path.join(home, '.codex') }
     const hookFile = path.join(env.CODEX_HOME, 'hooks.json')
     mkdirSync(path.dirname(hookFile), { recursive: true })
-    applyPlan(hookFile, { hooks: buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' }) })
+    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
+    const sessionStart = hooks['SessionStart']?.[0]?.hooks[0]
+    expect(sessionStart).toBeDefined()
+    sessionStart!.additionalContextLimit = 0
+    applyPlan(hookFile, { hooks })
 
     const installations = findInstallations(env)
-    const sessionStart = installations
+    const installedSessionStart = installations
       .find((installation) => installation.harness === 'codex')
       ?.handlers.find((handler) => handler.event === 'SessionStart')
-    expect(sessionStart?.additionalContextLimit).toBe(0)
-    expect(codexHookIdentityHash(sessionStart!)).toBe(
+    expect(installedSessionStart?.additionalContextLimit).toBe(0)
+    expect(codexHookIdentityHash(installedSessionStart!)).toBe(
       codexHookIdentityHash({
         event: 'SessionStart',
         groupIndex: 0,
         handlerIndex: 0,
-        command: sessionStart!.command,
+        command: installedSessionStart!.command,
         timeout: 5,
         additionalContextLimit: 0,
       }),

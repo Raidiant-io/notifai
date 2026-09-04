@@ -3497,6 +3497,69 @@ describe('Codex hook representation', () => {
     expect(codexTrustProblems(installations, env)).toEqual([])
   })
 
+  it('keeps an approved Codex handler identity stable across CLI upgrades', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-approved-noop-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+
+    const compatible = buildHookConfig({
+      adapterPath: hookAdapterPath(deps.hookAdapterHome),
+      harness: 'codex',
+    })
+    delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
+    applyPlan(toml, { hooks: compatible })
+    trustInstalledCodexHooks(cwd, env)
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    const installations = findInstallations(env, deps.hookAdapterHome).filter(
+      (installation) => installation.harness === 'codex',
+    )
+    expect(
+      installations
+        .flatMap((installation) => installation.handlers)
+        .find((handler) => handler.event === 'SessionStart'),
+    ).not.toHaveProperty('additionalContextLimit')
+    expect(codexTrustProblems(installations, env)).toEqual([])
+    expect(io.outLines.join('\n')).toContain('Your existing Codex hook approvals still match')
+  })
+
+  it('restores the approved compatible SessionStart shape after a prior installer changed it', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-approved-restore-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+
+    const compatible = buildHookConfig({
+      adapterPath: hookAdapterPath(deps.hookAdapterHome),
+      harness: 'codex',
+    })
+    delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
+    applyPlan(toml, { hooks: compatible })
+    trustInstalledCodexHooks(cwd, env)
+
+    const changed = buildHookConfig({
+      adapterPath: hookAdapterPath(deps.hookAdapterHome),
+      harness: 'codex',
+    })
+    changed['SessionStart']![0]!.hooks[0]!.additionalContextLimit = 0
+    applyPlan(toml, mergeHooks(loadSettings(toml), changed, scriptPath).document)
+    expect(codexTrustProblems(findInstallations(env, deps.hookAdapterHome), env)).not.toEqual([])
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    const sessionStart = findInstallations(env, deps.hookAdapterHome)
+      .flatMap((installation) => installation.handlers)
+      .find((handler) => handler.event === 'SessionStart')
+    expect(sessionStart).not.toHaveProperty('additionalContextLimit')
+    expect(codexTrustProblems(findInstallations(env, deps.hookAdapterHome), env)).toEqual([])
+    expect(io.outLines.join('\n')).toContain('Your existing Codex hook approvals still match')
+  })
+
   it('leaves config.toml byte-identical when uninstall finds no Notifai hooks', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-noop-uninstall-'))
     const io = new CapturedIo()

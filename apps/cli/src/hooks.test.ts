@@ -2939,7 +2939,7 @@ describe('session-start hook', () => {
       h.deps,
       'session-start',
       stdin({ session_id: 'bounded-root-guidance', source: 'startup' }),
-      'claude-code',
+      'codex',
     )
     const output = JSON.parse(h.io.outLines.at(-1) ?? '{}') as {
       hookSpecificOutput?: { additionalContext?: string }

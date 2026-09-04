@@ -27,8 +27,13 @@ export function renderGuidance(topics: readonly ResolvedGuidanceTopic[]): string
   return [GUIDANCE_TRUST_PREAMBLE, AGENT_TERMS_PREAMBLE, ...blocks].join('\n\n')
 }
 
-/** Hard ceiling for model-visible lifecycle context, including repository topics. */
-export const GUIDANCE_CONTEXT_MAX_BYTES = 24_000
+/**
+ * Hard ceiling for model-visible lifecycle context, including repository
+ * topics. Codex's default hook-output spill threshold is 10,000 bytes. Staying
+ * at or below it keeps the complete guidance inline without adding a hook field
+ * that changes the User-approved handler identity.
+ */
+export const GUIDANCE_CONTEXT_MAX_BYTES = 10_000
 
 export type BoundedGuidance =
   | { ok: true; content: string; bytes: number }
