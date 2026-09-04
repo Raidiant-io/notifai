@@ -418,7 +418,33 @@ async function probeAccount(
     }
   }
 
-  const err = devicesErr ?? (accessOutcome.status === 'rejected' ? accessOutcome.reason : null)
+  const accessErr = accessOutcome.status === 'rejected' ? accessOutcome.reason : null
+  const err = [devicesErr, accessErr].find((error) => error instanceof ApiCallError && error.status === 401)
+    ?? devicesErr ?? accessErr
+  const rejectedCredential = err instanceof ApiCallError && err.status === 401
+  if (!rejectedCredential) {
+    return {
+      email,
+      devices: null,
+      lookupFailed: true,
+      auth: access?.status === 'active'
+        ? {
+            id: 'auth',
+            title: 'Account',
+            status: 'ready',
+            detail: email
+              ? `machine ${credential.machineId} accepted (${email})`
+              : `machine ${credential.machineId} accepted`,
+          }
+        : {
+            id: 'auth',
+            title: 'Account',
+            status: 'gap',
+            detail: 'could not check Account access; the saved machine approval is unchanged',
+            remedy: { by: 'user-here', summary: 'try again when the service is reachable', command: SETUP_COMMAND },
+          },
+    }
+  }
   return {
     email: null,
     devices: null,
@@ -589,7 +615,13 @@ export async function assessReadiness(
     const why = !credential ? 'this machine is not paired' : 'the server is unreachable'
     states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: `not checked — ${why}` })
   } else if (accountLookupFailed || accountDevices === null) {
-    states.push({ id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — sign-in failed' })
+    states.push(states.find((state) => state.id === 'auth')?.status === 'ready'
+      ? {
+          id: 'devices', title: 'Your devices', status: 'gap',
+          detail: 'could not check your Companion Apps',
+          remedy: { by: 'user-here', summary: 'retry the device lookup', command: SETUP_COMMAND },
+        }
+      : { id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — Account access is unresolved' })
   } else {
     const devices = accountDevices
     const companionDevices = devices.filter(

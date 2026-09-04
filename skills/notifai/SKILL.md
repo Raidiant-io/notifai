@@ -305,8 +305,9 @@ user to run a command you could have run yourself.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-Flagless `notifai init --json` asks nothing and reaches delivery
-proof. Two independent decisions remain: Question Routing — devices or
+`notifai init --json` starts needed browser approval without a terminal prompt.
+Keep it running while the User approves.
+Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.
 Lifecycle wiring has no scope: one install per harness for this machine;
 `notifai project enable` is the per-project switch. Never guess unattended:
@@ -328,7 +329,7 @@ its own exact-session admission check.
 
 Then gather the human-only steps its reported gap needs:
 
-- approving this machine in the browser (after **you** started `notifai login`)
+- approving this machine in the browser opened by `notifai init`
 - installing the companion app, signing in, and allowing notifications
 
 Never emulate User-owned actions, claim to approve hooks yourself, or claim an

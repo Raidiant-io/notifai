@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3ededc5a2a0871d5fbd377117e7628e61d53bb0884963870230b9e87e00af0e5",
+  "behavior_digest": "sha256:d95082033769cd5895570c6620fca27121a0ff0cfcfd833ed4752f31aba23091",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms against current harness contracts. Detached Claude admission now distinguishes ordinary async from asyncRewake and blocking lifetimes; inherited conflicting session markers receive foreground recovery without guessed attribution. Every answered request carries an Agent Acknowledgement obligation even when response metadata says optional. Generated OpenCode and OpenClaw adapters preserve disabled-Project silence and refresh guidance for each model request; failed activation reports unverified enablement with supported recovery. Runtime authority, worker ownership, no-native-plugin distribution, and inactive Mac scope remain unchanged.",
+  "reason": "Reviewed the existing harness integration evidence and the changed setup, readiness, skill and README surfaces. Unattended init starts the same bounded trusted browser approval as interactive setup, reports progress on stderr and final readiness on stdout, and preserves the access errand when approval stops. Transient lookups require retry rather than reapproval; selecting a Companion platform starts one bounded handoff. The skill now names init as the approval owner. Lifecycle activation and Question Routing remain unchanged, User browser approval remains required, and domain terms distinguish Account access, machine approval and Companion readiness.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -29,10 +29,9 @@ export type Remedy =
    */
   | { by: 'cli'; summary: string; command?: string }
   /**
-   * A human at this terminal. `interactive` marks the ones the CLI can drive
-   * on their behalf when someone is actually watching — a browser sign-in is
-   * the CLI's to launch but the human's to complete, so an agent must still
-   * treat it as out of reach.
+   * An action the User completes. `interactive` marks a flow the CLI can
+   * start for them: init starts machine approval for either caller, while the
+   * User still signs in and approves in their browser.
    */
   | {
       by: 'user-here'

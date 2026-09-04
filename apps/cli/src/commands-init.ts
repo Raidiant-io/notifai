@@ -64,7 +64,7 @@ export function projectSlugFrom(name: string): string {
 }
 
 export interface InitFlags {
-  /** Emit the final shared readiness model and never prompt. */
+  /** Emit final readiness on stdout, progress on stderr, and never prompt. */
   json?: boolean
   projectId?: string
   /**
@@ -103,7 +103,8 @@ function formatWaitBudget(milliseconds: number): string {
  * With a human at a terminal it walks them through the missing pieces; run by
  * an agent it never prompts — each optional step is answered by a flag, and
  * whatever only the user can do (signing in, pairing a companion device) is
- * printed as the next human action. An agent runs every CLI command itself.
+ * opened in the browser or printed as the next human action. An agent runs
+ * every CLI command itself; machine approval uses the same bounded wait.
  */
 /**
  * Close a gap the CLI is allowed to close on its own, without asking.
@@ -250,8 +251,7 @@ async function registeredCompanions(client: ApiClient): Promise<number> {
  *
  * Asked in the User's words, here, so the destination this terminal opens is
  * already about their phone rather than an index they have to choose from
- * again on the other screen. A run with no human gets nothing — it opens no
- * browser and answers no question — so there is no prompt to hang on.
+ * again on the other screen. This selection is only offered at a human terminal.
  */
 async function askCompanionPlatform(deps: CommandDeps): Promise<CompanionPlatform | null> {
   if (deps.io.interactive !== true || deps.io.select === undefined) return null
@@ -266,7 +266,7 @@ async function askCompanionPlatform(deps: CommandDeps): Promise<CompanionPlatfor
  * Observe the supported Device Installation path while the user finishes the
  * app-side work. The bridge is one focused setup destination for the platform
  * they just named — not the omnibus help page, whose own next step is to go
- * somewhere else. Interactive runs offer to open it so the user never types
+ * somewhere else. Interactive runs open it so the user never types
  * the URL; non-interactive/agent paths only print plain text and never wait on
  * a prompt.
  *
@@ -292,9 +292,9 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   // already holding. Only a User with nothing registered has a platform still
   // to name, and that is read from the account rather than from the wording of
   // the state that got us here.
-  const platform = (await registeredCompanions(authed.client)) === 0
-    ? await askCompanionPlatform(deps)
-    : null
+  const needsPlatform = (await registeredCompanions(authed.client)) === 0
+  const platform = needsPlatform ? await askCompanionPlatform(deps) : null
+  if (needsPlatform && platform === null) return 'pending'
   const setupUrl = setupCompanionUrl(authed.baseUrl, platform ?? undefined)
   const stepsLabel =
     platform === null ? 'Setup steps (no typing)' : `${companionPlatformLabel(platform)} steps (no typing)`
@@ -303,23 +303,14 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
       state.detail,
       remedy.summary,
       `${stepsLabel}: ${setupUrl}`,
-      `I will wait up to ${budgetLabel} for a Companion App to become ready.`,
+      `I will wait up to ${budgetLabel} for a Companion App to become ready. Ctrl-C stops this wait.`,
     ].join('\n'),
     'Finish setup on your phone',
   )
 
-  // Open the destination so the user never has to type the URL. Decline is
-  // fine — the URL remains in the note and in the Next: line if they leave.
-  if (await deps.io.confirm('Open those steps in your browser?', true)) {
-    deps.io.openUrl(setupUrl)
-  }
-
-  if (!(await deps.io.confirm('Wait here while you finish that on your phone?', true))) {
-    deps.io.out(
-      `OK — finish that when you can (steps: ${setupUrl}), then re-run \`notifai init\`.`,
-    )
-    return 'pending'
-  }
+  // The platform choice (or resuming an existing installation) starts the
+  // handoff. Only extending an expired wait needs another decision.
+  deps.io.openUrl(setupUrl)
 
   const now = deps.now ?? Date.now
   const sleep =
@@ -731,7 +722,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         ...deps,
         io: {
           interactive: false,
-          out: () => {},
+          out: (line) => deps.io.err(line),
           err: (line) => deps.io.err(line),
           confirm: async () => false,
           openUrl: (url) => deps.io.openUrl(url),
@@ -850,16 +841,28 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         break
       }
 
-      // Its to launch, theirs to complete. Running `init` is the consent; announce
-      // and open rather than re-asking. An agent never reaches this path.
+      // The CLI starts approval; the User completes it in their browser.
+      // Both human and unattended init use the same bounded approval flow.
       if (
+        (state.id === 'credential' || state.id === 'auth') &&
         remedy.by === 'user-here' &&
-        remedy.interactive === true &&
-        workingDeps.io.interactive === true
+        remedy.interactive === true
       ) {
         attempted.add(state.id)
         workingDeps.io.out('Opening your browser to approve this machine — Ctrl-C to stop.')
-        if ((await loginCommand(workingDeps, {}, (blocker) => (loginBlocker = blocker))) !== EXIT.ok) {
+        const loginResult = await loginCommand(workingDeps, {}, (blocker) => {
+          loginBlocker = blocker
+          // Both renderers must report the access errand that stopped approval,
+          // rather than the missing credential observed before it began.
+          readiness = {
+            states: readiness.states.map((observed) => observed.id === 'auth'
+              ? blocker
+              : observed.id === 'credential'
+                ? { id: 'credential', title: 'This machine', status: 'unknown', detail: 'approval stopped before a machine credential was stored' }
+                : observed),
+          }
+        })
+        if (loginResult !== EXIT.ok) {
           failed = true
           stop = true
           break
