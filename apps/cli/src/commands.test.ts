@@ -3727,7 +3727,7 @@ describe('harness activation guidance', () => {
     expect(output).not.toMatch(/Codex runs every matching handler|harmless/i)
   })
 
-  it('names Codex trust and fresh-session activation in the correct order', () => {
+  it('names required Codex trust and fresh-session activation in the correct order', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-activation-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
@@ -3737,8 +3737,29 @@ describe('harness activation guidance', () => {
     )
 
     const output = io.outLines.join('\n')
-    expect(output).toContain('Approve the Notifai handlers in `/hooks` if Codex asks')
-    expect(output).toMatch(/approve[\s\S]*start one fresh Codex session[\s\S]*`notifai doctor`/i)
+    expect(output).toContain('The changed Notifai handlers need approval')
+    expect(output).toMatch(/open `\/hooks`[\s\S]*start one fresh Codex session[\s\S]*`notifai doctor`/i)
+  })
+
+  it('says existing Codex approval still matches after an idempotent repair', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-approved-repair-'))
+    const env = isolatedEnv(cwd)
+    const firstIo = new CapturedIo()
+    const firstDeps = { ...makeDeps(firstIo, {} as ApiClient), cwd, env }
+
+    expect(hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+    trustInstalledCodexHooks(cwd, env)
+
+    firstIo.outLines = []
+    expect(hooksInstallCommand(firstDeps, { harness: 'codex', execPath, scriptPath })).toBe(
+      EXIT.ok,
+    )
+
+    const output = firstIo.outLines.join('\n')
+    expect(output).toContain('Your existing Codex hook approvals still match')
+    expect(output).not.toMatch(/need approval|approve or enable/i)
   })
 
   it('names the installed harness in the close, never a different one', () => {
@@ -7984,7 +8005,8 @@ describe('asking before the hooks have ever run', () => {
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
     expect(fired?.status).toBe('optional-gap')
     expect(fired?.detail).toMatch(/Claude Code/)
-    expect(fired?.detail).toMatch(/Codex: approve[\s\S]*start one fresh session/i)
+    expect(fired?.detail).toMatch(/Codex: start one fresh session/i)
+    expect(fired?.detail).not.toMatch(/approve.*start/i)
 
     io.errLines = []
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)

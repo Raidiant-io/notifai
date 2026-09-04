@@ -115,7 +115,7 @@ export function hookActivationAdvice(installations: Installation[]): string {
   }
   if (harnesses.has('codex')) {
     advice.push(
-      'Codex: approve the Notifai handlers in `/hooks` if asked, start one fresh session, send one prompt, then run `notifai doctor`',
+      'Codex: start one fresh session, send one prompt, then run `notifai doctor`; the separate Codex hook trust check says explicitly if `/hooks` needs your attention',
     )
   }
   if (harnesses.has('opencode')) {

@@ -24,6 +24,7 @@ import {
   codexLegacyProjectLayers,
   codexMachineLayerPaths,
   codexRepresentationProblems,
+  codexTrustProblems,
   detectHarness,
   detectedHarnesses,
   findInstallations,
@@ -107,7 +108,14 @@ function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarne
   const label = HARNESS_LABELS[harness]
   const activation =
     harness === 'codex'
-      ? 'Approve the Notifai handlers in `/hooks` if Codex asks, then start one fresh Codex session, send one prompt, and run `notifai doctor`.'
+      ? codexTrustProblems(
+          findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(
+            (installation) => installation.harness === 'codex',
+          ),
+          deps.env,
+        ).length === 0
+        ? 'Your existing Codex hook approvals still match. Start one fresh Codex session, send one prompt, and run `notifai doctor`.'
+        : 'The changed Notifai handlers need approval. Open `/hooks` in Codex and approve or enable them, then start one fresh Codex session, send one prompt, and run `notifai doctor`.'
       : harness === 'cursor'
         ? 'Start one fresh Cursor conversation, send one prompt, finish its first turn, then run `notifai doctor`.'
         : harness === 'opencode'
@@ -234,9 +242,9 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       codexPaths === null
         ? withTargetFileLock(settingsTarget, () => installInto(settingsTarget))
         : withCodexLayerTransaction(codexPaths, (inspection) => {
-            // Notifai's own handlers in the representation it is not writing
-            // are moved, not preserved: they are stripped here and rewritten
-            // into the target below, inside the same layer transaction.
+            // A healthy layer has Notifai in exactly one source, and inspection
+            // keeps that source stable. This cleanup is only for a damaged
+            // duplicate installation before rewriting the chosen target.
             const staleTarget =
               inspection.writeTarget === inspection.paths.hooksJson
                 ? inspection.paths.configToml

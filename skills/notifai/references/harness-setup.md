@@ -110,12 +110,13 @@ request ID, inspect the original with `notifai replies <request_id> --json` and
   SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same
   reporting-only worker contract and explicit textual delegation rule as
-  Claude. Notifai writes the Machine layer's `~/.codex/hooks.json`, and joins
-  inline `[hooks]` in that layer's `config.toml` only when the User's own hooks
-  already live there. One install covers every project and every worktree, so
-  there is nothing to repeat in a new checkout; a Project-scoped `.codex` hook
-  file from an older Notifai is removed once the Machine copy is proven
-  current.
+  Claude. A fresh install writes the Machine layer's `~/.codex/hooks.json`, or
+  joins inline `[hooks]` when that is the layer's existing representation.
+  Upgrades preserve whichever source already owns Notifai's approved handlers,
+  because moving the same definition between files creates a new Codex trust
+  identity. One install covers every project and every worktree, so there is
+  nothing to repeat in a new checkout; a Project-scoped `.codex` hook file from
+  an older Notifai is removed once the Machine copy is proven current.
 - **Cursor:** start one fresh conversation, send one prompt, and let the first
   completed or errored turn finish. Cursor's `SessionStart` context is currently
   lossy, so one visible synthetic follow-up activates Notifai through its native
