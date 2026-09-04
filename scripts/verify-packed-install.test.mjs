@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -70,4 +70,13 @@ test('a covering range is still a failure — resolution must not go to the regi
 test('a missing protocol dependency is a failure', () => {
   const failure = protocolPinFailure({ name: '@raidiant/notifai', version: '9.9.9', dependencies: {} }, '0.6.0')
   assert.match(String(failure), /declares no @raidiant\/notifai-protocol dependency/)
+})
+
+test('the packed-install script never spawns the third-party skills installer', () => {
+  const source = readFileSync(script, 'utf8')
+  assert.doesNotMatch(source, /nativeSkills\.add/u)
+  assert.doesNotMatch(source, /skillsAddArgv/u)
+  assert.doesNotMatch(source, /npxLaunch/u)
+  assert.match(source, /phase: 'packed-npm-install'/u)
+  assert.match(source, /stageShippedSkillBundle/u)
 })

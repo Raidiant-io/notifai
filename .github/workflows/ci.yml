@@ -138,6 +138,9 @@ jobs:
       - name: Verify registry-shaped packed installation
         run: pnpm check:packed
 
+      - name: Verify packed skill installer when the adapter, pin, or bundle changed
+        run: pnpm check:packed-skill-smoke -- --if-changed
+
       - name: Verify public provider posture
         env:
           GH_TOKEN: ${{ github.token }}

@@ -151,6 +151,9 @@ jobs:
             --protocol-tarball "$protocol_tarball" \
             --cli-tarball "$cli_tarball" \
             --gitleaks
+          node scripts/verify-packed-skill-install.mjs \
+            --protocol-tarball "$protocol_tarball" \
+            --cli-tarball "$cli_tarball"
 
       - name: Verify deployed service accepts this candidate
         if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}

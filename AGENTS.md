@@ -78,10 +78,22 @@ shipping source or test files.
 
 Before publishing, `pnpm check:packed` installs the packed tarballs in an
 isolated directory outside the workspace, registry-shaped, and runs the
-installed bin. Workspace linking always resolves the protocol sitting next to
+installed bin. It also proves the tarball still contains and can stage the
+reviewed skill. Workspace linking always resolves the protocol sitting next to
 the CLI, so it is the only pre-publish gate that can catch the packed manifest
 pinning any other protocol version — a defect every workspace-bound gate
-passes and every clean user install crashes on.
+passes and every clean user install crashes on. It does not spawn the
+third-party skills installer: `npm exec` can stall after the registry metadata
+endpoint is already reachable, and that hang previously consumed a full runner
+timeout.
+
+When the native skills adapter, installer pin, or packaged skill bundle
+changes, or when collecting release evidence, run
+`pnpm check:packed-skill-smoke`. That separately named integration smoke proves
+the published skills installer can consume the packed Notifai skill. Every
+external process has a short timeout and a named phase so an installer stall
+fails this smoke instead of the runner. Release CI runs it only with
+`--if-changed`; publication always runs it against the exact packed tarballs.
 
 After publishing, run `pnpm check:published`. It downloads the tarball npm is
 serving and compares it against the local checkout: the compiled files byte
