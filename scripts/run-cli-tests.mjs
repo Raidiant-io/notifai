@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
+import {createRequire} from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,7 +44,8 @@ let child
 let forwardedSignal
 
 try {
-  const vitest = fileURLToPath(import.meta.resolve('vitest/vitest.mjs'))
+  const cliPackage = new URL('../apps/cli/package.json', import.meta.url)
+  const vitest = createRequire(cliPackage).resolve('vitest/vitest.mjs')
   const forwarded = process.argv.slice(2)
   if (forwarded[0] === '--') forwarded.shift()
   child = spawn(process.execPath, [vitest, 'run', ...forwarded], {

@@ -128,6 +128,28 @@ jobs:
           ')
           printf 'release_refs=%s\n' "$release_refs" >> "$GITHUB_OUTPUT"
 
+      - name: Verify generated release pull request metadata
+        if: ${{ steps.release-please.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ steps.release-please.outputs.prs }}
+        run: |
+          set -euo pipefail
+          event_path="$RUNNER_TEMP/release-pr-event.json"
+          while IFS= read -r number; do
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}" | node -e '
+              let input = ""
+              process.stdin.setEncoding("utf8")
+              process.stdin.on("data", chunk => { input += chunk })
+              process.stdin.on("end", () => {
+                process.stdout.write(JSON.stringify({pull_request: JSON.parse(input)}))
+              })
+            ' > "$event_path"
+            node scripts/verify-release-pr-metadata.mjs "$event_path"
+          done < <(node -e '
+            for (const pr of JSON.parse(process.env.PRS)) console.log(pr.number)
+          ')
+
   dispatch:
     needs: release-please
     if: >-
@@ -135,7 +157,7 @@ jobs:
       (needs.release-please.outputs.release_refs != '' ||
       needs.release-please.outputs.releases_created == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       actions: write
       contents: read
@@ -144,13 +166,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait for exact release CI evidence
-        if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/require-ci-evidence.mjs --expected-sha "${{ github.sha }}" --wait
-
-      - name: Dispatch workflows at exact release refs
+      - name: Dispatch release evidence and publication
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REFS: ${{ needs.release-please.outputs.release_refs }}
@@ -205,6 +221,11 @@ jobs:
               console.log(entry.ref + "\t" + entry.sha)
             }
           ')
+
+          if [ "$RELEASES_CREATED" = "true" ]; then
+            dispatch_workflow ci.yml "$GITHUB_REF_NAME" "$GITHUB_SHA"
+            node scripts/require-ci-evidence.mjs --expected-sha "$GITHUB_SHA" --wait
+          fi
 
           if [ "$PROTOCOL_RELEASE_CREATED" = "true" ]; then
             dispatch_workflow publish.yml "$PROTOCOL_TAG" "$PROTOCOL_SHA"

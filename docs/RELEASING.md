@@ -27,9 +27,11 @@ onward.
 <type>(<scope>)!: <description>
 ```
 
-Validated by [commitlint](https://commitlint.js.org/) with
-`@commitlint/config-conventional`. Types, scopes, and header length are
-that config’s defaults — not a house list.
+Validated locally by [commitlint](https://commitlint.js.org/) with
+`@commitlint/config-conventional`. Types, scopes, and header length are that
+config’s defaults — not a house list. Exact-SHA release CI validates the
+candidate range again; routine pushes and pull requests do not start hosted
+workflows.
 
 ```
 feat(cli): wake Claude sessions through the inbox socket
@@ -38,14 +40,15 @@ feat(cli)!: remove the presence gate
 ```
 
 `pnpm check:commit` runs `commitlint --last`. The `commit-msg` hook runs
-commitlint. CI runs it on the pushed or PR range.
+commitlint. Release CI runs it on the exact candidate range.
 
 Write for a public audience: no internal tracker IDs.
 
-Pull requests are squash-merged. Give every PR a Conventional Commit title;
-CI lints it because GitHub uses it as the squash commit subject. This keeps
-`main` linear and gives release-please one authoritative commit per change
-instead of both a merge commit and the commits it contains.
+Pull requests are squash-merged. Give every PR a Conventional Commit title and
+validate that proposed squash subject locally because GitHub uses it as the
+squash commit subject. This keeps `main` linear and gives release-please one
+authoritative commit per change instead of both a merge commit and the commits
+it contains.
 
 ## Cutting a release
 
@@ -85,10 +88,11 @@ release-please cannot perform those repository-wide repairs itself. Its
 `extra-files` updater cannot address `../` from a package, the README contains
 component-specific markers, and a manifest bump does not regenerate a pnpm
 lockfile. The repository-scoped `GITHUB_TOKEN` does not recursively start
-workflows when it pushes the repair commit, so a separate limited job uses
-the official `workflow_dispatch` API to start `ci.yml` at the repaired branch.
+workflows when it pushes the repair commit, and routine branch changes
+intentionally have no CI trigger. A separate limited job uses the official
+`workflow_dispatch` API to start `ci.yml` at the repaired release branch.
 Both the dispatch response and CI verify the exact expected commit SHA. Wait
-for those required checks, including `pnpm check:packed`, before considering
+for that release evidence, including `pnpm check:packed`, before considering
 the Release PR ready.
 
 The combined manifest deliberately has no root (`.`) package. Do not add a
@@ -100,8 +104,8 @@ package release, tag, and SHA outputs. A skipped or mismatched release therefore
 fails the release job, which prevents the dispatch job from turning the skip
 into a green workflow.
 
-Before merge, the required `gates` check also validates the Release PR's
-GitHub title, body, and manifest delta through
+Before dispatching release CI, the release workflow also validates the Release
+PR's GitHub title, body, and manifest delta through
 `scripts/verify-release-pr-metadata.mjs`. This is the metadata release-please
 reads after merge; editing only the eventual squash commit message cannot repair
 an incompatible Release PR. In the combined no-root configuration, a lone
@@ -115,9 +119,9 @@ unchanged; if this check rejects a candidate, do not merge it.
 
 GitHub documents one narrower exception to the recursion rule: when
 `GITHUB_TOKEN` creates or updates a pull request, its `pull_request` event can
-create runs in an approval-required state. This release path does not depend on
-those runs. The repair push still cannot recurse; the dispatch job creates one
-explicit `workflow_dispatch` run at the repaired SHA; and `ci.yml` has only
+create runs in an approval-required state. This repository has no pull-request
+CI trigger, so that exception creates no duplicate run. The dispatch job creates
+one explicit `workflow_dispatch` run at the repaired SHA; and `ci.yml` has only
 `contents: read`, so it cannot dispatch another workflow, update the PR, or
 push another commit. `release-please.yml` has no push trigger, so CI dispatched
 on a release branch cannot re-enter release automation.
@@ -133,10 +137,9 @@ merged commit:
 - Protocol tag: `protocol-v<version>`
 
 release-please does not publish to npm. Tags created with `GITHUB_TOKEN` do not
-start tag-push workflows, so the dispatch job waits once for the already-running
-exact-main CI run to succeed, then starts `publish.yml` once per created tag and
-binds the run to release-please's exact tag SHA. It never starts duplicate CI to
-bridge this ordering boundary. Only
+start tag-push workflows. After creating the authorized tags, the dispatch job
+starts one exact-main CI run, waits for it to succeed, then starts `publish.yml`
+once per created tag and binds each run to release-please's exact tag SHA. Only
 when the maintainer asked, the workflow waits at the protected `npm-release`
 environment. A maintainer approves that deployment;
 the workflow first requires successful `ci.yml` evidence at the exact tag SHA,
@@ -258,22 +261,21 @@ names an active `tag` ruleset. Its detailed read-back must preserve all three re
 patterns, exactly zero excluded refs, an empty bypass list, and exactly the
 `update` and `deletion` rules.
 
-Ordinary CI runs `node scripts/check-public-provider-posture.mjs` with its
-read-only `GITHUB_TOKEN`; that continuously proves private vulnerability
-reporting remains enabled. Publication runs the same check with
+Exact-SHA release CI runs `node scripts/check-public-provider-posture.mjs` with
+its read-only `GITHUB_TOKEN`; publication runs the same check with
 `--release-tag` and `--expected-sha`, adding the exact tag/SHA and immutable
 GitHub Release assertions without printing API response bodies. The
 repository-wide immutability endpoint requires Administration (read), which a
-least-privilege Actions token intentionally does not have. A separately owned
-scheduled GitHub App posture check should grant that read permission only and
-run:
+least-privilege Actions token intentionally does not have. Check that deeper
+posture locally when preparing a release with an appropriately scoped human
+credential:
 
 ```sh
 node scripts/check-public-provider-posture.mjs --require-repository-immutability
 ```
 
-Do not broaden the publication token to make this deeper scheduled check fit
-inside the release workflow.
+Do not broaden the publication token to move this deeper check inside the
+release workflow.
 
 In GitHub repository **Settings → Actions → General → Workflow permissions**,
 enable **Allow GitHub Actions to create and approve pull requests** and save.
