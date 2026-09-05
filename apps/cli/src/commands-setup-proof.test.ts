@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -59,6 +59,35 @@ describe('stable setup delivery proof identity', () => {
       companion_receipt: { state: 'unknown', observed_at: null },
     })
     expect(readFileSync(file, 'utf8')).toBe(stored)
+  })
+
+  it('keeps a malformed Companion Receipt outcome incomplete', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-proof-malformed-receipt-'))
+    roots.push(root)
+    const commandDeps = deps(root, root, {
+      machineId: 'mac_one',
+      machineName: 'One',
+      baseUrl: 'https://app.notifai.test',
+      secret: 'approval-one',
+    })
+    expect(writeSetupProof(commandDeps, {
+      request_id: 'req_proof',
+      device_id: 'dev_one',
+      project: 'project',
+      started_at: '2026-08-26T00:00:00.000Z',
+      companion_receipt: { state: 'unknown', observed_at: null },
+    })).toBe(true)
+    const proofDir = path.join(root, 'state', 'notifai', 'setup-proofs')
+    const file = path.join(proofDir, readdirSync(proofDir)[0]!)
+    writeFileSync(file, `${JSON.stringify({
+      request_id: 'req_proof',
+      device_id: 'dev_one',
+      project: 'project',
+      started_at: '2026-08-26T00:00:00.000Z',
+      companion_receipt: { state: 'observed', observed_at: null },
+    })}\n`)
+
+    expect(readSetupProof(commandDeps, 'project')).toBeNull()
   })
 
   it('is shared by linked checkouts of one Project and separated by Project', () => {
