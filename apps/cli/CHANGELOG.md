@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.0.4](https://github.com/Raidiant-io/notifai/compare/v11.0.3...v11.0.4) (2026-09-05)
+
+
+### Bug Fixes
+
+* **cli:** guide setup through approval and recovery ([#153](https://github.com/Raidiant-io/notifai/issues/153)) ([e41c18b](https://github.com/Raidiant-io/notifai/commit/e41c18bba3f66d8b5dfc91052967d973f060b64f))
+* **cli:** preserve completed setup across upgrades ([#157](https://github.com/Raidiant-io/notifai/issues/157)) ([0a81001](https://github.com/Raidiant-io/notifai/commit/0a810011c4b571d147840ec27687ac0e019e10b9))
+* **cli:** recover safely from interrupted upgrades ([#154](https://github.com/Raidiant-io/notifai/issues/154)) ([fc07cef](https://github.com/Raidiant-io/notifai/commit/fc07cefd4d5233546b0a9f7fd75a0f385122e412))
+* **harness:** preserve guidance and exact question ownership ([#152](https://github.com/Raidiant-io/notifai/issues/152)) ([ffddf91](https://github.com/Raidiant-io/notifai/commit/ffddf91c8d05708fb2d1eb73a8b1c8528bcb87ea))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 6.1.3 to 6.1.4
+
 ## [11.0.3](https://github.com/Raidiant-io/notifai/compare/v11.0.2...v11.0.3) (2026-09-04)
 
 
