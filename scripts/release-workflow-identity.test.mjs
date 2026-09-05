@@ -127,14 +127,37 @@ test('release refs dispatch CI and publication at one exact SHA', () => {
   assert.match(release, /dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/u)
 })
 
-test('release publication dispatches and waits for exact-SHA CI before publish', () => {
+test('release candidate dispatch maps every strict-shell release output', () => {
+  const job = releaseWorkflow.jobs.dispatch
+  const step = job.steps.find(candidate => candidate.name === 'Dispatch release evidence and publication')
+
+  assert.match(job.if, /outputs\.release_refs != ''/u)
+  assert.match(step.run, /set -euo pipefail/u)
+  for (const [name, output] of [
+    ['RELEASE_REFS', 'release_refs'],
+    ['RELEASES_CREATED', 'releases_created'],
+    ['CLI_RELEASE_CREATED', 'cli_release_created'],
+    ['CLI_TAG', 'cli_tag'],
+    ['CLI_SHA', 'cli_sha'],
+    ['PROTOCOL_RELEASE_CREATED', 'protocol_release_created'],
+    ['PROTOCOL_TAG', 'protocol_tag'],
+    ['PROTOCOL_SHA', 'protocol_sha'],
+  ]) {
+    assert.equal(step.env[name], `\${{ needs.release-please.outputs.${output} }}`)
+  }
+  assert.match(step.run, /JSON\.parse\(process\.env\.RELEASE_REFS \|\| "\[\]"\)/u)
+})
+
+test('created releases dispatch and wait for exact-SHA CI before publish', () => {
   const job = releaseWorkflow.jobs.dispatch
   const dispatchIndex = job.steps.findIndex(step => step.name === 'Dispatch release evidence and publication')
 
   assert.equal(job['timeout-minutes'], 30)
   assert.deepEqual(job.permissions, {actions: 'write', contents: 'read'})
+  assert.match(job.if, /outputs\.releases_created == 'true'/u)
   assert.ok(dispatchIndex >= 0, 'release dispatch step is missing')
   const command = job.steps[dispatchIndex].run
+  assert.match(command, /if \[ "\$RELEASES_CREATED" = "true" \]; then/u)
   assert.match(command, /dispatch_workflow ci\.yml "\$GITHUB_REF_NAME" "\$GITHUB_SHA"/u)
   assert.match(command, /require-ci-evidence\.mjs --expected-sha "\$GITHUB_SHA" --wait/u)
   assert.ok(
