@@ -43,7 +43,6 @@ import {
 import { assessReadiness, remedyLine } from './commands-doctor.js'
 import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hook-install.js'
 import {
-  SETUP_PROOF_FORMAT,
   observedCompanionReceipt,
   observedSetupProof,
   readSetupProof,
@@ -560,7 +559,6 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
       return 'failed'
     }
     proof = {
-      format: SETUP_PROOF_FORMAT,
       request_id: receipt.request_id,
       device_id: target.device_id,
       project,
@@ -614,7 +612,6 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
           return 'failed'
         }
         proof = {
-          format: SETUP_PROOF_FORMAT,
           request_id: receipt.request_id,
           device_id: target.device_id,
           project,

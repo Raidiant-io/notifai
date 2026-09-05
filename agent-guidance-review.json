@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7aaf57d3ba280c3a6c9375c9c482af356d4356562c32c627aff16cefd0240222",
+  "behavior_digest": "sha256:0e9f3c2e04e41c5e6187a208889baf966ef2658bce7502bab178cfe234f6f9f4",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup and recovery, CLI readiness, README domain terms, and the trust policy. Persisting an already-observed Companion Receipt changes no Agent Guidance action: the skill already delegates missing readiness to notifai init --json and tells agents to branch on its states. Fresh or genuinely unobserved proof remains a gap, while a retained observation now stays complete and current evidence-read failure remains visible as a bounded diagnostic. Question Routing ownership, lifecycle behavior, setup authority, and non-exfiltration rules are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup and recovery, CLI readiness, README domain terms, and the trust policy. Normalizing pre-observation proof provenance as unknown and persisting only actual Companion Receipt evidence changes no Agent Guidance action: the skill already delegates missing readiness to notifai init --json and tells agents to branch on its states. A retained observation stays complete, while evidence-read and local-persistence failures remain visible as bounded diagnostics. Question Routing ownership, lifecycle behavior, setup authority, and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

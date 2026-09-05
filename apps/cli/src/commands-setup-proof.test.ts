@@ -1,11 +1,10 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandDeps } from './commands-core.js'
 import type { MachineCredential } from './credentials.js'
 import {
-  SETUP_PROOF_FORMAT,
   readSetupProof,
   setupProofApplies,
   writeSetupProof,
@@ -31,8 +30,8 @@ function deps(root: string, cwd: string, credential: MachineCredential): Command
 }
 
 describe('stable setup delivery proof identity', () => {
-  it('rejects records that predate the explicit Companion Receipt outcome', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-proof-old-format-'))
+  it('loads a pre-observation record as canonical unknown without rewriting it', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-proof-pre-observation-'))
     roots.push(root)
     const commandDeps = deps(root, root, {
       machineId: 'mac_one',
@@ -40,25 +39,26 @@ describe('stable setup delivery proof identity', () => {
       baseUrl: 'https://app.notifai.test',
       secret: 'approval-one',
     })
-    const current = {
-      format: SETUP_PROOF_FORMAT,
+    const provenance = {
       request_id: 'req_proof',
       device_id: 'dev_one',
       project: 'project',
       started_at: '2026-08-26T00:00:00.000Z',
-      companion_receipt: { state: 'unknown' as const, observed_at: null },
     }
-    expect(writeSetupProof(commandDeps, current)).toBe(true)
+    expect(writeSetupProof(commandDeps, {
+      ...provenance,
+      companion_receipt: { state: 'unknown', observed_at: null },
+    })).toBe(true)
     const proofDir = path.join(root, 'state', 'notifai', 'setup-proofs')
     const file = path.join(proofDir, readdirSync(proofDir)[0]!)
-    writeFileSync(file, `${JSON.stringify({
-      request_id: current.request_id,
-      device_id: current.device_id,
-      project: current.project,
-      started_at: current.started_at,
-    })}\n`)
+    const stored = readFileSync(file, 'utf8')
+    expect(JSON.parse(stored)).toEqual(provenance)
 
-    expect(readSetupProof(commandDeps, 'project')).toBeNull()
+    expect(readSetupProof(commandDeps, 'project')).toEqual({
+      ...provenance,
+      companion_receipt: { state: 'unknown', observed_at: null },
+    })
+    expect(readFileSync(file, 'utf8')).toBe(stored)
   })
 
   it('is shared by linked checkouts of one Project and separated by Project', () => {
@@ -73,7 +73,6 @@ describe('stable setup delivery proof identity', () => {
     const first = deps(root, path.join(root, 'worktree-a'), credential)
     const second = deps(root, path.join(root, 'worktree-b'), credential)
     const proof = {
-      format: SETUP_PROOF_FORMAT,
       request_id: 'req_proof',
       device_id: 'dev_one',
       project: 'shared-project',
@@ -96,7 +95,6 @@ describe('stable setup delivery proof identity', () => {
     }
     const original = deps(root, root, credential)
     expect(writeSetupProof(original, {
-      format: SETUP_PROOF_FORMAT,
       request_id: 'req_proof',
       device_id: 'dev_one',
       project: 'project',

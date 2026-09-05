@@ -16,6 +16,7 @@ import {
   readFileSync,
   realpathSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -110,7 +111,6 @@ import {
   stateDir,
 } from './config.js'
 import {
-  SETUP_PROOF_FORMAT,
   SETUP_PROOF_STALE_MS,
   writeSetupProof,
 } from './commands-setup-proof.js'
@@ -6348,6 +6348,8 @@ describe('init', () => {
 
   it('keeps completed setup ready when the saved Companion Receipt cannot be re-read transiently', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-transient-read-'))
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "durable-proof"\n')
     const io = new CapturedIo()
     let evidenceAvailable = true
     let submitCalls = 0
@@ -6363,7 +6365,7 @@ describe('init', () => {
       }),
       submit: async () => {
         submitCalls += 1
-        return setupReceipt('req_durable_proof')
+        return setupReceipt('req_unexpected_replacement')
       },
       evidence: async (requestId: string) => {
         if (!evidenceAvailable) {
@@ -6383,9 +6385,26 @@ describe('init', () => {
       env,
       logger: createLogger({ env, runId: 'r_durable_proof' }),
     }
+    const provenance = {
+      request_id: 'req_durable_proof',
+      device_id: readyIphone.device_id,
+      project: 'durable-proof',
+      started_at: '2026-09-05T12:00:00.000Z',
+    }
+    expect(writeSetupProof(deps, {
+      ...provenance,
+      companion_receipt: { state: 'unknown', observed_at: null },
+    })).toBe(true)
+    const proofDir = path.join(stateDir(env), 'setup-proofs')
+    const proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
+    expect(JSON.parse(readFileSync(proofFile, 'utf8'))).toEqual(provenance)
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
-    expect(submitCalls).toBe(1)
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitCalls).toBe(0)
+    expect(JSON.parse(readFileSync(proofFile, 'utf8'))).toEqual({
+      ...provenance,
+      companion_receipt: { state: 'observed', observed_at: '2026-09-05T12:00:02.000Z' },
+    })
 
     evidenceAvailable = false
     const readiness = await assessReadiness(deps)
@@ -6413,7 +6432,7 @@ describe('init', () => {
     io.errLines = []
     expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines[0] ?? '{}')).toMatchObject({ ready: true, can_send: true })
-    expect(submitCalls).toBe(1)
+    expect(submitCalls).toBe(0)
 
     expect(
       readLogRecords(env, { event: ['cli.error'], request: 'req_durable_proof' }).records.at(-1)?.data,
@@ -6425,6 +6444,101 @@ describe('init', () => {
     })
     expect(JSON.stringify(readLogRecords(env).records)).not.toContain('transient fixture detail')
   })
+
+  it.runIf(process.platform !== 'win32')(
+    'reports an observed receipt whose local persistence fails without sending a replacement',
+    async () => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-persist-failure-'))
+      mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+      writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "persist-failure"\n')
+      const io = new CapturedIo()
+      let evidenceCalls = 0
+      let submitCalls = 0
+      const client = {
+        health: async () => true,
+        capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+        listDevices: async () => ({ devices: [readyIphone] }),
+        accessStatus: async () => ({
+          status: 'active',
+          reason: 'alpha_grant',
+          expires_at: null,
+          email: 'proof@example.com',
+        }),
+        submit: async () => {
+          submitCalls += 1
+          return setupReceipt('req_unexpected_replacement')
+        },
+        evidence: async (requestId: string) => {
+          evidenceCalls += 1
+          return setupEvidence(requestId, {
+            state: 'observed',
+            observed_at: '2026-09-05T12:00:02.000Z',
+            latency_ms: 1_000,
+          })
+        },
+      } as unknown as ApiClient
+      const env = isolatedEnv(cwd)
+      const deps: CommandDeps = {
+        ...makeDeps(io, client),
+        cwd,
+        env,
+        logger: createLogger({ env, runId: 'r_proof_persist_failure' }),
+      }
+      expect(writeSetupProof(deps, {
+        request_id: 'req_persist_failure',
+        device_id: readyIphone.device_id,
+        project: 'persist-failure',
+        started_at: '2026-09-05T12:00:00.000Z',
+        companion_receipt: { state: 'unknown', observed_at: null },
+      })).toBe(true)
+      const proofDir = path.join(stateDir(env), 'setup-proofs')
+      const proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
+      const preservedProof = `${proofFile}.preserved`
+      renameSync(proofFile, preservedProof)
+      symlinkSync(preservedProof, proofFile)
+
+      const readiness = await assessReadiness(deps, { json: true })
+      expect(readiness.states.find((state) => state.id === 'proof')).toMatchObject({
+        status: 'ready',
+        detail: expect.stringContaining('could not be saved locally'),
+        technical: {
+          live_evidence: { status: 'observed' },
+          local_persistence: { status: 'unavailable', code: 'write_failed' },
+        },
+      })
+      const doctorIo = new CapturedIo()
+      expect(
+        await doctorCommand({ ...deps, io: doctorIo }, { json: true }, { readiness }),
+      ).toBe(EXIT.ok)
+      expect(JSON.parse(doctorIo.outLines[0] ?? '{}')).toMatchObject({
+        ready: true,
+        states: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'proof',
+            status: 'ready',
+            technical: {
+              live_evidence: { status: 'observed' },
+              local_persistence: { status: 'unavailable', code: 'write_failed' },
+            },
+          }),
+        ]),
+      })
+
+      io.outLines = []
+      io.errLines = []
+      expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
+      expect(JSON.parse(io.outLines[0] ?? '{}')).toMatchObject({ ready: true, can_send: true })
+      expect(submitCalls).toBe(0)
+      expect(evidenceCalls).toBe(2)
+      expect(
+        readLogRecords(env, { event: ['cli.error'], request: 'req_persist_failure' }).records.at(-1)?.data,
+      ).toEqual({
+        kind: 'setup_proof_observation_write',
+        request_id: 'req_persist_failure',
+        error_code: 'write_failed',
+      })
+    },
+  )
 
   it('says the wait timer expired and can keep waiting for a late device', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-keep-waiting-'))
@@ -6623,7 +6737,6 @@ describe('init', () => {
       now: () => now,
     }
     writeSetupProof(deps, {
-      format: SETUP_PROOF_FORMAT,
       request_id: 'req_old',
       device_id: readyIphone.device_id,
       project: 'stale-proof',
@@ -7178,7 +7291,6 @@ describe('init', () => {
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "json-ready"\n')
     const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
     writeSetupProof(deps, {
-      format: SETUP_PROOF_FORMAT,
       request_id: 'req_json_ready',
       device_id: readyIphone.device_id,
       project: 'json-ready',

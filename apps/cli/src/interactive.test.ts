@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from './client.js'
 import { EXIT, type CommandDeps } from './commands.js'
 import {
-  SETUP_PROOF_FORMAT,
   setupProofProject,
   writeSetupProof,
 } from './commands-setup-proof.js'
@@ -265,7 +264,6 @@ describe('interactiveCommand', () => {
     } as unknown as ApiClient
     const deps = makeDeps(cwd, isolatedEnv(cwd), client)
     writeSetupProof(deps, {
-      format: SETUP_PROOF_FORMAT,
       request_id: 'req_durable_proof',
       device_id: readyIphone.device_id,
       project: setupProofProject(deps, null),

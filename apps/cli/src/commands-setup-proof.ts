@@ -10,8 +10,12 @@ import { stateDir } from './config.js'
 import type { CommandDeps } from './commands-core.js'
 import { inferInvocationContext } from './invocation-context.js'
 
+/**
+ * Canonical setup proof state. On disk, provenance without a Companion
+ * Receipt outcome represents unknown; only an actual observed receipt adds
+ * the outcome to disk.
+ */
 export interface SetupProofRecord {
-  format: 'notifai.setup-proof.v2'
   request_id: string
   device_id: string
   project: string | null
@@ -20,8 +24,6 @@ export interface SetupProofRecord {
     | { state: 'unknown'; observed_at: null }
     | { state: 'observed'; observed_at: string }
 }
-
-export const SETUP_PROOF_FORMAT = 'notifai.setup-proof.v2' as const
 
 export function setupProofProject(deps: CommandDeps, configured: string | null): string | null {
   return configured ?? inferInvocationContext(deps.cwd).project
@@ -47,19 +49,29 @@ export function readSetupProof(deps: CommandDeps, project: string | null): Setup
   if (!existsSync(file)) return null
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<SetupProofRecord>
+    if (
+      typeof parsed.request_id !== 'string' ||
+      typeof parsed.device_id !== 'string' ||
+      !(typeof parsed.project === 'string' || parsed.project === null) ||
+      typeof parsed.started_at !== 'string'
+    ) {
+      return null
+    }
     const receipt = parsed.companion_receipt
-    const validReceipt = receipt !== undefined && (
-      receipt.state === 'unknown' && receipt.observed_at === null ||
-      receipt.state === 'observed' && typeof receipt.observed_at === 'string'
-    )
-    return parsed.format === SETUP_PROOF_FORMAT &&
-      typeof parsed.request_id === 'string' &&
-      typeof parsed.device_id === 'string' &&
-      (typeof parsed.project === 'string' || parsed.project === null) &&
-      typeof parsed.started_at === 'string' &&
-      validReceipt
-      ? (parsed as SetupProofRecord)
-      : null
+    const companionReceipt = receipt === undefined ||
+      receipt.state === 'unknown' && receipt.observed_at === null
+      ? { state: 'unknown' as const, observed_at: null }
+      : receipt.state === 'observed' && typeof receipt.observed_at === 'string'
+        ? { state: 'observed' as const, observed_at: receipt.observed_at }
+        : null
+    if (companionReceipt === null) return null
+    return {
+      request_id: parsed.request_id,
+      device_id: parsed.device_id,
+      project: parsed.project,
+      started_at: parsed.started_at,
+      companion_receipt: companionReceipt,
+    }
   } catch {
     // Corrupt local evidence is not readiness. A fresh proof replaces it.
     return null
@@ -73,7 +85,11 @@ export function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boo
     return false
   }
   try {
-    atomicWriteFileSync(file, `${JSON.stringify(proof, null, 2)}\n`, {
+    const { companion_receipt: companionReceipt, ...provenance } = proof
+    const stored = companionReceipt.state === 'observed'
+      ? { ...provenance, companion_receipt: companionReceipt }
+      : provenance
+    atomicWriteFileSync(file, `${JSON.stringify(stored, null, 2)}\n`, {
       mode: 0o600,
       preserveMode: false,
       requireCurrentUserOwner: true,
@@ -140,7 +156,6 @@ export function recordObservedDeliveryProof(
     const observed = observedCompanionReceipt(snapshot, delivery.device_id)
     if (observed === null) continue
     return writeSetupProof(deps, {
-      format: SETUP_PROOF_FORMAT,
       request_id: snapshot.request_id,
       device_id: delivery.device_id,
       project,

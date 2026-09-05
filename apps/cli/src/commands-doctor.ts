@@ -772,6 +772,7 @@ async function setupProofState(
   const readyFromObservation = (
     observedAt: string,
     liveEvidence?: { status: 'observed' | 'unknown' } | SetupProofEvidenceFailure,
+    localPersistence?: SetupProofPersistenceFailure,
   ): ReadinessState => ({
     id: 'proof',
     title: 'Delivery proof',
@@ -783,18 +784,34 @@ async function setupProofState(
         ? `; current evidence could not be re-read (${liveEvidence.code})`
         : liveEvidence?.status === 'unknown'
           ? '; the current service evidence no longer includes that retained observation'
-          : ''),
-    technical: liveEvidence === undefined ? undefined : { live_evidence: liveEvidence },
+          : '') +
+      (localPersistence === undefined
+        ? ''
+        : `; the current observation could not be saved locally (${localPersistence.code})`),
+    technical: liveEvidence === undefined && localPersistence === undefined
+      ? undefined
+      : {
+          ...(liveEvidence === undefined ? {} : { live_evidence: liveEvidence }),
+          ...(localPersistence === undefined ? {} : { local_persistence: localPersistence }),
+        },
   })
 
   try {
     const snapshot = await client.evidence(proof.request_id)
     const observed = observedCompanionReceipt(snapshot, proof.device_id)
     if (observed) {
+      let localPersistence: SetupProofPersistenceFailure | undefined
       if (proof.companion_receipt.state !== 'observed') {
-        writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))
+        if (!writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))) {
+          localPersistence = { status: 'unavailable', code: 'write_failed' }
+          log(deps).error('cli.error', {
+            kind: 'setup_proof_observation_write',
+            request_id: proof.request_id,
+            error_code: localPersistence.code,
+          })
+        }
       }
-      return readyFromObservation(observed.observedAt, { status: 'observed' })
+      return readyFromObservation(observed.observedAt, { status: 'observed' }, localPersistence)
     }
     if (proof.companion_receipt.state === 'observed') {
       return readyFromObservation(proof.companion_receipt.observed_at, { status: 'unknown' })
@@ -854,6 +871,11 @@ interface SetupProofEvidenceFailure {
   status: 'unavailable'
   code: string
   http_status: number | null
+}
+
+interface SetupProofPersistenceFailure {
+  status: 'unavailable'
+  code: 'write_failed'
 }
 
 function setupProofEvidenceFailure(err: unknown): SetupProofEvidenceFailure {

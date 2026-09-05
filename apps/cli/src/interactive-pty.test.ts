@@ -18,7 +18,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import type { CommandDeps } from './commands-core.js'
-import { SETUP_PROOF_FORMAT, writeSetupProof } from './commands-setup-proof.js'
+import { writeSetupProof } from './commands-setup-proof.js'
 import { FileStore, type MachineCredential } from './credentials.js'
 
 const roots: string[] = []
@@ -155,7 +155,6 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
       io: { out() {}, err() {}, async confirm() { return false }, openUrl() {} },
     } satisfies CommandDeps
     expect(writeSetupProof(proofDeps, {
-      format: SETUP_PROOF_FORMAT,
       request_id: 'req_pty_proof',
       device_id: 'dev_pty',
       project: 'pty-proof',
