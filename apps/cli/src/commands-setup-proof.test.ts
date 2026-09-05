@@ -1,10 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandDeps } from './commands-core.js'
 import type { MachineCredential } from './credentials.js'
-import { readSetupProof, setupProofApplies, writeSetupProof } from './commands-setup-proof.js'
+import {
+  SETUP_PROOF_FORMAT,
+  readSetupProof,
+  setupProofApplies,
+  writeSetupProof,
+} from './commands-setup-proof.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -26,6 +31,36 @@ function deps(root: string, cwd: string, credential: MachineCredential): Command
 }
 
 describe('stable setup delivery proof identity', () => {
+  it('rejects records that predate the explicit Companion Receipt outcome', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-proof-old-format-'))
+    roots.push(root)
+    const commandDeps = deps(root, root, {
+      machineId: 'mac_one',
+      machineName: 'One',
+      baseUrl: 'https://app.notifai.test',
+      secret: 'approval-one',
+    })
+    const current = {
+      format: SETUP_PROOF_FORMAT,
+      request_id: 'req_proof',
+      device_id: 'dev_one',
+      project: 'project',
+      started_at: '2026-08-26T00:00:00.000Z',
+      companion_receipt: { state: 'unknown' as const, observed_at: null },
+    }
+    expect(writeSetupProof(commandDeps, current)).toBe(true)
+    const proofDir = path.join(root, 'state', 'notifai', 'setup-proofs')
+    const file = path.join(proofDir, readdirSync(proofDir)[0]!)
+    writeFileSync(file, `${JSON.stringify({
+      request_id: current.request_id,
+      device_id: current.device_id,
+      project: current.project,
+      started_at: current.started_at,
+    })}\n`)
+
+    expect(readSetupProof(commandDeps, 'project')).toBeNull()
+  })
+
   it('is shared by linked checkouts of one Project and separated by Project', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-proof-identity-'))
     roots.push(root)
@@ -38,10 +73,12 @@ describe('stable setup delivery proof identity', () => {
     const first = deps(root, path.join(root, 'worktree-a'), credential)
     const second = deps(root, path.join(root, 'worktree-b'), credential)
     const proof = {
+      format: SETUP_PROOF_FORMAT,
       request_id: 'req_proof',
       device_id: 'dev_one',
       project: 'shared-project',
       started_at: '2026-08-26T00:00:00.000Z',
+      companion_receipt: { state: 'observed' as const, observed_at: '2026-08-26T00:00:02.000Z' },
     }
     expect(writeSetupProof(first, proof)).toBe(true)
     expect(readSetupProof(second, 'shared-project')).toEqual(proof)
@@ -59,10 +96,12 @@ describe('stable setup delivery proof identity', () => {
     }
     const original = deps(root, root, credential)
     expect(writeSetupProof(original, {
+      format: SETUP_PROOF_FORMAT,
       request_id: 'req_proof',
       device_id: 'dev_one',
       project: 'project',
       started_at: '2026-08-26T00:00:00.000Z',
+      companion_receipt: { state: 'observed', observed_at: '2026-08-26T00:00:02.000Z' },
     })).toBe(true)
     expect(readSetupProof(deps(root, root, { ...credential, baseUrl: 'https://other.test' }), 'project')).toBeNull()
     expect(readSetupProof(deps(root, root, { ...credential, machineId: 'mac_two' }), 'project')).toBeNull()

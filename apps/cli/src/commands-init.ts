@@ -43,7 +43,9 @@ import {
 import { assessReadiness, remedyLine } from './commands-doctor.js'
 import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hook-install.js'
 import {
+  SETUP_PROOF_FORMAT,
   observedCompanionReceipt,
+  observedSetupProof,
   readSetupProof,
   setupProofProject,
   setupProofApplies,
@@ -558,10 +560,12 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
       return 'failed'
     }
     proof = {
+      format: SETUP_PROOF_FORMAT,
       request_id: receipt.request_id,
       device_id: target.device_id,
       project,
       started_at: new Date((deps.now ?? Date.now)()).toISOString(),
+      companion_receipt: { state: 'unknown', observed_at: null },
     }
     if (!writeSetupProof(deps, proof)) return 'failed'
     deps.io.out(`Verification notification sent to ${target.display_name} (${proof.request_id}).`)
@@ -585,6 +589,10 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
       const snapshot = await authed.client.evidence(proof.request_id)
       const observed = observedCompanionReceipt(snapshot, proof.device_id)
       if (observed) {
+        if (!writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))) {
+          spinner?.error('Could not save the observed Companion Receipt')
+          return 'failed'
+        }
         spinner?.stop(`Receipt observed from ${observed.delivery.device_name}`)
         deps.io.out(
           `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name}.`,
@@ -606,10 +614,12 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
           return 'failed'
         }
         proof = {
+          format: SETUP_PROOF_FORMAT,
           request_id: receipt.request_id,
           device_id: target.device_id,
           project,
           started_at: new Date(now()).toISOString(),
+          companion_receipt: { state: 'unknown', observed_at: null },
         }
         if (!writeSetupProof(deps, proof)) return 'failed'
         replacedMissingProof = true

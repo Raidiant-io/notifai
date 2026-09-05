@@ -2,21 +2,26 @@ import { type EvidenceSnapshot } from '@raidiant/notifai-protocol'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
+import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import type { CommandDeps } from './commands-core.js'
 import { inferInvocationContext } from './invocation-context.js'
 
 export interface SetupProofRecord {
+  format: 'notifai.setup-proof.v2'
   request_id: string
   device_id: string
   project: string | null
   started_at: string
+  companion_receipt:
+    | { state: 'unknown'; observed_at: null }
+    | { state: 'observed'; observed_at: string }
 }
+
+export const SETUP_PROOF_FORMAT = 'notifai.setup-proof.v2' as const
 
 export function setupProofProject(deps: CommandDeps, configured: string | null): string | null {
   return configured ?? inferInvocationContext(deps.cwd).project
@@ -42,10 +47,17 @@ export function readSetupProof(deps: CommandDeps, project: string | null): Setup
   if (!existsSync(file)) return null
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<SetupProofRecord>
-    return typeof parsed.request_id === 'string' &&
+    const receipt = parsed.companion_receipt
+    const validReceipt = receipt !== undefined && (
+      receipt.state === 'unknown' && receipt.observed_at === null ||
+      receipt.state === 'observed' && typeof receipt.observed_at === 'string'
+    )
+    return parsed.format === SETUP_PROOF_FORMAT &&
+      typeof parsed.request_id === 'string' &&
       typeof parsed.device_id === 'string' &&
       (typeof parsed.project === 'string' || parsed.project === null) &&
-      typeof parsed.started_at === 'string'
+      typeof parsed.started_at === 'string' &&
+      validReceipt
       ? (parsed as SetupProofRecord)
       : null
   } catch {
@@ -61,8 +73,11 @@ export function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boo
     return false
   }
   try {
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 })
+    atomicWriteFileSync(file, `${JSON.stringify(proof, null, 2)}\n`, {
+      mode: 0o600,
+      preserveMode: false,
+      requireCurrentUserOwner: true,
+    })
     return true
   } catch (err) {
     deps.io.err(
@@ -89,8 +104,19 @@ export function observedCompanionReceipt(
 export const SETUP_PROOF_STALE_MS = 24 * 60 * 60 * 1000
 
 export function setupProofIsStale(proof: SetupProofRecord, now: number): boolean {
+  if (proof.companion_receipt.state === 'observed') return false
   const started = Date.parse(proof.started_at)
   return Number.isFinite(started) && now - started > SETUP_PROOF_STALE_MS
+}
+
+export function observedSetupProof(
+  proof: SetupProofRecord,
+  observedAt: string,
+): SetupProofRecord {
+  return {
+    ...proof,
+    companion_receipt: { state: 'observed', observed_at: observedAt },
+  }
 }
 
 export function setupProofApplies(
@@ -114,10 +140,12 @@ export function recordObservedDeliveryProof(
     const observed = observedCompanionReceipt(snapshot, delivery.device_id)
     if (observed === null) continue
     return writeSetupProof(deps, {
+      format: SETUP_PROOF_FORMAT,
       request_id: snapshot.request_id,
       device_id: delivery.device_id,
       project,
       started_at: observed.observedAt,
+      companion_receipt: { state: 'observed', observed_at: observed.observedAt },
     })
   }
   return false
