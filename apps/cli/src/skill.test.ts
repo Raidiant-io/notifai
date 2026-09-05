@@ -508,7 +508,7 @@ describe('Notifai agent skill', () => {
     expect(harnessReference).toContain('--skills-scope <project|global>')
     expect(harnessReference).not.toContain('--setup-scope')
     expect(harnessReference).toContain('~/.codex/hooks.json')
-    expect(harnessReference).toMatch(/run `notifai login` yourself/i)
+    expect(harnessReference).toMatch(/run `notifai init --json` yourself/i)
     expect(harnessReference).toMatch(/only the user can approve/i)
   })
 })

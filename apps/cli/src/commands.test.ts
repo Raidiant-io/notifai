@@ -5926,26 +5926,87 @@ describe('init', () => {
     expect(out).not.toContain('notifai login')
   })
 
-  it('never prompts or opens a browser when an agent runs it unattended', async () => {
+  it.each([false, true])('starts unattended approval without prompting and resumes setup (json=%s)', async (json) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-no-input-'))
     const io = new (class extends CapturedIo {
       override async confirm(): Promise<boolean> {
         throw new Error('an unattended init reached a prompt')
       }
-
-      override openUrl(): void {
-        throw new Error('an unattended init opened a browser')
-      }
     })()
+    let credential: ReturnType<CommandDeps['store']['load']> = null
+    let begins = 0
+    let now = 0
+    const client = {
+      health: async () => true,
+      beginPairing: async () => {
+        begins += 1
+        return {
+          pairing_id: 'pair_test', code: '123456',
+          approve_url: 'https://app.notifai.sh/pair/pair_test',
+          expires_at: new Date(60_000).toISOString(), poll_interval_seconds: 1,
+        }
+      },
+      pollPairing: async () => ({ status: 'approved', machine_id: 'mac_test' }),
+      listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null }),
+    } as unknown as ApiClient
     const deps: CommandDeps = {
-      ...makeDeps(io, { health: async () => true } as unknown as ApiClient),
+      ...makeDeps(io, client),
       cwd,
       env: isolatedEnv(cwd),
-      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds },
+      store: { load: () => credential, save: (saved) => { credential = saved }, clear: () => {}, describe: () => 'test store' },
     }
 
-    expect(await initCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('Next: This machine')
+    expect(await initCommand(deps, { json, hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(begins).toBe(1)
+    expect(credential?.machineId).toBe('mac_test')
+    expect(io.openedUrls).toHaveLength(1)
+    expect(io.openedUrls[0]).toMatch(/^https:\/\/app\.notifai\.sh\/pair\/pair_test#confirmation_secret=/)
+    if (json) {
+      expect(io.outLines).toHaveLength(1)
+      const result = JSON.parse(io.outLines[0]!)
+      expect(result.states.find((state: { id: string }) => state.id === 'credential').status).toBe('ready')
+      expect(result.states.find((state: { id: string }) => state.id === 'devices').status).toBe('gap')
+      expect(io.errLines.join('\n')).toContain('Approve this machine at:')
+    } else {
+      expect(io.outLines.join('\n')).toContain('Next: Your devices')
+    }
+    await initCommand(deps, { json, hooks: false, skills: false })
+    expect(begins).toBe(1)
+  })
+
+  it('reports the access errand in final JSON when unattended approval stops for access', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-access-stop-'))
+    const io = new CapturedIo()
+    let now = 0
+    const client = {
+      health: async () => true,
+      beginPairing: async () => ({
+        pairing_id: 'pair_test', code: '123456',
+        approve_url: 'https://app.notifai.sh/pair/pair_test',
+        expires_at: new Date(60_000).toISOString(), poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({
+        status: 'no_active_plan',
+        next_action: 'Request Alpha access at https://app.notifai.sh/setup/access',
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client), cwd, env: isolatedEnv(cwd),
+      now: () => now, sleep: async (milliseconds) => { now += milliseconds },
+      store: { load: () => null, save: () => { throw new Error('approval did not complete') }, clear: () => {}, describe: () => 'test store' },
+    }
+
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(io.outLines).toHaveLength(1)
+    const result = JSON.parse(io.outLines[0]!)
+    const blocker = result.states.find((state: { status: string }) => state.status === 'gap')
+    expect(blocker).toMatchObject({
+      id: 'auth', remedy: { by: 'user-elsewhere', summary: 'Request Alpha access at https://app.notifai.sh/setup/access' },
+    })
+    expect(now).toBe(1_000)
   })
 
   it('makes the unavailable distribution bridge explicit when no app has registered', async () => {
@@ -5990,6 +6051,10 @@ describe('init', () => {
         asked.push(question)
         return false
       }
+      async select(question: string) {
+        asked.push(question)
+        return null
+      }
     })()
     const client = {
       health: async () => true,
@@ -6018,10 +6083,11 @@ describe('init', () => {
     expect(asked).toEqual(expect.arrayContaining([expect.stringMatching(/skill/)]))
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    // Device wait prompts only after optionals have been considered.
+    // The phone selection happens only after optionals have been considered.
     expect(asked.indexOf(asked.find((q) => q.includes('hooks'))!)).toBeLessThan(
-      asked.findIndex((q) => q.includes('Wait here') || q.includes('Open install')),
+      asked.indexOf('Where do you want to receive notifications?'),
     )
+    expect(io.openedUrls).toEqual([])
   })
 
   it.each([
@@ -6101,8 +6167,6 @@ describe('init', () => {
     ).toBe(EXIT.ok)
     expect(io.prompts).toEqual([
       'Where do you want to receive notifications?',
-      'Open those steps in your browser?',
-      'Wait here while you finish that on your phone?',
     ])
     expect(io.openedUrls).toEqual(['https://test.notifai.invalid/setup/companion?platform=iphone'])
     expect(io.notes.some((n) => n.message.includes('I will wait up to 10 minutes'))).toBe(true)
@@ -6141,8 +6205,9 @@ describe('init', () => {
   it('says the wait timer expired and can keep waiting for a late device', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-keep-waiting-'))
     const io = new InteractiveIo()
-    // Open browser, wait yes, keep-waiting yes on first expiry.
-    io.confirmAnswers = [true, true, true]
+    io.selectAnswer = 'iphone'
+    // Only extending the expired wait requires another confirmation.
+    io.confirmAnswers = [true]
     let now = 0
     // Match DEVICE_BRIDGE_TIMEOUT_MS (10 minutes): device appears only after
     // the first budget has fully elapsed and keep-waiting has restarted.
@@ -6695,6 +6760,50 @@ describe('init', () => {
     expect(out).toContain('notifai init')
     expect(out).not.toContain('notifai login')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
+  })
+
+  it.each([
+    new NetworkError('temporary device lookup outage'),
+    new ApiCallError(503, 'service_unavailable', 'Please retry shortly.'),
+  ])('retains accepted authentication when the device lookup temporarily fails: %s', async (error) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-outage-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      listDevices: async () => { throw error },
+      accessStatus: async () => ({
+        status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test',
+      }),
+      accessRequest: async () => ({ request: null }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'auth')?.status).toBe('ready')
+    expect(readiness.states.find((state) => state.id === 'devices')).toMatchObject({
+      status: 'gap', remedy: { command: 'notifai init' },
+    })
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const output = io.outLines.join('\n')
+    expect(output).toMatch(/retry|try again/i)
+    expect(output).not.toMatch(/pair it again|sign-in failed|no longer recognised/)
+    expect(io.openedUrls).toEqual([])
+  })
+
+  it('requests retry when both account and device lookups are unavailable', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-account-outage-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      listDevices: async () => { throw new NetworkError('temporary device lookup outage') },
+      accessStatus: async () => { throw new NetworkError('temporary account lookup outage') },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toMatch(/retry|try again/i)
+    expect(io.outLines.join('\n')).not.toMatch(/pair it again|no longer recognised/)
+    expect(io.openedUrls).toEqual([])
   })
 
   it('names the support next action when a paired account has no active plan', async () => {

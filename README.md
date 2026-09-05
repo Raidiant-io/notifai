@@ -189,6 +189,15 @@ Harness hooks have no scope to ask about: they are installed once per harness
 for this machine. Installing the skill does place files elsewhere, so at a
 human terminal that — and only that — asks once whether it is for this project
 or for this machine.
+
+On an unapproved machine, `notifai init` opens the trusted approval page and
+waits until approval or its expiry, including when an agent runs it. The User
+still signs in and approves the machine in their browser. `notifai init --json`
+never prompts: approval progress goes to stderr while stdout contains one final
+readiness object. A later run uses the saved approval and resumes setup. At a
+human terminal, choosing iPhone or Android opens its setup steps and starts a
+bounded wait; Ctrl-C stops the wait, and expiry offers more time.
+
 `notifai init --skills` verifies the complete first-party skill against the
 copy and digest manifest shipped inside the installed npm package, stages that
 verified copy at a short-lived project-relative path, and delegates placement

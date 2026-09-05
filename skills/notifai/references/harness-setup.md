@@ -14,7 +14,9 @@ diagnosing, or recovering — not before.
 
 ## Signing this machine in
 
-Run `notifai login` yourself. It opens a browser page only the user can approve.
+Run `notifai init --json` yourself. It starts machine approval when needed and
+opens a browser page only the User can approve. Keep the command running while
+they approve; its bounded progress is on stderr and final readiness is on stdout.
 
 In a headless or remote shell, `notifai login --no-open` prints the approval URL
 instead of trying to open a browser — hand the user that URL. `--name <name>`
@@ -29,8 +31,9 @@ either as broken.
 
 ## Install deliberately
 
-Flagless `notifai init --json` needs no answer and closes everything before
-this point. Hooks place files, so this is where a question belongs: ask whether
+Flagless `notifai init --json` asks no terminal questions and advances the
+required setup steps; its reported gap names any remaining User action. Hooks
+place files, so this is where a question belongs: ask whether
 they want questions routed. There is no scope to ask about — Notifai installs
 one lifecycle mechanism per harness, for this machine, and whether it acts in a
 project is `notifai project enable`. Never tell the user to run setup commands
