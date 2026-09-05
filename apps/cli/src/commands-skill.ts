@@ -40,7 +40,7 @@ function developmentSkillMismatch(skill: NativeSkill): { checkout: string; insta
     : null
 }
 
-function expectedSkill(skill: NativeSkill): boolean {
+export function installedSkillMatchesPackage(skill: NativeSkill): boolean {
   const expectedDigest = expectedSkillDigest()
   return (
     skill.name === 'notifai' &&
@@ -87,6 +87,8 @@ function duplicateSkillState(installed: NativeSkill[], selectedScope?: SkillScop
   const global = installed.find((skill) => skill.scope === 'global')
   const projectPin = project === undefined ? 'not installed' : skillPin(project)
   const globalPin = global === undefined ? 'not installed' : skillPin(global)
+  const selected = installed.find((skill) => skill.scope === selectedScope)
+  const selectedVerified = selected !== undefined && installedSkillMatchesPackage(selected)
   return {
     id: 'skill',
     title: 'Agent guidance skill',
@@ -98,12 +100,12 @@ function duplicateSkillState(installed: NativeSkill[], selectedScope?: SkillScop
       project:
         project === undefined
           ? null
-          : { ref: project.ref, path: project.path, current: expectedSkill(project) },
+          : { ref: project.ref, path: project.path, current: installedSkillMatchesPackage(project) },
       global:
         global === undefined
           ? null
-          : { ref: global.ref, path: global.path, current: expectedSkill(global) },
-      resolution: 'both-listed',
+          : { ref: global.ref, path: global.path, current: installedSkillMatchesPackage(global) },
+      resolution: selectedVerified ? 'selected-copy-verified-cleanup-required' : 'both-listed',
     },
     remedy:
       selectedScope === undefined

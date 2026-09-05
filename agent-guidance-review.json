@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d95082033769cd5895570c6620fca27121a0ff0cfcfd833ed4752f31aba23091",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed the existing harness integration evidence and the changed setup, readiness, skill and README surfaces. Unattended init starts the same bounded trusted browser approval as interactive setup, reports progress on stderr and final readiness on stdout, and preserves the access errand when approval stops. Transient lookups require retry rather than reapproval; selecting a Companion platform starts one bounded handoff. The skill now names init as the approval owner. Lifecycle activation and Question Routing remain unchanged, User browser approval remains required, and domain terms distinguish Account access, machine approval and Companion readiness.",
+  "behavior_digest": "sha256:56a9f6853f1f67549318f775f4f808cac6632ead9495bffa484a10be42109220",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed update execution, CLI readiness, skill migration, lifecycle hooks, harness setup, README, the shipped skill and trust policy. Existing guidance delegates setup to init and follows its local typed recovery; it needs no new instruction for bounded update retries, deterministic destination diagnosis, or verified-copy retention. Optional, scheduled and required policy remains visible when a capability document is unavailable. Ambiguous installations and overlapping skill destinations fail before unsafe writes. Stable adapter retargeting preserves trusted handler definitions; machine approval, Project Enablement, Question Routing ownership and queued session state remain unchanged. Skill scope still requires an explicit choice, installed content is verified against the package, and no server-supplied command or repository claim gains authority.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

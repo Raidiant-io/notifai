@@ -93,7 +93,7 @@ function readLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): LockF
   }
 }
 
-function conventionalSkillPath(
+export function conventionalSkillPath(
   scope: SkillScope,
   name: string,
   cwd: string,

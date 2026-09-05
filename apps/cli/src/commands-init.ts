@@ -11,7 +11,8 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { sharedProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
-import { type SkillScope } from './native-skills.js'
+import { conventionalSkillPath, type SkillScope } from './native-skills.js'
+import { canonicalPath } from './local-path.js'
 import {
   firstRequiredBlocker,
   isOptionalAutomation,
@@ -49,7 +50,7 @@ import {
   setupProofIsStale,
   writeSetupProof,
 } from './commands-setup-proof.js'
-import { listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
+import { installedSkillMatchesPackage, listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { installHookAdapter } from './hook-adapter.js'
@@ -181,39 +182,84 @@ async function closeGap(
       )
       return 'failed'
     }
-    const { installed } = await listScopedNotifaiSkills(deps)
-    const extras = installed.filter((skill) => skill.scope !== installScope)
+    const retry = `notifai init --skills --skills-scope ${installScope}`
+    let inventory = await listScopedNotifaiSkills(deps)
+    if (inventory.errors.length > 0) {
+      deps.io.err(`Could not inspect installed guidance. Retry with \`${retry}\`.`)
+      return 'failed'
+    }
+    const scopesOverlap = () => {
+      const selected = inventory.installed.find((skill) => skill.scope === installScope)?.path
+        ?? conventionalSkillPath(installScope, 'notifai', deps.cwd, deps.env)
+      const normalize = (file: string) => {
+        const resolved = canonicalPath(file)
+        return (deps.hookPlatform ?? process.platform) === 'win32' ? resolved.toLowerCase() : resolved
+      }
+      const destination = normalize(selected)
+      return inventory.installed.some((skill) => {
+        if (skill.scope === installScope) return false
+        const old = normalize(skill.path)
+        return destination === old || destination.startsWith(`${old}${path.sep}`)
+          || old.startsWith(`${destination}${path.sep}`)
+      })
+    }
+    const refuseOverlap = () => {
+      deps.io.err('Project and global skill destinations overlap. Keep the existing scope, or run setup from a project with separate skill directories before changing scope.')
+      return 'failed' as const
+    }
+    if (scopesOverlap()) return refuseOverlap()
+    const selectedIsVerified = () => inventory.installed.some(
+      (skill) => skill.scope === installScope && installedSkillMatchesPackage(skill),
+    )
+    // Keep the existing scope until the native installer has produced a
+    // content-verified replacement. A retry after partial cleanup can reuse
+    // this proof and finish without invoking the installer again.
+    if (!selectedIsVerified()) {
+      deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${installScope} scope)...`)
+      const operation = await deps.nativeSkills.add({
+        source: SKILLS_SOURCE,
+        skill: 'notifai',
+        cwd: deps.cwd,
+        env: deps.env,
+        scope: installScope,
+      }).catch((error: unknown) => ({ code: 1, error: String(error) }))
+      const code = typeof operation === 'number' ? operation : operation.code
+      if (code !== 0) {
+        deps.io.err(
+          typeof operation === 'number'
+            ? `Skill installation failed. Retry with \`${retry}\` after checking the network connection.`
+            : `Skill installation refused — ${operation.error}. Retry with \`${retry}\`.`,
+        )
+        return 'failed'
+      }
+      inventory = await listScopedNotifaiSkills(deps)
+      if (inventory.errors.length > 0 || !selectedIsVerified()) {
+        deps.io.err(`The selected skill could not be verified; the previous scope was kept. Retry with \`${retry}\`.`)
+        return 'failed'
+      }
+    }
+    const extras = inventory.installed.filter((skill) => skill.scope !== installScope)
+    if (scopesOverlap()) return refuseOverlap()
     for (const extra of extras) {
       const code = await deps.nativeSkills.remove({
         skill: 'notifai',
         scope: extra.scope,
         cwd: deps.cwd,
         env: deps.env,
-      })
+      }).catch(() => 1)
       if (code !== 0) {
         deps.io.err(
-          `Skill installation refused — could not uninstall the ${extra.scope} copy (${extra.ref ?? 'unknown pin'}), so installing ${installScope} would leave both active.`,
+          `The ${installScope} skill is verified, but cleanup of the ${extra.scope} copy failed. Retry with \`${retry}\` to finish.`,
         )
         return 'failed'
       }
     }
-    deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${installScope} scope)...`)
-    const operation = await deps.nativeSkills.add({
-      source: SKILLS_SOURCE,
-      skill: 'notifai',
-      cwd: deps.cwd,
-      env: deps.env,
-      scope: installScope,
-    })
-    const code = typeof operation === 'number' ? operation : operation.code
-    if (code !== 0) {
-      deps.io.err(
-        typeof operation === 'number'
-          ? 'Skill installation failed — rerun `notifai init --skills` after checking the network connection.'
-          : `Skill installation refused — ${operation.error}.`,
-      )
+    inventory = await listScopedNotifaiSkills(deps)
+    if (inventory.errors.length > 0 || inventory.installed.length !== 1 || !selectedIsVerified()) {
+      deps.io.err(`Skill migration is incomplete. Retry with \`${retry}\` to finish.`)
+      return 'failed'
     }
-    return code === 0 ? 'closed' : 'failed'
+    return 'closed'
   }
 
   if (state.id === 'proof') return await runSetupProof(deps)
@@ -747,11 +793,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
   }
 
-  const skillOpts = resolved.skillsScope === undefined ? {} : { skillScope: resolved.skillsScope }
-  let readiness = await assessReadiness(workingDeps, { ...skillOpts, ...(flags.json === true ? { json: true } : {}) })
+  const skillOpts = () => resolved.skillsScope === undefined ? {} : { skillScope: resolved.skillsScope }
+  let readiness = await assessReadiness(workingDeps, { ...skillOpts(), ...(flags.json === true ? { json: true } : {}) })
   const reassess = (refresh?: readonly ReadinessRefresh[]) =>
     assessReadiness(workingDeps, {
-      ...skillOpts,
+      ...skillOpts(),
       ...(flags.json === true ? { json: true } : {}),
       ...(refresh === undefined ? {} : { previous: readiness, refresh }),
     })
@@ -832,6 +878,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         attempted.add(state.id)
         const result = await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
+        if (result === 'failed' && state.id === 'skill') {
+          readiness = await reassess(refreshAfterClose(state.id))
+          advanced = true
+          break
+        }
         if (result !== 'closed') {
           if (halt()) break
           continue
