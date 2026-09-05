@@ -108,10 +108,18 @@ import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract
  */
 async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise<ReadinessState> {
   try {
-    const [compatibility, documents] = await Promise.all([
+    const [compatibility, documentResults] = await Promise.all([
       client.compatibility(),
-      Promise.all(PLATFORMS.map((platform) => client.capabilities(platform))),
+      Promise.allSettled(PLATFORMS.map((platform) => client.capabilities(platform))),
     ])
+    const documents = documentResults.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    )
+    const documentErrors = documentResults.flatMap((result, index) =>
+      result.status === 'rejected'
+        ? [{ platform: PLATFORMS[index], error: String(result.reason) }]
+        : [],
+    )
     const serverCapabilities = new Set(compatibility.server_capabilities)
     const cliCapabilityIntersection = {
       available: SHIPPED_CLI_CAPABILITIES.filter((capability) => serverCapabilities.has(capability)),
@@ -139,6 +147,7 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         schema_version: document.schema_version,
         notification_contract_fingerprint: document.notification_contract_fingerprint,
       })),
+      capability_document_errors: documentErrors,
       cli_capability_intersection: cliCapabilityIntersection,
       notification_contract: notificationContract,
     }
@@ -183,6 +192,20 @@ async function compatibilityCheck(client: ApiClient, deps: CommandDeps): Promise
         remedy: {
           by: 'user-here',
           summary: 'try again after the service update',
+          command: 'notifai doctor',
+        },
+      }
+    }
+    if (documentErrors.length > 0) {
+      return {
+        id: 'contract',
+        title: 'Notifai check',
+        status: 'optional-gap',
+        detail: 'Could not finish checking Notifai. Try again.',
+        technical,
+        remedy: {
+          by: 'user-here',
+          summary: 'retry the Notifai check',
           command: 'notifai doctor',
         },
       }

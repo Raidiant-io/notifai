@@ -13,7 +13,7 @@ import {
   isNpxAdapterTarget,
 } from './hook-adapter.js'
 import { packageVersion } from './release.js'
-import { CLI_PACKAGE_NAME } from './cli-contract.js'
+import { CLI_PACKAGE_NAME, cliUpdateRecoveryCommand } from './cli-contract.js'
 import { pathContainsDirectory } from './local-path.js'
 import { npmInvocation } from './npm-invocation.js'
 import { compareVersions } from './version.js'
@@ -41,6 +41,10 @@ function npmRun(
     ...invocation.options,
     encoding: 'utf8',
     env: deps.env,
+    cwd: deps.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 120_000,
+    killSignal: 'SIGKILL',
   })
 }
 
@@ -70,9 +74,17 @@ function failed(
   packageManagerPrefix: string | null,
 ): number {
   if (flags.json === true) {
-    deps.io.out(JSON.stringify({ ok: false, code, package_manager_prefix: packageManagerPrefix, before }, null, 2))
+    deps.io.out(JSON.stringify({
+      ok: false,
+      code,
+      recovery_command: cliUpdateRecoveryCommand(),
+      package_manager_prefix: packageManagerPrefix,
+      before,
+      after: inspection(deps),
+    }, null, 2))
   } else {
-    deps.io.err('Notifai could not safely update the command that wins PATH. Run `notifai doctor --json` for the local installation details.')
+    deps.io.err('Notifai could not finish updating. Retry with:')
+    deps.io.err(cliUpdateRecoveryCommand())
   }
   return EXIT.failed
 }
@@ -83,6 +95,7 @@ function failed(
  * different global prefix; --prefix makes that ambient choice irrelevant.
  */
 export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): number {
+  flags = { ...flags, json: flags.json === true || deps.io.interactive !== true }
   const before = inspection(deps)
   const prefixResult = npmRun(deps, ['prefix', '--global'])
   const packageManagerPrefix =
@@ -125,10 +138,25 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
   const currentComparison = minimumCurrent === null
     ? 'unparseable'
     : compareVersions(effective.version, minimumCurrent)
-  if (
-    currentComparison === 'before'
-  ) {
+  if (currentComparison === 'unparseable') {
+    return failed(deps, flags, 'effective_command_version_unknown', before, packageManagerPrefix)
+  }
+  if (currentComparison === 'before') {
     return failed(deps, flags, 'effective_command_still_older', before, packageManagerPrefix)
+  }
+
+  // A package manifest can land before its dependencies or executable. Prove
+  // this artifact starts before making every trusted hook depend on it.
+  const probe = spawnSync(process.execPath, [effective.artifact_path, '--version'], {
+    encoding: 'utf8',
+    env: deps.env,
+    cwd: deps.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
+  })
+  if (probe.status !== 0 || probe.stdout?.trim() !== effective.version) {
+    return failed(deps, flags, 'effective_command_not_runnable', before, packageManagerPrefix)
   }
 
   let adapterRetargeted = false

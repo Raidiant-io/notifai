@@ -4949,6 +4949,31 @@ describe('compatibility-first update guidance', () => {
     },
   )
 
+  it.each(cases.filter(({ status }) => status !== 'ready'))(
+    'preserves $name recovery when one capability document is unavailable',
+    async ({ support, status, detail }) => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-partial-update-discovery-'))
+      const client = {
+        health: async () => true,
+        compatibility: async () => compatibilityWithCli(support),
+        capabilities: async (platform: Platform = 'ios') => {
+          if (platform === 'android') throw new NetworkError('temporarily offline')
+          return CAPABILITIES_V1.describe(platform)
+        },
+        listDevices: async () => ({ devices: [] }),
+        accessStatus: async () => ({ email: 'user@example.test' }),
+      } as unknown as ApiClient
+      const deps = { ...makeDeps(new CapturedIo(), client), cwd, env: isolatedEnv(cwd) }
+      const readiness = await assessReadiness(deps)
+      expect(readiness.states.find((state) => state.id === 'contract')).toMatchObject({
+        status,
+        detail,
+        remedy: { command: updateCliCommand(deps) },
+        technical: { capability_document_errors: [{ platform: 'android' }] },
+      })
+    },
+  )
+
   it('reports a missing named CLI capability without blocking ordinary sends', async () => {
     const requestedPlatforms: Platform[] = []
     let submissions = 0
@@ -5011,6 +5036,26 @@ describe('compatibility-first update guidance', () => {
     ).toBe(EXIT.ok)
     expect(submissions).toBe(1)
     expect(sendIo.errLines).toEqual([])
+  })
+
+  it('reports a lookup failure without claiming the service is being updated', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-unavailable-update-check-'))
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      capabilities: async (platform: Platform = 'ios') => {
+        if (platform === 'android') throw new NetworkError('temporarily offline')
+        return CAPABILITIES_V1.describe(platform)
+      },
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const readiness = await assessReadiness({ ...makeDeps(new CapturedIo(), client), cwd, env: isolatedEnv(cwd) })
+    expect(readiness.states.find((state) => state.id === 'contract')).toMatchObject({
+      status: 'optional-gap',
+      detail: 'Could not finish checking Notifai. Try again.',
+      remedy: { command: 'notifai doctor' },
+      technical: { capability_document_errors: [{ platform: 'android' }] },
+    })
   })
 
   it('reports a service that has not deployed this Notification Request contract', async () => {
@@ -5575,24 +5620,28 @@ describe('init', () => {
     })
   })
 
-  it('uninstalls the other skill scope before installing the chosen one', async () => {
+  it('verifies the chosen skill scope before uninstalling the previous one', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-prevented-'))
     const io = new CapturedIo()
     const removed: SkillScope[] = []
     const added: Array<SkillScope | undefined> = []
     let globalPresent = true
+    let projectPresent = false
     const nativeSkills: NativeSkills = {
       add: async (options) => {
         added.push(options.scope)
+        projectPresent = true
         return 0
       },
       remove: async (options) => {
+        expect(projectPresent).toBe(true)
         removed.push(options.scope)
         if (options.scope === 'global') globalPresent = false
         return 0
       },
       list: async (scope) => ({
-        skills: scope === 'global' && globalPresent ? [{ ...managedSkill('global', cwd), ref: 'v0.2.1' }] : [],
+        skills: (scope === 'global' && globalPresent) || (scope === 'project' && projectPresent)
+          ? [managedSkill(scope, cwd)] : [],
       }),
     }
 
@@ -5605,6 +5654,75 @@ describe('init', () => {
     ).toBe(EXIT.ok)
     expect(removed).toEqual(['global'])
     expect(added).toEqual(['project'])
+  })
+
+  function skillMigrationFixture() {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-migration-retry-'))
+    const io = new CapturedIo()
+    const records = new Map<SkillScope, NativeSkill>()
+    const install = (scope: SkillScope) => {
+      const destination = path.join(cwd, `installed-${scope}`)
+      installCurrentSkill(destination)
+      const record = { ...managedSkill(scope, cwd), path: destination }
+      records.set(scope, record)
+      return record
+    }
+    const old = install('global')
+    const oldContents = readFileSync(path.join(old.path, 'SKILL.md'), 'utf8')
+    const plan = { add: 'success', cleanup: 'success' }
+    const calls: string[] = []
+    const nativeSkills: NativeSkills = {
+      list: async (scope) => ({ skills: records.has(scope) ? [records.get(scope)!] : [] }),
+      add: async () => {
+        calls.push('add')
+        if (plan.add === 'throws') throw new Error('installer interrupted')
+        if (plan.add === 'offline') return 1
+        const record = install('project')
+        if (plan.add === 'invalid') writeFileSync(path.join(record.path, 'SKILL.md'), '# incomplete skill\n')
+        return 0
+      },
+      remove: async ({ scope }) => {
+        calls.push('remove')
+        if (plan.cleanup === 'throws') throw new Error('cleanup interrupted')
+        if (plan.cleanup === 'failure') return 1
+        if (plan.cleanup !== 'no-op') records.delete(scope)
+        return 0
+      },
+    }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
+    const flags = { skills: true, skillsScope: 'project' as const, hooks: false, json: true }
+    return { cwd, io, records, old, oldContents, plan, calls, deps, flags }
+  }
+
+  it.each(['offline', 'invalid', 'throws'])('keeps the old skill when the selected install is %s', async (failure) => {
+    const f = skillMigrationFixture()
+    f.plan.add = failure
+    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.failed)
+    expect(f.calls).toEqual(['add'])
+    expect(f.records.has('global')).toBe(true)
+    expect(readFileSync(path.join(f.old.path, 'SKILL.md'), 'utf8')).toBe(f.oldContents)
+    f.plan.add = 'success'
+    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(f.calls).toEqual(['add', 'add', 'remove'])
+    expect([...f.records.keys()]).toEqual(['project'])
+  })
+
+  it.each(['failure', 'no-op', 'throws'])('retains the verified selected skill after cleanup %s and retries without reinstalling', async (failure) => {
+    const f = skillMigrationFixture()
+    f.plan.cleanup = failure
+    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.failed)
+    expect(f.calls).toEqual(['add', 'remove'])
+    expect([...f.records.keys()]).toEqual(['global', 'project'])
+    expect(readFileSync(path.join(f.old.path, 'SKILL.md'), 'utf8')).toBe(f.oldContents)
+    const readiness = JSON.parse(f.io.outLines.at(-1)!) as { states: Array<{ id: string; technical?: unknown }> }
+    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
+      status: 'gap',
+      technical: { resolution: 'selected-copy-verified-cleanup-required' },
+    })
+    f.plan.cleanup = 'success'
+    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(f.calls).toEqual(['add', 'remove', 'remove'])
+    expect([...f.records.keys()]).toEqual(['project'])
   })
 
   it('clears a pre-existing skill duplicate by keeping the chosen skill scope', async () => {
@@ -5744,7 +5862,7 @@ describe('init', () => {
         return 0
       },
       remove: async () => 0,
-      list: async () => ({ skills: [] }),
+      list: async (scope) => ({ skills: receivedScope === scope ? [managedSkill(scope, cwd)] : [] }),
     }
 
     expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(

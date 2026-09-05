@@ -4,13 +4,14 @@ import {
   existsSync,
   lstatSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
 } from 'node:fs'
 import path from 'node:path'
 import type { ReadinessState } from './readiness.js'
 import { packageVersion } from './release.js'
 import { cliUpdateRecoveryCommand } from './cli-contract.js'
-import { canonicalPath, pathDirectories } from './local-path.js'
+import { canonicalPath, pathDirectories, sameLocalPath } from './local-path.js'
 
 const POSIX_NAMES = ['notifai']
 const WINDOWS_NAMES = ['notifai.cmd', 'notifai.exe', 'notifai']
@@ -43,7 +44,13 @@ export function pathNotifaiEntries(
   for (const directory of pathDirectories(env, platform)) {
     for (const name of names) {
       const candidate = path.join(directory, name)
-      if (!existsSync(candidate)) continue
+      // A dangling npm symlink is still installation evidence after an
+      // interrupted upgrade. Keep its destination available to local repair.
+      try {
+        lstatSync(candidate)
+      } catch {
+        continue
+      }
       if (!found.includes(candidate)) found.push(candidate)
     }
   }
@@ -81,6 +88,9 @@ function artifactForCommand(file: string, platform: NodeJS.Platform): string | n
   const shim = platform === 'win32' ? windowsShimArtifact(file) : null
   if (shim !== null) return shim
   try {
+    if (lstatSync(file).isSymbolicLink()) {
+      return canonicalPath(path.resolve(path.dirname(file), readlinkSync(file)))
+    }
     return canonicalPath(file)
   } catch {
     return null
@@ -101,13 +111,20 @@ function artifactVersion(artifact: string | null): string | null {
   }
 }
 
-function installPrefix(artifact: string | null): string | null {
-  if (artifact !== null) {
-    const marker = /[\\/]lib[\\/]node_modules[\\/]@raidiant[\\/]notifai[\\/]/i.exec(artifact)
-      ?? /[\\/]node_modules[\\/]@raidiant[\\/]notifai[\\/]/i.exec(artifact)
-    if (marker?.index !== undefined) return artifact.slice(0, marker.index)
-  }
-  return null
+function installPrefix(artifact: string | null, command: string, platform: NodeJS.Platform): string | null {
+  if (artifact === null) return null
+  // Only an npm-global layout is writable through npm --global --prefix.
+  // A local dependency or pnpm store path also contains node_modules, but
+  // treating its parent as a global prefix writes an unrelated installation.
+  const suffix = path.sep + path.join(
+    ...(platform === 'win32' ? [] : ['lib']),
+    'node_modules', '@raidiant', 'notifai', 'dist', 'main.js',
+  )
+  const normalized = platform === 'win32' ? artifact.toLowerCase() : artifact
+  if (!normalized.endsWith(suffix)) return null
+  const prefix = canonicalPath(artifact.slice(0, -suffix.length))
+  const bin = platform === 'win32' ? prefix : path.join(prefix, 'bin')
+  return sameLocalPath(path.dirname(command), bin, platform) ? prefix : null
 }
 
 export function inspectCliInstallations(
@@ -123,7 +140,7 @@ export function inspectCliInstallations(
       executable: isExecutablePath(command, platform),
       artifact_path: artifact,
       version: artifactVersion(artifact),
-      install_prefix: installPrefix(artifact),
+      install_prefix: installPrefix(artifact, command, platform),
     }
   })
   return {
