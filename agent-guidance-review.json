@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:0e9f3c2e04e41c5e6187a208889baf966ef2658bce7502bab178cfe234f6f9f4",
+  "behavior_digest": "sha256:54d6456d41bcd9ac1608a5857a529db3d188dfe7881bf09ab9dabf25e101b65d",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup and recovery, CLI readiness, README domain terms, and the trust policy. Normalizing pre-observation proof provenance as unknown and persisting only actual Companion Receipt evidence changes no Agent Guidance action: the skill already delegates missing readiness to notifai init --json and tells agents to branch on its states. A retained observation stays complete, while evidence-read and local-persistence failures remain visible as bounded diagnostics. Question Routing ownership, lifecycle behavior, setup authority, and non-exfiltration rules are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup and recovery, CLI readiness, README domain terms, and the trust policy. Normalizing pre-observation proof provenance as unknown and persisting only actual Companion Receipt evidence changes no Agent Guidance action: the skill already delegates missing readiness to notifai init --json and tells agents to branch on its states. A retained observation stays complete, while evidence-read and local-persistence failures remain visible as bounded diagnostics. An unavailable historical evidence check now retains the original request, matching the existing guidance that unknown is not proof of failure and setup is safe to resume. Question Routing ownership, lifecycle behavior, setup authority, and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

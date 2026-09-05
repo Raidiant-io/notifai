@@ -541,8 +541,12 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     try {
       const snapshot = await authed.client.evidence(proof.request_id)
       keepStale = observedCompanionReceipt(snapshot, proof.device_id) !== null
-    } catch {
-      keepStale = false
+    } catch (err) {
+      if (!(err instanceof ApiCallError && err.code === 'not_found')) {
+        // Unavailable evidence cannot establish that the saved request needs replacing.
+        reportError(deps, err)
+        return 'failed'
+      }
     }
     if (!keepStale) {
       deps.io.out(

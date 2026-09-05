@@ -6750,6 +6750,74 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
+  it.each([
+    ['network failure', new NetworkError('temporary connection failure')],
+    ['service failure', new ApiCallError(503, 'internal_error', 'temporary service failure')],
+  ])('retains an older setup proof through %s and resumes its existing receipt', async (_label, failure) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-stale-unavailable-'))
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "stale-unavailable"\n')
+    const io = new CapturedIo()
+    let now = Date.parse('2026-09-05T12:00:00.000Z')
+    let unavailable = true
+    let submitCalls = 0
+    const evidenceRequests: string[] = []
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt('req_unexpected_replacement')
+      },
+      evidence: async (requestId: string) => {
+        evidenceRequests.push(requestId)
+        if (unavailable) throw failure
+        return setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-09-04T11:59:59.000Z',
+          latency_ms: 1_000,
+        })
+      },
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds },
+    }
+    const provenance = {
+      request_id: 'req_stale_unavailable',
+      device_id: readyIphone.device_id,
+      project: 'stale-unavailable',
+      started_at: new Date(now - SETUP_PROOF_STALE_MS - 2_000).toISOString(),
+    }
+    expect(writeSetupProof(deps, {
+      ...provenance,
+      companion_receipt: { state: 'unknown', observed_at: null },
+    })).toBe(true)
+    const proofDir = path.join(stateDir(deps.env), 'setup-proofs')
+    const proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
+    const stored = readFileSync(proofFile, 'utf8')
+    expect(JSON.parse(stored)).toEqual(provenance)
+
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(submitCalls).toBe(0)
+    expect(readFileSync(proofFile, 'utf8')).toBe(stored)
+
+    unavailable = false
+    io.outLines = []
+    io.errLines = []
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitCalls).toBe(0)
+    expect(new Set(evidenceRequests)).toEqual(new Set(['req_stale_unavailable']))
+    expect(JSON.parse(readFileSync(proofFile, 'utf8'))).toEqual({
+      ...provenance,
+      companion_receipt: { state: 'observed', observed_at: '2026-09-04T11:59:59.000Z' },
+    })
+  })
+
   it('reports a proof-state write failure instead of crashing or sending twice', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-unwritable-'))
     const io = new CapturedIo()
