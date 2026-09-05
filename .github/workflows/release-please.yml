@@ -170,6 +170,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REFS: ${{ needs.release-please.outputs.release_refs }}
+          RELEASES_CREATED: ${{ needs.release-please.outputs.releases_created }}
           CLI_RELEASE_CREATED: ${{ needs.release-please.outputs.cli_release_created }}
           CLI_TAG: ${{ needs.release-please.outputs.cli_tag }}
           CLI_SHA: ${{ needs.release-please.outputs.cli_sha }}
