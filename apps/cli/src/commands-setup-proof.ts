@@ -2,20 +2,27 @@ import { type EvidenceSnapshot } from '@raidiant/notifai-protocol'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
+import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import type { CommandDeps } from './commands-core.js'
 import { inferInvocationContext } from './invocation-context.js'
 
+/**
+ * Canonical setup proof state. On disk, provenance without a Companion
+ * Receipt outcome represents unknown; only an actual observed receipt adds
+ * the outcome to disk.
+ */
 export interface SetupProofRecord {
   request_id: string
   device_id: string
   project: string | null
   started_at: string
+  companion_receipt:
+    | { state: 'unknown'; observed_at: null }
+    | { state: 'observed'; observed_at: string }
 }
 
 export function setupProofProject(deps: CommandDeps, configured: string | null): string | null {
@@ -42,12 +49,29 @@ export function readSetupProof(deps: CommandDeps, project: string | null): Setup
   if (!existsSync(file)) return null
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<SetupProofRecord>
-    return typeof parsed.request_id === 'string' &&
-      typeof parsed.device_id === 'string' &&
-      (typeof parsed.project === 'string' || parsed.project === null) &&
-      typeof parsed.started_at === 'string'
-      ? (parsed as SetupProofRecord)
-      : null
+    if (
+      typeof parsed.request_id !== 'string' ||
+      typeof parsed.device_id !== 'string' ||
+      !(typeof parsed.project === 'string' || parsed.project === null) ||
+      typeof parsed.started_at !== 'string'
+    ) {
+      return null
+    }
+    const receipt = parsed.companion_receipt
+    const companionReceipt = receipt === undefined ||
+      receipt.state === 'unknown' && receipt.observed_at === null
+      ? { state: 'unknown' as const, observed_at: null }
+      : receipt.state === 'observed' && typeof receipt.observed_at === 'string'
+        ? { state: 'observed' as const, observed_at: receipt.observed_at }
+        : null
+    if (companionReceipt === null) return null
+    return {
+      request_id: parsed.request_id,
+      device_id: parsed.device_id,
+      project: parsed.project,
+      started_at: parsed.started_at,
+      companion_receipt: companionReceipt,
+    }
   } catch {
     // Corrupt local evidence is not readiness. A fresh proof replaces it.
     return null
@@ -61,8 +85,15 @@ export function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boo
     return false
   }
   try {
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 })
+    const { companion_receipt: companionReceipt, ...provenance } = proof
+    const stored = companionReceipt.state === 'observed'
+      ? { ...provenance, companion_receipt: companionReceipt }
+      : provenance
+    atomicWriteFileSync(file, `${JSON.stringify(stored, null, 2)}\n`, {
+      mode: 0o600,
+      preserveMode: false,
+      requireCurrentUserOwner: true,
+    })
     return true
   } catch (err) {
     deps.io.err(
@@ -89,8 +120,19 @@ export function observedCompanionReceipt(
 export const SETUP_PROOF_STALE_MS = 24 * 60 * 60 * 1000
 
 export function setupProofIsStale(proof: SetupProofRecord, now: number): boolean {
+  if (proof.companion_receipt.state === 'observed') return false
   const started = Date.parse(proof.started_at)
   return Number.isFinite(started) && now - started > SETUP_PROOF_STALE_MS
+}
+
+export function observedSetupProof(
+  proof: SetupProofRecord,
+  observedAt: string,
+): SetupProofRecord {
+  return {
+    ...proof,
+    companion_receipt: { state: 'observed', observed_at: observedAt },
+  }
 }
 
 export function setupProofApplies(
@@ -118,6 +160,7 @@ export function recordObservedDeliveryProof(
       device_id: delivery.device_id,
       project,
       started_at: observed.observedAt,
+      companion_receipt: { state: 'observed', observed_at: observed.observedAt },
     })
   }
   return false

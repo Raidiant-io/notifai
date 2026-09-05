@@ -6,7 +6,7 @@ import {
 } from '@raidiant/notifai-protocol'
 import { existsSync } from 'node:fs'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
-import { ApiCallError, type ApiClient } from './client.js'
+import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { inspectCodexResume } from './codex-wake.js'
 import { type CliConfig } from './config.js'
 import {
@@ -56,6 +56,7 @@ import {
   SETUP_COMMAND,
   diagnoseIgnoredOriginOverride,
   loadLoggedConfig,
+  log,
   makeClient,
   resolvedBaseUrl,
   updateCliCommand,
@@ -88,10 +89,12 @@ import {
 import {
   SETUP_PROOF_STALE_MS,
   observedCompanionReceipt,
+  observedSetupProof,
   readSetupProof,
   setupProofProject,
   setupProofIsStale,
   setupProofApplies,
+  writeSetupProof,
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
@@ -763,16 +766,55 @@ async function setupProofState(
     }
   }
 
+  const deviceName =
+    companions.find((device) => device.device_id === proof.device_id)?.display_name ?? proof.device_id
+
+  const readyFromObservation = (
+    observedAt: string,
+    liveEvidence?: { status: 'observed' | 'unknown' } | SetupProofEvidenceFailure,
+    localPersistence?: SetupProofPersistenceFailure,
+  ): ReadinessState => ({
+    id: 'proof',
+    title: 'Delivery proof',
+    status: 'ready',
+    detail:
+      `Companion Receipt (the app's delivery confirmation) observed from ${deviceName} at ` +
+      `${observedAt} (${proof.request_id})` +
+      (liveEvidence?.status === 'unavailable'
+        ? `; current evidence could not be re-read (${liveEvidence.code})`
+        : liveEvidence?.status === 'unknown'
+          ? '; the current service evidence no longer includes that retained observation'
+          : '') +
+      (localPersistence === undefined
+        ? ''
+        : `; the current observation could not be saved locally (${localPersistence.code})`),
+    technical: liveEvidence === undefined && localPersistence === undefined
+      ? undefined
+      : {
+          ...(liveEvidence === undefined ? {} : { live_evidence: liveEvidence }),
+          ...(localPersistence === undefined ? {} : { local_persistence: localPersistence }),
+        },
+  })
+
   try {
     const snapshot = await client.evidence(proof.request_id)
     const observed = observedCompanionReceipt(snapshot, proof.device_id)
     if (observed) {
-      return {
-        id: 'proof',
-        title: 'Delivery proof',
-        status: 'ready',
-        detail: `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name} at ${observed.observedAt} (${proof.request_id})`,
+      let localPersistence: SetupProofPersistenceFailure | undefined
+      if (proof.companion_receipt.state !== 'observed') {
+        if (!writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))) {
+          localPersistence = { status: 'unavailable', code: 'write_failed' }
+          log(deps).error('cli.error', {
+            kind: 'setup_proof_observation_write',
+            request_id: proof.request_id,
+            error_code: localPersistence.code,
+          })
+        }
       }
+      return readyFromObservation(observed.observedAt, { status: 'observed' }, localPersistence)
+    }
+    if (proof.companion_receipt.state === 'observed') {
+      return readyFromObservation(proof.companion_receipt.observed_at, { status: 'unknown' })
     }
     const now = (deps.now ?? Date.now)()
     if (setupProofIsStale(proof, now)) {
@@ -800,11 +842,22 @@ async function setupProofState(
       },
     }
   } catch (err) {
+    const failure = setupProofEvidenceFailure(err)
+    log(deps).error('cli.error', {
+      kind: 'setup_proof_evidence_read',
+      request_id: proof.request_id,
+      error_code: failure.code,
+      http_status: failure.http_status,
+    })
+    if (proof.companion_receipt.state === 'observed') {
+      return readyFromObservation(proof.companion_receipt.observed_at, failure)
+    }
     return {
       id: 'proof',
       title: 'Delivery proof',
       status: 'gap',
-      detail: `could not read ${proof.request_id} evidence (${err instanceof ApiCallError ? err.code : String(err)})`,
+      detail: `could not read ${proof.request_id} evidence (${failure.code})`,
+      technical: { live_evidence: failure },
       remedy: {
         by: 'cli',
         summary: 'retry the existing verification evidence check',
@@ -812,6 +865,27 @@ async function setupProofState(
       },
     }
   }
+}
+
+interface SetupProofEvidenceFailure {
+  status: 'unavailable'
+  code: string
+  http_status: number | null
+}
+
+interface SetupProofPersistenceFailure {
+  status: 'unavailable'
+  code: 'write_failed'
+}
+
+function setupProofEvidenceFailure(err: unknown): SetupProofEvidenceFailure {
+  if (err instanceof ApiCallError) {
+    return { status: 'unavailable', code: err.code, http_status: err.status }
+  }
+  if (err instanceof NetworkError) {
+    return { status: 'unavailable', code: 'network_error', http_status: null }
+  }
+  return { status: 'unavailable', code: 'unexpected_error', http_status: null }
 }
 
 export async function doctorCommand(

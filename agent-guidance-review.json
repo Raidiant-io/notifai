@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:56a9f6853f1f67549318f775f4f808cac6632ead9495bffa484a10be42109220",
+  "behavior_digest": "sha256:54d6456d41bcd9ac1608a5857a529db3d188dfe7881bf09ab9dabf25e101b65d",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed update execution, CLI readiness, skill migration, lifecycle hooks, harness setup, README, the shipped skill and trust policy. Existing guidance delegates setup to init and follows its local typed recovery; it needs no new instruction for bounded update retries, deterministic destination diagnosis, or verified-copy retention. Optional, scheduled and required policy remains visible when a capability document is unavailable. Ambiguous installations and overlapping skill destinations fail before unsafe writes. Stable adapter retargeting preserves trusted handler definitions; machine approval, Project Enablement, Question Routing ownership and queued session state remain unchanged. Skill scope still requires an explicit choice, installed content is verified against the package, and no server-supplied command or repository claim gains authority.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup and recovery, CLI readiness, README domain terms, and the trust policy. Normalizing pre-observation proof provenance as unknown and persisting only actual Companion Receipt evidence changes no Agent Guidance action: the skill already delegates missing readiness to notifai init --json and tells agents to branch on its states. A retained observation stays complete, while evidence-read and local-persistence failures remain visible as bounded diagnostics. An unavailable historical evidence check now retains the original request, matching the existing guidance that unknown is not proof of failure and setup is safe to resume. Question Routing ownership, lifecycle behavior, setup authority, and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

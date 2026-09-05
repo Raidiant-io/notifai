@@ -4,6 +4,10 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from './client.js'
 import { EXIT, type CommandDeps } from './commands.js'
+import {
+  setupProofProject,
+  writeSetupProof,
+} from './commands-setup-proof.js'
 import { findInstallations, findLegacyProjectInstallations } from './install-hooks.js'
 
 const CANCEL = Symbol.for('notifai-clack-cancel')
@@ -82,7 +86,11 @@ function makeClient(): ApiClient {
   } as unknown as ApiClient
 }
 
-function makeDeps(cwd: string, env: NodeJS.ProcessEnv = isolatedEnv(cwd)): CommandDeps {
+function makeDeps(
+  cwd: string,
+  env: NodeJS.ProcessEnv = isolatedEnv(cwd),
+  client: ApiClient = makeClient(),
+): CommandDeps {
   return {
     io: {
       out: () => {},
@@ -104,7 +112,7 @@ function makeDeps(cwd: string, env: NodeJS.ProcessEnv = isolatedEnv(cwd)): Comma
     env,
     cwd,
     hookAdapterHome: path.join(cwd, 'adapter-home'),
-    clientFactory: () => makeClient(),
+    clientFactory: () => client,
   }
 }
 
@@ -222,6 +230,81 @@ describe('interactiveCommand', () => {
     expect(menu?.options?.[0]).toMatchObject({ value: 'setup', label: 'Finish setup' })
     expect(optionLabels(menu!)).not.toContain('Add a device')
     expect(optionLabels(menu!)).not.toContain('Sign in')
+  })
+
+  it('offers a test notification when completed proof has a transient evidence-read failure', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-durable-proof-'))
+    const readyIphone = {
+      device_id: 'dev_iphone',
+      display_name: 'iPhone',
+      platform: 'ios' as const,
+      permission_status: 'authorized',
+      registration_healthy: true,
+      app_version: '1.0.0',
+      app_build: '1',
+      os_version: '19.0',
+      capabilities: ['answer'] as const,
+      support_state: 'current' as const,
+      derived_status: 'working' as const,
+      status_message: null,
+      last_seen_at: '2026-09-05T12:00:00.000Z',
+    }
+    const client = {
+      ...makeClient(),
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({
+        status: 'active',
+        reason: 'alpha_grant',
+        expires_at: null,
+        email: 'rafael@example.test',
+      }),
+      evidence: async () => {
+        throw new Error('transient evidence failure')
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(cwd, isolatedEnv(cwd), client)
+    writeSetupProof(deps, {
+      request_id: 'req_durable_proof',
+      device_id: readyIphone.device_id,
+      project: setupProofProject(deps, null),
+      started_at: '2026-09-05T12:00:00.000Z',
+      companion_receipt: { state: 'observed', observed_at: '2026-09-05T12:00:02.000Z' },
+    })
+    answers = [CANCEL]
+
+    expect(await interactiveCommand(deps, '0.0.0-test')).toBe(EXIT.ok)
+    const menu = promptLog.find((entry) => entry.message === 'What would you like to do?')
+    expect(menu?.options?.[0]).toMatchObject({
+      value: 'test',
+      label: 'Send a test notification',
+    })
+    expect(optionLabels(menu!)).not.toContain('Finish setup')
+  })
+
+  it('still offers Finish setup when no Companion Receipt has been observed', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-unobserved-proof-'))
+    const client = {
+      ...makeClient(),
+      listDevices: async () => ({
+        devices: [{
+          device_id: 'dev_iphone',
+          display_name: 'iPhone',
+          platform: 'ios',
+          permission_status: 'authorized',
+          registration_healthy: true,
+          capabilities: ['answer'],
+        }],
+      }),
+    } as unknown as ApiClient
+    answers = [CANCEL]
+
+    expect(await interactiveCommand(makeDeps(cwd, isolatedEnv(cwd), client), '0.0.0-test')).toBe(EXIT.ok)
+    const menu = promptLog.find((entry) => entry.message === 'What would you like to do?')
+    expect(menu?.options?.[0]).toMatchObject({
+      value: 'setup',
+      label: 'Finish setup',
+      hint: 'delivery proof',
+    })
   })
 
   it('quits from the root menu on Escape', async () => {
