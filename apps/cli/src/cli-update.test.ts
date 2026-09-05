@@ -118,12 +118,33 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
       rmSync(f.installed.command)
       symlinkSync(artifact, f.installed.command)
       expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
-      expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({ ok: false, code: 'update_destination_unknown' })
+      expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({
+        ok: false, code: 'update_destination_unknown',
+        recovery_command: 'npx --yes @raidiant/notifai@latest doctor --json',
+        message: expect.stringContaining('package manager that installed'),
+      })
+      expect(f.io.outLines.join('\n')).not.toContain('@raidiant/notifai@latest update')
       const inferredPrefix = path.dirname(path.join(f.root, layout))
       expect(existsSync(path.join(inferredPrefix, 'lib', 'node_modules'))).toBe(false)
       expect(readFileSync(artifact, 'utf8')).toContain('3.0.1')
     },
   )
+
+  it('explains an unreachable npm prefix without prescribing the same refused updater', () => {
+    const f = recoveryFixture()
+    rmSync(f.installed.command)
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
+    expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({
+      ok: false, code: 'package_manager_prefix_not_on_path',
+      recovery_command: 'npx --yes @raidiant/notifai@latest doctor --json',
+      message: expect.stringContaining('not on PATH'),
+    })
+    expect(f.io.outLines.join('\n')).not.toContain('@raidiant/notifai@latest update')
+    f.io.interactive = true
+    expect(cliUpdateCommand(f.deps, {})).toBe(1)
+    expect(f.io.errLines.join('\n')).toContain('not on PATH')
+    expect(f.io.errLines.join('\n')).not.toContain('@raidiant/notifai@latest update')
+  })
 
   it.each([
     { name: 'missing runtime dependency', script: "throw new Error('missing dependency')\n" },

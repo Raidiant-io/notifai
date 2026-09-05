@@ -11,7 +11,8 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { sharedProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
-import { type SkillScope } from './native-skills.js'
+import { conventionalSkillPath, type SkillScope } from './native-skills.js'
+import { canonicalPath } from './local-path.js'
 import {
   firstRequiredBlocker,
   isOptionalAutomation,
@@ -187,6 +188,26 @@ async function closeGap(
       deps.io.err(`Could not inspect installed guidance. Retry with \`${retry}\`.`)
       return 'failed'
     }
+    const scopesOverlap = () => {
+      const selected = inventory.installed.find((skill) => skill.scope === installScope)?.path
+        ?? conventionalSkillPath(installScope, 'notifai', deps.cwd, deps.env)
+      const normalize = (file: string) => {
+        const resolved = canonicalPath(file)
+        return (deps.hookPlatform ?? process.platform) === 'win32' ? resolved.toLowerCase() : resolved
+      }
+      const destination = normalize(selected)
+      return inventory.installed.some((skill) => {
+        if (skill.scope === installScope) return false
+        const old = normalize(skill.path)
+        return destination === old || destination.startsWith(`${old}${path.sep}`)
+          || old.startsWith(`${destination}${path.sep}`)
+      })
+    }
+    const refuseOverlap = () => {
+      deps.io.err('Project and global skill destinations overlap. Keep the existing scope, or run setup from a project with separate skill directories before changing scope.')
+      return 'failed' as const
+    }
+    if (scopesOverlap()) return refuseOverlap()
     const selectedIsVerified = () => inventory.installed.some(
       (skill) => skill.scope === installScope && installedSkillMatchesPackage(skill),
     )
@@ -218,6 +239,7 @@ async function closeGap(
       }
     }
     const extras = inventory.installed.filter((skill) => skill.scope !== installScope)
+    if (scopesOverlap()) return refuseOverlap()
     for (const extra of extras) {
       const code = await deps.nativeSkills.remove({
         skill: 'notifai',

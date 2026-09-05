@@ -73,18 +73,25 @@ function failed(
   before: CliInstallationInspection,
   packageManagerPrefix: string | null,
 ): number {
+  const recoveryMessage = code === 'update_destination_unknown'
+    ? 'Notifai could not identify an npm-global installation to update. Use the package manager that installed the resolved command to update it; the diagnostic below can inspect the installation.'
+    : code === 'package_manager_prefix_not_on_path'
+      ? 'The npm global command directory is not on PATH. Add the bin directory for the reported package-manager prefix to PATH (the prefix itself on Windows), then inspect the installation with the diagnostic below before retrying the update.'
+      : null
+  const recoveryCommand = recoveryMessage === null ? cliUpdateRecoveryCommand() : `npx --yes ${CLI_PACKAGE_NAME}@latest doctor --json`
   if (flags.json === true) {
     deps.io.out(JSON.stringify({
       ok: false,
       code,
-      recovery_command: cliUpdateRecoveryCommand(),
+      recovery_command: recoveryCommand,
+      ...(recoveryMessage === null ? {} : { message: recoveryMessage }),
       package_manager_prefix: packageManagerPrefix,
       before,
       after: inspection(deps),
     }, null, 2))
   } else {
-    deps.io.err('Notifai could not finish updating. Retry with:')
-    deps.io.err(cliUpdateRecoveryCommand())
+    deps.io.err(recoveryMessage ?? 'Notifai could not finish updating. Retry with:')
+    deps.io.err(recoveryCommand)
   }
   return EXIT.failed
 }

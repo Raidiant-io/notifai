@@ -5182,7 +5182,7 @@ describe('init', () => {
   }
 
   function managedSkill(scope: SkillScope, cwd: string): NativeSkill {
-    const skillPath = path.join(cwd, '.agents', 'skills', 'notifai')
+    const skillPath = path.join(scope === 'global' ? path.join(cwd, 'home') : cwd, '.agents', 'skills', 'notifai')
     if (!existsSync(skillPath)) installCurrentSkill(skillPath)
     return {
       name: 'notifai',
@@ -5538,6 +5538,8 @@ describe('init', () => {
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: [] }),
     } as unknown as ApiClient
+    const staleGlobal = managedSkill('global', cwd)
+    writeFileSync(path.join(staleGlobal.path, 'SKILL.md'), '# stale guidance\n')
     const nativeSkills: NativeSkills = {
       add: async () => 0,
       remove: async () => 0,
@@ -5693,6 +5695,26 @@ describe('init', () => {
     const flags = { skills: true, skillsScope: 'project' as const, hooks: false, json: true }
     return { cwd, io, records, old, oldContents, plan, calls, deps, flags }
   }
+
+  it.each(['account-home', 'symlink'])('refuses a skill migration whose destinations alias through %s', async (layout) => {
+    const f = skillMigrationFixture()
+    const destination = path.join(f.cwd, '.agents', 'skills', 'notifai')
+    installCurrentSkill(destination)
+    let oldPath = destination
+    if (layout === 'account-home') {
+      f.deps.env['HOME'] = f.cwd
+      f.deps.env['USERPROFILE'] = f.cwd
+    } else {
+      oldPath = path.join(f.cwd, 'alias-to-project-skill')
+      symlinkSync(destination, oldPath, 'dir')
+    }
+    f.records.set('global', { ...f.old, path: oldPath })
+    const contents = readFileSync(path.join(destination, 'SKILL.md'), 'utf8')
+    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.failed)
+    expect(f.calls).toEqual([])
+    expect(f.io.errLines.join('\n')).toContain('skill destinations overlap')
+    expect(readFileSync(path.join(destination, 'SKILL.md'), 'utf8')).toBe(contents)
+  })
 
   it.each(['offline', 'invalid', 'throws'])('keeps the old skill when the selected install is %s', async (failure) => {
     const f = skillMigrationFixture()
