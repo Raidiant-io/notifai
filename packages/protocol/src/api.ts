@@ -709,6 +709,18 @@ export const SoundLibraryManifestEntry = Type.Object(
 )
 export type SoundLibraryManifestEntryT = Static<typeof SoundLibraryManifestEntry>
 
+/** Recover a pending challenge using the locally retained installation identity. */
+export const RecoverSoundLibraryChallengeRequest = Type.Object(
+  { installation_id: Type.String({ pattern: '^ins_[A-Za-z0-9_-]{16,128}$' }) },
+  { additionalProperties: false },
+)
+export type RecoverSoundLibraryChallengeRequestT = Static<typeof RecoverSoundLibraryChallengeRequest>
+
+export interface RecoverSoundLibraryChallengeResponse {
+  /** Null means there is no live pending challenge; recovery never opens a round. */
+  receipt_challenge: string | null
+}
+
 /** Exact locally installed Sound set reported by one Device Installation. */
 export const ReportSoundLibraryReceiptRequest = Type.Object(
   {

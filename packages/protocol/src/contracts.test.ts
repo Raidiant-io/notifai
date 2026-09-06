@@ -26,6 +26,7 @@ import {
   PROVIDERS,
   PutRegistrationRequest,
   ReportSoundLibraryReceiptRequest,
+  RecoverSoundLibraryChallengeRequest,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   REPLY_SOURCES,
@@ -89,6 +90,12 @@ describe('Project identity contract', () => {
 })
 
 describe('Sound library bridge contract', () => {
+  it('requires retained installation identity for challenge recovery', () => {
+    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { installation_id: `ins_${'A'.repeat(24)}` })).toBe(true)
+    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { device_id: 'dev_public' })).toBe(false)
+    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { installation_id: 'ins_short' })).toBe(false)
+    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { installation_id: `ins_${'A'.repeat(24)}`, receipt_challenge: 'A'.repeat(22) })).toBe(false)
+  })
   const manifest = [
     {
       sound_id: 'snd_legacy',
