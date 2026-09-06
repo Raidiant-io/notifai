@@ -183,14 +183,11 @@ export const SOUND_LIBRARY_SYNC_COLLAPSE_ID = 'notifai.sound-library' as const
  * Silent library-refresh push. Distinct from a `done` retirement: no alert,
  * sound, badge, or mutable-content, and `notifai.sync=sound_library`.
  */
-export function buildSoundLibrarySyncEnvelope(receiptChallenge?: string): ApnsEnvelope {
+export function buildSoundLibrarySyncEnvelope(): ApnsEnvelope {
   return {
     payload: {
       aps: { 'content-available': 1 },
-      notifai: {
-        sync: SOUND_LIBRARY_SYNC,
-        ...(receiptChallenge === undefined ? {} : { receipt_challenge: receiptChallenge }),
-      },
+      notifai: { sync: SOUND_LIBRARY_SYNC },
     },
     priority: 5,
     pushType: 'background',
