@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [7.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v6.1.5...protocol-v7.0.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** `SoundView.contract_marker`, `SoundArtifactContractMarker`, `SoundLibraryManifestEntry`, `RecoverSoundLibraryChallengeRequest`, `RecoverSoundLibraryChallengeResponse`, and `ReportSoundLibraryReceiptRequest` are removed. `buildSoundLibrarySyncEnvelope` and `buildFcmSoundLibrarySyncEnvelope` take no argument.
+
+### Code Refactoring
+
+* **protocol:** drop sound receipt and marker types ([#160](https://github.com/Raidiant-io/notifai/issues/160)) ([3f069a2](https://github.com/Raidiant-io/notifai/commit/3f069a2f532e9d0e2c3ef85228717c008312ed73))
+
 ## [6.1.5](https://github.com/Raidiant-io/notifai/compare/protocol-v6.1.4...protocol-v6.1.5) (2026-09-06)
 
 
