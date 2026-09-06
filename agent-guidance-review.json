@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:65955ab315f82a7f9b6261ead3080b3f65a51b18fb656446f17340a08d1eccb6",
+  "behavior_digest": "sha256:c331a52cd355a1f59848b8664c92aa302a2bae4abb8a567f46bd2213ac38c424",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup, CLI readiness and domain terms against the new sound-library recovery schema. The schema serves companion synchronization using retained installation identity and an existing challenge; it introduces no agent command, readiness promise, notification behavior or setup action. Existing guidance still requires real Companion Receipt evidence and supported human setup, with unchanged Question Routing ownership and non-exfiltration rules.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup, CLI readiness and domain terms against the protocol change that removes the sound-library receipt and challenge shapes and the catalog artifact marker. Custom sound sync is again an ordinary companion catalog refresh; no agent command, readiness promise, notification behavior, guidance topic or setup action is added or changed, and Question Routing ownership and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
