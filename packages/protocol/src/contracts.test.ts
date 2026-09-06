@@ -25,8 +25,6 @@ import {
   PairingProofRequest,
   PROVIDERS,
   PutRegistrationRequest,
-  ReportSoundLibraryReceiptRequest,
-  RecoverSoundLibraryChallengeRequest,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
   REPLY_SOURCES,
@@ -89,48 +87,13 @@ describe('Project identity contract', () => {
   })
 })
 
-describe('Sound library bridge contract', () => {
-  it('requires retained installation identity for challenge recovery', () => {
-    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { installation_id: `ins_${'A'.repeat(24)}` })).toBe(true)
-    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { device_id: 'dev_public' })).toBe(false)
-    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { installation_id: 'ins_short' })).toBe(false)
-    expect(Value.Check(RecoverSoundLibraryChallengeRequest, { installation_id: `ins_${'A'.repeat(24)}`, receipt_challenge: 'A'.repeat(22) })).toBe(false)
-  })
-  const manifest = [
-    {
-      sound_id: 'snd_legacy',
-      content_hash: 'a'.repeat(64),
-      contract_marker: 'notification-sound/wav-pcm16-mono-48k/v1',
-    },
-    {
-      sound_id: 'snd_current',
-      content_hash: 'b'.repeat(64),
-      contract_marker: 'notification-sound/wav-pcm16-mono-48k/v2',
-    },
-  ]
-
-  it('carries the artifact marker needed for version-aware cache validation', () => {
-    expect(
-      Value.Check(ReportSoundLibraryReceiptRequest, {
-        receipt_challenge: 'A'.repeat(22),
-        sounds: manifest,
-      }),
-    ).toBe(true)
-    expect(
-      Value.Check(ReportSoundLibraryReceiptRequest, {
-        receipt_challenge: 'A'.repeat(22),
-        sounds: [{ ...manifest[0], contract_marker: 'notification-sound/unknown' }],
-      }),
-    ).toBe(false)
-  })
-
+describe('Sound library sync contract', () => {
   it('emits Android sound-library sync as a silent normal-priority data message', () => {
-    expect(buildFcmSoundLibrarySyncEnvelope('A'.repeat(22))).toEqual({
+    expect(buildFcmSoundLibrarySyncEnvelope()).toEqual({
       data: {
         notifai: JSON.stringify({
           schema_version: 1,
           sync: 'sound_library',
-          receipt_challenge: 'A'.repeat(22),
         }),
       },
       priority: 'NORMAL',
@@ -1540,10 +1503,10 @@ describe('notification kind', () => {
   })
 
   it('emits a distinct silent sound-library sync without alert, sound, or badge', () => {
-    expect(buildSoundLibrarySyncEnvelope('A'.repeat(22))).toEqual({
+    expect(buildSoundLibrarySyncEnvelope()).toEqual({
       payload: {
         aps: { 'content-available': 1 },
-        notifai: { sync: 'sound_library', receipt_challenge: 'A'.repeat(22) },
+        notifai: { sync: 'sound_library' },
       },
       priority: 5,
       pushType: 'background',

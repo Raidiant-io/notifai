@@ -1,7 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox'
 import {
   CUSTOM_SOUND_MAX_BYTES,
-  CUSTOM_SOUND_LIBRARY_LIMIT,
   KindSoundMap,
   NotificationDraft,
   NOTIFICATION_IMAGE_MAX_BYTES,
@@ -684,53 +683,12 @@ export interface SoundView {
   name: string
   duration_ms: number
   content_hash: string
-  /** Temporary cutover discriminator; cleanup removes v1 after receipt proof. */
-  contract_marker: SoundArtifactContractMarker
   url: string
 }
 
 export interface ListSoundsResponse {
   sounds: SoundView[]
 }
-
-export const SoundArtifactContractMarker = Type.Union([
-  Type.Literal('notification-sound/wav-pcm16-mono-48k/v1'),
-  Type.Literal('notification-sound/wav-pcm16-mono-48k/v2'),
-])
-export type SoundArtifactContractMarker = Static<typeof SoundArtifactContractMarker>
-
-export const SoundLibraryManifestEntry = Type.Object(
-  {
-    sound_id: Type.String({ pattern: '^snd_[A-Za-z0-9_-]+$' }),
-    content_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
-    contract_marker: SoundArtifactContractMarker,
-  },
-  { additionalProperties: false },
-)
-export type SoundLibraryManifestEntryT = Static<typeof SoundLibraryManifestEntry>
-
-/** Recover a pending challenge using the locally retained installation identity. */
-export const RecoverSoundLibraryChallengeRequest = Type.Object(
-  { installation_id: Type.String({ pattern: '^ins_[A-Za-z0-9_-]{16,128}$' }) },
-  { additionalProperties: false },
-)
-export type RecoverSoundLibraryChallengeRequestT = Static<typeof RecoverSoundLibraryChallengeRequest>
-
-export interface RecoverSoundLibraryChallengeResponse {
-  /** Null means there is no live pending challenge; recovery never opens a round. */
-  receipt_challenge: string | null
-}
-
-/** Exact locally installed Sound set reported by one Device Installation. */
-export const ReportSoundLibraryReceiptRequest = Type.Object(
-  {
-    /** One-time Device Installation challenge delivered by the current sync round. */
-    receipt_challenge: Type.String({ pattern: '^[A-Za-z0-9_-]{22}$' }),
-    sounds: Type.Array(SoundLibraryManifestEntry, { maxItems: CUSTOM_SOUND_LIBRARY_LIMIT }),
-  },
-  { additionalProperties: false },
-)
-export type ReportSoundLibraryReceiptRequestT = Static<typeof ReportSoundLibraryReceiptRequest>
 
 export interface CreateMediaUploadResponse {
   media_id: string
