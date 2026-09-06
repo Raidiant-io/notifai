@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [6.1.5](https://github.com/Raidiant-io/notifai/compare/protocol-v6.1.4...protocol-v6.1.5) (2026-09-06)
+
+
+### Bug Fixes
+
+* **protocol:** support pending sound receipt recovery ([#158](https://github.com/Raidiant-io/notifai/issues/158)) ([9e215b2](https://github.com/Raidiant-io/notifai/commit/9e215b28e1f89c5158fa4bc6cbd9c0503be3775e))
+
 ## [6.1.4](https://github.com/Raidiant-io/notifai/compare/protocol-v6.1.3...protocol-v6.1.4) (2026-09-05)
 
 ## [6.1.3](https://github.com/Raidiant-io/notifai/compare/protocol-v6.1.2...protocol-v6.1.3) (2026-09-04)
