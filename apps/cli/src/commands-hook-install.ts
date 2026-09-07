@@ -237,14 +237,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   }
 
   let installed: { file: string; foreignStopCount: number }
+  let migratedOwnedInline = false
   try {
     installed =
       codexPaths === null
         ? withTargetFileLock(settingsTarget, () => installInto(settingsTarget))
         : withCodexLayerTransaction(codexPaths, (inspection) => {
-            // A healthy layer has Notifai in exactly one source, and inspection
-            // keeps that source stable. This cleanup is only for a damaged
-            // duplicate installation before rewriting the chosen target.
+            // A healthy layer has Notifai in exactly one source. Cleanup also
+            // moves exclusively owned inline handlers onto hooks.json.
             const staleTarget =
               inspection.writeTarget === inspection.paths.hooksJson
                 ? inspection.paths.configToml
@@ -256,7 +256,10 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
             if (staleEvents.length > 0) {
               const staleDocument = loadSettings(staleTarget)
               const stripped = removeHooks(staleDocument, scriptPath)
-              if (stripped.replaced.length > 0) applyPlan(staleTarget, stripped.document)
+              if (stripped.replaced.length > 0) {
+                applyPlan(staleTarget, stripped.document)
+                migratedOwnedInline = staleTarget === inspection.paths.configToml
+              }
             }
             return installInto(inspection.writeTarget)
           })
@@ -265,6 +268,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return EXIT.failed
   }
 
+  if (migratedOwnedInline) {
+    deps.io.out(
+      'Moved Notifai Codex handlers from config.toml to hooks.json. Codex keys approval by source path, so open `/hooks` and approve the new handlers.',
+    )
+  }
   if (flags.narrate !== false) printHooksInstallClose(deps, harness, installed.file)
   if (installed.foreignStopCount > 0) {
     const label = HARNESS_LABELS[harness]
