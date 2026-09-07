@@ -153,7 +153,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   const nodePath = adapterTarget.execPath
   let adapterPath: string
   try {
-    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform).path
+    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform, deps.env).path
   } catch (err) {
     deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
     return EXIT.failed
@@ -237,14 +237,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   }
 
   let installed: { file: string; foreignStopCount: number }
+  let migratedOwnedInline = false
   try {
     installed =
       codexPaths === null
         ? withTargetFileLock(settingsTarget, () => installInto(settingsTarget))
         : withCodexLayerTransaction(codexPaths, (inspection) => {
-            // A healthy layer has Notifai in exactly one source, and inspection
-            // keeps that source stable. This cleanup is only for a damaged
-            // duplicate installation before rewriting the chosen target.
+            // A healthy layer has Notifai in exactly one source. Cleanup also
+            // moves exclusively owned inline handlers onto hooks.json.
             const staleTarget =
               inspection.writeTarget === inspection.paths.hooksJson
                 ? inspection.paths.configToml
@@ -256,7 +256,26 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
             if (staleEvents.length > 0) {
               const staleDocument = loadSettings(staleTarget)
               const stripped = removeHooks(staleDocument, scriptPath)
-              if (stripped.replaced.length > 0) applyPlan(staleTarget, stripped.document)
+              if (stripped.replaced.length > 0) {
+                // Parse and write the destination before removing working wiring.
+                // A malformed or unwritable destination must leave the source intact.
+                const target = inspection.writeTarget
+                const before = existsSync(target) ? readFileSync(target, 'utf8') : null
+                const result = installInto(target)
+                const written = readFileSync(target, 'utf8')
+                try {
+                  applyPlan(staleTarget, stripped.document)
+                } catch (err) {
+                  // Roll back our destination write, never an external writer's.
+                  if (readFileSync(target, 'utf8') === written) {
+                    if (before === null) rmSync(target, { force: true })
+                    else atomicWriteFileSync(target, before)
+                  }
+                  throw err
+                }
+                migratedOwnedInline = staleTarget === inspection.paths.configToml
+                return result
+              }
             }
             return installInto(inspection.writeTarget)
           })
@@ -265,6 +284,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return EXIT.failed
   }
 
+  if (migratedOwnedInline) {
+    deps.io.out(
+      'Moved Notifai Codex handlers from config.toml to hooks.json. Codex keys approval by source path, so open `/hooks` and approve the new handlers.',
+    )
+  }
   if (flags.narrate !== false) printHooksInstallClose(deps, harness, installed.file)
   if (installed.foreignStopCount > 0) {
     const label = HARNESS_LABELS[harness]

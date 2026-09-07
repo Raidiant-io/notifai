@@ -37,7 +37,8 @@ import type {
   SupportAssessment,
 } from '@raidiant/notifai-protocol'
 import { parse as parseToml } from 'smol-toml'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as installHooksModule from './install-hooks.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
@@ -3389,6 +3390,23 @@ describe('Codex hook representation', () => {
     '',
   ].join('\n')
 
+  it('refuses hooks install when no explicit adapter home is given under a relocated HOME', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-adapter-home-refuse-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookAdapterHome: undefined }
+    expect(process.env['HOME']).not.toBe(os.userInfo().homedir)
+    const osAdapter = hookAdapterPath()
+    const existed = existsSync(osAdapter)
+    const before = existed ? readFileSync(osAdapter, 'utf8') : null
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(io.errLines.join('\n')).toMatch(/explicit adapter home/i)
+    expect(existsSync(osAdapter)).toBe(existed)
+    if (existed) expect(readFileSync(osAdapter, 'utf8')).toBe(before)
+    expect(existsSync(hookAdapterPath(env.HOME))).toBe(false)
+  })
+
   it('writes the Machine hooks.json and never creates config.toml', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-new-layer-'))
     const io = new CapturedIo()
@@ -3419,6 +3437,99 @@ describe('Codex hook representation', () => {
     expect(existsSync(path.join(codexHome(env), 'hooks.json'))).toBe(true)
   })
 
+  it('preserves owned inline wiring and trust when the JSON destination is malformed', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-migration-failure-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+    writeFileSync(toml, '# owned by the User\nmodel = "example"\n[hooks.state.existing]\ntrusted_hash = "unchanged"\n')
+    applyPlan(toml, mergeHooks(loadSettings(toml), buildHookConfig({ adapterPath: hookAdapterPath(deps.hookAdapterHome), harness: 'codex' }), scriptPath).document)
+    const before = readFileSync(toml, 'utf8')
+    const json = path.join(codexHome(env), 'hooks.json')
+    writeFileSync(json, '{invalid json')
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(readFileSync(json, 'utf8')).toBe('{invalid json')
+    expect(readFileSync(toml, 'utf8')).toBe(before)
+  })
+
+  it('rolls back destination hooks if removing the inline source fails', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-migration-rollback-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+    applyPlan(toml, { hooks: buildHookConfig({ adapterPath: hookAdapterPath(deps.hookAdapterHome), harness: 'codex' }) })
+    const before = readFileSync(toml, 'utf8')
+    const json = path.join(codexHome(env), 'hooks.json')
+    const foreign = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign-stop"}]}]}}\n'
+    writeFileSync(json, foreign)
+    const originalApply = installHooksModule.applyPlan
+    const spy = vi.spyOn(installHooksModule, 'applyPlan').mockImplementation((file, document) => {
+      if (file === toml) throw new Error('injected source write failure')
+      originalApply(file, document)
+    })
+    try {
+      expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    } finally { spy.mockRestore() }
+    expect(readFileSync(json, 'utf8')).toBe(foreign)
+    expect(readFileSync(toml, 'utf8')).toBe(before)
+  })
+
+  it('checks the command environment and platform before adapter or harness writes', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-command-home-refusal-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const osHome = path.join(cwd, 'account-home')
+    const deps = {
+      ...makeDeps(io, {} as ApiClient), cwd,
+      env: { ...env, HOME: 'C:/scratch/isolated', USERPROFILE: osHome },
+      hookAdapterHome: undefined, hookPlatform: 'win32' as const,
+    }
+    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: osHome })
+    try {
+      expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    } finally { spy.mockRestore() }
+    expect(io.errLines.join('\n')).toMatch(/explicit adapter home/i)
+    expect(existsSync(osHome)).toBe(false)
+    expect(existsSync(path.join(codexHome(env), 'hooks.json'))).toBe(false)
+    expect(existsSync(path.join(codexHome(env), 'config.toml'))).toBe(false)
+  })
+
+  it('moves exclusively Notifai-owned inline handlers to hooks.json and names the approval', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-owned-inline-move-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+    writeFileSync(toml, '# keep this comment\nmodel = "gpt-5.6"\n')
+    applyPlan(
+      toml,
+      mergeHooks(
+        loadSettings(toml),
+        buildHookConfig({
+          adapterPath: hookAdapterPath(deps.hookAdapterHome),
+          harness: 'codex',
+        }),
+        scriptPath,
+      ).document,
+    )
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+
+    const json = path.join(codexHome(env), 'hooks.json')
+    expect(existsSync(json)).toBe(true)
+    expect(readFileSync(json, 'utf8')).toContain('--owner notifai')
+    const afterToml = readFileSync(toml, 'utf8')
+    expect(afterToml).not.toContain('--owner notifai')
+    expect(afterToml).toContain('# keep this comment')
+    expect(io.outLines.join('\n')).toMatch(/Moved Notifai Codex handlers from config.toml to hooks.json/)
+    expect(io.outLines.join('\n')).toMatch(/need approval/i)
+  })
+
   it('adds inline [hooks] only where the User already keeps their own there', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-inline-install-'))
     const io = new CapturedIo()
@@ -3438,11 +3549,11 @@ describe('Codex hook representation', () => {
   })
 
   /**
-   * The exact Orca coexistence shape from 2026-09-04: Orca owns hooks.json,
-   * Notifai was already approved inline, and reinstall must not manufacture a
-   * new trust identity by moving the same handlers between source files.
+   * Orca owns hooks.json and an older Notifai wrote inline handlers. Reinstall
+   * moves the owned inline handlers onto hooks.json, leaves the foreign Stop
+   * handler, and tells the User Codex will ask them to approve the new source.
    */
-  it('refreshes its approved inline handlers without moving their trusted source', () => {
+  it('moves exclusively owned inline handlers onto hooks.json and names the trust cost', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-migrate-inline-'))
     const io = new CapturedIo()
     const env = isolatedEnv(cwd)
@@ -3451,7 +3562,6 @@ describe('Codex hook representation', () => {
     mkdirSync(path.dirname(toml), { recursive: true })
     const preamble = '# keep this comment\nmodel = "gpt-5.6"\n'
     writeFileSync(toml, preamble)
-    // Reach the inline representation the way an older build did.
     const document = loadSettings(toml)
     applyPlan(
       toml,
@@ -3464,41 +3574,30 @@ describe('Codex hook representation', () => {
         scriptPath,
       ).document,
     )
-    const beforeInstallations = findInstallations(env, deps.hookAdapterHome).filter(
-      (installation) => installation.harness === 'codex',
-    )
-    const trustTables = beforeInstallations.flatMap((installation) =>
-      installation.handlers.map(
-        (handler) =>
-          `[hooks.state.${JSON.stringify(codexTrustKey(installation, handler))}]\n` +
-          `trusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
-      ),
-    )
-    writeFileSync(
-      toml,
-      `${readFileSync(toml, 'utf8')}\n${trustTables.join('\n')}`,
-    )
     const json = path.join(codexHome(env), 'hooks.json')
     applyPlan(json, {
       hooks: {
         Stop: [{ hooks: [{ type: 'command', command: 'orca-stop', timeout: 10 }] }],
       },
     })
-    const jsonBefore = readFileSync(json, 'utf8')
     expect(readFileSync(toml, 'utf8')).toContain('--owner notifai')
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
 
-    expect(readFileSync(json, 'utf8')).toBe(jsonBefore)
-    const after = readFileSync(toml, 'utf8')
-    expect(after).toContain('--owner notifai')
-    expect(after).toContain('# keep this comment')
-    expect(after).toContain('model = "gpt-5.6"')
+    const afterJson = readFileSync(json, 'utf8')
+    expect(afterJson).toContain('orca-stop')
+    expect(afterJson).toContain('--owner notifai')
+    const afterToml = readFileSync(toml, 'utf8')
+    expect(afterToml).not.toContain('--owner notifai')
+    expect(afterToml).toContain('# keep this comment')
+    expect(afterToml).toContain('model = "gpt-5.6"')
     const installations = findInstallations(env, deps.hookAdapterHome).filter(
       (installation) => installation.harness === 'codex',
     )
-    expect(installations.map((installation) => installation.file)).toEqual([toml])
-    expect(codexTrustProblems(installations, env)).toEqual([])
+    expect(installations.map((installation) => installation.file)).toEqual([json])
+    expect(codexTrustProblems(installations, env)).not.toEqual([])
+    expect(io.outLines.join('\n')).toMatch(/Moved Notifai Codex handlers from config.toml to hooks.json/)
+    expect(io.outLines.join('\n')).toMatch(/open `\/hooks`/i)
   })
 
   it('keeps an approved Codex handler identity stable across CLI upgrades', () => {
@@ -3506,15 +3605,15 @@ describe('Codex hook representation', () => {
     const io = new CapturedIo()
     const env = isolatedEnv(cwd)
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
-    const toml = path.join(codexHome(env), 'config.toml')
-    mkdirSync(path.dirname(toml), { recursive: true })
+    const json = path.join(codexHome(env), 'hooks.json')
+    mkdirSync(path.dirname(json), { recursive: true })
 
     const compatible = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
       harness: 'codex',
     })
     delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
-    applyPlan(toml, { hooks: compatible })
+    applyPlan(json, { hooks: compatible })
     trustInstalledCodexHooks(cwd, env)
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
 
@@ -3535,15 +3634,15 @@ describe('Codex hook representation', () => {
     const io = new CapturedIo()
     const env = isolatedEnv(cwd)
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
-    const toml = path.join(codexHome(env), 'config.toml')
-    mkdirSync(path.dirname(toml), { recursive: true })
+    const json = path.join(codexHome(env), 'hooks.json')
+    mkdirSync(path.dirname(json), { recursive: true })
 
     const compatible = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
       harness: 'codex',
     })
     delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
-    applyPlan(toml, { hooks: compatible })
+    applyPlan(json, { hooks: compatible })
     trustInstalledCodexHooks(cwd, env)
 
     const changed = buildHookConfig({
@@ -3551,7 +3650,7 @@ describe('Codex hook representation', () => {
       harness: 'codex',
     })
     changed['SessionStart']![0]!.hooks[0]!.additionalContextLimit = 0
-    applyPlan(toml, mergeHooks(loadSettings(toml), changed, scriptPath).document)
+    applyPlan(json, mergeHooks(loadSettings(json), changed, scriptPath).document)
     expect(codexTrustProblems(findInstallations(env, deps.hookAdapterHome), env)).not.toEqual([])
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)

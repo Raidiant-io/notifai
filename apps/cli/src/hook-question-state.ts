@@ -1,13 +1,18 @@
 /** Question history, inspection, and atomic live-question state changes. */
 import type { QuestionT, SourceContextT } from '@raidiant/notifai-protocol'
+import { withFileLock } from './file-lock.js'
 import {
   findOwningSession,
   pendingList,
   readSessionState,
+  sessionHasEnded,
+  sessionStatePath,
   updateSessionState,
+  writeSessionStateUnlocked,
 } from './hook-session-state.js'
 import type {
   PendingQuestion,
+  PendingSubmissionIntent,
   QuestionDeliveryState,
   QuestionHistoryEntry,
   QuestionTerminalState,
@@ -75,7 +80,7 @@ export function rememberQuestionState(
         : state
   const requestId = question.request_id ?? existing?.request_id
   const frozenRequestId =
-    requestId === undefined
+    requestId === undefined && terminalState !== 'withdrawn'
       ? question.submission?.request_id ?? existing?.frozen_request_id
       : undefined
   const record: QuestionHistoryEntry = {
@@ -154,22 +159,24 @@ export function inspectQuestionState(
     }
   }
   const retiring = (state.retiring ?? []).find((entry) => entry.question_id === questionId)
+  const history = (state.question_history ?? []).find(
+    (entry) => entry.question_id === questionId,
+  )
   if (retiring?.question_id !== undefined) {
+    const unconfirmed = history?.request_id === undefined &&
+      history?.frozen_request_id === retiring.request_id
     return {
       found: true,
       session_id: owner.sessionId,
       question: {
         question_id: retiring.question_id,
         state: retiring.state === 'answered' ? 'answered' : 'retired',
-        submitted: true,
-        request_id: retiring.request_id,
-        frozen_request_id: null,
+        submitted: unconfirmed ? null : true,
+        request_id: unconfirmed ? null : retiring.request_id,
+        frozen_request_id: unconfirmed ? retiring.request_id : null,
       },
     }
   }
-  const history = (state.question_history ?? []).find(
-    (entry) => entry.question_id === questionId,
-  )
   if (history !== undefined) {
     return {
       found: true,
@@ -214,30 +221,75 @@ export function dropPendingQuestion(
   })
 }
 
-/**
- * Drop registrations that never reached a device, so a later Stop cannot push
- * them. A retirement push would be noise: there is nothing on any device to
- * withdraw. Returns the withdrawn entries in registration order.
- */
-export function withdrawUnpushedQuestions(
+function queuedQuestionIndex(
+  state: SessionState,
+  entry: PendingQuestion,
+): number {
+  if (entry.question_id !== undefined) {
+    const remembered = (state.question_history ?? []).find(
+      (item) => item.question_id === entry.question_id,
+    )
+    if (
+      remembered?.state === 'withdrawn' ||
+      remembered?.state === 'answered' ||
+      remembered?.state === 'retired'
+    ) {
+      return -1
+    }
+  }
+  return pendingList(state).findIndex(
+    (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
+  )
+}
+
+/** A cheap preflight check; only admitQueuedQuestion authorizes submission. */
+export function queuedQuestionStillEligible(
   sessionId: string,
   env: NodeJS.ProcessEnv,
-): PendingQuestion[] {
-  let withdrawn: PendingQuestion[] = []
-  updateSessionState(sessionId, env, (current) => {
-    const pending = pendingList(current)
-    withdrawn = pending.filter((entry) => entry.request_id === undefined)
-    if (withdrawn.length === 0) return current
-    const remaining = pending.filter((entry) => entry.request_id !== undefined)
-    const next: SessionState = { ...current }
-    if (remaining.length > 0) next.pending = remaining
-    else delete next.pending
-    return withdrawn.reduce(
-      (remembered, entry) => rememberQuestionState(remembered, entry, 'withdrawn'),
-      next,
-    )
+  entry: PendingQuestion,
+): boolean {
+  return queuedQuestionIndex(readSessionState(sessionId, env), entry) >= 0
+}
+
+/** Whether silent local withdrawal is no longer an honest outcome. */
+export function questionSubmissionAttempted(entry: PendingQuestion): boolean {
+  return entry.request_id !== undefined || entry.submission?.admitted_at !== undefined
+}
+
+/**
+ * One serialized boundary with close, prompt retirement, and SessionEnd.
+ * Withdrawal first means no request starts. Admission first journals the
+ * reserved identity and starts the request before releasing the lock; a later
+ * close must retire that potentially remote identity, never call it withdrawn.
+ *
+ * submit must initiate the request synchronously and return its promise. The
+ * lock is released before awaiting network work, using the ordinary bounded
+ * acquisition and dead-process recovery of the session-state lock.
+ */
+export function admitQueuedQuestion<T>(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  entry: PendingQuestion,
+  intent: PendingSubmissionIntent,
+  now: number,
+  submit: () => Promise<T>,
+): Promise<T> | null {
+  const file = sessionStatePath(sessionId, env)
+  return withFileLock(`${file}.lock`, () => {
+    if (sessionHasEnded(sessionId, env)) return null
+    const current = readSessionState(sessionId, env)
+    const index = queuedQuestionIndex(current, entry)
+    if (index < 0) return null
+    const pending = [...pendingList(current)]
+    const candidate = pending[index]!
+    if (candidate.submission?.request_id !== intent.request_id) return null
+    pending[index] = {
+      ...candidate,
+      submission: { ...intent, admitted_at: intent.admitted_at ?? now },
+    }
+    writeSessionStateUnlocked(file, sessionId, { ...current, pending })
+    return submit()
   })
-  return withdrawn
 }
 
 export function clearFrozenSubmission(

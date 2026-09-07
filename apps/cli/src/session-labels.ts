@@ -91,7 +91,9 @@ function quarantineInvalidStore(file: string, raw: string): void {
   const backup = path.join(path.dirname(file), `session-labels.invalid-${digest}.json`)
   if (existsSync(backup)) {
     if (readFileSync(backup, 'utf8') !== raw) {
-      throw new Error('the session-name store recovery backup does not match its content hash')
+      throw new Error(
+        `the session-name store recovery backup does not match its content hash (${backup})`,
+      )
     }
     return
   }
@@ -105,7 +107,7 @@ function recoverInvalidStore(file: string, raw: string, store: SessionLabelStore
 }
 
 function storedRecord(candidate: unknown): StoredSessionLabel | null {
-  if (typeof candidate !== 'object' || candidate === null) return null
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return null
   const value = candidate as Partial<StoredSessionLabel>
   if (
     typeof value.label !== 'string' ||
@@ -118,7 +120,7 @@ function storedRecord(candidate: unknown): StoredSessionLabel | null {
     return null
   }
   const harness = value.harness
-  if (harness !== undefined && !Object.hasOwn(HARNESS_LABELS, harness)) return null
+  if (harness !== undefined && (typeof harness !== 'string' || !Object.hasOwn(HARNESS_LABELS, harness))) return null
   if (value.previous_source !== undefined && value.previous_source !== 'fallback') return null
   return {
     label: value.label,
@@ -136,7 +138,7 @@ function readStore(file: string): SessionLabelStore {
     rawText = readFileSync(file, 'utf8')
   } catch (err) {
     throw new Error(
-      `the session-name store is unreadable: ${err instanceof Error ? err.message : String(err)}`,
+      `the session-name store ${file} is unreadable: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
   let parsed: unknown
@@ -452,7 +454,7 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
   } catch (err) {
     return {
       ok: false,
-      error: `Could not persist this session's name: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Could not persist this session's name (${file}): ${err instanceof Error ? err.message : String(err)}`,
     }
   }
 }
@@ -486,7 +488,7 @@ export function renameStoredSessionLabel(
   } catch (err) {
     return {
       ok: false,
-      error: `The Account label changed, but this machine could not save it locally: ${err instanceof Error ? err.message : String(err)}`,
+      error: `The Account label changed, but this machine could not save it locally (${file}): ${err instanceof Error ? err.message : String(err)}`,
     }
   }
 }

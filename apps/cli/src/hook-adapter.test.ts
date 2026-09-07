@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,8 +14,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
+  resolveHookAdapterHome,
   hookAdapterPath,
   hookAdapterSource,
   inspectHookAdapter,
@@ -217,6 +219,37 @@ describe('stable hook adapter', () => {
         path.join(os.userInfo().homedir, '.notifai', 'bin', 'hook-adapter'),
       )
       expect(hookAdapterPath()).not.toContain('attacker-selected-home')
+    } finally {
+      if (original === undefined) delete process.env['HOME']
+      else process.env['HOME'] = original
+    }
+  })
+
+  it('refuses an ambiguous install so a scratch HOME cannot retarget the real adapter', () => {
+    const { root, homeDir } = isolated()
+    const script = path.join(root, 'target.js')
+    writeFileSync(script, '')
+    const osAdapter = hookAdapterPath()
+    const existed = existsSync(osAdapter)
+    const before = existed ? readFileSync(osAdapter, 'utf8') : null
+    const original = process.env['HOME']
+    process.env['HOME'] = path.join(root, 'attacker-home')
+    try {
+      expect(() =>
+        installHookAdapter({ execPath: process.execPath, scriptPath: script }),
+      ).toThrow(/explicit adapter home/i)
+      expect(existsSync(osAdapter)).toBe(existed)
+      if (existed) expect(readFileSync(osAdapter, 'utf8')).toBe(before)
+      expect(existsSync(hookAdapterPath(process.env['HOME']))).toBe(false)
+
+      const isolatedInstall = installHookAdapter(
+        { execPath: process.execPath, scriptPath: script },
+        homeDir,
+      )
+      expect(isolatedInstall.path).toBe(hookAdapterPath(homeDir))
+      expect(existsSync(isolatedInstall.path)).toBe(true)
+      expect(existsSync(osAdapter)).toBe(existed)
+      if (existed) expect(readFileSync(osAdapter, 'utf8')).toBe(before)
     } finally {
       if (original === undefined) delete process.env['HOME']
       else process.env['HOME'] = original
@@ -557,5 +590,53 @@ exit 127
 
     expect(secondInstall.path).toBe(firstInstall.path)
     expect(inspected && !isNpxAdapterTarget(inspected) ? inspected.scriptPath : null).toBe(second)
+  })
+})
+
+
+describe('OS-account adapter admission', () => {
+  it.each([
+    ['C:/scratch', 'C:/Users/account'],
+    ['C:/Users/account', 'C:/scratch'],
+    ['C:/scratch', 'C:/scratch'],
+  ])('refuses conflicting Windows HOME=%s and USERPROFILE=%s', (home, profile) => {
+    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: 'C:/Users/account' })
+    try {
+      expect(() => resolveHookAdapterHome(undefined, { HOME: home, USERPROFILE: profile }, 'win32'))
+        .toThrow(/explicit adapter home/i)
+    } finally { spy.mockRestore() }
+  })
+
+  it('ignores the MSYS HOME and permits case-equivalent Windows account paths', () => {
+    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: 'C:/Users/account' })
+    try {
+      expect(resolveHookAdapterHome(undefined, { HOME: '/c/Users/account', USERPROFILE: 'c:/users/ACCOUNT' }, 'win32'))
+        .toBe('C:/Users/account')
+      expect(resolveHookAdapterHome(undefined, {}, 'win32')).toBe('C:/Users/account')
+    } finally { spy.mockRestore() }
+  })
+
+  it('uses the supplied platform and environment in direct installs before writing anything', () => {
+    const { root, homeDir } = isolated()
+    const scriptPath = path.join(root, 'target.js')
+    writeFileSync(scriptPath, '')
+    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: homeDir })
+    try {
+      expect(() => installHookAdapter({ execPath: process.execPath, scriptPath }, undefined, 'win32', {
+        HOME: 'C:/scratch/isolated', USERPROFILE: homeDir,
+      })).toThrow(/explicit adapter home/i)
+      expect(existsSync(homeDir)).toBe(false)
+    } finally { spy.mockRestore() }
+  })
+
+  it('preserves immutable identity for a POSIX home alias', () => {
+    const { root, homeDir } = isolated()
+    mkdirSync(homeDir)
+    const alias = path.join(root, 'alias')
+    symlinkSync(homeDir, alias, 'dir')
+    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: homeDir })
+    try {
+      expect(resolveHookAdapterHome(undefined, { HOME: alias }, 'posix')).toBe(homeDir)
+    } finally { spy.mockRestore() }
   })
 })

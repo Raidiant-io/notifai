@@ -122,11 +122,12 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same
   reporting-only worker contract and explicit textual delegation rule as
   Claude. A fresh install writes the Machine layer's `~/.codex/hooks.json`, or
-  joins inline `[hooks]` when that is the layer's existing representation.
-  Upgrades preserve whichever source already owns Notifai's approved handlers
-  and keep the default SessionStart output-limit identity, because moving the
-  definition or adding identity-bearing fields creates a new Codex trust
-  identity. One install covers every project and every worktree, so there is
+  joins inline `[hooks]` when the User already keeps their own hooks there.
+  Notifai-owned inline handlers with no foreign inline neighbours are moved to
+  `hooks.json`; Codex will ask for `/hooks` approval because it keys trust by
+  source path. Foreign inline configuration is left in place. Later upgrades
+  keep the default SessionStart output-limit identity so they do not mint a
+  second trust identity. One install covers every project and every worktree, so there is
   nothing to repeat in a new checkout; a Project-scoped `.codex` hook file from
   an older Notifai is removed once the Machine copy is proven current.
 - **Cursor:** start one fresh conversation, send one prompt, and let the first
