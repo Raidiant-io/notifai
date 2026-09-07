@@ -37,6 +37,7 @@ import {
   acknowledgeCommand,
   askCommand,
   buildQuestions,
+  closeCommand,
   hookRunCommand,
   type CommandDeps,
   type CommandIo,
@@ -3410,6 +3411,36 @@ describe('user-prompt-submit hook', () => {
     expect(readSessionState('prompt-match-unpushed', h.env).pending).toBeUndefined()
   })
 
+  it('launches settlement for an unmatched unpushed question without retiring it', async () => {
+    const h = harness([])
+    registerQuestion('prompt-unmatched-unpushed', h.env, {
+      question: 'Ship it?',
+      question_id: 'q_unmatched',
+    })
+    let launches = 0
+
+    await hookRunCommand(
+      {
+        ...h.deps,
+        spawnQuestionSettlement: () => {
+          launches += 1
+        },
+      },
+      'user-prompt-submit',
+      stdin({
+        session_id: 'prompt-unmatched-unpushed',
+        prompt: 'keep going on the billing work',
+      }),
+      'codex',
+    )
+
+    expect(launches).toBe(1)
+    expect(h.recorder.submitted).toEqual([])
+    expect(
+      readSessionState('prompt-unmatched-unpushed', h.env).pending?.map((entry) => entry.question_id),
+    ).toEqual(['q_unmatched'])
+  })
+
   it('leaves an unrelated prompt’s live question open for the reply window', async () => {
     const h = harness([])
     writeSessionState('prompt-unrelated', h.env, {
@@ -4549,6 +4580,65 @@ describe('two hooks racing one question', () => {
     expect(sent).toEqual(['Older question?', 'Newer question?'])
     expect(h.io.outLines.join('\n')).toContain('Answer the newer question')
     expect(h.io.errLines.join('\n')).toContain('yielding the answer owner')
+  })
+})
+
+describe('conversational close racing lifecycle retry', () => {
+  it('does not submit a locally queued question retired during the retry wait', async () => {
+    const h = harness([])
+    writeSessionState('retired-race', h.env, { last_prompt_at: AWAY })
+    registerQuestion('retired-race', h.env, { question: 'Ship it?', question_id: 'q_local' }, NOW)
+    writeProjectSession(h.deps.cwd, h.env, 'retired-race', NOW, 'codex')
+    const makeClient = h.deps.clientFactory!
+    h.deps.clientFactory = (baseUrl, bearer, options) => {
+      const client = makeClient(baseUrl, bearer, options)
+      const listDevices = client.listDevices.bind(client)
+      client.listDevices = async () => {
+        expect(await closeCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
+        return listDevices()
+      }
+      return client
+    }
+
+    await hookRunCommand(
+      h.deps,
+      'question-settlement',
+      stdin({ session_id: 'retired-race', cwd: h.deps.cwd }),
+      'codex',
+    )
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toEqual([])
+    expect(inspectQuestionState('q_local', h.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false, request_id: null },
+    })
+    expect(h.io.errLines.join('\n')).toMatch(/retired before submission/)
+  })
+
+  it('still submits a queued question in another session after this session is closed', async () => {
+    const h = harness([])
+    writeSessionState('closed-session', h.env, { last_prompt_at: AWAY })
+    writeSessionState('other-session', h.env, { last_prompt_at: AWAY })
+    registerQuestion('closed-session', h.env, { question: 'Retire me?', question_id: 'q_closed' }, NOW)
+    registerQuestion('other-session', h.env, { question: 'Keep asking?', question_id: 'q_other' }, NOW)
+    writeProjectSession(h.deps.cwd, h.env, 'closed-session', NOW, 'codex')
+
+    expect(await closeCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
+    await hookRunCommand(
+      h.deps,
+      'question-settlement',
+      stdin({ session_id: 'other-session', cwd: h.deps.cwd }),
+      'codex',
+    )
+
+    const sent = h.recorder.submitted
+      .filter((entry) => isQuestionSubmit(entry))
+      .map((entry) => entry.draft.presentation.summary)
+    expect(sent).toEqual(['Keep asking?'])
+    expect(inspectQuestionState('q_closed', h.env)).toMatchObject({
+      found: true,
+      question: { state: 'withdrawn', submitted: false },
+    })
   })
 })
 

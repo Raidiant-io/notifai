@@ -41,6 +41,7 @@ import {
   dropPendingQuestion,
   isSamePending,
   pendingQuestions,
+  queuedQuestionStillEligible,
   rememberQuestionState,
   sourceContextAtHookEvent,
   summarizeRequestIds,
@@ -1349,6 +1350,10 @@ async function escalate(
   const submitted: PendingQuestion[] = []
   const admissionAnswers: AnsweredPending[] = []
   for (const entry of unasked) {
+    if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
+      notes.push('the question was retired before submission; not uploading it')
+      continue
+    }
     // The service owns how long the answer is accepted. This process begins
     // before submission, so its larger maximum-window budget includes startup
     // headroom and remains alive through the complete committed window.
@@ -1423,6 +1428,10 @@ async function escalate(
       notes.push('the Agent Session ended before submission; preserving no live observer')
       continue
     }
+    if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
+      notes.push('the question was retired before submission; not uploading it')
+      continue
+    }
     let receipt: SubmissionReceipt | undefined
     let admissionConfirmed = false
     try {
@@ -1476,6 +1485,10 @@ async function escalate(
             }
             if (sessionHasEnded(sessionId, ctx.env)) {
               notes.push('the Agent Session ended before recovered submission')
+              continue
+            }
+            if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
+              notes.push('the question was retired before submission; not uploading it')
               continue
             }
             receipt = await submitQuestion(ctx, intent)

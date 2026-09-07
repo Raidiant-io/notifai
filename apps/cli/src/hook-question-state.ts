@@ -219,6 +219,30 @@ export function dropPendingQuestion(
  * them. A retirement push would be noise: there is nothing on any device to
  * withdraw. Returns the withdrawn entries in registration order.
  */
+/** True only while this registration is still queued and has not been retired. */
+export function queuedQuestionStillEligible(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  entry: PendingQuestion,
+): boolean {
+  const state = readSessionState(sessionId, env)
+  if (entry.question_id !== undefined) {
+    const remembered = (state.question_history ?? []).find(
+      (item) => item.question_id === entry.question_id,
+    )
+    if (
+      remembered?.state === 'withdrawn' ||
+      remembered?.state === 'answered' ||
+      remembered?.state === 'retired'
+    ) {
+      return false
+    }
+  }
+  return pendingList(state).some(
+    (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
+  )
+}
+
 export function withdrawUnpushedQuestions(
   sessionId: string,
   env: NodeJS.ProcessEnv,
