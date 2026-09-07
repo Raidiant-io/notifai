@@ -153,7 +153,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   const nodePath = adapterTarget.execPath
   let adapterPath: string
   try {
-    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform).path
+    adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform, deps.env).path
   } catch (err) {
     deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
     return EXIT.failed
@@ -257,8 +257,24 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
               const staleDocument = loadSettings(staleTarget)
               const stripped = removeHooks(staleDocument, scriptPath)
               if (stripped.replaced.length > 0) {
-                applyPlan(staleTarget, stripped.document)
+                // Parse and write the destination before removing working wiring.
+                // A malformed or unwritable destination must leave the source intact.
+                const target = inspection.writeTarget
+                const before = existsSync(target) ? readFileSync(target, 'utf8') : null
+                const result = installInto(target)
+                const written = readFileSync(target, 'utf8')
+                try {
+                  applyPlan(staleTarget, stripped.document)
+                } catch (err) {
+                  // Roll back our destination write, never an external writer's.
+                  if (readFileSync(target, 'utf8') === written) {
+                    if (before === null) rmSync(target, { force: true })
+                    else atomicWriteFileSync(target, before)
+                  }
+                  throw err
+                }
                 migratedOwnedInline = staleTarget === inspection.paths.configToml
+                return result
               }
             }
             return installInto(inspection.writeTarget)

@@ -8,8 +8,8 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { acknowledgementCommand, printAcknowledgementStatus } from './commands-send-support.js'
-import { parkForRetirement } from './hook-question-retirement.js'
-import { dropPendingQuestion, withdrawUnpushedQuestions } from './hook-question-state.js'
+import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
+import { dropPendingQuestion } from './hook-question-state.js'
 import { readSessionState } from './hook-session-state.js'
 import { type PendingQuestion } from './hook-types.js'
 
@@ -75,8 +75,8 @@ export async function closeCommand(
 
 /**
  * Retire this session's outstanding questions, including registrations the
- * Stop hook has not pushed yet. Unpushed entries only exist locally: dropping
- * them is the whole retirement. Live ones still need their reply window closed.
+ * Stop hook has not pushed yet. Preparations are withdrawn locally; admitted
+ * attempts keep retirement debt. Live ones need their reply window closed.
  */
 async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<number> {
   const lifecycleSession = resolveCommandSession(deps)
@@ -97,7 +97,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     return EXIT.noReply
   }
 
-  const withdrawn = withdrawUnpushedQuestions(sessionId, deps.env)
+  const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env)
   const live = (readSessionState(sessionId, deps.env).pending ?? []).filter(
     (entry): entry is PendingQuestion & { request_id: string } =>
       entry.request_id !== undefined,
@@ -127,6 +127,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
       ...(entry.question_id === undefined ? {} : { question_id: entry.question_id }),
     })),
     closed,
+    ...(retiring.length === 0 ? {} : { retiring: retiring.map((entry) => entry.request_id) }),
   }
   if (json) deps.io.out(JSON.stringify(output, null, 2))
   else {
@@ -140,13 +141,17 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     for (const requestId of closed) {
       deps.io.out(`Closed the reply window for ${requestId}.`)
     }
+    if (retiring.length > 0) {
+      deps.io.out('Submission had already started; stopped local retries and queued retirement of the reserved request identities.')
+    }
   }
   return EXIT.ok
 }
 
 /**
  * Close one outstanding question by the stable id `notifai ask` returned, or
- * by a request id already on a device. Unpushed entries only exist locally.
+ * by a request id already on a device. Admission decides whether a queued
+ * entry can be withdrawn silently or needs its reserved remote id retired.
  * Returns null when this directory's session has no matching registration, so
  * the caller can still close a live request id against the service.
  */
@@ -164,21 +169,31 @@ async function closeLocalQuestion(
   if (entry === undefined) return null
 
   if (entry.request_id === undefined) {
-    dropPendingQuestion(sessionId, deps.env, entry, 'withdrawn')
+    const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env, entry.question_id)
+    // Admission may have completed and promoted this entry after the first
+    // read. Re-resolve it so the live close path owns that ordering.
+    if (withdrawn.length === 0 && retiring.length === 0) {
+      const current = (readSessionState(sessionId, deps.env).pending ?? []).find(
+        (candidate) => candidate.question_id === id || candidate.request_id === id,
+      )
+      if (current?.request_id !== undefined) return closeLocalQuestion(deps, current.request_id, json)
+      return EXIT.noReply
+    }
     const output = {
       session_id: sessionId,
-      withdrawn: [
-        {
-          question: entry.question,
-          ...(entry.question_id === undefined ? {} : { question_id: entry.question_id }),
-        },
-      ],
+      withdrawn: withdrawn.map((item) => ({
+        question: item.question,
+        ...(item.question_id === undefined ? {} : { question_id: item.question_id }),
+      })),
       closed: [] as string[],
+      ...(retiring.length === 0 ? {} : { retiring: retiring.map((item) => item.request_id) }),
     }
     if (json) deps.io.out(JSON.stringify(output, null, 2))
     else {
       deps.io.out(
-        `Withdrew unpushed question ${entry.question_id ?? id} so a later Stop will not send it.`,
+        retiring.length > 0
+          ? 'Submission had already started; stopped local retries and queued retirement of the reserved request identity.'
+          : `Withdrew unpushed question ${entry.question_id ?? id} so a later Stop will not send it.`,
       )
     }
     return EXIT.ok

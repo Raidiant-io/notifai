@@ -523,6 +523,30 @@ describe('semantic session labels', () => {
     )
   })
 
+  it.each([['array', ['codex']], ['uncoercible object', { toString: null }], ['null', null]])(
+    'isolates a %s harness without blocking valid sessions or repeating backups', (_name, harness) => {
+      const { env, now } = fixture()
+      const file = path.join(stateDir(env), 'session-labels.json')
+      const key = (id: string) => createHash('sha256').update(id).digest('hex')
+      mkdirSync(path.dirname(file), { recursive: true })
+      const original = JSON.stringify({ version: 1, sessions: {
+        [key('valid')]: { label: 'Valid work', source: 'explicit', first_seen_at: now, harness: 'codex' },
+        [key('invalid')]: { label: 'Invalid work', source: 'explicit', first_seen_at: now, harness },
+      } })
+      writeFileSync(file, original)
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(resolveSessionLabel({ env, now, sessionId: 'valid', harness: 'codex' }))
+          .toEqual({ ok: true, label: 'Valid work', source: 'explicit' })
+      }
+      const store = JSON.parse(readFileSync(file, 'utf8'))
+      expect(store.sessions[key('valid')].harness).toBe('codex')
+      expect(store.sessions[key('invalid')]).toBeUndefined()
+      const backups = readdirSync(path.dirname(file)).filter((name) => name.startsWith('session-labels.invalid-'))
+      expect(backups).toHaveLength(1)
+      expect(readFileSync(path.join(path.dirname(file), backups[0]!), 'utf8')).toBe(original)
+    },
+  )
+
   it('isolates an unreadable name store before creating a clean one', () => {
     const { env, now } = fixture()
     const file = path.join(stateDir(env), 'session-labels.json')

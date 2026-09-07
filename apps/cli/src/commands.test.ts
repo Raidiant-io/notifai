@@ -37,7 +37,8 @@ import type {
   SupportAssessment,
 } from '@raidiant/notifai-protocol'
 import { parse as parseToml } from 'smol-toml'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as installHooksModule from './install-hooks.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
@@ -3434,6 +3435,67 @@ describe('Codex hook representation', () => {
 
     expect(readFileSync(toml, 'utf8')).toBe(before)
     expect(existsSync(path.join(codexHome(env), 'hooks.json'))).toBe(true)
+  })
+
+  it('preserves owned inline wiring and trust when the JSON destination is malformed', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-migration-failure-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+    writeFileSync(toml, '# owned by the User\nmodel = "example"\n[hooks.state.existing]\ntrusted_hash = "unchanged"\n')
+    applyPlan(toml, mergeHooks(loadSettings(toml), buildHookConfig({ adapterPath: hookAdapterPath(deps.hookAdapterHome), harness: 'codex' }), scriptPath).document)
+    const before = readFileSync(toml, 'utf8')
+    const json = path.join(codexHome(env), 'hooks.json')
+    writeFileSync(json, '{invalid json')
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(readFileSync(json, 'utf8')).toBe('{invalid json')
+    expect(readFileSync(toml, 'utf8')).toBe(before)
+  })
+
+  it('rolls back destination hooks if removing the inline source fails', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-migration-rollback-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(codexHome(env), 'config.toml')
+    mkdirSync(path.dirname(toml), { recursive: true })
+    applyPlan(toml, { hooks: buildHookConfig({ adapterPath: hookAdapterPath(deps.hookAdapterHome), harness: 'codex' }) })
+    const before = readFileSync(toml, 'utf8')
+    const json = path.join(codexHome(env), 'hooks.json')
+    const foreign = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign-stop"}]}]}}\n'
+    writeFileSync(json, foreign)
+    const originalApply = installHooksModule.applyPlan
+    const spy = vi.spyOn(installHooksModule, 'applyPlan').mockImplementation((file, document) => {
+      if (file === toml) throw new Error('injected source write failure')
+      originalApply(file, document)
+    })
+    try {
+      expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    } finally { spy.mockRestore() }
+    expect(readFileSync(json, 'utf8')).toBe(foreign)
+    expect(readFileSync(toml, 'utf8')).toBe(before)
+  })
+
+  it('checks the command environment and platform before adapter or harness writes', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-command-home-refusal-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const osHome = path.join(cwd, 'account-home')
+    const deps = {
+      ...makeDeps(io, {} as ApiClient), cwd,
+      env: { ...env, HOME: 'C:/scratch/isolated', USERPROFILE: osHome },
+      hookAdapterHome: undefined, hookPlatform: 'win32' as const,
+    }
+    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: osHome })
+    try {
+      expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    } finally { spy.mockRestore() }
+    expect(io.errLines.join('\n')).toMatch(/explicit adapter home/i)
+    expect(existsSync(osHome)).toBe(false)
+    expect(existsSync(path.join(codexHome(env), 'hooks.json'))).toBe(false)
+    expect(existsSync(path.join(codexHome(env), 'config.toml'))).toBe(false)
   })
 
   it('moves exclusively Notifai-owned inline handlers to hooks.json and names the approval', () => {

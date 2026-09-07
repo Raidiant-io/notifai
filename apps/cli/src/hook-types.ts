@@ -195,6 +195,12 @@ export interface PendingSubmissionIntent {
   device_ids: string[]
   draft: NotificationDraftT
   owner_deadline_at: number
+  /**
+   * The submission attempt started under the session-state lock. Absence means
+   * preparation only; presence means the reserved identity may be remote even
+   * if the process crashed before receiving or persisting a receipt.
+   */
+  admitted_at?: number
 }
 
 export interface PendingQuestion {

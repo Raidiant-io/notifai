@@ -107,7 +107,7 @@ function recoverInvalidStore(file: string, raw: string, store: SessionLabelStore
 }
 
 function storedRecord(candidate: unknown): StoredSessionLabel | null {
-  if (typeof candidate !== 'object' || candidate === null) return null
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return null
   const value = candidate as Partial<StoredSessionLabel>
   if (
     typeof value.label !== 'string' ||
@@ -120,7 +120,7 @@ function storedRecord(candidate: unknown): StoredSessionLabel | null {
     return null
   }
   const harness = value.harness
-  if (harness !== undefined && !Object.hasOwn(HARNESS_LABELS, harness)) return null
+  if (harness !== undefined && (typeof harness !== 'string' || !Object.hasOwn(HARNESS_LABELS, harness))) return null
   if (value.previous_source !== undefined && value.previous_source !== 'fallback') return null
   return {
     label: value.label,

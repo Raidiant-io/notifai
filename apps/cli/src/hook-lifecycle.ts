@@ -37,10 +37,12 @@ import {
   retiringQuestion,
 } from './hook-question-retirement.js'
 import {
+  admitQueuedQuestion,
   clearFrozenSubmission,
   dropPendingQuestion,
   isSamePending,
   pendingQuestions,
+  questionSubmissionAttempted,
   queuedQuestionStillEligible,
   rememberQuestionState,
   sourceContextAtHookEvent,
@@ -198,24 +200,38 @@ async function prepareQuestionSubmission(
   }
 }
 
-async function submitQuestion(
+function submitQuestion(
   ctx: HookContext,
+  sessionId: string,
+  entry: PendingQuestion,
   intent: PendingSubmissionIntent,
-): Promise<SubmissionReceipt> {
-  const receipt = await ctx.client.submit(
-    {
-      request_id: intent.request_id,
-      idempotency_key: intent.idempotency_key,
-      draft: intent.draft,
-    },
-    0,
-  )
-  if (receipt.request_id !== intent.request_id) {
-    throw new Error(
-      `server replay returned ${receipt.request_id}, expected reserved ${intent.request_id}`,
-    )
+  notes: string[],
+): Promise<SubmissionReceipt> | null {
+  try {
+    const attempt = admitQueuedQuestion(sessionId, ctx.env, entry, intent, ctx.now(), async () => {
+      const receipt = await ctx.client.submit(
+        {
+          request_id: intent.request_id,
+          idempotency_key: intent.idempotency_key,
+          draft: intent.draft,
+        },
+        0,
+      )
+      if (receipt.request_id !== intent.request_id) {
+        throw new Error(
+          `server replay returned ${receipt.request_id}, expected reserved ${intent.request_id}`,
+        )
+      }
+      return receipt
+    })
+    if (attempt === null) notes.push('the question was retired before submission; not uploading it')
+    return attempt
+  } catch (err) {
+    // Only synchronous local admission failed. The callback returns a promise,
+    // so transport failures stay on the caller's ambiguous-response path.
+    notes.push(`could not admit the queued question; preserving it without upload: ${String(err)}`)
+    return null
   }
-  return receipt
 }
 
 function canSubmitCompleteWindow(
@@ -650,7 +666,7 @@ export async function handleUserPromptSubmit(
     const unmatched = pendingList(current).filter(
       (entry) => !matchedNow.some((item) => isSamePending(item, entry)),
     )
-    for (const entry of matchedNow.filter((item) => item.request_id !== undefined)) {
+    for (const entry of matchedNow.filter(questionSubmissionAttempted)) {
       const retirement = retiringQuestion(entry, 'answered_elsewhere', envelope.cwd)
       if (
         retirement !== null &&
@@ -687,7 +703,7 @@ export async function handleUserPromptSubmit(
       (remembered, entry) => rememberQuestionState(
         remembered,
         entry,
-        entry.request_id === undefined ? 'withdrawn' : 'retired',
+        questionSubmissionAttempted(entry) ? 'retired' : 'withdrawn',
       ),
       next,
     )
@@ -1428,14 +1444,12 @@ async function escalate(
       notes.push('the Agent Session ended before submission; preserving no live observer')
       continue
     }
-    if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
-      notes.push('the question was retired before submission; not uploading it')
-      continue
-    }
     let receipt: SubmissionReceipt | undefined
     let admissionConfirmed = false
     try {
-      receipt = await submitQuestion(ctx, intent)
+      const attempt = submitQuestion(ctx, sessionId, entry, intent, notes)
+      if (attempt === null) continue
+      receipt = await attempt
       admissionConfirmed = true
     } catch (caught) {
       let err: unknown = caught
@@ -1487,11 +1501,9 @@ async function escalate(
               notes.push('the Agent Session ended before recovered submission')
               continue
             }
-            if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
-              notes.push('the question was retired before submission; not uploading it')
-              continue
-            }
-            receipt = await submitQuestion(ctx, intent)
+            const attempt = submitQuestion(ctx, sessionId, entry, intent, notes)
+            if (attempt === null) continue
+            receipt = await attempt
             admissionConfirmed = true
           } catch (retryErr) {
             if (retryErr instanceof ApiCallError && isTerminalDraftRejection(retryErr)) {
@@ -1639,7 +1651,7 @@ async function escalate(
         if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
           retiring.push(retirement)
         }
-        return { ...current, retiring }
+        return rememberQuestionState({ ...current, retiring }, live, 'retired')
       })
     }
     if (sessionHasEnded(sessionId, ctx.env)) {
@@ -1652,6 +1664,12 @@ async function escalate(
         ctx.now(),
       )
       notes.push('the Agent Session ended during submission; queued the question for retirement')
+      continue
+    }
+    if (!pendingList(readSessionState(sessionId, ctx.env)).some((candidate) => isSamePending(candidate, entry))) {
+      // A local close won after admission. Never resurrect the queue or wait
+      // for an answer to a retired question; settle its reserved remote id.
+      await drainRetirements(ctx, sessionId, ctx.env)
       continue
     }
     submitted.push(live)

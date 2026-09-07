@@ -8,6 +8,7 @@ import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import {
   isSamePending,
+  questionSubmissionAttempted,
   rememberQuestionState,
   sourceContextAtHookEvent,
 } from './hook-question-state.js'
@@ -122,6 +123,44 @@ export function parkForRetirement(
 }
 
 /**
+ * Stop queued retries under the same lock as admission. Preparations that
+ * never started are withdrawn silently; admitted attempts retain their exact
+ * retirement identity even if their receipt is still in flight or was lost.
+ */
+export function retireQueuedQuestions(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  questionId?: string,
+): { withdrawn: PendingQuestion[]; retiring: RetiringQuestion[] } {
+  const withdrawn: PendingQuestion[] = []
+  const retiring: RetiringQuestion[] = []
+  updateSessionState(sessionId, env, (current) => {
+    const selected = pendingList(current).filter((entry) =>
+      entry.request_id === undefined &&
+      (questionId === undefined || entry.question_id === questionId),
+    )
+    const remaining = pendingList(current).filter((entry) => !selected.includes(entry))
+    let next: SessionState = { ...current }
+    if (remaining.length > 0) next.pending = remaining
+    else delete next.pending
+    for (const entry of selected) {
+      if (questionSubmissionAttempted(entry)) {
+        const retirement = retiringQuestion(entry, 'answered_elsewhere')!
+        retiring.push(retirement)
+        const queue = [...(next.retiring ?? [])]
+        if (!queue.some((item) => item.request_id === retirement.request_id)) queue.push(retirement)
+        next = rememberQuestionState({ ...next, retiring: queue }, entry, 'retired')
+      } else {
+        withdrawn.push(entry)
+        next = rememberQuestionState(next, entry, 'withdrawn')
+      }
+    }
+    return next
+  })
+  return { withdrawn, retiring }
+}
+
+/**
  * Convert live question state into a complete retirement instruction.
  *
  * A request/collapse pair without the original Delivery targets is not safe to
@@ -221,12 +260,16 @@ export async function drainRetirements(
       retired.push(entry.request_id)
       // Persist each success before touching the next entry. A later corrupt
       // record or interrupted process must not resurrect work already done.
-      updateSessionState(sessionId, env, (current) => ({
-        ...current,
-        retiring: (current.retiring ?? []).filter(
-          (candidate) => candidate.request_id !== entry.request_id,
-        ),
-      }))
+      updateSessionState(sessionId, env, (current) => rememberQuestionState(
+        {
+          ...current,
+          retiring: (current.retiring ?? []).filter(
+            (candidate) => candidate.request_id !== entry.request_id,
+          ),
+        },
+        entry,
+        entry.state === 'answered' ? 'answered' : 'retired',
+      ))
     }
   }
   return retired

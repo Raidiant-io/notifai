@@ -12,6 +12,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import { sameLocalPath } from './local-path.js'
+import { isWindowsAbsolute } from './platform.js'
 
 const ADAPTER_MARKER = '# notifai managed hook adapter'
 const WIN32_ADAPTER_MARKER = '// notifai managed hook adapter'
@@ -77,19 +78,23 @@ export function hookAdapterPath(homeDir: string = os.userInfo().homedir): string
   return path.join(homeDir, '.notifai', 'bin', 'hook-adapter')
 }
 
-function envRequestedHome(
+function envRequestedHomes(
   env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): string | undefined {
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string[] {
   if (platform === 'win32') {
     const profile = env['USERPROFILE']
-    if (typeof profile === 'string' && profile !== '') return profile
     const home = env['HOME']
-    if (typeof home === 'string' && home !== '') return home
-    return undefined
+    // accountHome accepts a Windows-absolute HOME ahead of USERPROFILE.
+    // Validate both: one real value must not conceal a relocated other one.
+    // Git Bash/MSYS HOME is intentionally ignored by accountHome as well.
+    return [
+      ...(typeof profile === 'string' && profile !== '' ? [profile] : []),
+      ...(typeof home === 'string' && isWindowsAbsolute(home) ? [home] : []),
+    ]
   }
   const home = env['HOME']
-  return typeof home === 'string' && home !== '' ? home : undefined
+  return typeof home === 'string' && home !== '' ? [home] : []
 }
 
 /**
@@ -100,14 +105,14 @@ function envRequestedHome(
 export function resolveHookAdapterHome(
   explicitHome?: string,
   env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
   if (explicitHome !== undefined && explicitHome !== '') return explicitHome
   const osHome = os.userInfo().homedir
-  const requested = envRequestedHome(env, platform)
-  if (requested !== undefined && !sameLocalPath(requested, osHome, platform)) {
+  const comparisonPlatform = platform === 'win32' ? 'win32' : 'linux'
+  if (envRequestedHomes(env, platform).some((home) => !sameLocalPath(home, osHome, comparisonPlatform))) {
     throw new Error(
-      `Refusing to install the shared hook adapter: HOME does not match this account's OS home. Isolated verification must pass an explicit adapter home; a mutable HOME cannot retarget trusted hook identity.`,
+      `Refusing to install the shared hook adapter: HOME or USERPROFILE does not match this account's OS home. Isolated programmatic verification must pass an explicit adapter home; a mutable home cannot retarget trusted hook identity.`,
     )
   }
   return osHome
@@ -118,10 +123,11 @@ export function installHookAdapter(
   target: HookAdapterTarget,
   homeDir?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
 ): { path: string; changed: boolean } {
   const host = hookHostPlatform(platform)
   assertUsableTarget(target, host)
-  const resolvedHome = resolveHookAdapterHome(homeDir)
+  const resolvedHome = resolveHookAdapterHome(homeDir, env, platform)
   const file = hookAdapterPath(resolvedHome)
   ensureManagedDirectories(resolvedHome, host)
   const source = hookAdapterSource(target, host)
