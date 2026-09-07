@@ -654,7 +654,16 @@ export function askCommand(
   }
   const source = resolveDraftInvocation(deps, flags, active)
   if (!source.ok) {
-    return askFailure(deps, flags, 'invalid_source', 'source_context', source.error, 'remove the conflicting source override and retry')
+    return askFailure(
+      deps,
+      flags,
+      'invalid_source',
+      'source_context',
+      source.error,
+      /session-name store|session's name/u.test(source.error)
+        ? 'inspect the named session-name store, isolate or remove the invalid record, and retry'
+        : 'remove the conflicting source override and retry',
+    )
   }
   if (source.invocation.source?.session_id !== sessionId) {
     return askFailure(

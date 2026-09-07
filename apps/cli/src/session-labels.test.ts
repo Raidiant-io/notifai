@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -465,6 +466,61 @@ describe('semantic session labels', () => {
       label: 'Violet Crane',
       source: 'fallback',
     })
+  })
+
+  it('keeps valid sessions when one stored record uses an unknown harness', () => {
+    const { env, now } = fixture()
+    const file = path.join(stateDir(env), 'session-labels.json')
+    const validKey = createHash('sha256').update('valid-session').digest('hex')
+    const unknownKey = createHash('sha256').update('future-harness-session').digest('hex')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          version: 1,
+          sessions: {
+            [validKey]: {
+              label: 'Valid work',
+              source: 'explicit',
+              first_seen_at: now,
+              harness: 'codex',
+            },
+            [unknownKey]: {
+              label: 'Future harness work',
+              source: 'explicit',
+              first_seen_at: now,
+              harness: 'not-a-supported-harness',
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    )
+
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1,
+        sessionId: 'valid-session',
+        harness: 'codex',
+        explicitLabel: 'A later unrelated label',
+      }),
+    ).toEqual({ ok: true, label: 'Valid work', source: 'explicit' })
+
+    const recovered = JSON.parse(readFileSync(file, 'utf8')) as {
+      sessions: Record<string, { label: string; harness?: string }>
+    }
+    expect(recovered.sessions[validKey]?.label).toBe('Valid work')
+    expect(recovered.sessions[unknownKey]).toBeUndefined()
+    const backups = readdirSync(path.dirname(file)).filter((name) =>
+      /^session-labels\.invalid-[a-f0-9]{64}\.json$/u.test(name),
+    )
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(path.join(path.dirname(file), backups[0]!), 'utf8')).toContain(
+      'not-a-supported-harness',
+    )
   })
 
   it('isolates an unreadable name store before creating a clean one', () => {
