@@ -69,7 +69,7 @@ export interface CommandDeps {
   store: CredentialStore
   env: NodeJS.ProcessEnv
   cwd: string
-  /** Test seam; production fixes the hook adapter under os.homedir(). */
+  /** Test seam; production uses the OS-account adapter and refuses a relocated HOME. */
   hookAdapterHome?: string
   /** Test seam; production uses this process's Node and CLI paths. */
   hookInstallTarget?: HookAdapterTarget

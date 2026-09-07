@@ -3389,6 +3389,23 @@ describe('Codex hook representation', () => {
     '',
   ].join('\n')
 
+  it('refuses hooks install when no explicit adapter home is given under a relocated HOME', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-adapter-home-refuse-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookAdapterHome: undefined }
+    expect(process.env['HOME']).not.toBe(os.userInfo().homedir)
+    const osAdapter = hookAdapterPath()
+    const existed = existsSync(osAdapter)
+    const before = existed ? readFileSync(osAdapter, 'utf8') : null
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(io.errLines.join('\n')).toMatch(/explicit adapter home/i)
+    expect(existsSync(osAdapter)).toBe(existed)
+    if (existed) expect(readFileSync(osAdapter, 'utf8')).toBe(before)
+    expect(existsSync(hookAdapterPath(env.HOME))).toBe(false)
+  })
+
   it('writes the Machine hooks.json and never creates config.toml', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-new-layer-'))
     const io = new CapturedIo()

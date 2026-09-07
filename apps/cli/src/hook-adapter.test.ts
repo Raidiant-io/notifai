@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -217,6 +218,37 @@ describe('stable hook adapter', () => {
         path.join(os.userInfo().homedir, '.notifai', 'bin', 'hook-adapter'),
       )
       expect(hookAdapterPath()).not.toContain('attacker-selected-home')
+    } finally {
+      if (original === undefined) delete process.env['HOME']
+      else process.env['HOME'] = original
+    }
+  })
+
+  it('refuses an ambiguous install so a scratch HOME cannot retarget the real adapter', () => {
+    const { root, homeDir } = isolated()
+    const script = path.join(root, 'target.js')
+    writeFileSync(script, '')
+    const osAdapter = hookAdapterPath()
+    const existed = existsSync(osAdapter)
+    const before = existed ? readFileSync(osAdapter, 'utf8') : null
+    const original = process.env['HOME']
+    process.env['HOME'] = path.join(root, 'attacker-home')
+    try {
+      expect(() =>
+        installHookAdapter({ execPath: process.execPath, scriptPath: script }),
+      ).toThrow(/explicit adapter home/i)
+      expect(existsSync(osAdapter)).toBe(existed)
+      if (existed) expect(readFileSync(osAdapter, 'utf8')).toBe(before)
+      expect(existsSync(hookAdapterPath(process.env['HOME']))).toBe(false)
+
+      const isolatedInstall = installHookAdapter(
+        { execPath: process.execPath, scriptPath: script },
+        homeDir,
+      )
+      expect(isolatedInstall.path).toBe(hookAdapterPath(homeDir))
+      expect(existsSync(isolatedInstall.path)).toBe(true)
+      expect(existsSync(osAdapter)).toBe(existed)
+      if (existed) expect(readFileSync(osAdapter, 'utf8')).toBe(before)
     } finally {
       if (original === undefined) delete process.env['HOME']
       else process.env['HOME'] = original

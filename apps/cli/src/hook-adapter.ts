@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
+import { sameLocalPath } from './local-path.js'
 
 const ADAPTER_MARKER = '# notifai managed hook adapter'
 const WIN32_ADAPTER_MARKER = '// notifai managed hook adapter'
@@ -76,6 +77,42 @@ export function hookAdapterPath(homeDir: string = os.userInfo().homedir): string
   return path.join(homeDir, '.notifai', 'bin', 'hook-adapter')
 }
 
+function envRequestedHome(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform === 'win32') {
+    const profile = env['USERPROFILE']
+    if (typeof profile === 'string' && profile !== '') return profile
+    const home = env['HOME']
+    if (typeof home === 'string' && home !== '') return home
+    return undefined
+  }
+  const home = env['HOME']
+  return typeof home === 'string' && home !== '' ? home : undefined
+}
+
+/**
+ * Adapter identity is the OS account home. A mutable HOME is not a trusted
+ * isolation context: honouring it would retarget every live harness hook.
+ * Tests and other explicit callers pass the destination home themselves.
+ */
+export function resolveHookAdapterHome(
+  explicitHome?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (explicitHome !== undefined && explicitHome !== '') return explicitHome
+  const osHome = os.userInfo().homedir
+  const requested = envRequestedHome(env, platform)
+  if (requested !== undefined && !sameLocalPath(requested, osHome, platform)) {
+    throw new Error(
+      `Refusing to install the shared hook adapter: HOME does not match this account's OS home. Isolated verification must pass an explicit adapter home; a mutable HOME cannot retarget trusted hook identity.`,
+    )
+  }
+  return osHome
+}
+
 /** Install or repair the stable adapter and atomically retarget its implementation. */
 export function installHookAdapter(
   target: HookAdapterTarget,
@@ -84,8 +121,9 @@ export function installHookAdapter(
 ): { path: string; changed: boolean } {
   const host = hookHostPlatform(platform)
   assertUsableTarget(target, host)
-  const file = hookAdapterPath(homeDir)
-  ensureManagedDirectories(homeDir ?? os.userInfo().homedir, host)
+  const resolvedHome = resolveHookAdapterHome(homeDir)
+  const file = hookAdapterPath(resolvedHome)
+  ensureManagedDirectories(resolvedHome, host)
   const source = hookAdapterSource(target, host)
   return withTargetFileLock(file, () => {
     const existing = existsSync(file) ? readSafeManagedFile(file) : null
