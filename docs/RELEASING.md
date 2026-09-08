@@ -50,6 +50,13 @@ squash commit subject. This keeps `main` linear and gives release-please one
 authoritative commit per change instead of both a merge commit and the commits
 it contains.
 
+Authored PR Markdown is a UTF-8 file with real line breaks. Pass that file as
+`gh pr create --body-file <path>` or `gh pr edit --body-file <path>` (`--body-file -`
+reads stdin on create). After GitHub stores the description, read the API
+`body` and confirm those bytes match the file. A two-character `\n` sequence
+in prose is stored literally; keep a visible `\n` example inside backticks or
+a fenced block. Leave generated release-please changelog bodies unchanged.
+
 ## Cutting a release
 
 [release-please](https://github.com/googleapis/release-please) opens and
