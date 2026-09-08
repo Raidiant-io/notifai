@@ -251,9 +251,9 @@ Cursor work stays under the parent Agent Session's explicit notification ownersh
 rather than pretending the worker received context its host cannot deliver.
 
 **UserPromptSubmit** (`user-prompt-submit`) runs when you send a prompt. That
-is the proof you are at the keyboard, so Notifai retires any question still
-waiting on your devices and remembers this Agent Session for later `notifai ask`
-calls. It never substitutes activation when SessionStart is missing; reinstall
+records presence for this turn and remembers this Agent Session for later
+`notifai ask` calls. It retires only questions that the prompt plausibly answers;
+unrelated questions remain outstanding. It never substitutes activation when SessionStart is missing; reinstall
 the current hooks and begin a fresh Agent Session. It has to run here for presence:
 only this moment can tell that you were present for this turn.
 
