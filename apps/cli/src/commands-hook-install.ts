@@ -1,6 +1,7 @@
 /** Hook installation and uninstallation across supported harnesses. */
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
@@ -12,7 +13,7 @@ import {
 } from './harnesses.js'
 import { installHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
 import type { HookEvent } from './hook-events.js'
-import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
+import { HOOK_EVENT_COMMAND_RE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   applyPlan,
@@ -29,16 +30,22 @@ import {
   detectedHarnesses,
   findInstallations,
   findLegacyProjectInstallations,
+  findObsoleteNotifaiPluginWiring,
   handlerEvent,
+  isTomlSettingsPath,
   loadCursorSettings,
   loadSettings,
   machineHookFiles,
   mergeCursorHooks,
   mergeHooks,
+  prepareCodexPluginCleanup,
+  preparePlan,
   removeCursorHooks,
   removeHooks,
   settingsFile,
+  stripObsoleteNotifaiPluginEnablement,
   withCodexLayerTransaction,
+  type SettingsDocument,
 } from './install-hooks.js'
 import {
   OPENCLAW_PLUGIN_MANIFEST,
@@ -151,16 +158,19 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
   const hookPlatform = deps.hookPlatform ?? process.platform
   const nodePath = adapterTarget.execPath
+  const codexPaths = harness === 'codex' ? codexMachineLayerPaths(deps.env, hookPlatform) : null
   let adapterPath: string
   try {
+    // Refuse unsupported plugin configuration before even updating the adapter.
+    // The authoritative plan is made again under the layer lock below.
+    if (codexPaths !== null) prepareCodexPluginCleanup(codexPaths.configToml)
     adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform, deps.env).path
   } catch (err) {
-    deps.io.err(`Could not prepare the stable hook adapter: ${String(err)}`)
+    deps.io.err(`Could not prepare hook installation: ${String(err)}`)
     return EXIT.failed
   }
   // Codex is the one harness whose layer holds two candidate files, so its
   // transaction anchors on `config.toml` and the inspection names the target.
-  const codexPaths = harness === 'codex' ? codexMachineLayerPaths(deps.env, hookPlatform) : null
   const settingsTarget = codexPaths?.configToml ?? settingsFile(harness, deps.env, hookPlatform)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
@@ -219,8 +229,11 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     return finishInstall(deps, harness, scriptPath, EXIT.ok)
   }
 
-  const installInto = (file: string): { file: string; foreignStopCount: number } => {
-    const document = loadSettings(file)
+  const prepareInstall = (
+    file: string,
+    document: SettingsDocument = loadSettings(file),
+    previous?: string | null,
+  ): { file: string; foreignStopCount: number; apply: () => void } => {
     const foreignStopCount = foreignStopHandlers(document).length
     const result = mergeHooks(
       document,
@@ -232,58 +245,72 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       }),
       scriptPath,
     )
-    applyPlan(file, result.document)
-    return { file, foreignStopCount }
+    // JSON settings can carry leftover native plugin enablement in the same
+    // document as hooks. Strip it in this write so a crash cannot leave both
+    // firing. Codex plugin cleanup is planned and persisted first below.
+    const next = isTomlSettingsPath(file)
+      ? result.document
+      : stripObsoleteNotifaiPluginEnablement(result.document).document
+    return { file, foreignStopCount, apply: preparePlan(file, next, previous) }
   }
 
   let installed: { file: string; foreignStopCount: number }
   let migratedOwnedInline = false
+  let disabledPlugins: string[] = []
   try {
     installed =
       codexPaths === null
-        ? withTargetFileLock(settingsTarget, () => installInto(settingsTarget))
+        ? withTargetFileLock(settingsTarget, () => {
+            const plan = prepareInstall(settingsTarget)
+            plan.apply()
+            return plan
+          })
         : withCodexLayerTransaction(codexPaths, (inspection) => {
-            // A healthy layer has Notifai in exactly one source. Cleanup also
-            // moves exclusively owned inline handlers onto hooks.json.
-            const staleTarget =
-              inspection.writeTarget === inspection.paths.hooksJson
-                ? inspection.paths.configToml
-                : inspection.paths.hooksJson
-            const staleEvents =
-              staleTarget === inspection.paths.hooksJson
-                ? inspection.ourJsonEvents
-                : inspection.ourTomlEvents
-            if (staleEvents.length > 0) {
-              const staleDocument = loadSettings(staleTarget)
-              const stripped = removeHooks(staleDocument, scriptPath)
-              if (stripped.replaced.length > 0) {
-                // Parse and write the destination before removing working wiring.
-                // A malformed or unwritable destination must leave the source intact.
-                const target = inspection.writeTarget
-                const before = existsSync(target) ? readFileSync(target, 'utf8') : null
-                const result = installInto(target)
-                const written = readFileSync(target, 'utf8')
-                try {
-                  applyPlan(staleTarget, stripped.document)
-                } catch (err) {
-                  // Roll back our destination write, never an external writer's.
-                  if (readFileSync(target, 'utf8') === written) {
-                    if (before === null) rmSync(target, { force: true })
-                    else atomicWriteFileSync(target, before)
-                  }
-                  throw err
-                }
-                migratedOwnedInline = staleTarget === inspection.paths.configToml
-                return result
+            const cleanup = prepareCodexPluginCleanup(inspection.paths.configToml)
+            const documentAfterCleanup = (file: string): SettingsDocument =>
+              file === inspection.paths.configToml
+                ? cleanup.source === null ? {} : parseToml(cleanup.source) as SettingsDocument
+                : loadSettings(file)
+            const previousAfterCleanup = (file: string): string | null | undefined =>
+              file === inspection.paths.configToml ? cleanup.source : undefined
+            const target = inspection.writeTarget
+            const plan = prepareInstall(target, documentAfterCleanup(target), previousAfterCleanup(target))
+            const staleTarget = target === inspection.paths.hooksJson
+              ? inspection.paths.configToml : inspection.paths.hooksJson
+            const stale = removeHooks(documentAfterCleanup(staleTarget), scriptPath)
+            const removeStale = stale.replaced.length === 0 ? null : preparePlan(
+              staleTarget, stale.document, previousAfterCleanup(staleTarget),
+            )
+            // All syntax/preservation plans are validated before writing. Retire
+            // the native plugin FIRST and never restore it on a later failure:
+            // an interruption can leave no new wiring, never two firing paths.
+            cleanup.apply()
+            disabledPlugins = cleanup.removed
+            const before = existsSync(target) ? readFileSync(target, 'utf8') : null
+            plan.apply()
+            const written = readFileSync(target, 'utf8')
+            try {
+              removeStale?.()
+            } catch (err) {
+              // Roll back only our document write, never native enablement or
+              // an external writer's configuration.
+              if (readFileSync(target, 'utf8') === written) {
+                if (before === null) rmSync(target, { force: true })
+                else atomicWriteFileSync(target, before)
               }
+              throw err
             }
-            return installInto(inspection.writeTarget)
+            migratedOwnedInline = removeStale !== null && staleTarget === inspection.paths.configToml
+            return plan
           })
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
   }
 
+  if (disabledPlugins.length > 0) {
+    deps.io.out(`Disabled leftover Notifai native plugin wiring (${disabledPlugins.join(', ')}) so it cannot fire beside document hooks`)
+  }
   if (migratedOwnedInline) {
     deps.io.out(
       'Moved Notifai Codex handlers from config.toml to hooks.json. Codex keys approval by source path, so open `/hooks` and approve the new handlers.',
@@ -355,12 +382,7 @@ function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { comm
   if (!Array.isArray(groups)) return []
   return groups
     .flatMap((group) => group.hooks ?? [])
-    .filter(
-      (handler) =>
-        !/ hook (session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\b/.test(
-          handler.command,
-        ),
-    )
+    .filter((handler) => !HOOK_EVENT_COMMAND_RE.test(handler.command))
 }
 
 /**
@@ -524,19 +546,28 @@ function stripNotifaiHandlers(
   files: readonly string[],
   scriptPath: string,
   cursor: boolean,
-  locked: boolean,
 ): HandlerRemoval {
   const existing = files.filter((candidate) => existsSync(candidate))
   const removed: { file: string; events: string[] }[] = []
   for (const candidate of existing) {
     const strip = () => {
-      const result = cursor
-        ? removeCursorHooks(loadCursorSettings(candidate), scriptPath)
-        : removeHooks(loadSettings(candidate), scriptPath)
-      if (result.replaced.length > 0) applyPlan(candidate, result.document)
+      if (cursor) {
+        const result = removeCursorHooks(loadCursorSettings(candidate), scriptPath)
+        if (result.replaced.length > 0) applyPlan(candidate, result.document)
+        return result
+      }
+      const result = removeHooks(loadSettings(candidate), scriptPath)
+      if (isTomlSettingsPath(candidate)) {
+        if (result.replaced.length > 0) applyPlan(candidate, result.document)
+        return result
+      }
+      const cleaned = stripObsoleteNotifaiPluginEnablement(result.document)
+      if (result.replaced.length > 0 || cleaned.removed.length > 0) {
+        applyPlan(candidate, cleaned.document)
+      }
       return result
     }
-    const result = locked ? strip() : withTargetFileLock(candidate, strip)
+    const result = withTargetFileLock(candidate, strip)
     if (result.replaced.length > 0) removed.push({ file: candidate, events: result.replaced })
   }
   return { existing, removed }
@@ -565,7 +596,7 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
         deps.io.out(`Nothing to remove: ${file} does not exist.`)
       }
     } else if (harness === 'cursor') {
-      const result = stripNotifaiHandlers([file], scriptPath, true, false)
+      const result = stripNotifaiHandlers([file], scriptPath, true)
       if (result.existing.length === 0) {
         deps.io.out(`Nothing to remove: ${file} does not exist.`)
       } else if (result.removed.length > 0) {
@@ -579,11 +610,25 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
       const files = machineHookFiles(harness, deps.env, deps.hookPlatform)
       const result =
         codexPaths === null
-          ? stripNotifaiHandlers(files, scriptPath, false, false)
+          ? stripNotifaiHandlers(files, scriptPath, false)
           : withCodexLayerTransaction(codexPaths, (inspection) => {
-              const stripped = stripNotifaiHandlers(files, scriptPath, false, true)
+              const cleanup = prepareCodexPluginCleanup(inspection.paths.configToml)
+              const existing = files.filter((candidate) => existsSync(candidate))
+              const plans = existing.map((candidate) => {
+                const source = candidate === inspection.paths.configToml ? cleanup.source : undefined
+                const document = source === undefined ? loadSettings(candidate)
+                  : source === null ? {} : parseToml(source) as SettingsDocument
+                const result = removeHooks(document, scriptPath)
+                return {
+                  file: candidate,
+                  events: result.replaced,
+                  apply: result.replaced.length === 0 ? () => {} : preparePlan(candidate, result.document, source),
+                }
+              })
+              cleanup.apply()
+              for (const plan of plans) plan.apply()
               cleanupEmptiedCodexLayer(inspection.paths)
-              return stripped
+              return { existing, removed: plans.filter((plan) => plan.events.length > 0) }
             })
       if (result.existing.length === 0) {
         deps.io.out(`Nothing to remove: ${file} does not exist.`)
@@ -602,6 +647,20 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   // Uninstall means no Notifai lifecycle wiring is left anywhere this Project
   // can reach, not just in the one file the Machine installation used.
   removeLegacyProjectInstallations(deps, harness, scriptPath)
+  const leftoverPlugin = findObsoleteNotifaiPluginWiring(deps.env, deps.hookPlatform).filter(
+    (entry) => entry.harness === harness,
+  )
+  if (leftoverPlugin.length > 0) {
+    deps.io.err(
+      leftoverPlugin
+        .map(
+          (entry) =>
+            `Obsolete native plugin wiring still enabled (${entry.keys.join(', ')}) in ${entry.file}; document hooks and a leftover plugin must never both fire. Uninstall is not complete while that plugin remains. Disable that Notifai plugin and rerun \`notifai hooks uninstall --harness ${entry.harness}\`.`,
+        )
+        .join('\n'),
+    )
+    return EXIT.failed
+  }
   return EXIT.ok
 }
 
@@ -638,7 +697,7 @@ export function removeLegacyProjectInstallations(
       return
     }
     const files = legacy.map((installation) => installation.file)
-    const result = stripNotifaiHandlers(files, scriptPath, harness === 'cursor', false)
+    const result = stripNotifaiHandlers(files, scriptPath, harness === 'cursor')
     for (const entry of result.removed) {
       deps.io.out(
         `Removed leftover Project-scoped Notifai hooks (${entry.events.join(', ')}) from ${entry.file}`,

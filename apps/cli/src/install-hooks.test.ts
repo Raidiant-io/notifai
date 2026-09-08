@@ -18,10 +18,19 @@ import { parseChoices } from './send.js'
 import {
   OPENCODE_PLUGIN_MARKER,
   isOurOpencodePlugin,
+  opencodeConfigDir,
   opencodePluginPath,
   opencodePluginSource,
   opencodePluginTarget,
 } from './opencode-plugin.js'
+import {
+  HOOK_EVENT_PATTERN,
+  HOOK_EVENT_TABLE,
+  HOOK_EVENTS,
+  OPENCLAW_EVENTS,
+  OPENCODE_EVENTS,
+  requiredHookEvents,
+} from './hook-events.js'
 import {
   OPENCLAW_PLUGIN_MARKER,
   isOurOpenclawPlugin,
@@ -43,6 +52,7 @@ import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
 import {
   QUESTION_STOP_TIMEOUT_SECONDS,
   applyPlan,
+  BLOCKING_STOP_STATUS_MESSAGE,
   detectHarness,
   detectedHarnesses,
   buildCursorHookConfig,
@@ -51,6 +61,7 @@ import {
   codexProjectRoot,
   findInstallations,
   findLegacyProjectInstallations,
+  findObsoleteNotifaiPluginWiring,
   codexHookIdentityHash,
   codexCoexistenceNotes,
   codexHomeNote,
@@ -62,9 +73,14 @@ import {
   hookCommand,
   quoteWindowsArg,
   loadSettings,
+  mergeCursorHooks,
   mergeHooks,
+  notifaiNativePluginEnablementKeys,
+  removeCursorHooks,
   removeHooks,
   settingsFile,
+  spliceOutNotifaiPluginTables,
+  stripObsoleteNotifaiPluginEnablement,
   type HookConfig,
   type SettingsDocument,
 } from './install-hooks.js'
@@ -208,7 +224,77 @@ describe('hook config', () => {
       type: 'command',
       command: hookCommand(options.adapterPath, 'stop', 'claude-code', options),
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,
+      statusMessage: BLOCKING_STOP_STATUS_MESSAGE,
     })
+  })
+
+  it('sets a status message only on blocking Question Routing Stop handlers', () => {
+    const posixClaude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
+    const windowsClaude = buildHookConfig({
+      adapterPath: ADAPTER,
+      harness: 'claude-code',
+      platform: 'win32',
+      nodePath: EXEC,
+    })
+    const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
+    const cursor = buildCursorHookConfig({ adapterPath: ADAPTER, harness: 'cursor' })
+
+    expect(posixClaude['Stop']?.[0]?.hooks[0]?.statusMessage).toBeUndefined()
+    expect(posixClaude['Stop']?.[0]?.hooks[0]?.async).toBe(true)
+    expect(windowsClaude['Stop']?.[0]?.hooks[0]?.statusMessage).toBe(BLOCKING_STOP_STATUS_MESSAGE)
+    expect(windowsClaude['Stop']?.[0]?.hooks[0]?.async).toBeUndefined()
+    expect(codex['Stop']?.[0]?.hooks[0]?.statusMessage).toBe(BLOCKING_STOP_STATUS_MESSAGE)
+    expect(cursor['stop']?.some((handler) => 'statusMessage' in handler)).toBe(false)
+  })
+
+  it('derives every installer event list from one harness-neutral table', () => {
+    expect([...HOOK_EVENTS]).toEqual(HOOK_EVENT_TABLE.map((row) => row.notifai))
+    expect(HOOK_EVENT_PATTERN).toBe(HOOK_EVENTS.join('|'))
+    expect(OPENCODE_EVENTS).toEqual([
+      ['UserPromptSubmit', 'user-prompt-submit'],
+      ['Stop', 'stop'],
+      ['SessionEnd', 'session-end'],
+    ])
+    expect(OPENCLAW_EVENTS).toEqual([
+      ['SessionStart', 'session-start'],
+      ['SubagentStart', 'subagent-start'],
+      ['UserPromptSubmit', 'user-prompt-submit'],
+      ['Stop', 'stop'],
+      ['SessionEnd', 'session-end'],
+    ])
+    expect(requiredHookEvents('cursor')).toEqual([
+      'session-start',
+      'activation-stop',
+      'user-prompt-submit',
+      'stop',
+      'session-end',
+    ])
+    expect(requiredHookEvents('claude-code')).toEqual([
+      'session-start',
+      'subagent-start',
+      'user-prompt-submit',
+      'stop',
+      'session-end',
+    ])
+    expect(requiredHookEvents('opencode')).toEqual([])
+    expect(Object.keys(buildHookConfig({ adapterPath: ADAPTER }))).toEqual([
+      'SessionStart',
+      'SubagentStart',
+      'UserPromptSubmit',
+      'Stop',
+      'SessionEnd',
+    ])
+    expect(Object.keys(buildCursorHookConfig({ adapterPath: ADAPTER })).sort()).toEqual([
+      'beforeSubmitPrompt',
+      'sessionEnd',
+      'sessionStart',
+      'stop',
+    ])
+    const cursorStop = buildCursorHookConfig({ adapterPath: ADAPTER })['stop'] ?? []
+    expect(cursorStop.map((handler) => handlerEvent(handler.command))).toEqual([
+      'activation-stop',
+      'stop',
+    ])
   })
 
   it('restores missing SessionStart exactly once when an old owned shape is reinstalled over', () => {
@@ -278,6 +364,21 @@ describe('merging into existing settings', () => {
     ])
   })
 
+  it('keeps a prototype-named event as data instead of mutating Object.prototype', () => {
+    const existingHooks = Object.create(null) as HookConfig
+    existingHooks['__proto__'] = [{ hooks: [{ type: 'command', command: 'keep-proto' }] }]
+    existingHooks['constructor'] = [{ hooks: [{ type: 'command', command: 'keep-ctor' }] }]
+    existingHooks['Stop'] = [{ hooks: [{ type: 'command', command: 'make lint' }] }]
+    const merged = mergeHooks({ hooks: existingHooks }, ours(), SCRIPT)
+    const stripped = removeHooks(merged.document, SCRIPT)
+
+    expect(merged.document.hooks?.['__proto__']?.[0]?.hooks[0]?.command).toBe('keep-proto')
+    expect(merged.document.hooks?.['constructor']?.[0]?.hooks[0]?.command).toBe('keep-ctor')
+    expect(stripped.document.hooks?.['__proto__']?.[0]?.hooks[0]?.command).toBe('keep-proto')
+    expect(Object.prototype.hasOwnProperty('Stop')).toBe(false)
+    expect(Object.prototype.hasOwnProperty('hooks')).toBe(false)
+  })
+
   it('uninstall removes only our handlers', () => {
     const installed = mergeHooks(
       { hooks: { Stop: [{ hooks: [{ type: 'command' as const, command: 'make lint' }] }] } },
@@ -289,6 +390,17 @@ describe('merging into existing settings', () => {
       { hooks: [{ type: 'command', command: 'make lint' }] },
     ])
     expect(stripped.document.hooks?.['UserPromptSubmit']).toBeUndefined()
+  })
+
+  it('keeps a prototype-named Cursor event as data instead of mutating Object.prototype', () => {
+    const existingHooks = Object.create(null) as Record<string, { command: string }[]>
+    existingHooks['__proto__'] = [{ command: 'keep-cursor-proto' }]
+    const merged = mergeCursorHooks({ hooks: existingHooks }, buildCursorHookConfig({ adapterPath: ADAPTER }), SCRIPT)
+    const stripped = removeCursorHooks(merged.document, SCRIPT)
+
+    expect(merged.document.hooks?.['__proto__']?.[0]?.command).toBe('keep-cursor-proto')
+    expect(stripped.document.hooks?.['__proto__']?.[0]?.command).toBe('keep-cursor-proto')
+    expect(Object.prototype.hasOwnProperty('sessionStart')).toBe(false)
   })
 })
 
@@ -1116,6 +1228,35 @@ describe('the OpenCode adapter', () => {
     )
   })
 
+  it('follows OpenCode XDG_CONFIG_HOME after OPENCODE_CONFIG_DIR', () => {
+    expect(opencodeConfigDir({ OPENCODE_CONFIG_DIR: '/cfg/opencode', XDG_CONFIG_HOME: '/xdg' })).toBe(
+      '/cfg/opencode',
+    )
+    expect(opencodeConfigDir({ XDG_CONFIG_HOME: '/xdg' })).toBe(path.join('/xdg', 'opencode'))
+    expect(opencodePluginPath({ XDG_CONFIG_HOME: '/xdg' })).toBe(
+      path.join('/xdg', 'opencode', 'plugins', 'notifai.js'),
+    )
+    expect(opencodeConfigDir({ HOME: '/home/ada' })).toBe(
+      path.join('/home/ada', '.config', 'opencode'),
+    )
+    const empty = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-xdg-empty-'))
+    expect(
+      detectedHarnesses(empty, {
+        HOME: path.join(empty, 'home'),
+        XDG_CONFIG_HOME: path.join(empty, 'xdg'),
+      }),
+    ).not.toContain('opencode')
+    const xdgHome = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-xdg-present-'))
+    const xdg = path.join(xdgHome, 'xdg')
+    mkdirSync(path.join(xdg, 'opencode'), { recursive: true })
+    expect(
+      detectedHarnesses(xdgHome, {
+        HOME: path.join(xdgHome, 'home'),
+        XDG_CONFIG_HOME: xdg,
+      }),
+    ).toContain('opencode')
+  })
+
   it('is a harness `hooks install` knows about', () => {
     expect(HOOK_INSTALLABLE_HARNESSES).toContain('opencode')
     expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
@@ -1635,17 +1776,18 @@ describe('writing config.toml around what is already there', () => {
     expect(after.hooks.state[`${layer}/config.toml:stop:0:0`]?.trusted_hash).toBe('sha256:abc')
   })
 
-  it('falls back to a whole-file write when the splice cannot be trusted', () => {
+  it('splices a root inline hooks value without losing comments', () => {
     const layer = layerFor('notifai-toml-inline-')
     const file = path.join(layer, 'config.toml')
-    // An inline top-level `hooks` key cannot be spliced around, only rewritten.
-    writeFileSync(file, '# this comment is lost, and that is the safe outcome\nhooks = {}\n')
+    // Lexical statement ownership covers root inline keys as well as tables.
+    writeFileSync(file, '# retain this comment\nhooks = {}\n')
 
     applyPlan(file, { hooks: ours() })
 
     const after = readFileSync(file, 'utf8')
     expect(after).toContain('[[hooks.Stop]]')
     expect(after).not.toContain('hooks = {}')
+    expect(after).toContain('# retain this comment')
   })
 
   it('is a no-op when the serialized document already matches the file', () => {
@@ -1683,5 +1825,109 @@ describe('emptied Codex representations', () => {
     expect(after).toContain('model = "gpt-5.6"')
     expect(after).toContain('trusted_hash')
     expect(after).not.toContain('[[hooks.Stop]]')
+  })
+})
+
+describe('obsolete native plugin enablement', () => {
+  it('recognizes only the Notifai plugin id, including a marketplace suffix', () => {
+    expect(
+      notifaiNativePluginEnablementKeys({
+        'notifai@notifai-trial': true,
+        'beads@claude-plugins-official': true,
+        'my-notifai-helper': true,
+        notifai: { enabled: false },
+      }),
+    ).toEqual(['notifai@notifai-trial'])
+  })
+
+  it('keeps document-only removal from claiming the plugin half is gone', () => {
+    const existing = {
+      enabledPlugins: { 'notifai@notifai-trial': true, 'other@market': true },
+      hooks: buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' }),
+    }
+    const stripped = removeHooks(existing, SCRIPT)
+    expect(stripped.document.enabledPlugins).toEqual({
+      'notifai@notifai-trial': true,
+      'other@market': true,
+    })
+    const cleaned = stripObsoleteNotifaiPluginEnablement(stripped.document)
+    expect(cleaned.removed).toEqual(['notifai@notifai-trial'])
+    expect(cleaned.document.enabledPlugins).toEqual({ 'other@market': true })
+  })
+
+  it('splices only Notifai plugin tables out of Codex config.toml', () => {
+    const source = [
+      'model = "gpt-5.2"',
+      '',
+      '[plugins.memory]',
+      'enabled = true',
+      '',
+      '[plugins."notifai@notifai-trial"]',
+      'enabled = true',
+      '',
+      '# keep this comment',
+      '[marketplaces.notifai-trial]',
+      'source = "/opt/notifai-trial"',
+      '',
+    ].join('\n')
+    const { next, removed } = spliceOutNotifaiPluginTables(source)
+    expect(removed).toEqual(['notifai@notifai-trial'])
+    expect(next).toContain('model = "gpt-5.2"')
+    expect(next).toContain('[plugins.memory]')
+    expect(next).toContain('# keep this comment')
+    expect(next).toContain('[marketplaces.notifai-trial]')
+    expect(next).not.toContain('plugins."notifai@notifai-trial"')
+  })
+
+  it('preserves strings in arrays, escaped quotes, disabled plugins and all comment text', () => {
+    const foreign = [
+      '# root note',
+      'unrelated_nan = nan',
+      'examples = ["""',
+      '[plugins.notifai]',
+      'keep \\"quoted\\" text',
+      '"""]',
+      '[plugins.notifai]',
+      'enabled = false',
+      'options = { text = "[plugins.notifai]" }',
+      '',
+    ].join('\n')
+    const owned = [
+      '[plugins."notifai@local"] # owned header note',
+      'enabled = true',
+      'values = [',
+      '  "remove", # keep array note',
+      ']',
+      '# final note',
+      '',
+    ].join('\n')
+    const { next, removed } = spliceOutNotifaiPluginTables(foreign + owned)
+    expect(removed).toEqual(['notifai@local'])
+    expect(parseToml(next)).toEqual(parseToml(foreign))
+    expect(next).toContain(foreign)
+    for (const comment of ['# owned header note', '# keep array note', '# final note']) expect(next).toContain(comment)
+    expect(spliceOutNotifaiPluginTables(next)).toEqual({ next, removed: [] })
+  })
+
+  it('discovers leftover Claude plugin enablement in an isolated harness home', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-obsolete-plugin-'))
+    const claudeHome = path.join(home, '.claude')
+    mkdirSync(claudeHome, { recursive: true })
+    applyPlan(path.join(claudeHome, 'settings.json'), {
+      enabledPlugins: { 'notifai@local': true },
+      hooks: buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' }),
+    })
+    const found = findObsoleteNotifaiPluginWiring({
+      HOME: home,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      CODEX_HOME: path.join(home, '.codex'),
+    })
+    expect(found).toEqual([
+      {
+        harness: 'claude-code',
+        file: path.join(claudeHome, 'settings.json'),
+        keys: ['notifai@local'],
+      },
+    ])
   })
 })

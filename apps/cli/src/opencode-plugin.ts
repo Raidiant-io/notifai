@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
-import { configHome } from './install-hooks.js'
+import { harnessAccountHome } from './install-hooks.js'
 import {
   MISSING_LIFECYCLE_GUIDANCE_CONTEXT,
   WORKER_ACTIVATION_CONTEXT,
@@ -37,11 +37,30 @@ export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 /** Bump when an installed generated file must be rewritten to remain functional. */
 const OPENCODE_ADAPTER_VERSION = 13
 
+/**
+ * OpenCode's global config directory for the running installation.
+ *
+ * OpenCode resolves that directory through `xdg-basedir` (`Global.Path.config`
+ * = `$XDG_CONFIG_HOME/opencode`, defaulting to `~/.config/opencode`).
+ * `OPENCODE_CONFIG_DIR` remains the explicit override and wins, matching the
+ * precedence this installer already gave that variable.
+ */
+export function opencodeConfigDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string {
+  const override = env['OPENCODE_CONFIG_DIR']
+  if (override !== undefined && override !== '') return override
+  const xdg = env['XDG_CONFIG_HOME']
+  if (typeof xdg === 'string' && xdg !== '') return path.join(xdg, 'opencode')
+  return path.join(harnessAccountHome(env, platform), '.config', 'opencode')
+}
+
 export function opencodePluginDir(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
-  return path.join(configHome(env, 'OPENCODE_CONFIG_DIR', '.config/opencode', platform), 'plugins')
+  return path.join(opencodeConfigDir(env, platform), 'plugins')
 }
 
 export function opencodePluginPath(

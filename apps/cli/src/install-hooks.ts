@@ -21,34 +21,30 @@ import {
 } from './hook-adapter.js'
 import {
   OPENCODE_PLUGIN_FILENAME,
+  opencodeConfigDir,
   opencodePluginPath,
   opencodePluginTarget,
 } from './opencode-plugin.js'
 import {
-  OPENCLAW_EVENTS,
   legacyOpenclawProjectPluginPath,
   openclawHasGlobalEvidence,
   openclawPluginPath,
   openclawPluginTarget,
 } from './openclaw-plugin.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
+import {
+  HOOK_EVENT_COMMAND_RE,
+  HOOK_EVENT_PATTERN,
+  HOOK_EVENT_TABLE,
+  OPENCLAW_EVENTS,
+  OPENCODE_EVENTS,
+} from './hook-events.js'
 import { accountHome } from './platform.js'
 import { sameLocalPath } from './local-path.js'
 import {
   NON_ROUTING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
 } from './question-timing.js'
-
-/**
- * The three joints the OpenCode plugin hooks into, as (harness event, the
- * `notifai hook` event it runs). The plugin is a module and has no settings
- * entries to read, so `findInstallations` reconstructs its handlers from this.
- */
-const OPENCODE_EVENTS = [
-  ['UserPromptSubmit', 'user-prompt-submit'],
-  ['Stop', 'stop'],
-  ['SessionEnd', 'session-end'],
-] as const
 
 /**
  * Harness hook installation.
@@ -222,8 +218,11 @@ export function stopHandlerIsDetached(
  * waiter finishes out of band. Codex and Claude on Windows block and print a
  * continuation to stdout. Every Question Routing owner declares the same
  * complete-window timeout; changing Codex's definition requires one explicit
- * trust approval.
+ * trust approval. Blocking hosts also set `statusMessage` so the held turn is
+ * not mistaken for a hang.
  */
+export const BLOCKING_STOP_STATUS_MESSAGE = 'Notifai: waiting for your answer'
+
 function stopHandler(
   adapterPath: string,
   harness: HookInstallableHarness | undefined,
@@ -234,7 +233,12 @@ function stopHandler(
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'codex' || harness === 'claude-code') {
-    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
+    return {
+      type: 'command',
+      command,
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
+      statusMessage: BLOCKING_STOP_STATUS_MESSAGE,
+    }
   }
   return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }
@@ -249,58 +253,26 @@ function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
 export function buildHookConfig(options: BuildOptions): HookConfig {
   const { adapterPath } = options
   const commandOptions = commandOptionsFrom(options)
-  return {
-    SessionStart: [
+  const hooks: HookConfig = Object.create(null)
+  for (const row of HOOK_EVENT_TABLE) {
+    if (row.document === null) continue
+    if (row.notifai === 'stop') {
+      hooks[row.document] = [{ hooks: [stopHandler(adapterPath, options.harness, commandOptions)] }]
+      continue
+    }
+    hooks[row.document] = [
       {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(adapterPath, 'session-start', options.harness, commandOptions),
-            // Activation is local context only: no config, credentials, or network.
-            timeout: 5,
+            command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+            timeout: row.timeoutSeconds,
           },
         ],
       },
-    ],
-    SubagentStart: [
-      {
-        hooks: [
-          {
-            type: 'command',
-            command: hookCommand(adapterPath, 'subagent-start', options.harness, commandOptions),
-            timeout: 5,
-          },
-        ],
-      },
-    ],
-    UserPromptSubmit: [
-      {
-        hooks: [
-          {
-            type: 'command',
-            command: hookCommand(adapterPath, 'user-prompt-submit', options.harness, commandOptions),
-            // Claude Code defaults UserPromptSubmit to 30s. Choose a shorter
-            // explicit budget so a slow network cannot delay the user's prompt.
-            timeout: 15,
-          },
-        ],
-      },
-    ],
-    Stop: [{ hooks: [stopHandler(adapterPath, options.harness, commandOptions)] }],
-    SessionEnd: [
-      {
-        hooks: [
-          {
-            type: 'command',
-            command: hookCommand(adapterPath, 'session-end', options.harness, commandOptions),
-            // Both harnesses give SessionEnd a ~1-3s budget, so this handler
-            // only touches local state.
-            timeout: 3,
-          },
-        ],
-      },
-    ],
+    ]
   }
+  return hooks
 }
 
 export interface CursorHookHandler {
@@ -320,46 +292,18 @@ interface CursorSettingsDocument {
 /** Cursor's native schema is flat and uses lower-camel lifecycle event names. */
 export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
   const commandOptions = commandOptionsFrom(options)
-  return {
-    sessionStart: [
-      {
-        command: hookCommand(options.adapterPath, 'session-start', 'cursor', commandOptions),
-        // Activation only emits local context and must not depend on setup.
-        timeout: 5,
-      },
-    ],
-    beforeSubmitPrompt: [
-      {
-        command: hookCommand(
-          options.adapterPath,
-          'user-prompt-submit',
-          'cursor',
-          commandOptions,
-        ),
-        timeout: 15,
-      },
-    ],
-    stop: [
-      {
-        command: hookCommand(options.adapterPath, 'activation-stop', 'cursor', commandOptions),
-        timeout: 5,
-        loop_limit: 1,
-      },
-      {
-        command: hookCommand(options.adapterPath, 'stop', 'cursor', commandOptions),
-        timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
-        // A continuation may register a real follow-up question. Match the
-        // session-state cap so those chains are useful but never unbounded.
-        loop_limit: 3,
-      },
-    ],
-    sessionEnd: [
-      {
-        command: hookCommand(options.adapterPath, 'session-end', 'cursor', commandOptions),
-        timeout: 3,
-      },
-    ],
+  const hooks: CursorHookConfig = Object.create(null)
+  for (const row of HOOK_EVENT_TABLE) {
+    if (row.cursor === null) continue
+    const handler: CursorHookHandler = {
+      command: hookCommand(options.adapterPath, row.notifai, 'cursor', commandOptions),
+      timeout:
+        row.notifai === 'stop' ? NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
+    }
+    if ('cursorLoopLimit' in row) handler.loop_limit = row.cursorLoopLimit
+    hooks[row.cursor] = [...(hooks[row.cursor] ?? []), handler]
   }
+  return hooks
 }
 
 /**
@@ -827,7 +771,7 @@ function globalHarnessEvidence(
   if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
   if (existsSync(codexGlobalDir(env, platform))) found.push('codex')
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
-  if (existsSync(path.join(home, '.config', 'opencode'))) found.push('opencode')
+  if (existsSync(opencodeConfigDir(env, platform))) found.push('opencode')
   if (openclawHasGlobalEvidence(existsSync, env, platform)) found.push('openclaw')
   return found
 }
@@ -901,7 +845,7 @@ function isOurCommand(command: string, scriptPath: string): boolean {
 
 /** Cleanup-only recognition for unmistakable pre-marker Notifai commands. */
 function isLegacyNotifaiCommand(command: string): boolean {
-  const hook = `['"]?\\s+hook (?:session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\\b`
+  const hook = `['"]?\\s+hook (?:${HOOK_EVENT_PATTERN})\\b`
   return (
     new RegExp(`(?:^|[\\s'"])notifai(?:\\.cmd)?${hook}`).test(command) ||
     new RegExp(
@@ -920,7 +864,7 @@ export function mergeCursorHooks(
   incoming: CursorHookConfig,
   scriptPath: string,
 ): { document: CursorSettingsDocument; added: string[]; replaced: string[]; removed: string[] } {
-  const hooks: CursorHookConfig = {}
+  const hooks: CursorHookConfig = Object.create(null)
   const added: string[] = []
   const replaced: string[] = []
   const removed: string[] = []
@@ -944,7 +888,7 @@ export function removeCursorHooks(
   existing: CursorSettingsDocument,
   scriptPath: string,
 ): { document: CursorSettingsDocument; added: string[]; replaced: string[]; removed: string[] } {
-  const hooks: CursorHookConfig = {}
+  const hooks: CursorHookConfig = Object.create(null)
   const replaced: string[] = []
   for (const [event, handlers] of Object.entries(existing.hooks ?? {})) {
     const foreign = handlers.filter((handler) => !isOurCommand(handler.command, scriptPath))
@@ -1019,7 +963,7 @@ export function mergeHooks(
   incoming: HookConfig,
   scriptPath: string,
 ): MergeResult {
-  const hooks: HookConfig = {}
+  const hooks: HookConfig = Object.create(null)
   const added: string[] = []
   const replaced: string[] = []
   const removed: string[] = []
@@ -1047,7 +991,7 @@ export function mergeHooks(
 }
 
 export function removeHooks(existing: SettingsDocument, scriptPath: string): MergeResult {
-  const hooks: HookConfig = {}
+  const hooks: HookConfig = Object.create(null)
   const replaced: string[] = []
   for (const [event, groups] of Object.entries(existing.hooks ?? {})) {
     if (!Array.isArray(groups)) {
@@ -1076,29 +1020,39 @@ export function removeHooks(existing: SettingsDocument, scriptPath: string): Mer
  * support.
  */
 export function applyPlan(file: string, document: SettingsDocument | CursorSettingsDocument): void {
+  preparePlan(file, document)()
+}
+
+/** Validate a proposed document before any file in a multi-file edit changes. */
+export function preparePlan(
+  file: string,
+  document: SettingsDocument | CursorSettingsDocument,
+  previous: string | null = readOptionalOwnedRegularFile(file),
+): () => void {
   const body = isTomlSettingsPath(file)
-    ? tomlBody(file, document as SettingsDocument)
+    ? tomlBody(file, document as SettingsDocument, previous)
     : `${JSON.stringify(document, null, 2)}\n`
-  // A document with nothing left in it is a file Notifai created and has just
-  // emptied. Keeping it would leave `{}` behind as the visible residue of an
-  // uninstall; a file that still holds anything of the User's is never empty.
-  if (
-    (!isTomlSettingsPath(file) && isEmptyJsonDocument(body)) ||
-    (isTomlSettingsPath(file) && body.trim() === '')
-  ) {
-    if (existsSync(file)) rmSync(file, { force: true })
-    return
+  const empty = isTomlSettingsPath(file) ? body.trim() === '' : isEmptyJsonDocument(body)
+  return prepareFileWrite(file, previous, empty ? null : body)
+}
+
+function readOptionalOwnedRegularFile(file: string): string | null {
+  try {
+    return readOwnedRegularFile(file)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
   }
-  if (existsSync(file)) {
-    try {
-      if (readOwnedRegularFile(file) === body) return
-    } catch {
-      // A file we cannot re-read still needs the replacement below.
-    }
+}
+
+function prepareFileWrite(file: string, previous: string | null, next: string | null): () => void {
+  return () => {
+    const current = readOptionalOwnedRegularFile(file)
+    if (current !== previous) throw new Error(`Configuration changed while preparing ${file}; retry.`)
+    if (current === next) return
+    if (next === null) rmSync(file, { force: true })
+    else atomicWriteFileSync(file, next, { requireCurrentUserOwner: true })
   }
-  atomicWriteFileSync(file, body, {
-    requireCurrentUserOwner: true,
-  })
 }
 
 function isEmptyJsonDocument(body: string): boolean {
@@ -1146,73 +1100,122 @@ export function cleanupEmptiedCodexLayer(paths: CodexLayerPaths): void {
  * came in as, and only the hooks tables are regenerated — re-emitted at the end
  * of the file, because TOML does not care where a table sits and splicing into
  * the middle would mean reasoning about a region line by line. If the result
- * cannot be proven to parse back to the document asked for, this falls back to
- * the whole-file rewrite rather than risk a file it half-understood.
+ * cannot be proven to parse back to the document asked for, refuse the write.
  */
-function tomlBody(file: string, document: SettingsDocument): string {
-  const whole = `${stringifyToml(document)}\n`
-  if (!existsSync(file)) return whole
-  let previous: string
-  try {
-    previous = readOwnedRegularFile(file)
-  } catch {
-    return whole
-  }
-  return spliceTomlHooks(previous, document) ?? whole
+function tomlBody(file: string, document: SettingsDocument, previous: string | null): string {
+  if (previous === null) return `${stringifyToml(document)}\n`
+  if (sameTomlValue(parseToml(previous), document)) return previous
+  const next = spliceTomlHooks(previous, document)
+  if (next === null) throw new Error(`Cannot preserve unrelated TOML configuration in ${file}; no changes written.`)
+  return next
 }
 
-/** A TOML table header line, e.g. `[hooks.state."…"]` or `[[hooks.Stop]]`. */
-const TOML_TABLE_HEADER = /^\s*\[\[?([^[\]]+)\]\]?\s*(?:#.*)?$/
-
-/**
- * The first key in a dotted TOML key path, unquoting it if it is quoted.
- * `hooks.state."/a/b:stop:0:0"` is rooted at `hooks`, and so is `hooks.Stop`.
- */
-function firstTomlKey(keyPath: string): string {
-  const trimmed = keyPath.trim()
-  const quote = trimmed[0]
-  if (quote === '"' || quote === "'") {
-    const end = trimmed.indexOf(quote, 1)
-    return end === -1 ? trimmed.slice(1) : trimmed.slice(1, end)
-  }
-  const dot = trimmed.indexOf('.')
-  return (dot === -1 ? trimmed : trimmed.slice(0, dot)).trim()
+interface TomlStatement {
+  start: number
+  end: number
+  table: boolean
+  path: string[]
+  comments: { start: number; end: number }[]
 }
 
-/**
- * `source` with its hooks tables replaced by `document`'s, or null when that
- * cannot be done safely — an inline top-level `hooks` key, or a result that
- * does not parse back to exactly the document asked for.
- */
+/** Only locate syntax; smol-toml owns validity and decoded key identity. */
+function tomlStatements(source: string): TomlStatement[] {
+  parseToml(source)
+  const statements: TomlStatement[] = []
+  let offset = 0
+  while (offset < source.length) {
+    if (/\s/.test(source[offset]!)) { offset++; continue }
+    if (source[offset] === '#') {
+      while (offset < source.length && source[offset] !== '\n') offset++
+      continue
+    }
+    const start = offset
+    let depth = 0
+    let equals = -1
+    const comments: TomlStatement['comments'] = []
+    while (offset < source.length) {
+      const char = source[offset]!
+      if (char === '"' || char === "'") {
+        const multiline = source.slice(offset, offset + 3) === char.repeat(3)
+        offset += multiline ? 3 : 1
+        while (offset < source.length) {
+          if (char === '"' && source[offset] === '\\') { offset += 2; continue }
+          if (source[offset] === char) {
+            let count = 1
+            while (source[offset + count] === char) count++
+            if (!multiline || count >= 3) {
+              offset += multiline ? count : 1
+              break
+            }
+            offset += count
+          } else offset++
+        }
+        continue
+      }
+      if (char === '#') {
+        if (depth === 0) break
+        const commentStart = offset
+        while (offset < source.length && source[offset] !== '\n') offset++
+        comments.push({ start: commentStart, end: offset })
+        continue
+      }
+      if (char === '\n' && depth === 0) break
+      if (char === '[' || char === '{') depth++
+      if (char === ']' || char === '}') depth--
+      if (char === '=' && depth === 0 && equals === -1) equals = offset
+      offset++
+    }
+    const table = source[start] === '['
+    const syntax = source.slice(start, offset).trim()
+    // A standalone table or a dummy assignment decodes dotted/quoted/escaped
+    // keys without interpreting brackets, dots or quotes inside a key as syntax.
+    let decoded: unknown = parseToml(table ? syntax : `${source.slice(start, equals)} = 0`)
+    const keys: string[] = []
+    while (decoded !== null && typeof decoded === 'object') {
+      if (Array.isArray(decoded)) { decoded = decoded[0]; continue }
+      const entries = Object.entries(decoded)
+      if (entries.length !== 1) break
+      const [key, value] = entries[0]!
+      keys.push(key)
+      decoded = value
+    }
+    statements.push({ start, end: offset, table, path: keys, comments })
+  }
+  return statements
+}
+
+/** Splice syntax spans only; even comments inside removed arrays survive. */
+function omitTomlStatements(source: string, removed: TomlStatement[]): string {
+  let next = ''
+  let offset = 0
+  for (const statement of removed) {
+    next += source.slice(offset, statement.start)
+    for (const comment of statement.comments) next += `${source.slice(comment.start, comment.end)}\n`
+    offset = statement.end
+  }
+  return next + source.slice(offset)
+}
+
+/** Replace hook syntax only, validating all unrelated parsed values. */
 function spliceTomlHooks(source: string, document: SettingsDocument): string | null {
-  const kept: string[] = []
-  let inHooks = false
-  for (const line of source.split('\n')) {
-    const header = TOML_TABLE_HEADER.exec(line)
-    if (header !== null) inHooks = firstTomlKey(header[1] ?? '') === 'hooks'
-    // A root-level `hooks = …` or `hooks.x = …` would survive the splice and
-    // then collide with the tables appended below.
-    if (!inHooks && /^\s*hooks\s*[.=]/.test(line)) return null
-    if (!inHooks) kept.push(line)
-  }
-
-  const hooks = document.hooks
-  const body = hooks === undefined ? '' : stringifyToml({ hooks })
-  const head = kept.join('\n').trimEnd()
-  const spliced =
-    body === '' ? `${head}\n` : head === '' ? `${body}\n` : `${head}\n\n${body}\n`
-
   try {
-    if (!sameTomlValue(parseToml(spliced), document)) return null
+    let table: string[] = []
+    const removed = tomlStatements(source).filter((statement) => {
+      if (statement.table) table = statement.path
+      return (statement.table ? table : [...table, ...statement.path])[0] === 'hooks'
+    })
+    const head = omitTomlStatements(source, removed)
+    const body = document.hooks === undefined ? '' : stringifyToml({ hooks: document.hooks })
+    const spliced = body === '' ? head : `${head}${head === '' || head.endsWith('\n') ? '' : '\n'}${body}\n`
+    return sameTomlValue(parseToml(spliced), document) ? spliced : null
   } catch {
     return null
   }
-  return spliced
 }
 
 /** Structural equality for parsed TOML, which carries dates as well as data. */
 function sameTomlValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true
+  if (Object.is(a, b)) return true
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
@@ -1223,14 +1226,14 @@ function sameTomlValue(a: unknown, b: unknown): boolean {
   const right = b as Record<string, unknown>
   const keys = Object.keys(left)
   if (keys.length !== Object.keys(right).length) return false
-  return keys.every((key) => key in right && sameTomlValue(left[key], right[key]))
+  return keys.every((key) => Object.hasOwn(right, key) && sameTomlValue(left[key], right[key]))
 }
 
 export function loadSettings(file: string): SettingsDocument {
   return isTomlSettingsPath(file) ? readTomlSettings(file) : readSettings(file)
 }
 
-function isTomlSettingsPath(file: string): boolean {
+export function isTomlSettingsPath(file: string): boolean {
   return file.endsWith('.toml')
 }
 
@@ -1433,7 +1436,148 @@ export function codexTrustProblems(
  * evidence that it has (and is itself worth reporting).
  */
 function isNotifaiCommand(command: string): boolean {
-  return / hook (session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\b/.test(command)
+  return HOOK_EVENT_COMMAND_RE.test(command)
+}
+
+/**
+ * Native plugin ids that would fire beside document hooks if left enabled.
+ *
+ * Notifai no longer wires through harness plugins. A leftover enablement from
+ * a trial or an older experiment still runs the same adapter command, so
+ * document handlers plus that plugin fire every event twice. Matching is the
+ * plugin name `notifai` with an optional `@marketplace` suffix — never a
+ * substring of someone else's plugin id.
+ */
+function isNotifaiNativePluginKey(key: string): boolean {
+  const id = key.split('@')[0]?.trim() ?? ''
+  return id.toLowerCase() === 'notifai'
+}
+
+function pluginEntryIsEnabled(value: unknown): boolean {
+  if (value === false) return false
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return (value as Record<string, unknown>)['enabled'] !== false
+  }
+  return true
+}
+
+export function notifaiNativePluginEnablementKeys(value: unknown): string[] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([key, enabled]) => isNotifaiNativePluginKey(key) && pluginEntryIsEnabled(enabled))
+    .map(([key]) => key)
+}
+
+export function stripObsoleteNotifaiPluginEnablement(document: SettingsDocument): {
+  document: SettingsDocument
+  removed: string[]
+} {
+  const next: SettingsDocument = { ...document }
+  const removed: string[] = []
+  for (const field of ['enabledPlugins', 'plugins'] as const) {
+    const value = next[field]
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
+    const record = { ...(value as Record<string, unknown>) }
+    let changed = false
+    for (const key of Object.keys(record)) {
+      if (!isNotifaiNativePluginKey(key) || !pluginEntryIsEnabled(record[key])) continue
+      delete record[key]
+      removed.push(key)
+      changed = true
+    }
+    if (!changed) continue
+    if (Object.keys(record).length === 0) delete next[field]
+    else next[field] = record
+  }
+  return { document: next, removed }
+}
+
+/**
+ * Remove enabled Notifai plugin tables only after lexical ownership and full
+ * semantic preservation are proven. Unsupported dotted/inline definitions
+ * fail before mutation, rather than silently leaving a second firing path.
+ */
+export function spliceOutNotifaiPluginTables(source: string): { next: string; removed: string[] } {
+  const expected = parseToml(source) as Record<string, unknown>
+  const plugins = expected['plugins']
+  const removed = notifaiNativePluginEnablementKeys(plugins)
+  if (removed.length === 0) return { next: source, removed }
+  const remaining = { ...(plugins as Record<string, unknown>) }
+  for (const key of removed) delete remaining[key]
+  expected['plugins'] = remaining
+  let dropping = false
+  const omitted = tomlStatements(source).filter((statement) => {
+    if (statement.table) {
+      dropping = statement.path[0] === 'plugins' && removed.includes(statement.path[1] ?? '')
+    }
+    return dropping
+  })
+  const next = omitTomlStatements(source, omitted)
+  const parsed = parseToml(next)
+  // Removing the last child table may also remove its implicit parent.
+  for (const value of [expected, parsed]) {
+    const entries = value['plugins']
+    if (entries && typeof entries === 'object' && !Array.isArray(entries) && Object.keys(entries).length === 0) {
+      delete value['plugins']
+    }
+  }
+  if (!sameTomlValue(parsed, expected)) {
+    throw new Error('Cannot safely remove obsolete native plugin wiring from this TOML form; disable the Notifai plugin or use [plugins."notifai"] table form and retry. No changes written.')
+  }
+  return { next, removed }
+}
+
+export interface ObsoleteNativePluginWiring {
+  harness: 'claude-code' | 'codex'
+  file: string
+  keys: string[]
+}
+
+/**
+ * Leftover native plugin enablement that would fire beside document hooks.
+ *
+ * Reads only harness settings files this installer already owns inspecting.
+ * It never shells out to a plugin CLI and never writes a plugin.
+ */
+export function findObsoleteNotifaiPluginWiring(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): ObsoleteNativePluginWiring[] {
+  const found: ObsoleteNativePluginWiring[] = []
+  const claudeFile = settingsFile('claude-code', env, platform)
+  if (existsSync(claudeFile)) {
+    try {
+      const keys = notifaiNativePluginEnablementKeys(loadSettings(claudeFile)['enabledPlugins'])
+      if (keys.length > 0) found.push({ harness: 'claude-code', file: claudeFile, keys })
+    } catch {
+      // Unreadable settings are reported by the ordinary install/doctor path.
+    }
+  }
+  const codexToml = codexMachineLayerPaths(env, platform).configToml
+  if (existsSync(codexToml)) {
+    try {
+      const keys = notifaiNativePluginEnablementKeys(loadSettings(codexToml)['plugins'])
+      if (keys.length > 0) found.push({ harness: 'codex', file: codexToml, keys })
+    } catch {
+      // Same: leave diagnosis to the settings reader that already ran.
+    }
+  }
+  return found
+}
+
+/**
+ * Plan native plugin retirement without changing configuration. The caller
+ * validates every destination before applying this plan under the layer lock.
+ */
+export function prepareCodexPluginCleanup(file: string): {
+  source: string | null
+  removed: string[]
+  apply: () => void
+} {
+  const previous = readOptionalOwnedRegularFile(file)
+  if (previous === null) return { source: null, removed: [], apply: prepareFileWrite(file, null, null) }
+  const { next, removed } = spliceOutNotifaiPluginTables(previous)
+  return { source: next, removed, apply: prepareFileWrite(file, previous, next) }
 }
 
 /**
@@ -1641,7 +1785,7 @@ export function handlerEvent(command: string): string | null {
 function readOwnedRegularFile(file: string): string {
   const stat = lstatSync(file)
   if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new Error(`${file} is not a regular file; refusing to read it.`)
+    throw new Error(`${file} is not a regular file${stat.isSymbolicLink() ? ' (symlink)' : ''}; refusing to read it.`)
   }
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
   if (uid !== undefined && stat.uid !== uid) {

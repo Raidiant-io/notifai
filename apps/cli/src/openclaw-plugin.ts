@@ -6,6 +6,8 @@ import {
   WORKER_ACTIVATION_CONTEXT,
 } from './session-activation.js'
 
+export { OPENCLAW_EVENTS } from './hook-events.js'
+
 /**
  * The OpenClaw adapter.
  *
@@ -31,14 +33,6 @@ export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
 const OPENCLAW_ADAPTER_VERSION = 2
-
-export const OPENCLAW_EVENTS = [
-  ['SessionStart', 'session-start'],
-  ['SubagentStart', 'subagent-start'],
-  ['UserPromptSubmit', 'user-prompt-submit'],
-  ['Stop', 'stop'],
-  ['SessionEnd', 'session-end'],
-] as const
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
