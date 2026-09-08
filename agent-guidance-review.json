@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c331a52cd355a1f59848b8664c92aa302a2bae4abb8a567f46bd2213ac38c424",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup, CLI readiness and domain terms against the protocol change that removes the sound-library receipt and challenge shapes and the catalog artifact marker. Custom sound sync is again an ordinary companion catalog refresh; no agent command, readiness promise, notification behavior, guidance topic or setup action is added or changed, and Question Routing ownership and non-exfiltration rules are unchanged.",
+  "behavior_digest": "sha256:0855b8844c1054f004e7ad04a47a980a4d29dbb34d1a17c4cedc97a0701ed6e1",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed the release metadata, queued-question admission/retirement, adapter-home refusal, session-name recovery, lifecycle event table, blocking Stop status, OpenCode config discovery, and configuration-preserving installer changes across all five surfaces. Corrected README lifecycle guidance: UserPromptSubmit retires only questions the prompt plausibly answers, not every waiting question. The skill already distinguishes registration from submission, retains original question identities, and delegates repair to diagnostics. The harness reference already explains migration of exclusively owned Codex inline handlers to hooks.json and required User approval, preserving foreign inline configuration; its older-definition migration exception qualifies ordinary upgrade stability. CLI output names obsolete plugin wiring, safe configuration refusals and session-store recovery at failure. Full-window Question Routing, exact-session trust admission, domain terms, guidance authority, non-exfiltration and packaged skill authority remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
