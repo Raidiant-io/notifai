@@ -22,6 +22,11 @@ decision-log references, or private project names. Use Conventional Commits
 1.0.0. `pnpm check:commit` is commitlint (`@commitlint/config-conventional`).
 The `commit-msg` hook runs it.
 
+Authored GitHub PR Markdown goes through a UTF-8 file passed as
+`gh pr create --body-file` or `gh pr edit --body-file`, then a read-back of
+the stored body. The rule lives in `docs/RELEASING.md`. That is not the CLI
+`--body` / `--body-file` Notification Request transport.
+
 ## Gates — run before every commit
 
 ```sh
