@@ -3467,10 +3467,13 @@ describe('Codex hook representation', () => {
     const json = path.join(codexHome(env), 'hooks.json')
     const foreign = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign-stop"}]}]}}\n'
     writeFileSync(json, foreign)
-    const originalApply = installHooksModule.applyPlan
-    const spy = vi.spyOn(installHooksModule, 'applyPlan').mockImplementation((file, document) => {
-      if (file === toml) throw new Error('injected source write failure')
-      originalApply(file, document)
+    const originalPrepare = installHooksModule.preparePlan
+    const spy = vi.spyOn(installHooksModule, 'preparePlan').mockImplementation((file, document, previous) => {
+      const apply = originalPrepare(file, document, previous)
+      return () => {
+        if (file === toml) throw new Error('injected source write failure')
+        apply()
+      }
     })
     try {
       expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.failed)
@@ -4385,7 +4388,7 @@ describe('stable hook installation', () => {
     io.errLines = []
     expect(hooksUninstallCommand(deps, { harness: 'codex' })).toBe(EXIT.failed)
     expect(readFileSync(toml, 'utf8')).toContain('plugins.notifai.enabled = true')
-    expect(io.errLines.join('\n')).toMatch(/Uninstall is not complete while that plugin remains/)
+    expect(io.errLines.join('\n')).toMatch(/Cannot safely remove obsolete native plugin wiring/)
   })
 
   it('leaves the leftover in place when the Machine install did not become current', () => {

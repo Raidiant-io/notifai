@@ -1776,17 +1776,18 @@ describe('writing config.toml around what is already there', () => {
     expect(after.hooks.state[`${layer}/config.toml:stop:0:0`]?.trusted_hash).toBe('sha256:abc')
   })
 
-  it('falls back to a whole-file write when the splice cannot be trusted', () => {
+  it('splices a root inline hooks value without losing comments', () => {
     const layer = layerFor('notifai-toml-inline-')
     const file = path.join(layer, 'config.toml')
-    // An inline top-level `hooks` key cannot be spliced around, only rewritten.
-    writeFileSync(file, '# this comment is lost, and that is the safe outcome\nhooks = {}\n')
+    // Lexical statement ownership covers root inline keys as well as tables.
+    writeFileSync(file, '# retain this comment\nhooks = {}\n')
 
     applyPlan(file, { hooks: ours() })
 
     const after = readFileSync(file, 'utf8')
     expect(after).toContain('[[hooks.Stop]]')
     expect(after).not.toContain('hooks = {}')
+    expect(after).toContain('# retain this comment')
   })
 
   it('is a no-op when the serialized document already matches the file', () => {
@@ -1876,6 +1877,36 @@ describe('obsolete native plugin enablement', () => {
     expect(next).toContain('# keep this comment')
     expect(next).toContain('[marketplaces.notifai-trial]')
     expect(next).not.toContain('plugins."notifai@notifai-trial"')
+  })
+
+  it('preserves strings in arrays, escaped quotes, disabled plugins and all comment text', () => {
+    const foreign = [
+      '# root note',
+      'unrelated_nan = nan',
+      'examples = ["""',
+      '[plugins.notifai]',
+      'keep \\"quoted\\" text',
+      '"""]',
+      '[plugins.notifai]',
+      'enabled = false',
+      'options = { text = "[plugins.notifai]" }',
+      '',
+    ].join('\n')
+    const owned = [
+      '[plugins."notifai@local"] # owned header note',
+      'enabled = true',
+      'values = [',
+      '  "remove", # keep array note',
+      ']',
+      '# final note',
+      '',
+    ].join('\n')
+    const { next, removed } = spliceOutNotifaiPluginTables(foreign + owned)
+    expect(removed).toEqual(['notifai@local'])
+    expect(parseToml(next)).toEqual(parseToml(foreign))
+    expect(next).toContain(foreign)
+    for (const comment of ['# owned header note', '# keep array note', '# final note']) expect(next).toContain(comment)
+    expect(spliceOutNotifaiPluginTables(next)).toEqual({ next, removed: [] })
   })
 
   it('discovers leftover Claude plugin enablement in an isolated harness home', () => {
