@@ -6,8 +6,6 @@ import {
   WORKER_ACTIVATION_CONTEXT,
 } from './session-activation.js'
 
-export { OPENCLAW_EVENTS } from './hook-events.js'
-
 /**
  * The OpenClaw adapter.
  *
