@@ -91,6 +91,7 @@ import {
   findLegacyProjectInstallations,
   loadSettings,
   mergeHooks,
+  removeHooks,
   QUESTION_STOP_TIMEOUT_SECONDS,
   settingsFile,
 } from './install-hooks.js'
@@ -4298,6 +4299,93 @@ describe('stable hook installation', () => {
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
 
     expect(readFileSync(projectPlugin, 'utf8')).toBe('export const SomeoneElse = () => ({})\n')
+  })
+
+  it('reports leftover native plugin enablement and will not call uninstall complete while it remains', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-obsolete-plugin-'))
+    const io = new PlainInteractiveIo()
+    const env = isolatedEnv(cwd)
+    const client = {
+      health: async () => false,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [] }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    const machine = path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json')
+
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    applyPlan(machine, {
+      ...JSON.parse(readFileSync(machine, 'utf8')),
+      enabledPlugins: { 'notifai@notifai-trial': true, 'other@market': true },
+    })
+
+    io.outLines = []
+    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).toMatch(/Obsolete native plugin wiring/)
+    expect(io.outLines.join('\n')).toMatch(/must never both fire/)
+
+    // Stripping document handlers alone would leave the plugin firing.
+    const documentsOnly = removeHooks(JSON.parse(readFileSync(machine, 'utf8')), scriptPath)
+    expect(documentsOnly.document.enabledPlugins).toEqual({
+      'notifai@notifai-trial': true,
+      'other@market': true,
+    })
+
+    io.outLines = []
+    io.errLines = []
+    expect(hooksUninstallCommand(deps, { harness: 'claude-code' })).toBe(EXIT.ok)
+    const after = JSON.parse(readFileSync(machine, 'utf8')) as {
+      enabledPlugins?: Record<string, unknown>
+      hooks?: unknown
+    }
+    expect(after.enabledPlugins).toEqual({ 'other@market': true })
+    expect(after.hooks).toBeUndefined()
+    expect(io.errLines.join('\n')).not.toMatch(/Uninstall is not complete/)
+  })
+
+  it('splices leftover Codex plugin tables on install so document hooks are the only firing path', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-codex-obsolete-plugin-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(env.CODEX_HOME!, 'config.toml')
+    mkdirSync(env.CODEX_HOME!, { recursive: true })
+    writeFileSync(
+      toml,
+      [
+        'model = "gpt-5.2"',
+        '',
+        '[plugins.memory]',
+        'enabled = true',
+        '',
+        '[plugins."notifai@notifai-trial"]',
+        'enabled = true',
+        '',
+      ].join('\n'),
+    )
+
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    const after = readFileSync(toml, 'utf8')
+    expect(after).toContain('model = "gpt-5.2"')
+    expect(after).toContain('[plugins.memory]')
+    expect(after).not.toContain('notifai@notifai-trial')
+    expect(io.outLines.join('\n')).toMatch(/Disabled leftover Notifai native plugin wiring/)
+  })
+
+  it('does not report Codex uninstall complete when leftover plugin enablement cannot be removed', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-codex-plugin-incomplete-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const toml = path.join(env.CODEX_HOME!, 'config.toml')
+    mkdirSync(env.CODEX_HOME!, { recursive: true })
+    writeFileSync(toml, 'model = "gpt-5.2"\nplugins.notifai.enabled = true\n')
+
+    io.outLines = []
+    io.errLines = []
+    expect(hooksUninstallCommand(deps, { harness: 'codex' })).toBe(EXIT.failed)
+    expect(readFileSync(toml, 'utf8')).toContain('plugins.notifai.enabled = true')
+    expect(io.errLines.join('\n')).toMatch(/Uninstall is not complete while that plugin remains/)
   })
 
   it('leaves the leftover in place when the Machine install did not become current', () => {

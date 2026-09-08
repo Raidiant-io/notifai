@@ -35,6 +35,7 @@ import {
   detectedHarnesses,
   findInstallations,
   findLegacyProjectInstallations,
+  findObsoleteNotifaiPluginWiring,
   handlerEvent,
   type Installation,
 } from './install-hooks.js'
@@ -1093,6 +1094,7 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (trust)': 'Codex hook trust',
   'hooks (stop shape)': 'Turn-end hook shape',
   'hooks (legacy project install)': 'Leftover project hook install',
+  'hooks (obsolete native plugin)': 'Obsolete native plugin wiring',
   'hooks (codex representation)': 'Codex hook representation',
   'hooks (question admission)': 'Question admission',
   'hooks (fired)': 'Hooks have run here',
@@ -1393,6 +1395,30 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       remedy: {
         by: 'cli' as const,
         summary: 'remove the leftover Project-scoped Notifai hooks',
+        command,
+      },
+    })
+  }
+
+  // A leftover native plugin enablement fires the same adapter command as the
+  // document handlers. Question Routing is claim-locked, but SessionStart
+  // guidance is not: both paths inject, and uninstall that only strips the
+  // document half would lie that Notifai is gone.
+  const obsoletePlugins = findObsoleteNotifaiPluginWiring(deps.env, deps.hookPlatform)
+  if (obsoletePlugins.length > 0) {
+    const harnesses = [...new Set(obsoletePlugins.map((entry) => entry.harness))]
+    const command = harnesses
+      .map((harness) => `notifai hooks install --harness ${harness}`)
+      .join(' && ')
+    checks.push({
+      name: 'hooks (obsolete native plugin)',
+      ok: false,
+      detail: `${obsoletePlugins
+        .map((entry) => `${entry.harness} (${entry.keys.join(', ')} in ${entry.file})`)
+        .join(', ')} — a leftover Notifai plugin and document hooks must never both fire. Run \`${command}\` to disable the plugin enablement`,
+      remedy: {
+        by: 'cli' as const,
+        summary: 'disable leftover Notifai native plugin wiring',
         command,
       },
     })

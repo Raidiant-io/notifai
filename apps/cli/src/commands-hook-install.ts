@@ -12,7 +12,7 @@ import {
 } from './harnesses.js'
 import { installHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
 import type { HookEvent } from './hook-events.js'
-import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
+import { HOOK_EVENT_COMMAND_RE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   applyPlan,
@@ -29,7 +29,9 @@ import {
   detectedHarnesses,
   findInstallations,
   findLegacyProjectInstallations,
+  findObsoleteNotifaiPluginWiring,
   handlerEvent,
+  isTomlSettingsPath,
   loadCursorSettings,
   loadSettings,
   machineHookFiles,
@@ -38,6 +40,8 @@ import {
   removeCursorHooks,
   removeHooks,
   settingsFile,
+  stripObsoleteNotifaiPluginEnablement,
+  stripObsoleteNotifaiPluginWiringFromFile,
   withCodexLayerTransaction,
 } from './install-hooks.js'
 import {
@@ -232,7 +236,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       }),
       scriptPath,
     )
-    applyPlan(file, result.document)
+    // JSON settings can carry leftover native plugin enablement in the same
+    // document as hooks. Strip it in this write so a crash cannot leave both
+    // firing. Codex plugin tables live outside `[hooks]` and need the dedicated
+    // TOML splice after this lock.
+    const next = isTomlSettingsPath(file)
+      ? result.document
+      : stripObsoleteNotifaiPluginEnablement(result.document).document
+    applyPlan(file, next)
     return { file, foreignStopCount }
   }
 
@@ -328,6 +339,7 @@ function finishInstall(
   if (code !== EXIT.ok) return code
   if (!machineInstallationIsCurrent(deps, harness)) return code
   removeLegacyProjectInstallations(deps, harness, scriptPath)
+  disableObsoleteNativePluginWiring(deps, harness)
   return code
 }
 
@@ -355,12 +367,7 @@ function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { comm
   if (!Array.isArray(groups)) return []
   return groups
     .flatMap((group) => group.hooks ?? [])
-    .filter(
-      (handler) =>
-        !/ hook (session-start|subagent-start|activation-stop|user-prompt-submit|stop|session-end)\b/.test(
-          handler.command,
-        ),
-    )
+    .filter((handler) => !HOOK_EVENT_COMMAND_RE.test(handler.command))
 }
 
 /**
@@ -530,10 +537,20 @@ function stripNotifaiHandlers(
   const removed: { file: string; events: string[] }[] = []
   for (const candidate of existing) {
     const strip = () => {
-      const result = cursor
-        ? removeCursorHooks(loadCursorSettings(candidate), scriptPath)
-        : removeHooks(loadSettings(candidate), scriptPath)
-      if (result.replaced.length > 0) applyPlan(candidate, result.document)
+      if (cursor) {
+        const result = removeCursorHooks(loadCursorSettings(candidate), scriptPath)
+        if (result.replaced.length > 0) applyPlan(candidate, result.document)
+        return result
+      }
+      const result = removeHooks(loadSettings(candidate), scriptPath)
+      if (isTomlSettingsPath(candidate)) {
+        if (result.replaced.length > 0) applyPlan(candidate, result.document)
+        return result
+      }
+      const cleaned = stripObsoleteNotifaiPluginEnablement(result.document)
+      if (result.replaced.length > 0 || cleaned.removed.length > 0) {
+        applyPlan(candidate, cleaned.document)
+      }
       return result
     }
     const result = locked ? strip() : withTargetFileLock(candidate, strip)
@@ -583,6 +600,7 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
           : withCodexLayerTransaction(codexPaths, (inspection) => {
               const stripped = stripNotifaiHandlers(files, scriptPath, false, true)
               cleanupEmptiedCodexLayer(inspection.paths)
+              stripObsoleteNotifaiPluginWiringFromFile(inspection.paths.configToml)
               return stripped
             })
       if (result.existing.length === 0) {
@@ -602,7 +620,46 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
   // Uninstall means no Notifai lifecycle wiring is left anywhere this Project
   // can reach, not just in the one file the Machine installation used.
   removeLegacyProjectInstallations(deps, harness, scriptPath)
+  disableObsoleteNativePluginWiring(deps, harness)
+  const leftoverPlugin = findObsoleteNotifaiPluginWiring(deps.env, deps.hookPlatform).filter(
+    (entry) => entry.harness === harness,
+  )
+  if (leftoverPlugin.length > 0) {
+    deps.io.err(
+      leftoverPlugin
+        .map(
+          (entry) =>
+            `Obsolete native plugin wiring still enabled (${entry.keys.join(', ')}) in ${entry.file}; document hooks and a leftover plugin must never both fire. Uninstall is not complete while that plugin remains. Disable that Notifai plugin and rerun \`notifai hooks uninstall --harness ${entry.harness}\`.`,
+        )
+        .join('\n'),
+    )
+    return EXIT.failed
+  }
   return EXIT.ok
+}
+
+function disableObsoleteNativePluginWiring(
+  deps: CommandDeps,
+  harness: HookInstallableHarness,
+): void {
+  if (harness !== 'claude-code' && harness !== 'codex') return
+  const leftover = findObsoleteNotifaiPluginWiring(deps.env, deps.hookPlatform).filter(
+    (entry) => entry.harness === harness,
+  )
+  for (const entry of leftover) {
+    try {
+      const removed = withTargetFileLock(entry.file, () =>
+        stripObsoleteNotifaiPluginWiringFromFile(entry.file),
+      )
+      if (removed.length > 0) {
+        deps.io.out(
+          `Disabled leftover Notifai native plugin wiring (${removed.join(', ')}) in ${entry.file} so it cannot fire beside document hooks`,
+        )
+      }
+    } catch (err) {
+      deps.io.err(`Could not disable leftover native plugin wiring in ${entry.file}: ${String(err)}`)
+    }
+  }
 }
 
 /**
