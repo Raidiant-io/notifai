@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "typescript": "^5.8.0",
-    "vitest": "^3.2.0"
+    "vitest": "^4.1.11"
   },
   "description": "Client-visible Notifai wire contract: notification drafts, REST v1 request/response types, status vocabulary, and capability negotiation.",
   "license": "Apache-2.0",
