@@ -51,7 +51,7 @@ describe('Question Routing readiness', () => {
           title: 'Direct wake route',
           status: 'optional-gap' as const,
           detail: 'the held Stop continuation remains available',
-          technical: { held_stop_continuation: true },
+          technical: { direct_wake_optional: true },
         },
       ],
     }) as { question_routing_ready: boolean; direct_wake_ready: boolean }

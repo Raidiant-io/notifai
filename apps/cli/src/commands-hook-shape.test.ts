@@ -27,10 +27,24 @@ describe('Stop continuation lifetime admission', () => {
     expect(stopShapeProblems(installation('claude-code', true, timeout), 'darwin')).toEqual([])
   })
 
-  it.each(['codex', 'claude-code'] as const)('requires a full-window budget for blocking %s on Windows', (harness) => {
-    expect(stopShapeProblems(installation(harness, false, 1), 'win32')).toHaveLength(1)
-    expect(stopShapeProblems(installation(harness, false, QUESTION_STOP_TIMEOUT_SECONDS), 'win32')).toEqual([])
+  it('requires a full-window budget for blocking claude-code on Windows', () => {
+    expect(stopShapeProblems(installation('claude-code', false, 1), 'win32')).toHaveLength(1)
+    expect(
+      stopShapeProblems(installation('claude-code', false, QUESTION_STOP_TIMEOUT_SECONDS), 'win32'),
+    ).toEqual([])
   })
+
+  it.each(['win32', 'darwin', 'linux'] as const)(
+    'needs an async codex Stop on %s, and stops demanding a full-window budget for it',
+    (platform) => {
+      // The queue route holds no turn open, so a short or absent timeout no
+      // longer truncates an answer window. That whole failure class leaves the
+      // answer path; what the handler must still be is detached.
+      expect(stopShapeProblems(installation('codex', true, 1), platform)).toEqual([])
+      expect(stopShapeProblems(installation('codex', false, QUESTION_STOP_TIMEOUT_SECONDS), platform))
+        .toEqual([expect.stringContaining('needs `async: true`')])
+    },
+  )
 
   it('still rejects a blocking Claude handler for the POSIX detached route', () => {
     expect(stopShapeProblems(installation('claude-code', false, QUESTION_STOP_TIMEOUT_SECONDS), 'linux'))

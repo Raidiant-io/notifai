@@ -31,14 +31,15 @@ export function stopShapeProblems(
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
     if (stopHandlerIsDetached(installation.harness, platform)) {
+      const route = installation.harness === 'codex' ? 'session-queue' : 'inbox'
       if (handler.asyncRewake === true) {
         problems.push(
-          `${installation.file} enables \`asyncRewake\`, but the Claude Code inbox route requires ordinary \`async: true\`; reinstall the Claude Code hooks`,
+          `${installation.file} enables \`asyncRewake\`, but the ${installation.harness} ${route} route requires ordinary \`async: true\`; reinstall the ${installation.harness} hooks`,
         )
       }
       if (handler.async !== true) {
         problems.push(
-          `${installation.file} declares a blocking Stop handler; the Claude Code wake route needs \`async: true\` so the turn ends while the waiter runs`,
+          `${installation.file} declares a blocking Stop handler; the ${installation.harness} wake route needs \`async: true\` so the turn ends while the waiter runs`,
         )
       }
       continue

@@ -140,7 +140,15 @@ export function canSend(readiness: Readiness): boolean {
   })
 }
 
-/** This exact invocation has a fully evidenced exact-session question route. */
+/**
+ * This exact invocation has a fully evidenced exact-session question route.
+ *
+ * A wake route marked `direct_wake_optional` is excluded deliberately: on those
+ * harnesses an unavailable direct wake costs latency, not delivery. Claude on
+ * Windows still holds the Stop turn open, and Codex's answer waits in the
+ * accepted journal for the session's next turn. Counting either as a routing
+ * failure would report a working question route as broken.
+ */
 export function questionRoutingReady(readiness: Readiness): boolean {
   const relevant = readiness.states.filter(
     (state) =>
@@ -151,8 +159,8 @@ export function questionRoutingReady(readiness: Readiness): boolean {
           state.id === 'hooks-wake-route' &&
           typeof state.technical === 'object' &&
           state.technical !== null &&
-          'held_stop_continuation' in state.technical &&
-          state.technical.held_stop_continuation === true
+          'direct_wake_optional' in state.technical &&
+          state.technical.direct_wake_optional === true
         ),
   )
   return relevant.length > 0 && relevant.every((state) => state.status === 'ready')

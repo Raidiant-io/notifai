@@ -243,7 +243,10 @@ describe('hook config', () => {
     expect(posixClaude['Stop']?.[0]?.hooks[0]?.async).toBe(true)
     expect(windowsClaude['Stop']?.[0]?.hooks[0]?.statusMessage).toBe(BLOCKING_STOP_STATUS_MESSAGE)
     expect(windowsClaude['Stop']?.[0]?.hooks[0]?.async).toBeUndefined()
-    expect(codex['Stop']?.[0]?.hooks[0]?.statusMessage).toBe(BLOCKING_STOP_STATUS_MESSAGE)
+    // Codex no longer holds its turn open: the answer goes to the thread's own
+    // inbox, so there is no wait to explain and nothing to mistake for a hang.
+    expect(codex['Stop']?.[0]?.hooks[0]?.statusMessage).toBeUndefined()
+    expect(codex['Stop']?.[0]?.hooks[0]?.async).toBe(true)
     expect(cursor['stop']?.some((handler) => 'statusMessage' in handler)).toBe(false)
   })
 

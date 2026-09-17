@@ -456,13 +456,7 @@ export async function hookRunCommand(
         ctx,
         envelope,
         processDeadlineAt,
-        stopWakeRoute(
-          deps,
-          harness,
-          envelope.session_id,
-          cwd,
-          event === 'stop',
-        ),
+        stopWakeRoute(deps, harness, envelope.session_id, cwd),
         event === 'stop',
       )
     }
@@ -506,18 +500,18 @@ export async function hookRunCommand(
 /**
  * The last meter for an answer this Stop hook accepted, chosen by harness.
  *
- * Both wake adapters need the harness process that invoked this hook: Claude's
- * to prove exact own-child session ownership before it posts to the inbox
- * socket, Codex's to know whether its own stdout is still a live continuation
- * channel. Without an exact session id neither can prove anything, so the
- * waiter falls back to the plain blocking Stop continuation.
+ * Claude's adapter needs the harness process that invoked this hook, to prove
+ * exact own-child session ownership before it posts to the inbox socket. Codex's
+ * needs only the thread id: queueing is a write to that thread's own durable
+ * inbox, which no other process can be confused for. Without an exact session id
+ * neither can prove anything, so the waiter falls back to the plain Stop
+ * continuation.
  */
 function stopWakeRoute(
   deps: CommandDeps,
   harness: HookInstallableHarness | undefined,
   sessionId: string | undefined,
   cwd: string,
-  continuationActive = true,
 ): EscalationDeliveryRoute | undefined {
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
@@ -534,10 +528,8 @@ function stopWakeRoute(
     return codexWakeRoute({
       threadId: sessionId,
       cwd,
-      sourcePid: deps.codexSourcePid ?? declaredSourcePid ?? process.ppid,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
-      continuationActive,
     })
   }
   return undefined

@@ -7,7 +7,7 @@ import {
 import { existsSync } from 'node:fs'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import { inspectCodexResume } from './codex-wake.js'
+import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
 import { type CliConfig } from './config.js'
 import {
   HARNESS_LABELS,
@@ -1367,7 +1367,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok: shapeProblems.length === 0,
     detail:
       shapeProblems.length === 0
-        ? `every installed Stop handler declares the shape its harness and host need: Claude Code async on POSIX and blocking on Windows, Codex blocking, each with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
+        ? `every installed Stop handler declares the shape its harness and host need: Codex async everywhere, Claude Code async on POSIX and blocking on Windows with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
         : shapeProblems.join('; '),
   })
 
@@ -1624,7 +1624,7 @@ function wakeRouteCheck(
         name: 'hooks (wake route)',
         ok: false,
         reportOnly: true,
-        technical: { held_stop_continuation: true },
+        technical: { direct_wake_optional: true },
         detail:
           'direct inbox wake is unavailable on Windows; the held Stop still returns the answer to this same Agent Session without another User prompt',
       }
@@ -1647,19 +1647,16 @@ function wakeRouteCheck(
     }
   }
   if (active.harness === 'codex') {
-    const readiness = inspectCodexResume(deps.env, {
-      platform: deps.hookPlatform ?? process.platform,
-      directoryExists: (directory) => existsSync(directory),
-    })
+    const readiness = inspectCodexQueue(active.sessionId, deps.env)
     return {
       name: 'hooks (wake route)',
       ok: readiness.state === 'ready',
       reportOnly: true,
-      technical: { held_stop_continuation: true },
+      technical: { direct_wake_optional: true },
       detail:
         readiness.state === 'ready'
-          ? `the held Codex turn continues from its own hook, and after it returns ${readiness.lockDirectory} can prove a stopped thread unowned before resuming it`
-          : `the held Codex turn still continues from its own hook, but after it returns nothing can be resumed: ${readiness.reason}. Answers wait for the next turn`,
+          ? `the Stop hook returns at once and the answer is queued into this thread's own inbox in ${codexQueueHomeDirectory(deps.env)}, so it starts a turn here without you — within seconds when this session is live, and at its next opening when it is not`
+          : `${readiness.reason}. Answers are still delivered, at this session's next turn rather than on their own`,
     }
   }
   return null

@@ -1,15 +1,15 @@
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
-  CODEX_THREAD_LOCK_DIR,
-  codexThreadLockPath,
+  CODEX_QUEUE_STORE_FILE,
+  codexHome,
+  codexQueueStorePath,
   codexWakeRoute,
-  observeCodexThread,
+  inspectCodexQueue,
   systemCodexWakeAdapters,
   type CodexWakeAdapters,
-  type CodexWakeObservation,
 } from './codex-wake.js'
 
 const THREAD_ID = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
@@ -26,39 +26,31 @@ const event = {
 
 const temporaries: string[] = []
 
-function codexHome(): string {
-  const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-wake-'))
-  temporaries.push(home)
-  mkdirSync(path.join(home, CODEX_THREAD_LOCK_DIR), { recursive: true })
-  return home
-}
-
 afterAll(() => {
   for (const directory of temporaries) rmSync(directory, { recursive: true, force: true })
 })
 
+function temporaryDirectory(): string {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-queue-'))
+  temporaries.push(directory)
+  return directory
+}
+
+interface QueuedMessage {
+  threadId: string
+  cwd: string
+  context: string
+}
+
 function adapters(
-  options: {
-    sourceAlive?: boolean
-    probes?: CodexWakeObservation[]
-    probe?: CodexWakeObservation
-  } = {},
-): CodexWakeAdapters & { resumed: Array<{ threadId: string; cwd: string; context: string }>; probed: string[] } {
-  const resumed: Array<{ threadId: string; cwd: string; context: string }> = []
-  const probed: string[] = []
-  const sequence = [...(options.probes ?? [])]
+  options: { fail?: Error } = {},
+): CodexWakeAdapters & { queued: QueuedMessage[] } {
+  const queued: QueuedMessage[] = []
   return {
-    resumed,
-    probed,
-    probeThreadWriter(lockPath) {
-      probed.push(lockPath)
-      return sequence.shift() ?? options.probe ?? { state: 'stopped' }
-    },
-    sourceAlive() {
-      return options.sourceAlive ?? false
-    },
-    async resume(threadId, cwd, context) {
-      resumed.push({ threadId, cwd, context })
+    queued,
+    async queue(threadId, cwd, context) {
+      if (options.fail !== undefined) throw options.fail
+      queued.push({ threadId, cwd, context })
     },
   }
 }
@@ -69,186 +61,101 @@ function route(
 ): ReturnType<typeof codexWakeRoute> {
   return codexWakeRoute({
     threadId: overrides.threadId ?? THREAD_ID,
-    cwd: '/tmp/notifai-codex-wake',
-    sourcePid: 4242,
+    cwd: '/tmp/notifai-codex-queue-cwd',
     env: overrides.env ?? { CODEX_HOME: '/tmp/notifai-codex-home' },
     adapters: wake,
   })
 }
 
-describe('Codex thread ownership', () => {
-  it('names the lock file Codex itself keys by thread id', () => {
-    expect(codexThreadLockPath(THREAD_ID, { CODEX_HOME: '/tmp/cx' })).toBe(
-      `/tmp/cx/${CODEX_THREAD_LOCK_DIR}/${THREAD_ID}.lock`,
+describe('Codex queue readiness', () => {
+  it('is ready for any well-formed thread id, with no store or platform precondition', () => {
+    expect(inspectCodexQueue(THREAD_ID, { CODEX_HOME: '/nowhere-at-all' })).toEqual({
+      state: 'ready',
+      threadId: THREAD_ID,
+    })
+  })
+
+  it('refuses a session id that is not a thread id, because no inbox can be named', () => {
+    const readiness = inspectCodexQueue('not-a-uuid', {})
+    expect(readiness.state).toBe('unavailable')
+    expect(readiness).toMatchObject({ reason: expect.stringContaining('not a thread id') })
+  })
+
+  it('refuses a missing session id rather than queueing into an unnamed thread', () => {
+    expect(inspectCodexQueue(undefined, {}).state).toBe('unavailable')
+  })
+
+  it('names the queue store under CODEX_HOME without opening it', () => {
+    const home = temporaryDirectory()
+    expect(codexHome({ CODEX_HOME: home })).toBe(home)
+    expect(codexQueueStorePath({ CODEX_HOME: home })).toBe(
+      path.join(home, CODEX_QUEUE_STORE_FILE),
     )
   })
+})
 
-  it('refuses to derive a lock path from a session id that is not a thread id', () => {
+describe('Codex queue delivery', () => {
+  it('queues the accepted answer into the thread that asked', async () => {
     const wake = adapters()
-
-    expect(observeCodexThread('../../etc/passwd', {}, wake)).toEqual({
-      state: 'unknown',
-      reason: 'the Codex session id is not a thread id',
-    })
-    expect(wake.probed).toEqual([])
+    const outcome = await route(wake).deliver(event)
+    expect(wake.queued).toEqual([
+      { threadId: THREAD_ID, cwd: '/tmp/notifai-codex-queue-cwd', context: event.context },
+    ])
+    expect(outcome.acknowledgement).toBe('delivered')
   })
 
-  it('reports a probe that throws as unknown rather than as an unowned thread', () => {
-    const observation = observeCodexThread(THREAD_ID, { CODEX_HOME: '/tmp/cx' }, {
-      probeThreadWriter() {
-        throw new Error('permission denied')
+  it('reports the queued stage, never a delivered one, because exit 0 is not consumption', async () => {
+    const outcome = await route(adapters()).deliver(event)
+    // A queue write against an exited thread succeeds identically to a live
+    // one. The journal settles so the answer is never sent twice, but nothing
+    // here may claim the session consumed it.
+    expect(outcome.log).toMatchObject({ route: 'session-queue', stage: 'queued' })
+    expect(JSON.stringify(outcome.log)).not.toContain('"stage":"delivered"')
+  })
+
+  it('is the only delivery the route can make: there is no resume path to double up with', () => {
+    // `codex exec resume <id> "<prompt>"` drains the pending queue *and* runs
+    // the prompt, so an adapter offering both would deliver one answer twice.
+    // The guarantee is structural: the adapter surface exposes queueing alone.
+    expect(Object.keys(systemCodexWakeAdapters({ CODEX_HOME: '/tmp' }))).toEqual(['queue'])
+    expect(route(adapters()).kind).toBe('session-queue')
+  })
+
+  it('journals the answer when the session id cannot name a thread', async () => {
+    const wake = adapters()
+    const outcome = await route(wake, { threadId: 'codex-session-7' }).deliver(event)
+    expect(wake.queued).toEqual([])
+    expect(outcome.acknowledgement).toBe('held')
+  })
+
+  it('journals the answer when queueing fails, instead of reporting it delivered', async () => {
+    const wake = adapters({ fail: new Error('no rollout found for thread id') })
+    const outcome = await route(wake).deliver(event)
+    expect(outcome.acknowledgement).toBe('held')
+    expect(JSON.stringify(outcome)).toContain('no rollout found for thread id')
+  })
+
+  it('never queues an answer the SessionEnd fence declined to commit', async () => {
+    const wake = adapters()
+    const outcome = await route(wake).deliver({ ...event, commitDelivery: () => false })
+    expect(wake.queued).toEqual([])
+    expect(outcome.acknowledgement).toBe('held')
+  })
+
+  it('commits before writing, so a crash mid-queue cannot silently drop the answer', async () => {
+    const order: string[] = []
+    const wake: CodexWakeAdapters = {
+      async queue() {
+        order.push('queue')
+      },
+    }
+    await route(wake).deliver({
+      ...event,
+      commitDelivery: () => {
+        order.push('commit')
+        return true
       },
     })
-
-    expect(observation).toEqual({
-      state: 'unknown',
-      reason: 'Codex thread-writer lock probe failed: permission denied',
-    })
-  })
-})
-
-describe('Codex writer-lock probe', () => {
-  const platform = process.platform
-  const supported = platform === 'darwin' || platform === 'freebsd' || platform === 'openbsd'
-
-  it.runIf(supported)('reads a kernel-held lock as a live writer and its release as stopped', () => {
-    const home = codexHome()
-    const lock = codexThreadLockPath(THREAD_ID, { CODEX_HOME: home })
-    writeFileSync(lock, '')
-    const probe = systemCodexWakeAdapters({ CODEX_HOME: home }).probeThreadWriter
-
-    // flock is held per open file description, so this process contends with
-    // itself exactly as a separate Codex process would.
-    const held = openSync(lock, 0x20 | 0x4)
-    try {
-      expect(probe(lock)).toEqual({ state: 'live' })
-    } finally {
-      closeSync(held)
-    }
-
-    expect(probe(lock)).toEqual({ state: 'stopped' })
-  })
-
-  it.runIf(supported)('treats a swept lock file inside a real lock directory as stopped', () => {
-    const home = codexHome()
-    const probe = systemCodexWakeAdapters({ CODEX_HOME: home }).probeThreadWriter
-
-    expect(probe(codexThreadLockPath(THREAD_ID, { CODEX_HOME: home }))).toEqual({
-      state: 'stopped',
-    })
-  })
-
-  it.runIf(supported)('never claims a thread is unowned when there is no lock directory', () => {
-    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-nohome-'))
-    temporaries.push(home)
-    const probe = systemCodexWakeAdapters({ CODEX_HOME: home }).probeThreadWriter
-    const lock = codexThreadLockPath(THREAD_ID, { CODEX_HOME: home })
-
-    expect(probe(lock)).toMatchObject({ state: 'unknown' })
-  })
-
-  it.runIf(!supported)('fails closed where no non-blocking lock probe exists', () => {
-    const probe = systemCodexWakeAdapters({ CODEX_HOME: '/tmp/cx' }).probeThreadWriter
-
-    expect(probe(`/tmp/cx/${CODEX_THREAD_LOCK_DIR}/${THREAD_ID}.lock`)).toMatchObject({
-      state: 'unknown',
-    })
-  })
-})
-
-describe('Codex wake delivery', () => {
-  it('continues the live session through its own Stop hook without probing anything', async () => {
-    const wake = adapters({ sourceAlive: true })
-
-    const outcome = await route(wake).deliver(event)
-
-    expect(JSON.parse(outcome.stdout!)).toEqual({ decision: 'block', reason: event.context })
-    expect(wake.probed).toEqual([])
-    expect(wake.resumed).toEqual([])
-  })
-
-  it('cold-resumes a stopped thread only after two probes both find no writer', async () => {
-    const wake = adapters({ probes: [{ state: 'stopped' }, { state: 'stopped' }] })
-
-    const outcome = await route(wake).deliver(event)
-
-    expect(wake.probed).toEqual([
-      `/tmp/notifai-codex-home/${CODEX_THREAD_LOCK_DIR}/${THREAD_ID}.lock`,
-      `/tmp/notifai-codex-home/${CODEX_THREAD_LOCK_DIR}/${THREAD_ID}.lock`,
-    ])
-    expect(wake.resumed).toEqual([
-      { threadId: THREAD_ID, cwd: '/tmp/notifai-codex-wake', context: event.context },
-    ])
-    expect(outcome.stdout).toBeUndefined()
-    expect(outcome.log).toEqual({ route: 'cold-resume', stage: 'delivered' })
-  })
-
-  it('never resumes a thread a live writer owns', async () => {
-    const wake = adapters({ probe: { state: 'live' } })
-
-    const outcome = await route(wake).deliver(event)
-
-    expect(wake.resumed).toEqual([])
-    expect(outcome.stdout).toBeUndefined()
-    expect(outcome.log).toEqual({
-      route: 'hold-for-next-turn',
-      stage: 'queued',
-      reason: 'a live writer owns the Codex thread and this hook can no longer continue it',
-    })
-    expect(outcome.notes.join('\n')).toContain('holding the accepted answer for the next turn')
-  })
-
-  it('never resumes a thread whose writer took the lock between the two probes', async () => {
-    const wake = adapters({ probes: [{ state: 'stopped' }, { state: 'live' }] })
-
-    const outcome = await route(wake).deliver(event)
-
-    expect(wake.probed).toHaveLength(2)
-    expect(wake.resumed).toEqual([])
-    expect(outcome.log).toMatchObject({ route: 'hold-for-next-turn', stage: 'queued' })
-  })
-
-  it('journals the answer when ownership cannot be probed at all', async () => {
-    const wake = adapters({ probe: { state: 'unknown', reason: 'no lock directory' } })
-
-    const outcome = await route(wake).deliver(event)
-
-    expect(wake.resumed).toEqual([])
-    expect(outcome.log).toEqual({
-      route: 'hold-for-next-turn',
-      stage: 'queued',
-      reason: 'no lock directory',
-    })
-  })
-
-  it('journals the answer when the session id cannot name a thread lock', async () => {
-    const wake = adapters()
-
-    const outcome = await route(wake, { threadId: 'codex-session-7' }).deliver(event)
-
-    expect(wake.probed).toEqual([])
-    expect(wake.resumed).toEqual([])
-    expect(outcome.log).toMatchObject({
-      route: 'hold-for-next-turn',
-      reason: 'the Codex session id is not a thread id',
-    })
-  })
-
-  it('does not report delivery when the cold resume fails', async () => {
-    const wake = adapters()
-    wake.resume = vi.fn(async () => {
-      throw new Error('codex exec exited 1')
-    })
-
-    await expect(route(wake).deliver(event)).rejects.toThrow('codex exec exited 1')
-  })
-})
-
-describe('Codex system adapters', () => {
-  it('reads this process as a live source and PID 0 as no source at all', () => {
-    const wake = systemCodexWakeAdapters({})
-
-    expect(wake.sourceAlive(process.pid)).toBe(true)
-    expect(wake.sourceAlive(0)).toBe(false)
+    expect(order).toEqual(['commit', 'queue'])
   })
 })
