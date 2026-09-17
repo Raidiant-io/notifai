@@ -9549,7 +9549,7 @@ describe('asking before the hooks have ever run', () => {
     expect(continuation?.detail).toContain('held through the complete answer window')
     expect(continuation?.detail).toContain('same Agent Session')
     expect(directWake).toMatchObject({ status: 'optional-gap', title: 'Direct wake route' })
-    expect(directWake?.technical).toEqual({ held_stop_continuation: true })
+    expect(directWake?.technical).toEqual({ direct_wake_optional: true })
     expect(result.question_routing_ready).toBe(true)
     expect(result.direct_wake_ready).toBe(false)
     expect(directWake?.detail).toContain('held Stop still returns the answer')
@@ -9579,7 +9579,7 @@ describe('asking before the hooks have ever run', () => {
     expect(out).toContain('refusing to guess at an undocumented wire format')
   })
 
-  it('reports Codex resume readiness from its writer-lock directory alone', async () => {
+  it('reports the Codex queue wake route without needing any lock directory', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-codex-wake-'))
     const io = new PlainInteractiveIo()
     const env = {
@@ -9593,17 +9593,20 @@ describe('asking before the hooks have ever run', () => {
       hookPlatform: 'darwin' as NodeJS.Platform,
     }
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8', env, {
+      harness: 'codex',
+      last_prompt_at: 42,
+    })
+    writeProjectSession(cwd, env, '9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8', 42, 'codex')
 
-    io.outLines = []
-    await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).toContain('nothing can be resumed: no thread-writer-lock')
-
-    mkdirSync(path.join(env['CODEX_HOME']!, 'thread-writer-locks'), { recursive: true })
     io.outLines = []
     await doctorCommand(deps, {})
     const out = io.outLines.join('\n')
+    // The queue needs no thread-writer-lock directory, no daemon and no
+    // platform syscall, so readiness turns on naming the thread and nothing else.
     expect(out).toMatch(/ok\s+Direct wake route/)
-    expect(out).toContain('can prove a stopped thread unowned before resuming it')
+    expect(out).toContain("queued into this thread's own inbox")
+    expect(out).not.toContain('thread-writer-lock')
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {

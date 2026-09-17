@@ -90,11 +90,14 @@ describe('harness contract', () => {
       'hold-for-next-turn',
     ])
     expect(HARNESS_CAPABILITIES.codex.stopContinuation).toBe('decision-block')
+    // Codex delivers through its thread's durable inbox. The writer-lock-gated
+    // cold resume it replaced is gone rather than demoted: queueing and
+    // resuming the same answer delivers it twice.
     expect(HARNESS_CAPABILITIES.codex.deliveryRoutes).toEqual([
-      'hook-continuation',
-      'cold-resume',
+      'session-queue',
       'hold-for-next-turn',
     ])
+    expect(HARNESS_CAPABILITIES.codex.deliveryRoutes).not.toContain('cold-resume')
     expect(HARNESS_CAPABILITIES.cursor).toEqual({
       stopContinuation: 'unsupported',
       deliveryRoutes: ['unsupported'],

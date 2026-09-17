@@ -199,27 +199,36 @@ export { QUESTION_STOP_TIMEOUT_SECONDS } from './question-timing.js'
 /**
  * Whether this harness's Stop handler runs detached from the turn.
  *
- * The installer and doctor share this predicate so they agree whether Claude
- * runs out of band. Owner lifetime is route-neutral and lives in
+ * The installer and doctor share this predicate so they agree which harnesses
+ * run out of band. Owner lifetime is route-neutral and lives in
  * `question-timing.ts`.
+ *
+ * Codex is detached on every platform because its delivery route is a write to
+ * the thread's own durable inbox rather than this hook's stdout: there is no
+ * continuation to keep a turn open for, and the queue has no platform
+ * dependency to gate on. Claude Code still needs its turn held on Windows,
+ * where no inbox socket exists.
  */
 export function stopHandlerIsDetached(
   harness: HookInstallableHarness | undefined,
   platform?: Parameters<typeof hookHostPlatform>[0],
 ): boolean {
+  if (harness === 'codex') return true
   return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
 }
 
 /**
  * The turn-end handler, whose shape is the whole per-harness difference.
  *
- * Claude Code takes the answer over its own inbox socket, so its Stop hook is
- * `async: true`: it returns immediately, the terminal is never held, and the
- * waiter finishes out of band. Codex and Claude on Windows block and print a
- * continuation to stdout. Every Question Routing owner declares the same
- * complete-window timeout; changing Codex's definition requires one explicit
- * trust approval. Blocking hosts also set `statusMessage` so the held turn is
- * not mistaken for a hang.
+ * Claude Code takes the answer over its own inbox socket and Codex takes it
+ * through its thread's durable inbox, so both Stop hooks are `async: true`:
+ * they return immediately, the terminal is never held, and the waiter finishes
+ * out of band. Only Claude on Windows still blocks and prints a continuation to
+ * stdout, because no inbox socket exists there. Every Question Routing owner
+ * declares the same complete-window timeout, because the detached waiter must
+ * outlive the answer window in every case; what changed for Codex is that a
+ * short or missing timeout no longer truncates a held *turn*. Blocking hosts
+ * also set `statusMessage` so the held turn is not mistaken for a hang.
  */
 export const BLOCKING_STOP_STATUS_MESSAGE = 'Notifai: waiting for your answer'
 

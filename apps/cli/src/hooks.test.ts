@@ -25,7 +25,7 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
 import { CLAUDE_POST_SEND_LIVENESS_MS, type ClaudeWakeAdapters } from './claude-wake.js'
-import type { CodexWakeAdapters, CodexWakeObservation } from './codex-wake.js'
+import type { CodexWakeAdapters } from './codex-wake.js'
 import { readStdinWithTimeout } from './hook-input.js'
 import {
   activeLogPath,
@@ -1351,20 +1351,19 @@ describe('the waiter owning one question to the end', () => {
         },
       } as ApiClient
     }
-    writeSessionState('full-default-window', h.env, { last_prompt_at: AWAY })
-    registerQuestion('full-default-window', h.env, { question: 'Deploy?' }, NOW)
+    writeSessionState('019ff700-1111-7161-ab6e-bd06b3b93c8e', h.env, { last_prompt_at: AWAY })
+    registerQuestion('019ff700-1111-7161-ab6e-bd06b3b93c8e', h.env, { question: 'Deploy?' }, NOW)
+    const queued: string[] = []
 
     await hookRunCommand(
-      h.deps,
+      { ...h.deps, codexWake: { queue: async (_t, _c, context) => void queued.push(context) } },
       'stop',
-      stdin({ session_id: 'full-default-window' }),
+      stdin({ session_id: '019ff700-1111-7161-ab6e-bd06b3b93c8e' }),
       'codex',
     )
 
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}').reason).toContain(
-      'Answer near the one-day edge',
-    )
+    expect(queued.at(-1)).toContain('Answer near the one-day edge')
   })
 
   it('delivers a reply that commits while the server close fence is finalizing silence', async () => {
@@ -2193,10 +2192,16 @@ describe('several questions in flight', () => {
         },
       } as ApiClient
     }
-    writeSessionState('recover-500', h.env, { last_prompt_at: AWAY })
-    registerQuestion('recover-500', h.env, { question: 'Start personally?' }, NOW - 300_000)
+    writeSessionState('019ff701-2222-7161-ab6e-bd06b3b93c8e', h.env, { last_prompt_at: AWAY })
+    registerQuestion('019ff701-2222-7161-ab6e-bd06b3b93c8e', h.env, { question: 'Start personally?' }, NOW - 300_000)
+    const queued: string[] = []
 
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'recover-500' }), 'codex')
+    await hookRunCommand(
+      { ...h.deps, codexWake: { queue: async (_t, _c, context) => void queued.push(context) } },
+      'stop',
+      stdin({ session_id: '019ff701-2222-7161-ab6e-bd06b3b93c8e' }),
+      'codex',
+    )
 
     // Submit recorded the durable id before any wait; a 500 must not erase it
     // mid-flight, and recovery must still surface the late answer.
@@ -2205,10 +2210,9 @@ describe('several questions in flight', () => {
     expect(h.recorder.receipts[0]).toMatch(/^req_[A-Za-z0-9_-]{22,24}$/)
     expect(polls).toBeGreaterThanOrEqual(3)
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
-    expect(readSessionState('recover-500', h.env).pending).toBeUndefined()
-    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { decision?: string; reason?: string }
-    expect(output.decision).toBe('block')
-    expect(output.reason).toContain('Yes — start personally')
+    expect(readSessionState('019ff701-2222-7161-ab6e-bd06b3b93c8e', h.env).pending).toBeUndefined()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toContain('Yes — start personally')
   })
 
   it('stops retrying and names a permanent rejection during the blocking multi-wait', async () => {
@@ -5457,22 +5461,17 @@ describe('Codex Stop wake route', () => {
   const CODEX_THREAD = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 
   function codexWake(
-    options: { sourceAlive?: boolean; probe?: CodexWakeObservation } = {},
-  ): CodexWakeAdapters & { resumed: string[]; probed: string[] } {
-    const resumed: string[] = []
-    const probed: string[] = []
+    options: { fail?: Error } = {},
+  ): CodexWakeAdapters & { queued: string[]; threads: string[] } {
+    const queued: string[] = []
+    const threads: string[] = []
     return {
-      resumed,
-      probed,
-      probeThreadWriter(lockPath) {
-        probed.push(lockPath)
-        return options.probe ?? { state: 'stopped' }
-      },
-      sourceAlive() {
-        return options.sourceAlive ?? true
-      },
-      async resume(_threadId, _cwd, context) {
-        resumed.push(context)
+      queued,
+      threads,
+      async queue(threadId, _cwd, context) {
+        if (options.fail !== undefined) throw options.fail
+        threads.push(threadId)
+        queued.push(context)
       },
     }
   }
@@ -5503,7 +5502,7 @@ describe('Codex Stop wake route', () => {
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
     registerQuestion(CODEX_THREAD, h.env, { question: 'Ship it?' }, NOW)
-    const wake = codexWake({ sourceAlive: true, probe: { state: 'live' } })
+    const wake = codexWake()
     let launched:
       | { envelope: { session_id?: string; cwd?: string }; harness: string }
       | undefined
@@ -5544,7 +5543,12 @@ describe('Codex Stop wake route', () => {
 
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
     expect(h.io.outLines).toEqual([])
-    expect(wake.resumed).toEqual([])
+    // The settlement owner no longer has to wait for a turn-end to hand the
+    // answer over: it queues as soon as the answer settles, which is what
+    // removes the held turn from the critical path.
+    expect(wake.queued).toHaveLength(1)
+    expect(wake.queued[0]).toContain('Ship it')
+    expect(wake.threads).toEqual([CODEX_THREAD])
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
     expect(readSessionState(CODEX_THREAD, h.env).last_stop_at).toBeUndefined()
 
@@ -5554,9 +5558,16 @@ describe('Codex Stop wake route', () => {
       stdin({ session_id: CODEX_THREAD, cwd: h.deps.cwd }),
       'codex',
     )
+    // The only thing left on stdout is the acknowledgement obligation, which is
+    // a separate mechanism from answer delivery and still blocks the turn. The
+    // answer itself is not queued a second time beside the copy Codex holds.
     expect(h.io.outLines.map((line) => JSON.parse(line))).toEqual([
-      expect.objectContaining({ decision: 'block' }),
+      expect.objectContaining({
+        decision: 'block',
+        reason: expect.stringContaining('Agent Acknowledgement still missing'),
+      }),
     ])
+    expect(wake.queued).toHaveLength(1)
 
     expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
       text: 'Shipping the chosen change now.',
@@ -5580,6 +5591,10 @@ describe('Codex Stop wake route', () => {
     )
 
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+    // One queue write for one answer, and the journal settled on it: no later
+    // Stop queues the same answer again beside the copy Codex holds. The single
+    // stdout line remains the earlier acknowledgement block, now satisfied.
+    expect(wake.queued).toHaveLength(1)
     expect(h.io.outLines).toHaveLength(1)
     expect(readSessionState(CODEX_THREAD, h.env).pending).toBeUndefined()
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
@@ -5593,7 +5608,7 @@ describe('Codex Stop wake route', () => {
     let settlementInput: { session_id?: string; cwd?: string } | undefined
     const deps: CommandDeps = {
       ...h.deps,
-      codexWake: codexWake({ sourceAlive: true, probe: { state: 'live' } }),
+      codexWake: codexWake(),
       codexSourcePid: 12345,
       spawnQuestionSettlement: (launch) => {
         settlementInput = launch.envelope
@@ -5624,7 +5639,7 @@ describe('Codex Stop wake route', () => {
     expect(readSessionState(CODEX_THREAD, h.env).pending).toBeUndefined()
   })
 
-  it('continues the held turn with decision:block when the answer arrives during the hold', async () => {
+  it('queues the answer into its own thread when it arrives during the wait', async () => {
     const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
@@ -5644,15 +5659,18 @@ describe('Codex Stop wake route', () => {
       'codex',
     )
 
-    expect(h.io.outLines).toHaveLength(1)
-    const decision = JSON.parse(h.io.outLines[0]!) as { decision: string; reason: string }
-    expect(decision.decision).toBe('block')
-    expect(decision.reason).toContain('"BETA"')
-    // The default route owes the thread-writer lock nothing: a live Codex is
-    // reading this stdout, and a probe could only take the answer away.
-    expect(wake.probed).toEqual([])
-    expect(wake.resumed).toEqual([])
-    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+    // No decision block and no held turn. The answer is written to the thread's
+    // durable inbox, which the live session drains as its own next user turn.
+    expect(h.io.outLines).toEqual([])
+    expect(wake.threads).toEqual([CODEX_THREAD])
+    expect(wake.queued).toHaveLength(1)
+    expect(wake.queued[0]).toContain('"BETA"')
+    // The queue write settles the journal: Codex now holds the copy that will
+    // be delivered, and replaying it would answer the same question twice.
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toMatchObject({
+      delivered_route: 'session-queue',
+      delivered_at: expect.any(Number),
+    })
   })
 
   it('continues a Windows Claude Code held Stop in the exact Agent Session', async () => {
@@ -5676,7 +5694,7 @@ describe('Codex Stop wake route', () => {
     expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
   })
 
-  it('replays an answer journaled after the hold on the next Stop', async () => {
+  it('queues an answer journaled by an earlier turn on the next Stop', async () => {
     const h = harness([])
     journaledAnswer(h)
     const wake = codexWake()
@@ -5688,16 +5706,40 @@ describe('Codex Stop wake route', () => {
       'codex',
     )
 
-    expect(h.io.outLines).toHaveLength(1)
-    expect(JSON.parse(h.io.outLines[0]!)).toMatchObject({ decision: 'block' })
-    // Still journaled: only a successor Stop proves the continued turn ran.
-    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+    expect(h.io.outLines).toEqual([])
+    expect(wake.queued).toHaveLength(1)
+    expect(wake.queued[0]).toContain('"BETA"')
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toMatchObject({
+      delivered_route: 'session-queue',
+    })
   })
 
-  it('cold-resumes the journaled answer when the Codex process is gone and no writer holds the thread', async () => {
+  it('queues the same way whether or not the asking Codex process is still alive', async () => {
+    // The old route needed a live source for its stdout continuation and a
+    // writer-lock probe for everything else. A queue write needs neither: the
+    // thread's inbox is the destination in both cases, and an exited session
+    // simply drains it the next time it is opened.
+    const results: number[] = []
+    for (const sourcePid of [12345, 999_999]) {
+      const h = harness([])
+      journaledAnswer(h)
+      const wake = codexWake()
+      await hookRunCommand(
+        { ...h.deps, codexWake: wake, codexSourcePid: sourcePid },
+        'stop',
+        stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
+        'codex',
+      )
+      expect(h.io.outLines).toEqual([])
+      results.push(wake.queued.length)
+    }
+    expect(results).toEqual([1, 1])
+  })
+
+  it('holds the answer for the next turn when the queue write fails', async () => {
     const h = harness([])
     journaledAnswer(h)
-    const wake = codexWake({ sourceAlive: false, probe: { state: 'stopped' } })
+    const wake = codexWake({ fail: new Error('no rollout found for thread id') })
 
     await hookRunCommand(
       { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
@@ -5707,25 +5749,7 @@ describe('Codex Stop wake route', () => {
     )
 
     expect(h.io.outLines).toEqual([])
-    expect(wake.resumed).toHaveLength(1)
-    expect(wake.resumed[0]).toContain('"BETA"')
-    expect(wake.probed).toHaveLength(2)
-  })
-
-  it('holds the answer rather than resuming a thread a live writer owns', async () => {
-    const h = harness([])
-    journaledAnswer(h)
-    const wake = codexWake({ sourceAlive: false, probe: { state: 'live' } })
-
-    await hookRunCommand(
-      { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
-      'stop',
-      stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
-      'codex',
-    )
-
-    expect(h.io.outLines).toEqual([])
-    expect(wake.resumed).toEqual([])
+    expect(wake.queued).toEqual([])
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
     expect(h.io.errLines.join('\n')).toContain('holding the accepted answer for the next turn')
   })
@@ -5974,9 +5998,14 @@ describe('escalation waiter delivery seam', () => {
     expect(wrote).toBe(false)
   })
 
+  // Windows Claude Code, because it is now the blocking-stdout route: Codex
+  // delivers through its thread inbox and writes no continuation to fence.
   it('fences production blocking stdout immediately before the harness write', async () => {
     const h = harness([reply({ text: 'Too late for stdout' })])
-    writeSessionState('waiter-stdout-cancel', h.env, { last_prompt_at: AWAY })
+    writeSessionState('waiter-stdout-cancel', h.env, {
+      last_prompt_at: AWAY,
+      harness: 'claude-code',
+    })
     registerQuestion('waiter-stdout-cancel', h.env, { question: 'Deploy?' }, NOW)
     const originalErr = h.io.err.bind(h.io)
     let ended = false
@@ -5989,10 +6018,10 @@ describe('escalation waiter delivery seam', () => {
     }
 
     await hookRunCommand(
-      h.deps,
+      { ...h.deps, hookPlatform: 'win32' },
       'stop',
       stdin({ session_id: 'waiter-stdout-cancel' }),
-      'codex',
+      'claude-code',
     )
 
     expect(ended).toBe(true)

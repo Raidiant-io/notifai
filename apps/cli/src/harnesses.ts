@@ -43,6 +43,7 @@ export const HARNESS_LABELS: Record<SourceContextHarness, string> = {
 export type DeliveryRoute =
   | 'hook-continuation'
   | 'inbox-socket'
+  | 'session-queue'
   | 'owned-control-plane'
   | 'cold-resume'
   | 'hold-for-next-turn'
@@ -75,9 +76,9 @@ const CLAUDE_CODE_WINDOWS_CAPABILITY: HarnessCapability = {
 
 const CODEX_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
-  deliveryRoutes: ['hook-continuation', 'cold-resume', 'hold-for-next-turn'],
+  deliveryRoutes: ['session-queue', 'hold-for-next-turn'],
   deliveryContract:
-    'live Stop continuation while the turn is held through the complete answer window; crash recovery may resume only a stopped thread behind its writer lock',
+    "the Stop hook returns at once and waits out of band through the complete answer window, then queues the answer into this same thread's durable inbox; a live session consumes it within seconds, a busy one at its next turn boundary, and a stopped one the next time it is opened",
 }
 
 const CURSOR_CAPABILITY: HarnessCapability = {
