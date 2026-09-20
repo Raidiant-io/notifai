@@ -17,7 +17,7 @@ test('CLI test runner resolves Vitest from the CLI package that owns it', () => 
     writeFileSync(path.join(cli, 'package.json'), '{"type":"module"}\n')
     writeFileSync(
       path.join(vitest, 'package.json'),
-      '{"name":"vitest","type":"module","exports":{"./vitest.mjs":"./vitest.mjs"}}\n',
+      '{"name":"vitest","type":"module","exports":{"./package.json":"./package.json"},"bin":{"vitest":"./vitest.mjs"}}\n',
     )
     writeFileSync(path.join(vitest, 'vitest.mjs'), 'process.exitCode = 0\n')
 
