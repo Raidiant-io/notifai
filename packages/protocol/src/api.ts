@@ -279,6 +279,8 @@ export const RegisterInstallationRequest = Type.Object(
   {
     /** Stable random identifier generated once per app installation. */
     installation_id: Type.String({ pattern: '^ins_[A-Za-z0-9_-]{10,64}$' }),
+    /** Account-local continuity across sign-out; never an authorization token. */
+    recovery_installation_id: Type.Optional(Type.String({ pattern: '^rec_[A-Za-z0-9_-]{10,64}$' })),
     platform: PlatformSchema,
     display_name: Type.String({ minLength: 1, maxLength: 128 }),
     /** Marketing version. Inventory only; capabilities remain routing authority. */
@@ -295,6 +297,7 @@ export type RegisterInstallationRequestT = Static<typeof RegisterInstallationReq
 
 export interface RegisterInstallationResponse {
   device_id: string
+  recovery_installation_id: string
   /** Omitted by servers released before compatibility inventory. */
   support?: SupportAssessment
 }
@@ -501,7 +504,10 @@ export type ReplyAnswerT = Static<typeof ReplyAnswer>
 
 export const SubmitReplyRequest = Type.Object(
   {
-    delivery_id: Type.String({ pattern: '^del_[A-Za-z0-9_-]+$' }),
+    delivery_id: Type.Optional(Type.String({ pattern: '^del_[A-Za-z0-9_-]+$' })),
+    /** Recovery replies name a Request and the current Device Installation. */
+    request_id: Type.Optional(Type.String({ pattern: '^req_[A-Za-z0-9_-]+$' })),
+    device_id: Type.Optional(Type.String({ pattern: '^dev_[A-Za-z0-9_-]+$' })),
     /** Device-generated id; makes outbox retries idempotent. */
     client_reply_id: Type.String({ minLength: 8, maxLength: 64 }),
     /**
@@ -523,7 +529,13 @@ export const SubmitReplyRequest = Type.Object(
      */
     source: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    oneOf: [
+      { required: ['delivery_id'], not: { anyOf: [{ required: ['request_id'] }, { required: ['device_id'] }] } },
+      { required: ['request_id', 'device_id'], not: { required: ['delivery_id'] } },
+    ],
+  },
 )
 export type SubmitReplyRequestT = Static<typeof SubmitReplyRequest>
 
@@ -554,7 +566,8 @@ export interface ReplyView {
   reply_id: string
   /** Monotonic cursor within the Notification Request. */
   seq: number
-  delivery_id: string
+  /** Null when answered through recovery or the native installation was removed. */
+  delivery_id: string | null
   device_id: string
   device_name: string
   /** Human-readable rendering of the whole reply, assembled server-side. */
