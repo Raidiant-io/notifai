@@ -57,10 +57,10 @@ Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
 package-manager, CLI-version, checkout, XDG directory, and Notifai preference
-changes. Stop definitions differ by harness: Claude Code's runs asynchronously
-with an explicit timeout above the longest answer window (POSIX hosts only — on
-Windows it blocks like the others), and Codex declares the same full-window
-timeout; prompt-submit and session-end retain fixed short limits on both.
+changes. Codex Stop runs asynchronously on every platform; Claude Code Stop
+runs asynchronously on POSIX and blocks on Windows. Both declare a timeout
+above the longest answer window so their waiters can own the complete window;
+prompt-submit and session-end retain fixed short limits on both.
 Codex SessionStart stays within the harness's built-in inline-context budget;
 Notifai does not add an output-limit override that would create a second trust
 identity. Upgrades preserve both the source file and the approved definition.
@@ -72,7 +72,7 @@ later upgrades must not require another.
 first. The current Agent Session's UserPromptSubmit observation proves that the
 exact session owns this turn. A historical Stop observation is diagnostic
 telemetry, not an admission prerequisite: the installed, trusted, current,
-singular Stop definition and its continuation owner establish that the asking
+singular Stop definition and its answer waiter establish that the asking
 turn can route the question. Ask exposes no `--session-id` override and will
 not guess one.
 When the failure includes a User-owned trust or permission `user_action`, relay
@@ -197,9 +197,16 @@ meter differs per harness:
   the successor turn in the same Agent Session without another User prompt.
   Direct inbox wake is unavailable, but it is not needed while this exact Stop
   continuation owns the answer.
-- **Codex:** the Stop hook is the waiter. It holds until the answer arrives or
-  the complete answer window ends, then continues the session by returning
-  `decision: block`.
+- **Codex:** the asynchronous Stop hook releases the turn and waits in the
+  background for the complete answer window. When an answer arrives, Notifai
+  invokes `codex queue` for the exact Agent Session in the same Codex home.
+  A live idle session starts a turn, a busy one consumes the answer after its
+  current turn, and a closed one keeps the queued answer until it is reopened.
+  Queue success proves storage, not consumption; UserPromptSubmit observes
+  consumption. Keep the original question and request identities if the route
+  fails so Notifai's journal can recover the answer. Never queue and resume the
+  same answer separately: a resume can consume the queue and the repeated
+  prompt, producing two copies.
 - **Crash recovery:** the answer journal protects an accepted answer if an
   owner process or its route fails. It is not the normal last meter for an
   unexpired question.
@@ -272,7 +279,8 @@ Those are three different controls and only the last one decides whether an
 answer is still wanted. Question Routing owns that complete window. Claude Code
 waits out of band and wakes the Agent Session on POSIX; on Windows its Stop
 stays held and returns the answer as the same Agent Session's continuation,
-like Codex. The journal is crash recovery, not the ordinary delivery path.
+while Codex queues the answer into its Agent Session's durable inbox. The
+journal is crash recovery, not the ordinary delivery path.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
