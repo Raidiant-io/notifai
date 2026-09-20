@@ -54,10 +54,13 @@ const DPAPI_TIMEOUT_MS = 30_000
 const DPAPI_FILE = 'credentials.dpapi'
 const KEYCHAIN_TIMEOUT_MS = 15_000
 
+// Use .NET directly: loading PowerShell's Utility module for Add-Type or
+// New-Object can exceed the helper timeout under Git Bash on Windows ARM.
+// The inbox Windows PowerShell host uses .NET Framework's System.Security.
 const PROTECT_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
-  'Add-Type -AssemblyName System.Security',
-  '$in = New-Object System.IO.MemoryStream',
+  "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Security')",
+  '$in = [System.IO.MemoryStream]::new()',
   '[Console]::OpenStandardInput().CopyTo($in)',
   `$entropy = [System.Text.Encoding]::UTF8.GetBytes('${DPAPI_ENTROPY}')`,
   '$protected = [System.Security.Cryptography.ProtectedData]::Protect($in.ToArray(), $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
@@ -67,8 +70,8 @@ const PROTECT_SCRIPT = [
 
 const UNPROTECT_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
-  'Add-Type -AssemblyName System.Security',
-  '$b64 = [System.Text.Encoding]::ASCII.GetString((& { $in = New-Object System.IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($in); $in.ToArray() })).Trim()',
+  "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Security')",
+  '$b64 = [System.Text.Encoding]::ASCII.GetString((& { $in = [System.IO.MemoryStream]::new(); [Console]::OpenStandardInput().CopyTo($in); $in.ToArray() })).Trim()',
   '$protected = [Convert]::FromBase64String($b64)',
   `$entropy = [System.Text.Encoding]::UTF8.GetBytes('${DPAPI_ENTROPY}')`,
   '$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
