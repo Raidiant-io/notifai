@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.2.1](https://github.com/Raidiant-io/notifai/compare/v11.2.0...v11.2.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **cli:** resolve the global update target through npx ([#177](https://github.com/Raidiant-io/notifai/issues/177)) ([4001eec](https://github.com/Raidiant-io/notifai/commit/4001eecfa6f0d41bead5ea7fc601b02e17f2c852))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 7.0.3 to 7.0.4
+
 ## [11.2.0](https://github.com/Raidiant-io/notifai/compare/v11.1.1...v11.2.0) (2026-09-20)
 
 
