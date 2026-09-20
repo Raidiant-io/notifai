@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { EXIT, type CommandDeps } from './commands-core.js'
+import { agentUpdateNotice } from './agent-update-notice.js'
+import { resolveActiveHarness } from './commands-harness-context.js'
+import { projectBinding, projectEnabled } from './project-enablement.js'
+import { EXIT, updateCliCommand, type CommandDeps } from './commands-core.js'
 import { GUIDANCE_TRUST_PREAMBLE, SHIPPED_GUIDANCE, shippedGuidanceTopic } from './guidance-content.js'
 import {
   GUIDANCE_TOPIC_MAX_BYTES,
@@ -11,6 +14,7 @@ import {
   resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
+import { loadConfig } from './config.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -25,13 +29,20 @@ import { renderGuidance } from './guidance-render.js'
  * house rules from the shipped default without the output stopping being
  * Markdown.
  */
-export function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean }): number {
+export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
+  const active = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
+  const notice = active.contested.length === 0 && active.active?.harness === 'hermes' &&
+    projectEnabled(projectBinding(deps.cwd, deps.env, loadConfig({ cwd: deps.cwd, env: deps.env }).project.value))
+    ? await agentUpdateNotice({ env: deps.env, now: (deps.now ?? Date.now)(), updateCommand: updateCliCommand(deps),
+        ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
+    : undefined
   const topics = resolveGuidance({ cwd: deps.cwd, env: deps.env })
   if (flags.json) {
     deps.io.out(
       JSON.stringify(
         {
           trust: GUIDANCE_TRUST_PREAMBLE,
+          ...(notice === undefined ? {} : { update_notice: notice }),
           topics: topics.map((topic) => ({
             name: topic.name,
             source: topic.source,
@@ -47,6 +58,7 @@ export function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean }
     return EXIT.ok
   }
   deps.io.out(renderGuidance(topics))
+  if (notice !== undefined) deps.io.out(notice)
   return EXIT.ok
 }
 

@@ -18,10 +18,11 @@ bin, `npx --yes @raidiant/notifai@<version>` is supported. Pin the version.
 `hooks install` then writes that same pinned npx invocation into the harness
 adapter. This is slower than a real install and is not the default path.
 
-Run `notifai doctor` at a human terminal to check whether a newer CLI is
-available. JSON and noninteractive diagnostics currently check compatibility
-without looking up optional npm updates. A release does not update an existing
-installation automatically.
+Run `notifai doctor` or `notifai update --check --json` to check for a newer
+CLI and inspect release notes, guidance, and session requirements. Enabled
+Projects give root agents a quiet update offer at most once every seven days
+across the machine. A release does not install itself or restart an Agent
+Session automatically. The package includes its changelog.
 
 Use `notifai update` for later global updates. It repairs the installation the
 shell actually selects and keeps the stable hook adapter on that same CLI. It

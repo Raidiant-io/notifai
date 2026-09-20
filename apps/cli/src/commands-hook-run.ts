@@ -1,4 +1,5 @@
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
+import { agentUpdateNotice } from './agent-update-notice.js'
 import { claudeWakeRoute } from './claude-wake.js'
 import { ApiCallError } from './client.js'
 import { codexWakeRoute } from './codex-wake.js'
@@ -9,6 +10,7 @@ import {
   log,
   makeClient,
   rejectedPaths,
+  updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
@@ -189,11 +191,17 @@ export async function hookRunCommand(
         })
       }
     }
+    const notice = event === 'session-start' &&
+      ['claude-code', 'codex', 'opencode', 'openclaw'].includes(harness ?? '')
+      ? await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
+          ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
+      : undefined
     const stdout = sessionActivationOutput(
       harness,
       event === 'session-start' ? 'SessionStart' : 'SubagentStart',
       cwd,
       deps.env,
+      notice,
     )
     if (stdout !== undefined) deps.io.out(stdout)
     if (event === 'session-start' && envelope.session_id !== undefined) {
@@ -308,7 +316,11 @@ export async function hookRunCommand(
       outcome: claimed ? 'followup-added' : 'already-activated',
       decided: claimed,
     })
-    if (claimed) deps.io.out(cursorStopActivationOutput(cwd, deps.env))
+    if (claimed) {
+      const notice = await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
+        ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
+      deps.io.out(cursorStopActivationOutput(cwd, deps.env, notice))
+    }
     return EXIT.ok
   }
 

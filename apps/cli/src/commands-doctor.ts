@@ -690,22 +690,16 @@ export async function assessReadiness(
   }
 
   states.push(await setupProofState(deps, config, accountClient, accountDevices))
-  await applyRegistryRecommendation(deps, options.json === true, states)
 
   return { states }
 }
 
 async function applyRegistryRecommendation(
   deps: CommandDeps,
-  json: boolean,
   states: ReadinessState[],
 ): Promise<void> {
   if (
-    !shouldConsultCliRegistry({
-      ...(deps.io.interactive === undefined ? {} : { interactive: deps.io.interactive }),
-      json,
-      env: deps.env,
-    })
+!shouldConsultCliRegistry({ env: deps.env })
   ) {
     return
   }
@@ -713,7 +707,7 @@ async function applyRegistryRecommendation(
   const newer = newerPublishedCli(thisCliVersion(), latest)
   if (newer === null) return
   const contract = states.find((state) => state.id === 'contract')
-  if (contract === undefined || contract.status === 'gap') return
+  if (contract === undefined || contract.status === 'gap' || contract.status === 'optional-gap') return
   contract.status = 'optional-gap'
   contract.detail = CLI_UPDATE_AVAILABLE
   contract.remedy = {
@@ -896,6 +890,7 @@ export async function doctorCommand(
 ): Promise<number> {
   const readiness =
     options.readiness ?? (await assessReadiness(deps, flags.json === true ? { json: true } : {}))
+  await applyRegistryRecommendation(deps, readiness.states)
   const blocker = firstBlocker(readiness)
   const ok = blocker === null
 

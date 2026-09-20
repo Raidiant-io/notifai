@@ -80,3 +80,14 @@ test('the packed-install script never spawns the third-party skills installer', 
   assert.match(source, /phase: 'packed-npm-install'/u)
   assert.match(source, /stageShippedSkillBundle/u)
 })
+
+test('the packed gate rejects a release that omitted its changelog before installation', () => {
+  const fixture = mkdtempSync(path.join(os.tmpdir(), 'notifai-missing-changelog-'))
+  try {
+    const protocolTarball = fixtureTarball(fixture, 'protocol.tgz', { name: '@raidiant/notifai-protocol', version: '7.0.2' })
+    const cliTarball = fixtureTarball(fixture, 'cli.tgz', { name: '@raidiant/notifai', version: '11.1.1', dependencies: { '@raidiant/notifai-protocol': '7.0.2' } })
+    const run = spawnSync(process.execPath, [script, '--cli-tarball', cliTarball, '--protocol-tarball', protocolTarball], { encoding: 'utf8' })
+    assert.equal(run.status, 1)
+    assert.match(run.stderr, /packed CHANGELOG.md is missing/)
+  } finally { rmSync(fixture, { recursive: true, force: true }) }
+})

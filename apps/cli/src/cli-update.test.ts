@@ -172,6 +172,25 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
   })
 
+  it('gets the handoff from the installed artifact using the previous PATH version', () => {
+    const f = recoveryFixture()
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(packageVersion())});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(packageVersion())},args:process.argv.slice(2),new_release_marker:'new artifact'}));` })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    const report = JSON.parse(f.io.outLines[0]!)
+    expect(report.handoff).toMatchObject({ new_release_marker: 'new artifact', args: ['update', '--check', '--json', '--from', '3.0.1'] })
+    expect(report.handoff_error).toBeNull()
+    expect(report.follow_up_required).toBe(true)
+  })
+
+  it('reports incomplete follow-up when the new artifact rejects its handoff', () => {
+    const f = recoveryFixture()
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(packageVersion())});else process.stdout.write(JSON.stringify({ok:false,read_only:true,running_version:${JSON.stringify(packageVersion())}}));` })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    const report = JSON.parse(f.io.outLines[0]!)
+    expect(report.handoff).toBeNull()
+    expect(report.handoff_error).toContain('update --check --json')
+  })
+
   it('gives unattended failures structured retry evidence without requiring --json', () => {
     const f = recoveryFixture()
     f.setPlan({ exit: 1 })
@@ -312,7 +331,8 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write(${JSON.
     ])
     expect(spawnSync(stale.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(currentVersion)
     expect(inspectHookAdapter(home).target).toMatchObject({ scriptPath: realpathSync(stale.artifact) })
-    expect(io.outLines).toEqual(['Notifai is updated. Re-run `notifai init` to continue setup.'])
+    expect(io.outLines.join('\n')).toContain('notifai update --check --json')
+    expect(io.outLines.join('\n')).toContain('a restart is not automatic')
     expect(io.outLines.join('\n')).not.toContain(root)
     expect(io.errLines).toEqual([])
 

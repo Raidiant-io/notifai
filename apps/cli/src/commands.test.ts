@@ -58,6 +58,7 @@ import {
   describeHookFailure,
   devicesCommand,
   doctorCommand,
+  cliUpdateCheckCommand,
   EXIT,
   hooksInstallCommand,
   hooksUninstallCommand,
@@ -3692,6 +3693,8 @@ describe('Codex hook representation', () => {
     io.outLines = []
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     expect(readFileSync(json, 'utf8')).toBe(before)
+    expect(io.outLines.join('\n')).toContain('this write needs no restart')
+    expect(io.outLines.join('\n')).not.toContain('Start one fresh')
   })
 
   it('deletes an emptied hooks.json instead of leaving an empty residue', () => {
@@ -3976,6 +3979,64 @@ describe('harness activation guidance', () => {
     expect(inspected.target && 'spec' in inspected.target ? inspected.target.spec : null).toMatch(
       /^@raidiant\/notifai@/,
     )
+  })
+
+  it.each(['claude-code', 'codex', 'cursor', 'opencode', 'openclaw'] as const)('does not prescribe a restart for an unchanged %s installation', harness => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-unchanged-hooks-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    expect(hooksInstallCommand(deps, { harness, execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+    expect(hooksInstallCommand(deps, { harness, execPath, scriptPath })).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain('this write needs no restart')
+    expect(io.outLines.join('\n')).toContain('update --check --json')
+  })
+
+  it.each(['cursor', 'opencode', 'openclaw'] as const)('keeps supported %s update readiness separate from unavailable async questions', async harness => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-blocking-update-'))
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), ...(harness === 'cursor' ? { CURSOR_AGENT: '1' } : { NOTIFAI_ACTIVE_HARNESS: harness, NOTIFAI_ACTIVE_SESSION_ID: 'current-session' }) }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    expect(hooksInstallCommand(deps, { harness, execPath, scriptPath })).toBe(EXIT.ok)
+    const now = Date.now()
+    writeProjectSession(cwd, env, 'current-session', now, harness)
+    writeSessionState('current-session', env, { harness, last_prompt_at: now })
+    io.outLines = []
+    expect(await cliUpdateCheckCommand(deps, { json: true })).toBe(EXIT.ok)
+    const report = JSON.parse(io.outLines[0]!)
+    expect(report.session, JSON.stringify(report.session)).toMatchObject({ harness, assessment: harness === 'cursor' ? 'needs_attention' : 'continue', restart_required: harness === 'cursor' ? null : false })
+    for (const check of report.session.diagnostics.filter((s: { id: string }) => ['hooks-question-admission', 'hooks-answer-continuation'].includes(s.id))) {
+      expect(check).not.toHaveProperty('remedy')
+    }
+  })
+
+  it('does not call an unactivated Claude session safe to continue', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-unactivated-update-'))
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'not-activated' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+    expect(await cliUpdateCheckCommand(deps, { json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines[0]!).session).toMatchObject({ assessment: 'needs_attention', restart_required: null })
+  })
+
+  it('reports an explicit update plan without installing hooks or skills or changing question state', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-plan-'))
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'update-plan-session' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env,
+      fetchImpl: async () => new Response(JSON.stringify({ latest: '99.0.0' })) }
+    writeSessionState('update-plan-session', env, { harness: 'codex' })
+    const before = readSessionState('update-plan-session', env)
+    expect(await cliUpdateCheckCommand(deps, { json: true, from: '1.0.0' })).toBe(EXIT.ok)
+    const report = JSON.parse(io.outLines[0]!)
+    expect(report).toMatchObject({ ok: true, read_only: true, latest_version: '99.0.0',
+      guidance: { verified: true }, session: { harness: 'codex', restart_required: null, assessment: 'needs_attention' } })
+    expect(report.changelog.text).toBeTruthy()
+    expect(report.guidance.update_reference_path).toMatch(/references[/\\]updates.md$/)
+    expect(findInstallations(env)).toEqual([])
+    expect(readSessionState('update-plan-session', env)).toEqual(before)
   })
 
   it('keeps OpenCode permission prompts local and reports unsupported continuation', async () => {
@@ -4992,7 +5053,7 @@ describe('interactive command UX', () => {
     expect(io.checks).toEqual([])
   })
 
-  it('consults npm latest from an interactive doctor without failing the run', async () => {
+  it.each([false, true])('reports npm updates in explicit doctor, JSON=%s', async (json) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-registry-'))
     const io = new InteractiveIo()
     const client = {
@@ -5007,9 +5068,15 @@ describe('interactive command UX', () => {
       fetchImpl: async () => new Response(JSON.stringify({ latest: '99.0.0' }), { status: 200 }),
     }
 
-    expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines).toContain('A newer Notifai is available.')
-    expect(io.outLines).toContain(updateCliCommand(deps))
+    expect(await doctorCommand(deps, { json })).toBe(EXIT.failed)
+    if (json) {
+      expect(JSON.parse(io.outLines[0]!).states).toContainEqual(expect.objectContaining({
+        id: 'contract', status: 'optional-gap', detail: 'A newer Notifai is available.',
+      }))
+    } else {
+      expect(io.outLines).toContain('A newer Notifai is available.')
+      expect(io.outLines).toContain(updateCliCommand(deps))
+    }
   })
 })
 

@@ -50,6 +50,7 @@ export { logsCommand, parseSince } from './commands-logs.js'
 export { SKILLS_SOURCE } from './commands-skill.js'
 export { initCommand, projectSlugFrom } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
+export { cliUpdateCheckCommand } from './commands-update-check.js'
 export { cliUpdateCommand } from './commands-update.js'
 export {
   projectDisableCommand,
@@ -58,3 +59,5 @@ export {
 } from './commands-project.js'
 export { agentSessionRenameCommand } from './commands-agent-sessions.js'
 export { realIo } from './commands-io.js'
+
+export { updateSkillCommand } from './commands-update-skill.js'
