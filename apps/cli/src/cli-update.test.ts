@@ -98,6 +98,29 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     return { root, installed, running, home, adapterBefore, io, deps, setPlan }
   }
 
+  it('updates the real PATH winner when npx prepends its own temporary launcher', () => {
+    const f = recoveryFixture()
+    const modules = path.join(f.root, '_npx', 'cache-key', 'node_modules')
+    const artifact = path.join(modules, '@raidiant', 'notifai', 'dist', 'main.js')
+    const bin = path.join(modules, '.bin')
+    mkdirSync(path.dirname(artifact), { recursive: true })
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(path.join(path.dirname(artifact), '..', 'package.json'), JSON.stringify({ version: packageVersion() }))
+    writeFileSync(artifact, readFileSync(f.running.artifact), { mode: 0o755 })
+    symlinkSync(artifact, path.join(bin, 'notifai'))
+    f.deps.hookInstallTarget = { execPath: process.execPath, scriptPath: artifact }
+    f.deps.env.PATH = `${bin}:${f.deps.env.PATH}`
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(packageVersion())});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(packageVersion())},path:process.env.PATH}));` })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    const report = JSON.parse(f.io.outLines[0]!)
+    expect(report.update_prefix).toBe(realpathSync(f.installed.prefix))
+    expect(report.before.effective.command_path).toBe(f.installed.command)
+    expect(report.after.effective.command_path).toBe(f.installed.command)
+    expect(report.handoff.path.split(':')).not.toContain(bin)
+    expect(f.deps.env.PATH).toContain(bin)
+    expect(readFileSync(artifact, 'utf8')).toBe(readFileSync(f.running.artifact, 'utf8'))
+  })
+
   it('repairs an interrupted install whose only npm command is a dangling symlink', () => {
     const f = recoveryFixture()
     rmSync(f.installed.packageRoot, { recursive: true })

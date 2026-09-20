@@ -35,6 +35,32 @@ export interface CliInstallationInspection {
   entries: CliPathEntry[]
 }
 
+/** npm exec prepends its own temporary .bin; it is not the user's installed CLI. */
+export function withoutNpxLauncherPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  runningArtifact: string,
+): NodeJS.ProcessEnv {
+  const artifact = canonicalPath(runningArtifact)
+  const modules = path.dirname(path.dirname(path.dirname(path.dirname(artifact))))
+  const cacheEntry = path.dirname(modules)
+  if (path.basename(path.dirname(cacheEntry)) !== '_npx' ||
+      !sameLocalPath(artifact, path.join(modules, '@raidiant', 'notifai', 'dist', 'main.js'), platform) ||
+      path.basename(modules) !== 'node_modules') return env
+  const launcher = path.join(modules, '.bin')
+  const key = platform === 'win32' && env['Path'] !== undefined ? 'Path' : 'PATH'
+  const directories = pathDirectories(env, platform)
+  const retained = directories.filter(directory => !sameLocalPath(directory, launcher, platform))
+  const next = { ...env }
+  const value = retained.join(platform === 'win32' ? ';' : ':')
+  // Node's Windows child environment deduplicates case-insensitive keys. Keep
+  // every spelling coherent so an inherited PATH cannot defeat the new Path.
+  const keys = platform === 'win32' ? Object.keys(env).filter(name => name.toLowerCase() === 'path') : [key]
+  if (keys.every(name => env[name] === value)) return env
+  for (const name of keys) next[name] = value
+  return next
+}
+
 export function pathNotifaiEntries(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
@@ -133,7 +159,7 @@ export function inspectCliInstallations(
   options: CliBinReadinessOptions = {},
 ): CliInstallationInspection {
   const runningArtifact = canonicalPath(options.runningArtifactPath ?? process.argv[1] ?? 'notifai')
-  const entries = pathNotifaiEntries(env, platform).map((command): CliPathEntry => {
+  const entries = pathNotifaiEntries(withoutNpxLauncherPath(env, platform, runningArtifact), platform).map((command): CliPathEntry => {
     const artifact = artifactForCommand(command, platform)
     return {
       command_path: command,

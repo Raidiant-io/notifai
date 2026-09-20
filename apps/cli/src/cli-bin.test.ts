@@ -9,7 +9,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { cliBinReadiness, isExecutablePath, pathNotifaiEntries } from './cli-bin.js'
+import { cliBinReadiness, isExecutablePath, pathNotifaiEntries, withoutNpxLauncherPath } from './cli-bin.js'
 import { cliUpdateRecoveryCommand } from './cli-contract.js'
 
 describe('PATH notifai diagnosis', () => {
@@ -54,6 +54,29 @@ describe('PATH notifai diagnosis', () => {
     )
     return { prefix, artifact, command }
   }
+
+  it.each(['darwin', 'win32'] as const)('excludes only the running npx launcher on %s', platform => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-npx-path-'))
+    const modules = path.join(root, '_npx', 'hash', 'node_modules')
+    const artifact = path.join(modules, '@raidiant', 'notifai', 'dist', 'main.js')
+    const injected = path.join(modules, '.bin')
+    const foreign = path.join(root, 'project', 'node_modules', '.bin')
+    const global = path.join(root, 'global-bin')
+    const key = platform === 'win32' ? 'Path' : 'PATH'
+    const delimiter = platform === 'win32' ? ';' : ':'
+    const env = { [key]: [injected, foreign, global].join(delimiter) }
+    expect(withoutNpxLauncherPath(env, platform, artifact)[key]).toBe([foreign, global].join(delimiter))
+    if (platform === 'win32') {
+      const result = withoutNpxLauncherPath({ ...env, PATH: env[key] }, platform, artifact)
+      expect(result.PATH).toBe(result.Path)
+      expect(result.PATH).toBe([foreign, global].join(delimiter))
+      expect(withoutNpxLauncherPath({ Path: result.Path, PATH: env[key] }, platform, artifact)).toEqual({
+        Path: result.Path, PATH: result.Path,
+      })
+    }
+    expect(withoutNpxLauncherPath(env, platform, path.join(root, 'other', 'main.js'))).toBe(env)
+    expect(withoutNpxLauncherPath(env, platform, path.join(root, 'project', 'node_modules', '@raidiant', 'notifai', 'dist', 'main.js'))).toBe(env)
+  })
 
   it('reports a non-executable PATH binary as a gap', () => {
     if (process.platform === 'win32') return
