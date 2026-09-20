@@ -10,3 +10,4 @@ export * from './api.js'
 // the same code offline pre-flight estimates with, instead of a mirror.
 export * from './apns.js'
 export * from './fcm.js'
+export * from './history.js'
