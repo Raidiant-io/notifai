@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -248,6 +250,57 @@ describe('rendezvous contention', () => {
 })
 
 describe('directory-entry races', () => {
+  it.each([
+    { phase: 'ticket selection', code: 'ENOENT', token: 'f'.repeat(25) },
+    { phase: 'admission', code: 'ENOENT', token: '0' },
+    { phase: 'admission', code: 'EPERM', token: '0' },
+  ])('waits for a chooser renamed during $phase ($code)', ({ phase, code, token }) => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-entry-race-'))
+    const target = path.join(root, 'settings.json')
+    const lock = path.join(root, '.settings.json.notifai.lock')
+    const choosing = path.join(lock, `choosing-${process.pid}-${token}`)
+    // The peer selected ticket 1 while we were choosing. During ticket
+    // selection its token sorts last, so missing it lets us jump ahead with
+    // ticket 1. During admission it sorts first and must block our ticket 1.
+    const peerTicket = path.join(lock, `ticket-1-${process.pid}-${token}`)
+    let renamed = false
+    let waited = false
+    let entered = false
+
+    try {
+      withTargetFileLock(target, () => {
+        expect(existsSync(peerTicket), 'transactions must not overlap').toBe(false)
+        entered = true
+      }, {
+        observe(observation) {
+          if (observation.phase === 'choosing-published') writeFileSync(choosing, '')
+          if (observation.phase === 'waiting' && observation.blockers.includes(path.basename(peerTicket))) {
+            waited = true
+            rmSync(peerTicket)
+          }
+        },
+        lstatEntry(file) {
+          const selected = readdirSync(lock).some((name) => name.startsWith('ticket-'))
+          if (file === choosing && !renamed && selected === (phase === 'admission')) {
+            renamed = true
+            renameSync(choosing, peerTicket)
+            if (code === 'EPERM') {
+              throw Object.assign(new Error('entry is being renamed'), { code })
+            }
+          }
+          return lstatSync(file)
+        },
+      })
+
+      expect(renamed).toBe(true)
+      expect(waited).toBe(true)
+      expect(entered).toBe(true)
+      expect(existsSync(lock)).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rechecks a transient EPERM and accepts that the entry vanished', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-entry-race-'))
     const lock = path.join(root, 'shared.lock')
