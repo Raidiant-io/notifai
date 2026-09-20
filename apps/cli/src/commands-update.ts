@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import {
   inspectCliInstallations,
+  withoutNpxLauncherPath,
   type CliInstallationInspection,
 } from './cli-bin.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
@@ -102,6 +103,10 @@ function failed(
  * different global prefix; --prefix makes that ambient choice irrelevant.
  */
 export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): number {
+  // Carry the caller's effective PATH into npm and the new artifact's handoff,
+  // otherwise each child would diagnose the temporary npx runner as installed.
+  deps = { ...deps, env: withoutNpxLauncherPath(deps.env, deps.hookPlatform ?? process.platform,
+    runningArtifact(deps) ?? 'notifai') }
   flags = { ...flags, json: flags.json === true || deps.io.interactive !== true }
   const before = inspection(deps)
   const prefixResult = npmRun(deps, ['prefix', '--global'])

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:be7421755912ced8caa36dae39bcf595f7ceff2f6db6743a8d8290843e86b3c1",
+  "behavior_digest": "sha256:d11139235365ad512b51416212e621d2a91ba626601861d77622d0ba0a8fbe8d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms for weekly root-agent update offers and explicit JSON update discovery. Added the packaged update reference, new-artifact changelog/guidance/session handoff, existing-scope skill refresh, and conditional restart advice. Preserve User authorization and deferral, hook trust, question identities and live owners; no automatic install or Notification Request is caused by the optional notice. Cursor uses visible Stop activation and Hermes explicit guidance shares the throttle. Ordinary workers stay reporting-only.",
+  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms for weekly root-agent update offers and explicit JSON update discovery. Added the packaged update reference, new-artifact changelog/guidance/session handoff, existing-scope skill refresh, and conditional restart advice. Preserve User authorization and deferral, hook trust, question identities and live owners; no automatic install or Notification Request is caused by the optional notice. Cursor uses visible Stop activation and Hermes explicit guidance shares the throttle. Ordinary workers stay reporting-only. Live recovery follow-up: exclude only the running npm-exec cache launcher from installation diagnosis and child update PATH; other local or foreign winners still fail closed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
