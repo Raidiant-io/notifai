@@ -320,8 +320,8 @@ notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --j
 overrides.
 
 Branch on `states`, `can_send`, and `question_routing_ready`.
-`direct_wake_ready` says if answers can start a turn after continuation ends;
-it is optional when a held continuation owns the answer,
+`direct_wake_ready` assesses the route, not consumption;
+it is optional when a held continuation or journal recovery owns the answer,
 and `null` when no direct-wake assessment exists. A nonzero exit is a gap to
 close, never bypass.
 Do not follow a successful structured init with doctor. `ask --json` performs

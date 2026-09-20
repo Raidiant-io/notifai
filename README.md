@@ -95,7 +95,7 @@ not part of the current public support claim.
 | --- | --- | --- | --- |
 | Approved Machine CLI: login, configuration, send, ask, doctor | Supported | Supported | Supported |
 | Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; blocking Stop continuation because no live inbox socket exists |
-| Codex hooks | Supported; held Stop continuation, with guarded cold resume | Supported; held Stop continuation; cold resume fails closed | Supported; held Stop continuation; cold resume fails closed |
+| Codex hooks | Asynchronous Stop and durable session queue; CLI/app-server verified | Same queue implementation; live Codex verification pending | Same queue implementation; live Codex verification pending |
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenClaw hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
@@ -263,7 +263,12 @@ devices and when a device answer is handed back into the next turn. Question
 Routing keeps that exact return path alive for the complete answer window:
 Claude Code waits out of band and wakes the session on macOS/Linux; on Windows
 its Stop stays held and returns the answer as the same Agent Session's
-continuation, like Codex. It has to run at Stop because that is the first
+continuation. Codex waits in the background and uses `codex queue` to place the
+answer in the exact Agent Session's durable inbox. A live idle session starts
+a turn; a busy one consumes it at its next turn boundary; a closed one keeps
+it until reopened. Queue success proves storage; UserPromptSubmit observes
+consumption. Notifai does not also cold-resume that answer, which would risk
+consuming it twice. It has to run at Stop because that is the first
 moment the agent has finished its current work and is waiting for the answer.
 
 An `ask` success is a local registration, not a submitted Notification Request:
