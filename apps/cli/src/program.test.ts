@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { buildProgram, type ProgramRunners } from './program.js'
 import type { CommandDeps } from './commands.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
@@ -340,4 +340,13 @@ describe('program argv parsing', () => {
     expect(seenId).toBe('req_abc')
     expect(seenFlags).toEqual({})
   })
+})
+
+it('routes read-only update inspection separately from package installation', async () => {
+  const update = vi.fn(() => 0)
+  const updateCheck = vi.fn(async () => 0)
+  const result = await parse(['update', '--check', '--json', '--from', '11.0.6'], { update, updateCheck })
+  expect(result.exitCode).toBe(0)
+  expect(update).not.toHaveBeenCalled()
+  expect(updateCheck).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ check: true, json: true, from: '11.0.6' }))
 })

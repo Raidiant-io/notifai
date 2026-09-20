@@ -373,6 +373,7 @@ function harness(replies: ReplyView[] = []): Harness {
       env,
       cwd: root,
       clientFactory: () => fakeClient(recorder, replies),
+      fetchImpl: async () => { throw new Error('registry unused in lifecycle fixtures') },
       now: () => clock,
       sleep: async (milliseconds: number) => {
         clock += milliseconds
@@ -2888,6 +2889,43 @@ describe('ask registration', () => {
 })
 
 describe('session-start hook', () => {
+  it('shares one weekly update notice across root Agent Sessions and Projects', async () => {
+    const h = harness()
+    const lookup = vi.fn(async () => new Response(JSON.stringify({ latest: '99.0.0' })))
+    h.deps.fetchImpl = lookup
+    const start = async (id: string) => {
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'session-start', stdin({ session_id: id }), 'codex')
+      return h.io.outLines.join('\n')
+    }
+    expect(await start('first')).toContain('A newer Notifai is available.')
+    expect(await start('second')).not.toContain('A newer Notifai is available.')
+    const other = mkdtempSync(path.join(os.tmpdir(), 'notifai-other-project-'))
+    const binding = projectBinding(other, h.env)
+    if (binding === null) throw new Error('missing binding')
+    enableProject(binding)
+    h.deps.cwd = other
+    h.advanceClock(7 * 24 * 60 * 60 * 1000 - 1)
+    expect(await start('before-week')).not.toContain('A newer Notifai is available.')
+    h.advanceClock(1)
+    expect(await start('next-week')).toContain('A newer Notifai is available.')
+    expect(lookup).toHaveBeenCalledTimes(2)
+    expect(h.recorder.submitted).toEqual([])
+  })
+
+  it('does not spend the notice on workers or Cursor context the model cannot see', async () => {
+    const h = harness()
+    const lookup = vi.fn(async () => new Response('{"latest":"99.0.0"}'))
+    h.deps.fetchImpl = lookup
+    await hookRunCommand(h.deps, 'subagent-start', stdin({ session_id: 'worker' }), 'codex')
+    await hookRunCommand(h.deps, 'session-start', stdin({ conversation_id: 'cursor' }), 'cursor')
+    expect(lookup).not.toHaveBeenCalled()
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'activation-stop', stdin({ conversation_id: 'cursor', loop_count: 0, status: 'completed' }), 'cursor')
+    expect(h.io.outLines.join('\n')).toContain('offer to perform the update')
+    expect(lookup).toHaveBeenCalledTimes(1)
+  })
+
   it('is completely silent when the Project is disabled', async () => {
     const h = harness()
     const binding = projectBinding(h.deps.cwd, h.env)

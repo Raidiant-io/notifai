@@ -9,6 +9,8 @@ import {
   capabilitiesCommand,
   closeCommand,
   cliUpdateCommand,
+  cliUpdateCheckCommand,
+  updateSkillCommand,
   configExplainCommand,
   configSetCommand,
   configShowCommand,
@@ -83,6 +85,8 @@ const defaultRunners = {
   init: initCommand,
   doctor: doctorCommand,
   update: cliUpdateCommand,
+  updateCheck: cliUpdateCheckCommand,
+  updateSkill: updateSkillCommand,
   login: loginCommand,
   logout: logoutCommand,
   authStatus: authStatusCommand,
@@ -267,9 +271,22 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.start)
     .summary('Update the Notifai command this shell uses')
     .description('Update the effective global Notifai installation and keep Question Routing on it')
-    .option('--json', 'machine-readable installation and adapter result')
-    .action((opts: { json?: boolean }) => {
-      exit(runners.update(deps, opts))
+    .option('--json', 'machine-readable installation and session handoff')
+    .option('--check', 'inspect release notes, guidance, and session effects without installing')
+    .option('--refresh-skill', 'refresh the existing skill scope without login, hooks, or delivery setup')
+    .option('--from <version>', 'show installed changelog entries after this version (requires --check)')
+    .action(async (opts: { json?: boolean; check?: boolean; from?: string; refreshSkill?: boolean }) => {
+      if (opts.refreshSkill && (opts.check || opts.from !== undefined)) {
+        deps.io.err('--refresh-skill cannot be combined with --check or --from')
+        exit(2)
+        return
+      }
+      if (opts.from !== undefined && opts.check !== true) {
+        deps.io.err('--from requires --check')
+        exit(2)
+        return
+      }
+      exit(opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : runners.update(deps, opts))
     })
 
   const project = program
@@ -774,8 +791,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('show', { isDefault: true })
     .description('Print the effective guidance, every topic under the layer that supplied it')
     .option('--json', 'machine-readable output')
-    .action((opts: { json?: boolean }) => {
-      exit(runners.guidanceShow(deps, opts))
+    .action(async (opts: { json?: boolean }) => {
+      exit(await runners.guidanceShow(deps, opts))
     })
   guidance
     .command('set <topic> [text]')

@@ -12,13 +12,14 @@ export const WORKER_ACTIVATION_CONTEXT =
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
   'Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai init --json` to check setup, then `notifai guidance` before deciding whether or how to send a Notification Request.'
 
-function rootActivationContext(cwd: string, env: NodeJS.ProcessEnv): string {
+function rootActivationContext(cwd: string, env: NodeJS.ProcessEnv, notice?: string): string {
+  const opening = notice === undefined ? ROOT_OWNERSHIP : `${ROOT_OWNERSHIP}\n\n${notice}`
   const guidance = boundedEffectiveGuidance({
     cwd,
     env,
-    maxBytes: GUIDANCE_CONTEXT_MAX_BYTES - Buffer.byteLength(`${ROOT_OWNERSHIP}\n\n`, 'utf8'),
+    maxBytes: GUIDANCE_CONTEXT_MAX_BYTES - Buffer.byteLength(`${opening}\n\n`, 'utf8'),
   })
-  return `${ROOT_OWNERSHIP}\n\n${guidance.ok ? guidance.content : guidance.fallback}`
+  return `${opening}\n\n${guidance.ok ? guidance.content : guidance.fallback}`
 }
 
 /** One lifecycle meaning, encoded for each harness output contract. */
@@ -27,10 +28,11 @@ export function sessionActivationOutput(
   hookEventName: 'SessionStart' | 'SubagentStart',
   cwd: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
+  notice?: string,
 ): string | undefined {
   const context = hookEventName === 'SubagentStart'
     ? WORKER_ACTIVATION_CONTEXT
-    : rootActivationContext(cwd, env)
+    : rootActivationContext(cwd, env, notice)
   if (harness === 'opencode' || harness === 'openclaw') return context
   if (harness === 'cursor') {
     return JSON.stringify({ additional_context: context })
@@ -72,8 +74,9 @@ export function userPromptContextOutput(
 export function cursorStopActivationOutput(
   cwd: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
+  notice?: string,
 ): string {
   return JSON.stringify({
-    followup_message: rootActivationContext(cwd, env),
+    followup_message: rootActivationContext(cwd, env, notice),
   })
 }

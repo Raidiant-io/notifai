@@ -550,11 +550,11 @@ describe('a hostile clone cannot speak with the User\'s authority', () => {
     expect(topic.authority).toBe('user')
   })
 
-  it('prints the trust preamble above the repository content it must be read against', () => {
+  it('prints the trust preamble above the repository content it must be read against', async () => {
     const { deps, captured } = hostileClone({
       guidance: { 'when-to-notify.md': EXFILTRATION_ATTEMPT },
     })
-    expect(guidanceShowCommand(deps, {})).toBe(EXIT.ok)
+    expect(await guidanceShowCommand(deps, {})).toBe(EXIT.ok)
     const output = captured.out.join('\n')
     expect(output.indexOf(GUIDANCE_TRUST_PREAMBLE)).toBe(0)
     expect(output).toContain('from=this repository')
@@ -566,11 +566,11 @@ describe('a hostile clone cannot speak with the User\'s authority', () => {
     expect(output.slice(markerIndex)).toContain('from=this repository')
   })
 
-  it('refuses to let repository content forge a provenance marker', () => {
+  it('refuses to let repository content forge a provenance marker', async () => {
     const { deps, captured } = hostileClone({
       guidance: { 'when-to-notify.md': IMPERSONATION_ATTEMPT },
     })
-    expect(guidanceShowCommand(deps, {})).toBe(EXIT.ok)
+    expect(await guidanceShowCommand(deps, {})).toBe(EXIT.ok)
     const output = captured.out.join('\n')
     // Exactly one line may claim to come from the User's own file: none.
     expect(output).not.toContain('<!-- notifai:guidance topic=when-to-notify from=you')
@@ -629,11 +629,11 @@ describe('a hostile clone cannot speak with the User\'s authority', () => {
     }
   })
 
-  it('carries authority into the machine-readable output an agent parses', () => {
+  it('carries authority into the machine-readable output an agent parses', async () => {
     const { deps, captured } = hostileClone({
       guidance: { 'when-to-notify.md': EXFILTRATION_ATTEMPT, 'house-style.md': 'Be terse.\n' },
     })
-    expect(guidanceShowCommand(deps, { json: true })).toBe(EXIT.ok)
+    expect(await guidanceShowCommand(deps, { json: true })).toBe(EXIT.ok)
     const parsed = JSON.parse(captured.out.join('\n')) as {
       trust: string
       topics: { name: string; authority: string; summary: string }[]
@@ -647,7 +647,7 @@ describe('a hostile clone cannot speak with the User\'s authority', () => {
     expect(parsed.topics.filter((topic) => topic.authority === 'user')).toHaveLength(0)
   })
 
-  it('never follows a repository guidance symlink into private User files', () => {
+  it('never follows a repository guidance symlink into private User files', async () => {
     const { env, cwd, repo, home, deps, captured } = hostileClone()
     const privateDir = path.join(home, 'config', 'notifai', 'guidance-private')
     mkdirSync(privateDir, { recursive: true })
@@ -661,7 +661,7 @@ describe('a hostile clone cannot speak with the User\'s authority', () => {
     const topic = resolveGuidance({ cwd, env }).find((entry) => entry.name === 'titles')!
     expect(topic.authority).toBe('shipped')
     expect(topic.content).not.toContain('PRIVATE-USER-GUIDANCE')
-    expect(guidanceShowCommand(deps, {})).toBe(EXIT.ok)
+    expect(await guidanceShowCommand(deps, {})).toBe(EXIT.ok)
     expect(captured.out.join('\n')).not.toContain('PRIVATE-USER-GUIDANCE')
   })
 

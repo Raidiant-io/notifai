@@ -111,10 +111,19 @@ function resolveHookAdapterTarget(deps: CommandDeps, flags: HooksInstallFlags): 
   return { execPath, scriptPath }
 }
 
-function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarness, file: string): void {
+function installationBytes(files: string[]): string {
+  return JSON.stringify(files.map(file => {
+    try { return [file, readFileSync(file, 'utf8')] } catch { return [file, null] }
+  }))
+}
+
+function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarness, file: string, changed = true): void {
   const label = HARNESS_LABELS[harness]
-  const activation =
-    harness === 'codex'
+  const approvalNote = harness === 'codex' && codexTrustProblems(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(entry => entry.harness === 'codex'), deps.env).length === 0
+    ? 'Your existing Codex hook approvals still match. ' : ''
+  const activation = !changed
+    ? approvalNote + 'Hook installation is unchanged; this write needs no restart. Continue the current Agent Session if its lifecycle and trust are ready; `notifai update --check --json` reports any remaining session requirement.'
+    : harness === 'codex'
       ? codexTrustProblems(
           findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(
             (installation) => installation.harness === 'codex',
@@ -172,6 +181,8 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   // Codex is the one harness whose layer holds two candidate files, so its
   // transaction anchors on `config.toml` and the inspection names the target.
   const settingsTarget = codexPaths?.configToml ?? settingsFile(harness, deps.env, hookPlatform)
+  const comparedFiles = codexPaths === null ? [settingsTarget] : [codexPaths.configToml, codexPaths.hooksJson]
+  const beforeInstall = installationBytes(comparedFiles)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
   // merged into a settings document, so it owns the whole file.
@@ -225,7 +236,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       deps.io.err(String(err))
       return EXIT.failed
     }
-    if (flags.narrate !== false) printHooksInstallClose(deps, harness, settingsTarget)
+    if (flags.narrate !== false) printHooksInstallClose(deps, harness, settingsTarget, beforeInstall !== installationBytes(comparedFiles))
     return finishInstall(deps, harness, scriptPath, EXIT.ok)
   }
 
@@ -316,7 +327,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       'Moved Notifai Codex handlers from config.toml to hooks.json. Codex keys approval by source path, so open `/hooks` and approve the new handlers.',
     )
   }
-  if (flags.narrate !== false) printHooksInstallClose(deps, harness, installed.file)
+  if (flags.narrate !== false) printHooksInstallClose(deps, harness, installed.file, beforeInstall !== installationBytes(comparedFiles))
   if (installed.foreignStopCount > 0) {
     const label = HARNESS_LABELS[harness]
     deps.io.out(
@@ -401,6 +412,7 @@ function installOpencodePlugin(
     narrate?: boolean
   },
 ): number {
+  const beforeInstall = installationBytes([file])
   try {
     withTargetFileLock(file, () => {
       if (existsSync(file)) {
@@ -420,7 +432,7 @@ function installOpencodePlugin(
     deps.io.err(String(err))
     return EXIT.failed
   }
-  if (options.narrate !== false) printHooksInstallClose(deps, 'opencode', file)
+  if (options.narrate !== false) printHooksInstallClose(deps, 'opencode', file, beforeInstall !== installationBytes([file]))
   return EXIT.ok
 }
 
@@ -436,6 +448,8 @@ function installOpenclawPlugin(
   },
 ): number {
   const pluginDir = path.dirname(file)
+  const comparedFiles = [file, path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), openclawConfigPath(deps.env, deps.hookPlatform)]
+  const beforeInstall = installationBytes(comparedFiles)
   try {
     withTargetFileLock(file, () => {
       if (existsSync(file)) {
@@ -466,7 +480,7 @@ function installOpenclawPlugin(
     deps.io.err(String(err))
     return EXIT.failed
   }
-  if (options.narrate !== false) printHooksInstallClose(deps, 'openclaw', file)
+  if (options.narrate !== false) printHooksInstallClose(deps, 'openclaw', file, beforeInstall !== installationBytes(comparedFiles))
   return EXIT.ok
 }
 

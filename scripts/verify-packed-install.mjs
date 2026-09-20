@@ -272,6 +272,16 @@ export async function preparePackedCli(scratch, options = {}) {
 
   const pinFailure = protocolPinFailure(cliManifest, protocolManifest.version)
   if (pinFailure !== null) throw new Error(pinFailure)
+  for (const [directory, manifest] of [[packedCli, cliManifest], [packedProtocol, protocolManifest]]) {
+    let changelog
+    try { changelog = readFileSync(path.join(directory, 'CHANGELOG.md'), 'utf8') } catch {
+      throw new Error(`${manifest.name}: packed CHANGELOG.md is missing`)
+    }
+    if (!changelog.includes(`## [${manifest.version}]`)) {
+      throw new Error(`${manifest.name}: packed CHANGELOG.md has no section for ${manifest.version}`)
+    }
+  }
+
   if (process.platform !== 'win32') {
     const packedBin = path.join(packedCli, 'dist/main.js')
     const packedMode = statSync(packedBin).mode & 0o111

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -92,6 +93,16 @@ describe('skillsAddArgv', () => {
 })
 
 describe('runSkillsCommand', () => {
+  it('keeps native installer stdout out of structured command output', () => {
+    const moduleUrl = new URL('../dist/native-skills.js', import.meta.url).href
+    const script = `import { runSkillsCommand } from ${JSON.stringify(moduleUrl)};
+      const result = await runSkillsCommand([], { cwd: process.cwd(), env: process.env, diagnosticsToStderr: true },
+        (_args, options) => ({ file: process.execPath, args: ['-e', 'console.log("installer progress")'], options }));
+      console.log(JSON.stringify({ ok: result === 0 }));`
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    expect(JSON.parse(output)).toEqual({ ok: true })
+  })
+
   it('preserves a local launch failure instead of misreporting a network error', async () => {
     const result = await runSkillsCommand([], { cwd: '/tmp', env: {} }, () => {
       throw new Error(

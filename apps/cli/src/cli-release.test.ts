@@ -12,11 +12,9 @@ afterEach(() => {
 })
 
 describe('CLI registry recommendation', () => {
-  it('is suppressed for JSON, non-interactive, and CI callers', () => {
-    expect(shouldConsultCliRegistry({ interactive: true })).toBe(true)
-    expect(shouldConsultCliRegistry({ interactive: true, json: true })).toBe(false)
-    expect(shouldConsultCliRegistry({ interactive: false })).toBe(false)
-    expect(shouldConsultCliRegistry({ interactive: true, env: { CI: 'true' } })).toBe(false)
+  it('allows explicit diagnostics and suppresses CI', () => {
+    expect(shouldConsultCliRegistry({})).toBe(true)
+    expect(shouldConsultCliRegistry({ env: { CI: 'true' } })).toBe(false)
   })
 
   it('never throws when the registry is unreachable', async () => {

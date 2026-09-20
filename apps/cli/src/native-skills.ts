@@ -33,6 +33,7 @@ export interface SkillsListResult {
 }
 
 export interface SkillsAddOptions {
+  diagnosticsToStderr?: boolean
   source: string
   skill: string
   scope?: SkillScope
@@ -127,13 +128,14 @@ function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv):
 
 export function runSkillsCommand(
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
+  options: { cwd: string; env: NodeJS.ProcessEnv; diagnosticsToStderr?: boolean },
   resolveLaunch: typeof npxLaunch = npxLaunch,
 ): Promise<SkillsOperationResult> {
   return new Promise((resolve) => {
     let launch: ReturnType<typeof npxLaunch>
     try {
-      launch = resolveLaunch(args, options)
+      launch = resolveLaunch(args, { ...options,
+        ...(options.diagnosticsToStderr ? { stdio: ['ignore', 2, 2] as const } : {}) })
     } catch (error) {
       resolve({
         code: 1,
@@ -185,6 +187,7 @@ export const nativeSkills: NativeSkills = {
       return await runSkillsCommand(skillsAddArgv({ ...options, source: staged.staged.source }), {
         cwd: options.cwd,
         env: options.env,
+        ...(options.diagnosticsToStderr === undefined ? {} : { diagnosticsToStderr: options.diagnosticsToStderr }),
       })
     } finally {
       staged.staged.cleanup()

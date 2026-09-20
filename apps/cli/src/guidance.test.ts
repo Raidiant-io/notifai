@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
+import { disableProject, enableProject, projectBinding } from './project-enablement.js'
 import type { CommandDeps } from './commands-core.js'
 import {
   guidanceSetCommand,
@@ -253,10 +254,33 @@ function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
 }
 
 describe('guidance commands', () => {
-  it('shows every topic under a marker naming who supplied it', () => {
+  it('gives a Hermes owner the shared weekly update offer without changing guidance topics', async () => {
+    const { env, cwd } = setup()
+    env.HERMES_SESSION_ID = 'hermes-update-test'
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "configured-project"\n')
+    const binding = projectBinding(cwd, env, 'configured-project')
+    if (binding === null) throw new Error('missing project')
+    enableProject(binding)
+    const { deps, captured } = makeDeps(env, cwd)
+    deps.fetchImpl = async () => new Response('{"latest":"99.0.0"}')
+    deps.now = () => 1_800_000_000_000
+    await guidanceShowCommand(deps, { json: true })
+    expect(JSON.parse(captured.out[0]!).update_notice).toContain('offer to perform the update')
+    captured.out = []
+    await guidanceShowCommand(deps, { json: true })
+    expect(JSON.parse(captured.out[0]!)).not.toHaveProperty('update_notice')
+    disableProject(binding)
+    deps.now = () => 1_900_000_000_000
+    captured.out = []
+    await guidanceShowCommand(deps, { json: true })
+    expect(JSON.parse(captured.out[0]!)).not.toHaveProperty('update_notice')
+  })
+
+  it('shows every topic under a marker naming who supplied it', async () => {
     const { env, cwd } = setup({ project: { 'titles.md': 'my titles\n' } })
     const { deps, captured } = makeDeps(env, cwd)
-    expect(guidanceShowCommand(deps, {})).toBe(0)
+    expect(await guidanceShowCommand(deps, {})).toBe(0)
     const output = captured.out.join('\n')
     expect(output).toMatch(/<!-- notifai:guidance topic=when-to-notify from=shipped default -->/)
     expect(output).toMatch(
@@ -265,10 +289,10 @@ describe('guidance commands', () => {
     expect(output).toContain('my titles')
   })
 
-  it('emits machine-readable topics with name, source, authority, summary, and content', () => {
+  it('emits machine-readable topics with name, source, authority, summary, and content', async () => {
     const { env, cwd } = setup()
     const { deps, captured } = makeDeps(env, cwd)
-    expect(guidanceShowCommand(deps, { json: true })).toBe(0)
+    expect(await guidanceShowCommand(deps, { json: true })).toBe(0)
     const parsed = JSON.parse(captured.out.join('\n')) as {
       trust: string
       topics: { name: string; source: string; authority: string }[]
