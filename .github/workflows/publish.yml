@@ -114,10 +114,6 @@ jobs:
             scripts/verify-packed-install.test.mjs \
             scripts/verify-published.test.mjs
 
-      - name: Plan idempotent package publication
-        id: plan
-        run: node scripts/plan-publish.mjs
-
       - name: Record the exact CLI version
         id: cli-version
         shell: bash
@@ -154,6 +150,10 @@ jobs:
           node scripts/verify-packed-skill-install.mjs \
             --protocol-tarball "$protocol_tarball" \
             --cli-tarball "$cli_tarball"
+
+      - name: Plan idempotent package publication
+        id: plan
+        run: node scripts/plan-publish.mjs
 
       - name: Verify deployed service accepts this candidate
         if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
