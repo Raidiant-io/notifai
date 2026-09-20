@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v7.0.4...protocol-v8.0.0) (2026-09-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** support recovered request history and replies ([#179](https://github.com/Raidiant-io/notifai/issues/179))
+
+### Features
+
+* **protocol:** support recovered request history and replies ([#179](https://github.com/Raidiant-io/notifai/issues/179)) ([f4c0d5a](https://github.com/Raidiant-io/notifai/commit/f4c0d5a716f3f7b1fc63b124737ac9083e32724b))
+
 ## [7.0.4](https://github.com/Raidiant-io/notifai/compare/protocol-v7.0.3...protocol-v7.0.4) (2026-09-20)
 
 ## [7.0.3](https://github.com/Raidiant-io/notifai/compare/protocol-v7.0.2...protocol-v7.0.3) (2026-09-20)

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.2.2](https://github.com/Raidiant-io/notifai/compare/v11.2.1...v11.2.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **cli:** preserve installer lock ordering across entry renames ([#182](https://github.com/Raidiant-io/notifai/issues/182)) ([91e1c82](https://github.com/Raidiant-io/notifai/commit/91e1c82793cfb0a6616472d05c450f34a48f5465))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 7.0.4 to 8.0.0
+
 ## [11.2.1](https://github.com/Raidiant-io/notifai/compare/v11.2.0...v11.2.1) (2026-09-20)
 
 
