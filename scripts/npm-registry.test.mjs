@@ -51,7 +51,8 @@ test('a genuinely missing package fails after the bounded attempt ceiling', asyn
   )
 
   assert.equal(calls, REGISTRY_LOOKUP_ATTEMPTS)
-  assert.deepEqual(waits, [1000, 2000, 4000, 8000])
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000, ...Array(8).fill(30000)])
+  assert.equal(waits.reduce((sum, milliseconds) => sum + milliseconds, 0), 271000)
 })
 
 test('non-propagation verification failures do not retry', async () => {

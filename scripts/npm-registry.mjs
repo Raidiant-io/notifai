@@ -1,7 +1,9 @@
 import {setTimeout as delay} from 'node:timers/promises'
 import {execCommand} from './cross-platform.mjs'
 
-export const REGISTRY_LOOKUP_ATTEMPTS = 5
+// npm may accept a publish before the version becomes readable. Allow up to
+// 271 seconds of propagation waits without retrying unrelated failures.
+export const REGISTRY_LOOKUP_ATTEMPTS = 14
 
 function errorText(error) {
   return [error?.message, error?.stdout, error?.stderr]
@@ -35,7 +37,7 @@ export async function lookupPublishedTarball(
       return await lookup(label)
     } catch (error) {
       if (!isRegistryNotFound(error) || attempt === attempts) throw error
-      const delayMs = 1000 * (2 ** (attempt - 1))
+      const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 30000)
       onRetry({attempt, delayMs})
       await wait(delayMs)
     }

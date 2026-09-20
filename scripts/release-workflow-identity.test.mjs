@@ -212,6 +212,15 @@ test('publication prepares the protocol artifact before reading its built contra
   assert.equal(protocolPackage.scripts.prepack, 'pnpm run build')
 })
 
+test('publication builds comparison files before planning a retry with an existing protocol', () => {
+  const steps = publishWorkflow.jobs.npm.steps
+  const packIndex = steps.findIndex(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
+  const planIndex = steps.findIndex(candidate => candidate.name === 'Plan idempotent package publication')
+  assert.ok(packIndex >= 0 && planIndex > packIndex,
+    'planning verifies an existing protocol against local dist, which packing must build first')
+  assert.ok(steps.findIndex(candidate => candidate.name === 'Publish protocol with OIDC provenance') > planIndex)
+})
+
 test('publication reuses the exact tarballs that passed boundary and install checks', () => {
   const steps = publishWorkflow.jobs.npm.steps
   const pack = steps.find(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
