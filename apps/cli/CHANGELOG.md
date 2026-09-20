@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.1.0](https://github.com/Raidiant-io/notifai/compare/v11.0.6...v11.1.0) (2026-09-20)
+
+
+### Features
+
+* **cli:** deliver Codex answers through the thread's durable queue ([#169](https://github.com/Raidiant-io/notifai/issues/169)) ([4941c3f](https://github.com/Raidiant-io/notifai/commit/4941c3f60e7b82e679e3a90ca3ef187ec10004a0))
+
+
+### Bug Fixes
+
+* **cli:** avoid slow PowerShell module loading for Windows credentials ([#172](https://github.com/Raidiant-io/notifai/issues/172)) ([cd35b10](https://github.com/Raidiant-io/notifai/commit/cd35b1040ddde59e7360beb2d5ba031e02b04c93))
+* **cli:** make setup and queued-question retirement reliable ([#163](https://github.com/Raidiant-io/notifai/issues/163)) ([e4cee77](https://github.com/Raidiant-io/notifai/commit/e4cee77d2aaaf965544763a23cc0d3c4a636210c))
+* **cli:** preserve harness configuration during setup and cleanup ([#164](https://github.com/Raidiant-io/notifai/issues/164)) ([f8f82e6](https://github.com/Raidiant-io/notifai/commit/f8f82e62241d5ab841130070070a55cf50ae98dd))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 7.0.0 to 7.0.1
+
 ## [11.0.6](https://github.com/Raidiant-io/notifai/compare/v11.0.5...v11.0.6) (2026-09-06)
 
 
