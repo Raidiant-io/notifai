@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d11139235365ad512b51416212e621d2a91ba626601861d77622d0ba0a8fbe8d",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms for weekly root-agent update offers and explicit JSON update discovery. Added the packaged update reference, new-artifact changelog/guidance/session handoff, existing-scope skill refresh, and conditional restart advice. Preserve User authorization and deferral, hook trust, question identities and live owners; no automatic install or Notification Request is caused by the optional notice. Cursor uses visible Stop activation and Hermes explicit guidance shares the throttle. Ordinary workers stay reporting-only. Live recovery follow-up: exclude only the running npm-exec cache launcher from installation diagnosis and child update PATH; other local or foreign winners still fail closed.",
+  "behavior_digest": "sha256:b16af3fab2b3945b55388ba07c1cb007c223ada81444a6be66cb59a256763536",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, packaged Notifai skill, harness setup, CLI readiness and domain terms against recovered Request history and reply addressing. Recovery adds Companion App continuity and nullable native Delivery attribution; agents still send through the CLI, preserve each question identity, consume replies in order, acknowledge required answers and never replay a Notification Request to repair history. No hook activation, User authorization, trust, notification wording or setup instruction changes are required. The installer lock correction rescans a vanished choosing entry before admission; it preserves existing bounded waiting, ownership, symlink and atomic-write guards without a new agent action. README release markers are generated metadata.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -215,34 +215,48 @@ function liveEntries(
   options: FileLockOptions,
   deadline: number,
 ): LockEntry[] {
-  assertSameDirectory(directory, directoryIdentity)
-  const live: LockEntry[] = []
-  const lstatEntry = options.lstatEntry ?? ((file: string) => lstatSync(file))
-  for (const name of readdirSync(directory)) {
-    const entry = parseEntry(name)
-    if (entry === null) continue
-    const entryPath = path.join(directory, name)
-    const stat = liveEntryStat(entryPath, lstatEntry, deadline)
-    if (stat === null) continue
-    const uid = currentUid()
-    if (stat.isSymbolicLink() || !stat.isFile() || (uid !== undefined && stat.uid !== uid)) {
-      throw new Error(`${entryPath} is not a current-user-owned regular file-lock entry.`)
+  scan: for (;;) {
+    assertSameDirectory(directory, directoryIdentity)
+    const live: LockEntry[] = []
+    const lstatEntry = options.lstatEntry ?? ((file: string) => lstatSync(file))
+    for (const name of readdirSync(directory)) {
+      const entry = parseEntry(name)
+      if (entry === null) continue
+      const entryPath = path.join(directory, name)
+      const stat = liveEntryStat(entryPath, lstatEntry, deadline)
+      if (stat === null) {
+        if (entry.kind === 'choosing') {
+          // readdir and lstat are separate observations: the chooser can rename
+          // to a ticket between them. Ignoring its old name would hide a live
+          // contender, even though the rename itself never leaves an empty gap.
+          // Restart the scan so both ticket selection and admission see it.
+          if (Date.now() >= deadline) {
+            throw new Error(`timed out waiting for file lock ${directory}`)
+          }
+          continue scan
+        }
+        continue
+      }
+      const uid = currentUid()
+      if (stat.isSymbolicLink() || !stat.isFile() || (uid !== undefined && stat.uid !== uid)) {
+        throw new Error(`${entryPath} is not a current-user-owned regular file-lock entry.`)
+      }
+      if (processIsAlive(entry.pid)) {
+        live.push(entry)
+        continue
+      }
+      options.observe?.({ phase: 'stale-entry', entry: name })
+      try {
+        // Recheck the unique dead owner's inode so delayed recovery cannot reap
+        // a replacement published at the same path by external interference.
+        const current = lstatSync(entryPath)
+        if (current.dev === stat.dev && current.ino === stat.ino) unlinkSync(entryPath)
+      } catch {
+        // Another contender already recovered this exact dead owner's unique path.
+      }
     }
-    if (processIsAlive(entry.pid)) {
-      live.push(entry)
-      continue
-    }
-    options.observe?.({ phase: 'stale-entry', entry: name })
-    try {
-      // Recheck the unique dead owner's inode so delayed recovery cannot reap
-      // a replacement published at the same path by external interference.
-      const current = lstatSync(entryPath)
-      if (current.dev === stat.dev && current.ino === stat.ino) unlinkSync(entryPath)
-    } catch {
-      // Another contender already recovered this exact dead owner's unique path.
-    }
+    return live
   }
-  return live
 }
 
 function publishEmpty(file: string): EntryIdentity {
