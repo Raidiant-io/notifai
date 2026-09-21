@@ -211,8 +211,22 @@ meter differs per harness:
   owner process or its route fails. It is not the normal last meter for an
   unexpired question.
 
-An accepted answer is never dropped and never delivered twice, so a question
-that has not come back yet is still coming: do not re-ask it.
+Registration alone starts no waiter. Normally the asking turn's Stop starts
+submission; if a new User prompt overtakes it, UserPromptSubmit launches a
+detached settlement owner for unmatched registrations. That recovery can
+submit and queue a Codex answer while the new turn is active. It does not make
+`ask` an immediate-send command or remove the installed Stop requirement.
+
+Keep supervision obligations when a question blocks only part of the work.
+If the coordinator must remain active, use the skill's foreground `send --reply`
+flow only when its managed command can stay alive for the complete answer
+window while the coordinator supervises, then consume and acknowledge its
+result. Otherwise settle or explicitly transfer supervision before an `ask`
+handoff. Ending a turn neither completes delegated work nor transfers ownership.
+
+Keep the original identity when an answer has not arrived. Queue acceptance
+does not prove consumption, and expiry, retirement, or recovery failure can
+prevent resumption. Inspect `status` and `replies` instead of re-asking.
 
 At the `ask_grace_seconds` default of `0`, the question reaches devices as soon
 as the asking turn ends. A positive value keeps it in the terminal for that

@@ -345,7 +345,7 @@ function recordRegisteredQuestion(
           next: {
             end_turn: true,
             in_this_turn:
-              'Ask the question in the conversation and say what concrete work each possible answer will make you resume, then end the turn.',
+              'Ask the question in the conversation and say what concrete work each possible answer will make you resume, then end the turn so Question Routing can start submission. Registration alone does not start submission.',
             route_neutral:
               'Never say where the answer must arrive; it returns by whatever route the harness supports.',
             on_answer:
@@ -374,7 +374,7 @@ function recordRegisteredQuestion(
       : `Question registered locally (${questionId}); it has not been submitted as a Notification Request and has no Provider Acceptance yet. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.`,
   )
   deps.io.out(
-    `Question settlement runs after registration. Inspect the original identity with \`notifai status ${questionId}\`; never register a replacement to check whether this one was sent.`,
+    `Registration alone does not start submission. The asking turn's Stop normally starts question settlement; a later User prompt can recover an unmatched registration. Inspect the original identity with \`notifai status ${questionId}\`; never register a replacement to check whether this one was sent.`,
   )
   deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
   for (const [index, entry] of built.questions.entries()) {

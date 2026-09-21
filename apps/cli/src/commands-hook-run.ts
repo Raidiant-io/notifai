@@ -16,6 +16,7 @@ import {
 import { claudeSessionPid } from './commands-harness-context.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
+import { withFileLock } from './file-lock.js'
 import { questionRoutingCapability, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS } from './hook-events.js'
 import {
@@ -31,6 +32,8 @@ import {
   readSessionState,
   recordSessionStart,
   resetCursorStopActivation,
+  sessionHasEnded,
+  sessionStatePath,
 } from './hook-session-state.js'
 import {
   type EscalationDeliveryRoute,
@@ -155,6 +158,25 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  const launchSettlement = (): Record<string, unknown> => {
+    const sessionId = envelope.session_id
+    if (sessionId === undefined || harness === undefined) return {}
+    try {
+      const launched = withFileLock(`${sessionStatePath(sessionId, deps.env)}.lock`, () => {
+        if (sessionHasEnded(sessionId, deps.env)) return false
+        const current = readSessionState(sessionId, deps.env)
+        if ((current.pending?.length ?? 0) === 0 && current.accepted === undefined) return false
+        const spawnSettlement = deps.spawnQuestionSettlement ?? spawnQuestionSettlement
+        spawnSettlement({
+          envelope: { session_id: sessionId, cwd }, harness,
+        })
+        return true
+      })
+      return { settlement: launched ? 'launched' : 'cancelled' }
+    } catch (err) {
+      return { settlement: 'launch-failed', settlement_error: failureData(err) }
+    }
+  }
   const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
   logger.bind({ session: envelope.session_id ?? null })
   const lifecycleEnabled = (): boolean => {
@@ -204,6 +226,7 @@ export async function hookRunCommand(
       notice,
     )
     if (stdout !== undefined) deps.io.out(stdout)
+    let settlementRecovery: Record<string, unknown> = {}
     if (event === 'session-start' && envelope.session_id !== undefined) {
       try {
         const stopFingerprint = harness === 'codex'
@@ -212,6 +235,11 @@ export async function hookRunCommand(
             )
           : undefined
         recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint)
+        if (harness === 'codex') {
+          // Pending state is the durable handoff debt if the prior process
+          // died after queue commit but before starting its successor.
+          settlementRecovery = launchSettlement()
+        }
       } catch (err) {
         logger.error('hook.end', {
           hook: event,
@@ -225,6 +253,7 @@ export async function hookRunCommand(
       hook: event,
       outcome: stdout === undefined ? 'unsupported-harness' : 'context-added',
       decided: false,
+      ...settlementRecovery,
     })
     return EXIT.ok
   }
@@ -441,28 +470,6 @@ export async function hookRunCommand(
     let outcome: HookOutcome
     if (event === 'user-prompt-submit') {
       outcome = await handleUserPromptSubmit(ctx, envelope)
-      if (
-        outcome.settlementRequired === true &&
-        envelope.session_id !== undefined &&
-        harness !== undefined &&
-        questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
-          .stopContinuation !== 'unsupported'
-      ) {
-        try {
-          const launchSettlement = deps.spawnQuestionSettlement ?? spawnQuestionSettlement
-          launchSettlement({
-            envelope: { session_id: envelope.session_id, cwd },
-            harness,
-          })
-          outcome.log = { ...outcome.log, settlement: 'launched' }
-        } catch (err) {
-          outcome.log = {
-            ...outcome.log,
-            settlement: 'launch-failed',
-            settlement_error: failureData(err),
-          }
-        }
-      }
     } else {
       outcome = await handleStop(
         ctx,
@@ -471,6 +478,14 @@ export async function hookRunCommand(
         stopWakeRoute(deps, harness, envelope.session_id, cwd),
         event === 'stop',
       )
+    }
+    if (
+      outcome.settlementRequired === true && harness !== undefined &&
+      questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
+        .stopContinuation !== 'unsupported'
+    ) {
+      // handleStop released its question-owner lease before returning here.
+      outcome.log = { ...outcome.log, ...launchSettlement() }
     }
     // Answer diagnostics are already persisted once as hook.answer. Keep every
     // other note in the lifecycle record without duplicating the user's text.

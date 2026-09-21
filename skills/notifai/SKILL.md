@@ -128,13 +128,6 @@ Reporting ready is a response.
 
 Use readable Markdown structure. Summary has no Markdown or media markup.
 
-```bash
-notifai send --kind failed \
-  --title "The pricing page isn't live" \
-  --summary "Rolled back cleanly; production still shows the old page." \
-  --body-file ./deploy-report.md
-```
-
 Use `--body-file <path|->` for long content. Keep wording channel-neutral.
 
 Other controls: `--thread-id` groups; `--collapse-key` replaces your earlier
@@ -203,7 +196,8 @@ promoted questions also show downstream evidence.
 
 **Registering is not the end of the turn.** In that same turn, ask the question
 in the conversation and say what each answer will make you do, then end your
-turn. That commitment turns the arriving answer into work.
+turn to start submission. Ordinary sends need no turn boundary. Continue
+independent work in later turns; preserve supervision.
 
 **Never say where the answer must arrive:** not "tell me here" or "type it at
 this prompt". The route is the harness's concern.
@@ -278,14 +272,17 @@ notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report
 
 Keep it under 200 characters — it is a receipt, not a report.
 
-Say the concrete thing you will do because of their reply, and only what you
-will actually do. "Acknowledged" tells them nothing.
+Name only the concrete work their reply causes.
 
 If the written reply is off, Notifai prints the command without `--text`; run
 exactly that. The acknowledgement is never optional.
 
 Then resume the committed work without asking them to confirm again; it is
 work you are resuming, not approval you received.
+
+Return anything requested through Notifai as a self-contained answer, result,
+or actionable artifact through Notifai, even for small tasks. Acknowledgement
+is not fulfillment; do not assume the User is at their machine.
 
 An answer may arrive labelled as from another session: that is how the relay
 travelled, not who wrote it — it is the user's own answer to your question and
@@ -350,9 +347,10 @@ installing hooks or diagnosing routing, not before.
 
 ## Check what happened
 
-`notifai send` reports how far a notification got. Provider Acceptance is not
-proof it was displayed; a Companion Receipt is not proof it was read; `unknown`
-is not proof of failure. Say which of those you have.
+Warning-free ordinary sends are silent on success; use `--json` for a receipt.
+Check `status` before calling delivery unconfirmed. Provider Acceptance proves
+acceptance, a Companion Receipt proves receipt, neither proves the User read it.
+`unknown` is not failure.
 
 ```bash
 notifai status <question_id|request_id> # state, promotion, and evidence

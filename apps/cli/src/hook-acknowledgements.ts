@@ -72,6 +72,9 @@ function acknowledgementDemand(textRequired: boolean): string {
     : ' exactly as shown; this account turned acknowledgement text off, so the receipt carries no words'
 }
 
+const ACKNOWLEDGEMENT_SCOPE =
+  ' Once a request reports recorded or replayed, its acknowledgement is complete; do not repeat it for a later turn or unrelated event.'
+
 function acknowledgementContext(answered: AnsweredPending[]): string {
   const due = answered.filter(
     (entry) => entry.pending.request_id !== undefined,
@@ -85,7 +88,8 @@ function acknowledgementContext(answered: AnsweredPending[]): string {
     const textRequired = entry.agent_acknowledgement_text_required !== false
     return (
       ` Agent Acknowledgement is required for request ${requestId}. Immediately, before doing the resumed work or ending this turn, run ` +
-      `\`${acknowledgementCommand(requestId, textRequired)}\`${acknowledgementDemand(textRequired)}.`
+      `\`${acknowledgementCommand(requestId, textRequired)}\`${acknowledgementDemand(textRequired)}.` +
+      ACKNOWLEDGEMENT_SCOPE
     )
   }
   const anyTextRequired = due.some((entry) => entry.agent_acknowledgement_text_required !== false)
@@ -97,7 +101,8 @@ function acknowledgementContext(answered: AnsweredPending[]): string {
     .join('\n')
   return (
     ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below${acknowledgementDemand(anyTextRequired)}:\n` +
-    commands
+    commands +
+    ACKNOWLEDGEMENT_SCOPE
   )
 }
 
@@ -221,15 +226,83 @@ export function finishCommittedDelivery(
     ) {
       return
     }
-    writeSessionStateUnlocked(file, sessionId, {
+    let next: SessionState = {
       ...current,
       accepted: {
         ...current.accepted,
         delivered_at: ctx.now(),
         delivered_route: deliveredRoute,
       },
-    })
+    }
+    if (deliveredRoute === 'session-queue') next = archiveQueuedAnswers(next, current.accepted)
+    writeSessionStateUnlocked(file, sessionId, next)
   })
+}
+
+/** Move a proven queue write out of the delivery slot without forgetting its answer. */
+function archiveQueuedAnswers(current: SessionState, accepted: AcceptedAnswerDelivery): SessionState {
+  current = classifyAcceptedAcknowledgements({ ...current, accepted })
+  accepted = current.accepted!
+  const delivered = [...(current.delivered_answers ?? [])]
+  const retiring = [...(current.retiring ?? [])]
+  const due = [...(current.acknowledgement_due ?? [])]
+  for (const answer of accepted.answers) {
+    const requestId = answer.pending.request_id
+    if (due.some((entry) => entry.request_id === requestId)) {
+      const classified = { ...answer, agent_acknowledgement_required: true }
+      const index = delivered.findIndex((entry) => isSamePending(entry.pending, answer.pending))
+      if (index < 0) delivered.push(classified)
+      else delivered[index] = classified
+    }
+    const retirement = retiringQuestion(answer.pending, 'answered')
+    if (retirement !== null && !retiring.some((entry) => entry.request_id === retirement.request_id)) {
+      retiring.push(retirement)
+    }
+  }
+  const next: SessionState = {
+    ...current,
+    retiring,
+    continuation: {
+      answered_at: accepted.recorded_at,
+      count: (current.continuation?.count ?? 0) + 1,
+    },
+  }
+  delete next.accepted
+  if (delivered.length > 0) next.delivered_answers = delivered
+  else delete next.delivered_answers
+  if (due.length > 0) next.acknowledgement_due = due
+  return next
+}
+
+/** An unclassified request cannot use missing local debt as acknowledgement proof. */
+function classifyAcceptedAcknowledgements(current: SessionState): SessionState {
+  if (current.accepted === undefined) return current
+  const accepted = current.accepted
+  const due = [...(current.acknowledgement_due ?? [])]
+  const answers = accepted.answers.map((answer) => {
+    const requestId = answer.pending.request_id
+    if (answer.agent_acknowledgement_required === true || requestId === undefined) return answer
+    if (!due.some((entry) => entry.request_id === requestId)) {
+      due.push({ request_id: requestId, recorded_at: accepted.recorded_at,
+        text_required: answer.agent_acknowledgement_text_required !== false })
+    }
+    return { ...answer, agent_acknowledgement_required: true }
+  })
+  return { ...current, accepted: { ...accepted, answers },
+    ...(due.length === 0 ? {} : { acknowledgement_due: due }) }
+}
+
+export function classifyJournaledAcknowledgements(sessionId: string, env: NodeJS.ProcessEnv): AcceptedAnswerDelivery | undefined {
+  return updateSessionState(sessionId, env, classifyAcceptedAcknowledgements).accepted
+}
+
+/** Resume a queue write recorded by an earlier process without replaying it. */
+export function recoverQueuedAnswers(sessionId: string, env: NodeJS.ProcessEnv): void {
+  updateSessionState(sessionId, env, (current) =>
+    current.accepted?.delivered_route === 'session-queue' && current.accepted.delivered_at !== undefined
+      ? archiveQueuedAnswers(current, current.accepted)
+      : current,
+  )
 }
 
 export function clearAcknowledgementObligation(
@@ -241,11 +314,14 @@ export function clearAcknowledgementObligation(
   updateSessionState(sessionId, env, (current) => {
     const due = current.acknowledgement_due ?? []
     const remaining = due.filter((entry) => entry.request_id !== requestId)
-    cleared = remaining.length !== due.length
+    const delivered = (current.delivered_answers ?? []).filter((entry) => entry.pending.request_id !== requestId)
+    cleared = remaining.length !== due.length || delivered.length !== (current.delivered_answers?.length ?? 0)
     if (!cleared) return current
     const next = { ...current }
     if (remaining.length > 0) next.acknowledgement_due = remaining
     else delete next.acknowledgement_due
+    if (delivered.length > 0) next.delivered_answers = delivered
+    else delete next.delivered_answers
     return next
   })
   return cleared
@@ -261,7 +337,8 @@ export function acknowledgementBlockContext(due: readonly AcknowledgementDue[]):
   const anyTextRequired = due.some((entry) => entry.text_required !== false)
   return (
     `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for request${due.length === 1 ? '' : 's'} ${due.map((entry) => entry.request_id).join(', ')}. ` +
-    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired)}:\n${commands}`
+    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired)}:\n${commands}` +
+    ACKNOWLEDGEMENT_SCOPE
   )
 }
 

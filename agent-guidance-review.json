@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b16af3fab2b3945b55388ba07c1cb007c223ada81444a6be66cb59a256763536",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, packaged Notifai skill, harness setup, CLI readiness and domain terms against recovered Request history and reply addressing. Recovery adds Companion App continuity and nullable native Delivery attribution; agents still send through the CLI, preserve each question identity, consume replies in order, acknowledge required answers and never replay a Notification Request to repair history. No hook activation, User authorization, trust, notification wording or setup instruction changes are required. The installer lock correction rescans a vanished choosing entry before admission; it preserves existing bounded waiting, ownership, symlink and atomic-write guards without a new agent action. README release markers are generated metadata.",
+  "behavior_digest": "sha256:bb93b2f00c0551e85db54588a68b0d38522a0e0f0185b8c173f929dfb2cde5cf",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms together. Normal ask submission still begins at the asking-turn boundary, with overtaking-prompt recovery; independent work and supervision remain active. Codex queue acceptance is distinct from model consumption. Committed queue writes retain per-request unacknowledged answers while successors observe live siblings independently; prompt and pre-queue reconciliation prevent acknowledged-answer replay, exact-session restart recovers lost handoff, and SessionEnd fences delivery and successor launch. Existing journals preserve payloads and mandatory acknowledgement debt. No always-on or exactly-once guarantee is claimed. Guidance returns requested results through Notifai even for small tasks, distinguishes acknowledgement from fulfillment, limits acknowledgement to one completed receipt per request, and explains silent successful sends with JSON/status evidence. Corrected held-Codex, notifications-off and obsolete Stop claims without introducing new agent commands, settings or trust changes.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

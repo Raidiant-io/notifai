@@ -107,7 +107,10 @@ export function findOwningSession(
     const acceptedMatch = state.accepted?.answers.some(
       ({ pending }) => pending.question_id === id || pending.request_id === id,
     ) ?? false
-    if (pendingMatch || retiringMatch || historyMatch || acknowledgementMatch || acceptedMatch) {
+    const deliveredMatch = state.delivered_answers?.some(
+      ({ pending }) => pending.question_id === id || pending.request_id === id,
+    ) ?? false
+    if (pendingMatch || retiringMatch || historyMatch || acknowledgementMatch || acceptedMatch || deliveredMatch) {
       matches.push(sessionId)
       if (matches.length > 1) return { sessionId: null, ambiguous: true }
     }

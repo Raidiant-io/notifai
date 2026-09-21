@@ -808,7 +808,6 @@ describe('finding what is installed', () => {
     expect(notes[0]).toContain(path.join(layer, 'hooks.json'))
     expect(notes[0]).toContain('Notifai will not modify it')
     expect(notes[0]).toContain('not a Notifai fault')
-    expect(notes[0]).toContain("can end a turn before Notifai's answer arrives")
   })
 
   it('says nothing when Notifai is the only thing in the layer', () => {

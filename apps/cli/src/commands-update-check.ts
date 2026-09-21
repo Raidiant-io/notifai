@@ -61,7 +61,8 @@ export async function cliUpdateCheckCommand(
       ...updateSessionEffects(owner?.harness ?? null, readiness.states, restartReason),
       outstanding_questions: sessionState === null ? null : pendingList(sessionState).length,
       acknowledgement_obligations: sessionState === null ? null : sessionState.acknowledgement_due?.length ?? 0,
-      accepted_answer_pending: sessionState === null ? null : sessionState.accepted !== undefined,
+      accepted_answer_pending: sessionState === null ? null :
+        sessionState.accepted !== undefined || (sessionState.delivered_answers?.length ?? 0) > 0,
     },
     harness_installations: installations.map(installation => ({
       harness: installation.harness, file: installation.file,

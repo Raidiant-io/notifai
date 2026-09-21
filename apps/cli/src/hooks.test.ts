@@ -1211,7 +1211,7 @@ describe('late answer collection', () => {
     expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
   })
 
-  it('injects a journaled answer at Codex prompt start and replays it until acknowledged', async () => {
+  it.each(['local', 'service'] as const)('injects a journaled answer at Codex prompt start until acknowledged (%s)', async (evidence) => {
     const h = harness([])
     const acceptedReply = reply({ text: 'Revise the silhouette' })
     writeSessionState('prompt-answer', h.env, {
@@ -1265,9 +1265,24 @@ describe('late answer collection', () => {
     )
     expect(h.io.outLines).toHaveLength(2)
 
-    const acknowledged = readSessionState('prompt-answer', h.env)
-    delete acknowledged.acknowledgement_due
-    writeSessionState('prompt-answer', h.env, acknowledged)
+    if (evidence === 'local') {
+      expect(await acknowledgeCommand(
+        { ...h.deps, io: new CapturedIo() },
+        'req_prompt_answer',
+        { text: 'Revising the silhouette now.' },
+      )).toBe(EXIT.ok)
+    } else {
+      // The service committed, but the command died before clearing local debt.
+      h.recorder.acknowledged = new Set(['req_prompt_answer'])
+    }
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd, prompt: 'Continue the other work.' }),
+      'codex',
+    )
+    expect(h.io.outLines).toHaveLength(2)
+
     await hookRunCommand(
       h.deps,
       'stop',
@@ -1277,6 +1292,72 @@ describe('late answer collection', () => {
 
     expect(h.io.outLines).toHaveLength(2)
     expect(readSessionState('prompt-answer', h.env).accepted).toBeUndefined()
+  })
+
+  it('replays only the unacknowledged part of a journaled answer batch', async () => {
+    const h = harness([])
+    const answers = ['req_first', 'req_second'].map((requestId, index) => {
+      const answer = reply({ text: `Decision ${index + 1}` })
+      return {
+        pending: { question: `Question ${index + 1}?`, summary: `Question ${index + 1}?`, request_id: requestId },
+        reply: answer,
+        replies: [answer],
+        agent_acknowledgement_required: true,
+      }
+    })
+    writeSessionState('partial-prompt', h.env, {
+      accepted: { answers, remaining: 0, recorded_at: NOW },
+      acknowledgement_due: answers.map(({ pending }) => ({ request_id: pending.request_id, recorded_at: NOW })),
+    })
+    h.recorder.acknowledged = new Set(['req_first'])
+
+    await hookRunCommand(
+      h.deps, 'user-prompt-submit',
+      stdin({ session_id: 'partial-prompt', cwd: h.deps.cwd, prompt: 'Continue.' }), 'codex',
+    )
+
+    const context = JSON.parse(h.io.outLines.at(-1) ?? '{}').hookSpecificOutput?.additionalContext
+    expect(context).toContain('Decision 2')
+    expect(context).not.toContain('Decision 1')
+    expect(readSessionState('partial-prompt', h.env).acknowledgement_due?.map((entry) => entry.request_id))
+      .toEqual(['req_second'])
+    expect(readSessionState('partial-prompt', h.env).accepted).toBeDefined()
+  })
+
+  it.each(['offline', 'session-ended'] as const)('preserves journal recovery across acknowledgement reconciliation (%s)', async (failure) => {
+    const h = harness([])
+    const answer = reply({ text: 'Keep the draft' })
+    writeSessionState('reconcile-prompt', h.env, {
+      accepted: {
+        answers: [{
+          pending: { question: 'Keep it?', summary: 'Keep it?', request_id: 'req_keep' },
+          reply: answer, replies: [answer], agent_acknowledgement_required: true,
+        }],
+        remaining: 0, recorded_at: NOW,
+      },
+      acknowledgement_due: [{ request_id: 'req_keep', recorded_at: NOW }],
+    })
+    const deps: CommandDeps = {
+      ...h.deps,
+      clientFactory: () => ({
+        ...fakeClient(h.recorder, []),
+        agentAcknowledgement: async () => {
+          if (failure === 'offline') throw new Error('offline')
+          await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'reconcile-prompt' }), 'codex')
+          return fakeClient(h.recorder, []).agentAcknowledgement('req_keep', { waitSeconds: 0 })
+        },
+      }),
+    }
+
+    await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: 'reconcile-prompt' }), 'codex')
+
+    if (failure === 'offline') {
+      expect(h.io.outLines.join('\n')).toContain('Keep the draft')
+    } else {
+      expect(h.io.outLines).toEqual([])
+    }
+    expect(readSessionState('reconcile-prompt', h.env).accepted).toBeDefined()
+    expect(readSessionState('reconcile-prompt', h.env).acknowledgement_due).toHaveLength(1)
   })
 })
 
@@ -2112,6 +2193,217 @@ describe('several questions in flight', () => {
   function repliesByRequest(h: Harness, byRequest: Map<string, ReplyView[]>): void {
     h.recorder.repliesFor = (requestId) => byRequest.get(requestId) ?? []
   }
+
+  it.each(['unacknowledged', 'manual'] as const)('observes staggered replies without another prompt or Stop (%s)', async (mode) => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const byRequest = new Map([['req_hook_1', [reply({ text: 'First decision' })]]])
+    repliesByRequest(h, byRequest)
+    const queued: string[] = []
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+      codexWake: { queue: async (_thread, _cwd, context) => {
+        queued.push(context)
+        if (queued.length === 1) {
+          h.advanceClock(15_000)
+          byRequest.set('req_hook_2', [reply({ text: 'Second decision' })])
+          if (mode === 'manual') h.recorder.acknowledged = new Set([h.recorder.receipts[1]!])
+        }
+      } },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'First decision?' }, NOW)
+    registerQuestion(sessionId, h.env, { question: 'Second decision?' }, NOW + 1)
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(queued).toHaveLength(1)
+    expect(successors).toHaveLength(1)
+    // The process-spawn boundary is captured; run the exact detached entrypoint.
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+
+    expect(queued).toHaveLength(mode === 'manual' ? 1 : 2)
+    if (mode === 'unacknowledged') {
+      expect(queued[1]).toContain('Second decision')
+      expect(queued[1]).not.toContain('First decision')
+    }
+    const state = readSessionState(sessionId, h.env)
+    expect(state.pending).toBeUndefined()
+    expect(state.acknowledgement_due?.map((entry) => entry.request_id))
+      .toEqual(mode === 'manual' ? [h.recorder.receipts[0]] : h.recorder.receipts)
+    expect(state.delivered_answers?.map((entry) => entry.reply.text))
+      .toEqual(mode === 'manual' ? ['First decision'] : ['First decision', 'Second decision'])
+    expect(successors).toEqual([])
+    expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
+      text: 'Acting on the first decision.',
+    })).toBe(EXIT.ok)
+    expect((readSessionState(sessionId, h.env).delivered_answers ?? []).map((entry) => entry.reply.text))
+      .toEqual(mode === 'manual' ? [] : ['Second decision'])
+  })
+
+  it.each(['launch-failed', 'session-ended', 'after-launch'] as const)('preserves queue commits across successor handoff (%s)', async (interruption) => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const byRequest = new Map([['req_hook_1', [reply({ text: 'First decision' })]]])
+    repliesByRequest(h, byRequest)
+    const queued: string[] = []
+    const successors: { session_id?: string; cwd?: string }[] = []
+    let failLaunch = interruption === 'launch-failed'
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => {
+        if (failLaunch) throw new Error('process ended before successor launch')
+        successors.push(launch.envelope)
+      },
+      codexWake: { queue: async (_thread, _cwd, context) => {
+        queued.push(context)
+        if (queued.length === 1) {
+          byRequest.set('req_hook_2', [reply({ text: 'Second decision' })])
+          if (interruption === 'session-ended') handleSessionEnd(h.env, { session_id: sessionId }, NOW)
+        }
+      } },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'First decision?' }, NOW)
+    registerQuestion(sessionId, h.env, { question: 'Second decision?' }, NOW + 1)
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(queued).toHaveLength(1)
+    expect(successors).toHaveLength(interruption === 'after-launch' ? 1 : 0)
+    if (interruption === 'after-launch') handleSessionEnd(h.env, { session_id: sessionId }, NOW)
+    expect(readSessionState(sessionId, h.env).delivered_answers?.[0]?.reply.text).toBe('First decision')
+    if (interruption !== 'launch-failed') {
+      await hookRunCommand(deps, 'question-settlement', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+      expect(queued).toHaveLength(1)
+      return
+    }
+
+    // The native queue commit survived the lost handoff; exact-session restart
+    // recovers pending siblings without sending the already-queued answer again.
+    failLaunch = false
+    await hookRunCommand(deps, 'session-start', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(successors).toHaveLength(1)
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+    expect(queued).toHaveLength(2)
+    expect(queued[1]).toContain('Second decision')
+    expect(queued[1]).not.toContain('First decision')
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+  })
+
+  it('does not spend the continuation retry cap on distinct staggered siblings', async () => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const count = MAX_CONTINUATION_COUNT + 1
+    const byRequest = new Map([['req_hook_1', [reply({ text: 'Decision 1' })]]])
+    repliesByRequest(h, byRequest)
+    const queued: string[] = []
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+      codexWake: { queue: async (_thread, _cwd, context) => {
+        queued.push(context)
+        h.advanceClock(15_000)
+        const next = queued.length + 1
+        byRequest.set(`req_hook_${next}`, [reply({ text: `Decision ${next}` })])
+      } },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    for (let index = 1; index <= count; index += 1) {
+      registerQuestion(sessionId, h.env, { question: `Question ${index}?` }, NOW + index)
+    }
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    for (let index = 1; index < count; index += 1) {
+      expect(successors).toHaveLength(1)
+      await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+    }
+
+    expect(queued).toHaveLength(count)
+    for (let index = 0; index < count; index += 1) expect(queued[index]).toContain(`Decision ${index + 1}`)
+    expect(readSessionState(sessionId, h.env).delivered_answers).toHaveLength(count)
+    expect(readSessionState(sessionId, h.env).acknowledgement_due).toHaveLength(count)
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+    expect(successors).toEqual([])
+  })
+
+  it('recovers a previously committed queue journal without losing its unacknowledged answer', async () => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const first = reply({ text: 'First decision' })
+    writeSessionState(sessionId, h.env, {
+      accepted: {
+        answers: [{
+          pending: { question: 'First?', summary: 'First?', request_id: 'req_first',
+            collapse_key: 'first', device_ids: ['dev_iphone'] },
+          reply: first, replies: [first], agent_acknowledgement_required: true,
+        }],
+        remaining: 1, recorded_at: NOW, delivered_at: NOW, delivered_route: 'session-queue',
+      },
+      acknowledgement_due: [{ request_id: 'req_first', recorded_at: NOW }],
+      pending: [{
+        question: 'Second?', request_id: 'req_second', collapse_key: 'second', device_ids: ['dev_iphone'],
+        asked_at: NOW, reply_deadline_at: NOW + 60_000,
+      }],
+    })
+    h.recorder.repliesFor = (id) => id === 'req_second' ? [reply({ text: 'Second decision' })] : []
+    const queued: string[] = []
+    const deps: CommandDeps = {
+      ...h.deps, codexWake: { queue: async (_thread, _cwd, context) => void queued.push(context) },
+    }
+
+    await hookRunCommand(deps, 'question-settlement', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toContain('Second decision')
+    expect(queued[0]).not.toContain('First decision')
+    expect(readSessionState(sessionId, h.env).delivered_answers?.map((entry) => entry.reply.text))
+      .toEqual(['First decision', 'Second decision'])
+  })
+
+  it.each([true, false])('collects the next reply at prompt start with a queued answer (acknowledged=%s)', async (acknowledged) => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const byRequest = new Map([['req_hook_1', [reply({ text: 'Approve the first change' })]]])
+    repliesByRequest(h, byRequest)
+    const queued: string[] = []
+    const deps: CommandDeps = {
+      ...h.deps,
+      codexWake: { queue: async (_thread, _cwd, context) => void queued.push(context) },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Approve the first change?' }, NOW)
+    registerQuestion(sessionId, h.env, { question: 'Which preview should open?' }, NOW + 1)
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(queued).toHaveLength(1)
+    expect(readSessionState(sessionId, h.env).pending).toHaveLength(1)
+    if (acknowledged) {
+      expect(await acknowledgeCommand(
+        { ...deps, io: new CapturedIo() },
+        h.recorder.receipts[0]!,
+        { text: 'Applying the first change.' },
+      )).toBe(EXIT.ok)
+    }
+    byRequest.set('req_hook_2', [reply({ text: 'Open the separate preview' })])
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({ session_id: sessionId, cwd: deps.cwd, prompt: 'Check progress.' }),
+      'codex',
+    )
+
+    const context = JSON.parse(h.io.outLines.at(-1) ?? '{}').hookSpecificOutput?.additionalContext
+    expect(context).toContain('Open the separate preview')
+    if (acknowledged) expect(context).not.toContain('Approve the first change')
+    else expect(context).toContain('Approve the first change')
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+    expect(readSessionState(sessionId, h.env).acknowledgement_due?.map((entry) => entry.request_id))
+      .toEqual(acknowledged ? [h.recorder.receipts[1]] : h.recorder.receipts)
+    expect(h.recorder.submitted).toHaveLength(2)
+  })
 
   it('escalates every registered question in one pass, each as its own notification', async () => {
     const h = harness([])
@@ -5587,7 +5879,7 @@ describe('Codex Stop wake route', () => {
     expect(wake.queued).toHaveLength(1)
     expect(wake.queued[0]).toContain('Ship it')
     expect(wake.threads).toEqual([CODEX_THREAD])
-    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
+    expect(readSessionState(CODEX_THREAD, h.env).delivered_answers?.[0]?.reply.text).toBe('Ship it')
     expect(readSessionState(CODEX_THREAD, h.env).last_stop_at).toBeUndefined()
 
     await hookRunCommand(
@@ -5705,10 +5997,8 @@ describe('Codex Stop wake route', () => {
     expect(wake.queued[0]).toContain('"BETA"')
     // The queue write settles the journal: Codex now holds the copy that will
     // be delivered, and replaying it would answer the same question twice.
-    expect(readSessionState(CODEX_THREAD, h.env).accepted).toMatchObject({
-      delivered_route: 'session-queue',
-      delivered_at: expect.any(Number),
-    })
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
+    expect(readSessionState(CODEX_THREAD, h.env).delivered_answers?.[0]?.reply.text).toBe('BETA')
   })
 
   it('continues a Windows Claude Code held Stop in the exact Agent Session', async () => {
@@ -5732,9 +6022,10 @@ describe('Codex Stop wake route', () => {
     expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
   })
 
-  it('queues an answer journaled by an earlier turn on the next Stop', async () => {
+  it.each([false, true])('reconciles an unclassified answer journal before queueing (already acknowledged=%s)', async (acknowledged) => {
     const h = harness([])
     journaledAnswer(h)
+    if (acknowledged) h.recorder.acknowledged = new Set(['req_existing'])
     const wake = codexWake()
 
     await hookRunCommand(
@@ -5745,11 +6036,13 @@ describe('Codex Stop wake route', () => {
     )
 
     expect(h.io.outLines).toEqual([])
-    expect(wake.queued).toHaveLength(1)
-    expect(wake.queued[0]).toContain('"BETA"')
-    expect(readSessionState(CODEX_THREAD, h.env).accepted).toMatchObject({
-      delivered_route: 'session-queue',
-    })
+    expect(wake.queued).toHaveLength(acknowledged ? 0 : 1)
+    if (!acknowledged) expect(wake.queued[0]).toContain('"BETA"')
+    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
+    expect(readSessionState(CODEX_THREAD, h.env).delivered_answers?.[0]?.reply.text)
+      .toBe(acknowledged ? undefined : 'BETA')
+    expect((readSessionState(CODEX_THREAD, h.env).acknowledgement_due ?? []).map((entry) => entry.request_id))
+      .toEqual(acknowledged ? [] : ['req_existing'])
   })
 
   it('queues the same way whether or not the asking Codex process is still alive', async () => {
