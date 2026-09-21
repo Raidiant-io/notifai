@@ -108,6 +108,12 @@ export interface SessionState {
    */
   accepted?: AcceptedAnswerDelivery
   /**
+   * Native-queue writes that committed, retained per request until the agent
+   * acknowledges them. They never occupy the in-flight delivery slot or block
+   * observation of a sibling question. Reply parts remain in their fenced order.
+   */
+  delivered_answers?: AnsweredPending[]
+  /**
    * Required Agent Acknowledgements that the resumed agent still owes. This is
    * separate from answer delivery: the answer journal may settle as soon as a
    * harness accepts the continuation, while this obligation must survive until

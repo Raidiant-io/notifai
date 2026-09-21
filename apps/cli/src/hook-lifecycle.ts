@@ -16,9 +16,11 @@ import {
   acknowledgementBlockContext,
   amendAcceptedAnswers,
   answersContext,
+  classifyJournaledAcknowledgements,
   finishCommittedDelivery,
   holdForAcknowledgement,
   reconcileAcknowledgementObligations,
+  recoverQueuedAnswers,
   resetAcknowledgementBlocks,
   settleAcceptedAnswers,
   stageAcceptedAnswers,
@@ -566,8 +568,9 @@ export async function handleUserPromptSubmit(
   const sessionId = envelope.session_id
   if (!sessionId) return { notes }
 
+  recoverQueuedAnswers(sessionId, ctx.env)
   let state = readSessionState(sessionId, ctx.env)
-  if (state.accepted !== undefined) {
+  if (state.accepted !== undefined || (state.delivered_answers?.length ?? 0) > 0) {
     // A successful command can clear local debt before the next Stop, and a
     // interrupted command can leave debt after the service recorded its
     // acknowledgement. Reconcile both before replaying recovery context.
@@ -583,7 +586,10 @@ export async function handleUserPromptSubmit(
     }
   }
   if (state.accepted !== undefined) {
-    const answers = acceptedAnswersAwaitingAcknowledgement(state.accepted, state)
+    const answers = [
+      ...(state.delivered_answers ?? []),
+      ...acceptedAnswersAwaitingAcknowledgement(state.accepted, state),
+    ]
     updateSessionState(sessionId, ctx.env, (current) => ({
       ...current,
       ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
@@ -737,7 +743,7 @@ export async function handleUserPromptSubmit(
     // host dies around stdout, a later prompt or Stop safely replays it.
     const stdout = userPromptContextOutput(
       ctx.harness,
-      answersContext(lateAnswers, 0),
+      answersContext([...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
     )
     if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
     else notes.push('the late device answer will continue the agent at this turn’s Stop')
@@ -756,7 +762,7 @@ export async function handleUserPromptSubmit(
               ),
             },
           }),
-      settlementRequired: pendingList(updated).some((entry) => entry.request_id === undefined),
+      settlementRequired: needsQuestionSettlement(updated, ctx.harness),
     }
   }
   const retired = await drainRetirements(ctx, sessionId, ctx.env)
@@ -765,10 +771,22 @@ export async function handleUserPromptSubmit(
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
+  const delivered = readSessionState(sessionId, ctx.env).delivered_answers ?? []
+  const stdout = delivered.length > 0
+    ? userPromptContextOutput(ctx.harness, answersContext(delivered, pendingList(updated).length))
+    : undefined
   return {
     notes,
-    settlementRequired: pendingList(updated).some((entry) => entry.request_id === undefined),
+    ...(stdout === undefined ? {} : {
+      stdout,
+      log: { stage: 'context-added', route: 'user-prompt-submit', request_ids: summarizeRequestIds(delivered.map((entry) => entry.pending)).ids },
+    }),
+    settlementRequired: needsQuestionSettlement(updated, ctx.harness),
   }
+}
+
+function needsQuestionSettlement(state: SessionState, harness: HookContext['harness']): boolean {
+  return pendingList(state).some((entry) => entry.request_id === undefined || harness === 'codex')
 }
 
 /** Absence of debt proves consumption only for an explicitly classified answer. */
@@ -886,6 +904,7 @@ export async function runEscalationWaiter(
   }
   let settledAnswerThisPass = false
   try {
+    recoverQueuedAnswers(sessionId, ctx.env)
     let state = readSessionState(sessionId, ctx.env)
     if (state.accepted !== undefined) {
       const accepted = state.accepted
@@ -959,7 +978,10 @@ export async function runEscalationWaiter(
       state = readSessionState(sessionId, ctx.env)
     }
 
-    if (state.accepted === undefined && (state.acknowledgement_due?.length ?? 0) > 0) {
+    if (
+      state.accepted === undefined && (state.acknowledgement_due?.length ?? 0) > 0 &&
+      !(options.recordStop === false && options.route.kind === 'session-queue')
+    ) {
       const due = await reconcileAcknowledgementObligations(
         ctx,
         sessionId,
@@ -1038,6 +1060,27 @@ async function deliverAcceptedAnswers(
   notes: string[],
   cwd?: string,
 ): Promise<HookOutcome> {
+  if (route.kind === 'session-queue') {
+    accepted = classifyJournaledAcknowledgements(sessionId, ctx.env) ?? accepted
+    const ids = new Set(accepted.answers.map((answer) => answer.pending.request_id))
+    await reconcileAcknowledgementObligations(
+      ctx, sessionId,
+      (readSessionState(sessionId, ctx.env).acknowledgement_due ?? []).filter((entry) => ids.has(entry.request_id)),
+    )
+    if (sessionHasEnded(sessionId, ctx.env)) return { notes }
+    const unresolved = acceptedAnswersAwaitingAcknowledgement(accepted, readSessionState(sessionId, ctx.env))
+    if (unresolved.length === 0) {
+      settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
+      return {
+        notes,
+        log: { stage: 'acknowledgement-reconciled', request_ids: [...ids] },
+        settlementRequired: pendingList(readSessionState(sessionId, ctx.env)).length > 0,
+      }
+    }
+    accepted = { ...accepted, answers: unresolved }
+    // Keep the complete fenced batch in storage until queue completion, so
+    // acknowledged members still retain any unconfirmed retirement work.
+  }
   const { answers: answered, remaining } = accepted
   const requestIds = summarizeRequestIds(answered.map((entry) => entry.pending)).ids
   if (sessionHasEnded(sessionId, ctx.env)) {
@@ -1164,6 +1207,9 @@ async function deliverAcceptedAnswers(
   if (delivered.stdout !== undefined) outcome.stdout = delivered.stdout
   if (delivered.commitStdout !== undefined) outcome.commitStdout = delivered.commitStdout
   if (delivered.log !== undefined) outcome.log = delivered.log
+  if (route.kind === 'session-queue' && delivered.acknowledgement === 'delivered') {
+    outcome.settlementRequired = pendingList(readSessionState(sessionId, ctx.env)).length > 0
+  }
   return outcome
 }
 
@@ -1941,7 +1987,7 @@ export function handleSessionEnd(
       entry.request_id === undefined && entry.submission === undefined ? 'withdrawn' : 'retired',
     )
   }
-  for (const answer of state.accepted?.answers ?? []) {
+  for (const answer of [...(state.accepted?.answers ?? []), ...(state.delivered_answers ?? [])]) {
     stateWithHistory = rememberQuestionState(stateWithHistory, answer.pending, 'answered')
   }
   for (const retirement of state.retiring ?? []) {
@@ -1955,6 +2001,7 @@ export function handleSessionEnd(
   const retirementCandidates = [
     ...pendingList(state),
     ...(state.accepted?.answers.map((entry) => entry.pending) ?? []),
+    ...(state.delivered_answers?.map((entry) => entry.pending) ?? []),
   ]
   for (const entry of retirementCandidates) {
     try {

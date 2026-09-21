@@ -142,7 +142,7 @@ export function inspectQuestionState(
   if (pendingView !== null) {
     return { found: true, session_id: owner.sessionId, question: pendingView }
   }
-  const accepted = state.accepted?.answers.find(
+  const accepted = [...(state.accepted?.answers ?? []), ...(state.delivered_answers ?? [])].find(
     ({ pending: entry }) => entry.question_id === questionId,
   )?.pending
   if (accepted?.question_id !== undefined) {
