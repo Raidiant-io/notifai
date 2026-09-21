@@ -566,8 +566,24 @@ export async function handleUserPromptSubmit(
   const sessionId = envelope.session_id
   if (!sessionId) return { notes }
 
-  const state = readSessionState(sessionId, ctx.env)
+  let state = readSessionState(sessionId, ctx.env)
   if (state.accepted !== undefined) {
+    // A successful command can clear local debt before the next Stop, and a
+    // interrupted command can leave debt after the service recorded its
+    // acknowledgement. Reconcile both before replaying recovery context.
+    await reconcileAcknowledgementObligations(ctx, sessionId, state.acknowledgement_due ?? [])
+    if (sessionHasEnded(sessionId, ctx.env)) return { notes }
+    state = readSessionState(sessionId, ctx.env)
+    if (
+      state.accepted !== undefined &&
+      acceptedAnswersAwaitingAcknowledgement(state.accepted, state).length === 0
+    ) {
+      settleAcceptedAnswers(ctx, sessionId, state.accepted, envelope.cwd)
+      state = readSessionState(sessionId, ctx.env)
+    }
+  }
+  if (state.accepted !== undefined) {
+    const answers = acceptedAnswersAwaitingAcknowledgement(state.accepted, state)
     updateSessionState(sessionId, ctx.env, (current) => ({
       ...current,
       ...(ctx.harness === undefined ? {} : { harness: ctx.harness }),
@@ -578,7 +594,7 @@ export async function handleUserPromptSubmit(
     }
     const stdout = userPromptContextOutput(
       ctx.harness,
-      answersContext(state.accepted.answers, state.accepted.remaining),
+      answersContext(answers, state.accepted.remaining),
     )
     if (stdout !== undefined) {
       notes.push('the journaled device answer was added to the user\'s new turn')
@@ -589,7 +605,7 @@ export async function handleUserPromptSubmit(
         log: {
           stage: 'context-added',
           route: 'user-prompt-submit',
-          request_ids: state.accepted.answers.flatMap(({ pending }) =>
+          request_ids: answers.flatMap(({ pending }) =>
             pending.request_id === undefined ? [] : [pending.request_id],
           ),
         },
@@ -755,6 +771,18 @@ export async function handleUserPromptSubmit(
   }
 }
 
+/** Absence of debt proves consumption only for an explicitly classified answer. */
+function acceptedAnswersAwaitingAcknowledgement(
+  accepted: AcceptedAnswerDelivery,
+  state: SessionState,
+): AnsweredPending[] {
+  return accepted.answers.filter(({ pending, agent_acknowledgement_required }) =>
+    agent_acknowledgement_required !== true ||
+    pending.request_id === undefined ||
+    (state.acknowledgement_due ?? []).some((entry) => entry.request_id === pending.request_id),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Stop — the turn ended; escalate a registered question
 // ---------------------------------------------------------------------------
@@ -895,14 +923,7 @@ export async function runEscalationWaiter(
       // than one settled on delivery. So a recorded delivery settles.
       const acknowledgementProvesDelivery =
         accepted.answers.length > 0 &&
-        accepted.answers.every(
-          ({ pending, agent_acknowledgement_required }) =>
-            agent_acknowledgement_required === true &&
-            pending.request_id !== undefined &&
-            !(state.acknowledgement_due ?? []).some(
-              (entry) => entry.request_id === pending.request_id,
-            ),
-        )
+        acceptedAnswersAwaitingAcknowledgement(accepted, state).length === 0
       const deliveryProven =
         accepted.delivered_at !== undefined ||
         envelope.stop_hook_active === true ||

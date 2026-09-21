@@ -1211,7 +1211,7 @@ describe('late answer collection', () => {
     expect(readSessionState('late-prompt', h.env).accepted).toBeUndefined()
   })
 
-  it('injects a journaled answer at Codex prompt start and replays it until acknowledged', async () => {
+  it.each(['local', 'service'] as const)('injects a journaled answer at Codex prompt start until acknowledged (%s)', async (evidence) => {
     const h = harness([])
     const acceptedReply = reply({ text: 'Revise the silhouette' })
     writeSessionState('prompt-answer', h.env, {
@@ -1265,9 +1265,24 @@ describe('late answer collection', () => {
     )
     expect(h.io.outLines).toHaveLength(2)
 
-    const acknowledged = readSessionState('prompt-answer', h.env)
-    delete acknowledged.acknowledgement_due
-    writeSessionState('prompt-answer', h.env, acknowledged)
+    if (evidence === 'local') {
+      expect(await acknowledgeCommand(
+        { ...h.deps, io: new CapturedIo() },
+        'req_prompt_answer',
+        { text: 'Revising the silhouette now.' },
+      )).toBe(EXIT.ok)
+    } else {
+      // The service committed, but the command died before clearing local debt.
+      h.recorder.acknowledged = new Set(['req_prompt_answer'])
+    }
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'prompt-answer', cwd: h.deps.cwd, prompt: 'Continue the other work.' }),
+      'codex',
+    )
+    expect(h.io.outLines).toHaveLength(2)
+
     await hookRunCommand(
       h.deps,
       'stop',
@@ -1277,6 +1292,72 @@ describe('late answer collection', () => {
 
     expect(h.io.outLines).toHaveLength(2)
     expect(readSessionState('prompt-answer', h.env).accepted).toBeUndefined()
+  })
+
+  it('replays only the unacknowledged part of a journaled answer batch', async () => {
+    const h = harness([])
+    const answers = ['req_first', 'req_second'].map((requestId, index) => {
+      const answer = reply({ text: `Decision ${index + 1}` })
+      return {
+        pending: { question: `Question ${index + 1}?`, summary: `Question ${index + 1}?`, request_id: requestId },
+        reply: answer,
+        replies: [answer],
+        agent_acknowledgement_required: true,
+      }
+    })
+    writeSessionState('partial-prompt', h.env, {
+      accepted: { answers, remaining: 0, recorded_at: NOW },
+      acknowledgement_due: answers.map(({ pending }) => ({ request_id: pending.request_id, recorded_at: NOW })),
+    })
+    h.recorder.acknowledged = new Set(['req_first'])
+
+    await hookRunCommand(
+      h.deps, 'user-prompt-submit',
+      stdin({ session_id: 'partial-prompt', cwd: h.deps.cwd, prompt: 'Continue.' }), 'codex',
+    )
+
+    const context = JSON.parse(h.io.outLines.at(-1) ?? '{}').hookSpecificOutput?.additionalContext
+    expect(context).toContain('Decision 2')
+    expect(context).not.toContain('Decision 1')
+    expect(readSessionState('partial-prompt', h.env).acknowledgement_due?.map((entry) => entry.request_id))
+      .toEqual(['req_second'])
+    expect(readSessionState('partial-prompt', h.env).accepted).toBeDefined()
+  })
+
+  it.each(['offline', 'session-ended'] as const)('preserves journal recovery across acknowledgement reconciliation (%s)', async (failure) => {
+    const h = harness([])
+    const answer = reply({ text: 'Keep the draft' })
+    writeSessionState('reconcile-prompt', h.env, {
+      accepted: {
+        answers: [{
+          pending: { question: 'Keep it?', summary: 'Keep it?', request_id: 'req_keep' },
+          reply: answer, replies: [answer], agent_acknowledgement_required: true,
+        }],
+        remaining: 0, recorded_at: NOW,
+      },
+      acknowledgement_due: [{ request_id: 'req_keep', recorded_at: NOW }],
+    })
+    const deps: CommandDeps = {
+      ...h.deps,
+      clientFactory: () => ({
+        ...fakeClient(h.recorder, []),
+        agentAcknowledgement: async () => {
+          if (failure === 'offline') throw new Error('offline')
+          await hookRunCommand(h.deps, 'session-end', stdin({ session_id: 'reconcile-prompt' }), 'codex')
+          return fakeClient(h.recorder, []).agentAcknowledgement('req_keep', { waitSeconds: 0 })
+        },
+      }),
+    }
+
+    await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: 'reconcile-prompt' }), 'codex')
+
+    if (failure === 'offline') {
+      expect(h.io.outLines.join('\n')).toContain('Keep the draft')
+    } else {
+      expect(h.io.outLines).toEqual([])
+    }
+    expect(readSessionState('reconcile-prompt', h.env).accepted).toBeDefined()
+    expect(readSessionState('reconcile-prompt', h.env).acknowledgement_due).toHaveLength(1)
   })
 })
 
@@ -2112,6 +2193,46 @@ describe('several questions in flight', () => {
   function repliesByRequest(h: Harness, byRequest: Map<string, ReplyView[]>): void {
     h.recorder.repliesFor = (requestId) => byRequest.get(requestId) ?? []
   }
+
+  it('collects the next reply at prompt start after acknowledging a queued answer', async () => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const byRequest = new Map([['req_hook_1', [reply({ text: 'Approve the first change' })]]])
+    repliesByRequest(h, byRequest)
+    const queued: string[] = []
+    const deps: CommandDeps = {
+      ...h.deps,
+      codexWake: { queue: async (_thread, _cwd, context) => void queued.push(context) },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Approve the first change?' }, NOW)
+    registerQuestion(sessionId, h.env, { question: 'Which preview should open?' }, NOW + 1)
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(queued).toHaveLength(1)
+    expect(readSessionState(sessionId, h.env).pending).toHaveLength(1)
+    expect(await acknowledgeCommand(
+      { ...deps, io: new CapturedIo() },
+      h.recorder.receipts[0]!,
+      { text: 'Applying the first change.' },
+    )).toBe(EXIT.ok)
+    byRequest.set('req_hook_2', [reply({ text: 'Open the separate preview' })])
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({ session_id: sessionId, cwd: deps.cwd, prompt: 'Check progress.' }),
+      'codex',
+    )
+
+    const context = JSON.parse(h.io.outLines.at(-1) ?? '{}').hookSpecificOutput?.additionalContext
+    expect(context).toContain('Open the separate preview')
+    expect(context).not.toContain('Approve the first change')
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+    expect(readSessionState(sessionId, h.env).acknowledgement_due?.map((entry) => entry.request_id))
+      .toEqual([h.recorder.receipts[1]])
+    expect(h.recorder.submitted).toHaveLength(2)
+  })
 
   it('escalates every registered question in one pass, each as its own notification', async () => {
     const h = harness([])
