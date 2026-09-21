@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:40861f772ed95b7266e6403387dab24347d79ffab87398956fc7af9fcae51392",
+  "behavior_digest": "sha256:8dde852389ce72644df97f51c2b8d28435b189dd955572f0aa426315dfc35310",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms against local registration, normal Stop submission, overtaking-prompt settlement, Codex durable queue and Claude platform-specific continuation. Retained the normal asking-turn boundary and clarified independent work and supervision; corrected held-Codex, notifications-off, foreign-Stop and unconditional-delivery claims. Scoped injected acknowledgement instructions to one completed receipt per request. Requests received through Notifai now explicitly return their self-contained results through Notifai even for small tasks; acknowledgement remains receipt rather than fulfillment. No routing, trust, queue or acknowledgement-state algorithm changed.",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms against local registration, normal Stop submission, overtaking-prompt settlement, Codex durable queue and Claude platform-specific continuation. Retained the normal asking-turn boundary and clarified independent work and supervision; corrected held-Codex, notifications-off, foreign-Stop and unconditional-delivery claims. Scoped injected acknowledgement instructions to one completed receipt per request. Requests received through Notifai now explicitly return their self-contained results through Notifai even for small tasks; acknowledgement remains receipt rather than fulfillment. No routing, trust, queue or acknowledgement-state algorithm changed. Clarify silent successful sends, JSON receipts, and status verification before reporting delivery uncertainty.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

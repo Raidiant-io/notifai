@@ -347,9 +347,10 @@ installing hooks or diagnosing routing, not before.
 
 ## Check what happened
 
-`notifai send` reports how far a notification got. Provider Acceptance is not
-proof it was displayed; a Companion Receipt is not proof it was read; `unknown`
-is not proof of failure. Say which of those you have.
+Warning-free ordinary sends are silent on success; use `--json` for a receipt.
+Check `status` before calling delivery unconfirmed. Provider Acceptance proves
+acceptance, a Companion Receipt proves receipt, neither proves the User read it.
+`unknown` is not failure.
 
 ```bash
 notifai status <question_id|request_id> # state, promotion, and evidence
