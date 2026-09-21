@@ -69,11 +69,14 @@ notifai ask "Deploy the migration to production?" \
   --choice Yes --choice No
 ```
 
-The agent registers the question, ends its work, and your answer comes back on
-its next turn. Question Routing keeps that exact session available for the
+The agent registers the question and ends the asking turn to start submission;
+your answer returns to that same Agent Session. Question Routing owns the
 complete answer window: Claude Code waits out of band and wakes it on
 macOS/Linux; on Windows its Stop stays held and returns the answer as the same
-Agent Session's continuation, like Codex. On iPhone, press and hold the
+Agent Session's continuation. Codex waits out of band and queues the answer
+into that thread's durable inbox: idle sessions consume it, busy sessions
+consume it at their next turn boundary, and stopped sessions retain it until
+reopened. Queue success proves storage, not consumption. On iPhone, press and hold the
 collapsed banner to answer; the choices appear on the expanded card, not on
 the lock screen.
 

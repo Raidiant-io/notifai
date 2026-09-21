@@ -72,6 +72,9 @@ function acknowledgementDemand(textRequired: boolean): string {
     : ' exactly as shown; this account turned acknowledgement text off, so the receipt carries no words'
 }
 
+const ACKNOWLEDGEMENT_SCOPE =
+  ' Once a request reports recorded or replayed, its acknowledgement is complete; do not repeat it for a later turn or unrelated event.'
+
 function acknowledgementContext(answered: AnsweredPending[]): string {
   const due = answered.filter(
     (entry) => entry.pending.request_id !== undefined,
@@ -85,7 +88,8 @@ function acknowledgementContext(answered: AnsweredPending[]): string {
     const textRequired = entry.agent_acknowledgement_text_required !== false
     return (
       ` Agent Acknowledgement is required for request ${requestId}. Immediately, before doing the resumed work or ending this turn, run ` +
-      `\`${acknowledgementCommand(requestId, textRequired)}\`${acknowledgementDemand(textRequired)}.`
+      `\`${acknowledgementCommand(requestId, textRequired)}\`${acknowledgementDemand(textRequired)}.` +
+      ACKNOWLEDGEMENT_SCOPE
     )
   }
   const anyTextRequired = due.some((entry) => entry.agent_acknowledgement_text_required !== false)
@@ -97,7 +101,8 @@ function acknowledgementContext(answered: AnsweredPending[]): string {
     .join('\n')
   return (
     ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below${acknowledgementDemand(anyTextRequired)}:\n` +
-    commands
+    commands +
+    ACKNOWLEDGEMENT_SCOPE
   )
 }
 
@@ -261,7 +266,8 @@ export function acknowledgementBlockContext(due: readonly AcknowledgementDue[]):
   const anyTextRequired = due.some((entry) => entry.text_required !== false)
   return (
     `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for request${due.length === 1 ? '' : 's'} ${due.map((entry) => entry.request_id).join(', ')}. ` +
-    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired)}:\n${commands}`
+    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired)}:\n${commands}` +
+    ACKNOWLEDGEMENT_SCOPE
   )
 }
 

@@ -696,11 +696,8 @@ export function codexCoexistenceNotes(
   const theirs = inJson ? layer.paths.configToml : layer.paths.hooksJson
   const theirEvents = inJson ? layer.tomlEvents : layer.jsonEvents
   if (theirEvents.length === 0) return []
-  const stop = theirEvents.includes('Stop')
-    ? " That file's Stop handler can end a turn before Notifai's answer arrives, because Codex lets any Stop handler stop continuation."
-    : ''
   return [
-    `Notifai's Codex hooks are in ${ours}. ${theirs} defines hooks Notifai does not own (${theirEvents.join(', ')}) and Notifai will not modify it. Codex loads both files and runs every matching handler, so each set fires exactly once; its "prefer one representation per layer" startup warning is reporting that, not a Notifai fault.${stop}`,
+    `Notifai's Codex hooks are in ${ours}. ${theirs} defines hooks Notifai does not own (${theirEvents.join(', ')}) and Notifai will not modify it. Codex loads both files and runs every matching handler, so each set fires exactly once; its "prefer one representation per layer" startup warning is reporting that, not a Notifai fault.`,
   ]
 }
 

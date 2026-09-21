@@ -38,6 +38,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { parse as parseToml } from 'smol-toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { configInfo } from './config-schema.js'
 import * as installHooksModule from './install-hooks.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
@@ -4708,8 +4709,7 @@ describe('config surfaces', () => {
     const parsed = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
     expect(parsed['key']).toBe('ask_notifications')
     expect(parsed['accepts']).toBe('true or false')
-    expect(parsed['detail']).toContain('The master switch')
-    expect(parsed['detail']).toContain('Turn it off')
+    expect(parsed['detail']).toBe(configInfo('ask_notifications').detail)
   })
 
   it('rejects an unknown setting and points at the nearest real one', () => {

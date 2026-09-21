@@ -258,8 +258,8 @@ the current hooks and begin a fresh Agent Session. It has to run here for presen
 only this moment can tell that you were present for this turn.
 
 **Stop** (`stop`) runs when the agent turn ends. If the agent registered a
-question with `notifai ask`, this is when that question can leave for your
-devices and when a device answer is handed back into the next turn. Question
+question with `notifai ask`, this normally starts submission to your
+devices and ownership of the answer's return path. Question
 Routing keeps that exact return path alive for the complete answer window:
 Claude Code waits out of band and wakes the session on macOS/Linux; on Windows
 its Stop stays held and returns the answer as the same Agent Session's
@@ -268,8 +268,11 @@ answer in the exact Agent Session's durable inbox. A live idle session starts
 a turn; a busy one consumes it at its next turn boundary; a closed one keeps
 it until reopened. Queue success proves storage; UserPromptSubmit observes
 consumption. Notifai does not also cold-resume that answer, which would risk
-consuming it twice. It has to run at Stop because that is the first
-moment the agent has finished its current work and is waiting for the answer.
+consuming it twice. If a new User prompt overtakes Stop, UserPromptSubmit
+launches a detached settlement owner for unmatched registrations; that recovery
+can submit the question and queue its answer while the new turn is active.
+The answer queue does not itself promote registrations, so agents still end
+the asking turn to start the normal submission path.
 
 An `ask` success is a local registration, not a submitted Notification Request:
 it has no Provider Acceptance until question settlement promotes its stable

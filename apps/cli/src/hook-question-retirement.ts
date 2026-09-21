@@ -37,8 +37,8 @@ const ORPHAN_QUEUE_CAP = 50
 
 /**
  * Everything retirement needs. Narrower than a HookContext on purpose:
- * `notifai ask` supersedes the previous question and it is a plain command with
- * no hook payload, no idle probe and nothing to sleep for.
+ * explicit close is a plain command with no hook payload, no idle probe and
+ * nothing to sleep for. Independent asks never supersede each other.
  */
 export type RetireDeps = Pick<HookContext, 'client' | 'config'> & Pick<Partial<HookContext>, 'log'>
 

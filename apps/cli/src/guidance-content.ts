@@ -57,6 +57,9 @@ Notify when something changed for the user:
   response; send a one-way blocked notification only when no User reply would
   resume the work.
 - You found something that needs their attention soon.
+- The User requested something through Notifai: return the requested answer,
+  result, or actionable artifact through Notifai, even for a small task. Make
+  it self-contained; do not assume the User is at their machine.
 
 Never notify for:
 
@@ -189,6 +192,9 @@ const ACKNOWLEDGEMENTS = `# Acknowledgements
 
 An acknowledgement names the concrete work the reply sets in motion — only
 work you will actually do, and nothing generic.
+
+It confirms receipt, not fulfillment. Return the requested result through
+Notifai when ready; acknowledgement text may be disabled.
 
 Good:
 

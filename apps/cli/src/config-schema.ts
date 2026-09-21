@@ -90,7 +90,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'boolean',
     summary: 'Whether a registered question may reach your Companion devices at all',
     detail:
-      'The master switch for question routing. When this is off, a question an agent registers with `notifai ask` stays in the terminal and never leaves this machine, whatever else is configured. Turn it off to stop being reached for a while without uninstalling the harness hooks.',
+      'Controls registered-question routing. When off, `notifai ask` refuses new registrations and Question Routing does not submit pending local registrations. It does not disable ordinary sends or the separate blocking `send --reply` flow, and it does not withdraw questions already submitted. Turn it off to pause question routing without uninstalling harness hooks.',
     example: 'true',
   },
   ask_grace_seconds: {
@@ -100,7 +100,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'Optional delay before a question may reach your devices',
     detail:
-      'Zero (the default) sends the question to your devices as soon as the agent turn ends. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nThis controls when the question reaches devices, not how the harness keeps the Agent Session available afterward. Claude Code waits out of band on macOS/Linux; on Windows its Stop stays held, like Codex.',
+      'Zero (the default) lets question submission start at the end of the asking turn. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked.\n\nThis controls when the question reaches devices, not how the harness returns the answer afterward. Claude Code waits out of band on macOS/Linux; on Windows its Stop stays held. Codex waits out of band and queues the answer into the exact thread; a busy thread consumes it at its next turn boundary, and a stopped thread when reopened.',
     example: '0',
   },
 
@@ -111,7 +111,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'How long the service keeps accepting your answer to a question',
     detail:
-      'A question stays answerable for this long after it reaches the service. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nQuestion Routing keeps the exact Agent Session available for this complete window. Claude Code waits out of band and wakes the Agent Session on macOS/Linux; on Windows its Stop stays held and returns the answer as the same Agent Session continuation, like Codex. This is separate from `--reply-timeout`, which controls how long a direct `send --reply` command blocks.',
+      'A question stays answerable for this long after it reaches the service. The default is a day, so a question that arrives while you are away is still yours to answer when you come back.\n\nQuestion Routing owns the exact Agent Session return path for this complete window. Claude Code waits out of band and wakes the Agent Session on macOS/Linux; on Windows its Stop stays held and returns the answer as the same Agent Session continuation. Codex queues the answer into the exact thread; queue success proves storage, and a stopped thread consumes it only when reopened. This is separate from `--reply-timeout`, which controls how long a direct `send --reply` command blocks.',
     example: '86400',
   },
 

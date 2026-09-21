@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b16af3fab2b3945b55388ba07c1cb007c223ada81444a6be66cb59a256763536",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, packaged Notifai skill, harness setup, CLI readiness and domain terms against recovered Request history and reply addressing. Recovery adds Companion App continuity and nullable native Delivery attribution; agents still send through the CLI, preserve each question identity, consume replies in order, acknowledge required answers and never replay a Notification Request to repair history. No hook activation, User authorization, trust, notification wording or setup instruction changes are required. The installer lock correction rescans a vanished choosing entry before admission; it preserves existing bounded waiting, ownership, symlink and atomic-write guards without a new agent action. README release markers are generated metadata.",
+  "behavior_digest": "sha256:40861f772ed95b7266e6403387dab24347d79ffab87398956fc7af9fcae51392",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms against local registration, normal Stop submission, overtaking-prompt settlement, Codex durable queue and Claude platform-specific continuation. Retained the normal asking-turn boundary and clarified independent work and supervision; corrected held-Codex, notifications-off, foreign-Stop and unconditional-delivery claims. Scoped injected acknowledgement instructions to one completed receipt per request. Requests received through Notifai now explicitly return their self-contained results through Notifai even for small tasks; acknowledgement remains receipt rather than fulfillment. No routing, trust, queue or acknowledgement-state algorithm changed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
