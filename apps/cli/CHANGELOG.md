@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.3.0](https://github.com/Raidiant-io/notifai/compare/v11.2.2...v11.3.0) (2026-09-22)
+
+
+### Features
+
+* **cli:** make machine approval resumable and non-blocking for agents ([#184](https://github.com/Raidiant-io/notifai/issues/184)) ([c8f8c9a](https://github.com/Raidiant-io/notifai/commit/c8f8c9af44b8910952df509774bfd9cac0fa73a5))
+
+
+### Bug Fixes
+
+* **cli:** keep pending replies observed and clarify guidance ([#183](https://github.com/Raidiant-io/notifai/issues/183)) ([f225b1c](https://github.com/Raidiant-io/notifai/commit/f225b1ccd71485091b8d18bcb3c697ffa5d0b5f2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.0.0 to 8.0.1
+
 ## [11.2.2](https://github.com/Raidiant-io/notifai/compare/v11.2.1...v11.2.2) (2026-09-20)
 
 
