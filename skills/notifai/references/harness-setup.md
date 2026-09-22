@@ -14,13 +14,23 @@ diagnosing, or recovering — not before.
 
 ## Signing this machine in
 
-Run `notifai init --json` yourself. It starts machine approval when needed and
-opens a browser page only the User can approve. Keep the command running while
-they approve; its bounded progress is on stderr and final readiness is on stdout.
+Run `notifai init --json` yourself. When this machine is not paired it starts
+one approval, opens the approval page only the User can approve if a browser
+is reachable, polls once, and returns: progress is on stderr, final readiness
+on stdout, and the `credential` state's `technical.pairing` holds the
+`approve_url` and `code`.
+Tell the User to open that page, check the code, and approve — in the fixed
+T2 wording of <https://app.notifai.sh/setup.md>, which also names the other
+handoffs (denied, expired, no access, companion app, hook trust); when they
+say so, run the same command again. It resumes the approval it started — the
+handshake is kept on this machine until it resolves or expires — so a tool
+timeout or a closed shell never strands an approval the User already gave. A
+new code on a later run means the earlier approval expired; relay the new one.
 
-In a headless or remote shell, `notifai login --no-open` prints the approval URL
-instead of trying to open a browser — hand the user that URL. `--name <name>`
-sets what the machine is called in their dashboard; the hostname is the default.
+`notifai login --no-open` starts or resumes the same approval without opening
+a browser. `--name <name>` sets what the machine is called in their dashboard;
+the hostname is the default. `notifai logout` discards a saved credential and
+any approval still waiting.
 
 `notifai auth status --json` says whether this machine is paired.
 `notifai auth access --json` says whether the account has access, including

@@ -190,13 +190,18 @@ for this machine. Installing the skill does place files elsewhere, so at a
 human terminal that — and only that — asks once whether it is for this project
 or for this machine.
 
-On an unapproved machine, `notifai init` opens the trusted approval page and
-waits until approval or its expiry, including when an agent runs it. The User
-still signs in and approves the machine in their browser. `notifai init --json`
-never prompts: approval progress goes to stderr while stdout contains one final
-readiness object. A later run uses the saved approval and resumes setup. At a
-human terminal, choosing iPhone or Android opens its setup steps and starts a
-bounded wait; Ctrl-C stops the wait, and expiry offers more time.
+On an unapproved machine, `notifai init` starts one machine approval and opens
+the trusted approval page; the User signs in and approves the machine in their
+browser. At a human terminal the command waits until approval or expiry. Run
+by an agent, or anywhere nobody is at the terminal, it never waits on a person:
+it prints the approval page and code, polls once, and returns, and the next
+run resumes that same approval — the handshake is kept on disk until it
+resolves or expires, so an approval given after the command ended is not
+lost. `notifai init --json` never prompts: progress goes to stderr while
+stdout contains one final readiness object whose `credential` state carries
+the page and code to relay. At a human terminal, choosing iPhone or Android
+opens its setup steps and starts a bounded wait; Ctrl-C stops the wait, and
+expiry offers more time.
 
 `notifai init --skills` verifies the complete first-party skill against the
 copy and digest manifest shipped inside the installed npm package, stages that

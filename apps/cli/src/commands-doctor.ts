@@ -64,7 +64,9 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { deviceInstallRemedy, readyCompanionDevices } from './commands-devices.js'
-import { setupAccessUrl } from './setup-destinations.js'
+import { setupAccessUrl, setupCompanionUrl } from './setup-destinations.js'
+import { readPendingPairing } from './pending-pairing.js'
+import { pendingApprovalBlocker } from './commands-auth.js'
 import {
   claudeSessionPid,
   resolveActiveHarness,
@@ -413,6 +415,7 @@ async function probeAccount(
               title: 'Account',
               status: 'gap',
               detail: `this account does not have access to Notifai yet${who}`,
+              technical: { access_url: setupAccessUrl(baseUrl), next_action: next },
               remedy: { by: 'user-elsewhere', summary: next },
             }
           : {
@@ -492,6 +495,28 @@ async function probeAccount(
 }
 
 /**
+ * Not paired — and, when an approval is already waiting in the browser, said
+ * as that: the page and the code are the errand, and the same setup command
+ * resumes the handshake rather than starting another.
+ */
+function credentialGap(deps: CommandDeps): ReadinessState {
+  const pending = readPendingPairing(deps.env, (deps.now ?? Date.now)())
+  if (pending !== null) return pendingApprovalBlocker(pending)
+  return {
+    id: 'credential',
+    title: 'This machine',
+    status: 'gap',
+    detail: 'not paired with your account',
+    remedy: {
+      by: 'user-here',
+      summary: 'sign in — this opens your browser to approve the machine',
+      command: SETUP_COMMAND,
+      interactive: true,
+    },
+  }
+}
+
+/**
  * Read the whole setup once, in dependency order.
  *
  * Descent stops where a prerequisite is missing: without a credential there is
@@ -558,18 +583,7 @@ export async function assessReadiness(
           status: 'ready',
           detail: `paired as "${credential.machineName}" (${deps.store.describe()})`,
         }
-      : {
-          id: 'credential',
-          title: 'This machine',
-          status: 'gap',
-          detail: 'not paired with your account',
-          remedy: {
-            by: 'user-here',
-            summary: 'sign in — this opens your browser to approve the machine',
-            command: SETUP_COMMAND,
-            interactive: true,
-          },
-        },
+      : credentialGap(deps),
   )
 
   const baseUrl = resolvedBaseUrl(config, credential)
@@ -677,6 +691,19 @@ export async function assessReadiness(
               companionDevices.length === 0
                 ? 'no active Companion App registered yet'
                 : `${companionDevices.map((d) => `${d.display_name} (${d.platform}, ${d.permission_status})`).join(', ')} — registered but not able to receive`,
+            // The pieces an agent's fixed wording needs, separately from the
+            // sentence a human reads: where the install steps are, which
+            // email the app must sign in with, and what is registered so far.
+            technical: {
+              companion_setup_url: setupCompanionUrl(baseUrl),
+              account_email: accountEmail,
+              devices: companionDevices.map((d) => ({
+                display_name: d.display_name,
+                platform: d.platform,
+                permission_status: d.permission_status,
+                registration_healthy: d.registration_healthy,
+              })),
+            },
             remedy: {
               by: 'user-elsewhere',
               summary: deviceInstallRemedy({

@@ -39,6 +39,8 @@ import type {
 import { parse as parseToml } from 'smol-toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configInfo } from './config-schema.js'
+import { readPendingPairing } from './pending-pairing.js'
+import type { ReadinessState } from './readiness.js'
 import * as installHooksModule from './install-hooks.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
@@ -67,6 +69,7 @@ import {
   initCommand,
   SKILLS_SOURCE,
   loginCommand,
+  logoutCommand,
   logsCommand,
   parseSince,
   projectSlugFrom,
@@ -4878,7 +4881,7 @@ describe('interactive command UX', () => {
     ])
     expect(io.spinnerEvents).toEqual([
       'start:Waiting for approval… code ABCD-EFGH · 10s left',
-      'message:Waiting for approval… code ABCD-EFGH · 9s left',
+      'message:Waiting for approval… code ABCD-EFGH · 10s left',
       'stop:Machine "workstation" approved',
     ])
     expect(io.outLines).toEqual([])
@@ -4912,8 +4915,165 @@ describe('interactive command UX', () => {
       expect.stringMatching(
         /^Approve this machine at: https:\/\/app\.notifai\.sh\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
       ),
-      'Waiting for approval…',
+      expect.stringMatching(/^Machine ".+" approved\. Credential stored in test credential store\.$/),
     ])
+  })
+
+  it('hands an unattended approval back after one poll and resumes the same pairing next run', async () => {
+    // An agent's shell never waits on a person. The first run prints the page
+    // and the code and returns; the run after the User approved finds the
+    // pairing it started, without a second approval or a second browser tab.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-login-resume-'))
+    const io = new CapturedIo()
+    let begins = 0
+    let approved = false
+    let savedMachine: string | null = null
+    const client = {
+      beginPairing: async () => {
+        begins += 1
+        return {
+          pairing_id: 'pair_test',
+          code: 'ABCD-EFGH',
+          approve_url: 'https://app.notifai.sh/pair/ABCD-EFGH',
+          expires_at: new Date(600_000).toISOString(),
+          poll_interval_seconds: 1,
+        }
+      },
+      pollPairing: async () => (approved ? { status: 'approved', machine_id: 'mac_new' } : { status: 'pending' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => 0,
+      sleep: async () => {
+        throw new Error('an unattended login waited on a person')
+      },
+      store: {
+        load: () => null,
+        save: (credential) => {
+          savedMachine = credential.machineId
+        },
+        clear: () => {},
+        describe: () => 'test credential store',
+      },
+    }
+
+    expect(await loginCommand(deps, { name: 'workstation' })).toBe(EXIT.auth)
+    expect(begins).toBe(1)
+    expect(io.openedUrls).toHaveLength(1)
+    expect(io.outLines.at(-1)).toBe('Waiting for approval. Run `notifai init` again once it is approved.')
+    expect(readPendingPairing(deps.env, 0)).toMatchObject({ pairing_id: 'pair_test', code: 'ABCD-EFGH', machine_name: 'workstation' })
+
+    // Still pending: same pairing, same code, and the browser is not opened again.
+    expect(await loginCommand(deps, { name: 'workstation' })).toBe(EXIT.auth)
+    expect(begins).toBe(1)
+    expect(io.openedUrls).toHaveLength(1)
+    expect(io.outLines.filter((line) => line === 'Pairing code: ABCD-EFGH')).toHaveLength(2)
+
+    approved = true
+    expect(await loginCommand(deps, { name: 'workstation' })).toBe(EXIT.ok)
+    expect(begins).toBe(1)
+    expect(savedMachine).toBe('mac_new')
+    expect(readPendingPairing(deps.env, 0)).toBeNull()
+  })
+
+  it('replaces a pending pairing the service calls expired, or that names another machine, in the same run', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-login-stale-'))
+    const io = new CapturedIo()
+    let begins = 0
+    let now = 0
+    const expiries = new Map<string, number>()
+    const client = {
+      beginPairing: async () => {
+        begins += 1
+        expiries.set(`pair_${begins}`, now + 10_000)
+        return {
+          pairing_id: `pair_${begins}`,
+          code: `CODE-${begins}`,
+          approve_url: `https://app.notifai.sh/pair/CODE-${begins}`,
+          expires_at: new Date(now + 10_000).toISOString(),
+          poll_interval_seconds: 1,
+        }
+      },
+      // The service, not the local clock, decides that a pairing is over.
+      pollPairing: async (pairingId: string) =>
+        (expiries.get(pairingId) ?? 0) < now ? { status: 'expired' } : { status: 'pending' },
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => now,
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test credential store' },
+    }
+
+    expect(await loginCommand(deps, { name: 'one', open: false })).toBe(EXIT.auth)
+    expect(await loginCommand(deps, { name: 'two', open: false })).toBe(EXIT.auth)
+    expect(begins).toBe(2)
+    now = 11_000
+    // Expired on the service: one run discards it, starts a fresh one, and
+    // prints the fresh code, so the User is never left holding a dead code.
+    expect(await loginCommand(deps, { name: 'two', open: false })).toBe(EXIT.auth)
+    expect(begins).toBe(3)
+    expect(io.outLines.filter((line) => line === 'Pairing code: CODE-3')).toHaveLength(1)
+    expect(readPendingPairing(deps.env, now)?.pairing_id).toBe('pair_3')
+
+    logoutCommand(deps)
+    expect(readPendingPairing(deps.env, now)).toBeNull()
+  })
+
+  it('collects an approval given after the local expiry instead of asking for a second one', async () => {
+    // The User approved at minute nine and said so at minute twelve. The
+    // service still answers approved; a local clock that discarded the
+    // handshake would create a second Approved Machine and a second code.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-login-late-'))
+    const io = new CapturedIo()
+    let begins = 0
+    let now = 0
+    let savedMachine: string | null = null
+    const client = {
+      beginPairing: async () => {
+        begins += 1
+        return {
+          pairing_id: 'pair_late', code: 'LATE-0001',
+          approve_url: 'https://app.notifai.sh/pair/LATE-0001',
+          expires_at: new Date(600_000).toISOString(), poll_interval_seconds: 1,
+        }
+      },
+      pollPairing: async () => (now >= 540_000 ? { status: 'approved', machine_id: 'mac_late' } : { status: 'pending' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client), cwd, env: isolatedEnv(cwd), now: () => now,
+      store: { load: () => null, save: (credential) => { savedMachine = credential.machineId }, clear: () => {}, describe: () => 'test store' },
+    }
+    expect(await loginCommand(deps, { open: false })).toBe(EXIT.auth)
+    now = 720_000
+    expect(await loginCommand(deps, { open: false })).toBe(EXIT.ok)
+    expect(begins).toBe(1)
+    expect(savedMachine).toBe('mac_late')
+  })
+
+  it('names a denied approval so the next run does not silently ask again', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-login-denied-'))
+    const io = new CapturedIo()
+    const client = {
+      beginPairing: async () => ({
+        pairing_id: 'pair_deny', code: 'DENY-0001',
+        approve_url: 'https://app.notifai.sh/pair/DENY-0001',
+        expires_at: new Date(600_000).toISOString(), poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => ({ status: 'denied' }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = {
+      ...makeDeps(io, client), cwd, env: isolatedEnv(cwd), now: () => 0,
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test store' },
+    }
+    const blockers: ReadinessState[] = []
+    expect(await loginCommand(deps, { open: false }, (blocker) => blockers.push(blocker))).toBe(EXIT.auth)
+    expect(blockers).toHaveLength(1)
+    expect(blockers[0]).toMatchObject({ id: 'credential', status: 'gap', technical: { pairing_outcome: 'denied' } })
+    expect(readPendingPairing(deps.env, 0)).toBeNull()
   })
 
   it('asks a human to choose a config layer when no layer flag was passed', async () => {
@@ -6407,7 +6567,59 @@ describe('init', () => {
     expect(blocker).toMatchObject({
       id: 'auth', remedy: { by: 'user-elsewhere', summary: 'Request Alpha access at https://app.notifai.sh/setup/access' },
     })
-    expect(now).toBe(1_000)
+    expect(now).toBe(0)
+  })
+
+  it('reports a waiting approval in final JSON with the page and code an agent must relay', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-approval-pending-'))
+    const io = new CapturedIo()
+    let polls = 0
+    const client = {
+      health: async () => true,
+      beginPairing: async () => ({
+        pairing_id: 'pair_test', code: '123456',
+        approve_url: 'https://app.notifai.sh/pair/pair_test',
+        expires_at: new Date(600_000).toISOString(), poll_interval_seconds: 1,
+      }),
+      pollPairing: async () => {
+        polls += 1
+        return polls < 2 ? { status: 'pending' } : { status: 'approved', machine_id: 'mac_test' }
+      },
+      listDevices: async () => ({ devices: [] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null }),
+    } as unknown as ApiClient
+    let credential: ReturnType<CommandDeps['store']['load']> = null
+    const deps: CommandDeps = {
+      ...makeDeps(io, client), cwd, env: isolatedEnv(cwd),
+      now: () => 0, sleep: async () => { throw new Error('an unattended init waited on a person') },
+      store: { load: () => credential, save: (saved) => { credential = saved }, clear: () => {}, describe: () => 'test store' },
+    }
+
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
+    expect(io.outLines).toHaveLength(1)
+    const first = JSON.parse(io.outLines[0]!)
+    expect(first.ready).toBe(false)
+    const waiting = first.states.find((state: { id: string }) => state.id === 'credential')
+    expect(waiting).toMatchObject({
+      status: 'gap',
+      technical: { pairing: { code: '123456', approve_url: expect.stringMatching(/^https:\/\/app\.notifai\.sh\/pair\/pair_test#confirmation_secret=/) } },
+      remedy: { by: 'user-here', command: 'notifai init' },
+    })
+    expect(waiting.remedy.summary).toContain('123456')
+    expect(io.errLines.join('\n')).toContain('Starting machine approval in your browser.')
+
+    // The User approved; the next run resumes the same pairing and moves on
+    // to the devices gap without another approval.
+    io.outLines.length = 0
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.failed)
+    const second = JSON.parse(io.outLines[0]!)
+    expect(credential?.machineId).toBe('mac_test')
+    expect(second.states.find((state: { id: string }) => state.id === 'credential').status).toBe('ready')
+    expect(second.states.find((state: { id: string }) => state.id === 'devices')).toMatchObject({
+      status: 'gap',
+      technical: { companion_setup_url: 'https://app.notifai.sh/setup/companion', devices: [] },
+    })
+    expect(io.openedUrls).toHaveLength(1)
   })
 
   it('makes the unavailable distribution bridge explicit when no app has registered', async () => {
@@ -7419,8 +7631,10 @@ describe('init', () => {
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
-    expect(out).toContain('Next: Account')
-    expect(out).toContain('pair it again')
+    // Re-pairing was attempted and could not start; the close says that, not
+    // the stale "pair it again" observed before the attempt.
+    expect(out).toContain('Next: This machine')
+    expect(out).toContain('could not be started')
     expect(out).toContain('notifai init')
     expect(out).not.toContain('notifai login')
     expect(out.match(/^Next:/gm)).toHaveLength(1)
