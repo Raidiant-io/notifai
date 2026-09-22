@@ -911,15 +911,21 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         remedy.interactive === true
       ) {
         attempted.add(state.id)
-        workingDeps.io.out('Opening your browser to approve this machine — Ctrl-C to stop.')
+        workingDeps.io.out(
+          workingDeps.io.interactive === true
+            ? 'Opening your browser to approve this machine — Ctrl-C to stop.'
+            : 'Starting machine approval in your browser.',
+        )
         const loginResult = await loginCommand(workingDeps, {}, (blocker) => {
           loginBlocker = blocker
-          // Both renderers must report the access errand that stopped approval,
-          // rather than the missing credential observed before it began.
+          // Both renderers must report what actually stopped approval: the
+          // access errand when the Account has none, or the approval still
+          // waiting in the browser — never the missing credential observed
+          // before the attempt began.
           readiness = {
-            states: readiness.states.map((observed) => observed.id === 'auth'
+            states: readiness.states.map((observed) => observed.id === blocker.id
               ? blocker
-              : observed.id === 'credential'
+              : blocker.id === 'auth' && observed.id === 'credential'
                 ? { id: 'credential', title: 'This machine', status: 'unknown', detail: 'approval stopped before a machine credential was stored' }
                 : observed),
           }

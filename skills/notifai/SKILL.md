@@ -293,15 +293,16 @@ For update offers or post-update follow-up, read [Updating Notifai](references/u
 
 ## Set Notifai up
 
-You are the one doing the setup. Never tell the
-user to run a command you could have run yourself.
+Never tell the user to run a command you could have run yourself.
 
 “Notifai me” or “use notifai” authorizes durable enablement for this Project;
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-`notifai init --json` starts needed browser approval without a terminal prompt.
-Keep it running while the User approves.
+`notifai init --json` starts browser approval without prompting and returns;
+its `credential` state carries `technical.pairing.approve_url` and `.code`.
+Relay both as T2 in <https://app.notifai.sh/setup.md>; once the User says it
+is approved, run it again to resume.
 Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.
 Lifecycle wiring has no scope: one install per harness for this machine;
@@ -316,16 +317,14 @@ overrides.
 
 Branch on `states`, `can_send`, and `question_routing_ready`.
 `direct_wake_ready` assesses the route, not consumption;
-it is optional when a held continuation or journal recovery owns the answer,
-and `null` when no direct-wake assessment exists. A nonzero exit is a gap to
+optional when a held continuation or journal recovery owns the answer,
+`null` when no direct-wake assessment exists. A nonzero exit is a gap to
 close, never bypass.
 Do not follow a successful structured init with doctor. `ask --json` performs
 its own exact-session admission check.
 
-Then gather the human-only steps its reported gap needs:
-
-- approving this machine in the browser opened by `notifai init`
-- installing the companion app, signing in, and allowing notifications
+Its reported gap names any other human-only step (companion app, permission);
+that document has the words.
 
 Never emulate User-owned actions, claim to approve hooks yourself, or claim an
 unlisted harness. Harness trust wording lives in the setup reference.
