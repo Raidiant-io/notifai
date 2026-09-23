@@ -53,26 +53,23 @@ Notify when something changed for the user:
 - Substantial autonomous work finished — succeeded or failed. Work is
   substantial when it required multiple meaningful investigation, editing,
   build, test, deployment, or coordination steps.
-- Work cannot proceed: ask an answerable question when continuing needs a User
-  response; send a one-way blocked notification only when no User reply would
-  resume the work.
+- Work you own or coordinate needs a User response: ask an answerable question
+  through Notifai, even while other work continues or the User was recently
+  active. The question itself is a Notification Request; conversation alone
+  does not reach an away User. One-way blocked is only for work no User reply
+  would resume.
 - You found something that needs their attention soon.
-- The User requested something through Notifai: return the requested answer,
-  result, or actionable artifact through Notifai, even for a small task. Make
-  it self-contained; do not assume the User is at their machine.
+- The User requested something through Notifai: return the answer, result, or
+  actionable artifact through Notifai, even for a small task. Make it
+  self-contained; do not assume the User is at their machine.
 
-Never notify for:
-
-- Routine progress: starting, still working, one more subtask done.
-- A problem you hit and fixed yourself.
+Never notify for routine progress or a problem you fixed yourself.
 
 Completion of substantial work is an outcome, not routine progress.
-A requested audit or diagnosis that resolves the user's uncertainty through
-several distinct checks counts as substantial even when the result is clean
-and needs no further action.
+A requested audit or diagnosis resolving uncertainty through several distinct
+checks counts as substantial even when clean.
 
-One notification per event. When a status changes, replace your stale
-notification rather than stacking a new one.
+One notification per event. Replace stale status instead of stacking it.
 `
 
 const TITLES = `# Titles
@@ -158,33 +155,29 @@ terminal for details".
 
 const QUESTIONS = `# Questions
 
-When work needs a User response before it can continue, ask an answerable
-question. A one-way blocked Notification Request is only for work that no User
-reply would resume. If the User must act and then tell you it is ready, that
-readiness is an answer — ask for it.
+When work you own or coordinate needs a User response, the answerable question
+itself is a Notification Request. Register it with \`notifai ask\` in the same
+turn you ask in the conversation, even while other work continues or the User
+was recently active. Conversation alone does not reach an away User.
 
-A question is answerable from the notification alone, in the user's terms, not
-the machinery's. Its one askable sentence is the Summary. Put reasoning and
-stakes in an optional standalone Markdown Body when they are needed.
-Offer closed choices whose wording carries its own consequence.
+Decisions, approvals, sign-in, credential setup and physical actions count.
+Ask for safe setup or readiness, never for credentials or other private
+material. Readiness is an answer. Harness permission prompts and interactive
+pickers stay in the harness. One-way blocked is only for work no User reply
+would resume.
+
+Make it answerable from the notification alone. The Summary asks one question;
+optional standalone Markdown Body adds reasoning and stakes. Closed choices
+carry their own consequence.
 
 Good:
 
-- \`The schema change is ready. It touches live order data — deploy now or
-  wait for off-peak?\` with choices \`Deploy now\` / \`Wait for off-peak\`
-- \`The API key in .env.example is live. Revoke it now, or wait until the
-  replacement is provisioned?\` with \`Revoke now\` / \`Wait for the new key\`
 - \`Is the test device unlocked and ready for the install?\` with
   \`Ready — install now\` / \`Not yet — wait\`
 
 Bad:
 
 - \`What should I do?\` — nothing to answer without the terminal
-- \`Deploy to staging and notify the team?\` with \`Yes\` / \`No\` — two
-  decisions, one answer
-- \`Retry with --force-with-lease?\` — machinery; the real decision is
-  \`Overwrite the remote branch, or keep both versions?\`
-- Choices \`Option A\` / \`Option B\` — labels that point back into the body
 - \`Reply here with your choice\` — never name where the answer must arrive
 `
 

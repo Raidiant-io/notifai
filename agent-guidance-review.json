@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:dbcdadedb287aebc5f2d471a2acfd8873b6df4136fe8b6c8ac4453bc4b2257ff",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the skill, harness setup reference, lifecycle hooks, CLI readiness and domain terms after setup delivery proof became one record per Approved Machine instead of per Project and device, and the setup notification became '<machine> is set up' with no Project. No shipped guidance described proof as per-Project or quoted the old notification text. The skill's rule that a verification Notification does not deliver the original Agent Event still holds. Agent-visible changes are limited to the doctor 'proof' state: its gap detail now says the machine, not the project, is unproven, and its remedy summary names a notification that this machine is set up. The state id, remedy kind and command are unchanged, so agents branch on the same fields. No commands, flags, settings, hooks or trust rules changed.",
+  "behavior_digest": "sha256:022074ec72f434b6812816ba6cb3d4ac0b4f9768af48f997dcc5973b4d566ab0",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed root lifecycle activation, shipped topics, skill discovery and question lifecycle, harness setup, CLI readiness and domain vocabulary. Owners now load the skill before their first Notification Request and register work-gating User questions in the conversation turn, including while other work continues or after recent User activity. Safe setup/readiness requests preserve non-exfiltration; effective guidance authority, ordinary worker nonownership, harness permission exceptions, registration versus submission, turn-end submission and acknowledgement rules remain intact. Concise wording preserves the existing lifecycle and skill budgets. No hook behavior or runtime detection was added; contract assertions prove instruction coverage, not agent compliance. The intervening machine-level setup-proof review remains valid; the rebased release changes package versions and generated README markers only, with no source behavior change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

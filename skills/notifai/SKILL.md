@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Use Notifai proactively in every agent session that owns User-visible Notification Requests, even when the user does not mention it. The parent owns by default; use it in a worker only when ownership is explicitly delegated. Read guidance.
+description: Use when work needs a User decision, approval, sign-in, credential setup or physical action, or substantial work finishes or fails, even if the User was recently active or does not mention Notifai. For Notification Request owners; parent owns by default, workers only by explicit delegation. Read guidance.
 ---
 
 # Notifai
@@ -112,9 +112,8 @@ saved config from inventing a Project and never enables one.
 
 **Declare the kind that is true**: it decides how insistently the notification lands.
 
-Work needs a User response to continue? Ask an answerable question — even if
-blocked. Use one-way blocked only when no User reply would resume the work.
-Reporting ready is a response.
+Work needs a User response? [Ask an answerable question](#ask-a-question).
+Use one-way blocked only when no User reply would resume the work.
 
 `titles` and `content` guidance own each field. The wire shape:
 
@@ -160,54 +159,56 @@ the active harness proves the exact current Agent Session.
 
 ## Ask a question
 
-A question must be answerable from the notification itself. The positional
-question is its Summary (under 240 characters) and supplies the notification
-title. Put reasoning in the optional standalone Markdown Body. Offer 2-6 closed choices, one
-flag per choice — commas inside a label are literal. A typed answer is always
-possible; closed choices appear after pressing and holding the notification.
+Make the question answerable from the notification itself. The positional
+question is its Summary (under 240 characters) and title. Body adds standalone
+Markdown reasoning. Offer 2-6 closed choices, one flag each; commas are literal.
+Typed answers are always possible; closed choices appear after pressing and
+holding the notification.
 
-For both `ask` and `send --reply`, the Summary is the exact answerable question.
-Notifai never infers or truncates it from Body.
+For `ask` and `send --reply`, Summary is the exact question, never inferred or
+truncated from Body.
 
 ### Default: resume when they answer
 
-When work needs a User response before it can continue, use `ask`. It preserves
-the exact return path for the complete answer window without making the
-foreground command its owner:
+When work you own or coordinate needs a User response, use `notifai ask` in the
+same turn as its conversation question, even while other work continues or after
+recent User activity; conversation alone misses an away User.
+Ask for safe setup or readiness, never credentials. Harness permission prompts
+and interactive pickers stay in the harness.
+
+`ask` keeps the exact return path for the complete answer window:
 
 ```bash
 notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
 
-Add `--json` for choice ids and the `question_id`.
+`--json` returns choice ids and `question_id`.
 
 `registered: true` is local only. It has not yet been submitted as a
 Notification Request and has no Provider Acceptance. Never call a question sent
-or delivered from registration alone. Settlement preserves its `question_id` and adds a
-`request_id`. Inspect without changing it:
+or delivered from registration alone. Settlement adds `request_id`, keeping
+`question_id`. Inspect:
 
 ```bash
 notifai status <question_id> --json
 ```
 
-State is `local`, `frozen`, `live`, `answered`, `withdrawn`, or `retired`;
-promoted questions also show downstream evidence.
+States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 
 **Registering is not the end of the turn.** In that same turn, ask the question
 in the conversation and say what each answer will make you do, then end your
 turn to start submission. Ordinary sends need no turn boundary. Continue
 independent work in later turns; preserve supervision.
 
-**Never say where the answer must arrive:** not "tell me here" or "type it at
-this prompt". The route is the harness's concern.
+**Never say where the answer must arrive** ("tell me here"). The harness owns routing.
 
-Other surfaces: `--multi` combines answers; `--body`/`--body-file` adds Body;
-`--image`/`--image-alt` adds evidence; `--form <path|->` groups up to 10
-questions and requires a set-level `summary`.
+Use `--multi` for combined answers, `--body`/`--body-file` for Body,
+`--image`/`--image-alt` for evidence, or `--form <path|->` for up to 10 questions
+with a set-level `summary`.
 
-Keep independent questions as separate `ask` calls. Retire a registration
-that is obsolete or that they answer in the conversation with
+Register independent questions separately. Retire an obsolete registration or
+one they answer in the conversation with
 `notifai close <question_id>` or `notifai close --pending`.
 
 Keep every ID after a timeout or unavailable route. Inspect the original with
