@@ -53,11 +53,15 @@ describe('Notifai agent skill', () => {
     // The frontmatter description is the only skill text available during
     // automatic selection. It must select parent owners and workers given
     // explicit delegation without selecting every ordinary worker.
-    expect(description).toMatch(/every agent session that owns User-visible Notification Requests/i)
+    expect(description).toMatch(/for Notification Request owners/i)
     expect(description).toMatch(/parent owns by default/i)
-    expect(description).toMatch(/worker only when ownership is explicitly delegated/i)
-    expect(description).toMatch(/even when the user does not mention (?:Notifai|it)/i)
+    expect(description).toMatch(/workers only by explicit delegation/i)
+    expect(description).toMatch(/does not mention Notifai/i)
     expect(description).toMatch(/guidance/i)
+    for (const trigger of ['decision', 'approval', 'sign-in', 'credential setup', 'physical action', 'substantial work']) {
+      expect(description, trigger).toContain(trigger)
+    }
+    expect(description).toMatch(/User was recently active/i)
 
     const decide = section('## Decide whether to notify')
     expect(decide).toMatch(/owner session lifecycle context normally includes.*effective\s+guidance/is)
@@ -282,7 +286,7 @@ describe('Notifai agent skill', () => {
     expect(resumable).toBeGreaterThan(0)
     expect(foreground).toBeGreaterThan(0)
     expect(resumable).toBeLessThan(foreground)
-    expect(ask).toMatch(/work needs.*User response.*`ask`/is)
+    expect(ask).toMatch(/work you own or coordinate.*User response.*`notifai ask`/is)
     expect(ask).toMatch(/`send --reply`.*bounded foreground/is)
     expect(ask).toMatch(/(?:full|complete) answer window.*(?:match|equal).*`--reply-window`/is)
     expect(ask).toMatch(/exit code 3.*does not.*resume/is)
@@ -346,7 +350,7 @@ describe('Notifai agent skill', () => {
 
   it('teaches that closed choices appear after pressing and holding', () => {
     const ask = section('## Ask a question')
-    expect(ask).toMatch(/closed choices appear after pressing and holding the\s+notification/i)
+    expect(ask).toMatch(/closed choices appear after pressing and\s+holding the\s+notification/i)
     expect(skill).not.toMatch(/choices are buttons on the banner/i)
   })
 

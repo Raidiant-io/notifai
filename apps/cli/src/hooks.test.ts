@@ -3262,6 +3262,12 @@ describe('session-start hook', () => {
         hookEventName: 'SessionStart',
       })
       expect(first.hookSpecificOutput?.additionalContext).toMatch(/Notifai.*enabled.*Project/i)
+      const context = first.hookSpecificOutput?.additionalContext ?? ''
+      // Root activation must reach owners before they discover or load the skill.
+      expect(context).toMatch(/you own Notification Requests.*unless.*assigned elsewhere/i)
+      expect(context).toMatch(/load the Notifai skill before your first Notification Request/i)
+      expect(context).toMatch(/`notifai ask`.*same turn/i)
+      expect(context).toMatch(/safe setup or readiness, never for credentials/i)
       expect(first.hookSpecificOutput?.additionalContext).toContain('# How to read this guidance')
       expect(first.hookSpecificOutput?.additionalContext).toContain(
         '<!-- notifai:guidance topic=when-to-notify from=shipped default -->',
@@ -3339,7 +3345,7 @@ describe('session-start hook', () => {
 
     await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
-      followup_message: expect.stringMatching(/effective, provenance-marked guidance.*when-to-notify/is),
+      followup_message: expect.stringMatching(/effective guidance.*when-to-notify/is),
     })
 
     h.io.outLines = []

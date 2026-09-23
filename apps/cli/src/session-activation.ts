@@ -3,8 +3,9 @@ import { Buffer } from 'node:buffer'
 import { GUIDANCE_CONTEXT_MAX_BYTES, boundedEffectiveGuidance } from './guidance-render.js'
 
 const ROOT_OWNERSHIP =
-  'Notifai is enabled for this Project. The effective, provenance-marked guidance below governs Notification Requests. ' +
-  'Missing CLI readiness is handled through `notifai init --json`.'
+  'Notifai is enabled for this Project. You own Notification Requests unless explicitly assigned elsewhere. Load the Notifai skill before your first Notification Request. ' +
+  'Follow the effective guidance below. Under it, when owned or coordinated work needs a User decision, approval, sign-in, credential setup or physical action, register with `notifai ask` in the same turn as the conversation question; conversation alone misses an away User. Ask for safe setup or readiness, never for credentials. Harness permission prompts stay in the harness. ' +
+  'Missing readiness: `notifai init --json`.'
 
 export const WORKER_ACTIVATION_CONTEXT =
   'Notifai worker context: an Agent Event is a meaningful occurrence in your work; a Notification Request is a deliberate User-visible message about one. Report Agent Events to the parent and do not send Notification Requests unless the parent explicitly delegated that ownership. If delegated, load the Notifai skill and run `notifai guidance` before composing one.'

@@ -70,8 +70,8 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/multiple meaningful[\s\S]{0,120}steps/i)
     expect(content).toMatch(/requested audit or diagnosis[\s\S]{0,180}clean/i)
     expect(content).toMatch(/completion .* outcome, not routine progress/i)
-    expect(content).toMatch(/work cannot proceed/i)
-    expect(content).toMatch(/ask an answerable question/i)
+    expect(content).toMatch(/work you own or coordinate needs a User response/i)
+    expect(content).toMatch(/ask an\s+answerable question\s+through Notifai/i)
     expect(content).toMatch(/needs their attention soon/i)
     expect(content).toMatch(/routine progress/i)
     // Deliberately removed 2026-08-24: agents do not weigh time between the
@@ -88,8 +88,23 @@ describe('shipped guidance content', () => {
       shippedGuidanceTopic('content')!.content,
       shippedGuidanceTopic('questions')!.content,
     ].join('\n')
-    expect(content).toMatch(/work needs a User response[\s\S]{0,120}answerable\s+question/i)
+    expect(content).toMatch(/User response[\s\S]{0,120}answerable\s+question/i)
     expect(content).toMatch(/one-way blocked[\s\S]{0,120}no\s+User\s+reply\s+would\s+resume/i)
+  })
+
+  it('routes owned questions despite other work or recent User activity, with safe readiness asks', () => {
+    for (const name of ['when-to-notify', 'questions']) {
+      const content = shippedGuidanceTopic(name)!.content.replace(/\s+/g, ' ')
+      expect(content, name).toMatch(/work you own or coordinate/i)
+      expect(content, name).toMatch(/even while other work continues/i)
+      expect(content, name).toMatch(/User was recently active/i)
+      expect(content, name).toMatch(/question itself is a Notification Request/i)
+      expect(content, name).toMatch(/does not reach an away User/i)
+    }
+    const questions = shippedGuidanceTopic('questions')!.content.replace(/\s+/g, ' ')
+    expect(questions).toMatch(/register.*`notifai ask`.*same turn/i)
+    expect(questions).toMatch(/safe setup or readiness, never for credentials/i)
+    expect(questions).toMatch(/permission prompts and interactive pickers stay in the harness/i)
   })
 
   it('teaches outcome-altitude titles that stand alone, without kind or project', () => {
