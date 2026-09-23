@@ -46,7 +46,6 @@ import {
   observedCompanionReceipt,
   observedSetupProof,
   readSetupProof,
-  setupProofProject,
   setupProofApplies,
   setupProofIsStale,
   writeSetupProof,
@@ -422,32 +421,27 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
 }
 
 /**
- * The first notification a User ever receives from Notifai.
+ * The notification that says a machine is set up — sent once per Approved
+ * Machine, never per Project, so it only ever arrives when setup actually
+ * finished somewhere new.
  *
- * It is the payoff of the whole setup, and it used to be written as an
- * internal receipt: "This real notification completed setup verification" — a
- * sentence about the check rather than about them — delivered silently, at
- * `passive`, with the sound turned off. So the one arrival that proves their
- * agents can reach them landed in Notification Center with no banner and no
- * sound, where a first-time User has no reason to look and every reason to
- * conclude that nothing came.
- *
- * It now says what is true for them and arrives the way their notifications
- * will. `done` is the honest kind — a body of work finished successfully — and
- * it is also what lets the server pick the sound through its own kind, Project
- * and Account layers instead of this command stamping one and skipping them.
+ * It names the machine because that is the news: the User may run agents on
+ * several, and "your agents can reach you" from one they set up weeks ago
+ * reads as a mystery rather than a milestone. It carries no Project, because
+ * nothing about it is Project-specific. It arrives the way their
+ * notifications will: `done` is the honest kind, and it lets the server pick
+ * the sound through its own kind and Account layers instead of this command
+ * stamping one.
  */
 function setupProofDraft(
   config: CliConfig,
+  machineName: string,
   device: RoutableDevice,
 ): ReturnType<typeof buildDraft> {
-  const project = config.project.value
   return buildDraft(config, {
-    title: 'Your agents can reach you',
-    summary:
-      project === null
-        ? 'Notifai setup is finished. Notifications from your agents will arrive like this one.'
-        : `Notifai setup is finished for ${project}. Notifications from your agents will arrive like this one.`,
+    projectless: true,
+    title: `${machineName} is set up`,
+    summary: `Agents on ${machineName} can now send you notifications. They will arrive like this one.`,
     kind: 'done',
     platform: device.platform,
     device: [device.device_id],
@@ -467,7 +461,8 @@ async function submitSetupProof(
   config: CliConfig,
   device: RoutableDevice,
 ): Promise<SubmissionReceipt | null> {
-  const build = setupProofDraft(config, device)
+  const machineName = deps.store.load()?.machineName ?? 'This computer'
+  const build = setupProofDraft(config, machineName, device)
   if (!build.ok) {
     deps.io.err(`Could not build the setup verification notification: ${build.error}`)
     return null
@@ -516,11 +511,11 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     return 'failed'
   }
   const candidates = readyCompanionDevices(devices)
-  const project = setupProofProject(deps, config.project.value)
-  const existing = readSetupProof(deps, project)
+  const existing = readSetupProof(deps)
+  // An observed receipt proved this machine; setup never sends again.
+  if (existing?.companion_receipt.state === 'observed') return 'closed'
   const existingApplies = setupProofApplies(
     existing,
-    project,
     candidates.map((device) => device.device_id),
   )
   const target = (existingApplies
@@ -565,7 +560,6 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     proof = {
       request_id: receipt.request_id,
       device_id: target.device_id,
-      project,
       started_at: new Date((deps.now ?? Date.now)()).toISOString(),
       companion_receipt: { state: 'unknown', observed_at: null },
     }
@@ -618,7 +612,6 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
         proof = {
           request_id: receipt.request_id,
           device_id: target.device_id,
-          project,
           started_at: new Date(now()).toISOString(),
           companion_receipt: { state: 'unknown', observed_at: null },
         }

@@ -3,33 +3,31 @@ import { createHash } from 'node:crypto'
 import {
   existsSync,
   readFileSync,
+  rmSync,
 } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import type { CommandDeps } from './commands-core.js'
-import { inferInvocationContext } from './invocation-context.js'
 
 /**
- * Canonical setup proof state. On disk, provenance without a Companion
- * Receipt outcome represents unknown; only an actual observed receipt adds
- * the outcome to disk.
+ * Canonical setup proof state: one per Approved Machine. Delivery is a
+ * property of this machine's credential reaching the Account's devices, not of
+ * a Project or of which phone happened to answer, so a new Project or a phone
+ * that re-registers never asks for proof again. On disk, provenance without a
+ * Companion Receipt outcome represents unknown; only an actual observed
+ * receipt adds the outcome to disk.
  */
 export interface SetupProofRecord {
   request_id: string
   device_id: string
-  project: string | null
   started_at: string
   companion_receipt:
     | { state: 'unknown'; observed_at: null }
     | { state: 'observed'; observed_at: string }
 }
 
-export function setupProofProject(deps: CommandDeps, configured: string | null): string | null {
-  return configured ?? inferInvocationContext(deps.cwd).project
-}
-
-function setupProofPath(deps: CommandDeps, project: string | null): string | null {
+function setupProofPath(deps: CommandDeps): string | null {
   const credential = deps.store.load()
   if (credential === null) return null
   const approval = createHash('sha256')
@@ -37,14 +35,14 @@ function setupProofPath(deps: CommandDeps, project: string | null): string | nul
     .update(credential.secret)
     .digest('base64url')
   const digest = createHash('sha256')
-    .update(JSON.stringify({ project, machine_id: credential.machineId, service: credential.baseUrl, approval }))
+    .update(JSON.stringify({ machine_id: credential.machineId, service: credential.baseUrl, approval }))
     .digest('hex')
     .slice(0, 32)
-  return path.join(stateDir(deps.env), 'setup-proofs', `${digest}.json`)
+  return path.join(stateDir(deps.env), 'machine-proofs', `${digest}.json`)
 }
 
-export function readSetupProof(deps: CommandDeps, project: string | null): SetupProofRecord | null {
-  const file = setupProofPath(deps, project)
+export function readSetupProof(deps: CommandDeps): SetupProofRecord | null {
+  const file = setupProofPath(deps)
   if (file === null) return null
   if (!existsSync(file)) return null
   try {
@@ -52,7 +50,6 @@ export function readSetupProof(deps: CommandDeps, project: string | null): Setup
     if (
       typeof parsed.request_id !== 'string' ||
       typeof parsed.device_id !== 'string' ||
-      !(typeof parsed.project === 'string' || parsed.project === null) ||
       typeof parsed.started_at !== 'string'
     ) {
       return null
@@ -68,7 +65,6 @@ export function readSetupProof(deps: CommandDeps, project: string | null): Setup
     return {
       request_id: parsed.request_id,
       device_id: parsed.device_id,
-      project: parsed.project,
       started_at: parsed.started_at,
       companion_receipt: companionReceipt,
     }
@@ -79,7 +75,7 @@ export function readSetupProof(deps: CommandDeps, project: string | null): Setup
 }
 
 export function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boolean {
-  const file = setupProofPath(deps, proof.project)
+  const file = setupProofPath(deps)
   if (file === null) {
     deps.io.err('Could not save setup proof without an Approved Machine credential.')
     return false
@@ -94,6 +90,8 @@ export function writeSetupProof(deps: CommandDeps, proof: SetupProofRecord): boo
       preserveMode: false,
       requireCurrentUserOwner: true,
     })
+    // Per-Project proofs are superseded by the machine proof just written.
+    rmSync(path.join(stateDir(deps.env), 'setup-proofs'), { recursive: true, force: true })
     return true
   } catch (err) {
     deps.io.err(
@@ -135,30 +133,34 @@ export function observedSetupProof(
   }
 }
 
+/**
+ * Whether a saved proof still speaks for this machine. An observed receipt
+ * proved the machine once and for all; an unobserved one can only still be
+ * observed while the device it was sent to is ready.
+ */
 export function setupProofApplies(
   proof: SetupProofRecord | null,
-  project: string | null,
   deviceIds: readonly string[],
 ): proof is SetupProofRecord {
-  return proof !== null && proof.project === project && deviceIds.includes(proof.device_id)
+  if (proof === null) return false
+  return proof.companion_receipt.state === 'observed' || deviceIds.includes(proof.device_id)
 }
 
 /**
- * Persist ordinary send/status Companion Receipts as the project's delivery
- * proof so doctor does not demand a second verification request.
+ * Persist ordinary send/status Companion Receipts as this machine's delivery
+ * proof so setup never sends a verification notification it no longer needs.
  */
 export function recordObservedDeliveryProof(
   deps: CommandDeps,
   snapshot: EvidenceSnapshot,
-  project: string | null,
 ): boolean {
+  if (readSetupProof(deps)?.companion_receipt.state === 'observed') return true
   for (const delivery of snapshot.deliveries) {
     const observed = observedCompanionReceipt(snapshot, delivery.device_id)
     if (observed === null) continue
     return writeSetupProof(deps, {
       request_id: snapshot.request_id,
       device_id: delivery.device_id,
-      project,
       started_at: observed.observedAt,
       companion_receipt: { state: 'observed', observed_at: observed.observedAt },
     })

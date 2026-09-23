@@ -157,7 +157,6 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
     expect(writeSetupProof(proofDeps, {
       request_id: 'req_pty_proof',
       device_id: 'dev_pty',
-      project: 'pty-proof',
       started_at: '2026-09-05T12:00:00.000Z',
       companion_receipt: { state: 'observed', observed_at: '2026-09-05T12:00:02.000Z' },
     })).toBe(true)
