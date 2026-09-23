@@ -23,7 +23,7 @@ import {
   validateMediaInputs,
   type SendFlags,
 } from './send.js'
-import { recordObservedDeliveryProof, setupProofProject } from './commands-setup-proof.js'
+import { recordObservedDeliveryProof } from './commands-setup-proof.js'
 import {
   EXIT,
   authedClient,
@@ -761,7 +761,7 @@ export async function statusCommand(
   if (!authed) return EXIT.auth
   try {
     const snapshot = await authed.client.evidence(id)
-    recordObservedDeliveryProof(deps, snapshot, setupProofProject(deps, config.project.value))
+    recordObservedDeliveryProof(deps, snapshot)
     if (flags.json) {
       deps.io.out(JSON.stringify(snapshot, null, 2))
       return EXIT.ok
@@ -791,7 +791,7 @@ async function questionStatusCommand(
   if (!authed) return EXIT.auth
   try {
     const snapshot = await authed.client.evidence(local.request_id)
-    recordObservedDeliveryProof(deps, snapshot, setupProofProject(deps, config.project.value))
+    recordObservedDeliveryProof(deps, snapshot)
     const answered = snapshot.deliveries.some((delivery) =>
       delivery.events.some((event) => event.stage === 'reply_received'),
     )

@@ -6857,14 +6857,13 @@ describe('init', () => {
     const provenance = {
       request_id: 'req_durable_proof',
       device_id: readyIphone.device_id,
-      project: 'durable-proof',
       started_at: '2026-09-05T12:00:00.000Z',
     }
     expect(writeSetupProof(deps, {
       ...provenance,
       companion_receipt: { state: 'unknown', observed_at: null },
     })).toBe(true)
-    const proofDir = path.join(stateDir(env), 'setup-proofs')
+    const proofDir = path.join(stateDir(env), 'machine-proofs')
     const proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
     expect(JSON.parse(readFileSync(proofFile, 'utf8'))).toEqual(provenance)
 
@@ -6956,11 +6955,10 @@ describe('init', () => {
       expect(writeSetupProof(deps, {
         request_id: 'req_persist_failure',
         device_id: readyIphone.device_id,
-        project: 'persist-failure',
         started_at: '2026-09-05T12:00:00.000Z',
         companion_receipt: { state: 'unknown', observed_at: null },
       })).toBe(true)
-      const proofDir = path.join(stateDir(env), 'setup-proofs')
+      const proofDir = path.join(stateDir(env), 'machine-proofs')
       const proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
       const preservedProof = `${proofFile}.preserved`
       renameSync(proofFile, preservedProof)
@@ -7154,7 +7152,7 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
     expect(io.outLines.join('\n')).toContain('Provider accepted the notification')
     expect(io.outLines.join('\n')).toContain('Proof may still arrive')
-    const proofDir = path.join(stateDir(deps.env), 'setup-proofs')
+    const proofDir = path.join(stateDir(deps.env), 'machine-proofs')
     expect(readdirSync(proofDir).some((name) => name.endsWith('.json'))).toBe(true)
 
     io.outLines = []
@@ -7208,7 +7206,6 @@ describe('init', () => {
     writeSetupProof(deps, {
       request_id: 'req_old',
       device_id: readyIphone.device_id,
-      project: 'stale-proof',
       started_at: new Date(now - SETUP_PROOF_STALE_MS - 1).toISOString(),
       companion_receipt: { state: 'unknown', observed_at: null },
     })
@@ -7259,14 +7256,13 @@ describe('init', () => {
     const provenance = {
       request_id: 'req_stale_unavailable',
       device_id: readyIphone.device_id,
-      project: 'stale-unavailable',
       started_at: new Date(now - SETUP_PROOF_STALE_MS - 2_000).toISOString(),
     }
     expect(writeSetupProof(deps, {
       ...provenance,
       companion_receipt: { state: 'unknown', observed_at: null },
     })).toBe(true)
-    const proofDir = path.join(stateDir(deps.env), 'setup-proofs')
+    const proofDir = path.join(stateDir(deps.env), 'machine-proofs')
     const proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
     const stored = readFileSync(proofFile, 'utf8')
     expect(JSON.parse(stored)).toEqual(provenance)
@@ -7317,7 +7313,7 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('Next: Delivery proof')
   })
 
-  it('writes the first notification about the User, not about the check', async () => {
+  it('announces the machine that finished setup, not the Project or the check', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-copy-'))
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "orders-api"\n')
@@ -7341,31 +7337,65 @@ describe('init', () => {
     const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
-    const presentation = submitted!.draft.presentation
+    const draft = submitted!.draft
+    const presentation = draft.presentation
 
-    // A title says what is now true for the reader, alone on a lock screen,
-    // and carries neither the kind nor the Project — both travel as their own
-    // fields.
-    expect(presentation.title).toBe('Your agents can reach you')
-    expect(presentation.title.length).toBeLessThanOrEqual(40)
-    expect(presentation.title).not.toMatch(/orders-api|done/i)
+    // The news is which machine is now set up. The Project it happened to be
+    // run from has nothing to do with it, in the copy or as a field.
+    expect(presentation.title).toBe('test-machine is set up')
+    expect(presentation.summary).toContain('Agents on test-machine')
+    expect(`${presentation.title} ${presentation.summary}`).not.toMatch(/orders-api/)
+    expect(JSON.stringify(draft)).not.toContain('orders-api')
 
-    // None of the vocabulary of the check that produced it: the reader has not
-    // met "verification", a "proof", or the distinction between a real
-    // notification and any other kind.
+    // None of the vocabulary of the check that produced it, and nothing about
+    // where it landed or what to do to it.
     const copy = `${presentation.title} ${presentation.summary}`
-    expect(copy).not.toMatch(/verification|verify|proof|receipt|real notification|test/i)
-    // And nothing about where it landed or what to do to it.
+    expect(copy).not.toMatch(/verification|verify|proof|receipt|real notification|test notification/i)
     expect(copy).not.toMatch(/iPhone|Android|phone|tap|swipe|banner|lock screen/i)
-
-    expect(presentation.summary).toContain('orders-api')
-    expect(presentation.summary).toMatch(/^Notifai setup is finished/)
 
     // Still the same bar: a real send whose Companion Receipt was observed.
     expect(io.outLines.join('\n')).toContain(
       "Companion Receipt (the app's delivery confirmation) observed from iPhone.",
     )
     expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('never sends setup again once the machine is proven, in any Project or after a device change', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'init-proof-per-machine-'))
+    const env = isolatedEnv(root)
+    const replacementIphone = { ...readyIphone, device_id: 'dev_replacement_iphone' }
+    let submitCalls = 0
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices: [replacementIphone] }),
+      submit: async () => {
+        submitCalls += 1
+        return setupReceipt()
+      },
+      evidence: async (requestId: string) =>
+        setupEvidence(requestId, {
+          state: 'observed',
+          observed_at: '2026-08-05T18:00:02.000Z',
+          latency_ms: 1_000,
+        }),
+    } as unknown as ApiClient
+    const first = path.join(root, 'first-project')
+    mkdirSync(first)
+    writeSetupProof({ ...makeDeps(new CapturedIo(), client), cwd: first, env }, {
+      request_id: 'req_first_setup',
+      device_id: readyIphone.device_id,
+      started_at: '2026-08-05T18:00:00.000Z',
+      companion_receipt: { state: 'observed', observed_at: '2026-08-05T18:00:02.000Z' },
+    })
+
+    const other = path.join(root, 'other-project')
+    mkdirSync(other)
+    const deps = { ...makeDeps(new CapturedIo(), client), cwd: other, env }
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitCalls).toBe(0)
+    const proof = (await assessReadiness(deps)).states.find((state) => state.id === 'proof')
+    expect(proof?.status).toBe('ready')
   })
 
   it('treats Android as active Companion readiness and sends a platform-correct proof', async () => {
@@ -7832,7 +7862,6 @@ describe('init', () => {
     writeSetupProof(deps, {
       request_id: 'req_json_ready',
       device_id: readyIphone.device_id,
-      project: 'json-ready',
       started_at: '2026-08-25T00:00:00.000Z',
       companion_receipt: { state: 'observed', observed_at: '2026-08-25T00:00:02.000Z' },
     })

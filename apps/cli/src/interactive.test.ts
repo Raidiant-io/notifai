@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from './client.js'
 import { EXIT, type CommandDeps } from './commands.js'
 import {
-  setupProofProject,
   writeSetupProof,
 } from './commands-setup-proof.js'
 import { findInstallations, findLegacyProjectInstallations } from './install-hooks.js'
@@ -266,7 +265,6 @@ describe('interactiveCommand', () => {
     writeSetupProof(deps, {
       request_id: 'req_durable_proof',
       device_id: readyIphone.device_id,
-      project: setupProofProject(deps, null),
       started_at: '2026-09-05T12:00:00.000Z',
       companion_receipt: { state: 'observed', observed_at: '2026-09-05T12:00:02.000Z' },
     })

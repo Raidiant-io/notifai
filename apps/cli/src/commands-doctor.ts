@@ -94,7 +94,6 @@ import {
   observedCompanionReceipt,
   observedSetupProof,
   readSetupProof,
-  setupProofProject,
   setupProofIsStale,
   setupProofApplies,
   writeSetupProof,
@@ -769,20 +768,19 @@ async function setupProofState(
     }
   }
 
-  const project = setupProofProject(deps, config.project.value)
-  const proof = readSetupProof(deps, project)
-  const applies = setupProofApplies(proof, project, companions.map((device) => device.device_id))
+  const proof = readSetupProof(deps)
+  const applies = setupProofApplies(proof, companions.map((device) => device.device_id))
   if (!applies) {
     return {
       id: 'proof',
       title: 'Delivery proof',
       status: 'gap',
       detail:
-        "no Companion Receipt (the app's delivery confirmation) has proven this project on this machine yet",
+        "no Companion Receipt (the app's delivery confirmation) has proven this machine yet",
       remedy: {
         by: 'cli',
         summary:
-          "send one real verification notification and wait for its Companion Receipt (the app's delivery confirmation)",
+          "send one notification that this machine is set up and wait for its Companion Receipt (the app's delivery confirmation)",
         command: 'notifai init',
       },
     }
