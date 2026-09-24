@@ -71,6 +71,17 @@ It scans the canonical remote's advertised HEAD, branches, and tags as well as
 the local candidate. That second check intentionally lives outside this
 repository so its patterns do not become public.
 
+Before a push to the public `origin`, `scripts/githooks/pre-push` runs the
+boundary self-test and scan, gitleaks positive controls and current-tree/full-
+history scans, and `pnpm check:machine-paths`. The last check rejects the
+current machine's absolute home path in the index, worktree, or reachable Git
+history, including commit messages. The hook fails closed when a required
+tool is unavailable and requires a clean checkout at the exact pushed commit.
+Install it with `git config core.hooksPath scripts/githooks`; the private
+bootstrap configures the canonical public clone automatically. The hook is
+local, so PR review still checks public wording and any machine details that
+automatic patterns cannot recognize.
+
 ## Adding something new
 
 If a change needs a new top-level directory, a new workspace package, or a

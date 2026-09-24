@@ -22,6 +22,7 @@ advisory.
 ```sh
 pnpm install
 pnpm build         # protocol first; the CLI resolves its built exports
+git config core.hooksPath scripts/githooks
 ```
 
 ## Before you open a pull request
@@ -53,7 +54,9 @@ fix(protocol): reject an empty question set
 ```
 
 `pnpm check:commit` lints the last commit. Point `core.hooksPath` at
-`scripts/githooks` so the `commit-msg` hook runs commitlint.
+`scripts/githooks` so the `commit-msg` hook runs commitlint and the public
+`origin` pre-push hook checks the boundary, secrets, and machine paths. The
+pre-push hook requires a clean checkout of the exact commit being pushed.
 
 Use a Conventional Commit for the pull request title too. CI validates the
 title because GitHub squash-merges every pull request and uses that title as
