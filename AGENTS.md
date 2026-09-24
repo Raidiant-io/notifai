@@ -32,6 +32,7 @@ the stored body. The rule lives in `docs/RELEASING.md`. That is not the CLI
 ```sh
 pnpm check:boundary:self-test # prove boundary canaries still fail
 pnpm check:boundary   # structural allowlist + forbidden-content scan
+pnpm check:machine-paths # reject this machine's home path in files or history
 pnpm build            # protocol first — the CLI resolves its built exports
 pnpm -r test          # unit tests; no Docker, no network
 pnpm lint && pnpm -r typecheck
@@ -46,6 +47,14 @@ and scans that candidate's current tree and full Git history after proving
 redacted detection with ephemeral positive controls. Routine commits, pull
 requests, pushes, and clocks do not start hosted workflows. Local
 `pnpm check:secrets` retains the same tree/history evidence for ordinary work.
+
+Before pushing to the public `origin`, use the repository-owned `pre-push`
+hook in `scripts/githooks`. It requires a clean checkout at the exact pushed
+commit and runs the boundary self-test, boundary scan, secret controls plus
+tree/history scans, and machine-path scan. A missing scanner blocks the push.
+Set `core.hooksPath` to `scripts/githooks` in a standalone clone; the private
+root bootstrap installs it in the canonical public clone. The hook is a local
+gate, so review the public PR diff and its authored text before merge too.
 
 If a change needs a new top-level entry, workspace package, or file kind,
 extend the allowlist in `scripts/check-boundary.mjs` in the same commit and

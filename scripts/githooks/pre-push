@@ -1,0 +1,32 @@
+#!/bin/sh
+# The canonical public origin may receive only a reviewed, clean HEAD.
+set -eu
+
+[ "${1:-}" = origin ] || exit 0
+root=$(git rev-parse --show-toplevel)
+head=$(git -C "$root" rev-parse HEAD)
+zero=0000000000000000000000000000000000000000
+checked=0
+
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  [ "$local_sha" = "$zero" ] && continue
+  commit=$(git -C "$root" rev-parse --verify "${local_sha}^{commit}") || exit 1
+  if [ "$commit" != "$head" ]; then
+    echo 'Public origin push blocked: check out the exact commit being pushed.' >&2
+    exit 1
+  fi
+  checked=1
+done
+
+[ "$checked" -eq 1 ] || exit 0
+if [ -n "$(git -C "$root" status --porcelain --untracked-files=normal)" ]; then
+  echo 'Public origin push blocked: commit or remove working-tree changes first.' >&2
+  exit 1
+fi
+
+cd "$root"
+pnpm check:boundary:self-test
+pnpm check:boundary
+pnpm check:secrets
+node scripts/check-machine-paths.mjs
