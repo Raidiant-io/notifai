@@ -14,12 +14,65 @@ under [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and
 
 That is the Conventional Commits spec. It is not special-cased for 0.x: a
 breaking change on `0.5.1` was `1.0.0`. A breaking change on `1.0.0` is
-`2.0.0`. Pre-release labels (`1.0.0-rc.1`) exist if we need them later.
+`2.0.0`. Release versions are either stable `X.Y.Z` or beta
+`X.Y.Z-beta.N` with a positive, increasing `N`. The beta label means a
+tester-only CLI release; other prerelease labels are rejected by publication.
 
 What is on npm right now is whatever npm says — `npm view @raidiant/notifai
 version` and `npm view @raidiant/notifai-protocol version`. This document does
 not restate it, because a copied version number is wrong from the next release
 onward.
+
+The public CLI is npm `latest`; the current beta CLI is npm `beta`. A beta
+package is never installed by `npm install @raidiant/notifai` or plain
+`notifai update`. Testers opt in with
+`npx --yes @raidiant/notifai@beta update --channel beta`; the updater then
+installs `@raidiant/notifai@beta` into the effective global prefix. Previous
+beta versions remain individually installable by exact version even after the
+moving `beta` dist-tag advances.
+
+## Beta CLI releases
+
+A beta is a separately authorized npm publication, not a release-please cut.
+Prepare a short-lived candidate branch from the current public `main`; keep
+`.release-please-manifest.json` at the previous stable version. Select the next
+unused `X.Y.Z-beta.N` whose numeric base is newer than npm `latest`, checking
+both registry versions and Git tags. For a
+CLI-only beta, advance the CLI package version, add its `CHANGELOG.md` section,
+refresh the root README version and skill-pin markers, then update the lockfile
+with `pnpm install --lockfile-only`. Leave the protocol package at its already
+published stable version. If the wire contract changed, advance protocol to its
+own `X.Y.Z-beta.N`, pin that exact version in the CLI package, add both
+changelog sections, and refresh both README markers and the lockfile.
+
+Run the release gates on that exact candidate. With an explicit authorization
+for this beta cut, push the candidate branch and its exact version tag(s):
+`vX.Y.Z-beta.N` for CLI and, only when needed,
+`protocol-vX.Y.Z-beta.N` for protocol. Create an immutable GitHub Release for
+each tag **marked prerelease**. Dispatch `ci.yml` at each tagged SHA and wait
+for its exact-SHA success; then dispatch `publish.yml` for the tag(s) with
+`expected_sha` set to that SHA. The protected `npm-release` environment still
+requires maintainer approval, OIDC publication, byte verification, and the
+deployed-service contract gate. Protocol must be published and verified before
+a CLI beta that pins it. `publish.yml` checks exact tag/SHA, immutable GitHub
+Release prerelease state, and package version; publishes with explicit
+`--tag beta`; verifies npm `beta` points to the new artifact and npm `latest`
+did not change. If any check fails, use a new version rather than moving a
+published tag.
+
+Keep the candidate's version bump, beta changelog section, README markers, and
+lockfile **off `main`**. Merge or cherry-pick the actual product changes into
+`main` as ordinary Conventional Commits. The next public release uses the
+normal release-please flow from `main` and its unchanged stable manifest.
+Release-please [reads the previous release version from that manifest and
+finds its tag SHA](https://github.com/googleapis/release-please/blob/main/docs/troubleshooting.md#how-does-release-please-determine-the-previous-release),
+so its generated changelog spans the previous public stable release through
+all intervening product commits, even if several tester-only betas were cut.
+Before merging the public Release PR, inspect its generated notes against
+`git log <previous-stable-tag>..HEAD` and confirm no beta-only candidate
+metadata entered `main`. Human public release notes use that same stable-to-
+stable range. Each beta is listed in the website's Beta view; stable entries
+stay in the Public view.
 
 ## Commits
 

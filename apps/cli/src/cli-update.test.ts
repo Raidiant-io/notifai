@@ -65,10 +65,12 @@ describe('CLI update recovery', () => {
     mkdirSync(managerBin, { recursive: true })
     const manager = path.join(managerBin, 'npm')
     const plan = path.join(root, 'install-plan.json')
+    const calls = path.join(root, 'npm-calls.jsonl')
     writeFileSync(manager, `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
 if (args[0] === 'prefix') { process.stdout.write(${JSON.stringify(path.join(root, 'other-prefix'))}); process.exit(0); }
 const plan = JSON.parse(fs.readFileSync(${JSON.stringify(plan)}, 'utf8'));
 if (plan.exit) process.exit(plan.exit);
@@ -95,8 +97,27 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
       ...overrides,
     }))
     setPlan()
-    return { root, installed, running, home, adapterBefore, io, deps, setPlan }
+    return { root, installed, running, home, adapterBefore, io, deps, setPlan, calls }
   }
+
+  it('installs a beta only from npm beta and rejects a non-beta result', () => {
+    const f = recoveryFixture()
+    const version = '12.0.0-beta.2'
+    f.setPlan({
+      version,
+      script: `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${version}\n`)})\n`,
+    })
+    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(0)
+    expect(readFileSync(f.calls, 'utf8')).toContain('@raidiant/notifai@beta')
+    expect(JSON.parse(readFileSync(path.join(f.installed.packageRoot, 'package.json'), 'utf8')).version).toBe(version)
+
+    f.setPlan({ version: '12.0.0', script: `#!${process.execPath}\nprocess.stdout.write('12.0.0\\n')\n` })
+    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(1)
+    expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
+      code: 'beta_channel_returned_non_beta',
+      recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
+    })
+  })
 
   it('updates the real PATH winner when npx prepends its own temporary launcher', () => {
     const f = recoveryFixture()
@@ -350,7 +371,7 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write(${JSON.
       readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)),
     ).toEqual([
       ['prefix', '--global'],
-      ['install', '--global', '--prefix', realpathSync(stale.prefix), '@raidiant/notifai'],
+      ['install', '--global', '--prefix', realpathSync(stale.prefix), '@raidiant/notifai@latest'],
     ])
     expect(spawnSync(stale.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(currentVersion)
     expect(inspectHookAdapter(home).target).toMatchObject({ scriptPath: realpathSync(stale.artifact) })

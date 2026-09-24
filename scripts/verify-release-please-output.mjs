@@ -2,6 +2,7 @@
 import {execFileSync} from 'node:child_process'
 import {readFileSync} from 'node:fs'
 import process from 'node:process'
+import { publicationLane } from './publication-lane.mjs'
 
 function enabled(value) {
   return value === true || value === 'true'
@@ -33,6 +34,11 @@ export function changedManifestVersions(before, after) {
 }
 
 export function verifyReleasePleaseOutput({before, after, config, outputs, sha}) {
+  for (const [packagePath, version] of Object.entries(after)) {
+    if (publicationLane(version) !== 'latest') {
+      throw new Error(`release-please on main may create only stable package releases (${packagePath})`)
+    }
+  }
   const expected = changedManifestVersions(before, after).map((release) => {
     const packageConfig = config.packages?.[release.path]
     if (packageConfig === undefined) {

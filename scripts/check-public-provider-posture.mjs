@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { publicationLane } from './publication-lane.mjs'
 
 const API_ROOT = 'https://api.github.com/repos/Raidiant-io/notifai'
 const FULL_SHA = /^[0-9a-f]{40}$/
@@ -58,6 +59,10 @@ export async function checkPublicProviderPosture(
     throw new Error('releaseTag and expectedSha must be supplied together')
   }
   if (releaseTag !== undefined) {
+    const version = releaseTag.startsWith('protocol-v')
+      ? releaseTag.slice('protocol-v'.length)
+      : releaseTag.startsWith('v') ? releaseTag.slice(1) : ''
+    const lane = publicationLane(version)
     if (typeof expectedSha !== 'string' || !FULL_SHA.test(expectedSha)) {
       throw new Error('expectedSha must be one full lowercase commit SHA')
     }
@@ -72,6 +77,9 @@ export async function checkPublicProviderPosture(
     )
     if (release?.tag_name !== releaseTag) throw new Error('GitHub returned a different release tag')
     if (release?.immutable !== true) throw new Error('GitHub Release is not immutable')
+    if (release?.prerelease !== (lane === 'beta')) {
+      throw new Error(`GitHub Release prerelease state does not match ${lane} tag`)
+    }
   }
 
   if (requireRepositoryImmutability) {

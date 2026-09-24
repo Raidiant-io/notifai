@@ -7,6 +7,8 @@ const commit = 'a'.repeat(40)
 function providerFetch({
   pvr = true,
   immutable = true,
+  prerelease = false,
+  releaseTag = 'v1.2.3',
   tagSha = commit,
   setting = true,
   tagRuleset = true,
@@ -21,7 +23,7 @@ function providerFetch({
       return Response.json({ object: { type: 'commit', sha: tagSha } })
     }
     if (url.includes('/releases/tags/')) {
-      return Response.json({ tag_name: 'v1.2.3', immutable })
+      return Response.json({ tag_name: releaseTag, immutable, prerelease })
     }
     if (url.endsWith('/immutable-releases')) {
       return Response.json({ enabled: setting, enforced_by_owner: false })
@@ -66,6 +68,21 @@ test('accepts PVR, exact release SHA, immutable release, and repository setting'
       tagRuleset: true,
     },
   )
+})
+
+test('beta GitHub Releases must be marked prerelease and stable releases must not', async () => {
+  await checkPublicProviderPosture(
+    { releaseTag: 'v1.3.0-beta.1', expectedSha: commit },
+    providerFetch({ releaseTag: 'v1.3.0-beta.1', prerelease: true }),
+  )
+  await assert.rejects(checkPublicProviderPosture(
+    { releaseTag: 'v1.3.0-beta.1', expectedSha: commit },
+    providerFetch({ releaseTag: 'v1.3.0-beta.1' }),
+  ), /prerelease state/)
+  await assert.rejects(checkPublicProviderPosture(
+    { releaseTag: 'v1.2.3', expectedSha: commit },
+    providerFetch({ prerelease: true }),
+  ), /prerelease state/)
 })
 
 test('fails when private vulnerability reporting is disabled', async () => {

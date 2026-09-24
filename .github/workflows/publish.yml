@@ -155,6 +155,10 @@ jobs:
         id: plan
         run: node scripts/plan-publish.mjs
 
+      - name: Record npm distribution tags before publication
+        if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
+        run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-dist-tags-before.json"
+
       - name: Verify deployed service accepts this candidate
         if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
         run: node scripts/check-live-server-contract.mjs
@@ -162,7 +166,7 @@ jobs:
       # Protocol must reach the registry before a CLI that pins it exactly.
       - name: Publish protocol with OIDC provenance
         if: ${{ steps.plan.outputs.publish_protocol == 'true' }}
-        run: npm publish "$PROTOCOL_TARBALL" --access public --provenance
+        run: npm publish "$PROTOCOL_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"
 
       - name: Verify published protocol bytes and metadata
         if: ${{ steps.plan.outputs.verify_protocol == 'true' }}
@@ -170,15 +174,23 @@ jobs:
           node scripts/verify-published.mjs @raidiant/notifai-protocol
           --expected-tarball "$PROTOCOL_TARBALL"
 
+      - name: Verify protocol npm distribution
+        if: ${{ steps.plan.outputs.publish_protocol == 'true' }}
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" @raidiant/notifai-protocol
+
       - name: Publish CLI with OIDC provenance
         if: ${{ steps.plan.outputs.publish_cli == 'true' }}
-        run: npm publish "$CLI_TARBALL" --access public --provenance
+        run: npm publish "$CLI_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"
 
       - name: Verify published CLI bytes and metadata
         if: ${{ steps.plan.outputs.verify_cli == 'true' }}
         run: >-
           node scripts/verify-published.mjs @raidiant/notifai
           --expected-tarball "$CLI_TARBALL"
+
+      - name: Verify CLI npm distribution
+        if: ${{ steps.plan.outputs.publish_cli == 'true' }}
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" @raidiant/notifai
 
   windows-cli:
     needs: npm

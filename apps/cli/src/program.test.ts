@@ -214,6 +214,15 @@ describe('program argv parsing', () => {
     expect(seen).toEqual({ json: true })
   })
 
+  it('routes beta updates but refuses channel flags on read-only inspection', async () => {
+    const update = vi.fn(() => 0)
+    const beta = await parse(['update', '--channel', 'beta'], { update })
+    expect(beta.exitCode).toBe(0)
+    expect(update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ channel: 'beta' }))
+    expect((await parse(['update', '--channel', 'preview'], { update })).exitCode).toBe(2)
+    expect((await parse(['update', '--check', '--channel', 'beta'], { update })).exitCode).toBe(2)
+  })
+
   it('disentangles --no-wait and --wait from their shared commander flag', async () => {
     const capture = (sink: Record<string, unknown>[]): ProgramRunners['send'] =>
       (async (_deps, flags) => (sink.push(flags as Record<string, unknown>), 0)) as ProgramRunners['send']
