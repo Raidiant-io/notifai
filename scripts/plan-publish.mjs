@@ -15,6 +15,7 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { repositoryRoot } from './cross-platform.mjs'
 import { CLI_PACKAGE, PROTOCOL_PACKAGE } from './package-contract.mjs'
+import { publicationLane, requireMatchingReleaseLane } from './publication-lane.mjs'
 
 const CLI_NAME = CLI_PACKAGE.name
 const PROTOCOL_NAME = PROTOCOL_PACKAGE.name
@@ -24,6 +25,11 @@ export function planPublish({ head, refName, packages, tagCommits, published, ve
   if (trigger === undefined || tagCommits.get(refName) !== head) {
     throw new Error('the triggering tag must name a package version at the checked-out commit')
   }
+
+  requireMatchingReleaseLane(
+    packages.map((entry) => ({ ...entry, taggedHere: tagCommits.get(entry.tag) === head })),
+    trigger,
+  )
 
   const plan = new Map()
   for (const entry of packages) {
@@ -38,6 +44,9 @@ export function planPublish({ head, refName, packages, tagCommits, published, ve
   const cli = packages.find((entry) => entry.name === CLI_NAME)
   const protocol = packages.find((entry) => entry.name === PROTOCOL_NAME)
   if (cli === undefined || protocol === undefined) throw new Error('publishable package set is incomplete')
+  if (trigger.name === CLI_NAME && publicationLane(cli.version) === 'latest' && publicationLane(protocol.version) === 'beta') {
+    throw new Error('a stable CLI cannot depend on a beta protocol')
+  }
   if (plan.get(CLI_NAME)?.publish) {
     const protocolReady =
       verified.has(`${PROTOCOL_NAME}@${protocol.version}`) || plan.get(PROTOCOL_NAME)?.publish === true
@@ -119,6 +128,7 @@ async function main() {
   })
 
   const outputs = [
+    ['npm_dist_tag', publicationLane(packages.find((entry) => entry.tag === process.env.GITHUB_REF_NAME)?.version ?? '')],
     ['publish_protocol', plan.get(PROTOCOL_NAME)?.publish === true],
     ['verify_protocol', plan.get(PROTOCOL_NAME)?.verify === true],
     ['publish_cli', plan.get(CLI_NAME)?.publish === true],

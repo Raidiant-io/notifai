@@ -21,6 +21,7 @@ import { compareVersions } from './version.js'
 
 export interface CliUpdateFlags {
   json?: boolean
+  channel?: string
 }
 
 function runningArtifact(deps: CommandDeps): string | undefined {
@@ -79,7 +80,10 @@ function failed(
     : code === 'package_manager_prefix_not_on_path'
       ? 'The npm global command directory is not on PATH. Add the bin directory for the reported package-manager prefix to PATH (the prefix itself on Windows), then inspect the installation with the diagnostic below before retrying the update.'
       : null
-  const recoveryCommand = recoveryMessage === null ? cliUpdateRecoveryCommand() : `npx --yes ${CLI_PACKAGE_NAME}@latest doctor --json`
+  const beta = flags.channel === 'beta'
+  const recoveryCommand = recoveryMessage === null
+    ? beta ? `npx --yes ${CLI_PACKAGE_NAME}@beta update --channel beta` : cliUpdateRecoveryCommand()
+    : `npx --yes ${CLI_PACKAGE_NAME}@${beta ? 'beta' : 'latest'} doctor --json`
   if (flags.json === true) {
     deps.io.out(JSON.stringify({
       ok: false,
@@ -103,6 +107,11 @@ function failed(
  * different global prefix; --prefix makes that ambient choice irrelevant.
  */
 export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): number {
+  const channel = flags.channel ?? 'stable'
+  if (channel !== 'stable' && channel !== 'beta') {
+    deps.io.err('--channel must be stable or beta')
+    return EXIT.failed
+  }
   // Carry the caller's effective PATH into npm and the new artifact's handoff,
   // otherwise each child would diagnose the temporary npx runner as installed.
   deps = { ...deps, env: withoutNpxLauncherPath(deps.env, deps.hookPlatform ?? process.platform,
@@ -130,7 +139,7 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
     '--global',
     '--prefix',
     targetPrefix,
-    CLI_PACKAGE_NAME,
+    `${CLI_PACKAGE_NAME}@${channel === 'beta' ? 'beta' : 'latest'}`,
   ])
   if (install.status !== 0) {
     return failed(deps, flags, 'package_install_failed', before, packageManagerPrefix)
@@ -145,6 +154,9 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
     (before.effective !== null && effective.command_path !== before.effective.command_path)
   ) {
     return failed(deps, flags, 'effective_command_not_repaired', before, packageManagerPrefix)
+  }
+  if (channel === 'beta' && !/^\d+\.\d+\.\d+-beta\.[1-9]\d*$/.test(effective.version)) {
+    return failed(deps, flags, 'beta_channel_returned_non_beta', before, packageManagerPrefix)
   }
   const minimumCurrent = before.current.version
   const currentComparison = minimumCurrent === null

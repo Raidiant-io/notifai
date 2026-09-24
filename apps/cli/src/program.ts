@@ -274,8 +274,19 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable installation and session handoff')
     .option('--check', 'inspect release notes, guidance, and session effects without installing')
     .option('--refresh-skill', 'refresh the existing skill scope without login, hooks, or delivery setup')
+    .option('--channel <channel>', 'install from the stable or beta npm channel (default: stable)')
     .option('--from <version>', 'show installed changelog entries after this version (requires --check)')
-    .action(async (opts: { json?: boolean; check?: boolean; from?: string; refreshSkill?: boolean }) => {
+    .action(async (opts: { json?: boolean; check?: boolean; from?: string; refreshSkill?: boolean; channel?: string }) => {
+      if (opts.channel !== undefined && opts.channel !== 'stable' && opts.channel !== 'beta') {
+        deps.io.err('--channel must be stable or beta')
+        exit(2)
+        return
+      }
+      if (opts.channel !== undefined && (opts.check || opts.refreshSkill || opts.from !== undefined)) {
+        deps.io.err('--channel can only be used when installing an update')
+        exit(2)
+        return
+      }
       if (opts.refreshSkill && (opts.check || opts.from !== undefined)) {
         deps.io.err('--refresh-skill cannot be combined with --check or --from')
         exit(2)

@@ -236,10 +236,12 @@ test('publication reuses the exact tarballs that passed boundary and install che
   assert.match(pack.run, /--gitleaks(?:\s|$)/u)
   assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/u)
   assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/u)
-  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance')
+  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"')
   assert.match(verifyProtocol.run, /--expected-tarball "\$PROTOCOL_TARBALL"/u)
-  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance')
+  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"')
   assert.match(verifyCli.run, /--expected-tarball "\$CLI_TARBALL"/u)
+  assert.match(steps.find(candidate => candidate.name === 'Record npm distribution tags before publication').run, /verify-npm-distribution\.mjs snapshot/u)
+  assert.match(steps.find(candidate => candidate.name === 'Verify CLI npm distribution').run, /verify-npm-distribution\.mjs verify/u)
 })
 
 test('the publish workflow records the exact CLI version in GitHub output', () => {
@@ -278,5 +280,15 @@ test('the rootless combined manifest and release outputs remain exact', () => {
       outputs: {releasesCreated: 'false', packages: {}},
     }),
     /release manifest advanced apps\/cli, but release-please reported no release/u,
+  )
+  assert.throws(
+    () => verifyReleasePleaseOutput({
+      before: {'apps/cli': '9.0.0', 'packages/protocol': '5.0.0'},
+      after: {'apps/cli': '9.1.0-beta.1', 'packages/protocol': '5.0.0'},
+      config: releaseConfig,
+      sha,
+      outputs: {releasesCreated: 'true', packages: {}},
+    }),
+    /only stable package releases/u,
   )
 })
