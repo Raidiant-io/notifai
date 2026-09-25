@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createConnection } from 'node:net'
 import type { ContinuationEvent, DeliveryOutcome, EscalationDeliveryRoute } from './hook-types.js'
 import { compareVersions } from './version.js'
+import { claudeSourceDescriptor, deliverIntoClaudeSession } from './session-handoff.js'
 import { cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
 
 /** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
@@ -270,13 +271,6 @@ export function inspectClaudeInbox(options: {
   }
 }
 
-function socketLine(context: string): string {
-  return `${JSON.stringify({
-    type: 'user',
-    message: { role: 'user', content: context },
-  })}\n`
-}
-
 /**
  * Claude's own-child delivery route.
  *
@@ -290,7 +284,10 @@ function socketLine(context: string): string {
  *
  * Every path that hands nothing over reports `held`, so the accepted journal
  * replays it. Unknown state deliberately returns without throwing, so the
- * journal becomes `hold-for-next-turn` instead of failing the hook.
+ * journal becomes `hold-for-next-turn` instead of failing the hook. The
+ * in-place write is the hand-off shared with Session Messages
+ * (`session-handoff.ts`); only the cold resume of a stopped session belongs to
+ * this answer route.
  */
 export function claudeWakeRoute(options: {
   sessionId: string
@@ -299,76 +296,62 @@ export function claudeWakeRoute(options: {
   adapters?: ClaudeWakeAdapters
 }): EscalationDeliveryRoute {
   const adapters = options.adapters ?? systemClaudeWakeAdapters()
-  let sourceDescriptor: ClaudeSessionDescriptor | null = null
-  try {
-    const parsed = parseDescriptor(adapters.readDescriptor(options.sourcePid))
-    if (
-      parsed !== null &&
-      parsed.sessionId === options.sessionId &&
-      parsed.pid === options.sourcePid
-    ) {
-      sourceDescriptor = parsed
-    }
-  } catch {
-    // Delivery fails closed below; route construction must never break the hook.
-  }
+  const sourceDescriptor = claudeSourceDescriptor(options.sessionId, options.sourcePid, adapters)
   return {
     kind: 'inbox-socket',
     async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
-      const observation = await observeClaudeSession(options.sessionId, adapters)
-      if (observation.state === 'unknown') {
-        return holdForNextTurn(observation.reason)
+      const written = await deliverIntoClaudeSession({
+        sessionId: options.sessionId,
+        sourcePid: options.sourcePid,
+        sourceDescriptor,
+        adapters,
+        text: event.context,
+        begin: event.commitDelivery,
+        writer: 'Stop-hook process',
+      })
+      switch (written.status) {
+        case 'unavailable':
+          return holdForNextTurn(written.reason)
+        case 'cancelled':
+          return cancelledDelivery()
+        case 'failed':
+          // The write started; the waiter records the failure as it always has.
+          throw written.error
+        case 'written':
+          return {
+            notes: [
+              written.sessionState === 'live-idle'
+                ? 'posted the accepted answer to the live Claude session'
+                : 'queued the accepted answer for the busy Claude session',
+            ],
+            log: {
+              route: 'inbox-socket',
+              stage: 'delivered',
+              session_state: written.sessionState,
+            },
+            // The write completed: Claude Code holds the message. Nothing later
+            // reports on it, so this is where the journal settles.
+            acknowledgement: 'delivered',
+          }
+        case 'stopped':
+          break
       }
-      if (sourceDescriptor === null) {
-        const reason = 'the Stop-hook process cannot prove exact Claude session ownership'
-        return holdForNextTurn(reason)
-      }
-      if (observation.state === 'stopped') {
-        // Probe immediately before spawn. A prior descriptor or dead socket is
-        // never sufficient: resuming a live session creates a divergent ghost.
-        const confirmed = await observeClaudeSession(options.sessionId, adapters)
-        if (confirmed.state !== 'stopped') {
-          const reason =
-            confirmed.state === 'unknown'
-              ? confirmed.reason
-              : 'the Claude session became live before cold resume'
-          return holdForNextTurn(reason)
-        }
-        if (!event.commitDelivery()) return cancelledDelivery()
-        await adapters.resume(options.sessionId, sourceDescriptor.cwd, event.context)
-        return {
-          notes: ['cold-resumed the stopped Claude session with its accepted answer'],
-          log: { route: 'cold-resume', stage: 'delivered' },
-          acknowledgement: 'delivered',
-        }
-      }
-
-      if (
-        observation.descriptor.pid !== options.sourcePid ||
-        sourceDescriptor.startedAt !== observation.descriptor.startedAt
-      ) {
-        const reason = 'the Stop-hook process is not the observed exact Claude session child'
+      // Probe immediately before spawn. A prior descriptor or dead socket is
+      // never sufficient: resuming a live session creates a divergent ghost.
+      const confirmed = await observeClaudeSession(options.sessionId, adapters)
+      if (confirmed.state !== 'stopped') {
+        const reason =
+          confirmed.state === 'unknown'
+            ? confirmed.reason
+            : 'the Claude session became live before cold resume'
         return holdForNextTurn(reason)
       }
       if (!event.commitDelivery()) return cancelledDelivery()
-      await adapters.sendSocket(
-        observation.descriptor.messagingSocketPath,
-        socketLine(event.context),
-      )
-      await adapters.sleep(CLAUDE_POST_SEND_LIVENESS_MS)
+      // `stopped` is reported only with a proven source descriptor.
+      await adapters.resume(options.sessionId, sourceDescriptor!.cwd, event.context)
       return {
-        notes: [
-          observation.state === 'live-idle'
-            ? 'posted the accepted answer to the live Claude session'
-            : 'queued the accepted answer for the busy Claude session',
-        ],
-        log: {
-          route: 'inbox-socket',
-          stage: 'delivered',
-          session_state: observation.state,
-        },
-        // The write completed: Claude Code holds the message. Nothing later
-        // reports on it, so this is where the journal settles.
+        notes: ['cold-resumed the stopped Claude session with its accepted answer'],
+        log: { route: 'cold-resume', stage: 'delivered' },
         acknowledgement: 'delivered',
       }
     },

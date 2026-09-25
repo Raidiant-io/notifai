@@ -184,7 +184,7 @@ Bad:
 const ACKNOWLEDGEMENTS = `# Acknowledgements
 
 An acknowledgement names the concrete work the reply sets in motion — only
-work you will actually do, and nothing generic.
+work you will actually do, and nothing generic. Notes and edits too.
 
 It confirms receipt, not fulfillment. Return the requested result through
 Notifai when ready; acknowledgement text may be disabled.
@@ -193,7 +193,8 @@ Good:
 
 - \`Rolling out to staging now; I'll report the health checks.\`
 - \`Holding the deploy. I'll re-raise it once staging is green.\`
-- \`Shipping the fix; I'll confirm when password reset works again.\`
+- \`The email already went out; sending a Friday correction.\` — an edit
+  after irreversible work
 
 Bad:
 

@@ -263,16 +263,16 @@ notifai replies --pending --json
 ```
 
 **Acknowledge before you resume.** The user needs to know their reply was read.
-Notifai tells you the exact command; run it once per answered request that
-arrived through Notifai, before any of the work it unblocks:
+Notifai tells you the exact command; run it once per answered request or
+[note or edit](references/notes-and-edits.md) (`sm_…`) that arrived through
+Notifai, before the work it unblocks:
 
 ```bash
 notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report the health checks."
 ```
 
-Keep it under 200 characters — it is a receipt, not a report.
-
-Name only the concrete work their reply causes.
+Keep it under 200 characters and name only the concrete work their reply
+causes: it is a receipt, not a report.
 
 If the written reply is off, Notifai prints the command without `--text`; run
 exactly that. The acknowledgement is never optional.

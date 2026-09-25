@@ -124,6 +124,10 @@ export const LOG_EVENTS = [
   'attendant.lease',
   /** A Session Attendant stopped: why, and what it last reported. */
   'attendant.exit',
+  /** A hand-off into an Agent Session was claimed, or refused and why. */
+  'delivery.claimed',
+  /** How a claimed hand-off ended, and whether its outcome reached the service. */
+  'delivery.handoff',
   /** The active file was rotated. Explains a gap to anyone reading backwards. */
   'log.rotated',
 ] as const

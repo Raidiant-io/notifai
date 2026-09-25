@@ -18,6 +18,7 @@ import {
   pruneAbandonedSessions,
   readSessionEndMarker,
   readSessionIncarnation,
+  readSessionState,
   recordSessionNotified,
   recordSessionStart,
   refreshSessionMarkers,
@@ -405,6 +406,112 @@ describe('notifai hook attend', () => {
     await running
     expect(deps.exits).toEqual([{ reason: 'session-replaced', reported: 'ended' }])
     expect(service.calls.at(-1)).toMatchObject({ state: 'ended', generation: 1 })
+  })
+
+  it('hands a Session Note into the session in place: claimed, posted over the inbox, reported, and owed', async () => {
+    const { env, root } = isolatedEnv()
+    const socket = path.join(root, 'inbox.sock')
+    writeFileSync(socket, '')
+    const descriptor = {
+      pid: HARNESS.pid,
+      sessionId: 'sess-a',
+      cwd: root,
+      startedAt: 1,
+      procStart: HARNESS.start,
+      version: '2.1.282',
+      peerProtocol: 1,
+      messagingSocketPath: socket,
+      status: 'idle',
+    }
+    const posted: string[] = []
+    const calls: AttendanceRequestT[] = []
+    const claims: unknown[] = []
+    const reports: unknown[] = []
+    let delivered = false
+    const client = {
+      compatibility: async () => ({ server_capabilities: ['session_attendance'] }),
+      attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+        calls.push(body)
+        if (body.state !== 'running') return { status: 'withdrawn' }
+        if (calls.length > 1) await new Promise((resolve) => setTimeout(resolve, 20))
+        const messages = delivered
+          ? []
+          : [{ message_id: 'sm_note', created_at: '2026-09-25T10:00:00.000Z', agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Use the staging database' }]
+        return { status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c', messages }
+      },
+      claimDeliveryAttempt: async (_session: string, body: unknown) => {
+        claims.push(body)
+        return { attempt_id: 'att_note', claim_remaining_ms: 30_000 }
+      },
+      reportDeliveryAttempt: async (attemptId: string, body: { outcome: string }) => {
+        reports.push({ attemptId, ...body })
+        delivered = true
+        return { attempt_id: attemptId, outcome: body.outcome, replayed: false }
+      },
+    } as unknown as ApiClient
+    const deps = attendDeps(env, root, {
+      clientFactory: () => client,
+      claudeWake: {
+        listAgents: async () => [{ pid: HARNESS.pid, sessionId: 'sess-a', startedAt: 1, status: 'idle' }],
+        readDescriptor: () => descriptor,
+        sendSocket: async (_path: string, line: string) => {
+          posted.push(line)
+        },
+        resume: async () => {
+          throw new Error('Session Messages never cold resume')
+        },
+        sleep: async () => {},
+      },
+    })
+    recordSessionNotified('sess-a', env, Date.now())
+    const envelope = { session_id: 'sess-a', cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
+    const running = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
+    await until(() => reports.length === 1, 'the note hand-off report')
+
+    expect(calls[0]).toMatchObject({ state: 'running', accepts_messages: true })
+    expect(claims).toEqual([
+      {
+        incarnation: readSessionIncarnation('sess-a', env)?.incarnation,
+        generation: 1,
+        subject: { type: 'session_message', message_id: 'sm_note' },
+      },
+    ])
+    expect(posted).toHaveLength(1)
+    const line = JSON.parse(posted[0]!) as { type: string; message: { content: string } }
+    expect(line.type).toBe('user')
+    expect(line.message.content).toContain('"Use the staging database"')
+    expect(line.message.content).toContain('`notifai acknowledge sm_note --text <text>`')
+    expect(reports).toEqual([{ attemptId: 'att_note', outcome: 'handed_off' }])
+    expect(readSessionState('sess-a', env).message_acknowledgement_due).toEqual([
+      { message_id: 'sm_note', recorded_at: expect.any(Number), text_required: true },
+    ])
+
+    markSessionEnded('sess-a', env, Date.now() + 1)
+    await running
+  })
+
+  it('stays presence-only, accepting no notes, when the session has no inbox socket', async () => {
+    const { env, root } = isolatedEnv()
+    const service = fakeAttendance()
+    const deps = attendDeps(env, root, {
+      clientFactory: () => service.client,
+      claudeWake: {
+        listAgents: async () => [],
+        readDescriptor: () => {
+          throw new Error('started with --bare')
+        },
+        sendSocket: async () => {},
+        resume: async () => {},
+        sleep: async () => {},
+      },
+    })
+    recordSessionNotified('sess-a', env, Date.now())
+    const envelope = { session_id: 'sess-a', cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
+    const running = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
+    await until(() => service.calls.length >= 1, 'attendance exchange')
+    expect(service.calls[0]).toMatchObject({ accepts_messages: false })
+    markSessionEnded('sess-a', env, Date.now() + 1)
+    await running
   })
 
   it('fences itself, without any report, when its claim is removed or changes hands', async () => {

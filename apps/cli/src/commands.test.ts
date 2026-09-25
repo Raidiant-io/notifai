@@ -2100,6 +2100,45 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('reply wait failed')
   })
 
+  it('dispatches a Session Message acknowledgement by its sm_ prefix and clears only that debt', async () => {
+    const io = new CapturedIo()
+    const calls: string[] = []
+    const client = {
+      putAgentAcknowledgement: async () => {
+        calls.push('request')
+        throw new Error('a message id never reaches the request route')
+      },
+      putSessionMessageAcknowledgement: async (messageId: string, body: { text?: string }) => {
+        calls.push(`message:${messageId}:${body.text ?? ''}`)
+        return {
+          status: 'recorded' as const,
+          agent_acknowledgement: { text: body.text ?? '', created_at: '2026-09-25T12:01:00.000Z' },
+        }
+      },
+    } as unknown as ApiClient
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-acknowledge-message-'))
+    const deps = makeDeps(io, client)
+    deps.env = { XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+    writeSessionState('message-ack', deps.env, {
+      acknowledgement_due: [{ request_id: 'req_still_owed', recorded_at: 1, text_required: true }],
+      message_acknowledgement_due: [{ message_id: 'sm_note_1', recorded_at: 2, text_required: true }],
+    })
+
+    expect(
+      await acknowledgeCommand(deps, 'sm_note_1', { text: 'Switching to the staging database now.', json: true }),
+    ).toBe(EXIT.ok)
+
+    expect(calls).toEqual(['message:sm_note_1:Switching to the staging database now.'])
+    expect(JSON.parse(io.outLines.join('\n'))).toEqual({
+      message_id: 'sm_note_1',
+      outcome: 'recorded',
+      acknowledgement: { text: 'Switching to the staging database now.', created_at: '2026-09-25T12:01:00.000Z' },
+    })
+    const state = readSessionState('message-ack', deps.env)
+    expect(state.message_acknowledgement_due).toBeUndefined()
+    expect(state.acknowledgement_due).toEqual([{ request_id: 'req_still_owed', recorded_at: 1, text_required: true }])
+  })
+
   it('acknowledges non-interactively, trims text, emits JSON, and logs request identity', async () => {
     const io = new CapturedIo()
     let submitted: { requestId: string; text: string } | undefined

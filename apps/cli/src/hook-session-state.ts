@@ -367,9 +367,9 @@ export function findOwningSession(
     const historyMatch = (state.question_history ?? []).some(
       (entry) => entry.question_id === id || entry.request_id === id,
     )
-    const acknowledgementMatch = (state.acknowledgement_due ?? []).some(
-      (entry) => entry.request_id === id,
-    )
+    const acknowledgementMatch =
+      (state.acknowledgement_due ?? []).some((entry) => entry.request_id === id) ||
+      (state.message_acknowledgement_due ?? []).some((entry) => entry.message_id === id)
     const acceptedMatch = state.accepted?.answers.some(
       ({ pending }) => pending.question_id === id || pending.request_id === id,
     ) ?? false

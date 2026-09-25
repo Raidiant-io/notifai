@@ -5,6 +5,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import type { AttendantPhase, AttendantStatus } from './session-attendant.js'
+import type { DeliveryLease } from './session-delivery.js'
 
 /** One live attendant per Agent Session: PID + process start time + incarnation. */
 export function attendantClaimPath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -34,6 +35,7 @@ export interface AttendantReport {
   generation: number | null
   activity: string | null
   reason: string | null
+  accepts_messages: boolean
   updated_at: number
 }
 
@@ -72,6 +74,7 @@ export function listAttendantReports(env: NodeJS.ProcessEnv): AttendantReport[] 
         generation: typeof parsed['generation'] === 'number' ? parsed['generation'] : null,
         activity: typeof parsed['activity'] === 'string' ? parsed['activity'] : null,
         reason: typeof parsed['reason'] === 'string' ? parsed['reason'] : null,
+        accepts_messages: parsed['accepts_messages'] === true,
         updated_at: typeof parsed['updated_at'] === 'number' ? parsed['updated_at'] : 0,
       })
     } catch {
@@ -79,4 +82,31 @@ export function listAttendantReports(env: NodeJS.ProcessEnv): AttendantReport[] 
     }
   }
   return reports.sort((a, b) => b.updated_at - a.updated_at)
+}
+
+/**
+ * The lease a writer beside the attendant (the answer waiter) may claim under:
+ * the generation the live attendant of this session holds right now, or null.
+ * The service still decides; a stale read is refused as `generation_fenced`.
+ */
+export function readAttendantLease(sessionId: string, env: NodeJS.ProcessEnv): DeliveryLease | null {
+  try {
+    const status = JSON.parse(readFileSync(attendantStatusPath(sessionId, env), 'utf8')) as Record<string, unknown>
+    const generation = status['generation']
+    const incarnation = status['incarnation']
+    if (
+      status['phase'] !== 'attending' ||
+      typeof generation !== 'number' ||
+      !Number.isInteger(generation) ||
+      generation < 1 ||
+      typeof incarnation !== 'string'
+    ) {
+      return null
+    }
+    const claim = readClaimFile(attendantClaimPath(sessionId, env))
+    if (claim === null || claim['pid'] !== status['pid'] || !claimHolderMayRun(claim)) return null
+    return { incarnation, generation }
+  } catch {
+    return null
+  }
 }

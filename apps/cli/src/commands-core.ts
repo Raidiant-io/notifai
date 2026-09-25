@@ -20,6 +20,7 @@ import { logConfigResolved, logSettingsFrom, nullLogger, type Logger } from './l
 import type { NativeSkills } from './native-skills.js'
 import type { CodexSessionTitleLookup } from './harness-session-title.js'
 import type { OrcaSessionTitleLookup } from './orca-session-title.js'
+import type { ProcessIdentity } from './process-identity.js'
 import type { QuestionSettlementLaunch } from './question-settlement-process.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
@@ -87,6 +88,8 @@ export interface CommandDeps {
   /** Test seams for Claude liveness, socket delivery, and cold resume. */
   claudeWake?: ClaudeWakeAdapters
   claudeSourcePid?: number
+  /** Test seam: the answer waiter's writer identity; null disables answer claims. */
+  answerWriter?: ProcessIdentity | null
   /** Test seams for the Session Attendant's harness probe, clocks, and signals. */
   attendant?: AttendantSeams
   /** Test seams for the Codex thread-writer probe and cold resume. */

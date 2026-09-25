@@ -64,7 +64,10 @@ import {
   readProjectSession,
   writeProjectSession,
 } from './hook-project-sessions.js'
-import { claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import { acquireClaimFile, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
+import { readDeliveryJournal } from './session-delivery.js'
+import { owedAcknowledgements, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
 import {
   drainRetirements,
   drainOrphanRetirements,
@@ -81,7 +84,7 @@ import {
   writeSessionState as persistSessionState,
 } from './hook-session-state.js'
 import { type PendingQuestion, type SessionState } from './hook-types.js'
-import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
+import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { GUIDANCE_CONTEXT_MAX_BYTES } from './guidance-render.js'
@@ -5851,6 +5854,140 @@ describe('Claude Code Stop wake route', () => {
     expect(h.io.outLines).toEqual([])
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
   })
+
+  /**
+   * A live attendant for `claude-route` holding `generation`, as the answer
+   * waiter reads it: its status file and its claim, both naming this process.
+   */
+  function attendClaudeRoute(env: NodeJS.ProcessEnv, generation = 4): void {
+    writeAttendantStatus('claude-route', env, {
+      phase: 'attending',
+      incarnation: 'inc_answerclaimtest',
+      generation,
+      activity: 'idle',
+      reason: null,
+      accepts_messages: true,
+      updated_at: NOW,
+    })
+    expect(
+      acquireClaimFile(attendantClaimPath('claude-route', env), { incarnation: 'inc_answerclaimtest' }),
+    ).not.toBeNull()
+  }
+
+  /** Records every close disposition and serves the claim protocol. */
+  function claimingClient(h: Harness) {
+    const closes: Array<{ requestId: string; disposition: string | null }> = []
+    const claims: ClaimDeliveryAttemptRequestT[] = []
+    const reports: Array<{ attemptId: string; outcome: string }> = []
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => {
+      const client = factory()
+      return {
+        ...client,
+        closeReplies: async (requestId: string, disposition?: 'deliver' | 'retire') => {
+          closes.push({ requestId, disposition: disposition ?? null })
+          const listed = await client.closeReplies(requestId)
+          if (disposition === undefined) return listed
+          return {
+            ...listed,
+            close_disposition: disposition,
+            delivered_reply_seq: disposition === 'deliver' ? (listed.replies.at(-1)?.seq ?? null) : null,
+          }
+        },
+        claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
+          claims.push(body)
+          return { attempt_id: `att_answer_${claims.length}`, claim_remaining_ms: 30_000 }
+        },
+        reportDeliveryAttempt: async (attemptId: string, body: { outcome: string }) => {
+          reports.push({ attemptId, outcome: body.outcome })
+          return { attempt_id: attemptId, outcome: body.outcome, replayed: false }
+        },
+      } as ApiClient
+    }
+    return { closes, claims, reports }
+  }
+
+  it('closes with deliver and claims the fenced answer under the attendant lease before the inbox write', async () => {
+    const h = harness([reply({ text: 'Ship it', seq: 3 })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-route', h.env, { question: 'Ship it?' }, NOW)
+    attendClaudeRoute(h.env, 4)
+    const service = claimingClient(h)
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+
+    const requestId = h.recorder.receipts[0]!
+    expect(service.closes).toEqual([{ requestId, disposition: 'deliver' }])
+    expect(service.claims).toEqual([
+      {
+        incarnation: 'inc_answerclaimtest',
+        generation: 4,
+        subject: { type: 'answer', request_id: requestId },
+      },
+    ])
+    expect(wake.sent).toHaveLength(1)
+    expect(service.reports).toEqual([{ attemptId: 'att_answer_1', outcome: 'handed_off' }])
+    expect(readDeliveryJournal('claude-route', h.env)).toMatchObject([
+      { attempt_id: 'att_answer_1', stage: 'written', reported: 'handed_off' },
+    ])
+    expect(readSessionState('claude-route', h.env).accepted?.answers[0]?.delivery_claim).toBe(true)
+  })
+
+  it('closes without a disposition and claims nothing when no attendant holds the lease', async () => {
+    const h = harness([reply({ text: 'Ship it' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-route', h.env, { question: 'Ship it?' }, NOW)
+    const service = claimingClient(h)
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+
+    expect(service.closes).toEqual([{ requestId: h.recorder.receipts[0]!, disposition: null }])
+    expect(service.claims).toEqual([])
+    expect(wake.sent).toHaveLength(1)
+    expect(readSessionState('claude-route', h.env).accepted?.answers[0]?.delivery_claim).toBeUndefined()
+  })
+
+  it('still writes the answer, unclaimed, when the claim is refused', async () => {
+    const h = harness([reply({ text: 'Ship it' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-route', h.env, { question: 'Ship it?' }, NOW)
+    attendClaudeRoute(h.env)
+    const service = claimingClient(h)
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => ({
+      ...factory(),
+      claimDeliveryAttempt: async () => {
+        throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'not_claimable' })
+      },
+    }) as ApiClient
+    const wake = claudeWake()
+
+    await hookRunCommand(
+      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+      'stop',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+      'claude-code',
+    )
+
+    expect(service.closes.map((close) => close.disposition)).toEqual(['deliver'])
+    expect(wake.sent).toHaveLength(1)
+    expect(service.reports).toEqual([])
+  })
 })
 
 describe('Codex Stop wake route', () => {
@@ -6736,5 +6873,128 @@ describe('a question reaching the end of its answer window', () => {
     // rather than left for a turn that could never collect it.
     expect(readSessionState('short-window', h.env).pending).toBeUndefined()
     expect(h.recorder.closed.length).toBe(1)
+  })
+})
+
+describe('Session Message acknowledgement debt', () => {
+  /** Serves Session Message acknowledgement reads from `acknowledged`. */
+  function withMessageAcknowledgements(h: Harness, acknowledged: Set<string>): string[] {
+    const checks: string[] = []
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => ({
+      ...factory(),
+      sessionMessageAcknowledgement: async (messageId: string) => {
+        checks.push(messageId)
+        return {
+          message_id: messageId,
+          agent_acknowledgement_text_required: true,
+          agent_acknowledgement: acknowledged.has(messageId)
+            ? { text: 'Switching databases now.', created_at: new Date(NOW).toISOString() }
+            : null,
+        }
+      },
+    }) as ApiClient
+    return checks
+  }
+
+  it('holds the turn for an owed Session Message acknowledgement and releases it once recorded', async () => {
+    const h = harness([])
+    const acknowledged = new Set<string>()
+    const checks = withMessageAcknowledgements(h, acknowledged)
+    writeSessionState('message-debt', h.env, {
+      message_acknowledgement_due: [{ message_id: 'sm_owed', recorded_at: NOW, text_required: true }],
+    })
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'message-debt' }))
+
+    expect(checks).toEqual(['sm_owed'])
+    const block = JSON.parse(h.io.outLines.at(-1)!) as { decision: string; reason: string }
+    expect(block.decision).toBe('block')
+    expect(block.reason).toContain('still missing for message sm_owed')
+    expect(block.reason).toContain('`notifai acknowledge sm_owed --text <text>`')
+    expect(block.reason).toContain('because of the message')
+
+    acknowledged.add('sm_owed')
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'message-debt' }))
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('message-debt', h.env).message_acknowledgement_due).toBeUndefined()
+  })
+
+  it('preserves owed Session Message acknowledgements through SessionEnd', () => {
+    const h = harness([])
+    writeSessionState('message-end', h.env, {
+      message_acknowledgement_due: [{ message_id: 'sm_kept', recorded_at: NOW, text_required: false }],
+    })
+    handleSessionEnd(h.env, { session_id: 'message-end' }, NOW)
+    expect(readSessionState('message-end', h.env).message_acknowledgement_due).toEqual([
+      { message_id: 'sm_kept', recorded_at: NOW, text_required: false },
+    ])
+  })
+
+  it('keeps both debts across a released CLI writing the same state (new write, old run, new read)', () => {
+    const h = harness([])
+    const released = { request_id: 'req_released', recorded_at: NOW, text_required: true }
+    // New write: this CLI records message debt beside request debt.
+    writeSessionState('round-trip', h.env, {
+      acknowledgement_due: [released, { request_id: 'req_settled', recorded_at: NOW, text_required: true }],
+    })
+    recordMessageAcknowledgementDue('round-trip', h.env, {
+      message_id: 'sm_round',
+      recorded_at: NOW,
+      text_required: true,
+    })
+    // Old run: a released CLI reads the file, knows only request debt, and
+    // saves through its whole-document read-modify-write (it spreads what it
+    // read and rewrites only the fields it owns).
+    const onDisk = JSON.parse(readFileSync(sessionStatePath('round-trip', h.env), 'utf8')) as Record<string, unknown>
+    expect(onDisk['acknowledgement_due']).toEqual([released, { request_id: 'req_settled', recorded_at: NOW, text_required: true }])
+    const releasedView = onDisk as { acknowledgement_due: Array<{ request_id: string }> }
+    const releasedSave = {
+      ...releasedView,
+      acknowledgement_due: releasedView.acknowledgement_due.filter((entry) => entry.request_id !== 'req_settled'),
+      last_prompt_at: NOW + 1,
+    }
+    writeFileSync(sessionStatePath('round-trip', h.env), `${JSON.stringify(releasedSave, null, 2)}\n`)
+    // New read: both debts are still owed, each in its own field.
+    const state = readSessionState('round-trip', h.env)
+    expect(state.acknowledgement_due).toEqual([released])
+    expect(state.message_acknowledgement_due).toEqual([{ message_id: 'sm_round', recorded_at: NOW, text_required: true }])
+    expect(owedAcknowledgements(state).map((entry) => ('message_id' in entry ? entry.message_id : entry.request_id))).toEqual([
+      'req_released',
+      'sm_round',
+    ])
+  })
+
+  it('retires parked questions with the retire disposition', async () => {
+    const h = harness([])
+    const dispositions: Array<string | undefined> = []
+    const client = h.deps.clientFactory!()
+    writeSessionState('retire-disposition', h.env, {
+      retiring: [
+        {
+          request_id: 'req_parked',
+          collapse_key: 'collapse_parked',
+          device_ids: ['dev_iphone'],
+          question: 'Parked?',
+          state: 'expired',
+        },
+      ],
+    })
+    await drainRetirements(
+      {
+        client: {
+          ...client,
+          closeReplies: async (requestId: string, disposition?: 'deliver' | 'retire') => {
+            dispositions.push(disposition)
+            return client.closeReplies(requestId)
+          },
+        } as ApiClient,
+        config: loadConfig({ cwd: h.deps.cwd, env: h.env }),
+      },
+      'retire-disposition',
+      h.env,
+    )
+    expect(dispositions).toEqual(['retire'])
   })
 })

@@ -6,6 +6,7 @@ import {
   type DeliveryOutcome,
   type EscalationDeliveryRoute,
 } from './hook-types.js'
+import { deliverIntoCodexThread } from './session-handoff.js'
 import { cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
 
 /** Codex thread ids are UUIDs, and `--thread` wants that exact id. */
@@ -98,15 +99,18 @@ export function codexWakeRoute(options: {
   return {
     kind: 'session-queue',
     async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
-      const readiness = inspectCodexQueue(options.threadId, env)
-      if (readiness.state === 'unavailable') return holdForNextTurn(readiness.reason)
-      if (!event.commitDelivery()) return cancelledDelivery()
-      try {
-        await adapters.queue(readiness.threadId, options.cwd, event.context)
-      } catch (err) {
-        return holdForNextTurn(
-          `queueing the answer into the Codex thread failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
+      const written = await deliverIntoCodexThread({
+        threadId: options.threadId,
+        cwd: options.cwd,
+        env,
+        adapters,
+        text: event.context,
+        begin: event.commitDelivery,
+      })
+      if (written.status === 'unavailable') return holdForNextTurn(written.reason)
+      if (written.status === 'cancelled' || written.status === 'stopped') return cancelledDelivery()
+      if (written.status === 'failed') {
+        return holdForNextTurn(`queueing the answer into the Codex thread failed: ${written.reason}`)
       }
       return {
         notes: [

@@ -303,3 +303,11 @@ terminal closes, and withdraws when the Project is disabled or the hooks are
 removed. Only an opaque id leaves the machine: never process ids, paths, or
 session files. The UserPromptSubmit and Stop copies restart it if it died and
 otherwise exit at once. `notifai doctor` shows each attendant's state.
+
+The attendant also hands a note, or a change to an answer the agent already
+received, from your devices into that running session in place, over the same
+inbox route a detached answer uses. Each hand-off is claimed first, so an
+edited answer can only follow the answer it replaces, and nothing is written
+twice. The agent acknowledges each one with `notifai acknowledge sm_…`, exactly
+as it acknowledges an answered request. A session without an inbox socket (for
+example `--bare`) keeps presence only and accepts no notes.

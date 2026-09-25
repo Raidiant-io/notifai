@@ -1,5 +1,7 @@
 /** Hook-event domain handlers and the question escalation lifecycle. */
 import type {
+  CloseDisposition,
+  CloseRepliesResponse,
   ListRepliesResponse,
   MediaItemT,
   QuestionT,
@@ -19,6 +21,7 @@ import {
   classifyJournaledAcknowledgements,
   finishCommittedDelivery,
   holdForAcknowledgement,
+  owedAcknowledgements,
   reconcileAcknowledgementObligations,
   recoverQueuedAnswers,
   resetAcknowledgementBlocks,
@@ -33,6 +36,7 @@ import {
   drainOrphanRetirements,
   drainRetirements,
   finalizeReplies,
+  selectedForClaimedDelivery,
   orphanRetirements,
   pendingAnsweredByPrompt,
   retirePendings,
@@ -63,9 +67,11 @@ import {
   recordSessionNotified,
 } from './hook-session-state.js'
 import { userPromptContextOutput } from './session-activation.js'
+import { beginHandOff, type HandOff, type SequencerDeps } from './session-delivery.js'
 import type {
   AcceptedAnswerDelivery,
   AnsweredPending,
+  DeliveryOutcome,
   EscalationDeliveryRoute,
   EscalationWaiterOptions,
   HookContext,
@@ -458,17 +464,38 @@ async function pollPendingReply(
 
 interface FinalizedPending {
   pending: PendingQuestion
-  response: ListRepliesResponse | null
+  response: ListRepliesResponse | CloseRepliesResponse | null
+}
+
+/**
+ * How an answer-collecting close names itself: `deliver` only when this
+ * waiter will claim the fenced answer before writing it in place — a Claude
+ * inbox write while this session's attendant holds a lease. Otherwise no
+ * disposition, exactly as released CLIs close.
+ */
+function answerCloseDisposition(
+  ctx: HookContext,
+  route: EscalationDeliveryRoute,
+): CloseDisposition | undefined {
+  return route.kind === 'inbox-socket' && ctx.answerClaims?.lease() != null ? 'deliver' : undefined
+}
+
+/** The claim marker for an answer its own `deliver` close selected. */
+function claimMarker(
+  response: ListRepliesResponse | CloseRepliesResponse | null | undefined,
+): { delivery_claim?: true } {
+  return selectedForClaimedDelivery(response) ? { delivery_claim: true } : {}
 }
 
 /** Close several windows concurrently without confusing failure with silence. */
 async function finalizePendings(
   ctx: HookContext,
   pending: PendingQuestion[],
+  disposition?: CloseDisposition,
 ): Promise<FinalizedPending[]> {
   return Promise.all(
     pending.map(async (entry) => {
-      const response = await finalizeReplies(ctx, entry.request_id!)
+      const response = await finalizeReplies(ctx, entry.request_id!, disposition)
       ctx.log?.info('hook.retirement', {
         request_id: entry.request_id,
         attempted: true,
@@ -493,6 +520,7 @@ function finalizedAnswer(finalized: FinalizedPending): AnsweredPending | null {
           finalized.response?.agent_acknowledgement_required,
         agent_acknowledgement_text_required:
           finalized.response?.agent_acknowledgement_text_required,
+        ...claimMarker(finalized.response),
       }
 }
 
@@ -982,13 +1010,13 @@ export async function runEscalationWaiter(
     }
 
     if (
-      state.accepted === undefined && (state.acknowledgement_due?.length ?? 0) > 0 &&
+      state.accepted === undefined && owedAcknowledgements(state).length > 0 &&
       !(options.recordStop === false && options.route.kind === 'session-queue')
     ) {
       const due = await reconcileAcknowledgementObligations(
         ctx,
         sessionId,
-        state.acknowledgement_due!,
+        owedAcknowledgements(state),
       )
       const held = holdForAcknowledgement(ctx, sessionId, due, notes)
       if (held !== null) return held
@@ -1160,14 +1188,26 @@ async function deliverAcceptedAnswers(
       return true
     })
   }
-  let delivered = await route.deliver({
-    context: answersContext(answered, remaining),
-    answers: answered.length,
-    remaining,
-    request_ids: requestIds,
-    journal_recorded_at: accepted.recorded_at,
-    commitDelivery,
-  })
+  // Answers a `deliver` close selected are claimed first, under this session's
+  // delivery lock, so an Answer Edit can only follow the write. A claim that
+  // cannot be had never withholds the answer: it is written unclaimed, as
+  // released CLIs write it, and its edits simply wait.
+  const handOff = await claimAnswerHandOff(ctx, sessionId, route, answered)
+  let delivered: DeliveryOutcome
+  try {
+    delivered = await route.deliver({
+      context: answersContext(answered, remaining),
+      answers: answered.length,
+      remaining,
+      request_ids: requestIds,
+      journal_recorded_at: accepted.recorded_at,
+      commitDelivery: handOff === null ? commitDelivery : () => handOff.begin(commitDelivery),
+    })
+  } catch (err) {
+    await handOff?.finish('failed')
+    throw err
+  }
+  await handOff?.finish(delivered.acknowledgement === 'delivered' ? 'written' : 'not-written')
   if (delivered.acknowledgement === 'delivered' && !deliveryCommitted) {
     delivered = {
       notes: [
@@ -1215,6 +1255,65 @@ async function deliverAcceptedAnswers(
     outcome.settlementRequired = pendingList(readSessionState(sessionId, ctx.env)).length > 0
   }
   return outcome
+}
+
+/** How long a waiter waits for the attendant to re-acquire a moved lease. */
+const ANSWER_CLAIM_RETRY_MS = 2_000
+const ANSWER_CLAIM_ROUNDS = 3
+
+/**
+ * Claim every selected answer of this batch for one in-place write, or null
+ * when nothing may be claimed: no attendant lease, a route that does not write
+ * in place, or a delivery lock another writer kept.
+ */
+async function claimAnswerHandOff(
+  ctx: HookContext,
+  sessionId: string,
+  route: EscalationDeliveryRoute,
+  answered: AnsweredPending[],
+): Promise<HandOff | null> {
+  const claims = ctx.answerClaims
+  const subjects = answered.flatMap(({ pending, delivery_claim }) =>
+    delivery_claim === true && pending.request_id !== undefined
+      ? [{ type: 'answer' as const, request_id: pending.request_id }]
+      : [],
+  )
+  if (claims === undefined || subjects.length === 0 || route.kind !== 'inbox-socket') return null
+  const deps: SequencerDeps = {
+    sessionId,
+    env: ctx.env,
+    client: ctx.client,
+    monotonic: claims.monotonic,
+    wall: ctx.now,
+    sleep: ctx.sleep,
+    writer: claims.writer,
+    ...(ctx.log === undefined ? {} : { log: ctx.log }),
+  }
+  for (let round = 1; ; round += 1) {
+    const lease = claims.lease()
+    const handOff = lease === null ? null : await beginHandOff(deps, { lease, subjects })
+    if (handOff === null) {
+      ctx.log?.info('delivery.claimed', {
+        subject: 'answer',
+        request_ids: subjects.map((subject) => subject.request_id),
+        claimed: false,
+        reason: lease === null ? 'no-attendant-lease' : 'delivery-lock-busy',
+      })
+      if (lease === null && round < ANSWER_CLAIM_ROUNDS) {
+        await ctx.sleep(ANSWER_CLAIM_RETRY_MS)
+        continue
+      }
+      return null
+    }
+    // A lease that moved between the close and this claim is re-read once the
+    // attendant has had a moment to re-acquire; any other refusal is final.
+    const fenced =
+      handOff.claimed.length === 0 &&
+      handOff.refused.every((refusal) => refusal.reason === 'generation_fenced')
+    if (!fenced || round >= ANSWER_CLAIM_ROUNDS) return handOff
+    await handOff.finish('not-written')
+    await ctx.sleep(ANSWER_CLAIM_RETRY_MS)
+  }
 }
 
 /** True while this Stop owner is still allowed a direct-wake wait. */
@@ -1273,6 +1372,7 @@ async function handleClaimedStop(
       const finalized = await finalizePendings(
         ctx,
         answered.map((entry) => entry.pending),
+        answerCloseDisposition(ctx, route),
       )
       const authoritative = answered.map((entry) => {
         const response = finalized.find((candidate) =>
@@ -1294,6 +1394,7 @@ async function handleClaimedStop(
         agent_acknowledgement_text_required:
           response?.agent_acknowledgement_text_required ??
           entry.agent_acknowledgement_text_required,
+        ...claimMarker(response),
       }
       })
       const accepted = stageAcceptedAnswers(
@@ -1653,7 +1754,7 @@ async function escalate(
     if (intent.draft.source === undefined) delete live.source
     delete live.submission
     if (live.reply_deadline_at! > live.owner_deadline_at!) {
-      const response = await finalizeReplies(ctx, live.request_id!)
+      const response = await finalizeReplies(ctx, live.request_id!, answerCloseDisposition(ctx, route))
       if (response === null) {
         // Closing was unreachable, so the question is still potentially live.
         // Preserve it in the exact session instead of demoting it to the orphan
@@ -1694,6 +1795,7 @@ async function escalate(
           agent_acknowledgement_required: response.agent_acknowledgement_required,
           agent_acknowledgement_text_required:
             response.agent_acknowledgement_text_required,
+          ...claimMarker(response),
         })
       }
       dropPendingQuestion(sessionId, ctx.env, entry)
@@ -1765,7 +1867,7 @@ async function escalate(
     (entry) =>
       entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now(),
   )
-  const finalizedStale = await finalizePendings(ctx, staleLive)
+  const finalizedStale = await finalizePendings(ctx, staleLive, answerCloseDisposition(ctx, route))
   const staleAnswers = finalizedStale
     .map(finalizedAnswer)
     .filter((entry): entry is AnsweredPending => entry !== null)
@@ -1876,7 +1978,7 @@ async function escalate(
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
-    const finalized = await finalizePendings(ctx, expired)
+    const finalized = await finalizePendings(ctx, expired, answerCloseDisposition(ctx, route))
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)
@@ -1930,7 +2032,7 @@ async function escalate(
   }
 
   const polledAnswered = activeWaiting.filter((entry) => waited.byRequest.has(entry.request_id!))
-  const finalizedAnswered = await finalizePendings(ctx, polledAnswered)
+  const finalizedAnswered = await finalizePendings(ctx, polledAnswered, answerCloseDisposition(ctx, route))
   const answered: AnsweredPending[] = []
   for (const finalized of finalizedAnswered) {
     const entry = finalized.pending
@@ -1949,6 +2051,7 @@ async function escalate(
         finalized.response?.agent_acknowledgement_required,
       agent_acknowledgement_text_required:
         finalized.response?.agent_acknowledgement_text_required,
+      ...claimMarker(finalized.response),
     })
     if (finalized.response === null) {
       notes.push(
@@ -2044,13 +2147,20 @@ export function handleSessionEnd(
       `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
     )
   }
-  if (state.accepted !== undefined || (state.acknowledgement_due?.length ?? 0) > 0) {
+  if (
+    state.accepted !== undefined ||
+    (state.acknowledgement_due?.length ?? 0) > 0 ||
+    (state.message_acknowledgement_due?.length ?? 0) > 0
+  ) {
     const preserved: SessionState = { ...stateWithHistory }
     delete preserved.pending
     delete preserved.retiring
     delete preserved.acknowledgement_blocks
     if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
       delete preserved.acknowledgement_due
+    }
+    if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
+      delete preserved.message_acknowledgement_due
     }
     writeSessionState(sessionId, env, preserved)
     notes.push(
@@ -2065,6 +2175,9 @@ export function handleSessionEnd(
         queued_retirements: orphans.length,
         accepted_answers: state.accepted?.answers.length ?? 0,
         acknowledgement_due: state.acknowledgement_due?.length ?? 0,
+        ...(state.message_acknowledgement_due === undefined
+          ? {}
+          : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
       },
     }
   }

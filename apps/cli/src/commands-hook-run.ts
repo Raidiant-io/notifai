@@ -49,6 +49,9 @@ import { projectBinding, projectEnabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { cursorStopActivationOutput, sessionActivationOutput } from './session-activation.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { attendantSupport } from './session-attendant-probe.js'
+import { readAttendantLease } from './session-attendant-state.js'
 const INTERNAL_HOOK_EVENTS = ['question-settlement'] as const
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
@@ -471,6 +474,7 @@ export async function hookRunCommand(
       },
       log: logger,
       ...(harness === undefined ? {} : { harness }),
+      ...answerClaimsFor(deps, harness, envelope.session_id, event),
     }
 
     // Real clock, deliberately, not `deps.now`. This compares against file
@@ -576,6 +580,30 @@ function stopWakeRoute(
     })
   }
   return undefined
+}
+
+/**
+ * The Stop waiter claims fenced answers only where a Session Attendant can
+ * hold the session's lease and the answer is written in place: Claude Code on
+ * macOS and Linux. Everywhere else it closes and writes exactly as before.
+ */
+function answerClaimsFor(
+  deps: CommandDeps,
+  harness: HookInstallableHarness | undefined,
+  sessionId: string | undefined,
+  event: string,
+): Pick<HookContext, 'answerClaims'> {
+  if (sessionId === undefined || (event !== 'stop' && event !== 'question-settlement')) return {}
+  if (!attendantSupport(harness, deps.hookPlatform ?? process.platform).supported) return {}
+  const writer = deps.answerWriter === undefined ? currentProcessIdentity() : deps.answerWriter
+  if (writer === null) return {}
+  return {
+    answerClaims: {
+      lease: () => readAttendantLease(sessionId, deps.env),
+      writer,
+      monotonic: () => performance.now(),
+    },
+  }
 }
 
 /** Stable harness parent propagated by the managed adapter across child tools. */

@@ -43,6 +43,9 @@ export const ATTENDANT_UNSUPPORTED_RECHECK_MS = 30 * 60_000
 /** How long to wait before asking again about a session the service does not know yet. */
 export const ATTENDANT_UNKNOWN_SESSION_RETRY_MS = 60_000
 
+/** First pause before re-asking for a message that waits on something brief; doubles to the hold. */
+export const ATTENDANT_MESSAGE_RETRY_MS = 2_000
+
 const MAX_NETWORK_BACKOFF_MS = 30_000
 
 export type HarnessProbe =
@@ -82,6 +85,8 @@ export interface AttendantStatus {
   generation: number | null
   activity: SessionActivity | null
   reason: string | null
+  /** Whether this attendant hands Session Messages in, so the service accepts notes. */
+  accepts_messages: boolean
   updated_at: number
 }
 
@@ -113,8 +118,15 @@ export interface SessionAttendantOptions {
   serverSupportsAttendance(client: ApiClient): Promise<boolean>
   /** Whether this attendant can hand Session Messages into the session. */
   acceptsMessages: boolean
-  /** Receives claimable Session Messages; absent until message hand-off ships. */
-  onMessages?: (messages: AttendanceMessage[], attendant: AttendantHandle) => Promise<void>
+  /**
+   * Hands claimable Session Messages into the session. `retry-soon` asks for
+   * the next exchange without holding it open: a message is waiting on
+   * something that resolves in seconds.
+   */
+  onMessages?: (
+    messages: AttendanceMessage[],
+    attendant: AttendantHandle,
+  ) => Promise<'done' | 'retry-soon'>
   clock: AttendantClock
   logger: Logger
   /** Persist the local status `notifai doctor` reads. */
@@ -186,6 +198,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
         generation,
         activity,
         reason: phaseReason,
+        accepts_messages: options.acceptsMessages,
         updated_at: clock.wall(),
       })
     } catch {
@@ -338,6 +351,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   let backoff = 1_000
   let rotated = false
   let serverChecked = false
+  /** Consecutive `retry-soon` answers from message hand-off. */
+  let messageRetries = 0
   while (exit === null) {
     if (!networkStarted) {
       if (!options.notified()) {
@@ -403,7 +418,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     exchange = current
     const sentAt = clock.monotonic()
     const sentEpoch = epoch
-    const hold = cursor !== undefined && !reacquireNow
+    const hold = cursor !== undefined && !reacquireNow && messageRetries === 0
     reacquireNow = false
     let response: AttendanceResponse
     try {
@@ -441,7 +456,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     if (exit !== null) break
 
     if (response.status === 'attending') {
-      if (generation !== response.generation) {
+      const acquired = generation !== response.generation
+      if (acquired) {
         logger.info('attendant.lease', { event: 'acquired', generation: response.generation })
       }
       generation = response.generation
@@ -449,10 +465,13 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       leaseEndsAt = sentEpoch === epoch ? sentAt + response.lease_remaining_ms : null
       cursor = response.message_cursor
       rotated = false
+      // The answer waiter claims under the generation this status names.
+      if (acquired) writeStatus()
       setPhase('attending')
-      if (response.messages.length > 0 && options.onMessages !== undefined) {
+      let handedOff: 'done' | 'retry-soon' = 'done'
+      if (response.messages.length > 0 && options.acceptsMessages && options.onMessages !== undefined) {
         try {
-          await options.onMessages(response.messages, handle)
+          handedOff = await options.onMessages(response.messages, handle)
         } catch (err) {
           logger.error('attendant.state', {
             phase,
@@ -460,6 +479,15 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
             message: err instanceof Error ? err.message : String(err),
           })
         }
+      }
+      if (handedOff === 'retry-soon' && exit === null) {
+        // Ask again without holding the exchange, backing off to the ordinary
+        // hold so a message that keeps waiting cannot spin the attendant.
+        const pauseMs = ATTENDANT_MESSAGE_RETRY_MS * 2 ** Math.min(messageRetries, 4)
+        messageRetries += 1
+        await pause(Math.min(pauseMs, waitSeconds * 1_000))
+      } else {
+        messageRetries = 0
       }
       continue
     }

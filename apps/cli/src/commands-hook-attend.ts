@@ -7,7 +7,7 @@
  * never delays: the harness does not wait for an async handler), and on
  * UserPromptSubmit and Stop to re-arm a session whose attendant died.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
@@ -31,10 +31,12 @@ import { logSettingsFrom, type Logger } from './logging.js'
 import { processStartTime, type ProcessIdentity } from './process-identity.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { packageVersion } from './release.js'
+import type { AttendanceMessage } from '@raidiant/notifai-protocol'
 import {
   runSessionAttendant,
   systemAttendantClock,
   type AttendantClock,
+  type AttendantHandle,
   type AttendantResult,
   type GateResult,
 } from './session-attendant.js'
@@ -46,6 +48,11 @@ import {
 } from './session-attendant-probe.js'
 import { attendantClaimPath, attendantStatusPath, writeAttendantStatus } from './session-attendant-state.js'
 import { CLI_PACKAGE_NAME } from './cli-contract.js'
+import { inspectClaudeInbox, systemClaudeWakeAdapters, type ClaudeWakeAdapters } from './claude-wake.js'
+import { currentProcessIdentity } from './process-identity.js'
+import type { SequencerDeps } from './session-delivery.js'
+import { claudeSourceDescriptor, deliverIntoClaudeSession } from './session-handoff.js'
+import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
@@ -63,6 +70,8 @@ export interface AttendantSeams {
   gates?: () => GateResult
   /** Observe the finished attendant. */
   onExit?: (result: AttendantResult) => void
+  /** This attendant as a writer; production reads its own PID and start time. */
+  writer?: ProcessIdentity | null
 }
 
 const SUPERSEDED_OWNER_WAIT_MS = 6_000
@@ -174,6 +183,22 @@ export async function attendHook(
   })
 
   let client: ApiClient | null | undefined
+  const connect = (): ApiClient | null => {
+    if (client !== undefined) return client
+    const credential = deps.store.load()
+    client = credential
+      ? makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
+      : null
+    return client
+  }
+  const messages = sessionMessageWriter({
+    deps,
+    sessionId,
+    harnessPid: harnessProcess.pid,
+    writer: seams.writer === undefined ? currentProcessIdentity() : seams.writer,
+    clock,
+    logger,
+  })
   const signals = seams.signalled === undefined ? terminationSignal() : null
   try {
     const result = await runSessionAttendant({
@@ -194,19 +219,20 @@ export async function attendHook(
       claimHeld: () => token !== null && readClaimFile(claimFile)?.['token'] === token,
       notified: () => sessionNotified(sessionId, deps.env),
       gates,
-      client: () => {
-        if (client !== undefined) return client
-        const credential = deps.store.load()
-        client = credential
-          ? makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
-          : null
-        return client
-      },
+      client: connect,
       serverSupportsAttendance: async (api) =>
         (await api.compatibility()).server_capabilities.includes('session_attendance'),
-      // Session Messages need the delivery sequencer; until it ships, this
-      // attendant reports presence only and the service accepts no notes.
-      acceptsMessages: false,
+      // The service accepts notes for this session only while an attendant
+      // that can hand them in place says so.
+      acceptsMessages: messages !== null,
+      ...(messages === null
+        ? {}
+        : {
+            onMessages: async (batch, attendant) => {
+              const api = connect()
+              return api === null ? 'done' : messages(api, batch, attendant)
+            },
+          }),
       clock,
       logger,
       writeStatus: (status) => writeAttendantStatus(sessionId, deps.env, status),
@@ -225,6 +251,70 @@ export async function attendHook(
     if (token !== null) releaseClaimFile(claimFile, token)
   }
   return EXIT.ok
+}
+
+type SessionMessageWriter = (
+  client: ApiClient,
+  batch: AttendanceMessage[],
+  attendant: AttendantHandle,
+) => Promise<MessageHandOffResult>
+
+/**
+ * The attendant's Session Message writer, or null when this session cannot
+ * take a message in place: no inbox socket (`--bare`, an older Claude Code, an
+ * unsupported protocol) or no provable writer identity. Null keeps the
+ * attendant presence-only, and the service accepts no notes for the session.
+ */
+function sessionMessageWriter(input: {
+  deps: CommandDeps
+  sessionId: string
+  harnessPid: number
+  writer: ProcessIdentity | null
+  clock: AttendantClock
+  logger: Logger
+}): SessionMessageWriter | null {
+  const { deps, sessionId, harnessPid, writer, clock, logger } = input
+  if (writer === null) return null
+  const adapters: ClaudeWakeAdapters = deps.claudeWake ?? systemClaudeWakeAdapters(deps.env)
+  const inbox = inspectClaudeInbox({
+    pid: harnessPid,
+    platform: deps.hookPlatform ?? process.platform,
+    readDescriptor: adapters.readDescriptor,
+    socketExists: existsSync,
+  })
+  if (inbox.state !== 'ready') {
+    logger.info('attendant.state', { messages: 'unavailable', reason: inbox.reason })
+    return null
+  }
+  return (client, batch, attendant) => {
+    const sequencer: SequencerDeps = {
+      sessionId,
+      env: deps.env,
+      client,
+      monotonic: () => clock.monotonic(),
+      wall: () => clock.wall(),
+      sleep: (milliseconds) => clock.sleep(milliseconds, new AbortController().signal),
+      writer,
+      log: logger,
+    }
+    return handOffSessionMessages(batch, attendant, {
+      sequencer,
+      write: (text, begin) =>
+        deliverIntoClaudeSession({
+          sessionId,
+          sourcePid: harnessPid,
+          // Read at each write: the probe keeps proving this harness hosts the
+          // session, and Claude Code rewrites its descriptor as it runs.
+          sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
+          adapters,
+          text,
+          begin,
+          // Resident: the attendant outlives the ancestry check without waiting.
+          holdAfterSend: false,
+          writer: 'Session Attendant',
+        }),
+    })
+  }
 }
 
 /**

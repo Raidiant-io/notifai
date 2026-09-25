@@ -1701,6 +1701,7 @@ function sessionAttendantCheck(
       report.phase,
       report.generation === null ? null : `lease generation ${report.generation}`,
       report.activity,
+      report.phase === 'exited' ? null : report.accepts_messages ? 'accepts notes' : 'notes unavailable',
       report.reason,
     ]
       .filter((part): part is string => part !== null)

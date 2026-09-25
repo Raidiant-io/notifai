@@ -11,6 +11,8 @@ import { type ApiClient } from './client.js'
 import { type CliConfig } from './config.js'
 import { type DeliveryRoute, type HookInstallableHarness } from './harnesses.js'
 import type { Logger } from './logging.js'
+import type { ProcessIdentity } from './process-identity.js'
+import type { DeliveryLease } from './session-delivery.js'
 /**
  * Harness hook handlers.
  *
@@ -120,6 +122,14 @@ export interface SessionState {
    * the service confirms the agent-authored follow-up exists.
    */
   acknowledgement_due?: AcknowledgementDue[]
+  /**
+   * Agent Acknowledgements owed for Session Messages (Session Notes and Answer
+   * Edits) handed into this session. A sibling of `acknowledgement_due`, never
+   * folded into it: released CLIs read that list and must keep finding exactly
+   * the request debt they understand. The two meet only in memory, as
+   * `OwedAcknowledgement`.
+   */
+  message_acknowledgement_due?: MessageAcknowledgementDue[]
   /** Consecutive turns this session has been held for an acknowledgement. */
   acknowledgement_blocks?: number
 }
@@ -134,6 +144,16 @@ export interface AcknowledgementDue {
    */
   text_required?: boolean
 }
+
+export interface MessageAcknowledgementDue {
+  message_id: string
+  recorded_at: number
+  /** The account's snapshot taken when the Session Message was accepted. */
+  text_required: boolean
+}
+
+/** Either kind of owed acknowledgement; exists only in memory. */
+export type OwedAcknowledgement = AcknowledgementDue | MessageAcknowledgementDue
 
 export interface AcceptedAnswerDelivery {
   answers: AnsweredPending[]
@@ -369,6 +389,21 @@ export interface HookContext {
    * so this is the only account of why a question did or did not travel.
    */
   log?: Logger
+  /**
+   * Present where a Session Attendant can hold this session's lease: the
+   * answer waiter then closes with `deliver` and claims each fenced answer
+   * before its in-place write, so Answer Edits follow it in order.
+   */
+  answerClaims?: AnswerClaims
+}
+
+export interface AnswerClaims {
+  /** The lease generation the live attendant holds right now, or null. */
+  lease(): DeliveryLease | null
+  /** This waiter as a writer: PID and start time, journaled before any write. */
+  writer: ProcessIdentity
+  /** Claim deadlines are measured on this clock, never the wall clock. */
+  monotonic(): number
 }
 
 export type HookHarness = HookInstallableHarness
@@ -382,4 +417,10 @@ export interface AnsweredPending {
   agent_acknowledgement_required?: boolean | undefined
   /** Whether that acknowledgement must carry text; the account's snapshot. */
   agent_acknowledgement_text_required?: boolean | undefined
+  /**
+   * True when this process's `deliver` close selected this answer for a
+   * claimed hand-off: whoever writes it claims a Delivery Attempt first, so a
+   * later Answer Edit is handed off strictly after it.
+   */
+  delivery_claim?: true
 }

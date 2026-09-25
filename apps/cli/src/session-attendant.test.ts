@@ -185,6 +185,7 @@ function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initia
     acceptsMessages: false,
     onMessages: async (_messages, handle) => {
       harness.handle = handle
+      return 'done'
     },
     clock,
     logger: nullLogger(),
@@ -317,6 +318,57 @@ describe('Session Attendant', () => {
     await h.clock.advance(2_000)
     expect(held.aborted).toBe(true)
     expect(h.service.last().body.activity).toBe('working')
+    h.signal()
+    await h.clock.advance(1)
+  })
+
+  it('hands messages over only when it accepts them, and re-asks at once for one that must wait', async () => {
+    const note = { message_id: 'sm_1', created_at: 'x', agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'hi' }
+    const silent = startAttendant()
+    await silent.clock.advance(1)
+    silent.service.last().respond({ ...silent.service.attending(3), messages: [note] })
+    await silent.clock.advance(1)
+    expect(silent.handle).toBeNull()
+    silent.signal()
+    await silent.clock.advance(1)
+
+    const answers: Array<'done' | 'retry-soon'> = ['retry-soon', 'done']
+    const batches: string[][] = []
+    const h = startAttendant({
+      acceptsMessages: true,
+      onMessages: async (messages) => {
+        batches.push(messages.map((message) => message.message_id))
+        return answers.shift() ?? 'done'
+      },
+    })
+    await h.clock.advance(1)
+    h.service.last().respond({ ...h.service.attending(3), messages: [note] })
+    await h.clock.advance(1)
+    expect(batches).toEqual([['sm_1']])
+    const beforePause = h.service.exchanges.length
+    // A brief pause, then an exchange the service answers at once.
+    await h.clock.advance(1_000)
+    expect(h.service.exchanges).toHaveLength(beforePause)
+    await h.clock.advance(1_000)
+    expect(h.service.exchanges).toHaveLength(beforePause + 1)
+    expect(h.service.last().waitSeconds).toBe(0)
+    h.service.last().respond({ ...h.service.attending(3), messages: [note] })
+    await h.clock.advance(1)
+    expect(batches).toEqual([['sm_1'], ['sm_1']])
+    // Handed over: the next exchange holds again.
+    expect(h.service.last().waitSeconds).toBe(25)
+    h.signal()
+    await h.clock.advance(1)
+  })
+
+  it('republishes its status when it holds a new generation, so the answer waiter claims under it', async () => {
+    const h = startAttendant()
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(3))
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(4))
+    await h.clock.advance(1)
+    expect(h.statuses.at(-1)).toMatchObject({ phase: 'attending', generation: 4 })
     h.signal()
     await h.clock.advance(1)
   })
