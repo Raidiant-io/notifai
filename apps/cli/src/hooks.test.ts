@@ -497,6 +497,7 @@ interface CliProcessResult {
   stdout: string
   stderr: string
   durationMs: number
+  exitedAt: number
 }
 
 function runSessionEndCli(
@@ -530,12 +531,14 @@ function runSessionEndCli(
   const done = new Promise<CliProcessResult>((resolve, reject) => {
     child.once('error', reject)
     child.once('exit', (code, signal) => {
+      const exitedAt = Date.now()
       resolve({
         code,
         signal,
         stdout: Buffer.concat(stdout).toString(),
         stderr: Buffer.concat(stderr).toString(),
-        durationMs: Date.now() - startedAt,
+        durationMs: exitedAt - startedAt,
+        exitedAt,
       })
     })
   })
@@ -4125,6 +4128,7 @@ describe('session-end hook', () => {
         5_000,
         'the real Codex hook did not reach contended diagnostics before its deadline',
       )
+      const contendedAt = Date.now()
 
       // Reaching the second bakery ticket proves program.ts preAction did not write
       // first. Every durable cleanup must already be visible while diagnostics
@@ -4136,7 +4140,10 @@ describe('session-end hook', () => {
       const result = await cli.done
       expect(result).toMatchObject({ code: EXIT.ok, signal: null, stdout: '', stderr: '' })
       expect(result.durationMs).toBeGreaterThanOrEqual(900)
-      expect(result.durationMs).toBeLessThan(2_000)
+      // Bound only the lock wait: Node startup on a loaded runner is not part
+      // of it. From joining the contended lock, the hook gave up after its
+      // bounded wait instead of waiting for the live holder.
+      expect(result.exitedAt - contendedAt).toBeLessThan(2_000)
       // The diagnostic contender timed out rather than stealing the held lock,
       // disabled its sink, and still let the real CLI exit successfully.
       expect(existsSync(activeLogPath(h.env))).toBe(false)

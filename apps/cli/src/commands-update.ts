@@ -64,7 +64,7 @@ function inspection(deps: CommandDeps): CliInstallationInspection {
     deps.hookPlatform ?? process.platform,
     {
       ...(artifact === undefined ? {} : { runningArtifactPath: artifact }),
-      currentVersion: packageVersion(),
+      currentVersion: deps.runningVersion === undefined ? packageVersion() : deps.runningVersion,
     },
   )
 }

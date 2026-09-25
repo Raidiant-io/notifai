@@ -16,7 +16,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandDeps, CommandIo } from './commands-core.js'
 import { cliUpdateCommand } from './commands-update.js'
 import { installHookAdapter, inspectHookAdapter } from './hook-adapter.js'
-import { packageVersion } from './release.js'
 import { hooksInstallCommand } from './commands-hook-install.js'
 import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallations } from './install-hooks.js'
 import { readSessionState, sessionStatePath, writeSessionState } from './hook-session-state.js'
@@ -46,16 +45,41 @@ function npmInstall(root: string, name: string, version: string) {
   return { prefix, packageRoot, artifact, command }
 }
 
+/**
+ * Recovery is proved from a stable and a beta running build. A beta build's
+ * repair advice names the beta channel, and a plain update from it refuses to
+ * downgrade to an older stable `latest`, so each build recovers on its own
+ * channel from a registry that publishes it there.
+ */
+const RUNNING_BUILDS = [
+  {
+    channel: 'stable',
+    distTag: 'latest',
+    version: '10.1.0',
+    tags: { latest: '10.1.0' },
+    installSpec: '@raidiant/notifai@latest',
+  },
+  {
+    channel: 'beta',
+    distTag: 'beta',
+    version: '10.2.0-beta.1',
+    tags: { latest: '3.0.1', beta: '10.2.0-beta.1' },
+    installSpec: '@raidiant/notifai@10.2.0-beta.1',
+  },
+] as const
+type RunningBuild = (typeof RUNNING_BUILDS)[number]
+const STABLE_BUILD = RUNNING_BUILDS[0]
+
 describe('CLI update recovery', () => {
   const roots: string[] = []
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
-  function recoveryFixture(installedAt = '3.0.1') {
+  function recoveryFixture(installedAt = '3.0.1', build: RunningBuild = STABLE_BUILD) {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-retry-'))
     roots.push(root)
-    const version = packageVersion()!
+    const { version } = build
     const installed = npmInstall(root, 'installed', installedAt)
     const running = npmInstall(root, 'running', version)
     const home = path.join(root, 'home')
@@ -95,9 +119,11 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
       hookAdapterHome: home,
       hookInstallTarget: { execPath: process.execPath, scriptPath: running.artifact },
       hookPlatform: 'darwin',
+      runningVersion: version,
     }
     const setPlan = (overrides: Record<string, unknown> = {}) => writeFileSync(plan, JSON.stringify({
       version,
+      tags: build.tags,
       script: `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${version}\n`)})\n`,
       ...overrides,
     }))
@@ -106,7 +132,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
       readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
     const installedVersion = (): string =>
       JSON.parse(readFileSync(path.join(installed.packageRoot, 'package.json'), 'utf8')).version
-    return { root, installed, running, home, adapterBefore, io, deps, setPlan, calls, npmCalls, installedVersion }
+    return { root, version, installed, running, home, adapterBefore, io, deps, setPlan, calls, npmCalls, installedVersion }
   }
 
   /** A published release the fake npm installs; it reports its own version. */
@@ -114,8 +140,8 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     return { version, script: `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${version}\n`)})\n` }
   }
 
-  // Newer than this build, so the updater's own version never blocks the install.
-  const next = Number(packageVersion()!.split('.')[0]) + 1
+  // Newer than every running build, so the updater's own version never blocks the install.
+  const next = 11
 
   it('installs the newer of npm beta and latest as one exact release on the beta channel', () => {
     const f = recoveryFixture()
@@ -181,7 +207,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
 
   it('installs nothing on the beta channel when the published versions cannot be read', () => {
     const f = recoveryFixture()
-    f.setPlan(release(`${next}.0.0-beta.2`))
+    f.setPlan({ ...release(`${next}.0.0-beta.2`), tags: undefined })
     expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(1)
     expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
       ok: false,
@@ -199,12 +225,12 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     const bin = path.join(modules, '.bin')
     mkdirSync(path.dirname(artifact), { recursive: true })
     mkdirSync(bin, { recursive: true })
-    writeFileSync(path.join(path.dirname(artifact), '..', 'package.json'), JSON.stringify({ version: packageVersion() }))
+    writeFileSync(path.join(path.dirname(artifact), '..', 'package.json'), JSON.stringify({ version: f.version }))
     writeFileSync(artifact, readFileSync(f.running.artifact), { mode: 0o755 })
     symlinkSync(artifact, path.join(bin, 'notifai'))
     f.deps.hookInstallTarget = { execPath: process.execPath, scriptPath: artifact }
     f.deps.env.PATH = `${bin}:${f.deps.env.PATH}`
-    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(packageVersion())});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(packageVersion())},path:process.env.PATH}));` })
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(f.version)},path:process.env.PATH}));` })
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     const report = JSON.parse(f.io.outLines[0]!)
     expect(report.update_prefix).toBe(realpathSync(f.installed.prefix))
@@ -215,12 +241,13 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(readFileSync(artifact, 'utf8')).toBe(readFileSync(f.running.artifact, 'utf8'))
   })
 
-  it('repairs an interrupted install whose only npm command is a dangling symlink', () => {
-    const f = recoveryFixture()
+  it.each(RUNNING_BUILDS)('repairs an interrupted install whose only npm command is a dangling symlink from a $channel build', (build) => {
+    const f = recoveryFixture('3.0.1', build)
     rmSync(f.installed.packageRoot, { recursive: true })
-    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(0)
     expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({ ok: true, update_prefix: realpathSync(f.installed.prefix) })
-    expect(spawnSync(f.installed.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(packageVersion())
+    expect(f.npmCalls().at(-1)?.at(-1)).toBe(build.installSpec)
+    expect(spawnSync(f.installed.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(build.version)
     expect(inspectHookAdapter(f.home).target).toMatchObject({ scriptPath: realpathSync(f.installed.artifact) })
   })
 
@@ -247,34 +274,34 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     },
   )
 
-  it('explains an unreachable npm prefix without prescribing the same refused updater', () => {
-    const f = recoveryFixture()
+  it.each(RUNNING_BUILDS)('explains an unreachable npm prefix without prescribing the same refused updater from a $channel build', (build) => {
+    const f = recoveryFixture('3.0.1', build)
     rmSync(f.installed.command)
-    expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
+    expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(1)
     expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({
       ok: false, code: 'package_manager_prefix_not_on_path',
-      recovery_command: 'npx --yes @raidiant/notifai@latest doctor --json',
+      recovery_command: `npx --yes @raidiant/notifai@${build.distTag} doctor --json`,
       message: expect.stringContaining('not on PATH'),
     })
-    expect(f.io.outLines.join('\n')).not.toContain('@raidiant/notifai@latest update')
+    expect(f.io.outLines.join('\n')).not.toContain(`@raidiant/notifai@${build.distTag} update`)
     f.io.interactive = true
-    expect(cliUpdateCommand(f.deps, {})).toBe(1)
+    expect(cliUpdateCommand(f.deps, { channel: build.channel })).toBe(1)
     expect(f.io.errLines.join('\n')).toContain('not on PATH')
-    expect(f.io.errLines.join('\n')).not.toContain('@raidiant/notifai@latest update')
+    expect(f.io.errLines.join('\n')).not.toContain(`@raidiant/notifai@${build.distTag} update`)
   })
 
-  it.each([
-    { name: 'missing runtime dependency', script: "throw new Error('missing dependency')\n" },
-    { name: 'wrong executable version', script: "process.stdout.write('3.0.1\\n')\n" },
-    { name: 'invalid package version', version: 'broken' },
-  ])('refuses $name without retargeting hooks, then recovers on retry', (broken) => {
-    const f = recoveryFixture()
-    f.setPlan(broken)
-    expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
+  it.each(RUNNING_BUILDS.flatMap((build) => [
+    { name: 'missing runtime dependency', plan: { script: "throw new Error('missing dependency')\n" } },
+    { name: 'wrong executable version', plan: { script: "process.stdout.write('3.0.1\\n')\n" } },
+    { name: 'invalid package version', plan: { version: 'broken' } },
+  ].map((broken) => ({ ...broken, channel: build.channel, build }))))('refuses $name from a $channel build without retargeting hooks, then recovers on retry', ({ plan, build }) => {
+    const f = recoveryFixture('3.0.1', build)
+    f.setPlan(plan)
+    expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(1)
     expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({ ok: false })
     expect(readFileSync(inspectHookAdapter(f.home).path, 'utf8')).toBe(f.adapterBefore)
     f.setPlan()
-    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(0)
   })
 
   it('keeps the installation and adapter unchanged offline and resumes on retry', () => {
@@ -291,7 +318,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
 
   it('gets the handoff from the installed artifact using the previous PATH version', () => {
     const f = recoveryFixture()
-    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(packageVersion())});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(packageVersion())},args:process.argv.slice(2),new_release_marker:'new artifact'}));` })
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(f.version)},args:process.argv.slice(2),new_release_marker:'new artifact'}));` })
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     const report = JSON.parse(f.io.outLines[0]!)
     expect(report.handoff).toMatchObject({ new_release_marker: 'new artifact', args: ['update', '--check', '--json', '--from', '3.0.1'] })
@@ -301,7 +328,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
 
   it('reports incomplete follow-up when the new artifact rejects its handoff', () => {
     const f = recoveryFixture()
-    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(packageVersion())});else process.stdout.write(JSON.stringify({ok:false,read_only:true,running_version:${JSON.stringify(packageVersion())}}));` })
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:false,read_only:true,running_version:${JSON.stringify(f.version)}}));` })
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     const report = JSON.parse(f.io.outLines[0]!)
     expect(report.handoff).toBeNull()
@@ -326,22 +353,22 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     ])
   })
 
-  it('reports a partial upgrade when hook replacement fails and repairs it on retry', () => {
-    const f = recoveryFixture()
+  it.each(RUNNING_BUILDS)('reports a partial upgrade from a $channel build when hook replacement fails and repairs it on retry', (build) => {
+    const f = recoveryFixture('3.0.1', build)
     const adapter = inspectHookAdapter(f.home).path
     rmSync(adapter)
     symlinkSync(f.running.artifact, adapter)
-    expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
+    expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(1)
     expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({
       ok: false,
       code: 'hook_adapter_retarget_failed',
       recovery_command: expect.stringContaining(' update'),
-      after: { effective: { version: packageVersion() } },
+      after: { effective: { version: build.version } },
     })
-    expect(readFileSync(f.running.artifact, 'utf8')).toContain(packageVersion())
+    expect(readFileSync(f.running.artifact, 'utf8')).toContain(build.version)
     rmSync(adapter)
     installHookAdapter({ execPath: process.execPath, scriptPath: f.running.artifact }, f.home)
-    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(0)
   })
 
   it('keeps account-scoped hook trust and queued session work across an update', () => {
@@ -384,14 +411,13 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(readSessionState('upgrade-session', f.deps.env).pending?.[0]?.question_id).toBe('question-existing')
     expect(projectEnabled(enabled)).toBe(true)
     expect(projectEnabled(disabled)).toBe(false)
-    expect(spawnSync(inspectHookAdapter(f.home).path, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(packageVersion())
+    expect(spawnSync(inspectHookAdapter(f.home).path, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(f.version)
   })
 
-  it('updates the PATH winner prefix and retargets the shared hook adapter in one action', () => {
+  it.each(RUNNING_BUILDS)('updates the PATH winner prefix and retargets the shared hook adapter in one action from a $channel build', (build) => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-loop-'))
     roots.push(root)
-    const currentVersion = packageVersion()
-    if (currentVersion === null) throw new Error('test build has no package version')
+    const currentVersion = build.version
     const stale = npmInstall(root, 'stale-prefix', '3.0.1')
     const current = npmInstall(root, 'current-prefix', currentVersion)
     const managerPrefix = path.join(root, 'manager-prefix')
@@ -408,6 +434,10 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
 if (args[0] === 'prefix') {
   process.stdout.write(${JSON.stringify(managerPrefix)} + '\\n');
+  process.exit(0);
+}
+if (args[0] === 'view') {
+  process.stdout.write(${JSON.stringify(JSON.stringify(build.tags))});
   process.exit(0);
 }
 const prefix = args[args.indexOf('--prefix') + 1];
@@ -434,17 +464,19 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write(${JSON.
       hookAdapterHome: home,
       hookInstallTarget: { execPath: process.execPath, scriptPath: current.artifact },
       hookPlatform: 'darwin',
+      runningVersion: currentVersion,
     }
 
-    expect(cliUpdateCommand(deps, {})).toBe(0)
+    expect(cliUpdateCommand(deps, { channel: build.channel })).toBe(0)
     expect(JSON.parse(readFileSync(path.join(stale.packageRoot, 'package.json'), 'utf8'))).toMatchObject({
       version: currentVersion,
     })
     expect(
       readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)),
     ).toEqual([
+      ...(build.channel === 'beta' ? [['view', '@raidiant/notifai', 'dist-tags', '--json']] : []),
       ['prefix', '--global'],
-      ['install', '--global', '--prefix', realpathSync(stale.prefix), '@raidiant/notifai@latest'],
+      ['install', '--global', '--prefix', realpathSync(stale.prefix), build.installSpec],
     ])
     expect(spawnSync(stale.command, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(currentVersion)
     expect(inspectHookAdapter(home).target).toMatchObject({ scriptPath: realpathSync(stale.artifact) })
@@ -454,7 +486,7 @@ fs.writeFileSync(artifact, '#!${process.execPath}\\nprocess.stdout.write(${JSON.
     expect(io.errLines).toEqual([])
 
     io.outLines = []
-    expect(cliUpdateCommand(deps, { json: true })).toBe(0)
+    expect(cliUpdateCommand(deps, { json: true, channel: build.channel })).toBe(0)
     const result = JSON.parse(io.outLines[0] ?? '{}') as Record<string, unknown>
     expect(result).toMatchObject({
       ok: true,
