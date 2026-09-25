@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:022074ec72f434b6812816ba6cb3d4ac0b4f9768af48f997dcc5973b4d566ab0",
+  "behavior_digest": "sha256:56015258afcae93c2524a4992de7d9b2015f009bd982abb55975d6383e309c58",
   "outcome": "guidance-updated",
-  "reason": "Reviewed root lifecycle activation, shipped topics, skill discovery and question lifecycle, harness setup, CLI readiness and domain vocabulary. Owners now load the skill before their first Notification Request and register work-gating User questions in the conversation turn, including while other work continues or after recent User activity. Safe setup/readiness requests preserve non-exfiltration; effective guidance authority, ordinary worker nonownership, harness permission exceptions, registration versus submission, turn-end submission and acknowledgement rules remain intact. Concise wording preserves the existing lifecycle and skill budgets. No hook behavior or runtime detection was added; contract assertions prove instruction coverage, not agent compliance. The intervening machine-level setup-proof review remains valid; the rebased release changes package versions and generated README markers only, with no source behavior change.",
+  "reason": "Reviewed the beta update lane, full SemVer release ordering, CLI readiness and recovery text, Codex queue owner handoff, shipped guidance topics, and the Notifai skill. A prerelease installation now follows the beta channel without moving backward and can advance to a newer stable release. Codex may hand a queued answer window to its detached owner after Stop; the skill now states that a separate harness form can remain pending and must not be promised closed. Question registration, acknowledgement, non-exfiltration, guidance authority, ordinary worker nonownership, and harness permission boundaries remain intact. The new wording describes these behaviors without claiming mechanical cancellation of a harness form.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
