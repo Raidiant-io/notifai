@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.4.0](https://github.com/Raidiant-io/notifai/compare/v11.3.2...v11.4.0) (2026-09-25)
+
+
+### Features
+
+* **cli:** add guarded beta release lane ([#193](https://github.com/Raidiant-io/notifai/issues/193)) ([54ae1ef](https://github.com/Raidiant-io/notifai/commit/54ae1ef105244423c9e940fb6116c6cdef57cd5c))
+* **cli:** deliver session notes and answer edits ([#199](https://github.com/Raidiant-io/notifai/issues/199)) ([21aa89e](https://github.com/Raidiant-io/notifai/commit/21aa89e0ff2a3f4c91bbcdfda1930d90e83f94bc))
+
+
+### Bug Fixes
+
+* **cli:** avoid duplicate question forms for routed decisions ([#194](https://github.com/Raidiant-io/notifai/issues/194)) ([fa66090](https://github.com/Raidiant-io/notifai/commit/fa66090830fc5cf1ea5ef911b4dd28b3e23e1c82))
+* **cli:** keep Codex question owner alive after Stop ([#195](https://github.com/Raidiant-io/notifai/issues/195)) ([a696e04](https://github.com/Raidiant-io/notifai/commit/a696e0499c27c7e0e2809426545097b944994dfa))
+* **cli:** order release versions by full SemVer precedence ([#196](https://github.com/Raidiant-io/notifai/issues/196)) ([28d2229](https://github.com/Raidiant-io/notifai/commit/28d2229ec9d450daad5d1bd333f276f38df25315))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.0.3 to 8.1.0
+
 ## [11.3.2](https://github.com/Raidiant-io/notifai/compare/v11.3.1...v11.3.2) (2026-09-23)
 
 
