@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.4.0-beta.2](https://github.com/Raidiant-io/notifai/compare/v11.3.2...v11.4.0-beta.2) (2026-09-25)
+
+
+### Features
+
+* **cli:** add guarded beta release lane ([#193](https://github.com/Raidiant-io/notifai/issues/193)) ([54ae1ef](https://github.com/Raidiant-io/notifai/commit/54ae1ef105244423c9e940fb6116c6cdef57cd5c))
+
+
+### Bug Fixes
+
+* **cli:** avoid duplicate question forms for routed decisions ([#194](https://github.com/Raidiant-io/notifai/issues/194)) ([fa66090](https://github.com/Raidiant-io/notifai/commit/fa66090830fc5cf1ea5ef911b4dd28b3e23e1c82))
+* **cli:** keep Codex question owner alive after Stop ([#195](https://github.com/Raidiant-io/notifai/issues/195)) ([a696e04](https://github.com/Raidiant-io/notifai/commit/a696e0499c27c7e0e2809426545097b944994dfa))
+* **cli:** order release versions by full SemVer precedence ([#196](https://github.com/Raidiant-io/notifai/issues/196)) ([28d2229](https://github.com/Raidiant-io/notifai/commit/28d2229ec9d450daad5d1bd333f276f38df25315))
+* **release:** isolate secret-scanner controls from Git hooks and refresh the agent guidance review ([#198](https://github.com/Raidiant-io/notifai/pull/198)) ([b13c66d](https://github.com/Raidiant-io/notifai/commit/b13c66d0073aa0a19fd2c4549bf1ad0fb0f895ce))
+
 ## [11.3.2](https://github.com/Raidiant-io/notifai/compare/v11.3.1...v11.3.2) (2026-09-23)
 
 
