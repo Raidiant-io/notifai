@@ -75,6 +75,8 @@ export interface CommandDeps {
   hookInstallTarget?: HookAdapterTarget
   /** Test seam; production uses process.platform for adapter format and quoting. */
   hookPlatform?: NodeJS.Platform
+  /** Test seam; production uses this build's package version. */
+  runningVersion?: string | null
   /** Test seam; production uses fetch against base_url. */
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
