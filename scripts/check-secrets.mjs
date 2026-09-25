@@ -16,8 +16,8 @@ function argument(name) {
   return index === -1 ? undefined : process.argv[index + 1]
 }
 
-function run(args, cwd, expected, forbidden = []) {
-  const result = spawnSync(gitleaks, args, {cwd, encoding: 'utf8'})
+function run(args, cwd, expected, forbidden = [], env = process.env) {
+  const result = spawnSync(gitleaks, args, {cwd, env, encoding: 'utf8'})
   if (result.error) throw result.error
   const output = `${result.stdout || ''}${result.stderr || ''}`
   for (const value of forbidden) {
@@ -34,31 +34,34 @@ function run(args, cwd, expected, forbidden = []) {
 const scanArgs = (subcommand, ...rest) => [subcommand, '--no-banner', '--redact', ...rest]
 
 function positiveControls() {
+  // Hooks export GIT_DIR and friends; without clearing them, git and gitleaks
+  // would act on the repository being pushed instead of the fixture.
+  const fixtureEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')))
   const fixture = mkdtempSync(path.join(os.tmpdir(), 'notifai-secret-control-'))
   try {
-    execFileSync('git', ['init', '--quiet'], {cwd: fixture})
-    execFileSync('git', ['config', 'user.name', 'Secret Scanner Control'], {cwd: fixture})
-    execFileSync('git', ['config', 'user.email', 'control@example.invalid'], {cwd: fixture})
-    execFileSync('git', ['commit', '--quiet', '--allow-empty', '-m', 'base'], {cwd: fixture})
-    const base = execFileSync('git', ['rev-parse', 'HEAD'], {cwd: fixture, encoding: 'utf8'}).trim()
+    execFileSync('git', ['init', '--quiet'], {cwd: fixture, env: fixtureEnv})
+    execFileSync('git', ['config', 'user.name', 'Secret Scanner Control'], {cwd: fixture, env: fixtureEnv})
+    execFileSync('git', ['config', 'user.email', 'control@example.invalid'], {cwd: fixture, env: fixtureEnv})
+    execFileSync('git', ['commit', '--quiet', '--allow-empty', '-m', 'base'], {cwd: fixture, env: fixtureEnv})
+    const base = execFileSync('git', ['rev-parse', 'HEAD'], {cwd: fixture, env: fixtureEnv, encoding: 'utf8'}).trim()
 
     const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     const canary = ['gh', 'p'].join('') + '_' +
       Array.from(randomBytes(36), byte => alphabet[byte % alphabet.length]).join('')
     const canaryFile = path.join(fixture, 'control.txt')
     writeFileSync(canaryFile, `TOKEN=${canary}\n`)
-    run(scanArgs('dir', '--exit-code', '23', '.'), fixture, 23, [canary])
+    run(scanArgs('dir', '--exit-code', '23', '.'), fixture, 23, [canary], fixtureEnv)
 
-    execFileSync('git', ['add', 'control.txt'], {cwd: fixture})
-    execFileSync('git', ['commit', '--quiet', '-m', 'add scanner control'], {cwd: fixture})
+    execFileSync('git', ['add', 'control.txt'], {cwd: fixture, env: fixtureEnv})
+    execFileSync('git', ['commit', '--quiet', '-m', 'add scanner control'], {cwd: fixture, env: fixtureEnv})
     writeFileSync(canaryFile, 'control removed\n')
-    execFileSync('git', ['add', 'control.txt'], {cwd: fixture})
-    execFileSync('git', ['commit', '--quiet', '-m', 'remove scanner control'], {cwd: fixture})
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], {cwd: fixture, encoding: 'utf8'}).trim()
+    execFileSync('git', ['add', 'control.txt'], {cwd: fixture, env: fixtureEnv})
+    execFileSync('git', ['commit', '--quiet', '-m', 'remove scanner control'], {cwd: fixture, env: fixtureEnv})
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {cwd: fixture, env: fixtureEnv, encoding: 'utf8'}).trim()
 
-    run(scanArgs('dir', '--exit-code', '23', '.'), fixture, 0, [canary])
-    run(scanArgs('git', '--exit-code', '23', `--log-opts=${base}..${head}`, '.'), fixture, 23, [canary])
-    run(scanArgs('git', '--exit-code', '23', '--log-opts=--all', '.'), fixture, 23, [canary])
+    run(scanArgs('dir', '--exit-code', '23', '.'), fixture, 0, [canary], fixtureEnv)
+    run(scanArgs('git', '--exit-code', '23', `--log-opts=${base}..${head}`, '.'), fixture, 23, [canary], fixtureEnv)
+    run(scanArgs('git', '--exit-code', '23', '--log-opts=--all', '.'), fixture, 23, [canary], fixtureEnv)
   } finally {
     rmSync(fixture, {recursive: true, force: true})
   }
