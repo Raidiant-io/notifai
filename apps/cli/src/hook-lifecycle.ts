@@ -1019,6 +1019,7 @@ export async function runEscalationWaiter(
       // for a blocking continuation, and the settle above for a route that woke
       // a brand-new turn out of band.
       envelope.stop_hook_active === true || settledAnswerThisPass,
+      options.recordStop !== false && ctx.harness === 'codex' && options.route.kind === 'session-queue',
     )
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
@@ -1229,6 +1230,7 @@ async function handleClaimedStop(
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
   continuingFromAnswer: boolean,
+  handoffToDetachedOwner: boolean,
 ): Promise<HookOutcome> {
   const live = pending.filter((entry) => entry.request_id !== undefined)
   const unasked = pending.filter((entry) => entry.request_id === undefined)
@@ -1335,6 +1337,7 @@ async function handleClaimedStop(
         notes,
         hardDeadlineAt,
         route,
+        handoffToDetachedOwner,
       )
     }
     // Questions registered after the earlier push still owe the user their
@@ -1400,6 +1403,7 @@ async function handleClaimedStop(
     notes,
     hardDeadlineAt,
     route,
+    handoffToDetachedOwner,
   )
 }
 
@@ -1413,6 +1417,7 @@ async function escalate(
   notes: string[],
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
+  handoffToDetachedOwner: boolean,
 ): Promise<HookOutcome> {
   // The questions still owe the user their terminal-first window before
   // anything reaches their devices — measured from the oldest registration,
@@ -1792,6 +1797,14 @@ async function escalate(
     ...submitted,
   ]
   if (waitingOn.length === 0) return { notes }
+
+  // Codex has a durable exact-thread queue route. Release the short Stop hook
+  // after admission so a detached owner, independent of the TUI process, can
+  // observe the entire committed answer window. The owner lease and pending
+  // request identities remain in session state for that successor.
+  if (handoffToDetachedOwner) {
+    return { notes, settlementRequired: true }
+  }
 
   // Phase two: keep the same owner alive across every committed answer window.
   // Different questions may expire at different times, so finalize each one at

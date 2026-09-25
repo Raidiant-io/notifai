@@ -404,6 +404,23 @@ function stdin(payload: unknown): () => Promise<string> {
   return async () => JSON.stringify(payload)
 }
 
+/** Drive the real detached hook entrypoint after Codex Stop releases its turn. */
+async function codexStopAndSettle(
+  deps: CommandDeps,
+  envelope: { session_id: string; cwd?: string },
+): Promise<void> {
+  const successors: { session_id?: string; cwd?: string }[] = []
+  const detached: CommandDeps = {
+    ...deps,
+    spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+  }
+  await hookRunCommand(detached, 'stop', stdin(envelope), 'codex')
+  for (let settled = 0; successors.length > 0; settled += 1) {
+    if (settled >= 20) throw new Error('detached question owner did not settle')
+    await hookRunCommand(detached, 'question-settlement', stdin(successors.shift()), 'codex')
+  }
+}
+
 async function waitUntil(
   predicate: () => boolean,
   timeoutMs: number,
@@ -1437,11 +1454,9 @@ describe('the waiter owning one question to the end', () => {
     registerQuestion('019ff700-1111-7161-ab6e-bd06b3b93c8e', h.env, { question: 'Deploy?' }, NOW)
     const queued: string[] = []
 
-    await hookRunCommand(
+    await codexStopAndSettle(
       { ...h.deps, codexWake: { queue: async (_t, _c, context) => void queued.push(context) } },
-      'stop',
-      stdin({ session_id: '019ff700-1111-7161-ab6e-bd06b3b93c8e' }),
-      'codex',
+      { session_id: '019ff700-1111-7161-ab6e-bd06b3b93c8e' },
     )
 
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
@@ -2218,9 +2233,10 @@ describe('several questions in flight', () => {
     registerQuestion(sessionId, h.env, { question: 'Second decision?' }, NOW + 1)
 
     await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
-    expect(queued).toHaveLength(1)
     expect(successors).toHaveLength(1)
     // The process-spawn boundary is captured; run the exact detached entrypoint.
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+    expect(successors).toHaveLength(1)
     await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
 
     expect(queued).toHaveLength(mode === 'manual' ? 1 : 2)
@@ -2249,7 +2265,7 @@ describe('several questions in flight', () => {
     repliesByRequest(h, byRequest)
     const queued: string[] = []
     const successors: { session_id?: string; cwd?: string }[] = []
-    let failLaunch = interruption === 'launch-failed'
+    let failLaunch = false
     const deps: CommandDeps = {
       ...h.deps,
       spawnQuestionSettlement: (launch) => {
@@ -2260,6 +2276,7 @@ describe('several questions in flight', () => {
         queued.push(context)
         if (queued.length === 1) {
           byRequest.set('req_hook_2', [reply({ text: 'Second decision' })])
+          if (interruption === 'launch-failed') failLaunch = true
           if (interruption === 'session-ended') handleSessionEnd(h.env, { session_id: sessionId }, NOW)
         }
       } },
@@ -2269,6 +2286,8 @@ describe('several questions in flight', () => {
     registerQuestion(sessionId, h.env, { question: 'Second decision?' }, NOW + 1)
 
     await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(successors).toHaveLength(1)
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
     expect(queued).toHaveLength(1)
     expect(successors).toHaveLength(interruption === 'after-launch' ? 1 : 0)
     if (interruption === 'after-launch') handleSessionEnd(h.env, { session_id: sessionId }, NOW)
@@ -2315,7 +2334,7 @@ describe('several questions in flight', () => {
     }
 
     await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
-    for (let index = 1; index < count; index += 1) {
+    for (let index = 0; index < count; index += 1) {
       expect(successors).toHaveLength(1)
       await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
     }
@@ -2376,7 +2395,16 @@ describe('several questions in flight', () => {
     registerQuestion(sessionId, h.env, { question: 'Approve the first change?' }, NOW)
     registerQuestion(sessionId, h.env, { question: 'Which preview should open?' }, NOW + 1)
 
-    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const detached = {
+      ...deps,
+      spawnQuestionSettlement: (launch: { envelope: { session_id?: string; cwd?: string } }) => {
+        successors.push(launch.envelope)
+      },
+    }
+    await hookRunCommand(detached, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(successors).toHaveLength(1)
+    await hookRunCommand(detached, 'question-settlement', stdin(successors.shift()), 'codex')
     expect(queued).toHaveLength(1)
     expect(readSessionState(sessionId, h.env).pending).toHaveLength(1)
     if (acknowledged) {
@@ -2451,12 +2479,7 @@ describe('several questions in flight', () => {
     expect(h.recorder.submitted).toEqual([])
     expect(readSessionState('codex-form', h.env).pending?.[0]?.request_id).toBeUndefined()
 
-    await hookRunCommand(
-      h.deps,
-      'stop',
-      stdin({ session_id: 'codex-form' }),
-      'codex',
-    )
+    await codexStopAndSettle(h.deps, { session_id: 'codex-form' })
 
     expect(h.recorder.submitted.filter((s) => isQuestionSubmit(s))).toHaveLength(1)
     expect(readSessionState('codex-form', h.env).pending).toBeUndefined()
@@ -2489,11 +2512,9 @@ describe('several questions in flight', () => {
     registerQuestion('019ff701-2222-7161-ab6e-bd06b3b93c8e', h.env, { question: 'Start personally?' }, NOW - 300_000)
     const queued: string[] = []
 
-    await hookRunCommand(
+    await codexStopAndSettle(
       { ...h.deps, codexWake: { queue: async (_t, _c, context) => void queued.push(context) } },
-      'stop',
-      stdin({ session_id: '019ff701-2222-7161-ab6e-bd06b3b93c8e' }),
-      'codex',
+      { session_id: '019ff701-2222-7161-ab6e-bd06b3b93c8e' },
     )
 
     // Submit recorded the durable id before any wait; a 500 must not erase it
@@ -2525,7 +2546,7 @@ describe('several questions in flight', () => {
     writeSessionState('permanent-wait', h.env, { last_prompt_at: AWAY })
     registerQuestion('permanent-wait', h.env, { question: 'Still there?' }, NOW - 300_000)
 
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'permanent-wait' }), 'codex')
+    await codexStopAndSettle(h.deps, { session_id: 'permanent-wait' })
 
     expect(polls).toBe(1)
     expect(readSessionState('permanent-wait', h.env).pending).toBeUndefined()
@@ -2838,6 +2859,34 @@ describe('several questions in flight', () => {
     expect(
       h.recorder.submitted.filter((s) => isQuestionSubmit(s)),
     ).toHaveLength(2)
+  })
+})
+
+describe('Codex question owner lifetime', () => {
+  it('observes an answer after Stop returns without another User prompt', async () => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const queued: string[] = []
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+      codexWake: { queue: async (_thread, _cwd, context) => { queued.push(context) } },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Continue the release?' }, NOW)
+
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(h.recorder.receipts).toHaveLength(1)
+    expect(successors).toHaveLength(1)
+    expect(queued).toHaveLength(0)
+
+    h.recorder.repliesFor = () => [reply({ text: 'Continue' })]
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toContain('Continue')
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
   })
 })
 
@@ -5988,11 +6037,9 @@ describe('Codex Stop wake route', () => {
     })
     const wake = codexWake()
 
-    await hookRunCommand(
+    await codexStopAndSettle(
       { ...h.deps, codexWake: wake, codexSourcePid: 12345 },
-      'stop',
-      stdin({ session_id: CODEX_THREAD, cwd: '/tmp/codex-route' }),
-      'codex',
+      { session_id: CODEX_THREAD, cwd: '/tmp/codex-route' },
     )
 
     // No decision block and no held turn. The answer is written to the thread's
