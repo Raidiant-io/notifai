@@ -299,7 +299,7 @@ function sessionMessageWriter(input: {
     }
     return handOffSessionMessages(batch, attendant, {
       sequencer,
-      write: (text, begin) =>
+      write: (text, begin, guard) =>
         deliverIntoClaudeSession({
           sessionId,
           sourcePid: harnessPid,
@@ -309,6 +309,7 @@ function sessionMessageWriter(input: {
           adapters,
           text,
           begin,
+          guard,
           // Resident: the attendant outlives the ancestry check without waiting.
           holdAfterSend: false,
           writer: 'Session Attendant',

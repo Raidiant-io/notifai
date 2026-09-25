@@ -522,6 +522,11 @@ export async function hookRunCommand(
       // SessionEnd fence and the irreversible harness stdout write.
       if (outcome.commitStdout === undefined || outcome.commitStdout()) {
         deps.io.out(outcome.stdout)
+        try {
+          await outcome.afterOutput?.()
+        } catch {
+          // Recording what the hand-off proved never fails the hook.
+        }
       } else {
         deps.io.err('notifai: the Agent Session ended before answer delivery; no continuation was written')
       }

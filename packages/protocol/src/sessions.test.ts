@@ -158,6 +158,22 @@ describe('Delivery Attempts', () => {
     ).toBe(false)
   })
 
+  it('records an answer already written without a claim, and nothing else, after the fact', () => {
+    const answer = { type: 'answer', request_id: 'req_abc' }
+    expect(Value.Check(ClaimDeliveryAttemptRequest, { subject: answer, already_handed_off: true })).toBe(true)
+    // Only answers, only an explicit true, and never mixed with a lease claim.
+    expect(
+      Value.Check(ClaimDeliveryAttemptRequest, {
+        subject: { type: 'session_message', message_id: 'sm_abc' },
+        already_handed_off: true,
+      }),
+    ).toBe(false)
+    expect(Value.Check(ClaimDeliveryAttemptRequest, { subject: answer, already_handed_off: false })).toBe(false)
+    expect(
+      Value.Check(ClaimDeliveryAttemptRequest, { ...claim, subject: answer, already_handed_off: true }),
+    ).toBe(false)
+  })
+
   it('reports only the closed outcomes', () => {
     for (const outcome of ['handed_off', 'unconfirmed', 'released']) {
       expect(Value.Check(ReportDeliveryAttemptRequest, { outcome })).toBe(true)

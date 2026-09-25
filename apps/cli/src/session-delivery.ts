@@ -21,10 +21,12 @@
  * (`unconfirmed`), `written` did (`handed_off`). Harnesses have no dedup key,
  * so an `unconfirmed` hand-off is never retried.
  *
- * Every claimed write is made in-process (the inbox-socket line). A writer that
- * spawns a harness subprocess to write must run it in its own process group,
- * wait for it, and record that group here before it may claim: the Answer Edit
- * release rule relies on "writer gone" meaning nothing it started can write.
+ * A claimed write is made in-process (the inbox-socket line) or by a harness
+ * subprocess the writer starts in its own process group and waits for (a cold
+ * resume). A subprocess write is journaled as such before it starts and its
+ * group as soon as it exists: the Answer Edit release rule relies on "writer
+ * gone" meaning nothing it started can still write, so a subprocess write
+ * without a recorded group is never proven gone.
  *
  * Local only: PIDs and process start times never leave this machine.
  */
@@ -34,7 +36,7 @@ import type {
   DeliveryClaimRefusalReason,
 } from '@raidiant/notifai-protocol'
 import { DELIVERY_CLAIM_REFUSAL_REASONS } from '@raidiant/notifai-protocol'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
@@ -52,8 +54,11 @@ import {
 /** How long a writer waits for another writer's hand-off into the same session. */
 export const DELIVERY_LOCK_WAIT_MS = 30_000
 
-/** A write must start at least this long before its claim deadline. */
+/** A write must be committed at least this long before its claim deadline. */
 export const DELIVERY_WRITE_MARGIN_MS = 2_000
+
+/** The first byte of a write must leave at least this long before the deadline. */
+export const DELIVERY_WRITE_BOUNDARY_MS = 500
 
 /** Settled attempts stay readable as long as an Answer Edit may still need them. */
 const JOURNAL_KEEP_MS = 7 * 24 * 3600 * 1000
@@ -76,6 +81,10 @@ export interface DeliveryJournalEntry {
   subject: HandOffSubject
   stage: DeliveryJournalStage
   writer: ProcessIdentity
+  /** The write is a harness subprocess the writer started; see `groups`. */
+  subprocess?: true
+  /** Process groups of that subprocess, recorded as soon as they exist. */
+  groups?: number[]
   /** Wall-clock epoch ms, for people reading the file; never used for ordering. */
   claimed_at: number
   reported?: DeliveryAttemptOutcome
@@ -99,6 +108,8 @@ export interface SequencerDeps {
   log?: Logger
   /** Test seam: whether a recorded writer still runs. */
   liveness?: (identity: ProcessIdentity) => ProcessLiveness
+  /** Test seam: whether any process of a recorded process group still runs. */
+  groupAlive?: (pgid: number) => boolean
 }
 
 export type ClaimRefusal = DeliveryClaimRefusalReason | 'not_found' | 'unavailable'
@@ -117,12 +128,26 @@ export interface HandOff {
   /**
    * Call immediately before the irreversible write. False means write nothing:
    * a claim deadline is too close, `mayWrite` refused, or `commit` (the
-   * caller's own last fence, run after every check) refused. True with no
-   * claims leaves the choice to write unclaimed with the caller.
+   * caller's own last fence, run after every check) refused. The deadline is
+   * checked again after everything `begin` persisted. True with no claims
+   * leaves the choice to write unclaimed with the caller. `subprocess` marks a
+   * write made by a harness subprocess; record its group with `recordGroup`.
    */
-  begin(commit?: () => boolean): boolean
-  /** Journal how the write ended, release the lock, then report every attempt. */
-  finish(result: 'written' | 'not-written' | 'failed'): Promise<void>
+  begin(commit?: () => boolean, options?: { subprocess?: boolean }): boolean
+  /**
+   * Checked at the write itself (a connected socket, before its first byte):
+   * true while every claim still leaves `DELIVERY_WRITE_BOUNDARY_MS`.
+   */
+  writable(): boolean
+  /** Milliseconds until the write boundary passes; Infinity without claims. */
+  remainingMs(): number
+  /** Journal the process group of a subprocess write the moment it exists. */
+  recordGroup(pgid: number): void
+  /**
+   * Journal how the write ended, release the lock, then report every attempt.
+   * `aborted`: the write began but was stopped before any byte left.
+   */
+  finish(result: 'written' | 'not-written' | 'failed' | 'aborted'): Promise<void>
 }
 
 export function deliveryJournalPath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -242,6 +267,83 @@ export async function recoverDeliveryJournal(deps: SequencerDeps): Promise<numbe
   return reported
 }
 
+/** At most this often per machine, and at most this many journals per sweep. */
+export const JOURNAL_SWEEP_INTERVAL_MS = 10 * 60_000
+export const JOURNAL_SWEEP_MAX_JOURNALS = 20
+
+/**
+ * Report, from any hook that already holds a client, the attempts that dead
+ * writers left in any session's journal on this machine. A session that never
+ * runs again has no next hand-off to recover its journal, and until someone
+ * reports, the service keeps those attempts pending (holding their Answer
+ * Edits, or a claimed Session Message until its abandonment sweep).
+ *
+ * Bounded: rate-limited by a stamp file, newest journals first, a fixed number
+ * per sweep. Only gone writers' attempts are reported; a live writer reports
+ * its own.
+ */
+export async function sweepDeliveryJournals(input: {
+  env: NodeJS.ProcessEnv
+  client: ApiClient
+  writer: ProcessIdentity
+  now: number
+  log?: Logger
+  liveness?: (identity: ProcessIdentity) => ProcessLiveness
+  force?: boolean
+}): Promise<number> {
+  const directory = path.join(stateDir(input.env), 'sessions')
+  const stamp = path.join(stateDir(input.env), 'last-delivery-sweep')
+  if (input.force !== true) {
+    try {
+      if (existsSync(stamp) && input.now - statSync(stamp).mtimeMs < JOURNAL_SWEEP_INTERVAL_MS) return 0
+    } catch {
+      return 0
+    }
+  }
+  if (!existsSync(directory)) return 0
+  mkdirSync(path.dirname(stamp), { recursive: true })
+  writeFileSync(stamp, '', { mode: 0o600 })
+  const journals = readdirSync(directory)
+    .filter((name) => name.endsWith('.deliveries'))
+    .map((name) => {
+      const file = path.join(directory, name)
+      try {
+        return { file, mtime: statSync(file).mtimeMs }
+      } catch {
+        return null
+      }
+    })
+    .filter((entry): entry is { file: string; mtime: number } => entry !== null)
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, JOURNAL_SWEEP_MAX_JOURNALS)
+  let reported = 0
+  for (const { file } of journals) {
+    let sessionId: unknown
+    try {
+      sessionId = (JSON.parse(readFileSync(file, 'utf8')) as { session_id?: unknown }).session_id
+    } catch {
+      continue
+    }
+    if (typeof sessionId !== 'string' || deliveryJournalPath(sessionId, input.env) !== file) continue
+    const pending = readDeliveryJournal(sessionId, input.env).some(
+      (entry) => entry.reported === undefined && !inFlight.has(entry.attempt_id),
+    )
+    if (!pending) continue
+    reported += await recoverDeliveryJournal({
+      sessionId,
+      env: input.env,
+      client: input.client,
+      monotonic: () => performance.now(),
+      wall: () => input.now,
+      sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      writer: input.writer,
+      ...(input.log === undefined ? {} : { log: input.log }),
+      ...(input.liveness === undefined ? {} : { liveness: input.liveness }),
+    })
+  }
+  return reported
+}
+
 /** Report one outcome and record it; false leaves the entry for a later recovery. */
 async function reportAttempt(
   deps: SequencerDeps,
@@ -293,11 +395,46 @@ export function answerWriterGone(
   env: NodeJS.ProcessEnv,
   requestId: string,
   liveness: (identity: ProcessIdentity) => ProcessLiveness = (identity) => processIdentityLiveness(identity),
+  groupAlive: (pgid: number) => boolean = processGroupAlive,
 ): boolean {
   const entry = readDeliveryJournal(sessionId, env)
     .filter((candidate) => candidate.subject.type === 'answer' && candidate.subject.request_id === requestId)
     .at(-1)
-  return entry !== undefined && !inFlight.has(entry.attempt_id) && liveness(entry.writer) === 'gone'
+  if (entry === undefined || inFlight.has(entry.attempt_id) || liveness(entry.writer) !== 'gone') return false
+  if (entry.subprocess !== true) return true
+  // A subprocess write is gone only when its whole recorded group is.
+  return (entry.groups?.length ?? 0) > 0 && entry.groups!.every((pgid) => !groupAlive(pgid))
+}
+
+/** Signal 0 to a process group: ESRCH means no process of it remains. */
+export function processGroupAlive(pgid: number): boolean {
+  if (!Number.isInteger(pgid) || pgid <= 1) return true
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+/**
+ * The answers of this batch whose earlier hand-off already began a write: a
+ * restart must never write them again, since the harness has no dedup key.
+ */
+export function answersAlreadyWritten(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  requestIds: readonly string[],
+): Array<{ requestId: string; stage: DeliveryJournalStage }> {
+  const wanted = new Set(requestIds)
+  const found = new Map<string, DeliveryJournalStage>()
+  for (const entry of readDeliveryJournal(sessionId, env)) {
+    if (entry.subject.type !== 'answer' || !wanted.has(entry.subject.request_id)) continue
+    if (entry.stage === 'writing' || entry.stage === 'failed' || entry.stage === 'written') {
+      found.set(entry.subject.request_id, entry.stage)
+    }
+  }
+  return [...found].map(([requestId, stage]) => ({ requestId, stage }))
 }
 
 async function claimOne(
@@ -402,28 +539,68 @@ export async function beginHandOff(
   let began = false
   let finished = false
   const attemptIds = new Set(claimed.map((attempt) => attempt.attemptId))
+  const earliest = Math.min(...claimed.map((attempt) => attempt.deadline))
+  const committable = (): boolean => deps.monotonic() < earliest - DELIVERY_WRITE_MARGIN_MS
   return {
     claimed,
     refused,
-    begin: (commit) => {
+    begin: (commit, options = {}) => {
       if (finished) return false
       if (began) return true
-      const now = deps.monotonic()
-      if (claimed.some((attempt) => now >= attempt.deadline - DELIVERY_WRITE_MARGIN_MS)) {
+      if (!committable()) {
         deps.log?.info('delivery.handoff', { attempts: claimed.length, began: false, reason: 'claim-deadline' })
         return false
       }
       if (request.mayWrite !== undefined && !request.mayWrite()) return false
+      // The lease check can block; the caller's fence must not run late.
+      if (!committable()) {
+        deps.log?.info('delivery.handoff', { attempts: claimed.length, began: false, reason: 'claim-deadline' })
+        return false
+      }
       if (commit !== undefined && !commit()) return false
-      if (claimed.length > 0) setStage(deps, attemptIds, 'writing')
+      if (claimed.length > 0) {
+        updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
+          entries.map((entry) =>
+            attemptIds.has(entry.attempt_id)
+              ? { ...entry, stage: 'writing' as const, ...(options.subprocess === true ? { subprocess: true as const } : {}) }
+              : entry,
+          ),
+        )
+        // Everything above may have blocked: the deadline holds after it too.
+        if (!committable()) {
+          updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
+            entries.map((entry) => {
+              if (!attemptIds.has(entry.attempt_id)) return entry
+              const reverted: DeliveryJournalEntry = { ...entry, stage: 'claimed' }
+              delete reverted.subprocess
+              return reverted
+            }),
+          )
+          deps.log?.info('delivery.handoff', { attempts: claimed.length, began: false, reason: 'claim-deadline' })
+          return false
+        }
+      }
       began = true
       return true
+    },
+    writable: () => claimed.length === 0 || deps.monotonic() < earliest - DELIVERY_WRITE_BOUNDARY_MS,
+    remainingMs: () =>
+      claimed.length === 0 ? Number.POSITIVE_INFINITY : Math.max(0, earliest - DELIVERY_WRITE_BOUNDARY_MS - deps.monotonic()),
+    recordGroup: (pgid) => {
+      if (claimed.length === 0) return
+      updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
+        entries.map((entry) =>
+          attemptIds.has(entry.attempt_id) ? { ...entry, groups: [...new Set([...(entry.groups ?? []), pgid])] } : entry,
+        ),
+      )
     },
     finish: async (result) => {
       if (finished) return
       finished = true
-      // A write that began and did not complete may have reached the harness.
-      const stage: DeliveryJournalStage = !began ? 'released' : result === 'written' ? 'written' : 'failed'
+      // A write that began and did not complete may have reached the harness,
+      // unless it was stopped before its first byte left.
+      const stage: DeliveryJournalStage =
+        !began || result === 'aborted' ? 'released' : result === 'written' ? 'written' : 'failed'
       await settle(deps, claimed, stage, lock)
     },
   }

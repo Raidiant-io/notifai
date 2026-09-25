@@ -176,50 +176,78 @@ export const SESSION_MESSAGE_ID_PREFIX = 'sm_'
 export const SESSION_MESSAGE_ID_PATTERN = '^sm_[A-Za-z0-9_-]+$'
 export const DELIVERY_ATTEMPT_ID_PATTERN = '^att_[A-Za-z0-9_-]+$'
 
+const AttemptSubject = Type.Union([
+  Type.Object(
+    {
+      type: Type.Literal('session_message'),
+      message_id: Type.String({ pattern: SESSION_MESSAGE_ID_PATTERN }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal('answer'),
+      request_id: Type.String({ pattern: '^req_[A-Za-z0-9_-]+$' }),
+    },
+    { additionalProperties: false },
+  ),
+])
+
 /**
  * `POST /api/v1/agent-sessions/:session_id/delivery-attempts` (machine auth).
+ *
  * Claims one hand-off: a Session Message, or a Notification Request's fenced
  * answer (the reply its `deliver` close selected). The claim is bound to the
  * generation the claimant holds; claims from a fenced generation are refused.
+ *
+ * The second form records, after the fact, that this machine already wrote a
+ * selected answer into the session without holding a claim (the lease moved or
+ * a claim was refused, and an answer is never withheld). It is stored as an
+ * attempt whose outcome is `handed_off`, so the answer's Answer Edits follow
+ * it in order. It is refused while another attempt for that answer is pending
+ * or reported anything but `released`.
  */
-export const ClaimDeliveryAttemptRequest = Type.Object(
-  {
-    incarnation: Type.String({ pattern: ATTENDANT_INCARNATION_PATTERN }),
-    generation: Type.Integer({ minimum: 1 }),
-    subject: Type.Union([
-      Type.Object(
-        {
-          type: Type.Literal('session_message'),
-          message_id: Type.String({ pattern: SESSION_MESSAGE_ID_PATTERN }),
-        },
-        { additionalProperties: false },
-      ),
-      Type.Object(
+export const ClaimDeliveryAttemptRequest = Type.Union([
+  Type.Object(
+    {
+      incarnation: Type.String({ pattern: ATTENDANT_INCARNATION_PATTERN }),
+      generation: Type.Integer({ minimum: 1 }),
+      subject: AttemptSubject,
+      /**
+       * Answer Edits only, when the fenced answer's attempt is `unconfirmed`:
+       * this machine proved that attempt's writer and its whole process group
+       * are gone, so it can never write again. Deadline expiry alone is not proof.
+       */
+      earlier_answer_writer_gone: Type.Optional(Type.Literal(true)),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      subject: Type.Object(
         {
           type: Type.Literal('answer'),
           request_id: Type.String({ pattern: '^req_[A-Za-z0-9_-]+$' }),
         },
         { additionalProperties: false },
       ),
-    ]),
-    /**
-     * Answer Edits only, when the fenced answer's attempt is `unconfirmed`:
-     * this machine proved that attempt's writer and its whole process group
-     * are gone, so it can never write again. Deadline expiry alone is not proof.
-     */
-    earlier_answer_writer_gone: Type.Optional(Type.Literal(true)),
-  },
-  { additionalProperties: false },
-)
+      already_handed_off: Type.Literal(true),
+    },
+    { additionalProperties: false },
+  ),
+])
 export type ClaimDeliveryAttemptRequestT = Static<typeof ClaimDeliveryAttemptRequest>
 
 export interface ClaimDeliveryAttemptResponse {
   attempt_id: string
   /**
    * The claimant must not begin a harness write after this long, measured on
-   * its own monotonic clock from when it sent the claim.
+   * its own monotonic clock from when it sent the claim. Zero for an attempt
+   * recorded after the fact.
    */
   claim_remaining_ms: number
+  /** `handed_off` for an attempt recorded after the fact; absent for a claim. */
+  outcome?: 'handed_off'
 }
 
 /** `details.reason` of a 409 `claim_refused`. */

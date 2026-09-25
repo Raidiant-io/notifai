@@ -13,6 +13,7 @@ import { type DeliveryRoute, type HookInstallableHarness } from './harnesses.js'
 import type { Logger } from './logging.js'
 import type { ProcessIdentity } from './process-identity.js'
 import type { DeliveryLease } from './session-delivery.js'
+import type { WriteGuard } from './wake-support.js'
 /**
  * Harness hook handlers.
  *
@@ -304,6 +305,8 @@ export interface HookOutcome {
   log?: Record<string, unknown>
   /** An unpushed registration survived UserPromptSubmit and needs its own owner. */
   settlementRequired?: boolean
+  /** Runs only after `stdout` was written: what the hand-off itself proved. */
+  afterOutput?: () => Promise<void>
 }
 
 /** An accepted continuation ready for whichever host owns the last meter. */
@@ -316,9 +319,14 @@ export interface ContinuationEvent {
   /**
    * Must be called immediately before the route's irreversible harness write.
    * It atomically orders that write against SessionEnd; false means cancellation
-   * won and the route must hand nothing over.
+   * won and the route must hand nothing over. `subprocess` says the write is a
+   * harness child the route starts (and must report through `writerGroup`).
    */
-  commitDelivery(): boolean
+  commitDelivery(writer?: 'subprocess'): boolean
+  /** Present for a claimed write: checked at the socket before its first byte. */
+  writeGuard?: WriteGuard
+  /** A subprocess writer's process group, reported the moment it exists. */
+  writerGroup?(pgid: number): void
 }
 
 /**

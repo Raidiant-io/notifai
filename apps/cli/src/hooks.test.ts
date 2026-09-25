@@ -66,8 +66,9 @@ import {
 } from './hook-project-sessions.js'
 import { acquireClaimFile, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
-import { readDeliveryJournal } from './session-delivery.js'
+import { deliveryJournalPath, readDeliveryJournal } from './session-delivery.js'
 import { owedAcknowledgements, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
+import { TRANSPORT_LIMIT } from './injection-render.js'
 import {
   drainRetirements,
   drainOrphanRetirements,
@@ -3138,7 +3139,9 @@ describe('ask registration', () => {
     expect(decision.reason).toContain('question_id rollout-option')
     expect(decision.reason).toContain('"Which rollout option?"')
     expect(decision.reason).toContain('"BETA"')
-    expect(decision.reason).not.toMatch(/trusted|urgent|permission|approval/i)
+    // The one sentence naming permission prompts says carried words never satisfy them.
+    expect(decision.reason).toContain(TRANSPORT_LIMIT)
+    expect(decision.reason.replace(TRANSPORT_LIMIT, '')).not.toMatch(/trusted|urgent|permission|approval/i)
   })
 
   it('acts on the latest reply when answers conflict, because it is a correction', async () => {
@@ -5516,7 +5519,8 @@ describe('Claude Code Stop wake route', () => {
     expect(message.message.content).toContain('question_id')
     expect(message.message.content).toContain('"Which rollout option?"')
     expect(message.message.content).toContain('"BETA"')
-    expect(message.message.content).not.toMatch(/trusted|urgent|permission|approval/i)
+    expect(message.message.content).toContain(TRANSPORT_LIMIT)
+    expect(message.message.content.replace(TRANSPORT_LIMIT, '')).not.toMatch(/trusted|urgent|permission|approval/i)
     expect(wake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
     expect(readSessionState('claude-route', h.env).accepted).toBeDefined()
   })
@@ -5969,9 +5973,14 @@ describe('Claude Code Stop wake route', () => {
     attendClaudeRoute(h.env)
     const service = claimingClient(h)
     const factory = h.deps.clientFactory!
+    const afterTheFact: ClaimDeliveryAttemptRequestT[] = []
     h.deps.clientFactory = () => ({
       ...factory(),
-      claimDeliveryAttempt: async () => {
+      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
+        if ('already_handed_off' in body) {
+          afterTheFact.push(body)
+          return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+        }
         throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'not_claimable' })
       },
     }) as ApiClient
@@ -5987,6 +5996,106 @@ describe('Claude Code Stop wake route', () => {
     expect(service.closes.map((close) => close.disposition)).toEqual(['deliver'])
     expect(wake.sent).toHaveLength(1)
     expect(service.reports).toEqual([])
+    // Written without a claim, so recorded after the fact: its edits follow it.
+    expect(afterTheFact).toEqual([
+      { subject: { type: 'answer', request_id: h.recorder.receipts[0]! }, already_handed_off: true },
+    ])
+  })
+
+  /** A journaled, selected answer to `question`, as a Stop that died after closing left it. */
+  function selectedAccepted(env: NodeJS.ProcessEnv, requestId: string): void {
+    const pending = {
+      question: 'Ship it?',
+      summary: 'Ship it?',
+      question_id: 'q_ship',
+      request_id: requestId,
+      collapse_key: `collapse_${requestId}`,
+      device_ids: ['dev_iphone'],
+    }
+    const answer = reply({ text: 'Ship it', seq: 2 })
+    writeSessionState('claude-route', env, {
+      last_prompt_at: AWAY,
+      accepted: {
+        answers: [
+          {
+            pending,
+            reply: answer,
+            replies: [answer],
+            agent_acknowledgement_required: true,
+            delivery_claim: true,
+          },
+        ],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+      acknowledgement_due: [{ request_id: requestId, recorded_at: NOW, text_required: true }],
+    })
+  }
+
+  for (const stage of ['writing', 'failed', 'written'] as const) {
+    it(`never writes again an answer whose earlier hand-off journaled ${stage}, even when a new claim is refused`, async () => {
+      const h = harness([])
+      selectedAccepted(h.env, 'req_crashed')
+      const journal = deliveryJournalPath('claude-route', h.env)
+      mkdirSync(path.dirname(journal), { recursive: true })
+      writeFileSync(
+        journal,
+        JSON.stringify({
+          session_id: 'claude-route',
+          entries: [
+            {
+              attempt_id: 'att_before_crash',
+              subject: { type: 'answer', request_id: 'req_crashed' },
+              stage,
+              // A waiter that died after its socket write, before it saved delivered_at.
+              writer: { pid: 2_147_483_000, start: 'Thu Jan  1 00:00:00 1970' },
+              claimed_at: NOW,
+            },
+          ],
+        }),
+      )
+      attendClaudeRoute(h.env)
+      const service = claimingClient(h)
+      const wake = claudeWake()
+
+      await hookRunCommand(
+        { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
+        'stop',
+        stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }),
+        'claude-code',
+      )
+
+      expect(wake.sent).toEqual([])
+      expect(service.claims).toEqual([])
+      expect(service.reports).toEqual([
+        { attemptId: 'att_before_crash', outcome: stage === 'written' ? 'handed_off' : 'unconfirmed' },
+      ])
+      expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
+    })
+  }
+
+  it('records a selected answer handed off in a prompt\u2019s context after that context is written', async () => {
+    const h = harness([])
+    selectedAccepted(h.env, 'req_prompt')
+    const afterTheFact: ClaimDeliveryAttemptRequestT[] = []
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => ({
+      ...factory(),
+      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
+        afterTheFact.push(body)
+        return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+      },
+    }) as ApiClient
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'claude-route', cwd: h.deps.cwd, prompt: 'carry on' }),
+      'claude-code',
+    )
+
+    expect(h.io.outLines.at(-1)).toContain('Ship it')
+    expect(afterTheFact).toEqual([{ subject: { type: 'answer', request_id: 'req_prompt' }, already_handed_off: true }])
   })
 })
 
@@ -6919,6 +7028,38 @@ describe('Session Message acknowledgement debt', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'message-debt' }))
     expect(h.io.outLines).toEqual([])
     expect(readSessionState('message-debt', h.env).message_acknowledgement_due).toBeUndefined()
+  })
+
+  it('reminds a resumed session of an owed Session Message acknowledgement before its work', async () => {
+    const h = harness([])
+    const acknowledged = new Set<string>()
+    const checks = withMessageAcknowledgements(h, acknowledged)
+    writeSessionState('message-prompt', h.env, {
+      message_acknowledgement_due: [{ message_id: 'sm_resumed', recorded_at: NOW, text_required: true }],
+    })
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'message-prompt', cwd: h.deps.cwd, prompt: 'keep going' }),
+      'claude-code',
+    )
+    expect(checks).toEqual(['sm_resumed'])
+    const context = (JSON.parse(h.io.outLines.at(-1)!) as { hookSpecificOutput: { additionalContext: string } })
+      .hookSpecificOutput.additionalContext
+    expect(context).toContain('still missing for message sm_resumed')
+    expect(context).toContain('`notifai acknowledge sm_resumed --text <text>`')
+
+    acknowledged.add('sm_resumed')
+    h.io.outLines.length = 0
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'message-prompt', cwd: h.deps.cwd, prompt: 'next' }),
+      'claude-code',
+    )
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('message-prompt', h.env).message_acknowledgement_due).toBeUndefined()
   })
 
   it('preserves owed Session Message acknowledgements through SessionEnd', () => {

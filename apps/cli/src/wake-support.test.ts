@@ -26,4 +26,16 @@ describe('shared wake outcomes', () => {
       runWakeCommand(process.execPath, ['-e', 'process.stderr.write("nope"); process.exit(7)']),
     ).rejects.toThrow(/exited 7: nope$/)
   })
+
+  it('starts a subprocess writer in its own process group and reports it at once', async () => {
+    let reported: number | undefined
+    const output = await runWakeCommand('sh', ['-c', 'echo "$$ $(ps -o pgid= -p $$)"'], {
+      onSpawn: (pgid) => {
+        reported = pgid
+      },
+    })
+    const [pid, pgid] = output.trim().split(/\s+/).map(Number)
+    expect(pgid).toBe(pid)
+    expect(reported).toBe(pid)
+  })
 })

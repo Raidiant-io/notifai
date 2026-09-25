@@ -8,14 +8,18 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ProcessIdentity, ProcessLiveness } from './process-identity.js'
+import { execFileSync } from 'node:child_process'
 import {
   DELIVERY_WRITE_MARGIN_MS,
+  JOURNAL_SWEEP_MAX_JOURNALS,
   acquireDeliveryLock,
   answerWriterGone,
   beginHandOff,
   deliveryJournalPath,
+  processGroupAlive,
   readDeliveryJournal,
   recoverDeliveryJournal,
+  sweepDeliveryJournals,
   type DeliveryJournalEntry,
   type SequencerDeps,
 } from './session-delivery.js'
@@ -332,5 +336,150 @@ describe('Answer Edit release proof', () => {
     expect(answerWriterGone(SESSION, env, 'req_suspended', () => 'gone')).toBe(false)
     await handOff.finish('written')
     expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'handed_off' }])
+  })
+})
+
+describe('claim deadline at the write itself', () => {
+  it('re-checks the deadline after blocking checks and persistence, and writes nothing late', async () => {
+    const { env, service, deps, advance } = setup()
+    const handOff = (await beginHandOff(deps, {
+      lease: LEASE,
+      subjects: [{ type: 'answer', request_id: 'req_slow' }],
+      // A lease check that blocks until one second past the 30 s deadline.
+      mayWrite: () => {
+        advance(31_000)
+        return true
+      },
+    }))!
+    let committed = false
+    expect(handOff.begin(() => (committed = true))).toBe(false)
+    expect(committed).toBe(false)
+    await handOff.finish('not-written')
+    expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'released' }])
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ stage: 'released' })
+  })
+
+  it('reverts a write that a slow commit pushed past the margin to claimed, then releases it', async () => {
+    const { env, service, deps, advance } = setup()
+    const handOff = (await beginHandOff(deps, {
+      lease: LEASE,
+      subjects: [{ type: 'answer', request_id: 'req_commit' }],
+    }))!
+    expect(
+      handOff.begin(() => {
+        advance(29_000)
+        return true
+      }),
+    ).toBe(false)
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ stage: 'claimed' })
+    await handOff.finish('not-written')
+    expect(service.reports.map((report) => report.outcome)).toEqual(['released'])
+  })
+
+  it('closes the socket boundary before the deadline and reports an aborted write as released', async () => {
+    const { service, deps, advance } = setup()
+    const handOff = (await beginHandOff(deps, {
+      lease: LEASE,
+      subjects: [{ type: 'session_message', message_id: 'sm_late_socket' }],
+    }))!
+    expect(handOff.begin()).toBe(true)
+    expect(handOff.writable()).toBe(true)
+    expect(handOff.remainingMs()).toBe(30_000 - 500)
+    advance(30_000 - 500)
+    expect(handOff.writable()).toBe(false)
+    expect(handOff.remainingMs()).toBe(0)
+    await handOff.finish('aborted')
+    expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'released' }])
+  })
+})
+
+describe('subprocess writers in the Answer Edit release proof', () => {
+  const gone = (identity: ProcessIdentity): ProcessLiveness => (identity.pid === GONE.pid ? 'gone' : 'alive')
+
+  it('journals a subprocess write and its process group as soon as it exists', async () => {
+    const { env, deps } = setup()
+    const handOff = (await beginHandOff(deps, {
+      lease: LEASE,
+      subjects: [{ type: 'answer', request_id: 'req_resume' }],
+    }))!
+    expect(handOff.begin(undefined, { subprocess: true })).toBe(true)
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ stage: 'writing', subprocess: true })
+    handOff.recordGroup(9191)
+    expect(readDeliveryJournal(SESSION, env)[0]!.groups).toEqual([9191])
+    await handOff.finish('written')
+  })
+
+  it('proves a subprocess writer gone only when its whole recorded group is gone', () => {
+    const { env } = setup()
+    const entry = (groups?: number[]): DeliveryJournalEntry => ({
+      attempt_id: 'att_resume',
+      subject: { type: 'answer', request_id: 'req_resume' },
+      stage: 'writing',
+      writer: GONE,
+      subprocess: true,
+      ...(groups === undefined ? {} : { groups }),
+      claimed_at: 1,
+    })
+    seedJournal(env, [entry()])
+    // The waiter died before the child's group was journaled: unknowable.
+    expect(answerWriterGone(SESSION, env, 'req_resume', gone, () => false)).toBe(false)
+    seedJournal(env, [entry([9191])])
+    // The resumed harness outlived the waiter and may still write.
+    expect(answerWriterGone(SESSION, env, 'req_resume', gone, () => true)).toBe(false)
+    expect(answerWriterGone(SESSION, env, 'req_resume', gone, () => false)).toBe(true)
+  })
+
+  it('asks the operating system about a whole process group', () => {
+    expect(processGroupAlive(process.pid === 1 ? 2 : Number(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim()))).toBe(true)
+    expect(processGroupAlive(2_147_483_000)).toBe(false)
+  })
+})
+
+describe('machine-wide journal sweep', () => {
+  function seedSession(env: NodeJS.ProcessEnv, sessionId: string, entries: DeliveryJournalEntry[]): void {
+    const file = deliveryJournalPath(sessionId, env)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ session_id: sessionId, entries }))
+  }
+
+  it("reports gone writers' attempts from sessions that never ran again, bounded and rate-limited", async () => {
+    const { env, service, deps } = setup()
+    const dead = (id: string, stage: DeliveryJournalEntry['stage']): DeliveryJournalEntry => ({
+      attempt_id: id,
+      subject: { type: 'session_message', message_id: `sm_${id}` },
+      stage,
+      writer: GONE,
+      claimed_at: 1,
+    })
+    seedSession(env, 'ended-a', [dead('att_a', 'written')])
+    seedSession(env, 'ended-b', [dead('att_b', 'writing'), { ...dead('att_live', 'writing'), writer: { pid: 99, start: 'x' } }])
+    const input = {
+      env,
+      client: deps.client,
+      writer: SELF,
+      now: 1_790_000_000_000,
+      liveness: (identity: ProcessIdentity): ProcessLiveness => (identity.pid === GONE.pid ? 'gone' : 'alive'),
+    }
+    expect(await sweepDeliveryJournals(input)).toBe(2)
+    expect(service.reports.sort((a, b) => a.attemptId.localeCompare(b.attemptId))).toEqual([
+      { attemptId: 'att_a', outcome: 'handed_off' },
+      { attemptId: 'att_b', outcome: 'unconfirmed' },
+    ])
+    // Rate-limited: a second sweep within the interval touches nothing.
+    seedSession(env, 'ended-c', [dead('att_c', 'claimed')])
+    expect(await sweepDeliveryJournals({ ...input, now: input.now + 1_000 })).toBe(0)
+    expect(await sweepDeliveryJournals({ ...input, force: true })).toBe(1)
+    expect(service.reports.at(-1)).toEqual({ attemptId: 'att_c', outcome: 'released' })
+  })
+
+  it(`sweeps at most ${JOURNAL_SWEEP_MAX_JOURNALS} journals`, async () => {
+    const { env, service, deps } = setup()
+    for (let index = 0; index < JOURNAL_SWEEP_MAX_JOURNALS + 5; index += 1) {
+      seedSession(env, `many-${index}`, [
+        { attempt_id: `att_${index}`, subject: { type: 'answer', request_id: `req_${index}` }, stage: 'claimed', writer: GONE, claimed_at: 1 },
+      ])
+    }
+    await sweepDeliveryJournals({ env, client: deps.client, writer: SELF, now: Date.now(), liveness: () => 'gone' })
+    expect(service.reports).toHaveLength(JOURNAL_SWEEP_MAX_JOURNALS)
   })
 })

@@ -3,7 +3,7 @@
  * post-delivery Answer Edits — into its running Agent Session.
  *
  * Each message is one claimed hand-off through the session's delivery
- * sequencer, in the order the User sent them: claim under the attendant's
+ * sequencer, in the order the service accepted them: claim under the attendant's
  * lease generation, record the acknowledgement it is owed, write the
  * structured context in place, report. Nothing is written without a claim,
  * nothing after the claim deadline or the attendant's own write margin, and an
@@ -15,6 +15,7 @@ import { sessionMessageContext } from './injection-render.js'
 import { answerWriterGone, beginHandOff, type SequencerDeps } from './session-delivery.js'
 import type { AttendantHandle } from './session-attendant.js'
 import type { SessionWriteResult } from './session-handoff.js'
+import type { WriteGuard } from './wake-support.js'
 
 /**
  * - `done`: every message was handed off, settled elsewhere, or waits for the
@@ -27,8 +28,11 @@ export type MessageHandOffResult = 'done' | 'retry-soon'
 
 export interface MessageHandOffDeps {
   sequencer: SequencerDeps
-  /** The in-place write; `begin` is its commit point. */
-  write(text: string, begin: () => boolean): Promise<SessionWriteResult>
+  /**
+   * The in-place write: `begin` is its commit point and `guard` is checked at
+   * the socket itself, before the first byte.
+   */
+  write(text: string, begin: () => boolean, guard: WriteGuard): Promise<SessionWriteResult>
 }
 
 export async function handOffSessionMessages(
@@ -38,10 +42,10 @@ export async function handOffSessionMessages(
 ): Promise<MessageHandOffResult> {
   const { sequencer } = deps
   const log = sequencer.log
-  const ordered = [...messages].sort(
-    (a, b) => a.created_at.localeCompare(b.created_at) || a.message_id.localeCompare(b.message_id),
-  )
-  for (const message of ordered) {
+  // The service lists messages in acceptance (revision) order, which is the
+  // User's order. Timestamps can tie and identifiers are random, so neither
+  // may reorder them: a later edit must never land before an earlier one.
+  for (const message of messages) {
     const generation = attendant.generation()
     if (generation === null || !attendant.mayWrite()) return 'retry-soon'
     const handOff = await beginHandOff(sequencer, {
@@ -49,7 +53,13 @@ export async function handOffSessionMessages(
       subjects: [{ type: 'session_message', message_id: message.message_id }],
       earlierAnswerWriterGone: () =>
         message.kind === 'answer_edit' &&
-        answerWriterGone(sequencer.sessionId, sequencer.env, message.request_id, sequencer.liveness),
+        answerWriterGone(
+          sequencer.sessionId,
+          sequencer.env,
+          message.request_id,
+          sequencer.liveness,
+          sequencer.groupAlive,
+        ),
       mayWrite: () => attendant.mayWrite(),
     })
     if (handOff === null) return 'retry-soon'
@@ -84,6 +94,9 @@ export async function handOffSessionMessages(
         clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)
         owed = false
         return false
+      }, {
+        writable: () => handOff.writable() && attendant.mayWrite(),
+        remainingMs: () => handOff.remainingMs(),
       })
     } catch (err) {
       // Thrown before the write (state I/O): nothing reached the harness.
@@ -107,6 +120,11 @@ export async function handOffSessionMessages(
         continue
       case 'cancelled':
         await handOff.finish('not-written')
+        return 'retry-soon'
+      case 'aborted':
+        // Stopped at the socket before any byte left: nothing arrived, nothing is owed.
+        clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)
+        await handOff.finish('aborted')
         return 'retry-soon'
       case 'unavailable':
       case 'stopped':

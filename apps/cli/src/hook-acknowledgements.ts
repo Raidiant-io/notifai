@@ -3,6 +3,7 @@ import { withFileLock } from './file-lock.js'
 import { gate } from './hook-gates.js'
 import {
   ACKNOWLEDGEMENT_SCOPE,
+  TRANSPORT_LIMIT,
   acknowledgementCommand,
   acknowledgementDemand,
   quoted,
@@ -127,7 +128,7 @@ export function answersContext(answered: AnsweredPending[], remaining: number): 
     remaining > 0
       ? ` (${remaining} more registered question${remaining === 1 ? ' is' : 's are'} still waiting for an answer.)`
       : ''
-  const guidance = acknowledgementContext(answered)
+  const guidance = acknowledgementContext(answered) + TRANSPORT_LIMIT
   if (answered.length === 1) {
     return answerContext(answered[0]!) + tail + guidance
   }

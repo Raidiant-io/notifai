@@ -23,7 +23,8 @@ export const CODEX_QUEUE_STORE_FILE = 'queue_1.sqlite'
 
 export interface CodexWakeAdapters {
   /** Write one message into the thread's durable inbox via `codex queue`. */
-  queue(threadId: string, cwd: string, context: string): Promise<void>
+  /** `onSpawn` receives the `codex queue` child's own process group as soon as it exists. */
+  queue(threadId: string, cwd: string, context: string, onSpawn?: (pgid: number) => void): Promise<void>
 }
 
 export type CodexQueueReadiness =
@@ -105,7 +106,9 @@ export function codexWakeRoute(options: {
         env,
         adapters,
         text: event.context,
-        begin: event.commitDelivery,
+        // `codex queue` is a subprocess writer.
+        begin: () => event.commitDelivery('subprocess'),
+        onSpawn: (pgid) => event.writerGroup?.(pgid),
       })
       if (written.status === 'unavailable') return holdForNextTurn(written.reason)
       if (written.status === 'cancelled' || written.status === 'stopped') return cancelledDelivery()
@@ -135,7 +138,7 @@ export function codexWakeRoute(options: {
 
 function runCodex(
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
+  options: { cwd: string; env: NodeJS.ProcessEnv; onSpawn?: (pgid: number) => void },
 ): Promise<string> {
   return runWakeCommand('codex', args, options)
 }
@@ -144,9 +147,13 @@ export function systemCodexWakeAdapters(
   env: NodeJS.ProcessEnv = process.env,
 ): CodexWakeAdapters {
   return {
-    async queue(threadId, cwd, context) {
+    async queue(threadId, cwd, context, onSpawn) {
       if (!existsSync(cwd)) throw new Error(`Codex thread cwd no longer exists: ${cwd}`)
-      await runCodex(['queue', '--thread', threadId, '--message', context], { cwd, env })
+      await runCodex(['queue', '--thread', threadId, '--message', context], {
+        cwd,
+        env,
+        ...(onSpawn === undefined ? {} : { onSpawn }),
+      })
     },
   }
 }

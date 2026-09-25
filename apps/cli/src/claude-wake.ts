@@ -5,7 +5,14 @@ import { createConnection } from 'node:net'
 import type { ContinuationEvent, DeliveryOutcome, EscalationDeliveryRoute } from './hook-types.js'
 import { compareVersions } from './version.js'
 import { claudeSourceDescriptor, deliverIntoClaudeSession } from './session-handoff.js'
-import { cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
+import {
+  WriteAbortedError,
+  abortedDelivery,
+  cancelledDelivery,
+  holdForNextTurn,
+  runWakeCommand,
+  type WriteGuard,
+} from './wake-support.js'
 
 /** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
 export const CLAUDE_PEER_PROTOCOL = 1
@@ -41,8 +48,10 @@ export interface ClaudeAgentObservation {
 export interface ClaudeWakeAdapters {
   listAgents(): Promise<unknown>
   readDescriptor(pid: number): unknown
-  sendSocket(socketPath: string, line: string): Promise<void>
-  resume(sessionId: string, cwd: string, context: string): Promise<void>
+  /** With `guard`, a connection that is late or no longer writable writes nothing. */
+  sendSocket(socketPath: string, line: string, guard?: WriteGuard): Promise<void>
+  /** `onSpawn` receives the resumed harness's own process group as soon as it exists. */
+  resume(sessionId: string, cwd: string, context: string, onSpawn?: (pgid: number) => void): Promise<void>
   sleep(milliseconds: number): Promise<void>
 }
 
@@ -306,7 +315,8 @@ export function claudeWakeRoute(options: {
         sourceDescriptor,
         adapters,
         text: event.context,
-        begin: event.commitDelivery,
+        begin: () => event.commitDelivery(),
+        ...(event.writeGuard === undefined ? {} : { guard: event.writeGuard }),
         writer: 'Stop-hook process',
       })
       switch (written.status) {
@@ -314,6 +324,8 @@ export function claudeWakeRoute(options: {
           return holdForNextTurn(written.reason)
         case 'cancelled':
           return cancelledDelivery()
+        case 'aborted':
+          return abortedDelivery()
         case 'failed':
           // The write started; the waiter records the failure as it always has.
           throw written.error
@@ -346,9 +358,14 @@ export function claudeWakeRoute(options: {
             : 'the Claude session became live before cold resume'
         return holdForNextTurn(reason)
       }
-      if (!event.commitDelivery()) return cancelledDelivery()
+      // The resumed harness is a subprocess writer: its process group is
+      // journaled as soon as it exists, so its survival is never mistaken
+      // for a finished write.
+      if (!event.commitDelivery('subprocess')) return cancelledDelivery()
       // `stopped` is reported only with a proven source descriptor.
-      await adapters.resume(options.sessionId, sourceDescriptor!.cwd, event.context)
+      await adapters.resume(options.sessionId, sourceDescriptor!.cwd, event.context, (pgid) =>
+        event.writerGroup?.(pgid),
+      )
       return {
         notes: ['cold-resumed the stopped Claude session with its accepted answer'],
         log: { route: 'cold-resume', stage: 'delivered' },
@@ -358,7 +375,10 @@ export function claudeWakeRoute(options: {
   }
 }
 
-function runClaude(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+function runClaude(
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; onSpawn?: (pgid: number) => void } = {},
+): Promise<string> {
   return runWakeCommand('claude', args, options)
 }
 
@@ -384,18 +404,32 @@ export function systemClaudeWakeAdapters(
       const file = path.join(os.homedir(), '.claude', 'sessions', `${pid}.json`)
       return JSON.parse(readFileSync(file, 'utf8')) as unknown
     },
-    sendSocket(socketPath, line) {
+    sendSocket(socketPath, line, guard) {
       return new Promise<void>((resolve, reject) => {
         const socket = createConnection(socketPath)
         let settled = false
         const fail = (err: Error): void => {
           if (settled) return
           settled = true
+          clearTimeout(late)
           socket.destroy()
           reject(err)
         }
+        // A connection still pending at the write boundary is abandoned.
+        const late =
+          guard === undefined
+            ? undefined
+            : setTimeout(
+                () => fail(new WriteAbortedError('the inbox connection outlasted the claim')),
+                Math.min(guard.remainingMs(), 2_147_483_647),
+              )
         socket.once('error', fail)
         socket.once('connect', () => {
+          if (guard !== undefined && !guard.writable()) {
+            fail(new WriteAbortedError('the claim lapsed before the first byte'))
+            return
+          }
+          clearTimeout(late)
           socket.end(line, () => {
             if (settled) return
             settled = true
@@ -404,7 +438,7 @@ export function systemClaudeWakeAdapters(
         })
       })
     },
-    async resume(sessionId, cwd, context) {
+    async resume(sessionId, cwd, context, onSpawn) {
       if (!existsSync(cwd)) throw new Error(`Claude session cwd no longer exists: ${cwd}`)
       await runClaude(
         [
@@ -415,7 +449,7 @@ export function systemClaudeWakeAdapters(
           'json',
           context,
         ],
-        { cwd, env: coldResumeEnvironment(env) },
+        { cwd, env: coldResumeEnvironment(env), ...(onSpawn === undefined ? {} : { onSpawn }) },
       )
     },
     sleep(milliseconds) {

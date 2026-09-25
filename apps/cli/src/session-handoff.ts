@@ -19,6 +19,7 @@ import {
   type ClaudeWakeAdapters,
 } from './claude-wake.js'
 import { inspectCodexQueue, type CodexWakeAdapters } from './codex-wake.js'
+import { WriteAbortedError, type WriteGuard } from './wake-support.js'
 
 export type SessionWriteResult =
   | {
@@ -33,6 +34,8 @@ export type SessionWriteResult =
   | { status: 'stopped' }
   /** `begin` refused (SessionEnd won, a claim lapsed, the lease cannot cover the write). */
   | { status: 'cancelled' }
+  /** `begin` succeeded, then the write guard stopped the write before any byte left. */
+  | { status: 'aborted'; reason: string }
   /** The write started and failed; it may or may not have reached the harness. */
   | { status: 'failed'; reason: string; error: unknown }
 
@@ -75,6 +78,8 @@ export async function deliverIntoClaudeSession(options: {
   text: string
   begin(): boolean
   holdAfterSend?: boolean
+  /** Checked at the socket itself, after it connects and before its first byte. */
+  guard?: WriteGuard
   /** Names the posting process in refusal reasons, which logs keep verbatim. */
   writer: string
 }): Promise<SessionWriteResult> {
@@ -99,8 +104,9 @@ export async function deliverIntoClaudeSession(options: {
   }
   if (!options.begin()) return { status: 'cancelled' }
   try {
-    await adapters.sendSocket(observation.descriptor.messagingSocketPath, claudeSocketLine(options.text))
+    await adapters.sendSocket(observation.descriptor.messagingSocketPath, claudeSocketLine(options.text), options.guard)
   } catch (err) {
+    if (err instanceof WriteAbortedError) return { status: 'aborted', reason: err.message }
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err), error: err }
   }
   if (options.holdAfterSend !== false) await adapters.sleep(CLAUDE_POST_SEND_LIVENESS_MS)
@@ -119,12 +125,14 @@ export async function deliverIntoCodexThread(options: {
   adapters: CodexWakeAdapters
   text: string
   begin(): boolean
+  /** Receives the queue writer's process group as soon as it exists. */
+  onSpawn?: (pgid: number) => void
 }): Promise<SessionWriteResult> {
   const readiness = inspectCodexQueue(options.threadId, options.env)
   if (readiness.state === 'unavailable') return { status: 'unavailable', reason: readiness.reason }
   if (!options.begin()) return { status: 'cancelled' }
   try {
-    await options.adapters.queue(readiness.threadId, options.cwd, options.text)
+    await options.adapters.queue(readiness.threadId, options.cwd, options.text, options.onSpawn)
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err), error: err }
   }
