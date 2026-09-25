@@ -310,3 +310,6 @@ journal is crash recovery, not the ordinary delivery path.
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
 machine credential in a plaintext file rather than the OS keychain — only when
 the user has asked for it, and never on a shared machine.
+
+`notifai init` never creates `.notifai/config.toml`; that file is only for
+tracked, shared overrides a Project chooses to commit.

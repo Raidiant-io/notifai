@@ -19,7 +19,8 @@ import {
   personalProjectGuidanceDir,
   resolveGuidance,
 } from './guidance.js'
-import { boundedEffectiveGuidance, renderGuidance } from './guidance-render.js'
+import { GUIDANCE_CONTEXT_MAX_BYTES, boundedEffectiveGuidance, renderGuidance } from './guidance-render.js'
+import { sessionActivationOutput } from './session-activation.js'
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-'))
 afterAll(() => rmSync(tmp, { recursive: true, force: true }))
@@ -367,5 +368,31 @@ describe('guidance commands', () => {
     expect(resolveGuidance({ cwd, env }).find((topic) => topic.name === 'titles')!.source).toBe(
       'default',
     )
+  })
+})
+
+describe('lifecycle guidance budget', () => {
+  it('keeps the default owner context at least 10% under the lifecycle limit', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-budget-'))
+    const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+    const output = JSON.parse(sessionActivationOutput('claude-code', 'SessionStart', root, env)!) as {
+      hookSpecificOutput: { additionalContext: string }
+    }
+    const context = output.hookSpecificOutput.additionalContext
+    // Inline, not the fallback: every shipped topic arrives with the session.
+    expect(context).toContain('<!-- notifai:guidance topic=acknowledgements from=shipped default -->')
+    // Twenty more bytes must not tip the whole guidance into the fallback.
+    expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(GUIDANCE_CONTEXT_MAX_BYTES * 0.9)
+  })
+
+  it('points the shipped topics at the worked examples they no longer inline', () => {
+    const reference = readFileSync(
+      new URL('../../../skills/notifai/references/writing-examples.md', import.meta.url),
+      'utf8',
+    )
+    expect(shippedGuidanceTopic('content')!.content).toContain('references/writing-examples.md')
+    for (const example of ['Refund rollout awaits provider recovery', 'Work failed:', 'Blocked:', 'already went out']) {
+      expect(reference).toContain(example)
+    }
   })
 })

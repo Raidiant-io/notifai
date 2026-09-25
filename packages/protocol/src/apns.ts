@@ -6,6 +6,7 @@ import {
   isSemanticSound,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
+  SESSION_MESSAGES_SYNC,
   SOUND_LIBRARY_SYNC,
   type ApplePlatform,
   type NotificationDraftT,
@@ -188,6 +189,21 @@ export function buildSoundLibrarySyncEnvelope(): ApnsEnvelope {
     payload: {
       aps: { 'content-available': 1 },
       notifai: { sync: SOUND_LIBRARY_SYNC },
+    },
+    priority: 5,
+    pushType: 'background',
+  }
+}
+
+/** Collapse id so a burst of Session Message changes replaces one pending push. */
+export const SESSION_MESSAGES_SYNC_COLLAPSE_ID = 'notifai.session-messages' as const
+
+/** Silent Session Message refresh push, shaped like the sound-library sync. */
+export function buildSessionMessagesSyncEnvelope(): ApnsEnvelope {
+  return {
+    payload: {
+      aps: { 'content-available': 1 },
+      notifai: { sync: SESSION_MESSAGES_SYNC },
     },
     priority: 5,
     pushType: 'background',

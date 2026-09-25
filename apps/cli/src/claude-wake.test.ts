@@ -1,3 +1,7 @@
+import { mkdtempSync } from 'node:fs'
+import { createServer } from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   CLAUDE_PEER_PROTOCOL,
@@ -5,9 +9,11 @@ import {
   claudeWakeRoute,
   inspectClaudeInbox,
   observeClaudeSession,
+  systemClaudeWakeAdapters,
   type ClaudeSessionDescriptor,
   type ClaudeWakeAdapters,
 } from './claude-wake.js'
+import { WRITE_ABORTED_REASON, WriteAbortedError } from './wake-support.js'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 const STARTED_AT = 1_800_000_000_000
@@ -334,5 +340,79 @@ describe('Claude wake delivery', () => {
       }).deliver(event),
     ).rejects.toThrow('socket unavailable')
     expect(wake.sleeps).toEqual([])
+  })
+})
+
+describe('claimed writes at the boundary', () => {
+  it('commits a cold resume as a subprocess write and reports the child’s process group', async () => {
+    const wake = adapters({ agentsSequence: [[], []] })
+    wake.resume = async (_sessionId, _cwd, _context, onSpawn) => {
+      onSpawn?.(4747)
+    }
+    const commits: Array<string | undefined> = []
+    const groups: number[] = []
+    const outcome = await claudeWakeRoute({
+      sessionId: SESSION_ID,
+      cwd: '/tmp/notifai-claude-wake',
+      sourcePid: 12345,
+      adapters: wake,
+    }).deliver({
+      ...event,
+      commitDelivery: (writer?: 'subprocess') => {
+        commits.push(writer)
+        return true
+      },
+      writerGroup: (pgid) => groups.push(pgid),
+    })
+    expect(commits).toEqual(['subprocess'])
+    expect(groups).toEqual([4747])
+    expect(outcome.acknowledgement).toBe('delivered')
+  })
+
+  it('holds, as aborted, a write its guard stopped at the socket', async () => {
+    const wake = adapters()
+    wake.sendSocket = async (_path, _line, guard) => {
+      expect(guard?.writable()).toBe(false)
+      throw new WriteAbortedError('the claim lapsed before the first byte')
+    }
+    const outcome = await claudeWakeRoute({
+      sessionId: SESSION_ID,
+      cwd: '/tmp/notifai-claude-wake',
+      sourcePid: 12345,
+      adapters: wake,
+    }).deliver({ ...event, writeGuard: { writable: () => false, remainingMs: () => 0 } })
+    expect(outcome).toMatchObject({ acknowledgement: 'held', log: { reason: WRITE_ABORTED_REASON } })
+    expect(wake.sleeps).toEqual([])
+  })
+
+  it('sends no byte over a real inbox socket once the guard says the claim lapsed', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'nf-sock-'))
+    const socketPath = path.join(directory, 'inbox.sock')
+    const received: string[] = []
+    const server = createServer((socket) => {
+      socket.on('data', (chunk) => received.push(chunk.toString()))
+    })
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    try {
+      const system = systemClaudeWakeAdapters({})
+      await expect(
+        system.sendSocket(socketPath, 'late\n', { writable: () => false, remainingMs: () => 5_000 }),
+      ).rejects.toBeInstanceOf(WriteAbortedError)
+      await system.sendSocket(socketPath, 'in time\n', { writable: () => true, remainingMs: () => 5_000 })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(received.join('')).toBe('in time\n')
+    } finally {
+      server.close()
+    }
+  })
+
+  it('abandons a connection still pending at the write boundary', async () => {
+    const system = systemClaudeWakeAdapters({})
+    // Nothing listens here: the connection neither succeeds nor matters, and the
+    // boundary has already passed, so the write is abandoned as aborted.
+    const missing = path.join(mkdtempSync(path.join(os.tmpdir(), 'nf-sock-')), 'none.sock')
+    await expect(
+      system.sendSocket(missing, 'late\n', { writable: () => true, remainingMs: () => 0 }),
+    ).rejects.toBeInstanceOf(Error)
   })
 })

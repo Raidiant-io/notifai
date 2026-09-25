@@ -1,5 +1,6 @@
 import type { NotificationDraftT } from './notification.js'
 import type { AgentAcknowledgementView, ReplyView } from './api.js'
+import type { AnswerVersionView } from './sessions.js'
 
 /** A current retained Request snapshot; fetching it never posts a native alert. */
 export interface NotificationHistoryItem {
@@ -19,6 +20,13 @@ export interface NotificationHistoryItem {
   agent_acknowledgement_required: boolean
   latest_reply: (ReplyView & { client_reply_id: string }) | null
   agent_acknowledgement: AgentAcknowledgementView | null
+  /**
+   * Every answer the User gave this request, oldest first: replies, then
+   * post-delivery Answer Edits. Present only for installations advertising
+   * `answer_edits`; `latest_reply` and `agent_acknowledgement` keep their
+   * released meaning either way.
+   */
+  answer_versions?: AnswerVersionView[]
 }
 
 export interface NotificationHistoryPage {

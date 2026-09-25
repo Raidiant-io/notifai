@@ -1,5 +1,7 @@
 /** Hook-event domain handlers and the question escalation lifecycle. */
 import type {
+  CloseDisposition,
+  CloseRepliesResponse,
   ListRepliesResponse,
   MediaItemT,
   QuestionT,
@@ -19,6 +21,7 @@ import {
   classifyJournaledAcknowledgements,
   finishCommittedDelivery,
   holdForAcknowledgement,
+  owedAcknowledgements,
   reconcileAcknowledgementObligations,
   recoverQueuedAnswers,
   resetAcknowledgementBlocks,
@@ -33,6 +36,7 @@ import {
   drainOrphanRetirements,
   drainRetirements,
   finalizeReplies,
+  selectedForClaimedDelivery,
   orphanRetirements,
   pendingAnsweredByPrompt,
   retirePendings,
@@ -60,11 +64,24 @@ import {
   updateSessionState,
   writeSessionState,
   writeSessionStateUnlocked,
+  recordSessionNotified,
 } from './hook-session-state.js'
+import { currentProcessIdentity } from './process-identity.js'
 import { userPromptContextOutput } from './session-activation.js'
+import {
+  answersAlreadyWritten,
+  beginHandOff,
+  recordUnclaimedHandOffs,
+  recoverDeliveryJournal,
+  sweepDeliveryJournals,
+  type HandOff,
+  type SequencerDeps,
+} from './session-delivery.js'
+import { WRITE_ABORTED_REASON } from './wake-support.js'
 import type {
   AcceptedAnswerDelivery,
   AnsweredPending,
+  DeliveryOutcome,
   EscalationDeliveryRoute,
   EscalationWaiterOptions,
   HookContext,
@@ -224,6 +241,8 @@ function submitQuestion(
           `server replay returned ${receipt.request_id}, expected reserved ${intent.request_id}`,
         )
       }
+      // Wakes this session's dormant Session Attendant.
+      recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
     })
     if (attempt === null) notes.push('the question was retired before submission; not uploading it')
@@ -455,17 +474,43 @@ async function pollPendingReply(
 
 interface FinalizedPending {
   pending: PendingQuestion
-  response: ListRepliesResponse | null
+  response: ListRepliesResponse | CloseRepliesResponse | null
+}
+
+/**
+ * How an answer-collecting close names itself: `deliver` only when this
+ * waiter will claim the fenced answer before writing it in place — a Claude
+ * inbox write or a Codex thread-queue write while this session's attendant
+ * holds a lease. Otherwise no disposition, exactly as released CLIs close.
+ */
+function answerCloseDisposition(
+  ctx: HookContext,
+  route: EscalationDeliveryRoute,
+): CloseDisposition | undefined {
+  return claimableRoute(route) && ctx.answerClaims?.lease() != null ? 'deliver' : undefined
+}
+
+/** Routes that write into the running session itself, so a claim can cover the write. */
+function claimableRoute(route: EscalationDeliveryRoute): boolean {
+  return route.kind === 'inbox-socket' || route.kind === 'session-queue'
+}
+
+/** The claim marker for an answer its own `deliver` close selected. */
+function claimMarker(
+  response: ListRepliesResponse | CloseRepliesResponse | null | undefined,
+): { delivery_claim?: true } {
+  return selectedForClaimedDelivery(response) ? { delivery_claim: true } : {}
 }
 
 /** Close several windows concurrently without confusing failure with silence. */
 async function finalizePendings(
   ctx: HookContext,
   pending: PendingQuestion[],
+  disposition?: CloseDisposition,
 ): Promise<FinalizedPending[]> {
   return Promise.all(
     pending.map(async (entry) => {
-      const response = await finalizeReplies(ctx, entry.request_id!)
+      const response = await finalizeReplies(ctx, entry.request_id!, disposition)
       ctx.log?.info('hook.retirement', {
         request_id: entry.request_id,
         attempted: true,
@@ -490,6 +535,7 @@ function finalizedAnswer(finalized: FinalizedPending): AnsweredPending | null {
           finalized.response?.agent_acknowledgement_required,
         agent_acknowledgement_text_required:
           finalized.response?.agent_acknowledgement_text_required,
+        ...claimMarker(finalized.response),
       }
 }
 
@@ -564,9 +610,56 @@ export async function handleUserPromptSubmit(
   ctx: HookContext,
   envelope: HookEnvelope,
 ): Promise<HookOutcome> {
-  const notes: string[] = []
   const sessionId = envelope.session_id
-  if (!sessionId) return { notes }
+  if (!sessionId) return { notes: [] }
+  // Owed Session Message acknowledgements come before any resumed work: a
+  // session resumed after SessionEnd has no Stop to remind it first.
+  const reminder: PromptReminder = { text: await messageAcknowledgementReminder(ctx, sessionId), used: false }
+  const outcome = await answerPrompt(ctx, envelope, sessionId, reminder)
+  if (reminder.text === null || reminder.used || outcome.stdout !== undefined || sessionHasEnded(sessionId, ctx.env)) {
+    return outcome
+  }
+  const stdout = userPromptContextOutput(ctx.harness, reminder.text)
+  if (stdout === undefined) return outcome
+  outcome.notes.push('an owed Session Message acknowledgement was added to the user\'s new turn')
+  return {
+    ...outcome,
+    stdout,
+    decided: false,
+    log: { ...outcome.log, stage: outcome.log?.['stage'] ?? 'acknowledgement-reminded' },
+  }
+}
+
+interface PromptReminder {
+  text: string | null
+  used: boolean
+}
+
+/** Context for the new turn, carrying the owed-acknowledgement reminder once. */
+function withReminder(reminder: PromptReminder, context: string): string {
+  if (reminder.text === null) return context
+  reminder.used = true
+  return `${context}\n\n${reminder.text}`
+}
+
+/**
+ * The instruction for Session Message acknowledgements still owed after asking
+ * the service, or null when none is.
+ */
+async function messageAcknowledgementReminder(ctx: HookContext, sessionId: string): Promise<string | null> {
+  const owed = readSessionState(sessionId, ctx.env).message_acknowledgement_due ?? []
+  if (owed.length === 0) return null
+  const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
+  return still.length === 0 ? null : acknowledgementBlockContext(still)
+}
+
+async function answerPrompt(
+  ctx: HookContext,
+  envelope: HookEnvelope,
+  sessionId: string,
+  reminder: PromptReminder,
+): Promise<HookOutcome> {
+  const notes: string[] = []
 
   recoverQueuedAnswers(sessionId, ctx.env)
   let state = readSessionState(sessionId, ctx.env)
@@ -586,6 +679,27 @@ export async function handleUserPromptSubmit(
     }
   }
   if (state.accepted !== undefined) {
+    // A journaled write of this batch already began (claimed, or recorded
+    // after an unclaimed hand-off): adding it to this turn would hand it over
+    // twice. It settles instead; its acknowledgement stays owed.
+    const written = answersAlreadyWritten(
+      sessionId,
+      ctx.env,
+      state.accepted.answers.flatMap(({ pending }) => (pending.request_id === undefined ? [] : [pending.request_id])),
+    )
+    if (written.length > 0) {
+      settleAcceptedAnswers(ctx, sessionId, state.accepted, envelope.cwd)
+      ctx.log?.info('hook.answer', {
+        answered: true,
+        stage: 'replay-suppressed',
+        route: 'user-prompt-submit',
+        journal: written.map((entry) => `${entry.requestId}:${entry.stage}`),
+      })
+      notes.push('an earlier hand-off of the journaled answer already began its write; not adding it to this turn')
+      state = readSessionState(sessionId, ctx.env)
+    }
+  }
+  if (state.accepted !== undefined) {
     const answers = [
       ...(state.delivered_answers ?? []),
       ...acceptedAnswersAwaitingAcknowledgement(state.accepted, state),
@@ -600,14 +714,18 @@ export async function handleUserPromptSubmit(
     }
     const stdout = userPromptContextOutput(
       ctx.harness,
-      answersContext(answers, state.accepted.remaining),
+      withReminder(reminder, answersContext(answers, state.accepted.remaining)),
     )
     if (stdout !== undefined) {
       notes.push('the journaled device answer was added to the user\'s new turn')
+      const selected = unclaimedSelectedAnswers(sessionId, ctx.env, answers)
       return {
         stdout,
         decided: false,
         notes,
+        ...(selected.length === 0
+          ? {}
+          : { afterOutput: () => reportHandedOffAfterTheFact(ctx, sessionId, selected) }),
         log: {
           stage: 'context-added',
           route: 'user-prompt-submit',
@@ -743,7 +861,10 @@ export async function handleUserPromptSubmit(
     // host dies around stdout, a later prompt or Stop safely replays it.
     const stdout = userPromptContextOutput(
       ctx.harness,
-      answersContext([...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
+      withReminder(
+        reminder,
+        answersContext([...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
+      ),
     )
     if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
     else notes.push('the late device answer will continue the agent at this turn’s Stop')
@@ -767,13 +888,14 @@ export async function handleUserPromptSubmit(
   }
   const retired = await drainRetirements(ctx, sessionId, ctx.env)
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
+  await sweepDeliveryJournalsFor(ctx)
   const swept = [...retired, ...orphaned]
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
   }
   const delivered = readSessionState(sessionId, ctx.env).delivered_answers ?? []
   const stdout = delivered.length > 0
-    ? userPromptContextOutput(ctx.harness, answersContext(delivered, pendingList(updated).length))
+    ? userPromptContextOutput(ctx.harness, withReminder(reminder, answersContext(delivered, pendingList(updated).length)))
     : undefined
   return {
     notes,
@@ -979,13 +1101,13 @@ export async function runEscalationWaiter(
     }
 
     if (
-      state.accepted === undefined && (state.acknowledgement_due?.length ?? 0) > 0 &&
+      state.accepted === undefined && owedAcknowledgements(state).length > 0 &&
       !(options.recordStop === false && options.route.kind === 'session-queue')
     ) {
       const due = await reconcileAcknowledgementObligations(
         ctx,
         sessionId,
-        state.acknowledgement_due!,
+        owedAcknowledgements(state),
       )
       const held = holdForAcknowledgement(ctx, sessionId, due, notes)
       if (held !== null) return held
@@ -999,6 +1121,7 @@ export async function runEscalationWaiter(
         ...(await drainRetirements(ctx, sessionId, ctx.env)),
         ...(await drainOrphanRetirements(ctx, ctx.env, ctx.now())),
       ]
+      await sweepDeliveryJournalsFor(ctx)
       if (swept.length > 0) {
         notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
       }
@@ -1088,6 +1211,8 @@ async function deliverAcceptedAnswers(
     notes.push('the Agent Session ended before answer delivery; stopping this observer')
     return { notes }
   }
+  const replayed = await suppressWrittenReplay(ctx, sessionId, accepted, notes, cwd)
+  if (replayed !== null) return replayed
   const held = accepted.held_deliveries ?? 0
   if (held >= MAX_HELD_DELIVERIES) {
     gate(ctx, 'held', 'delivery-limit', {
@@ -1157,14 +1282,44 @@ async function deliverAcceptedAnswers(
       return true
     })
   }
-  let delivered = await route.deliver({
-    context: answersContext(answered, remaining),
-    answers: answered.length,
-    remaining,
-    request_ids: requestIds,
-    journal_recorded_at: accepted.recorded_at,
-    commitDelivery,
-  })
+  // Answers a `deliver` close selected are claimed first, under this session's
+  // delivery lock, so an Answer Edit can only follow the write. A claim that
+  // cannot be had never withholds the answer: it is written unclaimed, as
+  // released CLIs write it, and its edits simply wait.
+  const handOff = await claimAnswerHandOff(ctx, sessionId, route, answered)
+  let delivered: DeliveryOutcome
+  try {
+    delivered = await route.deliver({
+      context: answersContext(answered, remaining),
+      answers: answered.length,
+      remaining,
+      request_ids: requestIds,
+      journal_recorded_at: accepted.recorded_at,
+      commitDelivery:
+        handOff === null
+          ? commitDelivery
+          : (writer) => handOff.begin(commitDelivery, { subprocess: writer === 'subprocess' }),
+      ...(handOff === null || handOff.claimed.length === 0
+        ? {}
+        : {
+            writeGuard: { writable: () => handOff.writable(), remainingMs: () => handOff.remainingMs() },
+            writerGroup: (pgid: number) => handOff.recordGroup(pgid),
+          }),
+    })
+  } catch (err) {
+    await handOff?.finish('failed')
+    throw err
+  }
+  await handOff?.finish(
+    delivered.acknowledgement === 'delivered'
+      ? 'written'
+      : delivered.log?.['reason'] === WRITE_ABORTED_REASON
+        ? 'aborted'
+        : 'not-written',
+  )
+  if (delivered.acknowledgement === 'delivered' && deliveryCommitted) {
+    await reportUnclaimedHandOff(ctx, sessionId, answered, handOff)
+  }
   if (delivered.acknowledgement === 'delivered' && !deliveryCommitted) {
     delivered = {
       notes: [
@@ -1212,6 +1367,192 @@ async function deliverAcceptedAnswers(
     outcome.settlementRequired = pendingList(readSessionState(sessionId, ctx.env)).length > 0
   }
   return outcome
+}
+
+/**
+ * A restart must never write an answer twice. When this session's delivery
+ * journal shows that an earlier hand-off of any answer in the batch already
+ * began its write — completed (`written`) or possibly (`writing`, `failed`) —
+ * the batch settles without another write. Journal recovery reports the
+ * earlier attempt's outcome; an unconfirmed one is never retried.
+ */
+async function suppressWrittenReplay(
+  ctx: HookContext,
+  sessionId: string,
+  accepted: AcceptedAnswerDelivery,
+  notes: string[],
+  cwd?: string,
+): Promise<HookOutcome | null> {
+  const requestIds = accepted.answers.flatMap(({ pending }) =>
+    pending.request_id === undefined ? [] : [pending.request_id],
+  )
+  const written = answersAlreadyWritten(sessionId, ctx.env, requestIds)
+  if (written.length === 0) return null
+  if (ctx.answerClaims !== undefined) {
+    try {
+      await recoverDeliveryJournal(answerSequencer(ctx, sessionId, ctx.answerClaims))
+    } catch {
+      // Reporting is recovery's to retry; suppression does not depend on it.
+    }
+  }
+  settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
+  ctx.log?.info('hook.answer', {
+    answered: true,
+    stage: 'replay-suppressed',
+    request_ids: requestIds,
+    journal: written.map((entry) => `${entry.requestId}:${entry.stage}`),
+  })
+  notes.push('an earlier hand-off of this answer already began its write; not writing it again')
+  return { notes, log: { stage: 'replay-suppressed', request_ids: requestIds } }
+}
+
+/**
+ * The Answer Edit release rule needs the fenced answer's outcome. A selected
+ * answer written without a claim (the lease moved, the lock stayed busy, the
+ * claim was refused) is recorded after the fact as handed off, so its edits
+ * follow it instead of waiting on an attempt that never existed.
+ */
+async function reportUnclaimedHandOff(
+  ctx: HookContext,
+  sessionId: string,
+  answered: AnsweredPending[],
+  handOff: HandOff | null,
+): Promise<void> {
+  const claimed = new Set(
+    (handOff?.claimed ?? []).flatMap((attempt) =>
+      attempt.subject.type === 'answer' ? [attempt.subject.request_id] : [],
+    ),
+  )
+  const unclaimed = answered.flatMap(({ pending, delivery_claim }) =>
+    delivery_claim === true && pending.request_id !== undefined && !claimed.has(pending.request_id)
+      ? [pending.request_id]
+      : [],
+  )
+  await reportHandedOffAfterTheFact(ctx, sessionId, unclaimed)
+}
+
+/**
+ * Journal, then record, selected answers already written without a claim. A
+ * record that fails stays in this session's delivery journal, so the next
+ * hand-off here or the machine-wide sweep records it later.
+ */
+export async function reportHandedOffAfterTheFact(
+  ctx: HookContext,
+  sessionId: string,
+  requestIds: readonly string[],
+): Promise<void> {
+  if (requestIds.length === 0) return
+  const writer = ctx.answerClaims?.writer ?? currentProcessIdentity()
+  if (writer === null) return
+  await recordUnclaimedHandOffs(
+    {
+      sessionId,
+      env: ctx.env,
+      client: ctx.client,
+      monotonic: ctx.answerClaims?.monotonic ?? (() => performance.now()),
+      wall: ctx.now,
+      sleep: ctx.sleep,
+      writer,
+      ...(ctx.log === undefined ? {} : { log: ctx.log }),
+    },
+    requestIds,
+  )
+}
+
+function answerSequencer(ctx: HookContext, sessionId: string, claims: NonNullable<HookContext['answerClaims']>): SequencerDeps {
+  return {
+    sessionId,
+    env: ctx.env,
+    client: ctx.client,
+    monotonic: claims.monotonic,
+    wall: ctx.now,
+    sleep: ctx.sleep,
+    writer: claims.writer,
+    ...(ctx.log === undefined ? {} : { log: ctx.log }),
+  }
+}
+
+/**
+ * Selected answers this prompt hands off in its context without a claim; the
+ * ones a claimed write already covered are left to that attempt.
+ */
+function unclaimedSelectedAnswers(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  answers: readonly AnsweredPending[],
+): string[] {
+  const selected = answers.flatMap(({ pending, delivery_claim }) =>
+    delivery_claim === true && pending.request_id !== undefined ? [pending.request_id] : [],
+  )
+  const covered = new Set(answersAlreadyWritten(sessionId, env, selected).map((entry) => entry.requestId))
+  return selected.filter((requestId) => !covered.has(requestId))
+}
+
+/** The machine-wide journal sweep, from a hook that already holds a client. */
+async function sweepDeliveryJournalsFor(ctx: HookContext): Promise<void> {
+  const writer = ctx.answerClaims?.writer ?? currentProcessIdentity()
+  if (writer === null) return
+  try {
+    await sweepDeliveryJournals({
+      env: ctx.env,
+      client: ctx.client,
+      writer,
+      now: ctx.now(),
+      ...(ctx.log === undefined ? {} : { log: ctx.log }),
+    })
+  } catch {
+    // Housekeeping never fails a hook; the next sweep retries.
+  }
+}
+
+/** How long a waiter waits for the attendant to re-acquire a moved lease. */
+const ANSWER_CLAIM_RETRY_MS = 2_000
+const ANSWER_CLAIM_ROUNDS = 3
+
+/**
+ * Claim every selected answer of this batch for one in-place write, or null
+ * when nothing may be claimed: no attendant lease, a route that does not write
+ * in place, or a delivery lock another writer kept.
+ */
+async function claimAnswerHandOff(
+  ctx: HookContext,
+  sessionId: string,
+  route: EscalationDeliveryRoute,
+  answered: AnsweredPending[],
+): Promise<HandOff | null> {
+  const claims = ctx.answerClaims
+  const subjects = answered.flatMap(({ pending, delivery_claim }) =>
+    delivery_claim === true && pending.request_id !== undefined
+      ? [{ type: 'answer' as const, request_id: pending.request_id }]
+      : [],
+  )
+  if (claims === undefined || subjects.length === 0 || !claimableRoute(route)) return null
+  const deps = answerSequencer(ctx, sessionId, claims)
+  for (let round = 1; ; round += 1) {
+    const lease = claims.lease()
+    const handOff = lease === null ? null : await beginHandOff(deps, { lease, subjects })
+    if (handOff === null) {
+      ctx.log?.info('delivery.claimed', {
+        subject: 'answer',
+        request_ids: subjects.map((subject) => subject.request_id),
+        claimed: false,
+        reason: lease === null ? 'no-attendant-lease' : 'delivery-lock-busy',
+      })
+      if (lease === null && round < ANSWER_CLAIM_ROUNDS) {
+        await ctx.sleep(ANSWER_CLAIM_RETRY_MS)
+        continue
+      }
+      return null
+    }
+    // A lease that moved between the close and this claim is re-read once the
+    // attendant has had a moment to re-acquire; any other refusal is final.
+    const fenced =
+      handOff.claimed.length === 0 &&
+      handOff.refused.every((refusal) => refusal.reason === 'generation_fenced')
+    if (!fenced || round >= ANSWER_CLAIM_ROUNDS) return handOff
+    await handOff.finish('not-written')
+    await ctx.sleep(ANSWER_CLAIM_RETRY_MS)
+  }
 }
 
 /** True while this Stop owner is still allowed a direct-wake wait. */
@@ -1270,6 +1611,7 @@ async function handleClaimedStop(
       const finalized = await finalizePendings(
         ctx,
         answered.map((entry) => entry.pending),
+        answerCloseDisposition(ctx, route),
       )
       const authoritative = answered.map((entry) => {
         const response = finalized.find((candidate) =>
@@ -1291,6 +1633,7 @@ async function handleClaimedStop(
         agent_acknowledgement_text_required:
           response?.agent_acknowledgement_text_required ??
           entry.agent_acknowledgement_text_required,
+        ...claimMarker(response),
       }
       })
       const accepted = stageAcceptedAnswers(
@@ -1650,7 +1993,7 @@ async function escalate(
     if (intent.draft.source === undefined) delete live.source
     delete live.submission
     if (live.reply_deadline_at! > live.owner_deadline_at!) {
-      const response = await finalizeReplies(ctx, live.request_id!)
+      const response = await finalizeReplies(ctx, live.request_id!, answerCloseDisposition(ctx, route))
       if (response === null) {
         // Closing was unreachable, so the question is still potentially live.
         // Preserve it in the exact session instead of demoting it to the orphan
@@ -1691,6 +2034,7 @@ async function escalate(
           agent_acknowledgement_required: response.agent_acknowledgement_required,
           agent_acknowledgement_text_required:
             response.agent_acknowledgement_text_required,
+          ...claimMarker(response),
         })
       }
       dropPendingQuestion(sessionId, ctx.env, entry)
@@ -1762,7 +2106,7 @@ async function escalate(
     (entry) =>
       entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now(),
   )
-  const finalizedStale = await finalizePendings(ctx, staleLive)
+  const finalizedStale = await finalizePendings(ctx, staleLive, answerCloseDisposition(ctx, route))
   const staleAnswers = finalizedStale
     .map(finalizedAnswer)
     .filter((entry): entry is AnsweredPending => entry !== null)
@@ -1873,7 +2217,7 @@ async function escalate(
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
-    const finalized = await finalizePendings(ctx, expired)
+    const finalized = await finalizePendings(ctx, expired, answerCloseDisposition(ctx, route))
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)
@@ -1927,7 +2271,7 @@ async function escalate(
   }
 
   const polledAnswered = activeWaiting.filter((entry) => waited.byRequest.has(entry.request_id!))
-  const finalizedAnswered = await finalizePendings(ctx, polledAnswered)
+  const finalizedAnswered = await finalizePendings(ctx, polledAnswered, answerCloseDisposition(ctx, route))
   const answered: AnsweredPending[] = []
   for (const finalized of finalizedAnswered) {
     const entry = finalized.pending
@@ -1946,6 +2290,7 @@ async function escalate(
         finalized.response?.agent_acknowledgement_required,
       agent_acknowledgement_text_required:
         finalized.response?.agent_acknowledgement_text_required,
+      ...claimMarker(finalized.response),
     })
     if (finalized.response === null) {
       notes.push(
@@ -2041,13 +2386,20 @@ export function handleSessionEnd(
       `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
     )
   }
-  if (state.accepted !== undefined || (state.acknowledgement_due?.length ?? 0) > 0) {
+  if (
+    state.accepted !== undefined ||
+    (state.acknowledgement_due?.length ?? 0) > 0 ||
+    (state.message_acknowledgement_due?.length ?? 0) > 0
+  ) {
     const preserved: SessionState = { ...stateWithHistory }
     delete preserved.pending
     delete preserved.retiring
     delete preserved.acknowledgement_blocks
     if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
       delete preserved.acknowledgement_due
+    }
+    if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
+      delete preserved.message_acknowledgement_due
     }
     writeSessionState(sessionId, env, preserved)
     notes.push(
@@ -2062,6 +2414,9 @@ export function handleSessionEnd(
         queued_retirements: orphans.length,
         accepted_answers: state.accepted?.answers.length ?? 0,
         acknowledgement_due: state.acknowledgement_due?.length ?? 0,
+        ...(state.message_acknowledgement_due === undefined
+          ? {}
+          : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
       },
     }
   }

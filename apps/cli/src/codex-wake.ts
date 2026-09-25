@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { accessSync, constants, existsSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
 import {
@@ -6,7 +6,8 @@ import {
   type DeliveryOutcome,
   type EscalationDeliveryRoute,
 } from './hook-types.js'
-import { cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
+import { deliverIntoCodexThread } from './session-handoff.js'
+import { abortedDelivery, cancelledDelivery, holdForNextTurn, runWakeCommand } from './wake-support.js'
 
 /** Codex thread ids are UUIDs, and `--thread` wants that exact id. */
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -21,8 +22,24 @@ const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 export const CODEX_QUEUE_STORE_FILE = 'queue_1.sqlite'
 
 export interface CodexWakeAdapters {
-  /** Write one message into the thread's durable inbox via `codex queue`. */
-  queue(threadId: string, cwd: string, context: string): Promise<void>
+  /**
+   * Write one message into the thread's durable inbox via `codex queue`.
+   * `onSpawn` receives the child's own process group as soon as it exists.
+   * When `signal` aborts, the whole group is killed and the call rejects:
+   * a claimed write never outlives its claim.
+   */
+  queue(
+    threadId: string,
+    cwd: string,
+    context: string,
+    onSpawn?: (pgid: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void>
+  /**
+   * Whether the `codex` executable `queue` runs can be found at all. A
+   * resident writer asks once, before it offers to take Session Messages.
+   */
+  available?(): boolean
 }
 
 export type CodexQueueReadiness =
@@ -98,15 +115,27 @@ export function codexWakeRoute(options: {
   return {
     kind: 'session-queue',
     async deliver(event: ContinuationEvent): Promise<DeliveryOutcome> {
-      const readiness = inspectCodexQueue(options.threadId, env)
-      if (readiness.state === 'unavailable') return holdForNextTurn(readiness.reason)
-      if (!event.commitDelivery()) return cancelledDelivery()
-      try {
-        await adapters.queue(readiness.threadId, options.cwd, event.context)
-      } catch (err) {
-        return holdForNextTurn(
-          `queueing the answer into the Codex thread failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
+      const written = await deliverIntoCodexThread({
+        threadId: options.threadId,
+        cwd: options.cwd,
+        env,
+        adapters,
+        text: event.context,
+        // `codex queue` is a subprocess writer.
+        begin: () => event.commitDelivery('subprocess'),
+        ...(event.writeGuard === undefined ? {} : { guard: event.writeGuard }),
+        onSpawn: (pgid) => event.writerGroup?.(pgid),
+      })
+      if (written.status === 'unavailable') return holdForNextTurn(written.reason)
+      if (written.status === 'cancelled' || written.status === 'stopped') return cancelledDelivery()
+      if (written.status === 'aborted') return abortedDelivery()
+      if (written.status === 'failed') {
+        // A claimed answer (the Session Attendant holds this thread's lease)
+        // may have reached the queue: it is reported unconfirmed and never
+        // written again, exactly like a failed inbox write. An unclaimed one
+        // is held for the next turn, as it always was.
+        if (event.writeGuard !== undefined) throw written.error
+        return holdForNextTurn(`queueing the answer into the Codex thread failed: ${written.reason}`)
       }
       return {
         notes: [
@@ -131,7 +160,7 @@ export function codexWakeRoute(options: {
 
 function runCodex(
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
+  options: { cwd: string; env: NodeJS.ProcessEnv; onSpawn?: (pgid: number) => void; signal?: AbortSignal },
 ): Promise<string> {
   return runWakeCommand('codex', args, options)
 }
@@ -140,9 +169,29 @@ export function systemCodexWakeAdapters(
   env: NodeJS.ProcessEnv = process.env,
 ): CodexWakeAdapters {
   return {
-    async queue(threadId, cwd, context) {
+    available: () => executableOnPath('codex', env),
+    async queue(threadId, cwd, context, onSpawn, signal) {
       if (!existsSync(cwd)) throw new Error(`Codex thread cwd no longer exists: ${cwd}`)
-      await runCodex(['queue', '--thread', threadId, '--message', context], { cwd, env })
+      await runCodex(['queue', '--thread', threadId, '--message', context], {
+        cwd,
+        env,
+        ...(onSpawn === undefined ? {} : { onSpawn }),
+        ...(signal === undefined ? {} : { signal }),
+      })
     },
   }
+}
+
+/** Whether `name` resolves to an executable file on this environment's PATH (POSIX). */
+function executableOnPath(name: string, env: NodeJS.ProcessEnv): boolean {
+  for (const directory of (env['PATH'] ?? '').split(path.delimiter)) {
+    if (directory === '') continue
+    try {
+      accessSync(path.join(directory, name), constants.X_OK)
+      return true
+    } catch {
+      // Not here; keep looking.
+    }
+  }
+  return false
 }

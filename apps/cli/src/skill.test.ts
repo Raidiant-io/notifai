@@ -28,6 +28,16 @@ const harnessReference = readFileSync(
   new URL('../../../skills/notifai/references/harness-setup.md', import.meta.url),
   'utf8',
 )
+const diagnosticsReference = readFileSync(
+  new URL('../../../skills/notifai/references/diagnostics.md', import.meta.url),
+  'utf8',
+)
+const sendDetailsReference = readFileSync(
+  new URL('../../../skills/notifai/references/send-details.md', import.meta.url),
+  'utf8',
+)
+/** The skill and the references it links: everything an agent can reach from it. */
+const reachable = [skill, harnessReference, diagnosticsReference, sendDetailsReference].join('\n')
 const rootReadme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8')
 const cliReadme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
 
@@ -80,11 +90,14 @@ describe('Notifai agent skill', () => {
     expect(skill).toMatch(/verification Notification[\s\S]*does not deliver\s+the original Agent Event/i)
   })
 
-  it('fits inside the budget a skill is actually read within', () => {
+  it('fits inside the budget a skill is actually read within, with room to grow', () => {
     // Long skills are truncated in exactly the long sessions that need them.
-    // The old skill sat at ~4,800 tokens; this ceiling keeps a working margin.
+    // The old skill sat at ~4,800 tokens; the ceiling keeps a working margin,
+    // and the core text stays at least 10% under it: detail belongs in
+    // references, not in a skill with no room for its next rule.
     const approximateTokens = skill.length / 4
     expect(approximateTokens).toBeLessThan(4_400)
+    expect(approximateTokens).toBeLessThanOrEqual(4_400 * 0.9)
   })
 
   it('decides whether to notify before it composes anything', () => {
@@ -228,6 +241,9 @@ describe('Notifai agent skill', () => {
     expect(send).toContain('--body-file')
     expect(send).toMatch(/optional standalone Markdown for focused detail/i)
     expect(send).toContain('media:1')
+    expect(send).toContain('[Sending details](references/send-details.md)')
+    expect(sendDetailsReference).toMatch(/Bare `media:1`[\s\S]*is an error/)
+    expect(sendDetailsReference).toMatch(/belong to the User/)
     // Type and project are structured fields, never title text.
     expect(send).toMatch(/kind and the project travel as their own\s+fields, never in it/i)
   })
@@ -447,6 +463,9 @@ describe('Notifai agent skill', () => {
     expect(check).toContain('notifai logs')
     expect(check).toContain('hook.gate')
     expect(check).toMatch(/never leaves the machine/i)
+    expect(check).toContain('[Diagnosing what happened](references/diagnostics.md)')
+    expect(diagnosticsReference).toMatch(/never leaves the machine/i)
+    expect(diagnosticsReference).toContain('notifai auth access --json')
   })
 
   it('advertises exactly the gate reasons the code can emit', () => {
@@ -454,8 +473,7 @@ describe('Notifai agent skill', () => {
     // `no-devices` for months, neither of which was ever emitted, while
     // `answered`, `acknowledgement-required` and `proceeding` went undocumented.
     // Reading the vocabulary from the code makes that impossible to repeat.
-    const check = section('## Check what happened')
-    const documented = [...check.matchAll(/`([a-z]+(?:-[a-z]+)*)`/g)].map((m) => m[1]!)
+    const documented = [...diagnosticsReference.matchAll(/`([a-z]+(?:-[a-z]+)*)`/g)].map((m) => m[1]!)
     const advertised = new Set(documented.filter((word) => GATE_REASONS.includes(word as never)))
     for (const reason of GATE_REASONS) {
       // `elapsed` is debug-only bookkeeping, not a routing verdict an agent acts on.
@@ -491,7 +509,7 @@ describe('Notifai agent skill', () => {
       'notifai status',
       'notifai sounds',
     ]) {
-      expect(skill, `${command} is unreachable from the skill`).toContain(command)
+      expect(reachable, `${command} is unreachable from the skill`).toContain(command)
     }
   })
 

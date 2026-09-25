@@ -21,7 +21,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
 import { registerQuestion } from './hook-lifecycle.js'
 import { readSessionState } from './hook-session-state.js'
-import { codexTrustProblems, findInstallations } from './install-hooks.js'
+import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
@@ -557,7 +557,7 @@ export function askCommand(
       (installation) => installation.harness === active.harness,
     )
     const trustProblems = active.harness === 'codex'
-      ? codexTrustProblems(matchingInstallations, deps.env)
+      ? codexRoutingTrustProblems(matchingInstallations, deps.env)
       : []
     if (trustProblems.length > 0) {
       return askFailure(

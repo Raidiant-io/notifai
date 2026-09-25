@@ -290,3 +290,40 @@ again creates a separate question.
 Agent Session's local state and queues any leftover questions for retirement so
 they do not sit on your devices after the agent is gone. It has to run here
 because no later hook for this Agent Session will fire.
+
+**Session Attendant** (`attend`, Claude Code and Codex on macOS and Linux) is a second,
+asynchronous handler on SessionStart, UserPromptSubmit, and Stop. It keeps one
+small process per Agent Session running as that session's own hook child, so
+your devices can show whether the session is still running, working, or idle.
+It checks locally every two seconds that the exact harness process still hosts
+this exact session, and makes no network call until the session has sent a
+Notification Request, so sessions that never notified are never reported. It
+ends itself when the session ends, including when the harness is killed or its
+terminal closes, and withdraws when the Project is disabled or the hooks are
+removed. Only an opaque id leaves the machine: never process ids, paths, or
+session files. The UserPromptSubmit and Stop copies restart it if it died and
+otherwise exit at once. `notifai doctor` shows each attendant's state.
+
+The attendant also hands a note, or a change to an answer the agent already
+received, from your devices into that running session in place, over the same
+route a detached answer uses: Claude Code's inbox socket, or the Codex thread's
+own queue. Each hand-off is claimed first, so an edited answer can only follow
+the answer it replaces, and nothing is written twice. The agent acknowledges
+each one with `notifai acknowledge sm_…`, exactly as it acknowledges an
+answered request. A Claude Code session without an inbox socket (for example
+`--bare`), or a Codex session whose hooks cannot find the `codex` executable,
+keeps presence only and accepts no notes.
+
+On Codex the attendant differs in three ways. Codex enforces every async hook
+timeout, so the attend handler declares the complete answer window (about 72
+hours) and the next prompt or turn end restarts it after that. Codex publishes
+no session status, so working or idle comes from this thread's own prompt,
+turn-end, and interrupt hooks (a third attend copy on Interrupt only records
+that the turn ended). And Codex kills the attendant as soon as SessionEnd returns, so
+SessionEnd itself reports the session ended. A Codex thread that is no longer
+loaded has no attendant. Codex runs hooks through your login `$SHELL`; bash
+and zsh hand the hook straight to Codex's own child, and a shell that keeps
+running in between leaves the session's presence unknown rather than guessed. Codex marks new or changed hooks for review: after
+installing, open `/hooks` in Codex once and approve the Notifai handlers.
+`notifai doctor` names any handler still waiting. Question Routing does not
+wait for that approval.

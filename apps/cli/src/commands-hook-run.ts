@@ -14,6 +14,7 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
+import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -28,6 +29,7 @@ import {
 import {
   claimCursorStopActivation,
   confirmCursorStopActivation,
+  lifecycleStamp,
   pruneAbandonedSessions,
   readSessionState,
   recordSessionStart,
@@ -47,6 +49,9 @@ import { projectBinding, projectEnabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { cursorStopActivationOutput, sessionActivationOutput } from './session-activation.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { attendantSupport } from './session-attendant-probe.js'
+import { readAttendantLease } from './session-attendant-state.js'
 const INTERNAL_HOOK_EVENTS = ['question-settlement'] as const
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
@@ -84,6 +89,9 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
+  // Taken before stdin is read: an end the harness recorded before this
+  // invocation began belongs to an earlier incarnation of the session.
+  const invokedAt = lifecycleStamp(now())
   // One owner lifetime covers startup and the longest answer window. Claude
   // runs it detached; Codex holds the turn. The delivery mechanism does not
   // change how long the exact Agent Session remains reachable.
@@ -158,6 +166,17 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  if (event === 'attend') {
+    logger.bind({ session: envelope.session_id ?? null })
+    start({ cwd, event: envelope.hook_event_name ?? null, source: envelope.source ?? null })
+    try {
+      return await attendHook(deps, { envelope, harness, cwd, invokedAt, logger })
+    } catch (err) {
+      // A resident process that throws must still hand the harness exit 0.
+      logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
+      return EXIT.ok
+    }
+  }
   const launchSettlement = (): Record<string, unknown> => {
     const sessionId = envelope.session_id
     if (sessionId === undefined || harness === undefined) return {}
@@ -234,7 +253,7 @@ export async function hookRunCommand(
               findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform),
             )
           : undefined
-        recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint)
+        recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint, invokedAt)
         if (harness === 'codex') {
           // Pending state is the durable handoff debt if the prior process
           // died after queue commit but before starting its successor.
@@ -257,6 +276,11 @@ export async function hookRunCommand(
     })
     return EXIT.ok
   }
+
+  // A Codex turn starts here. This prompt hook is synchronous, so Codex runs it
+  // before the turn and one turn at a time: the Session Attendant reads the
+  // thread's activity from starts recorded in that order.
+  if (event === 'user-prompt-submit' && harness === 'codex') recordCodexTurnStart(envelope, deps.env)
 
   // Cursor has a confirmed host bug in which sessionStart.additional_context
   // is accepted but never reaches the model. A native Stop follow-up is the
@@ -404,6 +428,11 @@ export async function hookRunCommand(
         })
       }
       for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
+      if (harness === 'codex' && envelope.session_id !== undefined) {
+        // Codex kills the attendant as soon as this hook returns.
+        const reported = await reportCodexSessionEnded(deps, envelope.session_id)
+        logger.info('attendant.lease', { event: 'ended-by-session-end', outcome: reported })
+      }
       return EXIT.ok
     }
 
@@ -455,6 +484,7 @@ export async function hookRunCommand(
       },
       log: logger,
       ...(harness === undefined ? {} : { harness }),
+      ...answerClaimsFor(deps, harness, envelope.session_id, event),
     }
 
     // Real clock, deliberately, not `deps.now`. This compares against file
@@ -502,6 +532,11 @@ export async function hookRunCommand(
       // SessionEnd fence and the irreversible harness stdout write.
       if (outcome.commitStdout === undefined || outcome.commitStdout()) {
         deps.io.out(outcome.stdout)
+        try {
+          await outcome.afterOutput?.()
+        } catch {
+          // Recording what the hand-off proved never fails the hook.
+        }
       } else {
         deps.io.err('notifai: the Agent Session ended before answer delivery; no continuation was written')
       }
@@ -560,6 +595,30 @@ function stopWakeRoute(
     })
   }
   return undefined
+}
+
+/**
+ * The Stop waiter claims fenced answers only where a Session Attendant can
+ * hold the session's lease and the answer is written in place: Claude Code on
+ * macOS and Linux. Everywhere else it closes and writes exactly as before.
+ */
+function answerClaimsFor(
+  deps: CommandDeps,
+  harness: HookInstallableHarness | undefined,
+  sessionId: string | undefined,
+  event: string,
+): Pick<HookContext, 'answerClaims'> {
+  if (sessionId === undefined || (event !== 'stop' && event !== 'question-settlement')) return {}
+  if (!attendantSupport(harness, deps.hookPlatform ?? process.platform).supported) return {}
+  const writer = deps.answerWriter === undefined ? currentProcessIdentity() : deps.answerWriter
+  if (writer === null) return {}
+  return {
+    answerClaims: {
+      lease: () => readAttendantLease(sessionId, deps.env),
+      writer,
+      monotonic: () => performance.now(),
+    },
+  }
 }
 
 /** Stable harness parent propagated by the managed adapter across child tools. */

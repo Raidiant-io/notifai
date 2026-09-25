@@ -1,4 +1,6 @@
 /** Explicit question closure across remote and local lifecycle state. */
+import type { CloseRepliesResponse, ListRepliesResponse } from '@raidiant/notifai-protocol'
+import type { ApiClient } from './client.js'
 import { resolveCommandSession } from './command-session.js'
 import {
   EXIT,
@@ -12,6 +14,20 @@ import { parkForRetirement, retireQueuedQuestions } from './hook-question-retire
 import { dropPendingQuestion } from './hook-question-state.js'
 import { readSessionState } from './hook-session-state.js'
 import { type PendingQuestion } from './hook-types.js'
+
+/**
+ * An explicit close is a retirement: whatever replies it returns go to the
+ * command's caller, never through a claimed hand-off, so they are not selected
+ * for delivery. The printed response keeps its released shape.
+ */
+async function retireReplies(client: ApiClient, requestId: string): Promise<ListRepliesResponse> {
+  const response: Partial<CloseRepliesResponse> & ListRepliesResponse = {
+    ...(await client.closeReplies(requestId, 'retire')),
+  }
+  delete response.close_disposition
+  delete response.delivered_reply_seq
+  return response
+}
 
 /** Retire a question so a late answer is rejected rather than silently lost. */
 export async function closeCommand(
@@ -44,7 +60,7 @@ export async function closeCommand(
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    const response = await authed.client.closeReplies(requestId!)
+    const response = await retireReplies(authed.client, requestId!)
     forgetClosedQuestion(deps, requestId!)
     if (flags.json) {
       deps.io.out(
@@ -110,7 +126,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     if (!authed) return EXIT.auth
     for (const entry of live) {
       try {
-        await authed.client.closeReplies(entry.request_id)
+        await retireReplies(authed.client, entry.request_id)
         parkClosedQuestion(sessionId, deps.env, entry)
         dropPendingQuestion(sessionId, deps.env, entry)
         closed.push(entry.request_id)
@@ -203,7 +219,7 @@ async function closeLocalQuestion(
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
   try {
-    const response = await authed.client.closeReplies(entry.request_id)
+    const response = await retireReplies(authed.client, entry.request_id)
     parkClosedQuestion(sessionId, deps.env, entry)
     dropPendingQuestion(sessionId, deps.env, entry)
     if (json) {

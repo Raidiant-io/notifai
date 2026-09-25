@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import {
   CODEX_QUEUE_STORE_FILE,
   codexHome,
@@ -11,6 +11,7 @@ import {
   systemCodexWakeAdapters,
   type CodexWakeAdapters,
 } from './codex-wake.js'
+import { WriteDeadlineError } from './wake-support.js'
 
 const THREAD_ID = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 
@@ -116,8 +117,9 @@ describe('Codex queue delivery', () => {
   it('is the only delivery the route can make: there is no resume path to double up with', () => {
     // `codex exec resume <id> "<prompt>"` drains the pending queue *and* runs
     // the prompt, so an adapter offering both would deliver one answer twice.
-    // The guarantee is structural: the adapter surface exposes queueing alone.
-    expect(Object.keys(systemCodexWakeAdapters({ CODEX_HOME: '/tmp' }))).toEqual(['queue'])
+    // The guarantee is structural: queueing is the adapter surface's only
+    // write; `available` only looks for the executable.
+    expect(Object.keys(systemCodexWakeAdapters({ CODEX_HOME: '/tmp' })).sort()).toEqual(['available', 'queue'])
     expect(route(adapters()).kind).toBe('session-queue')
   })
 
@@ -157,5 +159,69 @@ describe('Codex queue delivery', () => {
       },
     })
     expect(order).toEqual(['commit', 'queue'])
+  })
+})
+
+describe('claimed Codex answer writes', () => {
+  it('writes nothing when the claim lapsed between commit and the queue writer', async () => {
+    const wake = adapters()
+    const outcome = await route(wake).deliver({
+      ...event,
+      writeGuard: { writable: () => false, remainingMs: () => 0 },
+    })
+    expect(wake.queued).toEqual([])
+    expect(outcome.acknowledgement).toBe('held')
+    expect(outcome.log).toMatchObject({ reason: 'write-aborted' })
+  })
+
+  it('reports a failed claimed write as possibly written, never holding it for another write', async () => {
+    const failure = new Error('codex queue exited 1')
+    await expect(
+      route(adapters({ fail: failure })).deliver({
+        ...event,
+        writeGuard: { writable: () => true, remainingMs: () => 30_000 },
+      }),
+    ).rejects.toBe(failure)
+  })
+})
+
+describe('Codex queue writer availability', () => {
+  it('finds the codex executable only on the hook environment PATH', () => {
+    const directory = temporaryDirectory()
+    expect(systemCodexWakeAdapters({ PATH: directory }).available?.()).toBe(false)
+    const executable = path.join(directory, 'codex')
+    writeFileSync(executable, '#!/bin/sh\n')
+    chmodSync(executable, 0o755)
+    expect(systemCodexWakeAdapters({ PATH: directory }).available?.()).toBe(true)
+  })
+})
+
+describe('the codex queue writer\u2019s deadline', () => {
+  it.skipIf(process.platform === 'win32')('kills a stalled codex queue and everything it started, and rejects', async () => {
+    const directory = temporaryDirectory()
+    const executable = path.join(directory, 'codex')
+    // A queue writer that stalls with a child of its own.
+    writeFileSync(executable, '#!/bin/sh\nsleep 30 &\nwait\n')
+    chmodSync(executable, 0o755)
+    const wake = systemCodexWakeAdapters({ PATH: `${directory}:/bin:/usr/bin` })
+    let pgid = 0
+    let spawned!: () => void
+    const started = new Promise<void>((resolve) => {
+      spawned = resolve
+    })
+    const deadline = new AbortController()
+    const queued = wake.queue(THREAD_ID, directory, 'note', (group) => {
+      pgid = group
+      spawned()
+    }, deadline.signal)
+    await started
+    deadline.abort()
+    await expect(queued).rejects.toBeInstanceOf(WriteDeadlineError)
+    await vi.waitFor(
+      () => {
+        expect(() => process.kill(-pgid, 0)).toThrow()
+      },
+      { timeout: 5_000 },
+    )
   })
 })

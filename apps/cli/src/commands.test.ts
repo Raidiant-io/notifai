@@ -94,6 +94,7 @@ import {
   codexTrustProblems,
   findInstallations,
   findLegacyProjectInstallations,
+  handlerEvent,
   loadSettings,
   mergeHooks,
   removeHooks,
@@ -237,7 +238,7 @@ const currentCompatibility: CompatibilityResponse = {
       rollout_complete: false,
     },
   ],
-  server_capabilities: ['answer', 'agent_acknowledgement'],
+  server_capabilities: ['answer', 'agent_acknowledgement', 'session_attendance'],
 }
 
 function compatibilityWithCli(
@@ -2098,6 +2099,45 @@ describe('command contracts', () => {
       degraded: true,
     })
     expect(io.errLines.join('\n')).toContain('reply wait failed')
+  })
+
+  it('dispatches a Session Message acknowledgement by its sm_ prefix and clears only that debt', async () => {
+    const io = new CapturedIo()
+    const calls: string[] = []
+    const client = {
+      putAgentAcknowledgement: async () => {
+        calls.push('request')
+        throw new Error('a message id never reaches the request route')
+      },
+      putSessionMessageAcknowledgement: async (messageId: string, body: { text?: string }) => {
+        calls.push(`message:${messageId}:${body.text ?? ''}`)
+        return {
+          status: 'recorded' as const,
+          agent_acknowledgement: { text: body.text ?? '', created_at: '2026-09-25T12:01:00.000Z' },
+        }
+      },
+    } as unknown as ApiClient
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-acknowledge-message-'))
+    const deps = makeDeps(io, client)
+    deps.env = { XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+    writeSessionState('message-ack', deps.env, {
+      acknowledgement_due: [{ request_id: 'req_still_owed', recorded_at: 1, text_required: true }],
+      message_acknowledgement_due: [{ message_id: 'sm_note_1', recorded_at: 2, text_required: true }],
+    })
+
+    expect(
+      await acknowledgeCommand(deps, 'sm_note_1', { text: 'Switching to the staging database now.', json: true }),
+    ).toBe(EXIT.ok)
+
+    expect(calls).toEqual(['message:sm_note_1:Switching to the staging database now.'])
+    expect(JSON.parse(io.outLines.join('\n'))).toEqual({
+      message_id: 'sm_note_1',
+      outcome: 'recorded',
+      acknowledgement: { text: 'Switching to the staging database now.', created_at: '2026-09-25T12:01:00.000Z' },
+    })
+    const state = readSessionState('message-ack', deps.env)
+    expect(state.message_acknowledgement_due).toBeUndefined()
+    expect(state.acknowledgement_due).toEqual([{ request_id: 'req_still_owed', recorded_at: 1, text_required: true }])
   })
 
   it('acknowledges non-interactively, trims text, emits JSON, and logs request identity', async () => {
@@ -5437,7 +5477,7 @@ describe('compatibility-first update guidance', () => {
         capability_documents: PLATFORMS.map((platform) => ({ platform, schema_version: 1 })),
         cli_capability_intersection: {
           available: [],
-          missing_on_server: ['agent_acknowledgement'],
+          missing_on_server: ['agent_acknowledgement', 'session_attendance'],
         },
       },
     })
@@ -9258,6 +9298,46 @@ describe('asking before the hooks have ever run', () => {
       ),
     ).toBe(EXIT.ok)
     expect(io.outLines).toEqual([])
+  })
+
+  it('never refuses a question over an attend handler awaiting approval, while doctor still names the approval', async () => {
+    const cwd = scratchDir('notifai-codex-attend-trust-')
+    const io = new PlainInteractiveIo()
+    const env = {
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      HOME: path.join(cwd, 'home'),
+      CODEX_HOME: path.join(cwd, 'codex-home'),
+      CODEX_THREAD_ID: 'codex-desktop-thread',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42, hookPlatform: 'darwin' as const }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    // The routing handlers are trusted; the newly added attend handlers are not.
+    trustInstalledCodexHooks(cwd, env)
+    const codex = findInstallations(env).find((installation) => installation.harness === 'codex')!
+    const attends = codex.handlers.filter((handler) => handlerEvent(handler.command) === 'attend')
+    expect(attends.map((handler) => handler.event).sort()).toEqual(['Interrupt', 'SessionStart', 'Stop', 'UserPromptSubmit'])
+    const configFile = path.join(env.CODEX_HOME, 'config.toml')
+    let toml = readFileSync(configFile, 'utf8')
+    for (const handler of attends) toml = toml.replace(codexHookIdentityHash(handler), 'sha256:not-yet-approved')
+    writeFileSync(configFile, toml)
+    expect(codexTrustProblems(findInstallations(env), env)).toEqual(
+      attends.map((handler) => expect.stringMatching(new RegExp(`^${handler.event} .*changed since it was trusted.*/hooks`))),
+    )
+    writeSessionState('codex-desktop-thread', env, {
+      harness: 'codex',
+      last_prompt_at: 42,
+      last_stop_at: 41,
+      // This session loaded the current Stop definition: the attend handler beside it is not part of it.
+      codex_stop_definition_fingerprint: codexStopDefinitionFingerprint(findInstallations(env)),
+    })
+    writeProjectSession(cwd, env, 'codex-desktop-thread', 42, 'codex')
+    io.outLines = []
+    io.errLines = []
+
+    askCommand(deps, 'Ship it?', { json: true })
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ registered: true })
+    expect(readSessionState('codex-desktop-thread', env).pending).toHaveLength(1)
   })
 
   it('gives doctor the same active-Codex diagnosis as ask', async () => {
