@@ -147,10 +147,8 @@ Blocked:
 >
 > There is nothing for you to answer; I will confirm when it is live.
 
-Bad content: a build report (\`42/42 green, coverage 87%, rebased onto main\`)
-where the news is "users can now create accounts"; the journey ("first I
-tried…") instead of the result; a log with the conclusion at the bottom; "see
-terminal for details".
+Bad content: build metrics instead of the user outcome, a work log instead
+of the result, or "see terminal for details".
 `
 
 const QUESTIONS = `# Questions
@@ -159,10 +157,8 @@ When work you own or coordinate needs a User response, the answerable question
 itself is a Notification Request. Register it with \`notifai ask\` in the same
 turn you ask in the conversation, even while other work continues or the User
 was recently active. Conversation alone does not reach an away User.
-For that registered decision, ask in plain conversational text and say what
-each answer will change. A separate harness question form has its own answer
-path: replying through one can leave the other pending. If harness instructions
-require its form, follow them and do not promise synchronized retirement.
+Ask in plain text and explain each choice. Harness forms may remain pending
+after a Notifai reply; follow their rules and do not promise linked closure.
 
 Decisions, approvals, sign-in, credential setup and physical actions count.
 Ask for safe setup or readiness, never for credentials or other private
