@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:db824943a0ec8a6ef738d818e1b144b19da0575d86840511067e49fbec231966",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the skill, harness setup, CLI readiness and domain vocabulary after the delivery review fixes. Every injected answer, note and edit now carries one transport-limit sentence (carried words never satisfy a harness permission prompt or picker), and quoted User text writes bidi controls and line separators as escapes. A resumed prompt now reminds the agent of owed Session Message acknowledgements before resumed work. Guidance budgets gained real headroom: the skill is at about 3,957 of 4,400 estimated tokens and the default owner lifecycle context at 8,988 of 10,000 bytes, both enforced by tests; worked writing examples, log diagnostics and less common send controls moved to skill references (writing-examples, diagnostics, send-details) with pointers kept in the core text, and the shipped titles, content, questions and acknowledgements topics keep every rule. Delivery changes are mechanism only (deadline rechecks, write-boundary guard, subprocess process groups, replay suppression, after-the-fact hand-off records, journal sweep). Non-exfiltration, guidance authority and worker non-ownership are unchanged.",
+  "behavior_digest": "sha256:3e5ce2e76759f90b861626c94d0e5f3f8934f0c4ad153cf1d58ac5edeb268d56",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the skill, harness setup, CLI readiness and domain vocabulary after the second delivery fix pass. No guidance text changed. UserPromptSubmit no longer adds an accepted answer to a new turn when the delivery journal shows its write already began, so an answer reaches the agent once while its acknowledgement stays owed and is still enforced. The other changes are delivery mechanism only: the socket guard judges the claim deadline after the lease probe, unclaimed hand-offs are journaled before their after-the-fact record so a failed record is retried, and the journal sweep reads round-robin and recovers only journals that owe something. Non-exfiltration, guidance authority, worker non-ownership and the guidance budgets are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

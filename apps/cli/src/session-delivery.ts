@@ -85,6 +85,14 @@ export interface DeliveryJournalEntry {
   subprocess?: true
   /** Process groups of that subprocess, recorded as soon as they exist. */
   groups?: number[]
+  /**
+   * A selected answer this machine wrote without a claim: no attempt exists
+   * until it is recorded after the fact. Whoever holds the journal records it;
+   * the write already happened, so the writer's liveness does not matter.
+   */
+  unclaimed?: true
+  /** Why the service refused to record it; nothing more is owed. */
+  refused?: string
   /** Wall-clock epoch ms, for people reading the file; never used for ordering. */
   claimed_at: number
   reported?: DeliveryAttemptOutcome
@@ -252,24 +260,116 @@ export async function recoverDeliveryJournal(deps: SequencerDeps): Promise<numbe
   const liveness = deps.liveness ?? ((identity: ProcessIdentity) => processIdentityLiveness(identity))
   let reported = 0
   for (const entry of readDeliveryJournal(deps.sessionId, deps.env)) {
-    if (entry.reported !== undefined || inFlight.has(entry.attempt_id)) continue
+    if (!reportable(entry, deps.writer, liveness)) continue
+    if (entry.unclaimed === true) {
+      if (await recordUnclaimed(deps, entry)) reported += 1
+      continue
+    }
     const own = sameProcess(entry.writer, deps.writer)
-    if (!own && liveness(entry.writer) !== 'gone') continue
     const outcome = recoveredOutcome(entry.stage)
     if (await reportAttempt(deps, entry.attempt_id, outcome, own ? 'retry' : 'recovered')) reported += 1
   }
   const cutoff = deps.wall() - JOURNAL_KEEP_MS
-  updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
-    entries
-      .filter((entry) => entry.reported === undefined || (entry.reported_at ?? entry.claimed_at) >= cutoff)
-      .slice(-JOURNAL_CAP),
-  )
+  updateDeliveryJournal(deps.sessionId, deps.env, (entries) => {
+    // Unsettled entries are never pruned; settled ones age out and are capped.
+    const settled = entries.filter(
+      (entry) => entry.reported !== undefined && (entry.reported_at ?? entry.claimed_at) >= cutoff,
+    )
+    const keep = new Set(settled.slice(-JOURNAL_CAP))
+    return entries.filter((entry) => entry.reported === undefined || keep.has(entry))
+  })
   return reported
+}
+
+/** Whether a recovery may report this entry now. */
+function reportable(
+  entry: DeliveryJournalEntry,
+  self: ProcessIdentity,
+  liveness: (identity: ProcessIdentity) => ProcessLiveness,
+): boolean {
+  if (entry.reported !== undefined || inFlight.has(entry.attempt_id)) return false
+  if (entry.unclaimed === true) return true
+  return sameProcess(entry.writer, self) || liveness(entry.writer) === 'gone'
+}
+
+/**
+ * Journal selected answers just written without a claim, then record each
+ * with the service. A failed record stays in the journal: the next hand-off in
+ * this session, or the machine-wide sweep, records it later.
+ */
+export async function recordUnclaimedHandOffs(
+  deps: SequencerDeps,
+  requestIds: readonly string[],
+): Promise<void> {
+  if (requestIds.length === 0) return
+  const entries: DeliveryJournalEntry[] = requestIds.map((requestId) => ({
+    attempt_id: `unclaimed:${requestId}`,
+    subject: { type: 'answer', request_id: requestId },
+    stage: 'written',
+    writer: deps.writer,
+    unclaimed: true,
+    claimed_at: deps.wall(),
+  }))
+  updateDeliveryJournal(deps.sessionId, deps.env, (current) => [
+    ...current.filter((entry) => !entries.some((added) => added.attempt_id === entry.attempt_id)),
+    ...entries,
+  ])
+  for (const entry of entries) await recordUnclaimed(deps, entry)
+}
+
+async function recordUnclaimed(deps: SequencerDeps, entry: DeliveryJournalEntry): Promise<boolean> {
+  if (entry.subject.type !== 'answer') return false
+  const requestId = entry.subject.request_id
+  let settled: Partial<DeliveryJournalEntry>
+  try {
+    const recorded = await deps.client.claimDeliveryAttempt(deps.sessionId, {
+      subject: { type: 'answer', request_id: requestId },
+      already_handed_off: true,
+    })
+    settled = { reported: 'handed_off' }
+    deps.log?.info('delivery.handoff', {
+      subject: 'answer',
+      request_id: requestId,
+      attempt_id: recorded.attempt_id,
+      outcome: 'handed_off',
+      source: 'after-the-fact',
+      reported: true,
+    })
+  } catch (err) {
+    const refusal =
+      err instanceof ApiCallError && err.status === 409 && err.code === 'claim_refused'
+        ? refusalReason(err.details)
+        : err instanceof ApiCallError && err.status === 404
+          ? 'not_found'
+          : null
+    deps.log?.error('delivery.handoff', {
+      subject: 'answer',
+      request_id: requestId,
+      outcome: 'handed_off',
+      source: 'after-the-fact',
+      reported: false,
+      ...(refusal === null ? {} : { refused: refusal }),
+      message: err instanceof Error ? err.message : String(err),
+    })
+    // A refusal is final (another attempt governs, or the answer was never
+    // selected); a transport failure stays owed for a later recovery.
+    if (refusal === null) return false
+    settled = { reported: 'released', refused: refusal }
+  }
+  const at = deps.wall()
+  updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
+    entries.map((candidate) =>
+      candidate.attempt_id === entry.attempt_id ? { ...candidate, ...settled, reported_at: at } : candidate,
+    ),
+  )
+  return settled.reported === 'handed_off'
 }
 
 /** At most this often per machine, and at most this many journals per sweep. */
 export const JOURNAL_SWEEP_INTERVAL_MS = 10 * 60_000
 export const JOURNAL_SWEEP_MAX_JOURNALS = 20
+/** Journals read per sweep while looking for those that owe something. */
+export const JOURNAL_SWEEP_MAX_SCANNED = 500
 
 /**
  * Report, from any hook that already holds a client, the attempts that dead
@@ -278,9 +378,10 @@ export const JOURNAL_SWEEP_MAX_JOURNALS = 20
  * reports, the service keeps those attempts pending (holding their Answer
  * Edits, or a claimed Session Message until its abandonment sweep).
  *
- * Bounded: rate-limited by a stamp file, newest journals first, a fixed number
- * per sweep. Only gone writers' attempts are reported; a live writer reports
- * its own.
+ * Bounded: rate-limited by a stamp file, a fixed number of journals read and
+ * recovered per sweep. Only journals that owe something reportable now are
+ * recovered, oldest first, so none can be starved. Gone writers' attempts and
+ * unrecorded unclaimed hand-offs are reported; a live writer reports its own.
  */
 export async function sweepDeliveryJournals(input: {
   env: NodeJS.ProcessEnv
@@ -302,22 +403,29 @@ export async function sweepDeliveryJournals(input: {
   }
   if (!existsSync(directory)) return 0
   mkdirSync(path.dirname(stamp), { recursive: true })
-  writeFileSync(stamp, '', { mode: 0o600 })
-  const journals = readdirSync(directory)
+  let cursor = ''
+  try {
+    cursor = existsSync(stamp) ? readFileSync(stamp, 'utf8').trim() : ''
+  } catch {
+    cursor = ''
+  }
+  writeFileSync(stamp, cursor, { mode: 0o600 })
+  // Read journals round-robin from where the last sweep stopped, so every
+  // journal is eventually looked at however many settled ones accumulate, and
+  // recover only those that owe something reportable now: settled journals and
+  // newer debt can never starve an older one out.
+  const liveness = input.liveness ?? ((identity: ProcessIdentity) => processIdentityLiveness(identity))
+  const names = readdirSync(directory)
     .filter((name) => name.endsWith('.deliveries'))
-    .map((name) => {
-      const file = path.join(directory, name)
-      try {
-        return { file, mtime: statSync(file).mtimeMs }
-      } catch {
-        return null
-      }
-    })
-    .filter((entry): entry is { file: string; mtime: number } => entry !== null)
-    .sort((a, b) => b.mtime - a.mtime)
-    .slice(0, JOURNAL_SWEEP_MAX_JOURNALS)
-  let reported = 0
-  for (const { file } of journals) {
+    .sort()
+  const start = Math.max(0, names.findIndex((name) => name > cursor))
+  const rotated = [...names.slice(start), ...names.slice(0, start)]
+  const candidates = rotated.slice(0, JOURNAL_SWEEP_MAX_SCANNED).map((name) => ({ file: path.join(directory, name), name }))
+  const owing: string[] = []
+  let scanned = 0
+  for (const { file } of candidates) {
+    if (owing.length >= JOURNAL_SWEEP_MAX_JOURNALS) break
+    scanned += 1
     let sessionId: unknown
     try {
       sessionId = (JSON.parse(readFileSync(file, 'utf8')) as { session_id?: unknown }).session_id
@@ -325,10 +433,14 @@ export async function sweepDeliveryJournals(input: {
       continue
     }
     if (typeof sessionId !== 'string' || deliveryJournalPath(sessionId, input.env) !== file) continue
-    const pending = readDeliveryJournal(sessionId, input.env).some(
-      (entry) => entry.reported === undefined && !inFlight.has(entry.attempt_id),
-    )
-    if (!pending) continue
+    if (readDeliveryJournal(sessionId, input.env).some((entry) => reportable(entry, input.writer, liveness))) {
+      owing.push(sessionId)
+    }
+  }
+  const last = candidates[scanned - 1]?.name
+  if (last !== undefined) writeFileSync(stamp, last, { mode: 0o600 })
+  let reported = 0
+  for (const sessionId of owing) {
     reported += await recoverDeliveryJournal({
       sessionId,
       env: input.env,

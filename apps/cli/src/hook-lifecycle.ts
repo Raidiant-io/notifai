@@ -71,6 +71,7 @@ import { userPromptContextOutput } from './session-activation.js'
 import {
   answersAlreadyWritten,
   beginHandOff,
+  recordUnclaimedHandOffs,
   recoverDeliveryJournal,
   sweepDeliveryJournals,
   type HandOff,
@@ -669,6 +670,27 @@ async function answerPrompt(
       acceptedAnswersAwaitingAcknowledgement(state.accepted, state).length === 0
     ) {
       settleAcceptedAnswers(ctx, sessionId, state.accepted, envelope.cwd)
+      state = readSessionState(sessionId, ctx.env)
+    }
+  }
+  if (state.accepted !== undefined) {
+    // A journaled write of this batch already began (claimed, or recorded
+    // after an unclaimed hand-off): adding it to this turn would hand it over
+    // twice. It settles instead; its acknowledgement stays owed.
+    const written = answersAlreadyWritten(
+      sessionId,
+      ctx.env,
+      state.accepted.answers.flatMap(({ pending }) => (pending.request_id === undefined ? [] : [pending.request_id])),
+    )
+    if (written.length > 0) {
+      settleAcceptedAnswers(ctx, sessionId, state.accepted, envelope.cwd)
+      ctx.log?.info('hook.answer', {
+        answered: true,
+        stage: 'replay-suppressed',
+        route: 'user-prompt-submit',
+        journal: written.map((entry) => `${entry.requestId}:${entry.stage}`),
+      })
+      notes.push('an earlier hand-off of the journaled answer already began its write; not adding it to this turn')
       state = readSessionState(sessionId, ctx.env)
     }
   }
@@ -1404,37 +1426,32 @@ async function reportUnclaimedHandOff(
   await reportHandedOffAfterTheFact(ctx, sessionId, unclaimed)
 }
 
-/** Record selected answers already written without a claim; best effort. */
+/**
+ * Journal, then record, selected answers already written without a claim. A
+ * record that fails stays in this session's delivery journal, so the next
+ * hand-off here or the machine-wide sweep records it later.
+ */
 export async function reportHandedOffAfterTheFact(
-  ctx: Pick<HookContext, 'client' | 'log'>,
+  ctx: HookContext,
   sessionId: string,
   requestIds: readonly string[],
 ): Promise<void> {
-  for (const requestId of requestIds) {
-    try {
-      const recorded = await ctx.client.claimDeliveryAttempt(sessionId, {
-        subject: { type: 'answer', request_id: requestId },
-        already_handed_off: true,
-      })
-      ctx.log?.info('delivery.handoff', {
-        subject: 'answer',
-        request_id: requestId,
-        attempt_id: recorded.attempt_id,
-        outcome: 'handed_off',
-        source: 'after-the-fact',
-        reported: true,
-      })
-    } catch (err) {
-      ctx.log?.error('delivery.handoff', {
-        subject: 'answer',
-        request_id: requestId,
-        outcome: 'handed_off',
-        source: 'after-the-fact',
-        reported: false,
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
-  }
+  if (requestIds.length === 0) return
+  const writer = ctx.answerClaims?.writer ?? currentProcessIdentity()
+  if (writer === null) return
+  await recordUnclaimedHandOffs(
+    {
+      sessionId,
+      env: ctx.env,
+      client: ctx.client,
+      monotonic: ctx.answerClaims?.monotonic ?? (() => performance.now()),
+      wall: ctx.now,
+      sleep: ctx.sleep,
+      writer,
+      ...(ctx.log === undefined ? {} : { log: ctx.log }),
+    },
+    requestIds,
+  )
 }
 
 function answerSequencer(ctx: HookContext, sessionId: string, claims: NonNullable<HookContext['answerClaims']>): SequencerDeps {

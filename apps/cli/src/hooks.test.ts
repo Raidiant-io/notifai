@@ -23,7 +23,7 @@ import {
   type SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { ApiCallError, type ApiClient } from './client.js'
+import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { CLAUDE_POST_SEND_LIVENESS_MS, type ClaudeWakeAdapters } from './claude-wake.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
 import { readStdinWithTimeout } from './hook-input.js'
@@ -6073,6 +6073,69 @@ describe('Claude Code Stop wake route', () => {
       expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
     })
   }
+
+  for (const unclaimed of [false, true]) {
+    it(`never adds to a prompt an answer whose ${unclaimed ? 'unclaimed' : 'claimed'} write the journal records`, async () => {
+      const h = harness([])
+      selectedAccepted(h.env, 'req_already')
+      const journal = deliveryJournalPath('claude-route', h.env)
+      mkdirSync(path.dirname(journal), { recursive: true })
+      writeFileSync(
+        journal,
+        JSON.stringify({
+          session_id: 'claude-route',
+          entries: [
+            {
+              attempt_id: unclaimed ? 'unclaimed:req_already' : 'att_written',
+              subject: { type: 'answer', request_id: 'req_already' },
+              stage: 'written',
+              writer: { pid: process.pid, start: 'this test' },
+              ...(unclaimed ? { unclaimed: true, reported: 'handed_off', reported_at: NOW } : {}),
+              claimed_at: NOW,
+            },
+          ],
+        }),
+      )
+
+      await hookRunCommand(
+        h.deps,
+        'user-prompt-submit',
+        stdin({ session_id: 'claude-route', cwd: h.deps.cwd, prompt: 'carry on' }),
+        'claude-code',
+      )
+
+      expect(h.io.outLines.join('\n')).not.toContain('Ship it')
+      const state = readSessionState('claude-route', h.env)
+      expect(state.accepted).toBeUndefined()
+      // Handed over once; the acknowledgement is still owed.
+      expect(state.acknowledgement_due?.map((entry) => entry.request_id)).toEqual(['req_already'])
+    })
+  }
+
+  it('journals a prompt hand-off before recording it, so a failed record is retried later', async () => {
+    const h = harness([])
+    selectedAccepted(h.env, 'req_offline')
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => ({
+      ...factory(),
+      claimDeliveryAttempt: async () => {
+        throw new NetworkError('offline')
+      },
+    }) as ApiClient
+
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'claude-route', cwd: h.deps.cwd, prompt: 'carry on' }),
+      'claude-code',
+    )
+
+    expect(h.io.outLines.at(-1)).toContain('Ship it')
+    expect(readDeliveryJournal('claude-route', h.env)).toMatchObject([
+      { attempt_id: 'unclaimed:req_offline', unclaimed: true, stage: 'written' },
+    ])
+    expect(readDeliveryJournal('claude-route', h.env)[0]!.reported).toBeUndefined()
+  })
 
   it('records a selected answer handed off in a prompt\u2019s context after that context is written', async () => {
     const h = harness([])

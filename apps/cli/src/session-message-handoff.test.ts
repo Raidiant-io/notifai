@@ -108,6 +108,9 @@ function setup() {
     debtAtWrite,
     guards,
     deps: { sequencer, write },
+    advance: (milliseconds: number) => {
+      mono += milliseconds
+    },
     setNextWrite: (status: SessionWriteResult['status']) => {
       nextWrite = status
     },
@@ -245,6 +248,34 @@ describe('Session Message hand-off', () => {
     expect(guard.writable()).toBe(true)
     h.attendant.writable = false
     expect(guard.writable()).toBe(false)
+  })
+
+  it('judges the claim deadline after the lease check at the socket, however long that check blocks', async () => {
+    const h = setup()
+    let blockAtSocket = false
+    const attendant: AttendantHandle = {
+      ...h.attendant.handle(),
+      // The lease check probes the harness; at the socket it blocks past the deadline.
+      mayWrite: () => {
+        if (blockAtSocket) h.advance(31_000)
+        return true
+      },
+    }
+    let atSocket: boolean | undefined
+    await handOffSessionMessages([note('sm_blocking', 'x')], attendant, {
+      ...h.deps,
+      write: async (_text, begin, guard) => {
+        expect(begin()).toBe(true)
+        blockAtSocket = true
+        atSocket = guard.writable()
+        return atSocket
+          ? { status: 'written', route: 'inbox-socket' }
+          : { status: 'aborted', reason: 'the claim lapsed before the first byte' }
+      },
+    })
+    expect(atSocket).toBe(false)
+    expect(h.reports).toEqual([{ attemptId: 'att_1', outcome: 'released' }])
+    expect(h.owed()).toEqual([])
   })
 
   it('releases the claim when the session cannot be proven reachable in place', async () => {

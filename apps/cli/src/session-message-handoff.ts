@@ -95,7 +95,9 @@ export async function handOffSessionMessages(
         owed = false
         return false
       }, {
-        writable: () => handOff.writable() && attendant.mayWrite(),
+        // The lease check probes the harness and can block: the claim
+        // deadline is judged after it, at the last moment before the byte.
+        writable: () => attendant.mayWrite() && handOff.writable(),
         remainingMs: () => handOff.remainingMs(),
       })
     } catch (err) {

@@ -2,7 +2,7 @@ import type {
   ClaimDeliveryAttemptRequestT,
   DeliveryAttemptOutcome,
 } from '@raidiant/notifai-protocol'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -16,8 +16,10 @@ import {
   answerWriterGone,
   beginHandOff,
   deliveryJournalPath,
+  answersAlreadyWritten,
   processGroupAlive,
   readDeliveryJournal,
+  recordUnclaimedHandOffs,
   recoverDeliveryJournal,
   sweepDeliveryJournals,
   type DeliveryJournalEntry,
@@ -481,5 +483,118 @@ describe('machine-wide journal sweep', () => {
     }
     await sweepDeliveryJournals({ env, client: deps.client, writer: SELF, now: Date.now(), liveness: () => 'gone' })
     expect(service.reports).toHaveLength(JOURNAL_SWEEP_MAX_JOURNALS)
+  })
+})
+
+describe('answers written without a claim', () => {
+  it('journals the hand-off first and records it later when the first record fails', async () => {
+    const { env, deps } = setup()
+    const recorded: ClaimDeliveryAttemptRequestT[] = []
+    let offline = true
+    const client = {
+      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
+        if (offline) throw new NetworkError('offline')
+        recorded.push(body)
+        return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+      },
+    } as unknown as ApiClient
+    await recordUnclaimedHandOffs({ ...deps, client }, ['req_unclaimed'])
+    expect(readDeliveryJournal(SESSION, env)).toMatchObject([
+      { attempt_id: 'unclaimed:req_unclaimed', stage: 'written', unclaimed: true },
+    ])
+    expect(readDeliveryJournal(SESSION, env)[0]!.reported).toBeUndefined()
+    // A replay of the answer is suppressed from the journal alone.
+    expect(answersAlreadyWritten(SESSION, env, ['req_unclaimed'])).toEqual([{ requestId: 'req_unclaimed', stage: 'written' }])
+
+    // The service is back: recovery records it, whoever runs it, and only once.
+    offline = false
+    expect(await recoverDeliveryJournal({ ...deps, client, writer: { pid: 1, start: 'someone else' } })).toBe(1)
+    expect(recorded).toEqual([{ subject: { type: 'answer', request_id: 'req_unclaimed' }, already_handed_off: true }])
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ reported: 'handed_off' })
+    expect(await recoverDeliveryJournal({ ...deps, client })).toBe(0)
+    expect(recorded).toHaveLength(1)
+  })
+
+  it('settles a refused record for good instead of retrying it', async () => {
+    const { env, deps } = setup()
+    let calls = 0
+    const client = {
+      claimDeliveryAttempt: async () => {
+        calls += 1
+        throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'not_claimable' })
+      },
+    } as unknown as ApiClient
+    await recordUnclaimedHandOffs({ ...deps, client }, ['req_other_machine'])
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ reported: 'released', refused: 'not_claimable' })
+    await recoverDeliveryJournal({ ...deps, client })
+    expect(calls).toBe(1)
+  })
+
+  it('lets the machine-wide sweep record an unclaimed hand-off a session never retried', async () => {
+    const { env, deps, service } = setup()
+    const file = deliveryJournalPath('ended-unclaimed', env)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      JSON.stringify({
+        session_id: 'ended-unclaimed',
+        entries: [
+          {
+            attempt_id: 'unclaimed:req_x',
+            subject: { type: 'answer', request_id: 'req_x' },
+            stage: 'written',
+            // A live writer does not matter: the write already happened.
+            writer: { pid: 99, start: 'alive' },
+            unclaimed: true,
+            claimed_at: 1,
+          },
+        ],
+      }),
+    )
+    const recorded: ClaimDeliveryAttemptRequestT[] = []
+    const client = {
+      ...deps.client,
+      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
+        recorded.push(body)
+        return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+      },
+    } as unknown as ApiClient
+    expect(
+      await sweepDeliveryJournals({ env, client, writer: SELF, now: Date.now(), liveness: () => 'alive', force: true }),
+    ).toBe(1)
+    expect(recorded).toHaveLength(1)
+    expect(service.reports).toEqual([])
+  })
+})
+
+describe('sweep selection never starves a journal that owes something', () => {
+  it('recovers an owing journal however many settled or live-writer journals surround it', async () => {
+    const { env, service, deps } = setup()
+    const seed = (sessionId: string, entry: Partial<DeliveryJournalEntry>): void => {
+      const file = deliveryJournalPath(sessionId, env)
+      mkdirSync(path.dirname(file), { recursive: true })
+      writeFileSync(
+        file,
+        JSON.stringify({
+          session_id: sessionId,
+          entries: [
+            { attempt_id: `att_${sessionId}`, subject: { type: 'answer', request_id: `req_${sessionId}` }, stage: 'written', writer: GONE, claimed_at: 1, ...entry },
+          ],
+        }),
+      )
+    }
+    // More settled journals, and more journals whose writer is still alive,
+    // than one sweep recovers.
+    for (let index = 0; index < JOURNAL_SWEEP_MAX_JOURNALS + 10; index += 1) {
+      seed(`settled-${index}`, { reported: 'handed_off', reported_at: Date.now() })
+      seed(`live-${index}`, { writer: { pid: 99, start: 'alive' } })
+    }
+    seed('owing-old', { stage: 'writing' })
+    // The oldest journal on disk: a newest-first selection would never reach it.
+    const past = new Date(Date.now() - 3 * 24 * 3600 * 1000)
+    utimesSync(deliveryJournalPath('owing-old', env), past, past)
+    const liveness = (identity: ProcessIdentity): ProcessLiveness => (identity.pid === GONE.pid ? 'gone' : 'alive')
+    expect(await sweepDeliveryJournals({ env, client: deps.client, writer: SELF, now: Date.now(), liveness, force: true })).toBe(1)
+    expect(service.reports).toEqual([{ attemptId: 'att_owing-old', outcome: 'unconfirmed' }])
   })
 })
