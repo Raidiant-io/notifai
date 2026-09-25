@@ -33,11 +33,13 @@ import {
 } from './openclaw-plugin.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import {
+  ATTEND_DOCUMENT_EVENTS,
   HOOK_EVENT_COMMAND_RE,
   HOOK_EVENT_PATTERN,
   HOOK_EVENT_TABLE,
   OPENCLAW_EVENTS,
   OPENCODE_EVENTS,
+  installsSessionAttendant,
 } from './hook-events.js'
 import { accountHome } from './platform.js'
 import { sameLocalPath } from './local-path.js'
@@ -280,6 +282,22 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         ],
       },
     ]
+  }
+  if (installsSessionAttendant(options.harness, options.platform)) {
+    // A second handler in the same group, never folded into the first: the
+    // harness runs the activation handler's context back promptly and does
+    // not wait for an async handler. No timeout: a backgrounded async hook is
+    // not timed out, and the attendant ends itself with its session.
+    const attend: HookHandler = {
+      type: 'command',
+      command: hookCommand(adapterPath, 'attend', options.harness, commandOptions),
+      async: true,
+    }
+    for (const event of ATTEND_DOCUMENT_EVENTS) {
+      const group = hooks[event]?.[0]
+      if (group === undefined) hooks[event] = [{ hooks: [attend] }]
+      else group.hooks.push(attend)
+    }
   }
   return hooks
 }

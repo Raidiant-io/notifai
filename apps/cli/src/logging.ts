@@ -116,6 +116,14 @@ export const LOG_EVENTS = [
   'hook.answer',
   /** The hook finished, with or without a decision. */
   'hook.end',
+  /** A Session Attendant took ownership of its Agent Session. */
+  'attendant.start',
+  /** A Session Attendant changed phase: dormant, attending, uncertain, and why. */
+  'attendant.state',
+  /** A Session Attendant acquired, lost, or re-identified its presence lease. */
+  'attendant.lease',
+  /** A Session Attendant stopped: why, and what it last reported. */
+  'attendant.exit',
   /** The active file was rotated. Explains a gap to anyone reading backwards. */
   'log.rotated',
 ] as const

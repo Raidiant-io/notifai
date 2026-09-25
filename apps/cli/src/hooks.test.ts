@@ -76,6 +76,7 @@ import {
   clearSessionState,
   pruneAbandonedSessions,
   readSessionState,
+  sessionNotified,
   sessionStatePath,
   writeSessionState as persistSessionState,
 } from './hook-session-state.js'
@@ -595,8 +596,11 @@ describe('pushing a registered question', () => {
     // Prompt 20s ago, exactly as a just-spawned agent has.
     writeSessionState('spawn1', h.env, { last_prompt_at: NOW - 20_000 })
     registerQuestion('spawn1', h.env, { question: 'Ship it?' }, NOW)
+    expect(sessionNotified('spawn1', h.env)).toBe(false)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'spawn1' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
+    // The accepted request wakes this session's dormant Session Attendant.
+    expect(sessionNotified('spawn1', h.env)).toBe(true)
     expect(h.recorder.submitted[0]?.draft.targets).toEqual({
       mode: 'selected',
       device_ids: ['dev_iphone', 'dev_mac'],

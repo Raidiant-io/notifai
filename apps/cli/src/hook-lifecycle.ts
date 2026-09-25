@@ -60,6 +60,7 @@ import {
   updateSessionState,
   writeSessionState,
   writeSessionStateUnlocked,
+  recordSessionNotified,
 } from './hook-session-state.js'
 import { userPromptContextOutput } from './session-activation.js'
 import type {
@@ -224,6 +225,8 @@ function submitQuestion(
           `server replay returned ${receipt.request_id}, expected reserved ${intent.request_id}`,
         )
       }
+      // Wakes this session's dormant Session Attendant.
+      recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
     })
     if (attempt === null) notes.push('the question was retired before submission; not uploading it')

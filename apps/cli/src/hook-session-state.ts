@@ -1,4 +1,5 @@
 /** Durable per-Agent-Session state, activation bookkeeping, and pruning. */
+import { randomBytes } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -6,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
@@ -13,6 +15,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, sessionConfigPath, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import type { HookHarness, PendingQuestion, SessionState } from './hook-types.js'
+import type { ProcessIdentity } from './process-identity.js'
 export function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.json`)
 }
@@ -41,11 +44,189 @@ export function markSessionEnded(sessionId: string, env: NodeJS.ProcessEnv, now:
   })
 }
 
-function clearSessionEndMarker(sessionId: string, env: NodeJS.ProcessEnv): void {
+/** When SessionEnd marked this session ended, or null when it carries no marker. */
+export function readSessionEndedAt(sessionId: string, env: NodeJS.ProcessEnv): number | null {
+  let raw: string
+  try {
+    raw = readFileSync(sessionEndMarkerPath(sessionId, env), 'utf8')
+  } catch {
+    return null
+  }
+  const at = Number(raw.trim())
+  // A marker without a readable time is older than any incarnation.
+  return Number.isFinite(at) ? at : 0
+}
+
+/**
+ * One start of one Agent Session: the edge from which its end is judged.
+ *
+ * A harness may start the same session id again — `/resume` in the same
+ * process, or `--resume` in a new one — after SessionEnd already marked it
+ * ended. Every observer that outlives a hook compares the end marker with the
+ * incarnation it serves, so an end recorded before this start can never end
+ * it, whichever parallel SessionStart handler runs first.
+ */
+export interface SessionIncarnation {
+  /** Opaque identity shown to the service by the Session Attendant. Never a PID. */
+  incarnation: string
+  /** Wall-clock start stamp; strictly increasing per session id. */
+  started_at: number
+  /** The harness process hosting this incarnation, when the starter knew it. */
+  harness_process?: ProcessIdentity
+}
+
+function sessionIncarnationPath(sessionId: string, env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.incarnation.json`)
+}
+
+export function readSessionIncarnation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+): SessionIncarnation | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(sessionIncarnationPath(sessionId, env), 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const record = parsed as Record<string, unknown>
+    if (
+      typeof record['incarnation'] !== 'string' ||
+      !/^inc_[A-Za-z0-9_-]{10,64}$/.test(record['incarnation']) ||
+      typeof record['started_at'] !== 'number' ||
+      !Number.isFinite(record['started_at'])
+    ) {
+      return null
+    }
+    const harness = record['harness_process'] as Record<string, unknown> | undefined
+    return {
+      incarnation: record['incarnation'],
+      started_at: record['started_at'],
+      ...(harness !== undefined &&
+      typeof harness['pid'] === 'number' &&
+      typeof harness['start'] === 'string'
+        ? { harness_process: { pid: harness['pid'], start: harness['start'] } }
+        : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+export function newIncarnationId(): string {
+  return `inc_${randomBytes(12).toString('base64url')}`
+}
+
+/**
+ * The one shared, idempotent start of an Agent Session incarnation.
+ *
+ * Every SessionStart handler calls it before anything reads the end marker.
+ * Two handlers of the same start agree on one incarnation: the second finds
+ * the first's record for the same harness process with no end after it, and
+ * reuses it. A new incarnation is minted when there is no record, when the
+ * harness process differs, or when the session ended after the recorded start.
+ * An end marker older than `stamp` (this handler's own process start) is
+ * dropped; one written after it is kept, because that end is this start's own.
+ * Callers stamp with the time their hook invocation began, before reading input.
+ */
+export function beginSessionIncarnation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  options: {
+    stamp: number
+    harnessProcess?: ProcessIdentity
+    /**
+     * Only a SessionStart may drop an earlier end marker. A re-arm (a later
+     * hook finding no incarnation for its harness process) mints one that
+     * starts after the marker instead, so shared cancellation stays intact.
+     */
+    clearEarlierEnd?: boolean
+  },
+): SessionIncarnation {
   const stateFile = sessionStatePath(sessionId, env)
-  withFileLock(`${stateFile}.lock`, () => {
-    rmSync(sessionEndMarkerPath(sessionId, env), { force: true })
+  return withFileLock(`${stateFile}.lock`, () => {
+    const endedAt = readSessionEndedAt(sessionId, env)
+    const current = readSessionIncarnation(sessionId, env)
+    const differentHarness =
+      options.harnessProcess !== undefined &&
+      current?.harness_process !== undefined &&
+      (current.harness_process.pid !== options.harnessProcess.pid ||
+        current.harness_process.start !== options.harnessProcess.start)
+    const endedSinceCurrent = current !== null && endedAt !== null && endedAt >= current.started_at
+    let next: SessionIncarnation
+    if (current !== null && !differentHarness && !endedSinceCurrent) {
+      next =
+        current.harness_process === undefined && options.harnessProcess !== undefined
+          ? { ...current, harness_process: options.harnessProcess }
+          : current
+    } else {
+      next = {
+        incarnation: newIncarnationId(),
+        started_at: Math.max(options.stamp, (current?.started_at ?? 0) + 1),
+        ...(options.harnessProcess === undefined ? {} : { harness_process: options.harnessProcess }),
+      }
+    }
+    if (options.clearEarlierEnd !== false && endedAt !== null && endedAt < options.stamp) {
+      rmSync(sessionEndMarkerPath(sessionId, env), { force: true })
+    }
+    if (next !== current) {
+      atomicWriteFileSync(sessionIncarnationPath(sessionId, env), `${JSON.stringify(next)}\n`)
+    }
+    return next
   })
+}
+
+/**
+ * Replace this incarnation's identity after the service refused it, keeping
+ * its start. Only the holder of `expected` may rotate it.
+ */
+export function rotateSessionIncarnation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  expected: string,
+): SessionIncarnation | null {
+  const stateFile = sessionStatePath(sessionId, env)
+  return withFileLock(`${stateFile}.lock`, () => {
+    const current = readSessionIncarnation(sessionId, env)
+    if (current === null || current.incarnation !== expected) return null
+    const next = { ...current, incarnation: newIncarnationId() }
+    atomicWriteFileSync(sessionIncarnationPath(sessionId, env), `${JSON.stringify(next)}\n`)
+    return next
+  })
+}
+
+/**
+ * Whether this Agent Session ever had a Notification Request accepted on this
+ * machine. Its Session Attendant makes no network call before this marker
+ * exists, so sessions that never notified are never reported.
+ */
+function sessionNotifiedPath(sessionId: string, env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.notified`)
+}
+
+export function sessionNotified(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  return existsSync(sessionNotifiedPath(sessionId, env))
+}
+
+/** Record the first accepted Notification Request of an Agent Session. Never throws. */
+export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv, now: number): void {
+  try {
+    const file = sessionNotifiedPath(sessionId, env)
+    if (existsSync(file)) return
+    mkdirSync(path.dirname(file), { recursive: true })
+    atomicWriteFileSync(file, `${now}\n`)
+  } catch {
+    // The marker only wakes a dormant attendant; the notification already left.
+  }
+}
+
+/** Keep a long-running session's small markers younger than the abandoned-state prune. */
+export function refreshSessionMarkers(sessionId: string, env: NodeJS.ProcessEnv, now: number): void {
+  const at = new Date(now)
+  for (const file of [sessionIncarnationPath(sessionId, env), sessionNotifiedPath(sessionId, env)]) {
+    try {
+      utimesSync(file, at, at)
+    } catch {
+      // Missing is fine; the prune only removes what is old.
+    }
+  }
 }
 
 export function readSessionState(sessionId: string, env: NodeJS.ProcessEnv): SessionState {
@@ -165,10 +346,12 @@ export function recordSessionStart(
   harness?: HookHarness,
   cwd?: string,
   codexStopDefinitionFingerprint?: string,
+  stamp: number = Date.now(),
 ): void {
   // Harnesses may reuse a session id only by explicitly starting that session
-  // again. That lifecycle edge is the sole authority for clearing cancellation.
-  clearSessionEndMarker(sessionId, env)
+  // again. That lifecycle edge is the sole authority for clearing cancellation,
+  // and it clears only an end recorded before this handler started.
+  beginSessionIncarnation(sessionId, env, { stamp })
   updateSessionState(sessionId, env, (current) => {
     const next: SessionState = {
       ...current,

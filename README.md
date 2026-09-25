@@ -290,3 +290,16 @@ again creates a separate question.
 Agent Session's local state and queues any leftover questions for retirement so
 they do not sit on your devices after the agent is gone. It has to run here
 because no later hook for this Agent Session will fire.
+
+**Session Attendant** (`attend`, Claude Code on macOS and Linux) is a second,
+asynchronous handler on SessionStart, UserPromptSubmit, and Stop. It keeps one
+small process per Agent Session running as that session's own hook child, so
+your devices can show whether the session is still running, working, or idle.
+It checks locally every two seconds that the exact harness process still hosts
+this exact session, and makes no network call until the session has sent a
+Notification Request, so sessions that never notified are never reported. It
+ends itself when the session ends, including when the harness is killed or its
+terminal closes, and withdraws when the Project is disabled or the hooks are
+removed. Only an opaque id leaves the machine: never process ids, paths, or
+session files. The UserPromptSubmit and Stop copies restart it if it died and
+otherwise exit at once. `notifai doctor` shows each attendant's state.

@@ -3,6 +3,7 @@ import {
   SHIPPED_CLI_CAPABILITIES,
   type RecoveryAction,
 } from '@raidiant/notifai-protocol'
+import type { AttendantSeams } from './commands-hook-attend.js'
 import { type ClaudeWakeAdapters } from './claude-wake.js'
 import {
   ApiCallError,
@@ -86,6 +87,8 @@ export interface CommandDeps {
   /** Test seams for Claude liveness, socket delivery, and cold resume. */
   claudeWake?: ClaudeWakeAdapters
   claudeSourcePid?: number
+  /** Test seams for the Session Attendant's harness probe, clocks, and signals. */
+  attendant?: AttendantSeams
   /** Test seams for the Codex thread-writer probe and cold resume. */
   codexWake?: CodexWakeAdapters
   codexSourcePid?: number

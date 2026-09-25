@@ -237,7 +237,7 @@ const currentCompatibility: CompatibilityResponse = {
       rollout_complete: false,
     },
   ],
-  server_capabilities: ['answer', 'agent_acknowledgement'],
+  server_capabilities: ['answer', 'agent_acknowledgement', 'session_attendance'],
 }
 
 function compatibilityWithCli(
@@ -5437,7 +5437,7 @@ describe('compatibility-first update guidance', () => {
         capability_documents: PLATFORMS.map((platform) => ({ platform, schema_version: 1 })),
         cli_capability_intersection: {
           available: [],
-          missing_on_server: ['agent_acknowledgement'],
+          missing_on_server: ['agent_acknowledgement', 'session_attendance'],
         },
       },
     })

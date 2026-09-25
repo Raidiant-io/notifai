@@ -385,7 +385,7 @@ function machineInstallationIsCurrent(deps: CommandDeps, harness: HookInstallabl
         event !== null && (HOOK_EVENTS as readonly string[]).includes(event),
       ),
   )
-  return requiredHookEvents(harness).every((event) => installed.has(event))
+  return requiredHookEvents(harness, deps.hookPlatform).every((event) => installed.has(event))
 }
 
 function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { command: string }[] }[]> }): { command: string }[] {

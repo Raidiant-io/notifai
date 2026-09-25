@@ -24,8 +24,15 @@ export const ClientCapabilitySchema = Type.Union(
   CLIENT_CAPABILITIES.map((capability) => Type.Literal(capability)),
 )
 
-/** Capabilities shipped by this CLI release on authenticated machine traffic. */
-export const SHIPPED_CLI_CAPABILITIES = ['agent_acknowledgement'] as const satisfies readonly ClientCapability[]
+/**
+ * Capabilities shipped by this CLI release on authenticated machine traffic.
+ * Every command advertises the same set, so a machine's recorded inventory does
+ * not flip between an attendant exchange and an ordinary send.
+ */
+export const SHIPPED_CLI_CAPABILITIES = [
+  'agent_acknowledgement',
+  'session_attendance',
+] as const satisfies readonly ClientCapability[]
 
 /** Capabilities shipped by the current Companion App. */
 export const SHIPPED_COMPANION_CAPABILITIES = ['answer'] as const satisfies readonly ClientCapability[]

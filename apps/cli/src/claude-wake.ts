@@ -81,7 +81,8 @@ function parseAgent(value: unknown): ClaudeAgentObservation | null {
   }
 }
 
-function parseDescriptor(value: unknown): ClaudeSessionDescriptor | null {
+/** A Claude Code session descriptor, or null when it has an unknown shape. */
+export function parseDescriptor(value: unknown): ClaudeSessionDescriptor | null {
   if (!isRecord(value)) return null
   if (
     typeof value['pid'] !== 'number' ||

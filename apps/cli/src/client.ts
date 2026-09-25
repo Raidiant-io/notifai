@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  AttendanceRequestT,
+  AttendanceResponse,
   AlphaAccessRequestResponse,
   AccountAccessResponse,
   BeginPairingResponse,
@@ -114,6 +116,15 @@ export interface ApiClient {
   finalizeMediaUpload(mediaId: string): Promise<FinalizeMediaUploadResponse>
   uploadMedia(grant: CreateMediaUploadResponse, bytes: Uint8Array): Promise<void>
   health(): Promise<boolean>
+  /**
+   * One Session Attendant exchange for an exact Agent Session. The server may
+   * hold a `running` exchange up to `waitSeconds`; `signal` cuts it short.
+   */
+  attend(
+    sessionId: string,
+    body: AttendanceRequestT,
+    options: { waitSeconds: number; signal?: AbortSignal },
+  ): Promise<AttendanceResponse>
 }
 
 export interface ClientOptions {
@@ -175,10 +186,11 @@ export function createClient(
     body?: unknown,
     /** Seconds the server was asked to hold the connection open. */
     serverWaitSeconds = 0,
+    abort?: AbortSignal,
   ): Promise<T> {
     const startedAt = Date.now()
     try {
-      const result = await callOnce<T>(method, apiPath, body, serverWaitSeconds)
+      const result = await callOnce<T>(method, apiPath, body, serverWaitSeconds, abort)
       logger?.debug('http.call', {
         method,
         path: apiPath,
@@ -205,6 +217,7 @@ export function createClient(
     apiPath: string,
     body?: unknown,
     serverWaitSeconds = 0,
+    abort?: AbortSignal,
   ): Promise<T> {
     // Without this, a server that accepts the connection and then never answers
     // hangs until the harness kills the whole hook — and the reply-poll deadline
@@ -216,7 +229,8 @@ export function createClient(
         ? requestBudgetMs
         : Math.max(1, options.deadlineAt - now())
     const limitMs = Math.max(1, Math.min(requestBudgetMs, remainingMs))
-    const signal = AbortSignal.timeout(limitMs)
+    const timeout = AbortSignal.timeout(limitMs)
+    const signal = abort === undefined ? timeout : AbortSignal.any([timeout, abort])
     let response: Response
     try {
       response = await fetch(`${root}${apiPath}`, {
@@ -354,5 +368,13 @@ export function createClient(
         return false
       }
     },
+    attend: (sessionId, body, { waitSeconds, signal }) =>
+      call<AttendanceResponse>(
+        'POST',
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attendance?wait_seconds=${waitSeconds}`,
+        body,
+        waitSeconds,
+        signal,
+      ),
   }
 }

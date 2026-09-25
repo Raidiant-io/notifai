@@ -14,6 +14,7 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
+import { attendHook } from './commands-hook-attend.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -84,6 +85,9 @@ export async function hookRunCommand(
   // would grant slow setup a second budget and let the harness kill us before
   // an accepted answer is journaled or written to stdout.
   const now = deps.now ?? Date.now
+  // Taken before stdin is read: an end the harness recorded before this
+  // invocation began belongs to an earlier incarnation of the session.
+  const invokedAt = now()
   // One owner lifetime covers startup and the longest answer window. Claude
   // runs it detached; Codex holds the turn. The delivery mechanism does not
   // change how long the exact Agent Session remains reachable.
@@ -158,6 +162,17 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  if (event === 'attend') {
+    logger.bind({ session: envelope.session_id ?? null })
+    start({ cwd, event: envelope.hook_event_name ?? null, source: envelope.source ?? null })
+    try {
+      return await attendHook(deps, { envelope, harness, cwd, invokedAt, logger })
+    } catch (err) {
+      // A resident process that throws must still hand the harness exit 0.
+      logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
+      return EXIT.ok
+    }
+  }
   const launchSettlement = (): Record<string, unknown> => {
     const sessionId = envelope.session_id
     if (sessionId === undefined || harness === undefined) return {}
@@ -234,7 +249,7 @@ export async function hookRunCommand(
               findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform),
             )
           : undefined
-        recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint)
+        recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint, invokedAt)
         if (harness === 'codex') {
           // Pending state is the durable handoff debt if the prior process
           // died after queue commit but before starting its successor.
