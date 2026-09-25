@@ -5,8 +5,8 @@ description: Use when work needs a User decision, approval, sign-in, credential 
 
 # Notifai
 
-Use `notifai`; never hand-roll HTTP, hooks, or polling. It owns routing,
-retries, and delivery evidence.
+Use `notifai` for routing, retries, and delivery evidence; never hand-roll
+HTTP, hooks, or polling.
 
 If missing: `npm install -g @raidiant/notifai`. Pinned
 `npx --yes @raidiant/notifai@<version>` is only for users refusing a global binary,
@@ -196,10 +196,10 @@ notifai status <question_id> --json
 
 States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 
-**Registering is not the end of the turn.** In that same turn, ask the question
-in the conversation and say what each answer will make you do, then end your
-turn to start submission. Ordinary sends need no turn boundary. Continue
-independent work in later turns; preserve supervision.
+**Registering is not the end of the turn.** Ask in plain conversational text,
+say what each answer will make you do, then end the turn to start submission.
+A second harness form can remain pending after a reply. Follow
+higher-priority rules; never claim either path retires the other.
 
 **Never say where the answer must arrive** ("tell me here"). The harness owns routing.
 
@@ -250,10 +250,9 @@ resume later. Never create a duplicate. On exit 0, act on the answer.
 
 ## When the answer arrives
 
-The latest reply is the user's current word: a later one corrects an earlier
-one, and a typed answer arriving in parts is read together, in order. A relayed
-answer reaches you as the chosen label's text; `notifai replies <request_id>
---json` has the stable choice ids.
+The latest reply is the user's current word: later choices correct earlier
+ones; typed parts are read together in order. A relayed answer uses the chosen
+label; `notifai replies <request_id> --json` has stable choice ids.
 
 Questions normally remain answerable for a day. When resuming without a relayed
 answer, inspect the original `question_id`. If it is lost, list outstanding
