@@ -3,7 +3,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
-import { latestPublishedCliVersion, newerPublishedCli, shouldConsultCliRegistry, thisCliVersion } from './cli-release.js'
+import { newerPublishedCli, publishedCliDistTags, shouldConsultCliRegistry, thisCliVersion } from './cli-release.js'
 import { CLI_UPDATE_AVAILABLE } from './cli-contract.js'
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -59,8 +59,8 @@ export async function agentUpdateNotice(options: {
       return true
     }, { waitMs: 50 })
     if (!claimed) return undefined
-    const latest = await latestPublishedCliVersion(options.fetchImpl, { useCache: false })
-    if (newerPublishedCli(thisCliVersion(), latest) === null) return undefined
+    const tags = await publishedCliDistTags(options.fetchImpl, { useCache: false })
+    if (newerPublishedCli(thisCliVersion(), tags) === null) return undefined
     const notify = withFileLock(`${file}.lock`, () => {
       const state = readState(file)
       if (recent(state.notified_at, options.now, NOTICE_INTERVAL_MS)) return false

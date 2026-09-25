@@ -22,7 +22,7 @@ import type { OrcaSessionTitleLookup } from './orca-session-title.js'
 import type { QuestionSettlementLaunch } from './question-settlement-process.js'
 import { packageVersion } from './release.js'
 import type { Tone } from './ui/theme.js'
-import { SERVICE_UPDATE_IN_PROGRESS, cliUpdateRecoveryCommand } from './cli-contract.js'
+import { SERVICE_UPDATE_IN_PROGRESS, cliUpdateChannel, cliUpdateRecoveryCommand } from './cli-contract.js'
 
 export interface CommandIo {
   out(line: string): void
@@ -198,10 +198,11 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
 
 /**
  * Resolve a current CLI independently of PATH. A bare `notifai update` would
- * be captured by the stale winner this action is meant to repair.
+ * be captured by the stale winner this action is meant to repair. A beta
+ * installation is pointed at the beta channel, which never downgrades it.
  */
 export function updateCliCommand(_deps: Pick<CommandDeps, 'hookInstallTarget' | 'hookPlatform'>): string {
-  return cliUpdateRecoveryCommand()
+  return cliUpdateRecoveryCommand(cliUpdateChannel(packageVersion()))
 }
 
 /** The one first-run command an unsigned machine is told to run. */

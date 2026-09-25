@@ -84,8 +84,8 @@ import {
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
 import {
-  latestPublishedCliVersion,
   newerPublishedCli,
+  publishedCliDistTags,
   shouldConsultCliRegistry,
   thisCliVersion,
 } from './cli-release.js'
@@ -729,8 +729,8 @@ async function applyRegistryRecommendation(
   ) {
     return
   }
-  const latest = await latestPublishedCliVersion(deps.fetchImpl)
-  const newer = newerPublishedCli(thisCliVersion(), latest)
+  const tags = await publishedCliDistTags(deps.fetchImpl)
+  const newer = newerPublishedCli(thisCliVersion(), tags)
   if (newer === null) return
   const contract = states.find((state) => state.id === 'contract')
   if (contract === undefined || contract.status === 'gap' || contract.status === 'optional-gap') return

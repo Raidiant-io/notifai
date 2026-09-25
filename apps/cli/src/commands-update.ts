@@ -14,10 +14,17 @@ import {
   isNpxAdapterTarget,
 } from './hook-adapter.js'
 import { packageVersion } from './release.js'
-import { CLI_PACKAGE_NAME, cliUpdateRecoveryCommand } from './cli-contract.js'
+import {
+  CLI_PACKAGE_NAME,
+  cliPackageSpec,
+  cliUpdateChannel,
+  cliUpdateRecoveryCommand,
+  type CliUpdateChannel,
+} from './cli-contract.js'
+import { cliReleaseTarget, parseCliDistTags, type CliReleaseTarget } from './cli-release.js'
 import { pathContainsDirectory } from './local-path.js'
 import { npmInvocation } from './npm-invocation.js'
-import { compareVersions } from './version.js'
+import { compareReleasePrecedence } from './version.js'
 
 export interface CliUpdateFlags {
   json?: boolean
@@ -68,28 +75,52 @@ function prefixIsAddressable(deps: CommandDeps, prefix: string): boolean {
   return pathContainsDirectory(deps.env, commandDirectory, platform)
 }
 
+/**
+ * Read the dist-tags from the registry npm itself installs from, so a custom
+ * registry configuration answers for both the read and the install.
+ */
+function publishedDistTags(deps: CommandDeps) {
+  const view = npmRun(deps, ['view', CLI_PACKAGE_NAME, 'dist-tags', '--json'])
+  if (view.status !== 0 || typeof view.stdout !== 'string') return null
+  try {
+    return parseCliDistTags(JSON.parse(view.stdout))
+  } catch {
+    return null
+  }
+}
+
+interface UpdateFailure {
+  code: string
+  /** Replaces the generic retry advice; the recovery is then a diagnostic unless given. */
+  message?: string
+  recoveryCommand?: string
+  target?: CliReleaseTarget
+}
+
 function failed(
   deps: CommandDeps,
-  flags: CliUpdateFlags,
-  code: string,
+  flags: CliUpdateFlags & { channel: CliUpdateChannel },
+  failure: UpdateFailure | string,
   before: CliInstallationInspection,
   packageManagerPrefix: string | null,
 ): number {
-  const recoveryMessage = code === 'update_destination_unknown'
+  const { code, message, recoveryCommand: explicitRecovery, target } =
+    typeof failure === 'string' ? { code: failure } as UpdateFailure : failure
+  const recoveryMessage = message ?? (code === 'update_destination_unknown'
     ? 'Notifai could not identify an npm-global installation to update. Use the package manager that installed the resolved command to update it; the diagnostic below can inspect the installation.'
     : code === 'package_manager_prefix_not_on_path'
       ? 'The npm global command directory is not on PATH. Add the bin directory for the reported package-manager prefix to PATH (the prefix itself on Windows), then inspect the installation with the diagnostic below before retrying the update.'
-      : null
-  const beta = flags.channel === 'beta'
-  const recoveryCommand = recoveryMessage === null
-    ? beta ? `npx --yes ${CLI_PACKAGE_NAME}@beta update --channel beta` : cliUpdateRecoveryCommand()
-    : `npx --yes ${CLI_PACKAGE_NAME}@${beta ? 'beta' : 'latest'} doctor --json`
+      : null)
+  const recoveryCommand = explicitRecovery ?? (recoveryMessage === null
+    ? cliUpdateRecoveryCommand(flags.channel)
+    : `npx --yes ${cliPackageSpec(flags.channel === 'beta' ? 'beta' : 'latest')} doctor --json`)
   if (flags.json === true) {
     deps.io.out(JSON.stringify({
       ok: false,
       code,
       recovery_command: recoveryCommand,
       ...(recoveryMessage === null ? {} : { message: recoveryMessage }),
+      ...(target === undefined ? {} : { target }),
       package_manager_prefix: packageManagerPrefix,
       before,
       after: inspection(deps),
@@ -106,18 +137,54 @@ function failed(
  * the stable hook adapter at that same artifact. The npm executable may own a
  * different global prefix; --prefix makes that ambient choice irrelevant.
  */
-export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): number {
-  const channel = flags.channel ?? 'stable'
-  if (channel !== 'stable' && channel !== 'beta') {
+export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): number {
+  const requestedChannel = requested.channel ?? 'stable'
+  if (requestedChannel !== 'stable' && requestedChannel !== 'beta') {
     deps.io.err('--channel must be stable or beta')
     return EXIT.failed
   }
+  const channel: CliUpdateChannel = requestedChannel
   // Carry the caller's effective PATH into npm and the new artifact's handoff,
   // otherwise each child would diagnose the temporary npx runner as installed.
   deps = { ...deps, env: withoutNpxLauncherPath(deps.env, deps.hookPlatform ?? process.platform,
     runningArtifact(deps) ?? 'notifai') }
-  flags = { ...flags, json: flags.json === true || deps.io.interactive !== true }
+  const flags = { ...requested, channel, json: requested.json === true || deps.io.interactive !== true }
   const before = inspection(deps)
+
+  // A beta channel, or a beta installation, installs one exact resolved
+  // release, and never one that would move the installation backwards. A
+  // stable installation updating on the stable channel keeps plain `latest`.
+  const installed = before.effective?.version ?? before.current.version
+  let target: CliReleaseTarget | null = null
+  if (channel === 'beta' || cliUpdateChannel(installed) === 'beta') {
+    const tags = publishedDistTags(deps)
+    if (tags === null) {
+      return failed(deps, flags, {
+        code: 'release_versions_unavailable',
+        message: 'Notifai could not read the published release versions, so nothing was installed. Check the connection to the npm registry, then retry with:',
+        recoveryCommand: cliUpdateRecoveryCommand(channel),
+      }, before, null)
+    }
+    target = cliReleaseTarget(tags, channel)
+    if (installed !== null && compareReleasePrecedence(target.version, installed) === 'before') {
+      const betaTarget = cliReleaseTarget(tags, 'beta')
+      const betaMovesForward = channel === 'stable' &&
+        compareReleasePrecedence(betaTarget.version, installed) !== 'before'
+      return failed(deps, flags, betaMovesForward
+        ? {
+            code: 'update_would_downgrade',
+            message: `The installed Notifai ${installed} is newer than the stable release ${target.version}, so nothing was installed. Keep it current on the beta channel with:`,
+            recoveryCommand: cliUpdateRecoveryCommand('beta'),
+            target,
+          }
+        : {
+            code: 'update_would_downgrade',
+            message: `The installed Notifai ${installed} is newer than every published release, so nothing was installed. Inspect the installation with:`,
+            target,
+          }, before, null)
+    }
+  }
+
   const prefixResult = npmRun(deps, ['prefix', '--global'])
   const packageManagerPrefix =
     prefixResult.status === 0 && typeof prefixResult.stdout === 'string' && prefixResult.stdout.trim() !== ''
@@ -139,7 +206,7 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
     '--global',
     '--prefix',
     targetPrefix,
-    `${CLI_PACKAGE_NAME}@${channel === 'beta' ? 'beta' : 'latest'}`,
+    cliPackageSpec(target?.version ?? 'latest'),
   ])
   if (install.status !== 0) {
     return failed(deps, flags, 'package_install_failed', before, packageManagerPrefix)
@@ -155,13 +222,13 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
   ) {
     return failed(deps, flags, 'effective_command_not_repaired', before, packageManagerPrefix)
   }
-  if (channel === 'beta' && !/^\d+\.\d+\.\d+-beta\.[1-9]\d*$/.test(effective.version)) {
-    return failed(deps, flags, 'beta_channel_returned_non_beta', before, packageManagerPrefix)
+  if (target !== null && effective.version !== target.version) {
+    return failed(deps, flags, { code: 'effective_command_not_target', target }, before, packageManagerPrefix)
   }
   const minimumCurrent = before.current.version
   const currentComparison = minimumCurrent === null
     ? 'unparseable'
-    : compareVersions(effective.version, minimumCurrent)
+    : compareReleasePrecedence(effective.version, minimumCurrent)
   if (currentComparison === 'unparseable') {
     return failed(deps, flags, 'effective_command_version_unknown', before, packageManagerPrefix)
   }
@@ -228,6 +295,7 @@ export function cliUpdateCommand(deps: CommandDeps, flags: CliUpdateFlags): numb
       ok: true,
       package_manager_prefix: packageManagerPrefix,
       update_prefix: targetPrefix,
+      target: target ?? { version: null, dist_tag: 'latest' },
       handoff,
       follow_up_required: true,
       handoff_error: handoff === null ? 'Run notifai update --check --json with the updated CLI before claiming guidance or session readiness.' : null,

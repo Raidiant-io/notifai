@@ -2,7 +2,7 @@ import { assessReadiness } from './commands-doctor.js'
 import { EXIT, updateCliCommand, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { inspectCliInstallations } from './cli-bin.js'
-import { latestPublishedCliVersion, newerPublishedCli } from './cli-release.js'
+import { newerPublishedCli, publishedCliDistTags } from './cli-release.js'
 import { packageVersion } from './release.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 import { isSemVer } from './version.js'
@@ -23,9 +23,10 @@ export async function cliUpdateCheckCommand(
   }
   const version = packageVersion()
   const installation = inspectCliInstallations(deps.env, deps.hookPlatform ?? process.platform)
-  const latest = await latestPublishedCliVersion(deps.fetchImpl)
+  const tags = await publishedCliDistTags(deps.fetchImpl)
   const current = installation.effective?.version ?? version
-  const available = latest === null || current === null ? null : newerPublishedCli(current, latest) !== null
+  const newer = tags === null || current === null ? null : newerPublishedCli(current, tags)
+  const available = tags === null || current === null ? null : newer !== null
   const readiness = await assessReadiness(deps, { json: true })
   const active = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const owner = active.contested.length === 0 ? active.active : null
@@ -45,10 +46,12 @@ export async function cliUpdateCheckCommand(
     read_only: true,
     running_version: version,
     installed_version: installation.effective?.version ?? null,
-    latest_version: latest,
+    latest_version: tags?.latest ?? null,
+    beta_version: tags?.beta ?? null,
     update_available: available,
+    available_version: newer,
     update_command: updateCliCommand(deps),
-    release_notes_url: releaseNotesUrl(latest),
+    release_notes_url: releaseNotesUrl(newer ?? tags?.latest ?? null),
     changelog: installedChangelog(version, flags.from),
     guidance: bundle.ok ? {
       verified: true,
@@ -78,7 +81,7 @@ export async function cliUpdateCheckCommand(
   }
   if (flags.json === true || deps.io.interactive !== true) deps.io.out(JSON.stringify(report, null, 2))
   else {
-    deps.io.out(available === true ? 'A newer Notifai is available.' : latest === null ? 'Could not check npm for updates.' : 'No newer Notifai is available.')
+    deps.io.out(available === true ? 'A newer Notifai is available.' : tags === null ? 'Could not check npm for updates.' : 'No newer Notifai is available.')
     if (report.release_notes_url !== null) deps.io.out(`Release notes: ${report.release_notes_url}`)
     deps.io.out(report.session.policy)
     for (const step of report.next_steps) deps.io.out(step)

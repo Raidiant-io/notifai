@@ -21,6 +21,21 @@ it('includes only the installed releases newer than the previous installation', 
   expect(installedChangelog('2.1.0', '2.1.0', root).text).toBe('')
 })
 
+it('orders beta release notes before the stable release they lead to', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-changelog-'))
+  roots.push(root)
+  writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changes\n## [11.4.0]\nStable\n## [11.4.0-beta.2]\nSecond beta\n## [11.4.0-beta.1]\nFirst beta\n## [11.3.2]\nPrevious\n')
+  const fromBeta = installedChangelog('11.4.0', '11.4.0-beta.1', root).text
+  expect(fromBeta).toContain('Stable')
+  expect(fromBeta).toContain('Second beta')
+  expect(fromBeta).not.toContain('First beta')
+  const onBeta = installedChangelog('11.4.0-beta.2', '11.3.2', root).text
+  expect(onBeta).toContain('Second beta')
+  expect(onBeta).toContain('First beta')
+  expect(onBeta).not.toContain('Stable')
+  expect(onBeta).not.toContain('Previous')
+})
+
 it.each(SOURCE_CONTEXT_HARNESSES)('does not require a restart for a ready %s installation', harness => {
   expect(HARNESS_UPDATE_EFFECTS[harness]).toBeTruthy()
   expect(updateSessionEffects(harness, [{ id: 'hooks', title: 'Hooks', status: 'ready', detail: 'current' }])).toMatchObject({ restart_required: false, assessment: 'continue' })

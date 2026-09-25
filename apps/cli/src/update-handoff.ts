@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compareVersions, isSemVer } from './version.js'
+import { compareReleasePrecedence, isSemVer } from './version.js'
 import type { SourceContextHarness } from './harnesses.js'
 import type { ReadinessState } from './readiness.js'
 
@@ -22,9 +22,9 @@ export function installedChangelog(version: string | null, from?: string, root =
     const sections = content.split(/(?=^## \[)/m).filter(section => {
       const heading = /^## \[([^\]]+)\]/m.exec(section)
       if (heading === null || version === null) return false
-      const relative = compareVersions(heading[1]!, version)
+      const relative = compareReleasePrecedence(heading[1]!, version)
       return (relative === 'before' || relative === 'equal') &&
-        (from === undefined || compareVersions(heading[1]!, from) === 'after')
+        (from === undefined || compareReleasePrecedence(heading[1]!, from) === 'after')
     })
     const text = sections.join('').trim()
     return { version, from: from ?? null, path: file, text: text.slice(0, CHANGELOG_LIMIT),
