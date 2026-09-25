@@ -1,4 +1,9 @@
-import { defaultSoundForKind, effectiveKind, type NotificationDraftT } from './notification.js'
+import {
+  defaultSoundForKind,
+  effectiveKind,
+  SESSION_MESSAGES_SYNC,
+  type NotificationDraftT,
+} from './notification.js'
 import type {
   AgentAcknowledgementSync,
   EnvelopeIds,
@@ -24,6 +29,19 @@ export function buildFcmSoundLibrarySyncEnvelope(): FcmDataEnvelope {
       notifai: JSON.stringify({
         schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
         sync: 'sound_library',
+      }),
+    },
+    priority: 'NORMAL',
+  }
+}
+
+/** Silent Android Session Message refresh, consumed before visible-envelope parsing. */
+export function buildFcmSessionMessagesSyncEnvelope(): FcmDataEnvelope {
+  return {
+    data: {
+      notifai: JSON.stringify({
+        schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
+        sync: SESSION_MESSAGES_SYNC,
       }),
     },
     priority: 'NORMAL',
