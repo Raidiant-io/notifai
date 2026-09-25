@@ -52,11 +52,11 @@ describe('CLI update recovery', () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
-  function recoveryFixture() {
+  function recoveryFixture(installedAt = '3.0.1') {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-update-retry-'))
     roots.push(root)
     const version = packageVersion()!
-    const installed = npmInstall(root, 'installed', '3.0.1')
+    const installed = npmInstall(root, 'installed', installedAt)
     const running = npmInstall(root, 'running', version)
     const home = path.join(root, 'home')
     installHookAdapter({ execPath: process.execPath, scriptPath: running.artifact }, home)
@@ -73,6 +73,11 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
 if (args[0] === 'prefix') { process.stdout.write(${JSON.stringify(path.join(root, 'other-prefix'))}); process.exit(0); }
 const plan = JSON.parse(fs.readFileSync(${JSON.stringify(plan)}, 'utf8'));
+if (args[0] === 'view') {
+  if (plan.tags === undefined) process.exit(1);
+  process.stdout.write(JSON.stringify(plan.tags));
+  process.exit(0);
+}
 if (plan.exit) process.exit(plan.exit);
 const prefix = args[args.indexOf('--prefix') + 1];
 const pkg = path.join(prefix, 'lib', 'node_modules', '@raidiant', 'notifai');
@@ -97,26 +102,94 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
       ...overrides,
     }))
     setPlan()
-    return { root, installed, running, home, adapterBefore, io, deps, setPlan, calls }
+    const npmCalls = (): string[][] =>
+      readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
+    const installedVersion = (): string =>
+      JSON.parse(readFileSync(path.join(installed.packageRoot, 'package.json'), 'utf8')).version
+    return { root, installed, running, home, adapterBefore, io, deps, setPlan, calls, npmCalls, installedVersion }
   }
 
-  it('installs a beta only from npm beta and rejects a non-beta result', () => {
-    const f = recoveryFixture()
-    const version = '12.0.0-beta.2'
-    f.setPlan({
-      version,
-      script: `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${version}\n`)})\n`,
-    })
-    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(0)
-    expect(readFileSync(f.calls, 'utf8')).toContain('@raidiant/notifai@beta')
-    expect(JSON.parse(readFileSync(path.join(f.installed.packageRoot, 'package.json'), 'utf8')).version).toBe(version)
+  /** A published release the fake npm installs; it reports its own version. */
+  function release(version: string) {
+    return { version, script: `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${version}\n`)})\n` }
+  }
 
-    f.setPlan({ version: '12.0.0', script: `#!${process.execPath}\nprocess.stdout.write('12.0.0\\n')\n` })
+  // Newer than this build, so the updater's own version never blocks the install.
+  const next = Number(packageVersion()!.split('.')[0]) + 1
+
+  it('installs the newer of npm beta and latest as one exact release on the beta channel', () => {
+    const f = recoveryFixture()
+    const beta = `${next}.0.0-beta.2`
+    f.setPlan({ ...release(beta), tags: { latest: '3.0.1', beta } })
+    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(0)
+    expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({ ok: true, target: { version: beta, dist_tag: 'beta' } })
+    expect(f.npmCalls().at(-1)).toContain(`@raidiant/notifai@${beta}`)
+    expect(f.installedVersion()).toBe(beta)
+
+    // Once the stable release ships, the beta channel installs it instead of the
+    // older same-core beta.
+    const stable = `${next}.0.0`
+    f.setPlan({ ...release(stable), tags: { latest: stable, beta } })
+    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(0)
+    expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({ ok: true, target: { version: stable, dist_tag: 'latest' } })
+    expect(f.npmCalls().at(-1)).toContain(`@raidiant/notifai@${stable}`)
+    expect(f.installedVersion()).toBe(stable)
+  })
+
+  it('refuses a beta-channel result other than the resolved release', () => {
+    const f = recoveryFixture()
+    f.setPlan({ ...release(`${next}.0.1`), tags: { latest: '3.0.1', beta: `${next}.0.0-beta.2` } })
     expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(1)
     expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
-      code: 'beta_channel_returned_non_beta',
+      code: 'effective_command_not_target',
       recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
     })
+  })
+
+  it('never moves a beta installation back to an older stable release', () => {
+    const beta = `${next}.0.0-beta.2`
+    const f = recoveryFixture(beta)
+    f.setPlan({ ...release('3.0.1'), tags: { latest: '3.0.1', beta } })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
+    expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
+      ok: false,
+      code: 'update_would_downgrade',
+      recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
+      target: { version: '3.0.1', dist_tag: 'latest' },
+    })
+    expect(f.npmCalls().some((args) => args[0] === 'install')).toBe(false)
+    expect(f.installedVersion()).toBe(beta)
+
+    // The stable release that supersedes the beta is an ordinary update.
+    const stable = `${next}.0.0`
+    f.setPlan({ ...release(stable), tags: { latest: stable, beta } })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    expect(f.npmCalls().at(-1)).toContain(`@raidiant/notifai@${stable}`)
+    expect(f.installedVersion()).toBe(stable)
+  })
+
+  it('refuses the beta channel when the installation is newer than every published release', () => {
+    const f = recoveryFixture(`${next}.1.0`)
+    f.setPlan({ ...release(`${next}.0.0`), tags: { latest: `${next}.0.0`, beta: `${next}.0.0-beta.2` } })
+    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(1)
+    const report = JSON.parse(f.io.outLines.at(-1)!)
+    expect(report).toMatchObject({ ok: false, code: 'update_would_downgrade' })
+    expect(report.recovery_command).not.toContain('update')
+    expect(f.npmCalls().some((args) => args[0] === 'install')).toBe(false)
+    expect(f.installedVersion()).toBe(`${next}.1.0`)
+  })
+
+  it('installs nothing on the beta channel when the published versions cannot be read', () => {
+    const f = recoveryFixture()
+    f.setPlan(release(`${next}.0.0-beta.2`))
+    expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(1)
+    expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
+      ok: false,
+      code: 'release_versions_unavailable',
+      recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
+    })
+    expect(f.npmCalls().some((args) => args[0] === 'install')).toBe(false)
+    expect(f.installedVersion()).toBe('3.0.1')
   })
 
   it('updates the real PATH winner when npx prepends its own temporary launcher', () => {

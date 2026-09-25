@@ -10,7 +10,7 @@ import {
 import path from 'node:path'
 import type { ReadinessState } from './readiness.js'
 import { packageVersion } from './release.js'
-import { cliUpdateRecoveryCommand } from './cli-contract.js'
+import { cliUpdateChannel, cliUpdateRecoveryCommand } from './cli-contract.js'
 import { canonicalPath, pathDirectories, sameLocalPath } from './local-path.js'
 
 const POSIX_NAMES = ['notifai']
@@ -186,7 +186,7 @@ export function cliBinReadiness(
 ): ReadinessState {
   const inspection = inspectCliInstallations(env, platform, options)
   const { current, effective, entries } = inspection
-  const updateCommand = cliUpdateRecoveryCommand()
+  const updateCommand = cliUpdateRecoveryCommand(cliUpdateChannel(current.version))
   if (effective === null && entries.length > 0) {
     return {
       id: 'cli-bin',

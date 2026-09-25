@@ -26,10 +26,16 @@ onward.
 The public CLI is npm `latest`; the current beta CLI is npm `beta`. A beta
 package is never installed by `npm install @raidiant/notifai` or plain
 `notifai update`. Testers opt in with
-`npx --yes @raidiant/notifai@beta update --channel beta`; the updater then
-installs `@raidiant/notifai@beta` into the effective global prefix. Previous
-beta versions remain individually installable by exact version even after the
-moving `beta` dist-tag advances.
+`npx --yes @raidiant/notifai@beta update --channel beta`; the updater reads
+both dist-tags, resolves whichever of `beta` and `latest` has the higher SemVer
+precedence (so `X.Y.Z` supersedes `X.Y.Z-beta.N`), and installs that exact
+version into the effective global prefix. A beta installation is told about a
+newer beta and about the stable release that supersedes it, and its update
+recommendation is the beta-channel command. The updater never moves a beta
+installation backwards: a plain update from a beta newer than `latest` refuses
+before installing and names the beta-channel command. Previous beta versions
+remain individually installable by exact version even after the moving `beta`
+dist-tag advances.
 
 ## Beta CLI releases
 

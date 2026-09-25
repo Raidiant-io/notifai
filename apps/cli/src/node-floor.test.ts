@@ -19,6 +19,12 @@ describe('the Node runtime floor', () => {
     expect(belowNodeFloor('v24.3.0')).toBe(false)
   })
 
+  it('treats a prerelease runtime as its numeric release', () => {
+    // A floor is a capability check, not release ordering.
+    expect(belowNodeFloor('v20.12.0-rc.1')).toBe(false)
+    expect(belowNodeFloor('v20.11.9-nightly20240101')).toBe(true)
+  })
+
   it('does not strand a reader whose version it cannot read', () => {
     expect(nodeMajor('bun-1.2')).toBeNull()
     expect(belowNodeFloor('bun-1.2')).toBe(false)

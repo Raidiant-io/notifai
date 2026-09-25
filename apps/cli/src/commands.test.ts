@@ -121,7 +121,7 @@ import {
   SETUP_PROOF_STALE_MS,
   writeSetupProof,
 } from './commands-setup-proof.js'
-import { resetLatestPublishedCliVersionForTest } from './cli-release.js'
+import { resetPublishedCliDistTagsForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
@@ -130,7 +130,7 @@ import { firstRequiredBlocker, readinessJson } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 
 afterEach(() => {
-  resetLatestPublishedCliVersionForTest()
+  resetPublishedCliDistTagsForTest()
 })
 
 /** Keep unrelated command cases focused while exercising the current authored shape. */
