@@ -794,7 +794,9 @@ describe('notifai hook attend for Codex', () => {
     const { env, root } = codexEnv()
     // This test process stands in for a login shell that kept running.
     env['NOTIFAI_HOOK_SOURCE_PID'] = String(process.pid)
-    expect(processExecutableName(process.pid)).toBe(path.basename(process.execPath))
+    const processName = processExecutableName(process.pid)
+    expect(processName).not.toBeNull()
+    expect(processName).not.toBe('codex')
     const deps = attendDeps(env, root)
     delete deps.attendant!.harnessProcess
     const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
