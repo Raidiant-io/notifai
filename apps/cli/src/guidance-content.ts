@@ -159,6 +159,10 @@ When work you own or coordinate needs a User response, the answerable question
 itself is a Notification Request. Register it with \`notifai ask\` in the same
 turn you ask in the conversation, even while other work continues or the User
 was recently active. Conversation alone does not reach an away User.
+For that registered decision, ask in plain conversational text and say what
+each answer will change. A separate harness question form has its own answer
+path: replying through one can leave the other pending. If harness instructions
+require its form, follow them and do not promise synchronized retirement.
 
 Decisions, approvals, sign-in, credential setup and physical actions count.
 Ask for safe setup or readiness, never for credentials or other private
