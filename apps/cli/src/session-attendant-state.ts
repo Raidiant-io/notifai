@@ -11,7 +11,7 @@ export function attendantClaimPath(sessionId: string, env: NodeJS.ProcessEnv): s
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.attendant`)
 }
 
-function attendantStatusPath(sessionId: string, env: NodeJS.ProcessEnv): string {
+export function attendantStatusPath(sessionId: string, env: NodeJS.ProcessEnv): string {
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.attendance.json`)
 }
 

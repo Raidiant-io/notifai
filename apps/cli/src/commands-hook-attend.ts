@@ -17,7 +17,9 @@ import { inspectHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from '
 import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import {
   beginSessionIncarnation,
-  readSessionEndedAt,
+  endsIncarnation,
+  readSessionEndMarker,
+  type LifecycleStamp,
   readSessionIncarnation,
   refreshSessionMarkers,
   rotateSessionIncarnation,
@@ -42,7 +44,8 @@ import {
   systemClaudeProbeAdapters,
   type ClaudeProbeAdapters,
 } from './session-attendant-probe.js'
-import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
+import { attendantClaimPath, attendantStatusPath, writeAttendantStatus } from './session-attendant-state.js'
+import { CLI_PACKAGE_NAME } from './cli-contract.js'
 import { compareVersions } from './version.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
@@ -70,7 +73,7 @@ export async function attendHook(
     envelope: HookEnvelope
     harness: HookHarness | undefined
     cwd: string
-    invokedAt: number
+    invokedAt: LifecycleStamp
     logger: Logger
   },
 ): Promise<number> {
@@ -80,6 +83,9 @@ export async function attendHook(
     logger.info('hook.end', { hook: 'attend', outcome, decided: false, ...data })
     return EXIT.ok
   }
+  // Read once, now: an in-place reinstall replaces the manifest on disk, and
+  // rereading it later would compare the installed files with themselves.
+  const runningVersion = deps.runningVersion === undefined ? packageVersion() : deps.runningVersion
   const sessionId = envelope.session_id
   if (sessionId === undefined) return end('ignored', { reason: 'missing-session-id' })
   const support = attendantSupport(harness, deps.hookPlatform ?? process.platform)
@@ -103,7 +109,7 @@ export async function attendHook(
     }
   }
 
-  const gates = seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness!))
+  const gates = seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness!, runningVersion))
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     logger.adopt(logSettingsFrom(config))
@@ -156,15 +162,14 @@ export async function attendHook(
     source: envelope.source ?? envelope.hook_event_name ?? null,
   })
 
-  const startedAt = record.started_at
+  const served = record
   const probeAdapters = seams.probeAdapters ?? systemClaudeProbeAdapters(deps.env)
   const probe = claudeAttendanceProbe({
     sessionId,
     harness: harnessProcess,
-    endedByHook: () => {
-      const at = readSessionEndedAt(sessionId, deps.env)
-      return at !== null && at >= startedAt
-    },
+    // SessionEnd names the incarnation it ended; an end of any other one,
+    // earlier or later, is not this attendant's.
+    endedByHook: () => endsIncarnation(readSessionEndMarker(sessionId, deps.env), served),
     adapters: probeAdapters,
   })
 
@@ -184,6 +189,9 @@ export async function attendHook(
         return token === null ? null : next.incarnation
       },
       probe,
+      // A claim that vanished or changed hands fences this attendant: another
+      // may already serve the same incarnation.
+      claimHeld: () => token !== null && readClaimFile(claimFile)?.['token'] === token,
       notified: () => sessionNotified(sessionId, deps.env),
       gates,
       client: () => {
@@ -202,7 +210,11 @@ export async function attendHook(
       clock,
       logger,
       writeStatus: (status) => writeAttendantStatus(sessionId, deps.env, status),
-      heartbeat: () => refreshSessionMarkers(sessionId, deps.env, clock.wall()),
+      heartbeat: () =>
+        refreshSessionMarkers(sessionId, deps.env, clock.wall(), [
+          claimFile,
+          attendantStatusPath(sessionId, deps.env),
+        ]),
       signalled: seams.signalled ?? signals!.promise,
       ...(seams.probeIntervalMs === undefined ? {} : { probeIntervalMs: seams.probeIntervalMs }),
       ...(seams.waitSeconds === undefined ? {} : { waitSeconds: seams.waitSeconds }),
@@ -225,6 +237,7 @@ export function attendantGates(
   cwd: string,
   sessionId: string,
   harness: HookHarness,
+  runningVersion: string | null,
 ): GateResult {
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
@@ -243,16 +256,23 @@ export function attendantGates(
     .filter((installation) => installation.harness === harness)
     .some((installation) => installation.handlers.some((handler) => handlerEvent(handler.command) === 'attend'))
   if (!attendInstalled) return { ok: false, reason: 'attend-handler-removed' }
-  const running = deps.runningVersion === undefined ? packageVersion() : deps.runningVersion
+  // Fail closed: an installed contract this attendant cannot establish is not
+  // one it may keep attending under.
   const installed = installedCliVersion(inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform).target)
-  if (running !== null && installed !== null && compareVersions(installed, running) === 'before') {
-    return { ok: false, reason: 'cli-downgraded' }
-  }
+  if (runningVersion === null || installed === null) return { ok: false, reason: 'cli-contract-unknown' }
+  const order = compareVersions(installed, runningVersion)
+  if (order === 'unparseable') return { ok: false, reason: 'cli-contract-unknown' }
+  if (order === 'before') return { ok: false, reason: 'cli-downgraded' }
   return { ok: true }
 }
 
 function installedCliVersion(target: HookAdapterTarget | null): string | null {
-  if (target === null || isNpxAdapterTarget(target)) return null
+  if (target === null) return null
+  if (isNpxAdapterTarget(target)) {
+    // Installers pin npx targets to an exact version: `@raidiant/notifai@1.2.3`.
+    const prefix = `${CLI_PACKAGE_NAME}@`
+    return target.spec.startsWith(prefix) ? target.spec.slice(prefix.length) : null
+  }
   try {
     const manifest = path.join(path.dirname(target.scriptPath), '..', 'package.json')
     const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { version?: unknown }

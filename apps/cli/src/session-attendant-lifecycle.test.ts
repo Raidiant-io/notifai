@@ -11,13 +11,19 @@ import { sanitizeSessionId, stateDir } from './config.js'
 import { claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
 import {
   beginSessionIncarnation,
+  endsIncarnation,
+  happenedBefore,
+  lifecycleStamp,
   markSessionEnded,
-  readSessionEndedAt,
+  pruneAbandonedSessions,
+  readSessionEndMarker,
   readSessionIncarnation,
   recordSessionNotified,
   recordSessionStart,
+  refreshSessionMarkers,
   sessionHasEnded,
 } from './hook-session-state.js'
+import { installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig } from './install-hooks.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { disableProject, enableProject, projectBinding } from './project-enablement.js'
@@ -43,45 +49,72 @@ function isolatedEnv(): { env: NodeJS.ProcessEnv; root: string } {
 describe('beginSessionIncarnation', () => {
   it('drops an end recorded before this start, whichever SessionStart handler runs first', () => {
     const { env } = isolatedEnv()
-    const first = beginSessionIncarnation('s1', env, { stamp: 1_000, harnessProcess: HARNESS })
+    const first = beginSessionIncarnation('s1', env, { stamp: lifecycleStamp(1_000), harnessProcess: HARNESS })
     markSessionEnded('s1', env, 2_000)
+    expect(endsIncarnation(readSessionEndMarker('s1', env), first)).toBe(true)
 
     // In-process /resume: the attend handler runs before the paused activation handler.
-    const attend = beginSessionIncarnation('s1', env, { stamp: 3_000, harnessProcess: HARNESS })
+    const invoked = lifecycleStamp(3_000)
+    const attend = beginSessionIncarnation('s1', env, { stamp: invoked, harnessProcess: HARNESS })
     expect(attend.incarnation).not.toBe(first.incarnation)
-    expect(attend.started_at).toBe(3_000)
-    expect(readSessionEndedAt('s1', env)).toBeNull()
+    expect(readSessionEndMarker('s1', env)).toBeNull()
 
-    // The activation handler resumes afterwards and joins the same incarnation.
-    recordSessionStart('s1', env, 'claude-code', '/work', undefined, 3_010)
+    // The activation handler of the same start resumes afterwards and joins it.
+    recordSessionStart('s1', env, 'claude-code', '/work', undefined, invoked)
     expect(readSessionIncarnation('s1', env)?.incarnation).toBe(attend.incarnation)
   })
 
   it('agrees on one incarnation when activation runs first', () => {
     const { env } = isolatedEnv()
     markSessionEnded('s2', env, 500)
-    recordSessionStart('s2', env, 'claude-code', '/work', undefined, 1_000)
+    const invoked = lifecycleStamp(1_000)
+    recordSessionStart('s2', env, 'claude-code', '/work', undefined, invoked)
     const activation = readSessionIncarnation('s2', env)!
-    const attend = beginSessionIncarnation('s2', env, { stamp: 1_020, harnessProcess: HARNESS })
+    const attend = beginSessionIncarnation('s2', env, { stamp: invoked, harnessProcess: HARNESS })
     expect(attend.incarnation).toBe(activation.incarnation)
     expect(attend.harness_process).toEqual(HARNESS)
   })
 
-  it('keeps an end written after this handler started: that end is its own', () => {
+  it('a delayed handler keeps an end that came after its own invocation: that end is its start\'s', () => {
     const { env } = isolatedEnv()
+    const invoked = lifecycleStamp(4_000)
+    // The activation handler joined this start, then the session ended, then
+    // the slow async handler of the same start finally runs.
+    recordSessionStart('s3', env, 'claude-code', '/work', undefined, invoked)
+    const started = readSessionIncarnation('s3', env)!
     markSessionEnded('s3', env, 5_000)
-    const late = beginSessionIncarnation('s3', env, { stamp: 4_000, harnessProcess: HARNESS })
-    expect(readSessionEndedAt('s3', env)).toBe(5_000)
-    expect(5_000 >= late.started_at).toBe(true)
+    const late = beginSessionIncarnation('s3', env, { stamp: invoked, harnessProcess: HARNESS })
+    expect(late.key).toBe(started.key)
+    expect(endsIncarnation(readSessionEndMarker('s3', env), late)).toBe(true)
+  })
+
+  it('orders lifecycle edges without the wall clock: a backward step cannot end a resumed session', () => {
+    const { env } = isolatedEnv()
+    beginSessionIncarnation('s6', env, { stamp: lifecycleStamp(10_000), harnessProcess: HARNESS })
+    markSessionEnded('s6', env, 11_000)
+    // The wall clock stepped back to 5 000 before the in-process resume.
+    const resumed = beginSessionIncarnation('s6', env, { stamp: lifecycleStamp(5_000), harnessProcess: HARNESS })
+    expect(readSessionEndMarker('s6', env)).toBeNull()
+    expect(endsIncarnation(readSessionEndMarker('s6', env), resumed)).toBe(false)
+    // And the resumed incarnation's own end, whatever its wall time, ends it.
+    markSessionEnded('s6', env, 1)
+    expect(endsIncarnation(readSessionEndMarker('s6', env), resumed)).toBe(true)
+  })
+
+  it('treats an end from an earlier boot as earlier, whatever its monotonic value', () => {
+    const later = { wall: 0, mono: (process.hrtime.bigint() + 10n ** 15n).toString() }
+    expect(happenedBefore(later, lifecycleStamp())).toBe(true)
+    const reference = lifecycleStamp()
+    expect(happenedBefore(lifecycleStamp(), reference)).toBe(false)
   })
 
   it('mints a new incarnation for a new harness process and keeps it for /compact', () => {
     const { env } = isolatedEnv()
-    const first = beginSessionIncarnation('s4', env, { stamp: 1_000, harnessProcess: HARNESS })
-    const compact = beginSessionIncarnation('s4', env, { stamp: 9_000, harnessProcess: HARNESS })
+    const first = beginSessionIncarnation('s4', env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
+    const compact = beginSessionIncarnation('s4', env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
     expect(compact.incarnation).toBe(first.incarnation)
     const resumed = beginSessionIncarnation('s4', env, {
-      stamp: 10_000,
+      stamp: lifecycleStamp(),
       harnessProcess: { pid: 5151, start: 'Fri Sep 25 12:00:00 2026' },
     })
     expect(resumed.incarnation).not.toBe(first.incarnation)
@@ -91,12 +124,26 @@ describe('beginSessionIncarnation', () => {
     const { env } = isolatedEnv()
     markSessionEnded('s5', env, 1_000)
     const rearmed = beginSessionIncarnation('s5', env, {
-      stamp: 2_000,
+      stamp: lifecycleStamp(),
       harnessProcess: HARNESS,
       clearEarlierEnd: false,
     })
     expect(sessionHasEnded('s5', env)).toBe(true)
-    expect(rearmed.started_at).toBeGreaterThan(1_000)
+    expect(endsIncarnation(readSessionEndMarker('s5', env), rearmed)).toBe(false)
+  })
+
+  it('keeps a live attendant claim through the abandoned-state prune', () => {
+    const { env } = isolatedEnv()
+    const claim = attendantClaimPath('s7', env)
+    mkdirSync(path.dirname(claim), { recursive: true })
+    writeFileSync(claim, '{}')
+    beginSessionIncarnation('s7', env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
+    const eightDays = 8 * 24 * 3600 * 1000
+    const later = Date.now() + eightDays
+    // The attendant's hourly heartbeat, a week on.
+    refreshSessionMarkers('s7', env, later, [claim])
+    expect(pruneAbandonedSessions(env, later + 60_000)).toBe(0)
+    expect(existsSync(claim)).toBe(true)
   })
 })
 
@@ -142,7 +189,7 @@ describe('Claude exact-session probe', () => {
       },
       pidExists: () => true,
       readStart: () => 'Fri Sep 25  11:12:08 2026 ',
-      now: () => 1_000,
+      parentPid: () => 1,
       ...overrides,
     }
   }
@@ -181,6 +228,47 @@ describe('Claude exact-session probe', () => {
   it('never claims running when the descriptor start disagrees', () => {
     const stale = adapters({ descriptor: { ...(adapters().readDescriptor(0) as object), procStart: 'Thu Sep 24 08:00:00 2026' } })
     expect(probeWith(stale)).toEqual({ state: 'uncertain', reason: 'process-start-mismatch' })
+  })
+
+  it('stays uncertain until a start-time check succeeds again, re-checking on every probe', () => {
+    let start: string | null = null
+    const probe = claudeAttendanceProbe({
+      sessionId: 'sess',
+      harness: HARNESS,
+      endedByHook: () => false,
+      adapters: adapters({ readStart: () => start }),
+    })
+    // The lookup fails: never running, on this probe or the next.
+    expect(probe()).toEqual({ state: 'uncertain', reason: 'process-start-unreadable' })
+    expect(probe()).toEqual({ state: 'uncertain', reason: 'process-start-unreadable' })
+    start = HARNESS.start
+    expect(probe()).toEqual({ state: 'running', activity: 'idle' })
+    // The PID is reused while the old descriptor remains: caught on the very next probe.
+    start = 'Sat Sep 26 09:00:00 2026'
+    expect(probe()).toEqual({ state: 'ended', reason: 'harness-gone' })
+  })
+
+  it('proves identity from a living parent without a lookup, and looks up once orphaned', () => {
+    let parent = HARNESS.pid
+    let lookups = 0
+    const probe = claudeAttendanceProbe({
+      sessionId: 'sess',
+      harness: HARNESS,
+      endedByHook: () => false,
+      adapters: adapters({
+        parentPid: () => parent,
+        readStart: () => {
+          lookups += 1
+          return null
+        },
+      }),
+    })
+    expect(probe()).toEqual({ state: 'running', activity: 'idle' })
+    expect(lookups).toBe(0)
+    // Reparented: the parent exited, and its PID now belongs to someone else.
+    parent = 1
+    expect(probe()).toEqual({ state: 'uncertain', reason: 'process-start-unreadable' })
+    expect(lookups).toBe(1)
   })
 
   it('takes the SessionEnd marker as the fast end path', () => {
@@ -252,7 +340,7 @@ function attendDeps(env: NodeJS.ProcessEnv, cwd: string, extra: Partial<CommandD
         }),
         pidExists: () => true,
         readStart: () => HARNESS.start,
-        now: Date.now,
+        parentPid: () => 1,
       },
       gates: () => ({ ok: true }),
       probeIntervalMs: 10,
@@ -280,7 +368,7 @@ describe('notifai hook attend', () => {
 
     const first = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
     await until(() => listAttendantReports(env).some((report) => report.phase === 'dormant'), 'dormant attendant')
-    expect(readSessionEndedAt('sess-a', env)).toBeNull()
+    expect(readSessionEndMarker('sess-a', env)).toBeNull()
 
     // Re-arm from the next prompt: a healthy owner already serves this incarnation.
     const started = Date.now()
@@ -319,6 +407,26 @@ describe('notifai hook attend', () => {
     expect(service.calls.at(-1)).toMatchObject({ state: 'ended', generation: 1 })
   })
 
+  it('fences itself, without any report, when its claim is removed or changes hands', async () => {
+    const { env, root } = isolatedEnv()
+    const service = fakeAttendance()
+    const deps = attendDeps(env, root, { clientFactory: () => service.client })
+    recordSessionNotified('sess-a', env, Date.now())
+    const envelope = { session_id: 'sess-a', cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
+    const running = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
+    await until(() => service.calls.length >= 2, 'attendance exchanges')
+
+    // A prune (or anything else) removed the claim, and a re-arm took it.
+    const claim = attendantClaimPath('sess-a', env)
+    const held = JSON.parse(readFileSync(claim, 'utf8')) as Record<string, unknown>
+    writeFileSync(claim, JSON.stringify({ ...held, token: 'someone-else' }))
+    await running
+    expect(deps.exits).toEqual([{ reason: 'claim-lost', reported: null }])
+    expect(service.calls.every((call) => call.state === 'running')).toBe(true)
+    // It never releases a claim that is no longer its own.
+    expect(JSON.parse(readFileSync(claim, 'utf8'))).toMatchObject({ token: 'someone-else' })
+  })
+
   it('does not attend for a harness without an exact-session probe', async () => {
     const { env, root } = isolatedEnv()
     const deps = attendDeps(env, root)
@@ -328,22 +436,83 @@ describe('notifai hook attend', () => {
 })
 
 describe('attendant gates', () => {
-  it('require Project Enablement and an installed attend handler', () => {
-    const { env, root } = isolatedEnv()
-    const deps = { io: new CapturedIo(), env, cwd: root, store: {} } as unknown as CommandDeps
-    const binding = projectBinding(root, env)!
-    enableProject(binding, new Date())
-    expect(attendantGates(deps, root, 's', 'claude-code')).toEqual({ ok: false, reason: 'attend-handler-removed' })
+  function installedCli(root: string, env: NodeJS.ProcessEnv, version: string): string {
+    const pkg = path.join(root, 'pkg')
+    mkdirSync(path.join(pkg, 'dist'), { recursive: true })
+    writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@raidiant/notifai', version }))
+    writeFileSync(path.join(pkg, 'dist', 'main.js'), '')
+    const home = path.join(root, 'adapter-home')
+    installHookAdapter({ execPath: process.execPath, scriptPath: path.join(pkg, 'dist', 'main.js') }, home, 'darwin', env)
+    return home
+  }
 
+  function gateDeps(root: string, env: NodeJS.ProcessEnv, hookAdapterHome?: string): CommandDeps {
+    return {
+      io: new CapturedIo(),
+      env,
+      cwd: root,
+      store: {},
+      hookPlatform: 'darwin',
+      ...(hookAdapterHome === undefined ? {} : { hookAdapterHome }),
+    } as unknown as CommandDeps
+  }
+
+  function installAttend(env: NodeJS.ProcessEnv): void {
     const settings = path.join(env['CLAUDE_CONFIG_DIR'] as string, 'settings.json')
     mkdirSync(path.dirname(settings), { recursive: true })
     writeFileSync(
       settings,
       JSON.stringify({ hooks: buildHookConfig({ adapterPath: '/adapter', harness: 'claude-code', platform: 'darwin' }) }),
     )
-    expect(attendantGates(deps, root, 's', 'claude-code')).toEqual({ ok: true })
+  }
 
+  it('require Project Enablement and an installed attend handler', () => {
+    const { env, root } = isolatedEnv()
+    const deps = gateDeps(root, env, installedCli(root, env, '11.4.0'))
+    const binding = projectBinding(root, env)!
+    enableProject(binding, new Date())
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'attend-handler-removed' })
+    installAttend(env)
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: true })
     disableProject(binding)
-    expect(attendantGates(deps, root, 's', 'claude-code')).toEqual({ ok: false, reason: 'project-disabled' })
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'project-disabled' })
+  })
+
+  it('withdraws after an in-place downgrade, judged by the version this attendant started with', () => {
+    const { env, root } = isolatedEnv()
+    enableProject(projectBinding(root, env)!, new Date())
+    installAttend(env)
+    // The attendant started as 11.4.0; the same install path now holds 11.3.0.
+    // Rereading the manifest would have compared 11.3.0 with itself.
+    const deps = gateDeps(root, env, installedCli(root, env, '11.3.0'))
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.3.0')).toEqual({ ok: true })
+  })
+
+  it('fails closed when the installed contract cannot be established', () => {
+    const { env, root } = isolatedEnv()
+    enableProject(projectBinding(root, env)!, new Date())
+    installAttend(env)
+    const missing = gateDeps(root, env, path.join(root, 'no-adapter-here'))
+    expect(attendantGates(missing, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
+    const home = installedCli(root, env, '11.4.0')
+    expect(attendantGates(gateDeps(root, env, home), root, 's', 'claude-code', null)).toEqual({
+      ok: false,
+      reason: 'cli-contract-unknown',
+    })
+    // An npx target is pinned to an exact version and compared like any other.
+    const npxHome = path.join(root, 'npx-home')
+    const npmCli = path.join(root, 'npm-cli.js')
+    writeFileSync(npmCli, '')
+    installHookAdapter(
+      { kind: 'npx', execPath: process.execPath, npmCli, spec: '@raidiant/notifai@11.3.0' },
+      npxHome,
+      'darwin',
+      env,
+    )
+    expect(attendantGates(gateDeps(root, env, npxHome), root, 's', 'claude-code', '11.4.0')).toEqual({
+      ok: false,
+      reason: 'cli-downgraded',
+    })
   })
 })

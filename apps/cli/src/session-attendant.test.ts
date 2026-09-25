@@ -82,6 +82,8 @@ class FakeService {
   exchanges: HeldExchange[] = []
   compatibilityCalls = 0
   supports = true
+  /** When set, discovery waits for the test to call this. */
+  holdCompatibility: { release?: () => void } | null = null
 
   client(): ApiClient {
     return {
@@ -108,6 +110,8 @@ class FakeService {
         // Answered on a later turn, so a test can configure the service first.
         await new Promise((resolve) => setImmediate(resolve))
         this.compatibilityCalls += 1
+        const hold = this.holdCompatibility
+        if (hold !== null) await new Promise<void>((resolve) => (hold.release = resolve))
         return {
           server_capabilities: this.supports ? ['agent_acknowledgement', 'session_attendance'] : ['agent_acknowledgement'],
         }
@@ -132,6 +136,7 @@ interface Harness {
   probe: HarnessProbe
   notified: boolean
   gate: GateResult
+  claimHeld: boolean
   recorded: string | null
   statuses: AttendantStatus[]
   handle: AttendantHandle | null
@@ -152,6 +157,7 @@ function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initia
     probe: { state: 'running', activity: 'idle' } as HarnessProbe,
     notified: true,
     gate: { ok: true } as GateResult,
+    claimHeld: true,
     recorded: 'inc_aaaaaaaaaaaa' as string | null,
     statuses: [] as AttendantStatus[],
     handle: null as AttendantHandle | null,
@@ -170,6 +176,7 @@ function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initia
       return harness.recorded
     },
     probe: () => harness.probe,
+    claimHeld: () => harness.claimHeld,
     notified: () => harness.notified,
     gates: () => harness.gate,
     client: () => service.client(),
@@ -458,5 +465,133 @@ describe('Session Attendant', () => {
     expect(h.service.exchanges).toHaveLength(2)
     h.signal()
     await h.clock.advance(1)
+  })
+
+  describe('service discovery', () => {
+    const running = (h: Harness) => h.service.exchanges.filter((exchange) => exchange.body.state === 'running')
+
+    it('re-checks the gates after discovery and sends nothing once the Project is disabled', async () => {
+      const h = startAttendant()
+      h.service.holdCompatibility = {}
+      await h.clock.advance(1)
+      h.gate = { ok: false, reason: 'project-disabled' }
+      h.service.holdCompatibility.release?.()
+      await h.clock.advance(1)
+      expect(await h.result).toEqual({ reason: 'gate:project-disabled', reported: null })
+      expect(running(h)).toHaveLength(0)
+    })
+
+    it('is cut short by uncertainty and sends nothing until evidence returns', async () => {
+      const h = startAttendant()
+      h.service.holdCompatibility = {}
+      await h.clock.advance(1)
+      h.probe = { state: 'uncertain', reason: 'descriptor-missing' }
+      await h.clock.advance(2_000)
+      h.service.holdCompatibility.release?.()
+      await h.clock.advance(10_000)
+      expect(running(h)).toHaveLength(0)
+      h.service.holdCompatibility = null
+      h.probe = { state: 'running', activity: 'idle' }
+      await h.clock.advance(2_000)
+      expect(running(h)).toHaveLength(1)
+      h.signal()
+      await h.clock.advance(1)
+    })
+
+    it('ends without a running request when the session ended during discovery', async () => {
+      const h = startAttendant()
+      h.service.holdCompatibility = {}
+      await h.clock.advance(1)
+      h.probe = { state: 'ended', reason: 'harness-gone' }
+      await h.clock.advance(2_000)
+      h.service.holdCompatibility.release?.()
+      await h.clock.advance(1)
+      h.service.last().respond({ status: 'withdrawn' })
+      expect(await h.result).toEqual({ reason: 'harness-gone', reported: 'ended' })
+      expect(running(h)).toHaveLength(0)
+    })
+  })
+
+  describe('write guard', () => {
+    async function attendingWithHandle(): Promise<Harness> {
+      const h = startAttendant({ acceptsMessages: true })
+      await h.clock.advance(1)
+      h.service.last().respond({
+        status: 'attending',
+        generation: 1,
+        lease_remaining_ms: 120_000,
+        message_cursor: 'c1',
+        messages: [{ message_id: 'sm_1', created_at: 'x', agent_acknowledgement_text_required: true, kind: 'note', body: 'hi' }],
+      })
+      await h.clock.advance(1)
+      expect(h.handle!.mayWrite()).toBe(true)
+      return h
+    }
+
+    it('refuses at once when a gate fails, without waiting for a probe tick', async () => {
+      const h = await attendingWithHandle()
+      h.gate = { ok: false, reason: 'project-disabled' }
+      expect(h.handle!.mayWrite()).toBe(false)
+      h.service.last().respond({ status: 'withdrawn' })
+      expect((await h.result).reason).toBe('gate:project-disabled')
+    })
+
+    it('refuses at once after a wall-clock jump and only a newer grant restores it', async () => {
+      const h = await attendingWithHandle()
+      const held = h.service.last()
+      h.clock.wallTime += 3_600_000
+      expect(h.handle!.mayWrite()).toBe(false)
+      expect(held.aborted).toBe(true)
+      await h.clock.advance(1)
+      // The re-acquiring exchange is answered at once, never held.
+      const reacquire = h.service.last()
+      expect(reacquire.waitSeconds).toBe(0)
+      reacquire.respond(h.service.attending(1))
+      await h.clock.advance(1)
+      expect(h.handle!.mayWrite()).toBe(true)
+      h.signal()
+      await h.clock.advance(1)
+    })
+
+    it('ignores a grant for an exchange sent before the jump', async () => {
+      const h = await attendingWithHandle()
+      const inFlight = h.service.last()
+      // The grant was sent before the machine slept and is answered, but the
+      // attendant has not processed it yet when the jump is seen: too late to
+      // abort, and it must still not count as a fresh lease.
+      inFlight.respond(h.service.attending(1))
+      h.clock.wallTime += 3_600_000
+      expect(h.handle!.mayWrite()).toBe(false)
+      await h.clock.advance(1)
+      expect(h.statuses.at(-1)?.phase).toBe('attending')
+      expect(h.handle!.mayWrite()).toBe(false)
+      // Only the re-acquiring exchange, sent after the jump, restores it.
+      h.service.last().respond(h.service.attending(1))
+      await h.clock.advance(1)
+      expect(h.handle!.mayWrite()).toBe(true)
+      h.signal()
+      await h.clock.advance(1)
+    })
+
+    it('refuses on fresh uncertain evidence and on a lost claim', async () => {
+      const h = await attendingWithHandle()
+      h.probe = { state: 'uncertain', reason: 'descriptor-missing' }
+      expect(h.handle!.mayWrite()).toBe(false)
+      h.probe = { state: 'running', activity: 'idle' }
+      h.claimHeld = false
+      expect(h.handle!.mayWrite()).toBe(false)
+      expect(await h.result).toEqual({ reason: 'claim-lost', reported: null })
+    })
+  })
+
+  it('fences itself without a report when its claim disappears', async () => {
+    const h = startAttendant()
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(2))
+    await h.clock.advance(1)
+    h.claimHeld = false
+    await h.clock.advance(2_000)
+    expect(await h.result).toEqual({ reason: 'claim-lost', reported: null })
+    expect(h.service.exchanges.every((exchange) => exchange.body.state === 'running')).toBe(true)
   })
 })

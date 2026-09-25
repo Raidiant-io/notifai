@@ -71,6 +71,7 @@ export type AttendantExitReason =
   | 'session-end-hook'
   | 'signal'
   | 'superseded'
+  | 'claim-lost'
   | 'withdrawn-by-service'
   | 'unauthorized'
   | `gate:${string}`
@@ -100,6 +101,8 @@ export interface SessionAttendantOptions {
   /** Replace a refused incarnation id; null when the record moved on. */
   rotateIncarnation(expected: string): string | null
   probe(): HarnessProbe
+  /** Whether this attendant still holds its exclusive local claim. */
+  claimHeld(): boolean
   /** Whether this session had a Notification Request accepted on this machine. */
   notified(): boolean
   /** Project Enablement and the installed CLI/hook contract. */
@@ -126,7 +129,12 @@ export interface SessionAttendantOptions {
 
 /** What a harness writer asks before each write. */
 export interface AttendantHandle {
-  /** True only while this incarnation holds a lease that cannot lapse before the write ends. */
+  /**
+   * True only while, right now: this attendant still owns its claim and
+   * incarnation, fresh local evidence shows the session running, every gate
+   * passes, no clock discontinuity happened since the lease was granted, and
+   * the lease cannot lapse before the write ends by the monotonic clock.
+   */
   mayWrite(): boolean
   generation(): number | null
   incarnation(): string
@@ -198,64 +206,102 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     stopping.abort()
     nudge()
   }
+  /** Bumped by every clock discontinuity; a lease granted in an older epoch is void. */
+  let epoch = 0
+  let reacquireNow = false
   const loseLease = (reason: string): void => {
-    if (leaseEndsAt === null && generation === null) return
-    logger.info('attendant.lease', { event: 'lost', reason, ...(generation === null ? {} : { generation }) })
+    if (leaseEndsAt !== null || generation !== null) {
+      logger.info('attendant.lease', { event: 'lost', reason, ...(generation === null ? {} : { generation }) })
+    }
     leaseEndsAt = null
   }
-  const handle: AttendantHandle = {
-    mayWrite: () =>
-      exit === null &&
-      probe.state === 'running' &&
-      generation !== null &&
-      leaseEndsAt !== null &&
-      clock.monotonic() < leaseEndsAt - ATTENDANT_WRITE_MARGIN_MS,
-    generation: () => generation,
-    incarnation: () => incarnation,
-  }
 
-  // -- local probe -------------------------------------------------------
   let lastWall = clock.wall()
   let lastMono = clock.monotonic()
-  let lastHeartbeat = lastMono
-  const tick = (): void => {
+  /**
+   * Sleep pauses the monotonic clock while the service's lease keeps running;
+   * a wall-clock step says the same. Either way nothing may be written until
+   * a fresh exchange, sent after the jump, re-acquires.
+   */
+  const checkClock = (): void => {
     const wall = clock.wall()
     const mono = clock.monotonic()
     const jump = Math.abs(wall - lastWall - (mono - lastMono))
     lastWall = wall
     lastMono = mono
     if (jump > ATTENDANT_CLOCK_JUMP_MS) {
-      // Sleep pauses the monotonic clock while the service's lease keeps
-      // running. Nothing may be written until a fresh exchange re-acquires.
+      epoch += 1
+      reacquireNow = true
       loseLease('clock-jump')
       exchange?.abort()
+    }
+  }
+
+  /**
+   * Re-establish everything this attendant relies on, now: clock continuity,
+   * its claim, its incarnation, and fresh session evidence. Returns whether
+   * the session is running and this attendant may still act for it.
+   */
+  const refresh = (): boolean => {
+    if (exit !== null) return false
+    checkClock()
+    if (!options.claimHeld()) {
+      stop('claim-lost')
+      return false
     }
     const recorded = options.incarnationNow()
     if (recorded !== null && recorded !== incarnation) {
       stop('superseded')
-      return
+      return false
     }
     const previous = probe
     probe = options.probe()
     if (probe.state === 'ended') {
       stop(probe.reason)
-      return
+      return false
     }
     if (probe.state === 'uncertain') {
       if (previous.state !== 'uncertain') {
         exchange?.abort()
         if (networkStarted) setPhase('uncertain', probe.reason)
       }
-    } else {
-      const changed = activity !== probe.activity
-      activity = probe.activity
-      if (previous.state !== 'running' || changed) {
-        // A held exchange carries the old activity; cut it so the next one reports this.
-        exchange?.abort()
-        nudge()
-      }
+      return false
     }
+    const changed = activity !== probe.activity
+    activity = probe.activity
+    if (previous.state !== 'running' || changed) {
+      // A held exchange carries the old activity; cut it so the next one reports this.
+      exchange?.abort()
+      nudge()
+    }
+    return true
+  }
+
+  const handle: AttendantHandle = {
+    mayWrite: () => {
+      if (!refresh()) return false
+      const gate = options.gates()
+      if (!gate.ok) {
+        stop(`gate:${gate.reason}`)
+        return false
+      }
+      return (
+        generation !== null &&
+        leaseEndsAt !== null &&
+        clock.monotonic() < leaseEndsAt - ATTENDANT_WRITE_MARGIN_MS
+      )
+    },
+    generation: () => generation,
+    incarnation: () => incarnation,
+  }
+
+  // -- local probe -------------------------------------------------------
+  let lastHeartbeat = lastMono
+  const tick = (): void => {
+    refresh()
+    if (exit !== null) return
     if (!networkStarted && options.notified()) nudge()
+    const mono = clock.monotonic()
     if (mono - lastHeartbeat >= 60 * 60_000) {
       lastHeartbeat = mono
       try {
@@ -300,7 +346,9 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       }
       networkStarted = true
     }
-    if (probe.state !== 'running') {
+    // Fresh evidence before every exchange, not the last tick's.
+    if (!refresh()) {
+      if (exit !== null) break
       if (probe.state === 'uncertain') setPhase('uncertain', probe.reason)
       await nextChange()
       continue
@@ -316,20 +364,29 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       break
     }
     if (!serverChecked) {
+      // Discovery is an exchange like any other: a stop, an uncertain probe,
+      // or an activity change cuts it, and whatever it answers, every check
+      // above runs again before anything is sent.
+      const discovery = new AbortController()
+      exchange = discovery
       let supported: boolean
       try {
-        supported = await options.serverSupportsAttendance(client)
+        supported = await abortable(options.serverSupportsAttendance(client), discovery.signal)
       } catch {
+        exchange = null
+        if (exit !== null || discovery.signal.aborted) continue
         await pause(backoff)
         backoff = Math.min(backoff * 2, MAX_NETWORK_BACKOFF_MS)
         continue
       }
+      exchange = null
       if (!supported) {
         setPhase('unsupported', 'service-has-no-session-attendance')
         await pause(ATTENDANT_UNSUPPORTED_RECHECK_MS)
         continue
       }
       serverChecked = true
+      continue
     }
     if (generation === null) setPhase('acquiring')
 
@@ -337,17 +394,21 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       incarnation,
       ...(generation === null ? {} : { generation }),
       state: 'running',
-      activity: probe.activity,
+      // Set by the successful refresh above.
+      activity: activity ?? 'idle',
       accepts_messages: options.acceptsMessages,
       ...(cursor === undefined ? {} : { message_cursor: cursor }),
     }
     const current = new AbortController()
     exchange = current
     const sentAt = clock.monotonic()
+    const sentEpoch = epoch
+    const hold = cursor !== undefined && !reacquireNow
+    reacquireNow = false
     let response: AttendanceResponse
     try {
       response = await client.attend(options.sessionId, body, {
-        waitSeconds: cursor === undefined ? 0 : waitSeconds,
+        waitSeconds: hold ? waitSeconds : 0,
         signal: current.signal,
       })
     } catch (err) {
@@ -384,7 +445,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
         logger.info('attendant.lease', { event: 'acquired', generation: response.generation })
       }
       generation = response.generation
-      leaseEndsAt = sentAt + response.lease_remaining_ms
+      // A grant sent before a clock discontinuity says nothing about now.
+      leaseEndsAt = sentEpoch === epoch ? sentAt + response.lease_remaining_ms : null
       cursor = response.message_cursor
       rotated = false
       setPhase('attending')
@@ -484,6 +546,9 @@ function finalReport(reason: AttendantExitReason): 'ended' | 'withdrawn' | null 
       return 'withdrawn'
     case 'withdrawn-by-service':
     case 'unauthorized':
+    case 'claim-lost':
+      // Another attendant may hold this incarnation's lease now; any report
+      // from here could release it.
       return null
     default:
       return reason.startsWith('gate:') && reason !== 'gate:not-paired' ? 'withdrawn' : null
@@ -496,6 +561,25 @@ function safeClient(options: SessionAttendantOptions): ApiClient | null {
   } catch {
     return null
   }
+}
+
+/** Rejects when `signal` aborts, so an awaited call cannot outlive a stop. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error('aborted'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error('aborted'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
 }
 
 /** Production clocks: `performance.now()` pauses with the machine; `Date.now()` does not. */

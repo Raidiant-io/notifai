@@ -41,14 +41,12 @@ export function attendantSupport(
   return { supported: false, reason: 'harness-has-no-exact-session-probe' }
 }
 
-/** How often the PID's start time is re-read even while the descriptor looks right. */
-const START_TIME_RECHECK_MS = 30_000
-
 export interface ClaudeProbeAdapters {
   readDescriptor(pid: number): unknown
   pidExists(pid: number): boolean
   readStart(pid: number): string | null
-  now(): number
+  /** This process's current parent; the kernel updates it when the parent exits. */
+  parentPid(): number
 }
 
 export function claudeDescriptorDir(env: NodeJS.ProcessEnv): string {
@@ -62,20 +60,28 @@ export function systemClaudeProbeAdapters(env: NodeJS.ProcessEnv): ClaudeProbeAd
     readDescriptor: (pid) => JSON.parse(readFileSync(path.join(dir, `${pid}.json`), 'utf8')) as unknown,
     pidExists,
     readStart: processStartTime,
-    now: Date.now,
+    parentPid: () => process.ppid,
   }
 }
 
 /**
- * The Claude Code probe.
+ * The Claude Code probe. Every call re-establishes the evidence; nothing is
+ * carried over from an earlier call, so one failed check can never be
+ * followed by `running` without a fresh successful one.
  *
  * - The harness PID is gone, or now belongs to a process with another start
- *   time: `ended` (harness-gone).
+ *   time: `ended` (harness-gone). Checked on every call: a SIGKILLed harness
+ *   leaves its descriptor behind, and a reused PID would satisfy the rest.
+ *   While the harness is still this process's parent the identity holds
+ *   without a lookup — a parent cannot be replaced under a living child;
+ *   otherwise (an npx adapter in between, or an orphaned attendant) the start
+ *   time is read again.
+ * - The start time cannot be read: `uncertain`.
  * - The descriptor for that PID names another session id: `/clear` or
  *   `/resume` replaced this session in the same process: `ended`.
  * - The descriptor is missing: Claude Code 2.1.282 removes it about a second
- *   *before* SessionEnd and exit, so this alone is `uncertain` until the PID
- *   check decides.
+ *   *before* SessionEnd and exit, so with the process alive this is
+ *   `uncertain`.
  * - The descriptor's `procStart` (UTC `ps` text) differs from the harness
  *   start read the same way: the evidence disagrees, `uncertain`.
  *
@@ -85,24 +91,23 @@ export function systemClaudeProbeAdapters(env: NodeJS.ProcessEnv): ClaudeProbeAd
 export function claudeAttendanceProbe(options: {
   sessionId: string
   harness: ProcessIdentity
-  /** SessionEnd's marker for an end at or after this incarnation's start. */
+  /** SessionEnd's marker for exactly this incarnation. */
   endedByHook: () => boolean
   adapters: ClaudeProbeAdapters
 }): () => HarnessProbe {
   const { adapters, harness } = options
   const expectedStart = normalizeProcessStart(harness.start)
-  let startCheckedAt = adapters.now()
   return () => {
     if (options.endedByHook()) return { state: 'ended', reason: 'session-end-hook' }
-    if (!adapters.pidExists(harness.pid)) return { state: 'ended', reason: 'harness-gone' }
-    const liveness = (): ReturnType<typeof processIdentityLiveness> =>
-      processIdentityLiveness(harness, adapters.readStart, adapters.pidExists)
+    const alive =
+      adapters.parentPid() === harness.pid
+        ? 'alive'
+        : processIdentityLiveness(harness, adapters.readStart, adapters.pidExists)
+    if (alive === 'gone') return { state: 'ended', reason: 'harness-gone' }
     let raw: unknown
     try {
       raw = adapters.readDescriptor(harness.pid)
     } catch {
-      const alive = liveness()
-      if (alive === 'gone') return { state: 'ended', reason: 'harness-gone' }
       return { state: 'uncertain', reason: 'descriptor-missing' }
     }
     const descriptor = parseDescriptor(raw)
@@ -110,24 +115,13 @@ export function claudeAttendanceProbe(options: {
       return { state: 'uncertain', reason: 'descriptor-unrecognised' }
     }
     if (normalizeProcessStart(descriptor.procStart) !== expectedStart) {
-      // A stale descriptor for a reused PID, or a clock format this build does
-      // not know. The PID check tells the two apart.
-      return liveness() === 'gone'
-        ? { state: 'ended', reason: 'harness-gone' }
-        : { state: 'uncertain', reason: 'process-start-mismatch' }
+      // A stale descriptor, or a clock format this build does not know.
+      return { state: 'uncertain', reason: 'process-start-mismatch' }
     }
     if (descriptor.sessionId !== options.sessionId) {
       return { state: 'ended', reason: 'session-replaced' }
     }
-    const now = adapters.now()
-    if (now - startCheckedAt >= START_TIME_RECHECK_MS || now < startCheckedAt) {
-      startCheckedAt = now
-      // A SIGKILLed harness leaves its descriptor behind; a reused PID would
-      // otherwise keep satisfying the checks above.
-      const alive = liveness()
-      if (alive === 'gone') return { state: 'ended', reason: 'harness-gone' }
-      if (alive === 'unknown') return { state: 'uncertain', reason: 'process-start-unreadable' }
-    }
+    if (alive === 'unknown') return { state: 'uncertain', reason: 'process-start-unreadable' }
     return { state: 'running', activity: descriptor.status === 'idle' ? 'idle' : 'working' }
   }
 }

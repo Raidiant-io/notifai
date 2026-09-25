@@ -29,6 +29,7 @@ import {
 import {
   claimCursorStopActivation,
   confirmCursorStopActivation,
+  lifecycleStamp,
   pruneAbandonedSessions,
   readSessionState,
   recordSessionStart,
@@ -87,7 +88,7 @@ export async function hookRunCommand(
   const now = deps.now ?? Date.now
   // Taken before stdin is read: an end the harness recorded before this
   // invocation began belongs to an earlier incarnation of the session.
-  const invokedAt = now()
+  const invokedAt = lifecycleStamp(now())
   // One owner lifetime covers startup and the longest answer window. Claude
   // runs it detached; Codex holds the turn. The delivery mechanism does not
   // change how long the exact Agent Session remains reachable.
