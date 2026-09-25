@@ -13,7 +13,7 @@ import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
 import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
 import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
-import { readSessionState } from './hook-session-state.js'
+import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
@@ -309,6 +309,11 @@ export async function sendCommand(
     return exit
   }
   settleSendAttempt(deps.env, attempt.attemptId)
+  const notifiedSession = submissionDraft.source?.session_id
+  if (notifiedSession !== undefined) {
+    // Wakes this session's dormant Session Attendant.
+    recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)())
+  }
   const receiptExit = receiptExitCode(receipt)
   // The single most useful line in the log: it ties the local invocation to
   // the server-side request id, which is what every later question about this

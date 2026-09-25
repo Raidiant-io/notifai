@@ -50,6 +50,7 @@ import {
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
 import {
+  CODEX_ATTEND_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
   applyPlan,
   BLOCKING_STOP_STATUS_MESSAGE,
@@ -272,13 +273,23 @@ describe('hook config', () => {
       'stop',
       'session-end',
     ])
-    expect(requiredHookEvents('claude-code')).toEqual([
+    expect(requiredHookEvents('claude-code', 'darwin')).toEqual([
+      'session-start',
+      'subagent-start',
+      'user-prompt-submit',
+      'stop',
+      'session-end',
+      'attend',
+    ])
+    expect(requiredHookEvents('claude-code', 'win32')).toEqual([
       'session-start',
       'subagent-start',
       'user-prompt-submit',
       'stop',
       'session-end',
     ])
+    expect(requiredHookEvents('codex', 'darwin')).toContain('attend')
+    expect(requiredHookEvents('codex', 'win32')).not.toContain('attend')
     expect(requiredHookEvents('opencode')).toEqual([])
     expect(Object.keys(buildHookConfig({ adapterPath: ADAPTER }))).toEqual([
       'SessionStart',
@@ -300,6 +311,77 @@ describe('hook config', () => {
     ])
   })
 
+  it('installs the Session Attendant as a second async handler for Claude Code and Codex on POSIX only', () => {
+    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      const handlers = hooks[event]?.flatMap((group) => group.hooks) ?? []
+      expect(handlers.map((handler) => handlerEvent(handler.command))).toEqual([
+        event === 'SessionStart' ? 'session-start' : event === 'Stop' ? 'stop' : 'user-prompt-submit',
+        'attend',
+      ])
+      // No timeout: a backgrounded async hook is never timed out, and the
+      // attendant ends itself with its session.
+      expect(handlers[1]).toEqual({
+        type: 'command',
+        command: hookCommand(ADAPTER, 'attend', 'claude-code'),
+        async: true,
+      })
+    }
+    // The activation handler keeps its own synchronous shape and runs first.
+    expect(hooks['SessionStart']?.[0]?.hooks[0]).toMatchObject({ timeout: 5 })
+    expect(hooks['SessionStart']?.[0]?.hooks[0]).not.toHaveProperty('async')
+    for (const event of ['SubagentStart', 'SessionEnd']) {
+      expect(hooks[event]?.flatMap((group) => group.hooks)).toHaveLength(1)
+    }
+    const windows = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'win32' })
+    const codexWindows = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'win32' })
+    for (const document of [windows, codexWindows]) {
+      const commands = Object.values(document).flatMap((groups) =>
+        groups.flatMap((group) => group.hooks.map((handler) => handler.command)),
+      )
+      expect(commands.some((command) => handlerEvent(command) === 'attend')).toBe(false)
+    }
+  })
+
+  it('declares the complete answer window on the Codex attendant, because Codex enforces async timeouts', () => {
+    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'darwin' })
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      const handlers = hooks[event]?.flatMap((group) => group.hooks) ?? []
+      expect(hooks[event]).toHaveLength(1)
+      expect(handlers.map((handler) => handlerEvent(handler.command))).toEqual([
+        event === 'SessionStart' ? 'session-start' : event === 'Stop' ? 'stop' : 'user-prompt-submit',
+        'attend',
+      ])
+      expect(handlers[1]).toEqual({
+        type: 'command',
+        command: hookCommand(ADAPTER, 'attend', 'codex'),
+        async: true,
+        timeout: CODEX_ATTEND_TIMEOUT_SECONDS,
+      })
+    }
+    // An interrupted Codex turn fires Interrupt, not Stop; Codex caps it at 3 s.
+    expect(hooks['Interrupt']).toEqual([
+      { hooks: [{ type: 'command', command: hookCommand(ADAPTER, 'attend', 'codex'), async: true, timeout: 3 }] },
+    ])
+    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })).not.toHaveProperty('Interrupt')
+    expect(CODEX_ATTEND_TIMEOUT_SECONDS).toBe(QUESTION_STOP_TIMEOUT_SECONDS)
+    expect(CODEX_ATTEND_TIMEOUT_SECONDS).toBe(260_460)
+    for (const event of ['SubagentStart', 'SessionEnd']) {
+      expect(hooks[event]?.flatMap((group) => group.hooks)).toHaveLength(1)
+    }
+  })
+
+  it('replaces, never duplicates, installed attend handlers on reinstall', () => {
+    const first = mergeHooks({}, buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' }), SCRIPT)
+    const again = mergeHooks(first.document, buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' }), SCRIPT)
+    const attends = Object.values(again.document.hooks ?? {}).flatMap((groups) =>
+      groups.flatMap((group) => group.hooks.filter((handler) => handlerEvent(handler.command) === 'attend')),
+    )
+    expect(attends).toHaveLength(3)
+    const removed = removeHooks(again.document, SCRIPT)
+    expect(Object.keys(removed.document.hooks ?? {})).toEqual([])
+  })
+
   it('restores missing SessionStart exactly once when an old owned shape is reinstalled over', () => {
     const old = mergeHooks({}, buildHookConfig({ adapterPath: ADAPTER }), SCRIPT)
     delete old.document.hooks?.['SessionStart']
@@ -311,7 +393,8 @@ describe('hook config', () => {
 
     for (const event of ['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']) {
       const groups = migrated.document.hooks?.[event] ?? []
-      expect(groups.flatMap((group) => group.hooks)).toHaveLength(1)
+      const attends = ['SessionStart', 'UserPromptSubmit', 'Stop'].includes(event)
+      expect(groups.flatMap((group) => group.hooks)).toHaveLength(attends ? 2 : 1)
     }
     expect(migrated.document.hooks?.['Stop']?.[0]?.hooks[0]).toMatchObject({
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,

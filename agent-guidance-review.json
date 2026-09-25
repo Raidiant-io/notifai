@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:56015258afcae93c2524a4992de7d9b2015f009bd982abb55975d6383e309c58",
+  "behavior_digest": "sha256:73afd62add709eb50ed81388c8285d3f9a6b54d86a6dbb47352f66913348a91f",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the beta update lane, full SemVer release ordering, CLI readiness and recovery text, Codex queue owner handoff, shipped guidance topics, and the Notifai skill. A prerelease installation now follows the beta channel without moving backward and can advance to a newer stable release. Codex may hand a queued answer window to its detached owner after Stop; the skill now states that a separate harness form can remain pending and must not be promised closed. Question registration, acknowledgement, non-exfiltration, guidance authority, ordinary worker nonownership, and harness permission boundaries remain intact. The new wording describes these behaviors without claiming mechanical cancellation of a harness form.",
+  "reason": "Reviewed the merged beta update and session-attendant behavior against lifecycle hooks, the Notifai skill, harness setup, CLI readiness, and domain terms. The skill now explains Session Notes and Answer Edits, their latest-word and acknowledgement rules, while keeping the beta update and separate harness-form guidance. Pending answer hand-offs remain owed until a final disposition; the new attempt_pending state is not treated as final. Question registration, acknowledgement, non-exfiltration, guidance authority, ordinary worker nonownership, and harness permission boundaries remain intact.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -1,0 +1,570 @@
+/**
+ * `notifai hook attend`: the asynchronous handler that becomes an Agent
+ * Session's Session Attendant, or exits within milliseconds when a healthy
+ * attendant for this exact session incarnation already runs.
+ *
+ * Installed on SessionStart next to the short activation handler (which it
+ * never delays: the harness does not wait for an async handler), and on
+ * UserPromptSubmit and Stop to re-arm a session whose attendant died.
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
+import { claudeSessionPid } from './commands-harness-context.js'
+import { loadConfig } from './config.js'
+import type { ApiClient } from './client.js'
+import { inspectHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
+import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
+import {
+  beginSessionIncarnation,
+  endsIncarnation,
+  readSessionEndMarker,
+  type LifecycleStamp,
+  readSessionIncarnation,
+  refreshSessionMarkers,
+  rotateSessionIncarnation,
+  sessionNotified,
+} from './hook-session-state.js'
+import type { HookEnvelope, HookHarness } from './hook-types.js'
+import { findInstallations, findLegacyProjectInstallations, handlerEvent } from './install-hooks.js'
+import { logSettingsFrom, type Logger } from './logging.js'
+import { processExecutableName, processStartTime, type ProcessIdentity } from './process-identity.js'
+import { projectBinding, projectEnabled } from './project-enablement.js'
+import { packageVersion } from './release.js'
+import type { AttendanceMessage } from '@raidiant/notifai-protocol'
+import {
+  runSessionAttendant,
+  systemAttendantClock,
+  type AttendantClock,
+  type AttendantHandle,
+  type AttendantResult,
+  type GateResult,
+} from './session-attendant.js'
+import {
+  attendantSupport,
+  claudeAttendanceProbe,
+  codexAttendanceProbe,
+  systemClaudeProbeAdapters,
+  type ClaudeProbeAdapters,
+} from './session-attendant-probe.js'
+import {
+  attendantClaimPath,
+  attendantStatusPath,
+  readAttendantHeldLease,
+  readTurnActivity,
+  recordTurnEnd,
+  recordTurnStart,
+  turnActivityPath,
+  writeAttendantStatus,
+} from './session-attendant-state.js'
+import { CLI_PACKAGE_NAME } from './cli-contract.js'
+import { inspectClaudeInbox, systemClaudeWakeAdapters, type ClaudeWakeAdapters } from './claude-wake.js'
+import { currentProcessIdentity } from './process-identity.js'
+import type { SequencerDeps } from './session-delivery.js'
+import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
+import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThread } from './session-handoff.js'
+import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
+import { compareVersions } from './version.js'
+
+/** Test seams; production reads the real harness, clocks, and signals. */
+export interface AttendantSeams {
+  harnessProcess?: ProcessIdentity
+  probeAdapters?: ClaudeProbeAdapters
+  clock?: AttendantClock
+  /** Resolves to simulate SIGTERM/SIGHUP/SIGINT. */
+  signalled?: Promise<void>
+  probeIntervalMs?: number
+  waitSeconds?: number
+  /** How long a new start waits for a superseded attendant to step aside. */
+  supersededOwnerWaitMs?: number
+  /** Replace the Project Enablement and installed-contract gates. */
+  gates?: () => GateResult
+  /** Observe the finished attendant. */
+  onExit?: (result: AttendantResult) => void
+  /** This attendant as a writer; production reads its own PID and start time. */
+  writer?: ProcessIdentity | null
+}
+
+const SUPERSEDED_OWNER_WAIT_MS = 6_000
+
+/**
+ * Bound on Codex SessionEnd's `ended` report. Codex allows SessionEnd at most
+ * three seconds, and the CLI's own start and durable cleanup come first.
+ */
+export const CODEX_SESSION_END_REPORT_MS = 1_000
+
+export async function attendHook(
+  deps: CommandDeps,
+  input: {
+    envelope: HookEnvelope
+    harness: HookHarness | undefined
+    cwd: string
+    invokedAt: LifecycleStamp
+    logger: Logger
+  },
+): Promise<number> {
+  const { envelope, harness, cwd, logger } = input
+  const seams = deps.attendant ?? {}
+  const end = (outcome: string, data: Record<string, unknown> = {}): number => {
+    logger.info('hook.end', { hook: 'attend', outcome, decided: false, ...data })
+    return EXIT.ok
+  }
+  // Read once, now: an in-place reinstall replaces the manifest on disk, and
+  // rereading it later would compare the installed files with themselves.
+  const runningVersion = deps.runningVersion === undefined ? packageVersion() : deps.runningVersion
+  const sessionId = envelope.session_id
+  if (sessionId === undefined) return end('ignored', { reason: 'missing-session-id' })
+  const support = attendantSupport(harness, deps.hookPlatform ?? process.platform)
+  if (!support.supported) return end('unsupported', { reason: support.reason })
+
+  const starting = envelope.hook_event_name === 'SessionStart' || envelope.source !== undefined
+  const claimFile = attendantClaimPath(sessionId, deps.env)
+  // Codex has no session descriptor: its activity is this thread's own turn
+  // boundaries. The synchronous prompt hook records each start in order; the
+  // turn-end and interrupt copies record ends here, before anything else.
+  if (harness === 'codex') recordCodexTurnEnd(envelope, sessionId, deps.env)
+  // Codex allows Interrupt three seconds: that copy records the turn's end and
+  // never becomes the attendant.
+  if (envelope.hook_event_name === 'Interrupt') return end('recorded')
+  // The hook adapter names the harness process that ran it. Claude Code also
+  // names itself; Codex is only ever the declared parent.
+  const pid = harness === 'codex' ? declaredHookSourcePid(deps.env) : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env)
+  if (pid === undefined) return end('ignored', { reason: 'harness-process-unproven' })
+  if (!starting) {
+    // Re-arm fast path, before any configuration or gate work: this runs on
+    // every prompt and every turn end, and almost always finds its owner.
+    const current = readSessionIncarnation(sessionId, deps.env)
+    const holder = readClaimFile(claimFile)
+    if (
+      current !== null &&
+      current.harness_process?.pid === (seams.harnessProcess?.pid ?? pid) &&
+      holder?.['incarnation'] === current.incarnation &&
+      claimHolderMayRun(holder)
+    ) {
+      return end('owner-present', { same_incarnation: true, holder_alive: true })
+    }
+  }
+
+  const gates = seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness!, runningVersion))
+  try {
+    const config = loadConfig({ cwd, env: deps.env, sessionId })
+    logger.adopt(logSettingsFrom(config))
+    logger.bind({ project: config.project.value })
+  } catch {
+    // The gate below reports enablement it cannot read.
+  }
+  const gate = gates()
+  if (!gate.ok) return end('ignored', { reason: gate.reason })
+
+  // Codex runs a hook through `$SHELL -lc`. bash and zsh exec the adapter, so
+  // its parent is Codex; a shell that does not would be named instead and
+  // outlive a crashed Codex. Only the Codex executable itself is proof.
+  if (seams.harnessProcess === undefined && harness === 'codex' && processExecutableName(pid) !== 'codex') {
+    return end('ignored', { reason: 'harness-process-not-codex' })
+  }
+  const harnessProcess =
+    seams.harnessProcess ?? (() => {
+      const start = processStartTime(pid)
+      return start === null ? null : { pid, start }
+    })()
+  if (harnessProcess === null) return end('ignored', { reason: 'harness-process-unproven' })
+
+  const clock = seams.clock ?? systemAttendantClock
+  let record = await withLockRetry(clock, () =>
+    beginSessionIncarnation(sessionId, deps.env, {
+      stamp: input.invokedAt,
+      harnessProcess,
+      clearEarlierEnd: starting,
+    }),
+  )
+
+  // One live attendant per session. A holder serving an older incarnation of
+  // this session (an in-process resume moments after a clear) steps aside
+  // within one probe; a holder serving this one is healthy, so this exits.
+  const waitUntil = clock.monotonic() + (seams.supersededOwnerWaitMs ?? SUPERSEDED_OWNER_WAIT_MS)
+  let token: string | null = null
+  while (true) {
+    token = acquireClaimFile(claimFile, { incarnation: record.incarnation }, clock.wall())
+    if (token !== null) break
+    const holder = readClaimFile(claimFile)
+    if (holder?.['incarnation'] === record.incarnation || clock.monotonic() >= waitUntil) {
+      return end('owner-present', {
+        same_incarnation: holder?.['incarnation'] === record.incarnation,
+        holder_alive: claimHolderMayRun(holder),
+      })
+    }
+    await clock.sleep(250, new AbortController().signal).catch(() => undefined)
+    record = readSessionIncarnation(sessionId, deps.env) ?? record
+  }
+
+  logger.info('hook.end', {
+    hook: 'attend',
+    outcome: 'attending',
+    decided: false,
+    source: envelope.source ?? envelope.hook_event_name ?? null,
+  })
+
+  const served = record
+  const probeAdapters = seams.probeAdapters ?? systemClaudeProbeAdapters(deps.env)
+  // SessionEnd names the incarnation it ended; an end of any other one,
+  // earlier or later, is not this attendant's.
+  const endedByHook = (): boolean => endsIncarnation(readSessionEndMarker(sessionId, deps.env), served)
+  const probe =
+    harness === 'codex'
+      ? codexAttendanceProbe({
+          harness: harnessProcess,
+          endedByHook,
+          activity: () => readTurnActivity(sessionId, deps.env, served.key),
+          adapters: probeAdapters,
+        })
+      : claudeAttendanceProbe({ sessionId, harness: harnessProcess, endedByHook, adapters: probeAdapters })
+
+  let client: ApiClient | null | undefined
+  const connect = (): ApiClient | null => {
+    if (client !== undefined) return client
+    const credential = deps.store.load()
+    client = credential
+      ? makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
+      : null
+    return client
+  }
+  const messages = sessionMessageWriter({
+    deps,
+    harness: harness!,
+    sessionId,
+    cwd: envelope.cwd ?? cwd,
+    harnessPid: harnessProcess.pid,
+    writer: seams.writer === undefined ? currentProcessIdentity() : seams.writer,
+    clock,
+    logger,
+  })
+  const signals = seams.signalled === undefined ? terminationSignal() : null
+  try {
+    const result = await runSessionAttendant({
+      sessionId,
+      incarnation: record.incarnation,
+      incarnationNow: () => readSessionIncarnation(sessionId, deps.env)?.incarnation ?? null,
+      rotateIncarnation: (expected) => {
+        const next = rotateSessionIncarnation(sessionId, deps.env, expected)
+        if (next === null) return null
+        // Keep the claim naming the incarnation it serves.
+        releaseClaimFile(claimFile, token!)
+        token = acquireClaimFile(claimFile, { incarnation: next.incarnation }, clock.wall())
+        return token === null ? null : next.incarnation
+      },
+      probe,
+      // A claim that vanished or changed hands fences this attendant: another
+      // may already serve the same incarnation.
+      claimHeld: () => token !== null && readClaimFile(claimFile)?.['token'] === token,
+      notified: () => sessionNotified(sessionId, deps.env),
+      gates,
+      client: connect,
+      serverSupportsAttendance: async (api) =>
+        (await api.compatibility()).server_capabilities.includes('session_attendance'),
+      // The service accepts notes for this session only while an attendant
+      // that can hand them in place says so.
+      acceptsMessages: messages !== null,
+      ...(messages === null
+        ? {}
+        : {
+            onMessages: async (batch, attendant) => {
+              const api = connect()
+              return api === null ? 'done' : messages(api, batch, attendant)
+            },
+          }),
+      clock,
+      logger,
+      writeStatus: (status) => writeAttendantStatus(sessionId, deps.env, status),
+      heartbeat: () =>
+        refreshSessionMarkers(sessionId, deps.env, clock.wall(), [
+          claimFile,
+          attendantStatusPath(sessionId, deps.env),
+          turnActivityPath(sessionId, deps.env),
+        ]),
+      signalled: seams.signalled ?? signals!.promise,
+      ...(seams.probeIntervalMs === undefined ? {} : { probeIntervalMs: seams.probeIntervalMs }),
+      ...(seams.waitSeconds === undefined ? {} : { waitSeconds: seams.waitSeconds }),
+    })
+    seams.onExit?.(result)
+  } finally {
+    signals?.dispose()
+    if (token !== null) releaseClaimFile(claimFile, token)
+  }
+  return EXIT.ok
+}
+
+type SessionMessageWriter = (
+  client: ApiClient,
+  batch: AttendanceMessage[],
+  attendant: AttendantHandle,
+) => Promise<MessageHandOffResult>
+
+/**
+ * The attendant's Session Message writer, or null when this session cannot
+ * take a message in place: for Claude Code no inbox socket (`--bare`, an older
+ * Claude Code, an unsupported protocol), for Codex no thread id, and for
+ * either no provable writer identity. Null keeps the attendant presence-only,
+ * and the service accepts no notes for the session.
+ */
+function sessionMessageWriter(input: {
+  deps: CommandDeps
+  harness: HookHarness
+  sessionId: string
+  cwd: string
+  harnessPid: number
+  writer: ProcessIdentity | null
+  clock: AttendantClock
+  logger: Logger
+}): SessionMessageWriter | null {
+  const { deps, sessionId, harnessPid, writer, clock, logger } = input
+  if (writer === null) return null
+  const sequencerFor = (client: ApiClient): SequencerDeps => ({
+    sessionId,
+    env: deps.env,
+    client,
+    monotonic: () => clock.monotonic(),
+    wall: () => clock.wall(),
+    sleep: (milliseconds) => clock.sleep(milliseconds, new AbortController().signal),
+    writer,
+    log: logger,
+  })
+  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, sequencerFor })
+  const adapters: ClaudeWakeAdapters = deps.claudeWake ?? systemClaudeWakeAdapters(deps.env)
+  const inbox = inspectClaudeInbox({
+    pid: harnessPid,
+    platform: deps.hookPlatform ?? process.platform,
+    readDescriptor: adapters.readDescriptor,
+    socketExists: existsSync,
+  })
+  if (inbox.state !== 'ready') {
+    logger.info('attendant.state', { messages: 'unavailable', reason: inbox.reason })
+    return null
+  }
+  return (client, batch, attendant) =>
+    handOffSessionMessages(batch, attendant, {
+      sequencer: sequencerFor(client),
+      write: (text, begin, guard) =>
+        deliverIntoClaudeSession({
+          sessionId,
+          sourcePid: harnessPid,
+          // Read at each write: the probe keeps proving this harness hosts the
+          // session, and Claude Code rewrites its descriptor as it runs.
+          sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
+          adapters,
+          text,
+          begin,
+          guard,
+          // Resident: the attendant outlives the ancestry check without waiting.
+          holdAfterSend: false,
+          writer: 'Session Attendant',
+        }),
+    })
+}
+
+/**
+ * Codex takes a Session Message through the thread's own durable inbox: the
+ * `codex queue` writer runs as a subprocess in its own process group, so it is
+ * journaled as a subprocess write and its group recorded the moment it exists.
+ * The attendant lives only while Codex keeps this thread loaded, and a loaded
+ * thread starts a turn for a queued message whether it was idle or working.
+ */
+function codexMessageWriter(input: {
+  deps: CommandDeps
+  sessionId: string
+  cwd: string
+  logger: Logger
+  sequencerFor(client: ApiClient): SequencerDeps
+}): SessionMessageWriter | null {
+  const { deps, sessionId, cwd, logger } = input
+  const queue = inspectCodexQueue(sessionId, deps.env)
+  if (queue.state !== 'ready') {
+    logger.info('attendant.state', { messages: 'unavailable', reason: queue.reason })
+    return null
+  }
+  const adapters: CodexWakeAdapters = deps.codexWake ?? systemCodexWakeAdapters(deps.env)
+  if (adapters.available?.() === false) {
+    // A queue writer that cannot start would leave every note unconfirmed.
+    logger.info('attendant.state', { messages: 'unavailable', reason: 'codex-executable-not-found' })
+    return null
+  }
+  return (client, batch, attendant) =>
+    handOffSessionMessages(batch, attendant, {
+      sequencer: input.sequencerFor(client),
+      write: (text, begin, guard, writerGroup) =>
+        deliverIntoCodexThread({
+          threadId: queue.threadId,
+          cwd,
+          env: deps.env,
+          adapters,
+          text,
+          begin: () => begin('subprocess'),
+          guard,
+          onSpawn: writerGroup,
+        }),
+    })
+}
+
+/** Record the Codex turn this turn end or interrupt closes. */
+function recordCodexTurnEnd(envelope: HookEnvelope, sessionId: string, env: NodeJS.ProcessEnv): void {
+  const turnId = envelope.turn_id
+  const event = envelope.hook_event_name
+  if (typeof turnId !== 'string' || turnId === '' || (event !== 'Stop' && event !== 'Interrupt')) return
+  try {
+    recordTurnEnd(sessionId, env, turnId)
+  } catch {
+    // Activity is a hint; a busy lock never costs the session its attendant.
+  }
+}
+
+/**
+ * Record the Codex turn this prompt starts. Called from the synchronous
+ * UserPromptSubmit hook: Codex runs it before the turn and one turn at a time,
+ * which is what orders recorded starts. Never throws.
+ */
+export function recordCodexTurnStart(envelope: HookEnvelope, env: NodeJS.ProcessEnv): void {
+  const sessionId = envelope.session_id
+  const turnId = envelope.turn_id
+  if (sessionId === undefined || typeof turnId !== 'string' || turnId === '') return
+  try {
+    const current = readSessionIncarnation(sessionId, env)
+    if (current !== null) recordTurnStart(sessionId, env, current.key, turnId)
+  } catch {
+    // Activity is a hint; it never delays or fails the User's prompt.
+  }
+}
+
+/**
+ * Re-checked before every exchange: the User-owned Project Enablement, and
+ * the installed CLI/hook contract. Hooks removed or replaced by a build that
+ * does not attend, or an installed CLI older than this attendant, withdraw it.
+ */
+export function attendantGates(
+  deps: CommandDeps,
+  cwd: string,
+  sessionId: string,
+  harness: HookHarness,
+  runningVersion: string | null,
+): GateResult {
+  try {
+    const config = loadConfig({ cwd, env: deps.env, sessionId })
+    if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) {
+      return { ok: false, reason: 'project-disabled' }
+    }
+  } catch {
+    return { ok: false, reason: 'enablement-unavailable' }
+  }
+  // The handler that started this attendant lives in the Machine layer, or in
+  // a Project layer an older build wrote; either keeps the contract in place.
+  const attendInstalled = [
+    ...findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform),
+    ...findLegacyProjectInstallations(cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform),
+  ]
+    .filter((installation) => installation.harness === harness)
+    .some((installation) => installation.handlers.some((handler) => handlerEvent(handler.command) === 'attend'))
+  if (!attendInstalled) return { ok: false, reason: 'attend-handler-removed' }
+  // Fail closed: an installed contract this attendant cannot establish is not
+  // one it may keep attending under.
+  const installed = installedCliVersion(inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform).target)
+  if (runningVersion === null || installed === null) return { ok: false, reason: 'cli-contract-unknown' }
+  const order = compareVersions(installed, runningVersion)
+  if (order === 'unparseable') return { ok: false, reason: 'cli-contract-unknown' }
+  if (order === 'before') return { ok: false, reason: 'cli-downgraded' }
+  return { ok: true }
+}
+
+function installedCliVersion(target: HookAdapterTarget | null): string | null {
+  if (target === null) return null
+  if (isNpxAdapterTarget(target)) {
+    // Installers pin npx targets to an exact version: `@raidiant/notifai@1.2.3`.
+    const prefix = `${CLI_PACKAGE_NAME}@`
+    return target.spec.startsWith(prefix) ? target.spec.slice(prefix.length) : null
+  }
+  try {
+    const manifest = path.join(path.dirname(target.scriptPath), '..', 'package.json')
+    const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { version?: unknown }
+    return typeof parsed.version === 'string' ? parsed.version : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The session-state lock is shared with the synchronous activation handler
+ * running beside this one. This handler is asynchronous and nobody waits on
+ * it, so it outlasts a busy moment instead of giving the session up.
+ */
+async function withLockRetry<T>(clock: AttendantClock, action: () => T): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return action()
+    } catch (err) {
+      if (attempt >= 8 || !(err instanceof Error) || !err.message.startsWith('timed out waiting for file lock')) {
+        throw err
+      }
+      await clock.sleep(250 * attempt, new AbortController().signal)
+    }
+  }
+}
+
+function declaredHookSourcePid(env: NodeJS.ProcessEnv): number | undefined {
+  const value = Number(env['NOTIFAI_HOOK_SOURCE_PID'])
+  return Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+/**
+ * Terminal close reaches the attendant as SIGTERM with no SessionEnd; treat
+ * any termination signal as "ending, report once".
+ */
+function terminationSignal(): { promise: Promise<void>; dispose(): void } {
+  const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGHUP', 'SIGINT']
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  const onSignal = (): void => resolve()
+  for (const signal of signals) process.on(signal, onSignal)
+  return {
+    promise,
+    dispose: () => {
+      for (const signal of signals) process.off(signal, onSignal)
+    },
+  }
+}
+
+/**
+ * Codex's SessionEnd reports the attended session `ended`.
+ *
+ * On Codex the attendant cannot: Codex SIGKILLs every unfinished async hook's
+ * process group the moment SessionEnd returns, before the attendant's next
+ * probe could see the end marker. SessionEnd therefore ends the lease the live
+ * attendant holds, with that lease's own incarnation and generation, so the
+ * service fences it exactly as the attendant's own report would. Without a
+ * held lease there is nothing to end; a failed report leaves the lease to
+ * lapse, and presence reads out of reach.
+ */
+export async function reportCodexSessionEnded(
+  deps: CommandDeps,
+  sessionId: string,
+): Promise<'no-lease' | 'not-paired' | 'reported' | 'failed'> {
+  const lease = readAttendantHeldLease(sessionId, deps.env)
+  if (lease === null) return 'no-lease'
+  const credential = deps.store.load()
+  if (!credential) return 'not-paired'
+  const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
+    timeoutMs: CODEX_SESSION_END_REPORT_MS,
+  })
+  const bound = new AbortController()
+  const timer = setTimeout(() => bound.abort(), CODEX_SESSION_END_REPORT_MS)
+  try {
+    await client.attend(
+      sessionId,
+      { incarnation: lease.incarnation, generation: lease.generation, state: 'ended' },
+      { waitSeconds: 0, signal: bound.signal },
+    )
+    return 'reported'
+  } catch {
+    return 'failed'
+  } finally {
+    clearTimeout(timer)
+  }
+}

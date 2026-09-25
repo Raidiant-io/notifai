@@ -526,16 +526,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     })
 
   program
-    .command('acknowledge <request_id>')
+    .command('acknowledge <request_or_message_id>')
     .helpGroup(GROUP.agent)
-    .summary("Tell the user what you'll do because of their reply")
+    .summary("Tell the user what you'll do because of their reply or note")
     .description(
-      'Record the required Agent Acknowledgement for a replied-to notification request; never prompts',
+      'Record the required Agent Acknowledgement for a replied-to notification request (req_…) or a Session Message the user sent into this session (sm_…: a note or an edited answer); never prompts',
     )
-    .option('--text <text>', 'concrete work you will do because of the reply')
+    .option('--text <text>', 'concrete work you will do because of the reply or message')
     .option('--json', 'machine-readable output')
-    .action(async (requestId: string, opts: { text?: string; json?: boolean }) => {
-      exit(await runners.acknowledge(deps, requestId, opts))
+    .action(async (id: string, opts: { text?: string; json?: boolean }) => {
+      exit(await runners.acknowledge(deps, id, opts))
     })
 
   program

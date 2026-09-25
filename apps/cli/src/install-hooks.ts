@@ -33,11 +33,13 @@ import {
 } from './openclaw-plugin.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import {
+  attendDocumentEvents,
   HOOK_EVENT_COMMAND_RE,
   HOOK_EVENT_PATTERN,
   HOOK_EVENT_TABLE,
   OPENCLAW_EVENTS,
   OPENCODE_EVENTS,
+  installsSessionAttendant,
 } from './hook-events.js'
 import { accountHome } from './platform.js'
 import { sameLocalPath } from './local-path.js'
@@ -197,6 +199,16 @@ export const NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS = NON_ROUTING_STOP_TIMEOU
 export { QUESTION_STOP_TIMEOUT_SECONDS } from './question-timing.js'
 
 /**
+ * Codex's Session Attendant lifetime. Codex kills an async hook at its
+ * declared timeout, so the attendant declares the same complete window a
+ * question owner does; the next prompt or turn end starts another.
+ */
+export const CODEX_ATTEND_TIMEOUT_SECONDS = QUESTION_STOP_TIMEOUT_SECONDS
+
+/** Codex clamps an Interrupt hook to three seconds; declaring it keeps the definition honest. */
+export const CODEX_INTERRUPT_TIMEOUT_SECONDS = 3
+
+/**
  * Whether this harness's Stop handler runs detached from the turn.
  *
  * The installer and doctor share this predicate so they agree which harnesses
@@ -280,6 +292,29 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         ],
       },
     ]
+  }
+  if (installsSessionAttendant(options.harness, options.platform)) {
+    // A second handler in the same group, never folded into the first: the
+    // harness runs the activation handler's context back promptly and does
+    // not wait for an async handler. Claude Code does not time out a
+    // backgrounded hook, so its attendant declares none and ends itself with
+    // its session. Codex enforces every async timeout, and its 600-second
+    // default would kill the attendant: it declares the complete answer window
+    // and a later prompt or turn end re-arms it after that. Codex caps
+    // Interrupt at three seconds; that copy only records the turn's end.
+    for (const event of attendDocumentEvents(options.harness)) {
+      const attend: HookHandler = {
+        type: 'command',
+        command: hookCommand(adapterPath, 'attend', options.harness, commandOptions),
+        async: true,
+        ...(options.harness !== 'codex'
+          ? {}
+          : { timeout: event === 'Interrupt' ? CODEX_INTERRUPT_TIMEOUT_SECONDS : CODEX_ATTEND_TIMEOUT_SECONDS }),
+      }
+      const group = hooks[event]?.[0]
+      if (group === undefined) hooks[event] = [{ hooks: [attend] }]
+      else group.hooks.push(attend)
+    }
   }
   return hooks
 }
@@ -1382,7 +1417,8 @@ export function codexStopDefinitionFingerprint(
     .filter((installation) => installation.harness === 'codex')
     .flatMap((installation) =>
       installation.handlers
-        .filter((handler) => handler.event === 'Stop')
+        // The attend handler shares the Stop group; it is not the Stop definition.
+        .filter((handler) => handler.event === 'Stop' && handlerEvent(handler.command) !== 'attend')
         .map((handler) => ({ installation, handler })),
     )
   if (candidates.length !== 1) return undefined
@@ -1432,6 +1468,24 @@ export function codexTrustProblems(
         ]
       }),
     )
+}
+
+/**
+ * Trust defects in the handlers Question Routing runs. The Session Attendant
+ * is presence, never a routing gate: an attend handler still awaiting
+ * approval is reported by doctor and init and never refuses a question.
+ */
+export function codexRoutingTrustProblems(
+  installations: Installation[],
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return codexTrustProblems(
+    installations.map((installation) => ({
+      ...installation,
+      handlers: installation.handlers.filter((handler) => handlerEvent(handler.command) !== 'attend'),
+    })),
+    env,
+  )
 }
 
 /**

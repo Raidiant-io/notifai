@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  AttendanceRequestT,
+  AttendanceResponse,
   AlphaAccessRequestResponse,
   AccountAccessResponse,
   BeginPairingResponse,
@@ -11,8 +13,13 @@ import type {
   GetAgentAcknowledgementResponse,
   ListDevicesResponse,
   ListSoundsResponse,
+  ClaimDeliveryAttemptRequestT,
+  ClaimDeliveryAttemptResponse,
   ClientCapability,
+  CloseDisposition,
+  CloseRepliesResponse,
   CompatibilityResponse,
+  GetSessionMessageAcknowledgementResponse,
   RecoveryAction,
   ListRepliesResponse,
   Platform,
@@ -20,6 +27,10 @@ import type {
   PutAgentAcknowledgementRequestT,
   PutAgentAcknowledgementResponse,
   PutAgentSessionLabelRequestT,
+  PutSessionMessageAcknowledgementRequestT,
+  PutSessionMessageAcknowledgementResponse,
+  ReportDeliveryAttemptRequestT,
+  ReportDeliveryAttemptResponse,
   AgentSessionView,
   SubmissionReceipt,
   SubmitNotificationRequestT,
@@ -99,8 +110,18 @@ export interface ApiClient {
     requestId: string,
     options: { waitSeconds: number; afterSeq: number },
   ): Promise<ListRepliesResponse>
-  /** Retire a question and return the replies committed before the close fence. */
+  /**
+   * Close a question's reply window and return the replies committed before
+   * the close fence. `disposition` says why: `deliver` only when this caller
+   * will claim the fenced answer for hand-off, `retire` on every retirement.
+   * Without one the close records none, exactly as released CLIs do.
+   */
   closeReplies(requestId: string): Promise<ListRepliesResponse>
+  closeReplies(requestId: string, disposition: CloseDisposition): Promise<CloseRepliesResponse>
+  closeReplies(
+    requestId: string,
+    disposition?: CloseDisposition,
+  ): Promise<ListRepliesResponse | CloseRepliesResponse>
   putAgentAcknowledgement(
     requestId: string,
     body: PutAgentAcknowledgementRequestT,
@@ -114,6 +135,30 @@ export interface ApiClient {
   finalizeMediaUpload(mediaId: string): Promise<FinalizeMediaUploadResponse>
   uploadMedia(grant: CreateMediaUploadResponse, bytes: Uint8Array): Promise<void>
   health(): Promise<boolean>
+  /**
+   * One Session Attendant exchange for an exact Agent Session. The server may
+   * hold a `running` exchange up to `waitSeconds`; `signal` cuts it short.
+   */
+  attend(
+    sessionId: string,
+    body: AttendanceRequestT,
+    options: { waitSeconds: number; signal?: AbortSignal },
+  ): Promise<AttendanceResponse>
+  /** Claim one hand-off into an Agent Session under the lease generation held. */
+  claimDeliveryAttempt(
+    sessionId: string,
+    body: ClaimDeliveryAttemptRequestT,
+  ): Promise<ClaimDeliveryAttemptResponse>
+  /** Report how a claimed hand-off ended; accepted from the attempt's machine only. */
+  reportDeliveryAttempt(
+    attemptId: string,
+    body: ReportDeliveryAttemptRequestT,
+  ): Promise<ReportDeliveryAttemptResponse>
+  putSessionMessageAcknowledgement(
+    messageId: string,
+    body: PutSessionMessageAcknowledgementRequestT,
+  ): Promise<PutSessionMessageAcknowledgementResponse>
+  sessionMessageAcknowledgement(messageId: string): Promise<GetSessionMessageAcknowledgementResponse>
 }
 
 export interface ClientOptions {
@@ -175,10 +220,11 @@ export function createClient(
     body?: unknown,
     /** Seconds the server was asked to hold the connection open. */
     serverWaitSeconds = 0,
+    abort?: AbortSignal,
   ): Promise<T> {
     const startedAt = Date.now()
     try {
-      const result = await callOnce<T>(method, apiPath, body, serverWaitSeconds)
+      const result = await callOnce<T>(method, apiPath, body, serverWaitSeconds, abort)
       logger?.debug('http.call', {
         method,
         path: apiPath,
@@ -205,6 +251,7 @@ export function createClient(
     apiPath: string,
     body?: unknown,
     serverWaitSeconds = 0,
+    abort?: AbortSignal,
   ): Promise<T> {
     // Without this, a server that accepts the connection and then never answers
     // hangs until the harness kills the whole hook — and the reply-poll deadline
@@ -216,7 +263,8 @@ export function createClient(
         ? requestBudgetMs
         : Math.max(1, options.deadlineAt - now())
     const limitMs = Math.max(1, Math.min(requestBudgetMs, remainingMs))
-    const signal = AbortSignal.timeout(limitMs)
+    const timeout = AbortSignal.timeout(limitMs)
+    const signal = abort === undefined ? timeout : AbortSignal.any([timeout, abort])
     let response: Response
     try {
       response = await fetch(`${root}${apiPath}`, {
@@ -287,11 +335,12 @@ export function createClient(
         undefined,
         waitSeconds,
       ),
-    closeReplies: (requestId) =>
-      call<ListRepliesResponse>(
+    closeReplies: ((requestId: string, disposition?: CloseDisposition) =>
+      call<ListRepliesResponse | CloseRepliesResponse>(
         'POST',
         `/api/v1/notifications/${encodeURIComponent(requestId)}/replies/close`,
-      ),
+        disposition === undefined ? undefined : { disposition },
+      )) as ApiClient['closeReplies'],
     putAgentAcknowledgement: (requestId, body) =>
       call<PutAgentAcknowledgementResponse>(
         'PUT',
@@ -354,5 +403,36 @@ export function createClient(
         return false
       }
     },
+    attend: (sessionId, body, { waitSeconds, signal }) =>
+      call<AttendanceResponse>(
+        'POST',
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attendance?wait_seconds=${waitSeconds}`,
+        body,
+        waitSeconds,
+        signal,
+      ),
+    claimDeliveryAttempt: (sessionId, body) =>
+      call<ClaimDeliveryAttemptResponse>(
+        'POST',
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/delivery-attempts`,
+        body,
+      ),
+    reportDeliveryAttempt: (attemptId, body) =>
+      call<ReportDeliveryAttemptResponse>(
+        'POST',
+        `/api/v1/delivery-attempts/${encodeURIComponent(attemptId)}/report`,
+        body,
+      ),
+    putSessionMessageAcknowledgement: (messageId, body) =>
+      call<PutSessionMessageAcknowledgementResponse>(
+        'PUT',
+        `/api/v1/session-messages/${encodeURIComponent(messageId)}/agent-acknowledgement`,
+        body,
+      ),
+    sessionMessageAcknowledgement: (messageId) =>
+      call<GetSessionMessageAcknowledgementResponse>(
+        'GET',
+        `/api/v1/session-messages/${encodeURIComponent(messageId)}/agent-acknowledgement`,
+      ),
   }
 }

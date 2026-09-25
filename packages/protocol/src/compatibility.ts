@@ -1,16 +1,38 @@
 import { Type, type Static } from '@sinclair/typebox'
 import type { Platform } from './notification.js'
 
-/** Named jobs a client can perform. Per-client advertisement is routing authority. */
-export const CLIENT_CAPABILITIES = ['answer', 'agent_acknowledgement'] as const
+/**
+ * Named jobs a client can perform. Per-client advertisement is routing authority.
+ *
+ * - `session_attendance` (CLI): runs a Session Attendant that holds an Agent
+ *   Session's presence lease and hands Session Messages into it.
+ * - `session_notes` / `answer_edits` (Companion App): writes Session Notes and
+ *   Answer Edits and reads their state. An app advertises these only after
+ *   `GET /api/v1/features` lists the matching Server Feature, because a server
+ *   that predates them rejects an unknown advertised capability.
+ */
+export const CLIENT_CAPABILITIES = [
+  'answer',
+  'agent_acknowledgement',
+  'session_attendance',
+  'session_notes',
+  'answer_edits',
+] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]
 
 export const ClientCapabilitySchema = Type.Union(
   CLIENT_CAPABILITIES.map((capability) => Type.Literal(capability)),
 )
 
-/** Capabilities shipped by this CLI release on authenticated machine traffic. */
-export const SHIPPED_CLI_CAPABILITIES = ['agent_acknowledgement'] as const satisfies readonly ClientCapability[]
+/**
+ * Capabilities shipped by this CLI release on authenticated machine traffic.
+ * Every command advertises the same set, so a machine's recorded inventory does
+ * not flip between an attendant exchange and an ordinary send.
+ */
+export const SHIPPED_CLI_CAPABILITIES = [
+  'agent_acknowledgement',
+  'session_attendance',
+] as const satisfies readonly ClientCapability[]
 
 /** Capabilities shipped by the current Companion App. */
 export const SHIPPED_COMPANION_CAPABILITIES = ['answer'] as const satisfies readonly ClientCapability[]

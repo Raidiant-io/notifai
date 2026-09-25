@@ -1,6 +1,13 @@
 /** Accepted-answer delivery and required Agent Acknowledgement obligations. */
 import { withFileLock } from './file-lock.js'
 import { gate } from './hook-gates.js'
+import {
+  ACKNOWLEDGEMENT_SCOPE,
+  TRANSPORT_LIMIT,
+  acknowledgementCommand,
+  acknowledgementDemand,
+  quoted,
+} from './injection-render.js'
 import { retiringQuestion } from './hook-question-retirement.js'
 import { isSamePending, pendingHasChoices, rememberQuestionState } from './hook-question-state.js'
 import {
@@ -10,15 +17,44 @@ import {
   updateSessionState,
   writeSessionStateUnlocked,
 } from './hook-session-state.js'
+import { SESSION_MESSAGE_ID_PREFIX } from '@raidiant/notifai-protocol'
 import type {
   AcceptedAnswerDelivery,
   AcknowledgementDue,
   AnsweredPending,
   HookContext,
   HookOutcome,
+  MessageAcknowledgementDue,
+  OwedAcknowledgement,
   RetiringQuestion,
   SessionState,
 } from './hook-types.js'
+
+export function owedAcknowledgementId(owed: OwedAcknowledgement): string {
+  return 'message_id' in owed ? owed.message_id : owed.request_id
+}
+
+/** Every acknowledgement this session still owes, request debt first. */
+export function owedAcknowledgements(state: SessionState): OwedAcknowledgement[] {
+  return [...(state.acknowledgement_due ?? []), ...(state.message_acknowledgement_due ?? [])]
+}
+
+/**
+ * Record the acknowledgement a Session Message is owed, before it is written:
+ * an agent that acknowledges the moment it reads the message must find the
+ * debt already there to clear.
+ */
+export function recordMessageAcknowledgementDue(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  due: MessageAcknowledgementDue,
+): void {
+  updateSessionState(sessionId, env, (current) => {
+    const owed = current.message_acknowledgement_due ?? []
+    if (owed.some((entry) => entry.message_id === due.message_id)) return current
+    return { ...current, message_acknowledgement_due: [...owed, due] }
+  })
+}
 /**
  * The answer as the agent should read it. For a question with choices the
  * latest reply IS the answer — an earlier conflicting one was corrected by
@@ -39,41 +75,16 @@ function answerContext(answered: AnsweredPending): string {
     answeredQuestionIds.length === 0
       ? ''
       : `question_id${answeredQuestionIds.length === 1 ? '' : 's'} ${answeredQuestionIds.join(', ')}, `
-  const question = `question ${JSON.stringify(pending.question)}`
+  const question = `question ${quoted(pending.question)}`
   if (replies.length === 1 || pendingHasChoices(pending)) {
-    return `Notifai — ${identity}${question}; the user answered ${JSON.stringify(latest.text)}.`
+    return `Notifai — ${identity}${question}; the user answered ${quoted(latest.text)}.`
   }
-  const parts = replies.map((reply) => JSON.stringify(reply.text)).join(', then ')
+  const parts = replies.map((reply) => quoted(reply.text)).join(', then ')
   return (
     `Notifai — ${identity}${question}; the user answered in ${replies.length} parts, ` +
     `in the order written: ${parts}. Later parts extend or correct earlier ones.`
   )
 }
-
-/**
- * Every answer that has arrived, as one message. Several registered questions
- * may resolve in one hook pass; the agent reads them together, each answer
- * tied to the question that asked it, with a truthful note about anything
- * still waiting.
- */
-function acknowledgementCommand(requestId: string, textRequired = true): string {
-  return textRequired
-    ? `notifai acknowledge ${requestId} --text <text>`
-    : `notifai acknowledge ${requestId}`
-}
-
-/**
- * The acknowledgement is owed either way; only its text is conditional. So the
- * instruction never says "you may skip this" — it says what to run.
- */
-function acknowledgementDemand(textRequired: boolean): string {
-  return textRequired
-    ? ' with non-empty text saying what concrete work you will do because of the reply; a bare acknowledgement is insufficient'
-    : ' exactly as shown; this account turned acknowledgement text off, so the receipt carries no words'
-}
-
-const ACKNOWLEDGEMENT_SCOPE =
-  ' Once a request reports recorded or replayed, its acknowledgement is complete; do not repeat it for a later turn or unrelated event.'
 
 function acknowledgementContext(answered: AnsweredPending[]): string {
   const due = answered.filter(
@@ -106,12 +117,18 @@ function acknowledgementContext(answered: AnsweredPending[]): string {
   )
 }
 
+/**
+ * Every answer that has arrived, as one message. Several registered questions
+ * may resolve in one hook pass; the agent reads them together, each answer
+ * tied to the question that asked it, with a truthful note about anything
+ * still waiting.
+ */
 export function answersContext(answered: AnsweredPending[], remaining: number): string {
   const tail =
     remaining > 0
       ? ` (${remaining} more registered question${remaining === 1 ? ' is' : 's are'} still waiting for an answer.)`
       : ''
-  const guidance = acknowledgementContext(answered)
+  const guidance = acknowledgementContext(answered) + TRANSPORT_LIMIT
   if (answered.length === 1) {
     return answerContext(answered[0]!) + tail + guidance
   }
@@ -119,11 +136,11 @@ export function answersContext(answered: AnsweredPending[], remaining: number): 
     const latest = replies.at(-1)!
     const answer =
       replies.length === 1 || pendingHasChoices(pending)
-        ? JSON.stringify(latest.text)
-        : `${replies.map((reply) => JSON.stringify(reply.text)).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
+        ? quoted(latest.text)
+        : `${replies.map((reply) => quoted(reply.text)).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
     const ids = [...new Set(latest.answers.map((entry) => entry.question_id))]
     const identity = ids.length === 0 ? '' : `question_id${ids.length === 1 ? '' : 's'} ${ids.join(', ')}: `
-    return `- ${identity}${JSON.stringify(pending.question)} → ${answer}`
+    return `- ${identity}${quoted(pending.question)} → ${answer}`
   })
   return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}${tail}${guidance}`
 }
@@ -305,11 +322,14 @@ export function recoverQueuedAnswers(sessionId: string, env: NodeJS.ProcessEnv):
   )
 }
 
+/** Forget one owed acknowledgement, dispatched by identifier: `sm_…` or a request id. */
 export function clearAcknowledgementObligation(
   sessionId: string,
   env: NodeJS.ProcessEnv,
-  requestId: string,
+  id: string,
 ): boolean {
+  if (id.startsWith(SESSION_MESSAGE_ID_PREFIX)) return clearMessageAcknowledgement(sessionId, env, id)
+  const requestId = id
   let cleared = false
   updateSessionState(sessionId, env, (current) => {
     const due = current.acknowledgement_due ?? []
@@ -327,17 +347,43 @@ export function clearAcknowledgementObligation(
   return cleared
 }
 
-export function acknowledgementBlockContext(due: readonly AcknowledgementDue[]): string {
-  const commands = due
-    .map(
-      (entry) =>
-        `- ${entry.request_id}: \`${acknowledgementCommand(entry.request_id, entry.text_required !== false)}\``,
-    )
-    .join('\n')
+function clearMessageAcknowledgement(sessionId: string, env: NodeJS.ProcessEnv, messageId: string): boolean {
+  let cleared = false
+  updateSessionState(sessionId, env, (current) => {
+    const due = current.message_acknowledgement_due ?? []
+    const remaining = due.filter((entry) => entry.message_id !== messageId)
+    cleared = remaining.length !== due.length
+    if (!cleared) return current
+    const next = { ...current }
+    if (remaining.length > 0) next.message_acknowledgement_due = remaining
+    else delete next.message_acknowledgement_due
+    return next
+  })
+  return cleared
+}
+
+export function acknowledgementBlockContext(due: readonly OwedAcknowledgement[]): string {
   const anyTextRequired = due.some((entry) => entry.text_required !== false)
+  const commands = due
+    .map((entry) => {
+      const id = owedAcknowledgementId(entry)
+      return `- ${id}: \`${acknowledgementCommand(id, entry.text_required !== false)}\``
+    })
+    .join('\n')
+  const requests = due.filter((entry): entry is AcknowledgementDue => !('message_id' in entry))
+  const messages = due.filter((entry): entry is MessageAcknowledgementDue => 'message_id' in entry)
+  const subjects = [
+    ...(requests.length === 0
+      ? []
+      : [`request${requests.length === 1 ? '' : 's'} ${requests.map((entry) => entry.request_id).join(', ')}`]),
+    ...(messages.length === 0
+      ? []
+      : [`message${messages.length === 1 ? '' : 's'} ${messages.map((entry) => entry.message_id).join(', ')}`]),
+  ].join(' and ')
+  const cause = requests.length === 0 ? 'message' : 'reply'
   return (
-    `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for request${due.length === 1 ? '' : 's'} ${due.map((entry) => entry.request_id).join(', ')}. ` +
-    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired)}:\n${commands}` +
+    `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for ${subjects}. ` +
+    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired, cause)}:\n${commands}` +
     ACKNOWLEDGEMENT_SCOPE
   )
 }
@@ -363,20 +409,20 @@ const MAX_ACKNOWLEDGEMENT_BLOCKS = 3
 export function holdForAcknowledgement(
   ctx: HookContext,
   sessionId: string,
-  due: readonly AcknowledgementDue[],
+  due: readonly OwedAcknowledgement[],
   notes: string[],
 ): HookOutcome | null {
   if (due.length === 0) return null
-  const requestIds = due.map((entry) => entry.request_id)
+  const ids = subjectIds(due)
   const blocks = (readSessionState(sessionId, ctx.env).acknowledgement_blocks ?? 0) + 1
   if (blocks > MAX_ACKNOWLEDGEMENT_BLOCKS) {
     // Drop the obligation with the reason recorded. The answer was already
     // delivered; what is lost is the agent's receipt for it, and the log is
     // where that loss stays visible.
-    for (const requestId of requestIds) clearAcknowledgementObligation(sessionId, ctx.env, requestId)
+    for (const owed of due) clearAcknowledgementObligation(sessionId, ctx.env, owedAcknowledgementId(owed))
     resetAcknowledgementBlocks(sessionId, ctx.env)
     gate(ctx, 'proceeding', 'acknowledgement-abandoned', {
-      request_ids: requestIds,
+      ...ids,
       blocks: blocks - 1,
       limit: MAX_ACKNOWLEDGEMENT_BLOCKS,
     })
@@ -389,11 +435,21 @@ export function holdForAcknowledgement(
     ...current,
     acknowledgement_blocks: blocks,
   }))
-  gate(ctx, 'held', 'acknowledgement-required', { request_ids: requestIds, blocks })
+  gate(ctx, 'held', 'acknowledgement-required', { ...ids, blocks })
   return {
     stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
     notes,
-    log: { stage: 'acknowledgement-required', request_ids: requestIds },
+    log: { stage: 'acknowledgement-required', ...ids },
+  }
+}
+
+/** Log fields naming owed acknowledgements; `request_ids` keeps its released meaning. */
+function subjectIds(due: readonly OwedAcknowledgement[]): Record<string, string[]> {
+  const requestIds = due.flatMap((entry) => ('message_id' in entry ? [] : [entry.request_id]))
+  const messageIds = due.flatMap((entry) => ('message_id' in entry ? [entry.message_id] : []))
+  return {
+    ...(requestIds.length === 0 && messageIds.length > 0 ? {} : { request_ids: requestIds }),
+    ...(messageIds.length === 0 ? {} : { message_ids: messageIds }),
   }
 }
 
@@ -407,21 +463,26 @@ export function resetAcknowledgementBlocks(sessionId: string, env: NodeJS.Proces
   })
 }
 
-export async function reconcileAcknowledgementObligations(
+/**
+ * Ask the service which owed acknowledgements now exist and forget those.
+ * Returns what is still owed; a failed check counts as still owed.
+ */
+export async function reconcileAcknowledgementObligations<T extends OwedAcknowledgement>(
   ctx: HookContext,
   sessionId: string,
-  due: readonly AcknowledgementDue[],
-): Promise<AcknowledgementDue[]> {
-  const unresolved: AcknowledgementDue[] = []
+  due: readonly T[],
+): Promise<T[]> {
+  const unresolved: T[] = []
   for (const obligation of due) {
+    const id = owedAcknowledgementId(obligation)
     try {
-      const snapshot = await ctx.client.agentAcknowledgement(obligation.request_id, {
-        waitSeconds: 0,
-      })
-      if (
-        snapshot.agent_acknowledgement !== null
-      ) {
-        clearAcknowledgementObligation(sessionId, ctx.env, obligation.request_id)
+      const acknowledgement =
+        'message_id' in obligation
+          ? (await ctx.client.sessionMessageAcknowledgement(obligation.message_id)).agent_acknowledgement
+          : (await ctx.client.agentAcknowledgement(obligation.request_id, { waitSeconds: 0 }))
+              .agent_acknowledgement
+      if (acknowledgement !== null) {
+        clearAcknowledgementObligation(sessionId, ctx.env, id)
       } else {
         unresolved.push(obligation)
       }
@@ -431,7 +492,7 @@ export async function reconcileAcknowledgementObligations(
         verdict: 'held',
         reason: 'acknowledgement-required',
         stage: 'reconcile-failed',
-        request_id: obligation.request_id,
+        ...('message_id' in obligation ? { message_id: id } : { request_id: id }),
         message: err instanceof Error ? err.message : String(err),
       })
     }

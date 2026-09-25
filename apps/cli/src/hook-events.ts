@@ -1,5 +1,6 @@
 /** Canonical lifecycle event vocabulary shared by installation and execution. */
 import { type HookInstallableHarness } from './harnesses.js'
+import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 
 /**
  * One harness-neutral table for the lifecycle events this CLI build serves.
@@ -64,6 +65,16 @@ export const HOOK_EVENT_TABLE = [
     opencodeDiscovery: true,
     timeoutSeconds: 3,
   },
+  {
+    // The Session Attendant. It is not one document event: it is installed
+    // as a second, asynchronous handler on each of ATTEND_DOCUMENT_EVENTS.
+    notifai: 'attend',
+    document: null,
+    cursor: null,
+    openclaw: false,
+    opencodeDiscovery: false,
+    timeoutSeconds: 0,
+  },
 ] as const
 
 export type HookEvent = (typeof HOOK_EVENT_TABLE)[number]['notifai']
@@ -90,10 +101,44 @@ export const OPENCLAW_EVENTS = HOOK_EVENT_TABLE.filter(
     row.openclaw && row.document !== null,
 ).map((row) => [row.document, row.notifai] as const)
 
+/**
+ * Where the Session Attendant handler is installed: SessionStart starts it,
+ * and UserPromptSubmit and Stop re-arm a session whose attendant died.
+ */
+export const ATTEND_DOCUMENT_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop'] as const
+
+/**
+ * The attend handler's events for one harness. Codex also needs Interrupt: an
+ * interrupted Codex turn fires Interrupt instead of Stop, and the attendant
+ * reads a Codex thread's activity from its own turn boundaries.
+ */
+export function attendDocumentEvents(harness: HookInstallableHarness | undefined): readonly string[] {
+  return harness === 'codex' ? [...ATTEND_DOCUMENT_EVENTS, 'Interrupt'] : ATTEND_DOCUMENT_EVENTS
+}
+
+/**
+ * Whether this build installs the Session Attendant for a harness: Claude Code
+ * and Codex, on POSIX only. Claude Code on Windows has no session descriptor
+ * or inbox socket; Codex on Windows has no proven hook parent process.
+ */
+export function installsSessionAttendant(
+  harness: HookInstallableHarness | undefined,
+  platform?: NodeJS.Platform | HookHostPlatform,
+): boolean {
+  return (harness === 'claude-code' || harness === 'codex') && hookHostPlatform(platform) === 'posix'
+}
+
 /** Lifecycle handlers one installed harness must carry in this CLI build. */
-export function requiredHookEvents(harness: HookInstallableHarness): readonly HookEvent[] {
+export function requiredHookEvents(
+  harness: HookInstallableHarness,
+  platform?: NodeJS.Platform | HookHostPlatform,
+): readonly HookEvent[] {
   if (harness === 'opencode' || harness === 'openclaw') return []
   return HOOK_EVENT_TABLE.filter((row) =>
-    harness === 'cursor' ? row.cursor !== null : row.document !== null,
+    row.notifai === 'attend'
+      ? installsSessionAttendant(harness, platform)
+      : harness === 'cursor'
+        ? row.cursor !== null
+        : row.document !== null,
   ).map((row) => row.notifai)
 }

@@ -12,7 +12,7 @@ import { HOOK_EVENTS } from './hook-events.js'
 import { readSessionState } from './hook-session-state.js'
 import {
   codexStopDefinitionFingerprint,
-  codexTrustProblems,
+  codexRoutingTrustProblems,
   handlerEvent,
   type Installation,
 } from './install-hooks.js'
@@ -84,7 +84,7 @@ export function activeQuestionRouteProblems(
     problems.push(problem)
   }
   for (const installation of matching) problems.push(...stopShapeProblems(installation, deps.hookPlatform))
-  problems.push(...codexTrustProblems(matching, deps.env))
+  problems.push(...codexRoutingTrustProblems(matching, deps.env))
   if (active.harness === 'codex' && active.sessionId !== undefined) {
     const state = readSessionState(active.sessionId, deps.env)
     const currentFingerprint = codexStopDefinitionFingerprint(matching)

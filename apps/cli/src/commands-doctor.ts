@@ -100,6 +100,8 @@ import {
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { attendantSupport } from './session-attendant-probe.js'
+import { listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 
 // ---------------------------------------------------------------------------
@@ -1278,6 +1280,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     }
   }
 
+  const attendants = sessionAttendantCheck(deps, active)
+  if (attendants !== null) checks.push(attendants)
+
   // A handler naming an event this build dropped exits 2 every time the harness
   // fires it, which the harness reports as a hook failure.
   const stale = installations.flatMap((i) =>
@@ -1289,7 +1294,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       .map((h) => `${h.event} -> ${handlerEvent(h.command)} in ${i.file}`),
   )
   const missing = installations.flatMap((installation) => {
-    const required = requiredHookEvents(installation.harness)
+    const required = requiredHookEvents(installation.harness, deps.hookPlatform)
     const installed = new Set(
       installation.handlers
         .map((handler) => handlerEvent(handler.command))
@@ -1680,4 +1685,52 @@ function wakeRouteCheck(
     }
   }
   return null
+}
+
+/**
+ * Session Attendants on this machine: which sessions are attended and in what
+ * phase. Informational: presence is a convenience, never a routing gate.
+ */
+function sessionAttendantCheck(
+  deps: CommandDeps,
+  active: { harness: string; sessionId?: string | undefined; label: string } | null,
+): HookCheck | null {
+  const reports = listAttendantReports(deps.env)
+  const live = reports.filter((report) => report.alive)
+  const describe = (report: AttendantReport): string =>
+    [
+      report.phase,
+      report.generation === null ? null : `lease generation ${report.generation}`,
+      report.activity,
+      report.phase === 'exited' ? null : report.accepts_messages ? 'accepts notes' : 'notes unavailable',
+      report.reason,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(', ')
+  const own =
+    active?.sessionId === undefined
+      ? undefined
+      : reports.find((report) => report.session_id === active.sessionId)
+  const attended =
+    (active?.harness === 'claude-code' || active?.harness === 'codex') &&
+    attendantSupport(active.harness, deps.hookPlatform ?? process.platform).supported
+  if (reports.length === 0 && !attended) return null
+  const parts: string[] = []
+  if (attended && active.sessionId !== undefined) {
+    parts.push(
+      own === undefined
+        ? `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
+        : own.alive
+          ? `this session: ${describe(own)}`
+          : `this session's attendant stopped (${describe(own)}); its next prompt starts another`,
+    )
+  }
+  parts.push(`${live.length} running on this machine`)
+  return {
+    name: 'session attendant',
+    ok: true,
+    reportOnly: true,
+    detail: parts.join('; '),
+    technical: { attendants: live },
+  }
 }

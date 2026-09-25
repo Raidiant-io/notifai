@@ -20,6 +20,7 @@ import type {
   OverallState,
   EvidenceStage,
 } from './status.js'
+import type { SessionPresenceView } from './sessions.js'
 import {
   CapabilityAdvertisement,
   type AffectedOperation,
@@ -49,24 +50,47 @@ import {
 export const DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED = true
 
 /**
- * The one account preference over Agent Acknowledgements, and it governs text
- * only. It applies when the submitting CLI advertised the acknowledgement job;
- * turning it off drops the agent's brief written reply, never the receipt itself.
+ * Send Delay choices in seconds: the Companion-side hold between pressing send
+ * and an in-app answer, Answer Edit, or Session Note leaving the device. Zero is
+ * "Off". Native notification actions always send immediately.
+ */
+export const SEND_DELAY_SECONDS_OPTIONS = [0, 3, 5, 10] as const
+export type SendDelaySeconds = (typeof SEND_DELAY_SECONDS_OPTIONS)[number]
+export const DEFAULT_SEND_DELAY_SECONDS: SendDelaySeconds = 5
+
+export const SendDelaySecondsSchema = Type.Union(
+  SEND_DELAY_SECONDS_OPTIONS.map((seconds) => Type.Literal(seconds)),
+)
+
+/**
+ * `agent_acknowledgement_text_enabled` is the one account preference over
+ * Agent Acknowledgements, and it governs text only. It applies when the
+ * submitting CLI advertised the acknowledgement job; turning it off drops the
+ * agent's brief written reply, never the receipt itself.
+ *
+ * `send_delay_seconds` is the Account's Send Delay. Servers that predate it
+ * omit the field, which a Companion App reads as "not offered" rather than
+ * inferring a value.
  */
 export const AccountPreferences = Type.Object(
   {
     agent_acknowledgement_text_enabled: Type.Boolean({
       default: DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
     }),
+    send_delay_seconds: Type.Optional(SendDelaySecondsSchema),
   },
   { additionalProperties: false },
 )
 export type AccountPreferencesT = Static<typeof AccountPreferences>
 export type AccountPreferencesResponse = AccountPreferencesT
 
+/** A partial update: each present field is written; at least one must be present. */
 export const UpdateAccountPreferencesRequest = Type.Object(
-  { agent_acknowledgement_text_enabled: Type.Boolean() },
-  { additionalProperties: false },
+  {
+    agent_acknowledgement_text_enabled: Type.Optional(Type.Boolean()),
+    send_delay_seconds: Type.Optional(SendDelaySecondsSchema),
+  },
+  { additionalProperties: false, minProperties: 1 },
 )
 export type UpdateAccountPreferencesRequestT = Static<typeof UpdateAccountPreferencesRequest>
 
@@ -589,6 +613,25 @@ export interface AgentAcknowledgementView {
   created_at: string
 }
 
+/**
+ * Optional body of `POST /api/v1/notifications/:request_id/replies/close`.
+ * A capable CLI names why it closes: `deliver` when it collected the answers
+ * and will hand them to the agent, `retire` when the question is being retired
+ * without delivery. The first recorded disposition wins; a later close never
+ * changes it. A close without a body (released CLIs) records none, so answers
+ * collected that way cannot be edited after the window closes.
+ */
+export const CLOSE_DISPOSITIONS = ['deliver', 'retire'] as const
+export type CloseDisposition = (typeof CLOSE_DISPOSITIONS)[number]
+
+export const CloseRepliesRequest = Type.Object(
+  {
+    disposition: Type.Union(CLOSE_DISPOSITIONS.map((value) => Type.Literal(value))),
+  },
+  { additionalProperties: false },
+)
+export type CloseRepliesRequestT = Static<typeof CloseRepliesRequest>
+
 export interface ListRepliesResponse {
   request_id: string
   /** Null when the Notification Request did not request replies. */
@@ -603,6 +646,21 @@ export interface ListRepliesResponse {
   /** The one recorded Agent Acknowledgement, or null while none is available. */
   agent_acknowledgement: AgentAcknowledgementView | null
   replies: ReplyView[]
+}
+
+/**
+ * Close response when the close carried a disposition. A close without a body
+ * receives exactly `ListRepliesResponse`.
+ */
+export interface CloseRepliesResponse extends ListRepliesResponse {
+  /** The stored disposition, which may be an earlier close's rather than this one's. */
+  close_disposition: CloseDisposition | null
+  /**
+   * The reply selected for delivery to the agent by a `deliver` close: the
+   * fenced answer a capable writer claims and hands off. Null when the stored
+   * disposition is `retire`, or when the window closed with no reply.
+   */
+  delivered_reply_seq: number | null
 }
 
 /** Agent-authored follow-up text is kept intentionally smaller than a user reply. */
@@ -801,7 +859,11 @@ export interface AgentSessionView {
 }
 
 export interface ListAgentSessionsResponse {
-  agent_sessions: AgentSessionView[]
+  /**
+   * `presence` is additive: servers that predate Session Presence omit it,
+   * which a Companion App renders exactly like `unknown`.
+   */
+  agent_sessions: (AgentSessionView & { presence?: SessionPresenceView })[]
 }
 
 // ---------------------------------------------------------------------------

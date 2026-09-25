@@ -1,5 +1,10 @@
 /** Durable question retirement, including cross-session orphan recovery. */
-import type { LifecycleEndState, ListRepliesResponse } from '@raidiant/notifai-protocol'
+import type {
+  CloseDisposition,
+  CloseRepliesResponse,
+  LifecycleEndState,
+  ListRepliesResponse,
+} from '@raidiant/notifai-protocol'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -47,21 +52,44 @@ export type RetireDeps = Pick<HookContext, 'client' | 'config'> & Pick<Partial<H
  * every reply that committed before the window closed. `null` is deliberately
  * different from an empty reply set — it means ownership could not be proven
  * final and the local record must stay recoverable.
+ *
+ * `disposition` tells the service why this close happens, and the first close
+ * that ends an open window keeps its reason: `deliver` only from a waiter that
+ * will claim the fenced answer before handing it off, `retire` from every
+ * retirement. Answer collection that hands off unclaimed sends none, so its
+ * answer is honestly not editable after the fence.
  */
 export async function finalizeReplies(
   ctx: RetireDeps,
   requestId: string,
-): Promise<ListRepliesResponse | null> {
+  disposition?: CloseDisposition,
+): Promise<ListRepliesResponse | CloseRepliesResponse | null> {
   try {
-    return await ctx.client.closeReplies(requestId)
+    return disposition === undefined
+      ? await ctx.client.closeReplies(requestId)
+      : await ctx.client.closeReplies(requestId, disposition)
   } catch {
     return null
   }
 }
 
+/** Whether this close selected the answer it returned for a claimed hand-off. */
+export function selectedForClaimedDelivery(
+  response: ListRepliesResponse | CloseRepliesResponse | null | undefined,
+): boolean {
+  return (
+    response !== null &&
+    response !== undefined &&
+    'close_disposition' in response &&
+    response.close_disposition === 'deliver' &&
+    response.delivered_reply_seq !== null &&
+    response.delivered_reply_seq === response.replies.at(-1)?.seq
+  )
+}
+
 /** Best effort only for already-journaled retirement debt. */
 export async function closeQuietly(ctx: RetireDeps, requestId: string): Promise<void> {
-  await finalizeReplies(ctx, requestId)
+  await finalizeReplies(ctx, requestId, 'retire')
 }
 
 /**
@@ -73,7 +101,7 @@ async function proveRetirement(
   ctx: RetireDeps,
   requestId: string,
 ): Promise<boolean> {
-  const response = await finalizeReplies(ctx, requestId)
+  const response = await finalizeReplies(ctx, requestId, 'retire')
   const proven = response !== null
   ctx.log?.info('hook.retirement', {
     request_id: requestId,

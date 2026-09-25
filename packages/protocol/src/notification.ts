@@ -239,6 +239,11 @@ export const CUSTOM_SOUND_ID_PATTERN = '^snd_[A-Za-z0-9_-]+$'
 export const NOTIFICATION_SOUND_MEDIA_TYPE = 'audio/wav'
 /** Silent background push that asks a Companion App to refresh custom sounds. */
 export const SOUND_LIBRARY_SYNC = 'sound_library' as const
+/**
+ * Silent background push that asks a Companion App advertising
+ * `session_notes` to pull `GET /api/v1/session-messages`.
+ */
+export const SESSION_MESSAGES_SYNC = 'session_messages' as const
 
 export const INTERRUPTION_LEVELS = ['passive', 'active', 'time_sensitive'] as const
 

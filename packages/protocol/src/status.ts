@@ -98,6 +98,14 @@ export const ERROR_CODES = [
   'acknowledgement_text_required',
   /** The submitted choice is not one this question offered; never retryable. */
   'unknown_choice',
+  /** The Agent Session is not `running` with `accepts_messages`; keep the draft. */
+  'session_not_accepting_messages',
+  /** The answer can no longer be edited (e.g. its close selected nothing for delivery). */
+  'answer_not_editable',
+  /** `base_version` is not the latest Answer Version; show the newer answer, keep the draft. */
+  'answer_changed',
+  /** A Delivery Attempt claim was refused; `details.reason` names why. */
+  'claim_refused',
   'internal_error',
 ] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]

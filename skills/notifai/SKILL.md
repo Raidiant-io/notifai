@@ -96,9 +96,8 @@ notifai send --kind done \
   --body "Sign-up, email verification, and login work end to end on staging. Next: password reset, unless you want something else first."
 ```
 
-Outside a Project, or when the User explicitly asks for a Projectless
-notification, pass `--projectless`. This deliberate override prevents cwd or
-saved config from inventing a Project and never enables one.
+Outside a Project, or when the User asks for a Projectless notification, pass
+`--projectless`; it keeps cwd or config from inventing a Project.
 
 `--kind` is required, and it is the most consequential word you choose:
 
@@ -125,21 +124,11 @@ Use one-way blocked only when no User reply would resume the work.
   Summary's information plus useful detail; focused views show Body or Summary,
   never both. Omit it when Summary is enough.
 
-Use readable Markdown structure. Summary has no Markdown or media markup.
+Use `--body-file <path|->` for long content.
 
-Use `--body-file <path|->` for long content. Keep wording channel-neutral.
-
-Other controls: `--thread-id` groups; `--collapse-key` replaces your earlier
-matching notification; `--ttl` bounds useful delivery.
-Use `notifai capabilities --platform <platform>` for destination contracts.
-
-Repeat `--image <path|url>` (up to 8), paired with `--image-alt`; all reach the
-gallery. Reference any or all in Body with Markdown image syntax:
-`- Bob: ![front](media:1) ![side](media:2)`. Bare `media:1`, `[…](media:1)`,
-or a position with no `--image` is an error.
-
-`--sound`, `--level`, and `--device` belong to the User.
-`--sound` takes a shipped name or a custom name/id from `notifai sounds`.
+Images (`--image`, referenced in Body as `media:1`), grouping, replacement,
+and the User-owned `--sound`, `--level`, and `--device`:
+[Sending details](references/send-details.md).
 Use `--retry` only for the same unresolved Agent Event; the CLI reuses one
 opaque attempt or refuses ambiguity.
 
@@ -151,7 +140,7 @@ It is safe to repeat the same `--session-label` on every send and ask; the first
 accepted semantic name remains authoritative. Only a generated fallback name
 can be replaced by a later semantic name.
 
-User renames sync across Companion Apps and future Requests. An agent may run
+An agent may run
 `notifai session rename "New job"` only when its job changed completely and its
 current name would now mislead. Never rename for milestones, ordinary progress,
 or same-job refinement. The command accepts no Agent Session id and fails unless
@@ -203,9 +192,8 @@ higher-priority rules; never claim either path retires the other.
 
 **Never say where the answer must arrive** ("tell me here"). The harness owns routing.
 
-Use `--multi` for combined answers, `--body`/`--body-file` for Body,
-`--image`/`--image-alt` for evidence, or `--form <path|->` for up to 10 questions
-with a set-level `summary`.
+Use `--multi` for combined answers, `--body-file` for Body, `--image` for
+evidence, or `--form <path|->` for up to 10 questions with one `summary`.
 
 Register independent questions separately. Retire an obsolete registration or
 one they answer in the conversation with
@@ -263,16 +251,16 @@ notifai replies --pending --json
 ```
 
 **Acknowledge before you resume.** The user needs to know their reply was read.
-Notifai tells you the exact command; run it once per answered request that
-arrived through Notifai, before any of the work it unblocks:
+Notifai tells you the exact command; run it once per answered request or
+[note or edit](references/notes-and-edits.md) (`sm_…`) that arrived through
+Notifai, before the work it unblocks:
 
 ```bash
 notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report the health checks."
 ```
 
-Keep it under 200 characters — it is a receipt, not a report.
-
-Name only the concrete work their reply causes.
+Keep it under 200 characters and name only the concrete work their reply
+causes: it is a receipt, not a report.
 
 If the written reply is off, Notifai prints the command without `--text`; run
 exactly that. The acknowledgement is never optional.
@@ -312,9 +300,6 @@ Lifecycle wiring has no scope: one install per harness for this machine;
 notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --json
 ```
 
-`init` never creates `.notifai/config.toml`; use it only for tracked shared
-overrides.
-
 Branch on `states`, `can_send`, and `question_routing_ready`.
 `direct_wake_ready` assesses the route, not consumption;
 optional when a held continuation or journal recovery owns the answer,
@@ -329,11 +314,6 @@ that document has the words.
 Never emulate User-owned actions, claim to approve hooks yourself, or claim an
 unlisted harness. Harness trust wording lives in the setup reference.
 
-When sign-in looks fine but nothing sends, `notifai auth status --json` and
-`notifai auth access --json` separate a pairing problem from an account without
-an active plan — report which one it is instead of calling it a delivery
-failure.
-
 On `no_active_devices`, run `notifai init --json`, close its gap, then repeat the
 exact original send with `--retry`. A verification Notification does not deliver
 the original Agent Event.
@@ -346,7 +326,7 @@ installing hooks or diagnosing routing, not before.
 
 ## Check what happened
 
-Warning-free ordinary sends are silent on success; use `--json` for a receipt.
+Ordinary sends are silent on success; `--json` gives a receipt.
 Check `status` before calling delivery unconfirmed. Provider Acceptance proves
 acceptance, a Companion Receipt proves receipt, neither proves the User read it.
 `unknown` is not failure.
@@ -355,28 +335,10 @@ acceptance, a Companion Receipt proves receipt, neither proves the User read it.
 notifai status <question_id|request_id> # state, promotion, and evidence
 ```
 
-When something did not happen and you cannot see why — most of all after `ask`,
-whose push happens later inside a hook the harness swallows — the local log is
-the only account:
-
-```bash
-notifai logs                     # recent record for this project
-notifai logs --level error       # only what failed
-notifai logs --request <id>      # everything about one notification
-notifai logs --since 10m --json  # JSONL on stdout, for parsing
-```
-
-An empty record can mean `log_level` is `off` — check it before concluding a
-hook never ran.
-
-`hook.gate` records carry a fixed `reason` — `notifications-off`,
-`claimed-elsewhere`, `no-question`, `no-session`, `answered`,
-`acknowledgement-required`, `acknowledgement-abandoned`, `harness-cannot-continue`,
-`continuation-repeat`,
-`continuation-limit`,
-`delivery-limit`, `proceeding` — so filter on that, never on the wording of a
-message. `notifications-off` is the one the user deliberately never sees, which
-is why it is worth ruling out before concluding anything is broken.
+When something did not happen and you cannot see why — most of all after
+`ask` — `notifai logs` is the only account: its `hook.gate` records carry a
+fixed reason. Read [Diagnosing what happened](references/diagnostics.md) for
+filters, the reasons, and sign-in versus plan problems.
 
 The log never leaves the machine, and it contains the user's own answers. Treat
 it like any other private file of theirs.
