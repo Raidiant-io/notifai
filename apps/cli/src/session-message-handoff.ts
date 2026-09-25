@@ -68,6 +68,7 @@ export async function handOffSessionMessages(
       await handOff.finish('not-written')
       switch (refusal.reason) {
         case 'awaiting_earlier_answer':
+        case 'attempt_pending':
         case 'unavailable':
           // Later messages keep their order behind this one.
           return 'retry-soon'

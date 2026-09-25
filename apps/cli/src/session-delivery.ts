@@ -351,9 +351,11 @@ async function recordUnclaimed(deps: SequencerDeps, entry: DeliveryJournalEntry)
       ...(refusal === null ? {} : { refused: refusal }),
       message: err instanceof Error ? err.message : String(err),
     })
-    // A refusal is final (another attempt governs, or the answer was never
-    // selected); a transport failure stays owed for a later recovery.
-    if (refusal === null) return false
+    // A transport failure, or another attempt still pending, stays owed: that
+    // attempt may yet report `released`, and then this write must be recorded.
+    // Every other refusal is final (another attempt settled the answer, this
+    // machine does not own the lease, or the answer was never selected).
+    if (refusal === null || refusal === 'attempt_pending') return false
     settled = { reported: 'released', refused: refusal }
   }
   const at = deps.wall()

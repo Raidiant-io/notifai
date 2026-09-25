@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3e5ce2e76759f90b861626c94d0e5f3f8934f0c4ad153cf1d58ac5edeb268d56",
+  "behavior_digest": "sha256:b006a6d916814567aecd448e47bcfa30d77fc4e172af0672c7a1b9f8d2450f39",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the skill, harness setup, CLI readiness and domain vocabulary after the second delivery fix pass. No guidance text changed. UserPromptSubmit no longer adds an accepted answer to a new turn when the delivery journal shows its write already began, so an answer reaches the agent once while its acknowledgement stays owed and is still enforced. The other changes are delivery mechanism only: the socket guard judges the claim deadline after the lease probe, unclaimed hand-offs are journaled before their after-the-fact record so a failed record is retried, and the journal sweep reads round-robin and recovers only journals that owe something. Non-exfiltration, guidance authority, worker non-ownership and the guidance budgets are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the skill, harness setup, CLI readiness and domain vocabulary after the third delivery fix. No guidance text or agent-visible behavior changed: an after-the-fact record of an unclaimed answer hand-off now stays owed while the service reports another attempt for that answer as pending (the new attempt_pending refusal reason) and is dropped only on final refusals. Non-exfiltration, guidance authority, worker non-ownership and the guidance budgets are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

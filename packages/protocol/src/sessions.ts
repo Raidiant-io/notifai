@@ -204,8 +204,9 @@ const AttemptSubject = Type.Union([
  * selected answer into the session without holding a claim (the lease moved or
  * a claim was refused, and an answer is never withheld). It is stored as an
  * attempt whose outcome is `handed_off`, so the answer's Answer Edits follow
- * it in order. It is refused while another attempt for that answer is pending
- * or reported anything but `released`.
+ * it in order. It is refused with `attempt_pending` while another attempt for
+ * that answer has no outcome yet (temporary), and with `not_claimable` once one
+ * reported anything but `released` (final).
  */
 export const ClaimDeliveryAttemptRequest = Type.Union([
   Type.Object(
@@ -258,6 +259,12 @@ export const DELIVERY_CLAIM_REFUSAL_REASONS = [
   'not_claimable',
   /** An Answer Edit waits for the fenced answer's attempt to report an outcome. */
   'awaiting_earlier_answer',
+  /**
+   * An after-the-fact record waits: another attempt for that answer has no
+   * outcome yet. Record again once it reports; a `released` report frees it.
+   * Every other refusal of an after-the-fact record is final.
+   */
+  'attempt_pending',
 ] as const
 export type DeliveryClaimRefusalReason = (typeof DELIVERY_CLAIM_REFUSAL_REASONS)[number]
 

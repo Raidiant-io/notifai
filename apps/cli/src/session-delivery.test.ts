@@ -515,6 +515,35 @@ describe('answers written without a claim', () => {
     expect(recorded).toHaveLength(1)
   })
 
+  it('keeps the record owed while another attempt is pending, and records it once that attempt is released', async () => {
+    const { env, deps } = setup()
+    let pendingElsewhere = true
+    const recorded: ClaimDeliveryAttemptRequestT[] = []
+    const client = {
+      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
+        if (pendingElsewhere) {
+          throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'attempt_pending' })
+        }
+        recorded.push(body)
+        return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+      },
+    } as unknown as ApiClient
+    await recordUnclaimedHandOffs({ ...deps, client }, ['req_pending_elsewhere'])
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ unclaimed: true })
+    expect(readDeliveryJournal(SESSION, env)[0]!.reported).toBeUndefined()
+    expect(readDeliveryJournal(SESSION, env)[0]!.refused).toBeUndefined()
+
+    // Still pending on the next recovery: still owed.
+    expect(await recoverDeliveryJournal({ ...deps, client })).toBe(0)
+    expect(readDeliveryJournal(SESSION, env)[0]!.reported).toBeUndefined()
+
+    // That attempt was released: the unclaimed write is recorded now.
+    pendingElsewhere = false
+    expect(await recoverDeliveryJournal({ ...deps, client })).toBe(1)
+    expect(recorded).toEqual([{ subject: { type: 'answer', request_id: 'req_pending_elsewhere' }, already_handed_off: true }])
+    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ reported: 'handed_off' })
+  })
+
   it('settles a refused record for good instead of retrying it', async () => {
     const { env, deps } = setup()
     let calls = 0
