@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.1.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.0.3...protocol-v8.1.0) (2026-09-25)
+
+
+### Features
+
+* **cli:** deliver session notes and answer edits ([#199](https://github.com/Raidiant-io/notifai/issues/199)) ([21aa89e](https://github.com/Raidiant-io/notifai/commit/21aa89e0ff2a3f4c91bbcdfda1930d90e83f94bc))
+
 ## [8.0.3](https://github.com/Raidiant-io/notifai/compare/protocol-v8.0.2...protocol-v8.0.3) (2026-09-23)
 
 ## [8.0.2](https://github.com/Raidiant-io/notifai/compare/protocol-v8.0.1...protocol-v8.0.2) (2026-09-23)
