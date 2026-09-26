@@ -300,8 +300,8 @@ function reportable(
 export async function recordUnclaimedHandOffs(
   deps: SequencerDeps,
   requestIds: readonly string[],
-): Promise<void> {
-  if (requestIds.length === 0) return
+): Promise<boolean> {
+  if (requestIds.length === 0) return true
   const entries: DeliveryJournalEntry[] = requestIds.map((requestId) => ({
     attempt_id: `unclaimed:${requestId}`,
     subject: { type: 'answer', request_id: requestId },
@@ -314,7 +314,9 @@ export async function recordUnclaimedHandOffs(
     ...current.filter((entry) => !entries.some((added) => added.attempt_id === entry.attempt_id)),
     ...entries,
   ])
-  for (const entry of entries) await recordUnclaimed(deps, entry)
+  let recorded = true
+  for (const entry of entries) recorded = (await recordUnclaimed(deps, entry)) && recorded
+  return recorded
 }
 
 async function recordUnclaimed(deps: SequencerDeps, entry: DeliveryJournalEntry): Promise<boolean> {
