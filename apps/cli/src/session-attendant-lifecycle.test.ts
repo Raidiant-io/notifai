@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AttendanceRequestT, AttendanceResponse } from '@raidiant/notifai-protocol'
@@ -24,7 +24,7 @@ import {
   refreshSessionMarkers,
   sessionHasEnded,
 } from './hook-session-state.js'
-import { installHookAdapter } from './hook-adapter.js'
+import { inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig } from './install-hooks.js'
 import { currentProcessIdentity, processExecutableName } from './process-identity.js'
 import { disableProject, enableProject, projectBinding } from './project-enablement.js'
@@ -905,6 +905,29 @@ describe('attendant gates', () => {
     const deps = gateDeps(root, env, installedCli(root, env, '11.3.0'))
     expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
     expect(attendantGates(deps, root, 's', 'claude-code', '11.3.0')).toEqual({ ok: true })
+  })
+
+  it('reads a symlinked installed CLI contract and fails closed when its real manifest is unavailable', () => {
+    const { env, root } = isolatedEnv()
+    enableProject(projectBinding(root, env)!, new Date())
+    installAttend(env)
+    const home = installedCli(root, env, '11.4.0')
+    const deps = gateDeps(root, env, home)
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: true })
+    const link = path.join(root, 'bin', 'notifai')
+    mkdirSync(path.dirname(link), { recursive: true })
+    symlinkSync(path.join(root, 'pkg', 'dist', 'main.js'), link)
+    installHookAdapter({ execPath: process.execPath, scriptPath: link }, home, 'darwin', env)
+    expect(inspectHookAdapter(home, 'darwin').target).toMatchObject({ scriptPath: link })
+    const manifest = path.join(root, 'pkg', 'package.json')
+
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: true })
+    writeFileSync(manifest, JSON.stringify({ name: '@raidiant/notifai', version: '11.3.0' }))
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
+    writeFileSync(manifest, '{invalid json')
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
+    rmSync(manifest)
+    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
   })
 
   it('fails closed when the installed contract cannot be established', () => {
