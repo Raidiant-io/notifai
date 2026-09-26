@@ -105,6 +105,7 @@ import { opencodePluginSource } from './opencode-plugin.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
 import { readSessionState, writeSessionState } from './hook-session-state.js'
+import { readDeliveryJournal } from './session-delivery.js'
 import {
   nativeSkills as realNativeSkills,
   type NativeSkill,
@@ -2100,6 +2101,105 @@ describe('command contracts', () => {
     expect(closes).toEqual([{ requestId: receipt.request_id, disposition: 'deliver' }])
     expect(io.outLines).toContain('reply from iPhone: no, wait')
     expect(io.errLines.join('\n')).toContain('is the answer that counts')
+  })
+
+  it('records a genuine foreground hand-off after the fenced answer reaches the exact Agent Session', async () => {
+    const io = new CapturedIo()
+    const sessionId = '0199aabb-1122-7333-8444-556677889900'
+    const calls: string[] = []
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        expect(body.draft.source?.session_id).toBe(sessionId)
+        return receipt
+      },
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => {
+        calls.push('closed')
+        return claimedReplyResponse([reply])
+      },
+      claimDeliveryAttempt: async (session: string, body: unknown) => {
+        expect(session).toBe(sessionId)
+        expect(body).toEqual({ subject: { type: 'answer', request_id: receipt.request_id }, already_handed_off: true })
+        expect(io.outLines.join('\n')).toContain('reply from iPhone')
+        calls.push('recorded')
+        return { attempt_id: 'att_foreground', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreground-answer-'))
+    deps.env = { ...isolatedEnv(root), CODEX_THREAD_ID: sessionId }
+    deps.cwd = root
+
+    expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10 })).toBe(EXIT.ok)
+    expect(calls).toEqual(['closed', 'recorded'])
+  })
+
+  it('does not record a foreground answer for a different Agent Session', async () => {
+    const io = new CapturedIo()
+    let claimed = false
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+      claimDeliveryAttempt: async () => { claimed = true },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreground-other-'))
+    deps.env = { ...isolatedEnv(root), CODEX_THREAD_ID: 'session_one' }
+    deps.cwd = root
+
+    expect(await sendCommand(deps, {
+      title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10, sessionId: 'session_other',
+    })).toBe(EXIT.ok)
+    expect(claimed).toBe(false)
+  })
+
+  it('keeps a printed answer recoverable when its hand-off report loses the network', async () => {
+    const io = new CapturedIo()
+    const sessionId = '0199aabb-1122-7333-8444-556677889900'
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+      claimDeliveryAttempt: async () => { throw new NetworkError('report response lost') },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreground-offline-'))
+    deps.env = { ...isolatedEnv(root), CODEX_THREAD_ID: sessionId }
+    deps.cwd = root
+
+    expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10 })).toBe(EXIT.network)
+    expect(io.outLines.join('\n')).toContain('reply from iPhone')
+    expect(io.errLines.join('\n')).toContain('pending journal recovery')
+    expect(readDeliveryJournal(sessionId, deps.env)).toMatchObject([
+      { attempt_id: `unclaimed:${receipt.request_id}`, stage: 'written', unclaimed: true },
+    ])
+    expect(readDeliveryJournal(sessionId, deps.env)[0]?.reported).toBeUndefined()
+  })
+
+  it('re-presents a previously selected answer and records the supported recovery hand-off', async () => {
+    const io = new CapturedIo()
+    const sessionId = '0199aabb-1122-7333-8444-556677889900'
+    let recorded = false
+    const client = {
+      closeReplies: async (_requestId: string, disposition: string) => {
+        expect(disposition).toBe('deliver')
+        return claimedReplyResponse([reply])
+      },
+      claimDeliveryAttempt: async (session: string) => {
+        expect(session).toBe(sessionId)
+        expect(io.outLines.join('\n')).toContain('reply from iPhone')
+        recorded = true
+        return { attempt_id: 'att_recovered', claim_remaining_ms: 0, outcome: 'handed_off' as const }
+      },
+    } as unknown as ApiClient
+    const deps = makeDeps(io, client)
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-foreground-recover-'))
+    deps.env = { ...isolatedEnv(root), CODEX_THREAD_ID: sessionId }
+    deps.cwd = root
+
+    expect(await repliesCommand(deps, receipt.request_id, { handoff: true })).toBe(EXIT.ok)
+    expect(recorded).toBe(true)
   })
 
   it('does not expose a polled answer when its delivery close cannot be confirmed', async () => {

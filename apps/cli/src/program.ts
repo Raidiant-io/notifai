@@ -520,8 +520,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--pending', 'use the pushed question pending for this Project and Agent Session')
     .option('--wait <seconds>', 'how long to wait for a reply', (v: string) => Number(v))
     .option('--after <seq>', 'return replies after this sequence number', (v: string) => Number(v))
+    .option('--handoff', 're-present the selected answer to this exact Agent Session and record its hand-off')
     .option('--json', 'machine-readable output')
-    .action(async (requestId: string | undefined, opts: { wait?: number; after?: number; json?: boolean; pending?: boolean }) => {
+    .action(async (requestId: string | undefined, opts: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean }) => {
       exit(await runners.replies(deps, requestId, opts))
     })
 

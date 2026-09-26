@@ -9,7 +9,7 @@ import {
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
-import { ApiCallError, NetworkError } from './client.js'
+import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
 import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
 import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
@@ -35,6 +35,8 @@ import {
 } from './commands-core.js'
 import { sourceContextHarnessSession } from './commands-harness-context.js'
 import { resolveCommandSession } from './command-session.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { readDeliveryJournal, recordUnclaimedHandOffs } from './session-delivery.js'
 import {
   beginSendAttempt,
   semanticMediaIds,
@@ -175,10 +177,11 @@ export async function sendCommand(
     env: deps.env,
     flags: { base_url: flags.baseUrl, wait_seconds: flags.wait } as FlagOverrides,
   })
+  const activeSession = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const source = resolveDraftInvocation(
     deps,
     flags,
-    sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)()),
+    activeSession,
   )
   if (!source.ok) {
     deps.io.err(source.error)
@@ -417,6 +420,13 @@ export async function sendCommand(
       printNoReply(deps, receipt.request_id, response.reply_expires_at)
       printAcknowledgementStatus(deps, response)
     }
+    if (
+      response.replies.length > 0 && !result.degraded &&
+      activeSession?.sessionId !== undefined && activeSession.sessionId === notifiedSession
+    ) {
+      const handoffExit = await reportForegroundAnswer(deps, authed.client, activeSession.sessionId, receipt.request_id)
+      if (handoffExit !== EXIT.ok) return handoffExit
+    }
     if (result.degraded) {
       log(deps).error('cli.error', {
         kind: 'network',
@@ -501,7 +511,7 @@ function emitSendWarnings(
 export async function repliesCommand(
   deps: CommandDeps,
   requestedId: string | undefined,
-  flags: { wait?: number; after?: number; json?: boolean; pending?: boolean },
+  flags: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean },
 ): Promise<number> {
   const waitSeconds = flags.wait ?? 0
   const afterSeq = flags.after ?? 0
@@ -517,6 +527,36 @@ export async function repliesCommand(
   if (flags.pending === true && requestedId !== undefined) {
     deps.io.err('Pass a request id or --pending, not both.')
     return EXIT.usage
+  }
+  if (flags.handoff === true) {
+    if (requestedId === undefined || flags.pending === true || waitSeconds !== 0 || afterSeq !== 0) {
+      deps.io.err('--handoff needs one request id without --pending, --wait, or --after.')
+      return EXIT.usage
+    }
+    const active = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
+    if (active?.sessionId === undefined) {
+      deps.io.err('--handoff needs an unambiguous exact Agent Session in this harness.')
+      return EXIT.usage
+    }
+    const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, sessionId: active.sessionId })
+    const authed = authedClient(deps, config)
+    if (!authed) return EXIT.auth
+    try {
+      const response = await authed.client.closeReplies(requestedId, 'deliver')
+      if (!selectedForClaimedDelivery(response)) {
+        deps.io.err(`No selected answer for ${requestedId} can be handed to this Agent Session.`)
+        return EXIT.failed
+      }
+      recordReplies(deps, requestedId, response.replies)
+      if (flags.json) deps.io.out(JSON.stringify(replyResultJson(response, false)))
+      else {
+        printReplies(deps, response.replies)
+        printAcknowledgementStatus(deps, response)
+      }
+      return await reportForegroundAnswer(deps, authed.client, active.sessionId, requestedId)
+    } catch (err) {
+      return reportError(deps, err, { operation: 'reply_handoff', request_id: requestedId })
+    }
   }
   let requestIds = requestedId === undefined ? [] : [requestedId]
   let lifecycleSessionId: string | undefined
@@ -640,6 +680,46 @@ export async function repliesCommand(
   } catch (err) {
     return reportError(deps, err)
   }
+}
+
+/** The stdout write is the foreground harness hand-off; report only afterwards. */
+async function reportForegroundAnswer(
+  deps: CommandDeps,
+  client: ApiClient,
+  sessionId: string,
+  requestId: string,
+): Promise<number> {
+  const writer = currentProcessIdentity()
+  if (writer === null) {
+    deps.io.err(`Answer printed for ${requestId}, but its hand-off could not be journaled for recovery.`)
+    return EXIT.failed
+  }
+  let recorded: boolean
+  try {
+    recorded = await recordUnclaimedHandOffs({
+      sessionId,
+      env: deps.env,
+      client,
+      monotonic: () => performance.now(),
+      wall: deps.now ?? Date.now,
+      sleep: deps.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+      writer,
+      log: log(deps),
+    }, [requestId])
+  } catch (err) {
+    deps.io.err(`Answer printed for ${requestId}, but its hand-off journal failed: ${String(err)}. Re-present it with \`notifai replies ${requestId} --handoff\` in this Agent Session.`)
+    return EXIT.failed
+  }
+  if (!recorded) {
+    const entry = readDeliveryJournal(sessionId, deps.env).find((candidate) =>
+      candidate.attempt_id === `unclaimed:${requestId}`,
+    )
+    deps.io.err(entry?.reported === 'released'
+      ? `Answer printed for ${requestId}, but the service refused its hand-off report (${entry.refused ?? 'unknown reason'}).`
+      : `Answer printed for ${requestId}; its hand-off report is pending journal recovery.`)
+    return entry?.reported === 'released' ? EXIT.failed : EXIT.network
+  }
+  return EXIT.ok
 }
 
 function recordDegradedReplyWaits(deps: CommandDeps, requestIds: readonly string[]): void {
