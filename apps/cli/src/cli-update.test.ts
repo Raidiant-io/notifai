@@ -172,7 +172,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     })
   })
 
-  it('never moves a beta installation back to an older stable release', () => {
+  it('refuses to move a beta installation back to an older stable release without an explicit channel', () => {
     const beta = `${next}.0.0-beta.2`
     const f = recoveryFixture(beta)
     f.setPlan({ ...release('3.0.1'), tags: { latest: '3.0.1', beta } })
@@ -192,6 +192,37 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     expect(f.npmCalls().at(-1)).toContain(`@raidiant/notifai@${stable}`)
     expect(f.installedVersion()).toBe(stable)
+  })
+
+  it('switches a newer global beta to the selected public release only when stable is explicit', () => {
+    const beta = RUNNING_BUILDS[1].version
+    const stable = RUNNING_BUILDS[0].version
+    const f = recoveryFixture(beta, RUNNING_BUILDS[1])
+    f.setPlan({ tags: undefined })
+    expect(cliUpdateCommand(f.deps, { channel: 'stable', json: true })).toBe(1)
+    expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
+      code: 'release_versions_unavailable',
+      recovery_command: 'npx --yes @raidiant/notifai@latest update --channel stable',
+    })
+    expect(f.npmCalls().some((args) => args[0] === 'install')).toBe(false)
+
+    f.setPlan({
+      version: stable,
+      tags: { latest: stable, beta },
+      script: `#!${process.execPath}\nif (process.argv[2] === '--version') process.stdout.write(${JSON.stringify(`${stable}\n`)}); else process.stdout.write(JSON.stringify({ ok: true, read_only: true, running_version: ${JSON.stringify(stable)} }));\n`,
+    })
+
+    expect(cliUpdateCommand(f.deps, { channel: 'stable', json: true })).toBe(0)
+    const report = JSON.parse(f.io.outLines.at(-1)!)
+    expect(report).toMatchObject({
+      ok: true,
+      update_prefix: realpathSync(f.installed.prefix),
+      target: { version: stable, dist_tag: 'latest' },
+      handoff: { ok: true, read_only: true, running_version: stable },
+    })
+    expect(f.npmCalls().at(-1)).toContain(`@raidiant/notifai@${stable}`)
+    expect(f.installedVersion()).toBe(stable)
+    expect(inspectHookAdapter(f.home).target).toMatchObject({ scriptPath: realpathSync(f.installed.artifact) })
   })
 
   it('refuses the beta channel when the installation is newer than every published release', () => {

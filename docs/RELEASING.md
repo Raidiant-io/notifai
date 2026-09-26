@@ -31,11 +31,13 @@ both dist-tags, resolves whichever of `beta` and `latest` has the higher SemVer
 precedence (so `X.Y.Z` supersedes `X.Y.Z-beta.N`), and installs that exact
 version into the effective global prefix. A beta installation is told about a
 newer beta and about the stable release that supersedes it, and its update
-recommendation is the beta-channel command. The updater never moves a beta
-installation backwards: a plain update from a beta newer than `latest` refuses
-before installing and names the beta-channel command. Previous beta versions
-remain individually installable by exact version even after the moving `beta`
-dist-tag advances.
+recommendation is the beta-channel command. A plain update from a beta newer
+than `latest` refuses before installing and names the beta-channel command.
+To switch that global installation back to the public release intentionally,
+run `notifai update --channel stable`; it installs the exact `latest` version
+and verifies the effective command and hook adapter before handing off.
+Previous beta versions remain individually installable by exact version even
+after the moving `beta` dist-tag advances.
 
 ## Beta CLI releases
 
