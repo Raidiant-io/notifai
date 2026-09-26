@@ -524,6 +524,14 @@ function replyResponse(
   }
 }
 
+function claimedReplyResponse(replies: ReplyView[] = []) {
+  return {
+    ...replyResponse(replies),
+    close_disposition: 'deliver' as const,
+    delivered_reply_seq: replies.at(-1)?.seq ?? null,
+  }
+}
+
 describe('command contracts', () => {
   it('durably enables a valid in-Project send before missing authentication stops it', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-explicit-enable-'))
@@ -1695,6 +1703,7 @@ describe('command contracts', () => {
         return receipt
       },
       replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
 
     expect(
@@ -1757,6 +1766,7 @@ describe('command contracts', () => {
     const client = {
       submit: async () => receipt,
       replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
 
     expect(
@@ -1820,6 +1830,7 @@ describe('command contracts', () => {
         now += options.waitSeconds * 1_000
         return replyResponse(polls.length === 3 ? [reply] : [])
       },
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-direct-reply-log-'))
     const deps = {
@@ -1875,6 +1886,7 @@ describe('command contracts', () => {
         if (replyCalls === 1) throw new NetworkError('temporary disconnect')
         return replyResponse([reply])
       },
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
     const deps = {
       ...makeDeps(io, client),
@@ -1917,6 +1929,7 @@ describe('command contracts', () => {
         }
         return replyResponse([reply])
       },
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
     const deps = {
       ...makeDeps(io, client),
@@ -2040,6 +2053,7 @@ describe('command contracts', () => {
     const client = {
       submit: async () => receipt,
       replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
 
     expect(
@@ -2064,6 +2078,67 @@ describe('command contracts', () => {
       acknowledgement_command: `notifai acknowledge ${receipt.request_id} --text <text>`,
       degraded: false,
     })
+  })
+
+  it('hands off the answer selected by the close fence, including a racing correction', async () => {
+    const io = new CapturedIo()
+    const corrected = { ...reply, reply_id: 'rpl_corrected', seq: 2, text: 'no, wait' }
+    const closes: Array<{ requestId: string; disposition: string }> = []
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async (requestId: string, disposition: string) => {
+        closes.push({ requestId, disposition })
+        expect(io.outLines.join('\n')).not.toContain('reply from')
+        return claimedReplyResponse([reply, corrected])
+      },
+    } as unknown as ApiClient
+
+    expect(await sendCommand(makeDeps(io, client), {
+      title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10,
+    })).toBe(EXIT.ok)
+    expect(closes).toEqual([{ requestId: receipt.request_id, disposition: 'deliver' }])
+    expect(io.outLines).toContain('reply from iPhone: no, wait')
+    expect(io.errLines.join('\n')).toContain('is the answer that counts')
+  })
+
+  it('does not expose a polled answer when its delivery close cannot be confirmed', async () => {
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => {
+        throw new NetworkError('close response lost')
+      },
+    } as unknown as ApiClient
+
+    expect(await sendCommand(makeDeps(io, client), {
+      title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10, json: true,
+    })).toBe(EXIT.network)
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0] ?? '{}')).toMatchObject({
+      request_id: receipt.request_id,
+      replies: [],
+      degraded: true,
+    })
+    expect(io.errLines.join('\n')).toContain('Could not confirm the answer handoff')
+  })
+
+  it('does not hand off a polled answer when another close won the fence', async () => {
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => ({
+        ...replyResponse([reply]), close_disposition: 'retire', delivered_reply_seq: null,
+      }),
+    } as unknown as ApiClient
+
+    expect(await sendCommand(makeDeps(io, client), {
+      title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10,
+    })).toBe(EXIT.failed)
+    expect(io.outLines.join('\n')).not.toContain('reply from')
+    expect(io.errLines.join('\n')).toContain('closed elsewhere')
   })
 
   it('still prints the one reply_result object when the wait itself faults', async () => {
@@ -10316,6 +10391,7 @@ describe('question sets', () => {
         return receipt
       },
       replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
 
     expect(
@@ -10344,6 +10420,7 @@ describe('question sets', () => {
         return receipt
       },
       replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
     } as unknown as ApiClient
 
     const body = `Which environment?\n\n${'Long Markdown context. '.repeat(30)}`

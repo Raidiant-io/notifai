@@ -13,6 +13,7 @@ import { ApiCallError, NetworkError } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
 import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
 import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
+import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
@@ -370,17 +371,51 @@ export async function sendCommand(
       now: deps.now,
       sleep: deps.sleep,
     })
-    recordReplies(deps, receipt.request_id, result.response.replies)
+    let response = result.response
+    if (response.replies.length > 0 && !result.degraded) {
+      // The poll only says an answer exists. Close under the server's reply
+      // fence before exposing an answer to the agent, so a correction racing
+      // the close becomes the answer we actually hand off and can edit later.
+      try {
+        response = await authed.client.closeReplies(receipt.request_id, 'deliver')
+      } catch (err) {
+        const exit = reportError(deps, err, {
+          operation: 'reply_delivery_close',
+          request_id: receipt.request_id,
+        })
+        deps.io.err(
+          `Could not confirm the answer handoff for ${receipt.request_id}. ` +
+            'No answer was returned; inspect the request before acting on it.',
+        )
+        if (flags.json) deps.io.out(JSON.stringify(unansweredReplyResultJson(receipt, true)))
+        return exit
+      }
+      if (!selectedForClaimedDelivery(response)) {
+        log(deps).error('cli.error', {
+          kind: 'reply_delivery_unconfirmed',
+          operation: 'reply_delivery_close',
+          request_id: receipt.request_id,
+          close_disposition: 'close_disposition' in response ? response.close_disposition : null,
+        })
+        deps.io.err(
+          `Could not confirm the answer handoff for ${receipt.request_id}. ` +
+            'The question may have been closed elsewhere; no answer was returned.',
+        )
+        if (flags.json) deps.io.out(JSON.stringify(unansweredReplyResultJson(receipt, true)))
+        return EXIT.failed
+      }
+    }
+    recordReplies(deps, receipt.request_id, response.replies)
     if (flags.json) {
       deps.io.out(
-        JSON.stringify(replyResultJson(result.response, result.degraded, receipt)),
+        JSON.stringify(replyResultJson(response, result.degraded, receipt)),
       )
-    } else if (result.response.replies.length > 0) {
-      printReplies(deps, result.response.replies)
-      printAcknowledgementStatus(deps, result.response)
+    } else if (response.replies.length > 0) {
+      printReplies(deps, response.replies)
+      printAcknowledgementStatus(deps, response)
     } else {
-      printNoReply(deps, receipt.request_id, result.response.reply_expires_at)
-      printAcknowledgementStatus(deps, result.response)
+      printNoReply(deps, receipt.request_id, response.reply_expires_at)
+      printAcknowledgementStatus(deps, response)
     }
     if (result.degraded) {
       log(deps).error('cli.error', {

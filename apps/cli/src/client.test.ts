@@ -160,6 +160,28 @@ describe('a server that never answers', () => {
     await expect(createClient(baseUrl, null).health()).resolves.toBe(true)
   })
 
+  it('sends a delivery close over the reply endpoint and reads the fenced selection', async () => {
+    const seen: { method?: string; url?: string; body?: unknown }[] = []
+    const baseUrl = await serving((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => { raw += String(chunk) })
+      request.on('end', () => {
+        seen.push({ method: request.method, url: request.url, body: JSON.parse(raw) as unknown })
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({
+          request_id: 'req_1', reply_expires_at: '2026-09-26T11:00:00.000Z',
+          agent_acknowledgement_required: true, agent_acknowledgement_text_required: true,
+          agent_acknowledgement: null, replies: [{ seq: 2 }],
+          close_disposition: 'deliver', delivered_reply_seq: 2,
+        }))
+      })
+    })
+
+    const response = await createClient(baseUrl, 'Bearer test').closeReplies('req_1', 'deliver')
+    expect(seen).toEqual([{ method: 'POST', url: '/api/v1/notifications/req_1/replies/close', body: { disposition: 'deliver' } }])
+    expect(response).toMatchObject({ close_disposition: 'deliver', delivered_reply_seq: 2 })
+  })
+
   it('puts and fetches Agent Acknowledgements on the encoded request path', async () => {
     const seen: { method?: string; url?: string; body?: unknown }[] = []
     const baseUrl = await serving((request, response) => {
