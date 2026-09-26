@@ -535,11 +535,12 @@ function terminationSignal(): { promise: Promise<void>; dispose(): void } {
  *
  * On Codex the attendant cannot: Codex SIGKILLs every unfinished async hook's
  * process group the moment SessionEnd returns, before the attendant's next
- * probe could see the end marker. SessionEnd therefore ends the lease the live
- * attendant holds, with that lease's own incarnation and generation, so the
- * service fences it exactly as the attendant's own report would. Without a
- * held lease there is nothing to end; a failed report leaves the lease to
- * lapse, and presence reads out of reach.
+ * probe could see the end marker, and may kill it before SessionEnd starts.
+ * SessionEnd therefore ends the saved lease of the current incarnation, even
+ * without a living attendant. Its exact incarnation and generation let the
+ * service fence it as it would the attendant's own report. Without saved
+ * fencing identity there is nothing safe to end; a failed report leaves the
+ * lease to lapse, and presence reads out of reach.
  */
 export async function reportCodexSessionEnded(
   deps: CommandDeps,
