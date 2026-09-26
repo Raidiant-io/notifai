@@ -26,6 +26,7 @@ import {
 } from './hook-session-state.js'
 import { inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig } from './install-hooks.js'
+import { nullLogger } from './logging.js'
 import { currentProcessIdentity, processExecutableName } from './process-identity.js'
 import { disableProject, enableProject, projectBinding } from './project-enablement.js'
 import type { AttendantResult } from './session-attendant.js'
@@ -850,6 +851,51 @@ describe('notifai hook attend for Codex', () => {
     calls.length = 0
     expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'claude-code')).toBe(0)
     expect(calls).toEqual([])
+  })
+
+  it('Codex SessionEnd still reports its lease when the attendant exits during local cleanup', async () => {
+    const { env, root } = codexEnv()
+    const calls: AttendanceRequestT[] = []
+    const client = {
+      attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+        calls.push(body)
+        return { status: 'withdrawn' }
+      },
+    } as unknown as ApiClient
+    const claim = attendantClaimPath(THREAD, env)
+    mkdirSync(path.dirname(claim), { recursive: true })
+    expect(acquireClaimFile(claim, { incarnation: 'inc_race' }, Date.now())).not.toBeNull()
+    writeAttendantStatus(THREAD, env, {
+      phase: 'attending',
+      incarnation: 'inc_race',
+      generation: 4,
+      activity: 'idle',
+      reason: null,
+      accepts_messages: true,
+      updated_at: Date.now(),
+    })
+    const logger = {
+      ...nullLogger(),
+      info: (event: string): void => {
+        if (event !== 'hook.end') return
+        expect(sessionHasEnded(THREAD, env)).toBe(true)
+        writeAttendantStatus(THREAD, env, {
+          phase: 'exited',
+          incarnation: 'inc_race',
+          generation: 4,
+          activity: 'idle',
+          reason: 'session-end-hook',
+          accepts_messages: false,
+          updated_at: Date.now(),
+        })
+        rmSync(claim, { force: true })
+      },
+    }
+    const deps = attendDeps(env, root, { clientFactory: () => client, logger })
+    const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionEnd' }
+
+    expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'codex')).toBe(0)
+    expect(calls).toEqual([{ incarnation: 'inc_race', generation: 4, state: 'ended' }])
   })
 })
 

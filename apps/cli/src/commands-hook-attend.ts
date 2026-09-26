@@ -50,7 +50,6 @@ import {
 import {
   attendantClaimPath,
   attendantStatusPath,
-  readAttendantHeldLease,
   readTurnActivity,
   recordTurnEnd,
   recordTurnStart,
@@ -60,7 +59,7 @@ import {
 import { CLI_PACKAGE_NAME } from './cli-contract.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters, type ClaudeWakeAdapters } from './claude-wake.js'
 import { currentProcessIdentity } from './process-identity.js'
-import type { SequencerDeps } from './session-delivery.js'
+import type { DeliveryLease, SequencerDeps } from './session-delivery.js'
 import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
 import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThread } from './session-handoff.js'
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
@@ -545,8 +544,8 @@ function terminationSignal(): { promise: Promise<void>; dispose(): void } {
 export async function reportCodexSessionEnded(
   deps: CommandDeps,
   sessionId: string,
+  lease: DeliveryLease | null,
 ): Promise<'no-lease' | 'not-paired' | 'reported' | 'failed'> {
-  const lease = readAttendantHeldLease(sessionId, deps.env)
   if (lease === null) return 'no-lease'
   const credential = deps.store.load()
   if (!credential) return 'not-paired'
