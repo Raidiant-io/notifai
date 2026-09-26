@@ -7,7 +7,7 @@
  * never delays: the harness does not wait for an async handler), and on
  * UserPromptSubmit and Stop to re-arm a session whose attendant died.
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
@@ -480,7 +480,7 @@ function installedCliVersion(target: HookAdapterTarget | null): string | null {
     return target.spec.startsWith(prefix) ? target.spec.slice(prefix.length) : null
   }
   try {
-    const manifest = path.join(path.dirname(target.scriptPath), '..', 'package.json')
+    const manifest = path.join(path.dirname(realpathSync(target.scriptPath)), '..', 'package.json')
     const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { version?: unknown }
     return typeof parsed.version === 'string' ? parsed.version : null
   } catch {
