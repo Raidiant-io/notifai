@@ -96,6 +96,7 @@ export async function handOffSessionMessages(
           message_id: message.message_id,
           recorded_at: sequencer.wall(),
           text_required: message.agent_acknowledgement_text_required,
+          ...(writer === 'subprocess' ? { queued_context: sessionMessageContext(message) } : {}),
         })
         owed = true
         if (handOff.begin(undefined, { subprocess: writer === 'subprocess' })) return true

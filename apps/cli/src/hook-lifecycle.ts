@@ -22,6 +22,8 @@ import {
   finishCommittedDelivery,
   holdForAcknowledgement,
   owedAcknowledgements,
+  observeQueuedMessagePrompt,
+  presentedMessageAcknowledgements,
   reconcileAcknowledgementObligations,
   recoverQueuedAnswers,
   resetAcknowledgementBlocks,
@@ -612,6 +614,12 @@ export async function handleUserPromptSubmit(
 ): Promise<HookOutcome> {
   const sessionId = envelope.session_id
   if (!sessionId) return { notes: [] }
+  if (ctx.harness === 'codex') {
+    const presented = observeQueuedMessagePrompt(sessionId, ctx.env, envelope.prompt)
+    if (presented.length > 0) ctx.log?.info('delivery.handoff', {
+      route: 'session-queue', stage: 'prompt-observed', message_ids: presented,
+    })
+  }
   // Owed Session Message acknowledgements come before any resumed work: a
   // session resumed after SessionEnd has no Stop to remind it first.
   const reminder: PromptReminder = { text: await messageAcknowledgementReminder(ctx, sessionId), used: false }
@@ -647,7 +655,7 @@ function withReminder(reminder: PromptReminder, context: string): string {
  * the service, or null when none is.
  */
 async function messageAcknowledgementReminder(ctx: HookContext, sessionId: string): Promise<string | null> {
-  const owed = readSessionState(sessionId, ctx.env).message_acknowledgement_due ?? []
+  const owed = presentedMessageAcknowledgements(readSessionState(sessionId, ctx.env))
   if (owed.length === 0) return null
   const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
   return still.length === 0 ? null : acknowledgementBlockContext(still)

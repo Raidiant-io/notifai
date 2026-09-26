@@ -34,9 +34,34 @@ export function owedAcknowledgementId(owed: OwedAcknowledgement): string {
   return 'message_id' in owed ? owed.message_id : owed.request_id
 }
 
-/** Every acknowledgement this session still owes, request debt first. */
+/** Presented messages only: queued Codex input cannot hold its preceding turn. */
+export function presentedMessageAcknowledgements(state: SessionState): MessageAcknowledgementDue[] {
+  return (state.message_acknowledgement_due ?? []).filter((entry) => entry.queued_context === undefined)
+}
+
+/** Every presented acknowledgement this session still owes, request debt first. */
 export function owedAcknowledgements(state: SessionState): OwedAcknowledgement[] {
-  return [...(state.acknowledgement_due ?? []), ...(state.message_acknowledgement_due ?? [])]
+  return [...(state.acknowledgement_due ?? []), ...presentedMessageAcknowledgements(state)]
+}
+
+/** Exact queued text entering the owning Codex turn proves presentation, not action. */
+export function observeQueuedMessagePrompt(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined): string[] {
+  if (prompt === undefined) return []
+  const presentedIds: string[] = []
+  updateSessionState(sessionId, env, (current) => {
+    if (!(current.message_acknowledgement_due ?? []).some((entry) => entry.queued_context === prompt)) return current
+    return {
+      ...current,
+      message_acknowledgement_due: current.message_acknowledgement_due!.map((entry) => {
+        if (entry.queued_context !== prompt) return entry
+        presentedIds.push(entry.message_id)
+        const presented = { ...entry }
+        delete presented.queued_context
+        return presented
+      }),
+    }
+  })
+  return presentedIds
 }
 
 /**
