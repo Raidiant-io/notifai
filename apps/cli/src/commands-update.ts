@@ -97,9 +97,20 @@ interface UpdateFailure {
   target?: CliReleaseTarget
 }
 
+interface UpdateFlags extends CliUpdateFlags {
+  channel: CliUpdateChannel
+  explicitStableSwitch: boolean
+}
+
+function updateRetryCommand(flags: UpdateFlags): string {
+  return flags.explicitStableSwitch
+    ? `npx --yes ${cliPackageSpec('latest')} update --channel stable`
+    : cliUpdateRecoveryCommand(flags.channel)
+}
+
 function failed(
   deps: CommandDeps,
-  flags: CliUpdateFlags & { channel: CliUpdateChannel },
+  flags: UpdateFlags,
   failure: UpdateFailure | string,
   before: CliInstallationInspection,
   packageManagerPrefix: string | null,
@@ -112,7 +123,7 @@ function failed(
       ? 'The npm global command directory is not on PATH. Add the bin directory for the reported package-manager prefix to PATH (the prefix itself on Windows), then inspect the installation with the diagnostic below before retrying the update.'
       : null)
   const recoveryCommand = explicitRecovery ?? (recoveryMessage === null
-    ? cliUpdateRecoveryCommand(flags.channel)
+    ? updateRetryCommand(flags)
     : `npx --yes ${cliPackageSpec(flags.channel === 'beta' ? 'beta' : 'latest')} doctor --json`)
   if (flags.json === true) {
     deps.io.out(JSON.stringify({
@@ -148,13 +159,20 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
   // otherwise each child would diagnose the temporary npx runner as installed.
   deps = { ...deps, env: withoutNpxLauncherPath(deps.env, deps.hookPlatform ?? process.platform,
     runningArtifact(deps) ?? 'notifai') }
-  const flags = { ...requested, channel, json: requested.json === true || deps.io.interactive !== true }
   const before = inspection(deps)
 
   // A beta channel, or a beta installation, installs one exact resolved
-  // release, and never one that would move the installation backwards. A
-  // stable installation updating on the stable channel keeps plain `latest`.
+  // release. Only an explicit stable selection may move a beta installation
+  // backwards; plain update still protects it. A stable installation updating
+  // on the stable channel keeps plain `latest`.
   const installed = before.effective?.version ?? before.current.version
+  const explicitlySwitchingToStable = requested.channel === 'stable' && cliUpdateChannel(installed) === 'beta'
+  const flags: UpdateFlags = {
+    ...requested,
+    channel,
+    json: requested.json === true || deps.io.interactive !== true,
+    explicitStableSwitch: explicitlySwitchingToStable,
+  }
   let target: CliReleaseTarget | null = null
   if (channel === 'beta' || cliUpdateChannel(installed) === 'beta') {
     const tags = publishedDistTags(deps)
@@ -162,11 +180,12 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
       return failed(deps, flags, {
         code: 'release_versions_unavailable',
         message: 'Notifai could not read the published release versions, so nothing was installed. Check the connection to the npm registry, then retry with:',
-        recoveryCommand: cliUpdateRecoveryCommand(channel),
+        recoveryCommand: updateRetryCommand(flags),
       }, before, null)
     }
     target = cliReleaseTarget(tags, channel)
-    if (installed !== null && compareReleasePrecedence(target.version, installed) === 'before') {
+    if (installed !== null && compareReleasePrecedence(target.version, installed) === 'before' &&
+        !explicitlySwitchingToStable) {
       const betaTarget = cliReleaseTarget(tags, 'beta')
       const betaMovesForward = channel === 'stable' &&
         compareReleasePrecedence(betaTarget.version, installed) !== 'before'
@@ -232,7 +251,9 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
   if (currentComparison === 'unparseable') {
     return failed(deps, flags, 'effective_command_version_unknown', before, packageManagerPrefix)
   }
-  if (currentComparison === 'before') {
+  // The exact-target check above already proved an intentional switch landed
+  // on the selected public release, even when this running beta is newer.
+  if (currentComparison === 'before' && !explicitlySwitchingToStable) {
     return failed(deps, flags, 'effective_command_still_older', before, packageManagerPrefix)
   }
 

@@ -274,7 +274,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable installation and session handoff')
     .option('--check', 'inspect release notes, guidance, and session effects without installing')
     .option('--refresh-skill', 'refresh the existing skill scope without login, hooks, or delivery setup')
-    .option('--channel <channel>', 'install from the stable or beta npm channel (default: stable)')
+    .option('--channel <channel>', 'choose stable or beta; explicit stable can switch from a newer beta (default: stable)')
     .option('--from <version>', 'show installed changelog entries after this version (requires --check)')
     .action(async (opts: { json?: boolean; check?: boolean; from?: string; refreshSkill?: boolean; channel?: string }) => {
       if (opts.channel !== undefined && opts.channel !== 'stable' && opts.channel !== 'beta') {
