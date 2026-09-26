@@ -38,7 +38,9 @@ import {
 } from './session-attendant-probe.js'
 import {
   attendantClaimPath,
+  attendantStatusPath,
   listAttendantReports,
+  readAttendantLease,
   readTurnActivity,
   recordTurnEnd,
   recordTurnStart,
@@ -830,13 +832,14 @@ describe('notifai hook attend for Codex', () => {
     expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'codex')).toBe(0)
     expect(calls).toEqual([])
 
-    // A live attendant (this process) holds generation 3 of incarnation inc_1.
+    // A live attendant (this process) holds generation 3 of this incarnation.
+    const current = beginSessionIncarnation(THREAD, env, { stamp: lifecycleStamp(Date.now() + 1), harnessProcess: HARNESS })
     const claim = attendantClaimPath(THREAD, env)
     mkdirSync(path.dirname(claim), { recursive: true })
-    expect(acquireClaimFile(claim, { incarnation: 'inc_1' }, Date.now())).not.toBeNull()
+    expect(acquireClaimFile(claim, { incarnation: current.incarnation }, Date.now())).not.toBeNull()
     writeAttendantStatus(THREAD, env, {
       phase: 'attending',
-      incarnation: 'inc_1',
+      incarnation: current.incarnation,
       generation: 3,
       activity: 'idle',
       reason: null,
@@ -844,13 +847,116 @@ describe('notifai hook attend for Codex', () => {
       updated_at: Date.now(),
     })
     expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'codex')).toBe(0)
-    expect(calls).toEqual([{ incarnation: 'inc_1', generation: 3, state: 'ended' }])
+    expect(calls).toEqual([{ incarnation: current.incarnation, generation: 3, state: 'ended' }])
     expect(sessionHasEnded(THREAD, env)).toBe(true)
 
     // Claude Code's attendant survives SessionEnd and reports for itself.
     calls.length = 0
     expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'claude-code')).toBe(0)
     expect(calls).toEqual([])
+  })
+
+  it.each(['missing-claim', 'dead-claim', 'exited'] as const)(
+    'Codex SessionEnd reports the saved generation when the attendant is %s before hook entry',
+    async (failure) => {
+      const { env, root } = codexEnv()
+      const current = beginSessionIncarnation(THREAD, env, { stamp: lifecycleStamp(Date.now()), harnessProcess: HARNESS })
+      const calls: AttendanceRequestT[] = []
+      const client = {
+        attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+          calls.push(body)
+          return { status: 'withdrawn' }
+        },
+      } as unknown as ApiClient
+      const claim = attendantClaimPath(THREAD, env)
+      mkdirSync(path.dirname(claim), { recursive: true })
+      if (failure === 'dead-claim') {
+        expect(acquireClaimFile(claim, { incarnation: current.incarnation }, Date.now())).not.toBeNull()
+        const dead = { ...JSON.parse(readFileSync(claim, 'utf8')), pid: 1_073_741_824 }
+        writeFileSync(claim, JSON.stringify(dead))
+      }
+      writeAttendantStatus(THREAD, env, {
+        phase: failure === 'exited' ? 'exited' : 'attending',
+        incarnation: current.incarnation,
+        generation: 5,
+        activity: 'idle',
+        reason: failure === 'exited' ? 'signal' : null,
+        accepts_messages: failure !== 'exited',
+        updated_at: Date.now(),
+      })
+      if (failure === 'dead-claim') {
+        const file = attendantStatusPath(THREAD, env)
+        const status = JSON.parse(readFileSync(file, 'utf8'))
+        writeFileSync(file, JSON.stringify({ ...status, pid: 1_073_741_824 }))
+      }
+      // Dead attendants must remain unusable for message delivery.
+      expect(readAttendantLease(THREAD, env)).toBeNull()
+      const deps = attendDeps(env, root, { clientFactory: () => client })
+      const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionEnd' }
+      expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'codex')).toBe(0)
+      expect(calls).toEqual([{ incarnation: current.incarnation, generation: 5, state: 'ended' }])
+      expect(sessionHasEnded(THREAD, env)).toBe(true)
+    },
+  )
+
+  it.each([
+    { generation: null },
+    { generation: 0 },
+    { generation: 1.5 },
+    { generation: Number.MAX_SAFE_INTEGER + 1 },
+    { incarnation: 'inc_an_earlier_start' },
+    { session_id: 'another-session' },
+  ])('Codex SessionEnd rejects unusable or foreign saved fencing identity: %j', async (override) => {
+    const { env, root } = codexEnv()
+    const current = beginSessionIncarnation(THREAD, env, { stamp: lifecycleStamp(Date.now()), harnessProcess: HARNESS })
+    const calls: AttendanceRequestT[] = []
+    const client = {
+      attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+        calls.push(body)
+        return { status: 'withdrawn' }
+      },
+    } as unknown as ApiClient
+    writeAttendantStatus(THREAD, env, {
+      phase: 'attending', incarnation: current.incarnation, generation: 5,
+      activity: 'idle', reason: null, accepts_messages: true, updated_at: Date.now(),
+    })
+    const file = attendantStatusPath(THREAD, env)
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ...override }))
+    const deps = attendDeps(env, root, { clientFactory: () => client })
+    expect(await hookRunCommand(deps, 'session-end', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionEnd' }), 'codex')).toBe(0)
+    expect(calls).toEqual([])
+  })
+
+  it('Codex SessionEnd keeps the captured generation when a replacement acquires during cleanup', async () => {
+    const { env, root } = codexEnv()
+    const current = beginSessionIncarnation(THREAD, env, { stamp: lifecycleStamp(Date.now()), harnessProcess: HARNESS })
+    const status = {
+      phase: 'attending' as const, incarnation: current.incarnation, generation: 5,
+      activity: 'idle' as const, reason: null, accepts_messages: true, updated_at: Date.now(),
+    }
+    writeAttendantStatus(THREAD, env, status)
+    const calls: AttendanceRequestT[] = []
+    const client = {
+      attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+        calls.push(body)
+        return { status: 'withdrawn' }
+      },
+    } as unknown as ApiClient
+    const logger = {
+      ...nullLogger(),
+      info: (event: string): void => {
+        if (event !== 'hook.end') return
+        const replacement = beginSessionIncarnation(THREAD, env, {
+          stamp: lifecycleStamp(Date.now() + 1), harnessProcess: HARNESS,
+        })
+        expect(replacement.incarnation).not.toBe(current.incarnation)
+        writeAttendantStatus(THREAD, env, { ...status, incarnation: replacement.incarnation, generation: 6 })
+      },
+    }
+    const deps = attendDeps(env, root, { clientFactory: () => client, logger })
+    expect(await hookRunCommand(deps, 'session-end', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionEnd' }), 'codex')).toBe(0)
+    // The service can fence this old report; it never names the replacement.
+    expect(calls).toEqual([{ incarnation: current.incarnation, generation: 5, state: 'ended' }])
   })
 
   it('Codex SessionEnd still reports its lease when the attendant exits during local cleanup', async () => {
@@ -862,12 +968,13 @@ describe('notifai hook attend for Codex', () => {
         return { status: 'withdrawn' }
       },
     } as unknown as ApiClient
+    const current = beginSessionIncarnation(THREAD, env, { stamp: lifecycleStamp(Date.now()), harnessProcess: HARNESS })
     const claim = attendantClaimPath(THREAD, env)
     mkdirSync(path.dirname(claim), { recursive: true })
-    expect(acquireClaimFile(claim, { incarnation: 'inc_race' }, Date.now())).not.toBeNull()
+    expect(acquireClaimFile(claim, { incarnation: current.incarnation }, Date.now())).not.toBeNull()
     writeAttendantStatus(THREAD, env, {
       phase: 'attending',
-      incarnation: 'inc_race',
+      incarnation: current.incarnation,
       generation: 4,
       activity: 'idle',
       reason: null,
@@ -881,7 +988,7 @@ describe('notifai hook attend for Codex', () => {
         expect(sessionHasEnded(THREAD, env)).toBe(true)
         writeAttendantStatus(THREAD, env, {
           phase: 'exited',
-          incarnation: 'inc_race',
+          incarnation: current.incarnation,
           generation: 4,
           activity: 'idle',
           reason: 'session-end-hook',
@@ -895,7 +1002,7 @@ describe('notifai hook attend for Codex', () => {
     const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionEnd' }
 
     expect(await hookRunCommand(deps, 'session-end', stdin(envelope), 'codex')).toBe(0)
-    expect(calls).toEqual([{ incarnation: 'inc_race', generation: 4, state: 'ended' }])
+    expect(calls).toEqual([{ incarnation: current.incarnation, generation: 4, state: 'ended' }])
   })
 })
 

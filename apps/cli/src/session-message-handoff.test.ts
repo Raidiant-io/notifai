@@ -9,7 +9,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
 import { readSessionState } from './hook-session-state.js'
-import { answersContext } from './hook-acknowledgements.js'
+import { answersContext, observeQueuedMessagePrompt, owedAcknowledgements } from './hook-acknowledgements.js'
 import type { AnsweredPending } from './hook-types.js'
 import { TRANSPORT_LIMIT, quoted, sessionMessageContext } from './injection-render.js'
 import type { ProcessIdentity } from './process-identity.js'
@@ -120,6 +120,34 @@ function setup() {
 }
 
 describe('Session Message hand-off', () => {
+  it('keeps a queued Codex Edit out of acknowledgement reminders until its complete context enters the turn', async () => {
+    const h = setup()
+    const message = edit('sm_green', 'req_color', 'Green')
+    const queued: string[] = []
+    await handOffSessionMessages([message], h.attendant.handle(), {
+      ...h.deps,
+      write: (text, begin, guard, writerGroup) => deliverIntoCodexThread({
+        threadId: '019ff69d-a07f-7161-ab6e-bd06b3b93c8e', cwd: '/tmp', env: h.env,
+        adapters: { queue: async (_thread, _cwd, context, onSpawn) => {
+          onSpawn?.(4_321)
+          queued.push(context)
+          expect(readSessionState(SESSION, h.env).message_acknowledgement_due?.[0]?.queued_context).toBe(context)
+        } },
+        text, begin: () => begin('subprocess'), guard, onSpawn: writerGroup,
+      }),
+    })
+    expect(queued).toEqual([sessionMessageContext(message)])
+    expect(h.reports).toEqual([{ attemptId: 'att_1', outcome: 'handed_off' }])
+    expect(readDeliveryJournal(SESSION, h.env)).toMatchObject([{ stage: 'written', subprocess: true }])
+    expect(owedAcknowledgements(readSessionState(SESSION, h.env))).toEqual([])
+    observeQueuedMessagePrompt(SESSION, h.env, 'sm_green')
+    expect(owedAcknowledgements(readSessionState(SESSION, h.env))).toEqual([])
+    observeQueuedMessagePrompt(SESSION, h.env, queued[0])
+    expect(owedAcknowledgements(readSessionState(SESSION, h.env))).toEqual([
+      { message_id: 'sm_green', recorded_at: expect.any(Number), text_required: false },
+    ])
+  })
+
   it('claims each note, records its acknowledgement debt before the write, writes it, and reports it', async () => {
     const h = setup()
     const result = await handOffSessionMessages([note('sm_note', 'Use the staging database')], h.attendant.handle(), h.deps)

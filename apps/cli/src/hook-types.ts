@@ -153,6 +153,12 @@ export interface MessageAcknowledgementDue {
   recorded_at: number
   /** The account's snapshot taken when the Session Message was accepted. */
   text_required: boolean
+  /**
+   * Codex queue acceptance is storage, not presentation. Until this exact
+   * context appears in UserPromptSubmit, Stop must let the working turn end
+   * so Codex can start the queued turn. Never solicit an ID-only receipt.
+   */
+  queued_context?: string
 }
 
 /** Either kind of owed acknowledgement; exists only in memory. */

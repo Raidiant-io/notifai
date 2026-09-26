@@ -68,7 +68,7 @@ import { acquireClaimFile, claimQuestionPush, releaseQuestionPush } from './hook
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { deliveryJournalPath, readDeliveryJournal } from './session-delivery.js'
 import { owedAcknowledgements, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
-import { TRANSPORT_LIMIT } from './injection-render.js'
+import { TRANSPORT_LIMIT, sessionMessageContext } from './injection-render.js'
 import {
   drainRetirements,
   drainOrphanRetirements,
@@ -7118,6 +7118,52 @@ describe('a question reaching the end of its answer window', () => {
 })
 
 describe('Session Message acknowledgement debt', () => {
+  it('lets a working Codex turn become idle before demanding acknowledgement of its queued Edit', async () => {
+    const h = harness([])
+    const acknowledged = new Set<string>()
+    const checks = withMessageAcknowledgements(h, acknowledged)
+    const context = sessionMessageContext({
+      message_id: 'sm_green', kind: 'answer_edit', request_id: 'req_color',
+      created_at: new Date(NOW).toISOString(), agent_acknowledgement_text_required: true,
+      answers: [{ question_id: 'q_color', choice_ids: ['green'], text: null }], text: 'Green',
+    })
+    writeSessionState('working-edit', h.env, {
+      message_acknowledgement_due: [{
+        message_id: 'sm_green', recorded_at: NOW, text_required: true, queued_context: context,
+      }],
+    })
+
+    // codex queue exits successfully while the old turn is still working.
+    // Codex can start this queued input only after Stop allows it to be idle.
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'working-edit' }), 'codex')
+    expect(h.io.outLines).toEqual([])
+    expect(checks).toEqual([])
+    expect(readSessionState('working-edit', h.env).message_acknowledgement_due?.[0]?.queued_context).toBe(context)
+
+    // An unrelated prompt (even one naming the message ID) proves no content.
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({
+      session_id: 'working-edit', cwd: h.deps.cwd, prompt: 'Check sm_green',
+    }), 'codex')
+    expect(h.io.outLines).toEqual([])
+    expect(checks).toEqual([])
+
+    // The queue now starts the new turn with the complete Green Edit body.
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({
+      session_id: 'working-edit', cwd: h.deps.cwd, prompt: context,
+    }), 'codex')
+    expect(checks).toEqual(['sm_green'])
+    expect(readSessionState('working-edit', h.env).message_acknowledgement_due?.[0]).not.toHaveProperty('queued_context')
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'working-edit' }), 'codex')
+    expect(JSON.parse(h.io.outLines.at(-1)!).reason).toContain('sm_green')
+
+    acknowledged.add('sm_green')
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'working-edit' }), 'codex')
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('working-edit', h.env).message_acknowledgement_due).toBeUndefined()
+  })
+
   /** Serves Session Message acknowledgement reads from `acknowledged`. */
   function withMessageAcknowledgements(h: Harness, acknowledged: Set<string>): string[] {
     const checks: string[] = []

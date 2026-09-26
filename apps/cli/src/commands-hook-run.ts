@@ -51,7 +51,7 @@ import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { cursorStopActivationOutput, sessionActivationOutput } from './session-activation.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
-import { readAttendantHeldLease, readAttendantLease } from './session-attendant-state.js'
+import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 const INTERNAL_HOOK_EVENTS = ['question-settlement'] as const
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
@@ -197,12 +197,11 @@ export async function hookRunCommand(
     }
   }
   const sessionEnd = hookDefersDiagnosticsUntilAfterCleanup(event)
-  // The attendant may release its claim as the session exits. Capture the
-  // fenced lease as soon as the hook identifies the session, before config
-  // reads or the end marker give it more time to disappear.
+  // Codex may kill the attendant before this hook starts. Capture its saved
+  // fencing identity before cleanup or another start can replace local state.
   const codexEndingLease =
     sessionEnd && harness === 'codex' && envelope.session_id !== undefined
-      ? readAttendantHeldLease(envelope.session_id, deps.env)
+      ? readAttendantEndingLease(envelope.session_id, deps.env)
       : null
   logger.bind({ session: envelope.session_id ?? null })
   const lifecycleEnabled = (): boolean => {

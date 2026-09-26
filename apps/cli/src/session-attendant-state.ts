@@ -4,6 +4,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
+import { readSessionIncarnation } from './hook-session-state.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import type { AttendantPhase, AttendantStatus } from './session-attendant.js'
 import type { SessionActivity } from '@raidiant/notifai-protocol'
@@ -114,26 +115,27 @@ export function readAttendantLease(sessionId: string, env: NodeJS.ProcessEnv): D
 }
 
 /**
- * The lease a live attendant of this session holds in any phase short of
- * exiting, for the one writer that ends it on the attendant's behalf: Codex's
- * SessionEnd, after which Codex kills the attendant before it can report.
+ * Saved fencing identity for Codex SessionEnd, even if the attendant died
+ * before the hook started. Ending presence is not a harness write: it must
+ * survive a missing/dead claim and an exited status. The service checks the
+ * exact incarnation and generation, so a saved report cannot end a newer
+ * lease. Only the current local incarnation may supply that identity.
  */
-export function readAttendantHeldLease(sessionId: string, env: NodeJS.ProcessEnv): DeliveryLease | null {
+export function readAttendantEndingLease(sessionId: string, env: NodeJS.ProcessEnv): DeliveryLease | null {
   try {
     const status = JSON.parse(readFileSync(attendantStatusPath(sessionId, env), 'utf8')) as Record<string, unknown>
     const generation = status['generation']
     const incarnation = status['incarnation']
     if (
-      status['phase'] === 'exited' ||
+      status['session_id'] !== sessionId ||
       typeof generation !== 'number' ||
-      !Number.isInteger(generation) ||
+      !Number.isSafeInteger(generation) ||
       generation < 1 ||
-      typeof incarnation !== 'string'
+      typeof incarnation !== 'string' ||
+      readSessionIncarnation(sessionId, env)?.incarnation !== incarnation
     ) {
       return null
     }
-    const claim = readClaimFile(attendantClaimPath(sessionId, env))
-    if (claim === null || claim['pid'] !== status['pid'] || !claimHolderMayRun(claim)) return null
     return { incarnation, generation }
   } catch {
     return null
