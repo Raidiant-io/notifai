@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.4.1](https://github.com/Raidiant-io/notifai/compare/v11.4.0...v11.4.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **cli:** allow explicit switch from beta to stable ([#202](https://github.com/Raidiant-io/notifai/issues/202)) ([5e397d8](https://github.com/Raidiant-io/notifai/commit/5e397d870ce8584b9326c1aeeefdb16d4980931f))
+* **cli:** fence foreground answers before handoff ([#204](https://github.com/Raidiant-io/notifai/issues/204)) ([db8eb20](https://github.com/Raidiant-io/notifai/commit/db8eb20ea8acf79e40e9bfbe2edcb81aeaee075d))
+* **cli:** preserve Codex SessionEnd lease ([#206](https://github.com/Raidiant-io/notifai/issues/206)) ([10d8445](https://github.com/Raidiant-io/notifai/commit/10d8445e5f1027d9b59c015075b37e66f7370fa8))
+* **cli:** preserve queued Edit content and ended presence ([#207](https://github.com/Raidiant-io/notifai/issues/207)) ([273be6b](https://github.com/Raidiant-io/notifai/commit/273be6bc4c488eec8a7568c53ac1ef00e15a7ae8))
+* **cli:** report foreground answer handoffs ([#205](https://github.com/Raidiant-io/notifai/issues/205)) ([b8459e9](https://github.com/Raidiant-io/notifai/commit/b8459e914509b6898407d9f579e5b9be487cb295))
+* **cli:** resolve symlinked CLI path for attendant contract ([#203](https://github.com/Raidiant-io/notifai/issues/203)) ([5df024c](https://github.com/Raidiant-io/notifai/commit/5df024c5c1fcaf8457bf0648d3279ddffb5b0def))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.1.0 to 8.1.1
+
 ## [11.4.0](https://github.com/Raidiant-io/notifai/compare/v11.3.2...v11.4.0) (2026-09-25)
 
 
