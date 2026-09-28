@@ -1,4 +1,5 @@
 /** User-facing diagnosis and recovery guidance for hook readiness. */
+import { existsSync, readFileSync } from 'node:fs'
 import { type CommandDeps } from './commands-core.js'
 import { type ActiveHarnessSession } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
@@ -16,6 +17,57 @@ import {
   handlerEvent,
   type Installation,
 } from './install-hooks.js'
+import {
+  openclawConfigPath,
+  openclawPluginLoadBlockers,
+  openclawPluginLoadRemedy,
+  openclawPluginLoadWarning,
+  parseOpenclawConfig,
+  type OpenclawPluginLoadBlocker,
+} from './openclaw-plugin.js'
+
+export interface OpenclawPluginLoadability {
+  loadable: boolean
+  configFile: string
+  blockers: OpenclawPluginLoadBlocker[]
+  warning: string | null
+  remedy: string | null
+  error: string | null
+}
+
+/** Inspect OpenClaw's User-owned trust controls without modifying them. */
+export function inspectOpenclawPluginLoadability(
+  deps: CommandDeps,
+): OpenclawPluginLoadability {
+  const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
+  try {
+    const source = existsSync(configFile) ? readFileSync(configFile, 'utf8') : '{}\n'
+    const config = parseOpenclawConfig(source, configFile)
+    const blockers = openclawPluginLoadBlockers(config)
+    const warning = openclawPluginLoadWarning(blockers)
+    return {
+      loadable: blockers.length === 0,
+      configFile,
+      blockers,
+      warning,
+      remedy:
+        blockers.length === 0
+          ? null
+          : blockers.map(openclawPluginLoadRemedy).join('; '),
+      error: null,
+    }
+  } catch (err) {
+    const error = String(err)
+    return {
+      loadable: false,
+      configFile,
+      blockers: [],
+      warning: error,
+      remedy: `Repair the JSONC syntax in ${configFile}, then run \`notifai doctor\`.`,
+      error,
+    }
+  }
+}
 export const CODEX_HOOK_APPROVAL_USER_ACTION = {
   code: 'codex_hook_approval_required',
   harness: 'codex',

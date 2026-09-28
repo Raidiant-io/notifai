@@ -1,4 +1,12 @@
 import path from 'node:path'
+import {
+  applyEdits,
+  modify,
+  parse,
+  printParseErrorCode,
+  type JSONPath,
+  type ParseError,
+} from 'jsonc-parser'
 import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 import { harnessAccountHome } from './install-hooks.js'
 import {
@@ -295,23 +303,177 @@ export function openclawPluginTarget(
   }
 }
 
-export function parseOpenclawConfig(source: string): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(source)
-    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-    const stripped = source
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^\s*\/\/.*$/gm, '')
-      .replace(/,(\s*[}\]])/g, '$1')
-    const parsed: unknown = JSON.parse(stripped)
-    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function parseOpenclawConfig(
+  source: string,
+  configFile = 'OpenClaw config',
+): Record<string, unknown> {
+  const errors: ParseError[] = []
+  const parsed: unknown = parse(source, errors, { allowTrailingComma: true })
+  if (errors.length > 0) {
+    const problems = errors
+      .map((error) => `${printParseErrorCode(error.error)} at offset ${error.offset}`)
+      .join(', ')
+    throw new Error(`${configFile} contains invalid JSONC (${problems}); refusing to write`)
+  }
+  if (isJsonObject(parsed)) return parsed
+  throw new Error(`${configFile} is not a JSON object; refusing to write`)
+}
+
+function openclawFormattingOptions(source: string) {
+  const indentation = /(?:^|\r?\n)([\t ]+)(?=")/.exec(source)?.[1] ?? '  '
+  return {
+    insertSpaces: !indentation.includes('\t'),
+    tabSize: indentation.length,
+    eol: source.includes('\r\n') ? '\r\n' : '\n',
+  }
+}
+
+/** Apply one JSONC edit while leaving unrelated source ranges intact. */
+export function editOpenclawConfigText(
+  source: string,
+  configFile: string,
+  location: JSONPath,
+  value: unknown,
+): string {
+  parseOpenclawConfig(source, configFile)
+  return applyEdits(
+    source,
+    modify(source, location, value, { formattingOptions: openclawFormattingOptions(source) }),
+  )
+}
+
+function objectAt(value: unknown): Record<string, unknown> | null {
+  return isJsonObject(value) ? value : null
+}
+
+/** Install or refresh Notifai's entry with a JSONC parser edit. */
+export function enableOpenclawNotifaiConfigText(source: string, configFile: string): string {
+  const config = parseOpenclawConfig(source, configFile)
+  const merged = mergeOpenclawNotifaiEntry(config)
+  const mergedPlugins = objectAt(merged.plugins)!
+  const mergedEntries = objectAt(mergedPlugins['entries'])!
+  const plugins = objectAt(config.plugins)
+
+  if (plugins === null) {
+    return editOpenclawConfigText(source, configFile, ['plugins'], merged.plugins)
+  }
+  if (Object.hasOwn(plugins, 'entries') && !isJsonObject(plugins['entries'])) {
+    return editOpenclawConfigText(source, configFile, ['plugins', 'entries'], mergedEntries)
+  }
+  return editOpenclawConfigText(
+    source,
+    configFile,
+    ['plugins', 'entries', OPENCLAW_PLUGIN_ID],
+    mergedEntries[OPENCLAW_PLUGIN_ID],
+  )
+}
+
+function editOpenclawConfigToMatch(
+  source: string,
+  configFile: string,
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+): string {
+  const nextPlugins = objectAt(next.plugins)
+  const previousPlugins = objectAt(previous.plugins)
+  if (nextPlugins === null) {
+    return editOpenclawConfigText(source, configFile, ['plugins'], undefined)
+  }
+  if (previousPlugins === null) return source
+
+  let text = source
+  const previousEntries = objectAt(previousPlugins['entries'])
+  const nextEntries = objectAt(nextPlugins['entries'])
+  if (Object.hasOwn(previousPlugins, 'entries') && !Object.hasOwn(nextPlugins, 'entries')) {
+    text = editOpenclawConfigText(text, configFile, ['plugins', 'entries'], undefined)
+  } else if (
+    previousEntries !== null &&
+    Object.hasOwn(previousEntries, OPENCLAW_PLUGIN_ID) &&
+    nextEntries !== null &&
+    !Object.hasOwn(nextEntries, OPENCLAW_PLUGIN_ID)
+  ) {
+    text = editOpenclawConfigText(
+      text,
+      configFile,
+      ['plugins', 'entries', OPENCLAW_PLUGIN_ID],
+      undefined,
+    )
+  }
+
+  const previousLoad = objectAt(previousPlugins['load'])
+  const nextLoad = objectAt(nextPlugins['load'])
+  if (previousLoad !== null && Object.hasOwn(previousLoad, 'paths')) {
+    if (nextLoad === null) {
+      text = editOpenclawConfigText(text, configFile, ['plugins', 'load'], undefined)
+    } else if (JSON.stringify(previousLoad['paths']) !== JSON.stringify(nextLoad['paths'])) {
+      text = editOpenclawConfigText(
+        text,
+        configFile,
+        ['plugins', 'load', 'paths'],
+        nextLoad['paths'],
+      )
     }
   }
-  throw new Error('OpenClaw config is not a JSON object')
+  return text
+}
+
+/** Remove only the entry and explicit load path owned by this installation. */
+export function removeOpenclawNotifaiConfigText(
+  source: string,
+  configFile: string,
+  pluginDir: string,
+): string {
+  const config = parseOpenclawConfig(source, configFile)
+  const next = removeOpenclawNotifaiEntry(config, pluginDir)
+  return next === config ? source : editOpenclawConfigToMatch(source, configFile, config, next)
+}
+
+/** Remove one older Project load path while leaving the shared entry alone. */
+export function removeOpenclawLoadPathConfigText(
+  source: string,
+  configFile: string,
+  pluginDir: string,
+): string {
+  const config = parseOpenclawConfig(source, configFile)
+  const next = removeOpenclawLoadPath(config, pluginDir)
+  return next === config ? source : editOpenclawConfigToMatch(source, configFile, config, next)
+}
+
+export interface OpenclawPluginLoadBlocker {
+  key: 'plugins.allow' | 'plugins.deny'
+  action: 'add' | 'remove'
+}
+
+export function openclawPluginLoadBlockers(
+  config: Record<string, unknown>,
+): OpenclawPluginLoadBlocker[] {
+  const plugins = objectAt(config.plugins)
+  if (plugins === null) return []
+  const blockers: OpenclawPluginLoadBlocker[] = []
+  const allow = plugins['allow']
+  if (Array.isArray(allow) && allow.length > 0 && !allow.includes(OPENCLAW_PLUGIN_ID)) {
+    blockers.push({ key: 'plugins.allow', action: 'add' })
+  }
+  const deny = plugins['deny']
+  if (Array.isArray(deny) && deny.includes(OPENCLAW_PLUGIN_ID)) {
+    blockers.push({ key: 'plugins.deny', action: 'remove' })
+  }
+  return blockers
+}
+
+export function openclawPluginLoadRemedy(blocker: OpenclawPluginLoadBlocker): string {
+  return blocker.action === 'add'
+    ? `add \"${OPENCLAW_PLUGIN_ID}\" to ${blocker.key}`
+    : `remove \"${OPENCLAW_PLUGIN_ID}\" from ${blocker.key}`
+}
+
+export function openclawPluginLoadWarning(blockers: OpenclawPluginLoadBlocker[]): string | null {
+  if (blockers.length === 0) return null
+  return `OpenClaw will not load Notifai: ${blockers.map(openclawPluginLoadRemedy).join('; ')}.`
 }
 
 export function mergeOpenclawNotifaiEntry(
@@ -378,10 +540,19 @@ export function removeOpenclawNotifaiEntry(
   config: Record<string, unknown>,
   pluginDir: string,
 ): Record<string, unknown> {
+  if (!isJsonObject(config.plugins)) return config
+  const currentPlugins = config.plugins as Record<string, unknown>
+  const currentEntries = objectAt(currentPlugins['entries'])
+  const currentLoad = objectAt(currentPlugins['load'])
+  const removesEntry =
+    currentEntries !== null && Object.hasOwn(currentEntries, OPENCLAW_PLUGIN_ID)
+  const removesLoadPath =
+    currentLoad !== null &&
+    Array.isArray(currentLoad['paths']) &&
+    currentLoad['paths'].includes(pluginDir)
+  if (!removesEntry && !removesLoadPath) return config
   const plugins =
-    config.plugins !== null && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
-      ? { ...(config.plugins as Record<string, unknown>) }
-      : {}
+    { ...(config.plugins as Record<string, unknown>) }
   const entries =
     plugins.entries !== null && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
       ? { ...(plugins.entries as Record<string, unknown>) }

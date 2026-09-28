@@ -50,15 +50,17 @@ import {
 import {
   OPENCLAW_PLUGIN_MANIFEST,
   OPENCLAW_PLUGIN_PACKAGE,
+  enableOpenclawNotifaiConfigText,
   isOurOpenclawPlugin,
-  mergeOpenclawNotifaiEntry,
+  openclawPluginLoadBlockers,
+  openclawPluginLoadWarning,
   openclawConfigPath,
   openclawPluginManifest,
   openclawPluginPackage,
   openclawPluginSource,
   parseOpenclawConfig,
-  removeOpenclawLoadPath,
-  removeOpenclawNotifaiEntry,
+  removeOpenclawLoadPathConfigText,
+  removeOpenclawNotifaiConfigText,
 } from './openclaw-plugin.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
@@ -173,6 +175,13 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     // Refuse unsupported plugin configuration before even updating the adapter.
     // The authoritative plan is made again under the layer lock below.
     if (codexPaths !== null) prepareCodexPluginCleanup(codexPaths.configToml)
+    if (harness === 'openclaw') {
+      const configFile = openclawConfigPath(deps.env, hookPlatform)
+      if (existsSync(configFile)) {
+        assertOwnedRegularFile(configFile)
+        parseOpenclawConfig(readFileSync(configFile, 'utf8'), configFile)
+      }
+    }
     adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform, deps.env).path
   } catch (err) {
     deps.io.err(`Could not prepare hook installation: ${String(err)}`)
@@ -450,6 +459,7 @@ function installOpenclawPlugin(
   const pluginDir = path.dirname(file)
   const comparedFiles = [file, path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), openclawConfigPath(deps.env, deps.hookPlatform)]
   const beforeInstall = installationBytes(comparedFiles)
+  let blockers: ReturnType<typeof openclawPluginLoadBlockers> = []
   try {
     withTargetFileLock(file, () => {
       if (existsSync(file)) {
@@ -475,30 +485,42 @@ function installOpenclawPlugin(
         requireCurrentUserOwner: true,
       })
     })
-    writeOpenclawEnablement(deps)
+    blockers = writeOpenclawEnablement(deps)
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
   }
+  const warning = openclawPluginLoadWarning(blockers)
+  if (warning !== null) deps.io.err(warning)
   if (options.narrate !== false) printHooksInstallClose(deps, 'openclaw', file, beforeInstall !== installationBytes(comparedFiles))
   return EXIT.ok
 }
 
-function writeOpenclawEnablement(deps: CommandDeps): void {
+function writeOpenclawEnablement(deps: CommandDeps): ReturnType<typeof openclawPluginLoadBlockers> {
   const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
-  withTargetFileLock(configFile, () => {
-    let config: Record<string, unknown> = {}
-    if (existsSync(configFile)) {
-      assertOwnedRegularFile(configFile)
-      config = parseOpenclawConfig(readFileSync(configFile, 'utf8'))
-    }
-    const merged = mergeOpenclawNotifaiEntry(config)
-    atomicWriteFileSync(configFile, `${JSON.stringify(merged, null, 2)}\n`, {
+  return withTargetFileLock(configFile, () => {
+    if (existsSync(configFile)) assertOwnedRegularFile(configFile)
+    const source = existsSync(configFile) ? readFileSync(configFile, 'utf8') : '{}\n'
+    const config = parseOpenclawConfig(source, configFile)
+    const nextSource = enableOpenclawNotifaiConfigText(source, configFile)
+    atomicWriteFileSync(configFile, nextSource, {
       mode: 0o600,
       preserveMode: true,
       requireCurrentUserOwner: true,
     })
+    return openclawPluginLoadBlockers(config)
   })
+}
+
+function removeEmptyOpenclawPluginDirectory(pluginDir: string): void {
+  try {
+    if (!lstatSync(pluginDir).isDirectory() || readdirSync(pluginDir).length !== 0) return
+    rmdirSync(pluginDir)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTEMPTY' || code === 'EEXIST') return
+    throw err
+  }
 }
 
 /**
@@ -512,7 +534,7 @@ function removeNotifaiPluginFile(
   file: string,
 ): 'removed' | 'absent' | 'foreign' {
   const pluginDir = path.dirname(file)
-  return withTargetFileLock(file, () => {
+  const outcome = withTargetFileLock(file, () => {
     if (!existsSync(file)) return 'absent'
     assertOwnedRegularFile(file)
     const source = readFileSync(file, 'utf8')
@@ -523,25 +545,28 @@ function removeNotifaiPluginFile(
     if (harness === 'openclaw') {
       rmSync(path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), { force: true })
       rmSync(path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), { force: true })
-      if (existsSync(pluginDir) && readdirSync(pluginDir).length === 0) rmdirSync(pluginDir)
     }
     return 'removed'
   })
+  if (harness === 'openclaw' && outcome === 'removed') {
+    removeEmptyOpenclawPluginDirectory(pluginDir)
+  }
+  return outcome
 }
 
-/** Rewrite OpenClaw's config through one of the two entry-shaping helpers. */
+/** Apply a minimal JSONC edit to OpenClaw's config. */
 function editOpenclawConfig(
   deps: CommandDeps,
-  edit: (config: Record<string, unknown>) => Record<string, unknown>,
+  edit: (source: string, configFile: string) => string,
 ): void {
   const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
   if (!existsSync(configFile)) return
   withTargetFileLock(configFile, () => {
     assertOwnedRegularFile(configFile)
-    const config = parseOpenclawConfig(readFileSync(configFile, 'utf8'))
-    const next = edit(config)
-    if (next === config) return
-    atomicWriteFileSync(configFile, `${JSON.stringify(next, null, 2)}\n`, {
+    const source = readFileSync(configFile, 'utf8')
+    const next = edit(source, configFile)
+    if (next === source) return
+    atomicWriteFileSync(configFile, next, {
       mode: 0o600,
       preserveMode: true,
       requireCurrentUserOwner: true,
@@ -595,12 +620,19 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     harness === 'codex' ? codexMachineLayerPaths(deps.env, deps.hookPlatform) : null
   const file = codexPaths?.configToml ?? settingsFile(harness, deps.env, deps.hookPlatform)
   try {
+    if (harness === 'openclaw') {
+      const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
+      if (existsSync(configFile)) {
+        assertOwnedRegularFile(configFile)
+        parseOpenclawConfig(readFileSync(configFile, 'utf8'), configFile)
+      }
+    }
     if (harness === 'opencode' || harness === 'openclaw') {
       const outcome = removeNotifaiPluginFile(harness, file)
       if (outcome === 'removed') {
         if (harness === 'openclaw') {
-          editOpenclawConfig(deps, (config) =>
-            removeOpenclawNotifaiEntry(config, path.dirname(file)),
+          editOpenclawConfig(deps, (source, configFile) =>
+            removeOpenclawNotifaiConfigText(source, configFile, path.dirname(file)),
           )
         }
         deps.io.out(`Removed the Notifai ${HARNESS_LABELS[harness]} plugin at ${file}`)
@@ -700,8 +732,8 @@ export function removeLegacyProjectInstallations(
       for (const installation of legacy) {
         if (removeNotifaiPluginFile(harness, installation.file) !== 'removed') continue
         if (harness === 'openclaw') {
-          editOpenclawConfig(deps, (config) =>
-            removeOpenclawLoadPath(config, path.dirname(installation.file)),
+          editOpenclawConfig(deps, (source, configFile) =>
+            removeOpenclawLoadPathConfigText(source, configFile, path.dirname(installation.file)),
           )
         }
         deps.io.out(
