@@ -3530,6 +3530,18 @@ describe('session-start hook', () => {
 
     expect(h.io.outLines).toEqual([])
   })
+
+  it('ignores Grok\'s Claude compatibility copy before reading stdin or writing state', async () => {
+    const h = harness()
+    h.deps.env['GROK_HOOK_EVENT'] = 'SessionStart'
+    const code = await hookRunCommand(h.deps, 'session-start', async () => {
+      throw new Error('compatibility copy read stdin')
+    }, 'claude-code')
+    expect(code).toBe(0)
+    expect(h.io.outLines).toEqual([])
+    expect(h.io.errLines).toEqual([])
+    expect(readSessionState('grok-compat-copy', h.env)).toEqual({})
+  })
 })
 
 describe('user-prompt-submit hook', () => {
@@ -6462,6 +6474,37 @@ describe('Codex Stop wake route', () => {
     expect(decision).toMatchObject({ decision: 'block' })
     expect(decision.reason).toContain('"Trim them"')
     expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
+  })
+
+  it('continues a Grok held Stop and consumes its native successor marker', async () => {
+    const sessionId = 'grok-held-stop'
+    const h = harness([reply({ text: 'Trim them' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, harness: 'grok' })
+    registerQuestion(sessionId, h.env, { question: 'Keep all permission rules?' }, NOW)
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: sessionId, cwd: h.deps.cwd, stopHookActive: false }),
+      'grok',
+    )
+    const decision = JSON.parse(h.io.outLines[0]!) as { decision: string; reason: string }
+    expect(decision.decision).toBe('block')
+    expect(decision.reason).toContain('"Trim them"')
+    expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
+
+    await hookRunCommand(
+      h.deps,
+      'stop',
+      stdin({ session_id: sessionId, cwd: h.deps.cwd, stopHookActive: true }),
+      'grok',
+    )
+    expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
+    expect(readSessionState(sessionId, h.env).continuation?.count).toBe(1)
+    const acknowledgement = JSON.parse(h.io.outLines[1] ?? '{}') as { decision?: string; reason?: string }
+    expect(acknowledgement.decision).toBe('block')
+    expect(acknowledgement.reason).toContain('notifai acknowledge')
   })
 
   it.each([false, true])('reconciles an unclassified answer journal before queueing (already acknowledged=%s)', async (acknowledged) => {

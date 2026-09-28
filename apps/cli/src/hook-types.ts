@@ -39,6 +39,8 @@ export interface HookEnvelope {
   source?: string
   /** Set by the harness when this Stop follows a previous Stop continuation. */
   stop_hook_active?: boolean
+  /** Grok's native spelling; normalized to stop_hook_active by the adapter. */
+  stopHookActive?: boolean
   /** Cursor's stable per-conversation identifier. */
   conversation_id?: string
   /** Cursor's project roots; the first is the hook's configuration root. */

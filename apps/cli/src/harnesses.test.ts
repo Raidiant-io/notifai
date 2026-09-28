@@ -40,6 +40,7 @@ describe('harness contract', () => {
       'cursor',
       'opencode',
       'openclaw',
+      'grok',
     ])
     expect(SOURCE_CONTEXT_HARNESSES).toContain('hermes')
     expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
@@ -107,6 +108,11 @@ describe('harness contract', () => {
     expect(HARNESS_CAPABILITIES.opencode.deliveryRoutes).toEqual(['unsupported'])
     expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('unsupported')
     expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
+    expect(HARNESS_CAPABILITIES.grok.stopContinuation).toBe('decision-block')
+    expect(HARNESS_CAPABILITIES.grok.deliveryRoutes).toEqual([
+      'hook-continuation',
+      'hold-for-next-turn',
+    ])
   })
 
   it('describes Windows Claude Code as a held Stop continuation without an inbox route', () => {

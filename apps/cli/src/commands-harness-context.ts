@@ -70,6 +70,8 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
     candidates.push({ harness: 'codex', label: 'Codex', sessionId: codexSession })
   }
   if ((env['CURSOR_AGENT'] ?? '') !== '') candidates.push({ harness: 'cursor', label: 'Cursor' })
+  const grokSession = env['GROK_SESSION_ID']?.trim()
+  if (grokSession) candidates.push({ harness: 'grok', label: 'Grok', sessionId: grokSession })
   const hermesSession = env['HERMES_SESSION_ID']
   if (hermesSession !== undefined && hermesSession !== '') {
     const integrationInstance = hermesClassicCliLocalInstance(env)

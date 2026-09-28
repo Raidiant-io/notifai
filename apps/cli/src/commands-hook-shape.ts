@@ -17,9 +17,10 @@ import {
  *     retain its own full-window lifetime: Claude does not enforce `timeout`
  *     after an ordinary async hook backgrounds. A short configured timeout
  *     alone therefore cannot prove that this route will lose its waiter.
- *   - Codex must declare the same full-window timeout. That changes its trusted
- *     definition and deliberately requires the User to approve it once.
- *   - Everything else cannot own asynchronous Question Routing; it receives
+ *   - Codex detaches Stop and routes through its durable session queue.
+ *   - Grok and Windows Claude Code hold Stop, so their blocking handlers need
+ *     the full-window timeout and must return their decision block directly.
+ *   - Other harnesses cannot own asynchronous Question Routing; they receive
  *     only the shorter bounded cleanup/refusal timeout.
  */
 export function stopShapeProblems(
@@ -44,7 +45,7 @@ export function stopShapeProblems(
       }
       continue
     }
-    if (installation.harness === 'codex' || installation.harness === 'claude-code') {
+    if (installation.harness === 'codex' || installation.harness === 'claude-code' || installation.harness === 'grok') {
       if (handler.async === true) {
         problems.push(
           `${installation.file} declares an asynchronous ${installation.harness} Stop handler, but this platform needs the blocking continuation so the harness consumes the answer output`,

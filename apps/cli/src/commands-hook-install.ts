@@ -13,7 +13,7 @@ import {
 } from './harnesses.js'
 import { installHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
 import type { HookEvent } from './hook-events.js'
-import { HOOK_EVENT_COMMAND_RE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
+import { HOOK_EVENT_COMMAND_RE, HOOK_EVENT_TABLE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   applyPlan,
@@ -50,15 +50,17 @@ import {
 import {
   OPENCLAW_PLUGIN_MANIFEST,
   OPENCLAW_PLUGIN_PACKAGE,
+  enableOpenclawNotifaiConfigText,
   isOurOpenclawPlugin,
-  mergeOpenclawNotifaiEntry,
+  openclawPluginLoadBlockers,
+  openclawPluginLoadWarning,
   openclawConfigPath,
   openclawPluginManifest,
   openclawPluginPackage,
   openclawPluginSource,
   parseOpenclawConfig,
-  removeOpenclawLoadPath,
-  removeOpenclawNotifaiEntry,
+  removeOpenclawLoadPathConfigText,
+  removeOpenclawNotifaiConfigText,
 } from './openclaw-plugin.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { packageVersion } from './release.js'
@@ -173,6 +175,13 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     // Refuse unsupported plugin configuration before even updating the adapter.
     // The authoritative plan is made again under the layer lock below.
     if (codexPaths !== null) prepareCodexPluginCleanup(codexPaths.configToml)
+    if (harness === 'openclaw') {
+      const configFile = openclawConfigPath(deps.env, hookPlatform)
+      if (existsSync(configFile)) {
+        assertOwnedRegularFile(configFile)
+        parseOpenclawConfig(readFileSync(configFile, 'utf8'), configFile)
+      }
+    }
     adapterPath = installHookAdapter(adapterTarget, deps.hookAdapterHome, hookPlatform, deps.env).path
   } catch (err) {
     deps.io.err(`Could not prepare hook installation: ${String(err)}`)
@@ -212,6 +221,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         nodePath,
         ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
       }),
+    )
+  }
+  if (harness === 'grok') {
+    return finishInstall(
+      deps,
+      harness,
+      scriptPath,
+      installGrokHooks(deps, settingsTarget, { adapterPath, platform: hookPlatform, nodePath }, flags.narrate),
     )
   }
 
@@ -436,6 +453,71 @@ function installOpencodePlugin(
   return EXIT.ok
 }
 
+/** Grok merges global hook files. This entire file is ours; leave foreign files untouched. */
+function installGrokHooks(
+  deps: CommandDeps,
+  file: string,
+  options: { adapterPath: string; platform: NodeJS.Platform; nodePath: string },
+  narrate: boolean | undefined,
+): number {
+  const before = installationBytes([file])
+  try {
+    withTargetFileLock(file, () => {
+      if (existsSync(file)) {
+        assertOwnedRegularFile(file)
+        if (!isOurGrokHookFile(readFileSync(file, 'utf8'))) {
+          throw new Error(`${file} exists and was not written by Notifai; move it aside first.`)
+        }
+      }
+      atomicWriteFileSync(file, `${JSON.stringify({ hooks: buildHookConfig({
+        adapterPath: options.adapterPath,
+        harness: 'grok',
+        platform: options.platform,
+        nodePath: options.nodePath,
+      }) }, null, 2)}\n`, {
+        mode: 0o600,
+        preserveMode: false,
+        requireCurrentUserOwner: true,
+      })
+    })
+  } catch (err) {
+    deps.io.err(String(err))
+    return EXIT.failed
+  }
+  if (narrate !== false) printHooksInstallClose(deps, 'grok', file, before !== installationBytes([file]))
+  return EXIT.ok
+}
+
+function isOurGrokHookFile(source: string): boolean {
+  let parsed: unknown
+  try { parsed = JSON.parse(source) } catch { return false }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
+  const document = parsed as Record<string, unknown>
+  if (Object.keys(document).length !== 1 || typeof document['hooks'] !== 'object' || document['hooks'] === null || Array.isArray(document['hooks'])) return false
+  const events = Object.entries(document['hooks'] as Record<string, unknown>)
+  const knownEvents = new Set<string>(HOOK_EVENT_TABLE.flatMap((row) => row.document === null ? [] : [row.document]))
+  return events.length > 0 && events.every(([event, groups]) =>
+    knownEvents.has(event) && Array.isArray(groups) && groups.length > 0 && groups.every((group) =>
+      typeof group === 'object' && group !== null && !Array.isArray(group) &&
+      Object.keys(group).every((key) => key === 'matcher' || key === 'hooks') &&
+      (group.matcher === undefined || typeof group.matcher === 'string') &&
+      Array.isArray(group.hooks) && group.hooks.length > 0 && group.hooks.every((handler: unknown) =>
+        isOurGrokHookHandler(handler),
+      ),
+    ),
+  )
+}
+
+function isOurGrokHookHandler(handler: unknown): boolean {
+  if (typeof handler !== 'object' || handler === null || Array.isArray(handler)) return false
+  const fields = handler as Record<string, unknown>
+  const command = fields['command']
+  return Object.keys(fields).every((key) => key === 'type' || key === 'command' || key === 'timeout') &&
+    fields['type'] === 'command' && typeof command === 'string' &&
+    (fields['timeout'] === undefined || typeof fields['timeout'] === 'number') &&
+    HOOK_EVENT_COMMAND_RE.test(command) && command.includes('--owner notifai --harness grok')
+}
+
 function installOpenclawPlugin(
   deps: CommandDeps,
   file: string,
@@ -450,6 +532,7 @@ function installOpenclawPlugin(
   const pluginDir = path.dirname(file)
   const comparedFiles = [file, path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), openclawConfigPath(deps.env, deps.hookPlatform)]
   const beforeInstall = installationBytes(comparedFiles)
+  let blockers: ReturnType<typeof openclawPluginLoadBlockers> = []
   try {
     withTargetFileLock(file, () => {
       if (existsSync(file)) {
@@ -475,30 +558,42 @@ function installOpenclawPlugin(
         requireCurrentUserOwner: true,
       })
     })
-    writeOpenclawEnablement(deps)
+    blockers = writeOpenclawEnablement(deps)
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed
   }
+  const warning = openclawPluginLoadWarning(blockers)
+  if (warning !== null) deps.io.err(warning)
   if (options.narrate !== false) printHooksInstallClose(deps, 'openclaw', file, beforeInstall !== installationBytes(comparedFiles))
   return EXIT.ok
 }
 
-function writeOpenclawEnablement(deps: CommandDeps): void {
+function writeOpenclawEnablement(deps: CommandDeps): ReturnType<typeof openclawPluginLoadBlockers> {
   const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
-  withTargetFileLock(configFile, () => {
-    let config: Record<string, unknown> = {}
-    if (existsSync(configFile)) {
-      assertOwnedRegularFile(configFile)
-      config = parseOpenclawConfig(readFileSync(configFile, 'utf8'))
-    }
-    const merged = mergeOpenclawNotifaiEntry(config)
-    atomicWriteFileSync(configFile, `${JSON.stringify(merged, null, 2)}\n`, {
+  return withTargetFileLock(configFile, () => {
+    if (existsSync(configFile)) assertOwnedRegularFile(configFile)
+    const source = existsSync(configFile) ? readFileSync(configFile, 'utf8') : '{}\n'
+    const config = parseOpenclawConfig(source, configFile)
+    const nextSource = enableOpenclawNotifaiConfigText(source, configFile)
+    atomicWriteFileSync(configFile, nextSource, {
       mode: 0o600,
       preserveMode: true,
       requireCurrentUserOwner: true,
     })
+    return openclawPluginLoadBlockers(config)
   })
+}
+
+function removeEmptyOpenclawPluginDirectory(pluginDir: string): void {
+  try {
+    if (!lstatSync(pluginDir).isDirectory() || readdirSync(pluginDir).length !== 0) return
+    rmdirSync(pluginDir)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTEMPTY' || code === 'EEXIST') return
+    throw err
+  }
 }
 
 /**
@@ -512,7 +607,7 @@ function removeNotifaiPluginFile(
   file: string,
 ): 'removed' | 'absent' | 'foreign' {
   const pluginDir = path.dirname(file)
-  return withTargetFileLock(file, () => {
+  const outcome = withTargetFileLock(file, () => {
     if (!existsSync(file)) return 'absent'
     assertOwnedRegularFile(file)
     const source = readFileSync(file, 'utf8')
@@ -523,25 +618,28 @@ function removeNotifaiPluginFile(
     if (harness === 'openclaw') {
       rmSync(path.join(pluginDir, OPENCLAW_PLUGIN_MANIFEST), { force: true })
       rmSync(path.join(pluginDir, OPENCLAW_PLUGIN_PACKAGE), { force: true })
-      if (existsSync(pluginDir) && readdirSync(pluginDir).length === 0) rmdirSync(pluginDir)
     }
     return 'removed'
   })
+  if (harness === 'openclaw' && outcome === 'removed') {
+    removeEmptyOpenclawPluginDirectory(pluginDir)
+  }
+  return outcome
 }
 
-/** Rewrite OpenClaw's config through one of the two entry-shaping helpers. */
+/** Apply a minimal JSONC edit to OpenClaw's config. */
 function editOpenclawConfig(
   deps: CommandDeps,
-  edit: (config: Record<string, unknown>) => Record<string, unknown>,
+  edit: (source: string, configFile: string) => string,
 ): void {
   const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
   if (!existsSync(configFile)) return
   withTargetFileLock(configFile, () => {
     assertOwnedRegularFile(configFile)
-    const config = parseOpenclawConfig(readFileSync(configFile, 'utf8'))
-    const next = edit(config)
-    if (next === config) return
-    atomicWriteFileSync(configFile, `${JSON.stringify(next, null, 2)}\n`, {
+    const source = readFileSync(configFile, 'utf8')
+    const next = edit(source, configFile)
+    if (next === source) return
+    atomicWriteFileSync(configFile, next, {
       mode: 0o600,
       preserveMode: true,
       requireCurrentUserOwner: true,
@@ -595,12 +693,30 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     harness === 'codex' ? codexMachineLayerPaths(deps.env, deps.hookPlatform) : null
   const file = codexPaths?.configToml ?? settingsFile(harness, deps.env, deps.hookPlatform)
   try {
-    if (harness === 'opencode' || harness === 'openclaw') {
+    if (harness === 'openclaw') {
+      const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
+      if (existsSync(configFile)) {
+        assertOwnedRegularFile(configFile)
+        parseOpenclawConfig(readFileSync(configFile, 'utf8'), configFile)
+      }
+    }
+    if (harness === 'grok') {
+      const outcome = withTargetFileLock(file, () => {
+        if (!existsSync(file)) return 'absent' as const
+        assertOwnedRegularFile(file)
+        if (!isOurGrokHookFile(readFileSync(file, 'utf8'))) return 'foreign' as const
+        rmSync(file, { force: true })
+        return 'removed' as const
+      })
+      if (outcome === 'removed') deps.io.out(`Removed the Notifai Grok hooks at ${file}`)
+      else if (outcome === 'foreign') deps.io.out(`Left ${file} alone: Notifai did not write it.`)
+      else deps.io.out(`Nothing to remove: ${file} does not exist.`)
+    } else if (harness === 'opencode' || harness === 'openclaw') {
       const outcome = removeNotifaiPluginFile(harness, file)
       if (outcome === 'removed') {
         if (harness === 'openclaw') {
-          editOpenclawConfig(deps, (config) =>
-            removeOpenclawNotifaiEntry(config, path.dirname(file)),
+          editOpenclawConfig(deps, (source, configFile) =>
+            removeOpenclawNotifaiConfigText(source, configFile, path.dirname(file)),
           )
         }
         deps.io.out(`Removed the Notifai ${HARNESS_LABELS[harness]} plugin at ${file}`)
@@ -700,8 +816,8 @@ export function removeLegacyProjectInstallations(
       for (const installation of legacy) {
         if (removeNotifaiPluginFile(harness, installation.file) !== 'removed') continue
         if (harness === 'openclaw') {
-          editOpenclawConfig(deps, (config) =>
-            removeOpenclawLoadPath(config, path.dirname(installation.file)),
+          editOpenclawConfig(deps, (source, configFile) =>
+            removeOpenclawLoadPathConfigText(source, configFile, path.dirname(installation.file)),
           )
         }
         deps.io.out(

@@ -67,6 +67,7 @@ and harness follow-up. If `handoff_error` is present, run
 | OpenCode | The loaded plugin invokes the adapter per event and obtains current guidance per model request. | Restart OpenCode when generated plugin code changed or required lifecycle activation is missing. |
 | OpenClaw | The loaded Gateway plugin invokes the adapter and obtains guidance before prompts. | Restart the Gateway when generated plugin code changed or required lifecycle activation is missing. |
 | Hermes | The local classic CLI can use the new executable and reread guidance in the same Agent Session. `notifai guidance` carries the shared weekly notice. | No managed Notifai hook/plugin and no invented restart requirement. |
+| Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | A newly installed SessionStart hook needs a fresh Agent Session for lifecycle observation; hook output cannot activate model-visible context. |
 
 Cursor, OpenCode, OpenClaw, and Hermes do not gain asynchronous Question Routing
 merely by updating. Their supported blocking question path and exact-identity

@@ -575,6 +575,10 @@ describe('Codex process probe', () => {
     expect(attendantSupport('codex', 'darwin')).toEqual({ supported: true })
     expect(attendantSupport('codex', 'linux')).toEqual({ supported: true })
     expect(attendantSupport('codex', 'win32')).toEqual({ supported: false, reason: 'codex-win32-unproven' })
+    expect(attendantSupport('grok', 'darwin')).toEqual({
+      supported: false,
+      reason: 'grok-has-no-exact-session-writer-or-attendant',
+    })
   })
 
   it('reports running with the activity the thread’s own turns recorded', () => {

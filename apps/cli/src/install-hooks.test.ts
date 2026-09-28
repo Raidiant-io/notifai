@@ -152,6 +152,19 @@ describe('hook config', () => {
     })
   })
 
+  it('builds native Grok lifecycle hooks with a complete-window held Stop and no attendant', () => {
+    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'grok' })
+    expect(Object.keys(config)).toEqual(['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'])
+    expect(config['Stop']?.[0]?.hooks[0]).toEqual({
+      type: 'command',
+      command: hookCommand(ADAPTER, 'stop', 'grok'),
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
+    })
+    expect(JSON.stringify(config)).not.toContain('hook attend')
+    expect(settingsFile('grok', { HOME: '/isolated', GROK_HOME: '/isolated/grok' }))
+      .toBe('/isolated/grok/hooks/notifai.json')
+  })
+
   it('invokes one stable adapter so a sparse hook PATH still works', () => {
     expect(hookCommand(ADAPTER, 'stop')).toBe(`'${ADAPTER}' hook stop --owner notifai`)
   })

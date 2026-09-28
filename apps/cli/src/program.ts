@@ -242,7 +242,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--skills-scope <scope>',
       'unattended agent-skill scope: project or global. Lifecycle wiring has no scope — it is installed for this machine',
     )
-    .option('--hooks', 'install harness hooks for registered-question routing')
+    .option('--hooks', 'install supported harness lifecycle hooks')
     .option('--no-hooks', 'skip the hooks without being asked')
     .action(
       async (opts: {
@@ -685,18 +685,18 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
 
   const hooks = program
     .command('hooks')
-    .description('Install harness hooks for registered-question routing, once per machine')
-    .summary('Wire a harness to route questions to your devices')
+    .description('Install harness lifecycle hooks once per machine')
+    .summary('Wire a harness to Notifai lifecycle events')
     .helpGroup(GROUP.advanced)
   hooks
     .command('install')
     .description(
-      'Wire this harness, for this machine, to route registered questions to your devices. ' +
+      'Wire this harness to Notifai lifecycle events on this machine. ' +
         'Whether Notifai acts in a project is `notifai project enable`, not an install scope',
     )
     .option(
       '--harness <name>',
-      'claude-code | codex | cursor | opencode | openclaw (default: every detected harness)',
+      'claude-code | codex | cursor | opencode | openclaw | grok (default: every detected harness)',
     )
     .action((opts: { harness?: string }) => {
       exit(runners.hooksInstall(deps, opts))
@@ -704,7 +704,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   hooks
     .command('uninstall')
     .description('Remove the hooks this CLI installed for this machine')
-    .option('--harness <name>', 'claude-code | codex | cursor | opencode | openclaw (default: detected)')
+    .option('--harness <name>', 'claude-code | codex | cursor | opencode | openclaw | grok (default: detected)')
     .action((opts: { harness?: string }) => {
       exit(runners.hooksUninstall(deps, opts))
     })

@@ -124,6 +124,18 @@ export async function hookRunCommand(
     })
     return EXIT.ok
   }
+  // Grok loads Claude settings by default. Its native Notifai definition is
+  // the sole owner; the inherited Claude copy must stop before reading stdin.
+  if (harness === 'claude-code' && (deps.env['GROK_HOOK_EVENT'] ?? '') !== '') {
+    start({ outcome: 'grok-compatibility-copy-skipped' })
+    logger.info('hook.end', {
+      hook: event,
+      outcome: 'ignored',
+      reason: 'grok-native-handler-owns-event',
+      decided: false,
+    })
+    return EXIT.ok
+  }
 
   let raw: string
   try {
@@ -162,6 +174,14 @@ export async function hookRunCommand(
       stop_hook_active:
         envelope.stop_hook_active ??
         (typeof envelope.loop_count === 'number' && envelope.loop_count > 0),
+    }
+  }
+  if (harness === 'grok') {
+    envelope = {
+      ...envelope,
+      ...(envelope.stop_hook_active === undefined && envelope.stopHookActive !== undefined
+        ? { stop_hook_active: envelope.stopHookActive }
+        : {}),
     }
   }
 
@@ -276,7 +296,9 @@ export async function hookRunCommand(
     }
     logger.info('hook.end', {
       hook: event,
-      outcome: stdout === undefined ? 'unsupported-harness' : 'context-added',
+      outcome: stdout === undefined
+        ? harness === 'grok' ? 'activation-context-unsupported' : 'unsupported-harness'
+        : 'context-added',
       decided: false,
       ...settlementRecovery,
     })
@@ -581,6 +603,7 @@ function stopWakeRoute(
   sessionId: string | undefined,
   cwd: string,
 ): EscalationDeliveryRoute | undefined {
+  if (harness === 'grok') return undefined
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {

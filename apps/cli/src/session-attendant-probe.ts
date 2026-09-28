@@ -27,6 +27,9 @@ export function attendantSupport(
   harness: HookHarness | undefined,
   platform: NodeJS.Platform,
 ): AttendantSupport {
+  if (harness === 'grok') {
+    return { supported: false, reason: 'grok-has-no-exact-session-writer-or-attendant' }
+  }
   if (harness === 'claude-code') {
     // The descriptor, inbox socket, and own-child delivery are proven on macOS.
     // Windows has none of them; Linux shares the socket design.

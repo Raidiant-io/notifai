@@ -107,12 +107,16 @@ Apps are not shipped.
 notifai hooks install
 ```
 
-Wires question routing into every supported harness detected on this
-machine (Claude Code, Codex, Cursor, OpenCode, OpenClaw). `notifai init` does the
+Wires lifecycle hooks into every supported harness detected on this
+machine (Claude Code, Codex, Cursor, OpenCode, OpenClaw, Grok). `notifai init` does the
 same and, at a terminal, lets you keep the detected set, pick a subset,
 or add one it did not see. This is what lets an agent's question reach
 your phone without the agent having to cooperate — no question detection,
-no state in a context window that compaction will eat.
+no state in a context window that compaction will eat. Grok's managed hooks
+observe lifecycle events and hold Stop through the complete answer window,
+then return the answer to the same Agent Session. They cannot inject activation
+guidance; load the Notifai skill directly. Exact Source Context comes from
+`GROK_SESSION_ID`.
 
 Every harness definition calls one stable user-level adapter under the account
 home (`~/.notifai/bin/hook-adapter` on macOS/Linux and the corresponding user

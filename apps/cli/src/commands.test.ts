@@ -4397,6 +4397,55 @@ describe('harness activation guidance', () => {
     expect(io.errLines.join('\n')).toMatch(/was not written by Notifai/)
     expect(readFileSync(plugin, 'utf8')).toBe('export default { id: "foreign" }\n')
   })
+
+  it('owns only Grok\'s native hook file across install and uninstall', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-grok-hooks-'))
+    const grokHome = path.join(cwd, 'grok-home')
+    const foreign = path.join(grokHome, 'hooks', 'another.json')
+    mkdirSync(path.dirname(foreign), { recursive: true })
+    writeFileSync(foreign, '{"hooks":{"Stop":[]}}\n')
+    const io = new CapturedIo()
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: { HOME: path.join(cwd, 'home'), GROK_HOME: grokHome, XDG_STATE_HOME: path.join(cwd, 'state') },
+    }
+    const owned = path.join(grokHome, 'hooks', 'notifai.json')
+    expect(hooksInstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.ok)
+    const document = JSON.parse(readFileSync(owned, 'utf8')) as { hooks: ReturnType<typeof buildHookConfig> }
+    expect(document.hooks['Stop']?.[0]?.hooks[0]).toMatchObject({
+      command: hookCommand(hookAdapterPath(deps.hookAdapterHome), 'stop', 'grok'),
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
+    })
+    expect(findInstallations(deps.env, deps.hookAdapterHome).filter((entry) => entry.harness === 'grok'))
+      .toHaveLength(1)
+    expect(readFileSync(foreign, 'utf8')).toBe('{"hooks":{"Stop":[]}}\n')
+    writeFileSync(foreign, JSON.stringify({ hooks: { Stop: [{ hooks: [document.hooks['Stop']?.[0]?.hooks[0]] }] } }))
+    expect(findInstallations(deps.env, deps.hookAdapterHome).filter((entry) => entry.harness === 'grok'))
+      .toHaveLength(2)
+
+    expect(hooksUninstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(existsSync(owned)).toBe(false)
+    expect(findInstallations(deps.env, deps.hookAdapterHome).filter((entry) => entry.harness === 'grok'))
+      .toHaveLength(1)
+    expect(readFileSync(foreign, 'utf8')).toContain('--harness grok')
+    writeFileSync(owned, '{"hooks":{"Stop":[]}}\n')
+    expect(hooksInstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(readFileSync(owned, 'utf8')).toBe('{"hooks":{"Stop":[]}}\n')
+    const mixed = JSON.stringify({ hooks: {
+      Stop: [{ hooks: [document.hooks['Stop']?.[0]?.hooks[0]] }],
+      SessionStart: [{ hooks: [] }],
+    } })
+    writeFileSync(owned, mixed)
+    expect(hooksInstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.failed)
+    expect(readFileSync(owned, 'utf8')).toBe(mixed)
+    const changedHandler = JSON.stringify({ hooks: {
+      Stop: [{ hooks: [{ ...document.hooks['Stop']?.[0]?.hooks[0], env: { FOREIGN: 'value' } }] }],
+    } })
+    writeFileSync(owned, changedHandler)
+    expect(hooksUninstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(readFileSync(owned, 'utf8')).toBe(changedHandler)
+  })
 })
 
 describe('stable hook installation', () => {
@@ -9766,6 +9815,36 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
     expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
+  })
+
+  it('admits Grok ask only for the exact active Agent Session', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-grok-'))
+    const io = new CapturedIo()
+    const env = {
+      HOME: path.join(cwd, 'home'),
+      GROK_HOME: path.join(cwd, 'grok-home'),
+      XDG_CONFIG_HOME: path.join(cwd, 'config'),
+      XDG_STATE_HOME: path.join(cwd, 'state'),
+      GROK_SESSION_ID: 'grok-current',
+    }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState('grok-current', env, { harness: 'grok', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'grok-current', 42, 'grok')
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(readSessionState('grok-current', env).pending?.[0]?.question).toBe('Ship it?')
+    const readiness = await assessReadiness(deps)
+    expect(readiness.states.find((state) => state.id === 'hooks-answer-continuation'))
+      .toMatchObject({ status: 'ready' })
+    expect(readiness.states.find((state) => state.id === 'hooks-wake-route'))
+      .toMatchObject({ status: 'optional-gap' })
+    expect(readiness.states.find((state) => state.id === 'hooks-Grok-activation'))
+      .toMatchObject({ status: 'optional-gap' })
+    env.GROK_SESSION_ID = 'another-grok-session'
+    expect(askCommand(deps, 'Second question?', {})).toBe(EXIT.usage)
+    expect(readSessionState('another-grok-session', env).pending).toBeUndefined()
   })
 
   it('refuses Hermes ask as unsupported rather than as missing hooks', () => {

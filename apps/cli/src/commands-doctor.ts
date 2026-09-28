@@ -80,6 +80,7 @@ import {
   CODEX_STALE_STOP_DEFINITION_PROBLEM,
   activeQuestionRouteProblems,
   hookActivationAdvice,
+  inspectOpenclawPluginLoadability,
 } from './commands-hook-diagnostics.js'
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
@@ -1122,10 +1123,26 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (fired)': 'Hooks have run here',
   'hooks (answer continuation)': 'How an answer returns',
   'hooks (wake route)': 'Direct wake route',
+  'hooks (openclaw plugin)': 'OpenClaw plugin loadability',
 }
 
 function checkTitle(name: string): string {
   return CHECK_TITLES[name] ?? name
+}
+
+function readinessRemedy(
+  remedy: HookCheck['remedy'],
+): NonNullable<ReadinessState['remedy']> {
+  if (remedy === undefined) {
+    return {
+      by: 'user-here',
+      summary: 'the detail above names what to change',
+      command: 'notifai hooks install',
+    }
+  }
+  if (remedy.by === 'user-elsewhere') return remedy
+  if (remedy.by === 'cli') return { ...remedy, by: 'cli' }
+  return { ...remedy, by: 'user-here' }
 }
 
   return [
@@ -1142,17 +1159,7 @@ function checkTitle(name: string): string {
       ...(check.ok || (check.reportOnly === true && check.remedy === undefined)
         ? {}
         : {
-            remedy: {
-              // The check's own remedy when it has one; the generic reinstall
-              // line was wrong exactly where it mattered (an unfired pointer
-              // needs a prompt, not `hooks install`). A report-only capability
-              // with no remedy is intentionally absent, not repairable.
-              ...(check.remedy ?? {
-                summary: 'the detail above names what to change',
-                command: 'notifai hooks install',
-              }),
-              by: check.remedy?.by ?? ('user-here' as const),
-            },
+            remedy: readinessRemedy(check.remedy),
           }),
     })),
     settings,
@@ -1167,12 +1174,14 @@ interface HookCheck {
   detail: string
   technical?: unknown
   /** A remedy truer than the generic `notifai hooks install`. */
-  remedy?: {
-    by?: 'cli' | 'user-here'
-    summary: string
-    command: string
-    user_action?: { code: string; harness: string; action: string; message: string }
-  }
+  remedy?:
+    | {
+        by?: 'cli' | 'user-here'
+        summary: string
+        command: string
+        user_action?: { code: string; harness: string; action: string; message: string }
+      }
+    | { by: 'user-elsewhere'; summary: string }
 }
 
 function hookChecks(deps: CommandDeps): HookCheck[] {
@@ -1185,7 +1194,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     checks.push({
       name: 'hooks',
       ok: true,
-      detail: 'not installed (optional) — `notifai hooks install` adds question routing',
+      detail: 'not installed (optional) — `notifai hooks install` adds supported lifecycle wiring; Question Routing depends on the harness',
     })
     return checks
   }
@@ -1195,7 +1204,35 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     detail: installations.map((i) => `${i.harness} (${i.file})`).join(', '),
   })
 
+  if (installations.some((installation) => installation.harness === 'openclaw')) {
+    const loadability = inspectOpenclawPluginLoadability(deps)
+    checks.push({
+      name: 'hooks (openclaw plugin)',
+      ok: loadability.loadable,
+      detail:
+        loadability.warning ??
+        `OpenClaw permits Notifai to load; plugins.allow and plugins.deny do not block it`,
+      technical: {
+        openclaw_plugin_loadable: loadability.loadable,
+        config_file: loadability.configFile,
+        blocking_keys: loadability.blockers.map((blocker) => blocker.key),
+        config_valid: loadability.error === null,
+      },
+      ...(loadability.loadable || loadability.remedy === null
+        ? {}
+        : { remedy: { by: 'user-elsewhere' as const, summary: loadability.remedy } }),
+    })
+  }
+
   const wired = new Set(installations.map((installation) => installation.harness))
+  if (wired.has('grok')) {
+    checks.push({
+      name: 'hooks (Grok activation)',
+      ok: false,
+      reportOnly: true,
+      detail: 'Grok discards SessionStart and allowed UserPromptSubmit stdout, so hook activation context is unsupported; load the Notifai skill directly',
+    })
+  }
   const unwired = detectedHarnesses(deps.cwd, deps.env).filter((harness) => !wired.has(harness))
   if (unwired.length > 0) {
     checks.push({
@@ -1682,6 +1719,15 @@ function wakeRouteCheck(
         readiness.state === 'ready'
           ? `the Stop hook returns at once and the answer is queued into this thread's own inbox in ${codexQueueHomeDirectory(deps.env)}, so it starts a turn here without you — within seconds when this session is live, and at its next opening when it is not`
           : `${readiness.reason}. Answers are still delivered, at this session's next turn rather than on their own`,
+    }
+  }
+  if (active.harness === 'grok') {
+    return {
+      name: 'hooks (wake route)',
+      ok: false,
+      reportOnly: true,
+      technical: { direct_wake_optional: true },
+      detail: 'Grok has no out-of-band wake route; its held Stop returns the answer to this same Agent Session within the complete answer window',
     }
   }
   return null

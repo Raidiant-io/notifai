@@ -209,6 +209,22 @@ describe('Hermes classic CLI/local Source Context seam', () => {
   })
 })
 
+describe('Grok Source Context', () => {
+  it('uses only an exact non-empty Grok session marker', () => {
+    expect(sourceContextHarnessSession({ GROK_SESSION_ID: '  grok-session  ' }, '/workspace', 1))
+      .toMatchObject({ harness: 'grok', label: 'Grok', sessionId: 'grok-session' })
+    expect(sourceContextHarnessSession({ GROK_HOME: '/isolated/grok' }, '/workspace', 1)).toBeNull()
+    expect(sourceContextHarnessSession({ GROK_SESSION_ID: '  ' }, '/workspace', 1)).toBeNull()
+  })
+
+  it('omits attribution when Grok inherits another harness marker', () => {
+    const env = { GROK_SESSION_ID: 'grok-session', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'parent' }
+    expect(resolveActiveHarness(env, '/workspace', 1).contested.map((entry) => entry.harness))
+      .toEqual(['claude-code', 'grok'])
+    expect(sourceContextHarnessSession(env, '/workspace', 1)).toBeNull()
+  })
+})
+
 describe('OpenClaw agent-local Source Context seam', () => {
   const PINNED_OPENCLAW = JSON.parse(
     readFileSync(new URL('./fixtures/openclaw-2026.7.1-2-agent-local.json', import.meta.url), 'utf8'),
