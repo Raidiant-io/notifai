@@ -27,19 +27,27 @@ Authored GitHub PR Markdown goes through a UTF-8 file passed as
 the stored body. The rule lives in `docs/RELEASING.md`. That is not the CLI
 `--body` / `--body-file` Notification Request transport.
 
-## Gates — run before every commit
+## Gates during ordinary work
+
+Run the boundary and machine-path checks for every change:
 
 ```sh
-pnpm check:boundary:self-test # prove boundary canaries still fail
 pnpm check:boundary   # structural allowlist + forbidden-content scan
 pnpm check:machine-paths # reject this machine's home path in files or history
-pnpm build            # protocol first — the CLI resolves its built exports
-pnpm -r test          # unit tests; no Docker, no network
-pnpm lint && pnpm -r typecheck
-pnpm check:commit     # commitlint on HEAD
-pnpm check:release    # packed files, metadata, docs, licenses, CLI version
-pnpm check:packed     # isolated registry-shaped install of the packed CLI; needs registry access
 ```
+
+For feature work, including a final feature candidate or PR, build,
+typecheck, lint, and test only changed packages and affected consumers. Select
+related Vitest files or methods; the CLI test wrapper forwards selectors, for
+example `pnpm --filter @raidiant/notifai test -- src/trust-policy.test.ts`.
+Run the boundary self-test when its scanner or allowlist changes. Commitlint
+runs in the commit hook; `pnpm check:commit` checks the resulting HEAD when
+needed. Keep the protected pre-push security scans below.
+
+Complete `pnpm -r test`, `pnpm check:release`, `pnpm check:packed`, and other
+whole-repository test suites are release-candidate gates, not ordinary commit
+or PR gates. Run them for an actual release or the maintainer's explicit
+full-suite request. The exact-SHA release workflow still owns its full gates.
 
 GitHub-hosted CI is release evidence, not the development feedback loop. It
 runs only when release automation explicitly dispatches an exact-SHA candidate,
