@@ -25,7 +25,9 @@ import {
  * commands every other harness invokes, so presence, activation, and
  * retirement stay in the CLI.
  *
- *   before_prompt_build -> session-start / subagent-start  (current owner/worker guidance)
+ *   session_start      -> openclaw-lifecycle              (generation observation)
+ *   before_reset       -> openclaw-lifecycle              (retire the old generation)
+ *   before_prompt_build -> session-start / subagent-start (context once per generation)
  *   message_received    -> user-prompt-submit              (User is present)
  *   agent_end           -> stop                            (the turn ended)
  *   session_end         -> session-end                     (retire local state)
@@ -41,7 +43,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 2
+const OPENCLAW_ADAPTER_VERSION = 3
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -191,6 +193,21 @@ function sessionKeyOf(event, ctx) {
   return typeof key === "string" ? key.trim() : ""
 }
 
+function sessionIdOf(event, ctx) {
+  const id = event?.sessionId ?? ctx?.sessionId
+  return typeof id === "string" && id.length > 0 ? id : undefined
+}
+
+function resumedFromOf(event) {
+  return typeof event?.resumedFrom === "string" && event.resumedFrom.length > 0
+    ? event.resumedFrom : undefined
+}
+
+function reasonOf(event) {
+  return typeof event?.reason === "string" && event.reason.length > 0
+    ? event.reason : undefined
+}
+
 function workspaceDirOf(event, ctx) {
   const dir = ctx?.workspaceDir ?? event?.workspaceDir ?? event?.context?.workspaceDir
   return typeof dir === "string" && dir.length > 0 ? dir : process.cwd()
@@ -213,18 +230,47 @@ function isUserMessage(event, ctx) {
   return true
 }
 
+function envelopeFor(sessionKey, event, ctx, hookEventName) {
+  return {
+    session_id: sessionKey,
+    cwd: workspaceDirOf(event, ctx),
+    hook_event_name: hookEventName,
+    openclaw_session_id: sessionIdOf(event, ctx),
+    openclaw_reason: reasonOf(event),
+    openclaw_resumed_from: resumedFromOf(event),
+  }
+}
+
+function onIfSupported(api, name, handler) {
+  try {
+    api.on(name, handler)
+  } catch {
+    // Older OpenClaw builds may reject a typed hook. The prompt fallback
+    // remains available, while unobserved rotations cannot be guessed.
+  }
+}
+
 function register(api) {
+  onIfSupported(api, "session_start", async (event, ctx) => {
+    const sessionKey = sessionKeyOf(event, ctx)
+    if (sessionKey === "") return
+    await runHook("openclaw-lifecycle", envelopeFor(sessionKey, event, ctx, "SessionStart"))
+  })
+
+  onIfSupported(api, "before_reset", async (event, ctx) => {
+    const sessionKey = sessionKeyOf(event, ctx)
+    if (sessionKey === "") return
+    await runHook("openclaw-lifecycle", envelopeFor(sessionKey, event, ctx, "BeforeReset"))
+  })
+
   api.on("before_prompt_build", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return { prependContext: WORKER_ACTIVATION_CONTEXT }
     const worker = isWorkerSession(sessionKey, ctx)
-    const resolved = await runHook(worker ? "subagent-start" : "session-start", {
-      session_id: sessionKey,
-      cwd: workspaceDirOf(event, ctx),
-      hook_event_name: worker ? "SubagentStart" : "SessionStart",
-    })
-    // Successful empty output means this Project is disabled. A later prompt
-    // rechecks enablement and supplies context after compaction or re-enable.
+    const resolved = await runHook(worker ? "subagent-start" : "session-start",
+      envelopeFor(sessionKey, event, ctx, worker ? "SubagentStart" : "SessionStart"))
+    // Successful empty output means this Project is disabled or this
+    // generation was already activated. A later prompt rechecks enablement.
     if (resolved !== null && resolved.trim().length === 0) return
     const context = typeof resolved === "string" && resolved.trim().length > 0
       ? resolved.trim()
@@ -256,11 +302,7 @@ function register(api) {
   api.on("session_end", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return
-    await runHook("session-end", {
-      session_id: sessionKey,
-      cwd: workspaceDirOf(event, ctx),
-      hook_event_name: "SessionEnd",
-    })
+    await runHook("session-end", envelopeFor(sessionKey, event, ctx, "SessionEnd"))
   })
 
   api.on("resolve_exec_env", (event, ctx) => {

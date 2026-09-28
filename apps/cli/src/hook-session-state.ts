@@ -135,6 +135,8 @@ export interface SessionIncarnation {
   /** Opaque identity shown to the service by the Session Attendant. Never a PID. */
   incarnation: string
   start: LifecycleStamp
+  /** The OpenClaw plugin generation behind this stable sessionKey. */
+  openclaw_generation?: string
   /** The harness process hosting this incarnation, when the starter knew it. */
   harness_process?: ProcessIdentity
 }
@@ -165,6 +167,9 @@ export function readSessionIncarnation(
       key: record['key'],
       incarnation: record['incarnation'],
       start,
+      ...(typeof record['openclaw_generation'] === 'string'
+        ? { openclaw_generation: record['openclaw_generation'] }
+        : {}),
       ...(harness !== undefined &&
       typeof harness['pid'] === 'number' &&
       typeof harness['start'] === 'string'
@@ -208,6 +213,7 @@ export function beginSessionIncarnation(
      * touching the marker, so shared cancellation stays intact.
      */
     clearEarlierEnd?: boolean
+    openclawGeneration?: string
   },
 ): SessionIncarnation {
   const stateFile = sessionStatePath(sessionId, env)
@@ -219,10 +225,13 @@ export function beginSessionIncarnation(
       current?.harness_process !== undefined &&
       (current.harness_process.pid !== options.harnessProcess.pid ||
         current.harness_process.start !== options.harnessProcess.start)
+    const differentOpenclawGeneration =
+      options.openclawGeneration !== undefined &&
+      current?.openclaw_generation !== options.openclawGeneration
     const endedEarlier =
       current !== null && endsIncarnation(marker, current) && happenedBefore(marker!.stamp, options.stamp)
     let next: SessionIncarnation
-    if (current !== null && !differentHarness && !endedEarlier) {
+    if (current !== null && !differentHarness && !differentOpenclawGeneration && !endedEarlier) {
       next =
         current.harness_process === undefined && options.harnessProcess !== undefined
           ? { ...current, harness_process: options.harnessProcess }
@@ -232,6 +241,9 @@ export function beginSessionIncarnation(
         key: randomBytes(12).toString('base64url'),
         incarnation: newIncarnationId(),
         start: options.stamp,
+        ...(options.openclawGeneration === undefined
+          ? {}
+          : { openclaw_generation: options.openclawGeneration }),
         ...(options.harnessProcess === undefined ? {} : { harness_process: options.harnessProcess }),
       }
     }
@@ -432,11 +444,15 @@ export function recordSessionStart(
   cwd?: string,
   codexStopDefinitionFingerprint?: string,
   stamp: LifecycleStamp = lifecycleStamp(),
+  openclawGeneration?: string,
 ): void {
   // Harnesses may reuse a session id only by explicitly starting that session
   // again. That lifecycle edge is the sole authority for clearing cancellation,
   // and it clears only an end recorded before this handler started.
-  beginSessionIncarnation(sessionId, env, { stamp })
+  beginSessionIncarnation(sessionId, env, {
+    stamp,
+    ...(openclawGeneration === undefined ? {} : { openclawGeneration }),
+  })
   updateSessionState(sessionId, env, (current) => {
     const next: SessionState = {
       ...current,

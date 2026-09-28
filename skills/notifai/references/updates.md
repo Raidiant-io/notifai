@@ -65,7 +65,7 @@ and harness follow-up. If `handoff_error` is present, run
 | Codex | Continue when the loaded Stop fingerprint and hook approvals still match. | Changed handler identity or source can need `/hooks` approval; a stale loaded Stop definition needs a fresh Agent Session. Follow the concrete new-CLI diagnosis. |
 | Cursor | Existing hooks use the updated adapter; reread guidance in the current conversation. | New lifecycle activation needs a fresh conversation, a prompt, and its first completed or errored turn. |
 | OpenCode | The loaded plugin invokes the adapter per event and obtains current guidance per model request. | Restart OpenCode when generated plugin code changed or required lifecycle activation is missing. |
-| OpenClaw | The loaded Gateway plugin invokes the adapter and obtains guidance before prompts. | Restart the Gateway when generated plugin code changed or required lifecycle activation is missing. |
+| OpenClaw | The loaded Gateway plugin checks before prompts and injects guidance once per observed generation; explicitly reread changed guidance in the current one. | Restart the Gateway when generated plugin code changed or required lifecycle activation is missing. |
 | Hermes | The local classic CLI can use the new executable and reread guidance in the same Agent Session. `notifai guidance` carries the shared weekly notice. | No managed Notifai hook/plugin and no invented restart requirement. |
 | Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | A newly installed SessionStart hook needs a fresh Agent Session for lifecycle observation; hook output cannot activate model-visible context. |
 

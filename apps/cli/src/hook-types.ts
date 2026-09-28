@@ -33,6 +33,12 @@ import type { WriteGuard } from './wake-support.js'
 /** Fields we read from harness hook JSON. Everything else is passed through. */
 export interface HookEnvelope {
   session_id?: string
+  /** OpenClaw's current transcript ID; session_id remains its stable sessionKey. */
+  openclaw_session_id?: string
+  /** OpenClaw's lifecycle reason, when its typed hook supplies one. */
+  openclaw_reason?: string
+  /** OpenClaw's previous transcript ID on a resumed session_start. */
+  openclaw_resumed_from?: string
   cwd?: string
   hook_event_name?: string
   /** How a harness lifecycle began: startup, resume, clear, compact, or fork. */

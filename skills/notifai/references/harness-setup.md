@@ -168,8 +168,11 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   startup, then start one fresh Agent Session, send one prompt, and run
   `notifai doctor`. Notifai owns its generated Gateway plugin and will not
   overwrite a foreign one. Exact Agent Session identity is the OpenClaw
-  `sessionKey`; `sessionId` is a rotating generation and is never used as the
-  session id. A session key containing `:subagent:` or an ACP nested context
+  `sessionKey`; the transcript `sessionId` can stay the same across `/new` and
+  `/reset`, while idle or daily rollover can change it. Notifai gives each
+  observed generation one activation on its first prompt, using the typed
+  lifecycle events to fence same-`sessionId` resets. A session key containing
+  `:subagent:` or an ACP nested context
   is a worker. Missing identity fails safe as a non-sending worker; only a
   proven parent Agent Session receives owner context. Explicit textual
   delegation promotes that worker through the same skill-and-guidance rule.

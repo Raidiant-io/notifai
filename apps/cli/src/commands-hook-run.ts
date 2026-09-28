@@ -31,6 +31,7 @@ import {
   confirmCursorStopActivation,
   lifecycleStamp,
   pruneAbandonedSessions,
+  readSessionIncarnation,
   readSessionState,
   recordSessionStart,
   resetCursorStopActivation,
@@ -45,6 +46,13 @@ import {
 } from './hook-types.js'
 import { codexStopDefinitionFingerprint, findInstallations } from './install-hooks.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
+import {
+  observeOpenclawPrompt,
+  observeOpenclawStart,
+  openclawGenerationLockPath,
+  readOpenclawGeneration,
+  writeOpenclawGeneration,
+} from './openclaw-generation.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -52,7 +60,7 @@ import { cursorStopActivationOutput, sessionActivationOutput } from './session-a
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
-const INTERNAL_HOOK_EVENTS = ['question-settlement'] as const
+const INTERNAL_HOOK_EVENTS = ['question-settlement', 'openclaw-lifecycle'] as const
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
 export function hookDefersDiagnosticsUntilAfterCleanup(
@@ -186,6 +194,40 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  if (event === 'openclaw-lifecycle') {
+    logger.bind({ session: envelope.session_id ?? null })
+    start({ cwd, event: envelope.hook_event_name ?? null })
+    if (harness !== 'openclaw' || envelope.session_id === undefined) return EXIT.ok
+    try {
+      const sessionKey = envelope.session_id
+      const outcome = withFileLock(openclawGenerationLockPath(sessionKey, deps.env), () => {
+        const current = readOpenclawGeneration(sessionKey, deps.env)
+        if (envelope.hook_event_name === 'SessionStart') {
+          const next = observeOpenclawStart(
+            current, envelope.openclaw_session_id, envelope.openclaw_resumed_from,
+          )
+          writeOpenclawGeneration(sessionKey, deps.env, next)
+          return 'start-observed'
+        }
+        if (envelope.hook_event_name === 'BeforeReset' && current !== null && !current.ended) {
+          if (
+            envelope.openclaw_session_id !== undefined && current.sessionId !== undefined &&
+            envelope.openclaw_session_id !== current.sessionId
+          ) return 'stale-reset-ignored'
+          if (current.activated) handleSessionEnd(deps.env, envelope, now())
+          writeOpenclawGeneration(sessionKey, deps.env, {
+            ...current, ended: true, resetPending: true,
+          })
+          return 'reset-observed'
+        }
+        return 'ignored'
+      })
+      logger.info('hook.end', { hook: event, outcome, decided: false })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
   if (event === 'attend') {
     logger.bind({ session: envelope.session_id ?? null })
     start({ cwd, event: envelope.hook_event_name ?? null, source: envelope.source ?? null })
@@ -263,6 +305,41 @@ export async function hookRunCommand(
       ? await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
           ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
       : undefined
+    if (harness === 'openclaw' && envelope.session_id !== undefined) {
+      try {
+        const sessionKey = envelope.session_id
+        const outcome = withFileLock(openclawGenerationLockPath(sessionKey, deps.env), () => {
+          const generation = observeOpenclawPrompt(
+            readOpenclawGeneration(sessionKey, deps.env), envelope.openclaw_session_id,
+          )
+          writeOpenclawGeneration(sessionKey, deps.env, generation)
+          if (generation.activated) return 'already-activated'
+          const previous = readSessionIncarnation(sessionKey, deps.env)
+          if (previous !== null && previous.openclaw_generation !== generation.id) {
+            // A new sessionId or resumed generation is authoritative even if
+            // its old session_end was dropped or delayed.
+            handleSessionEnd(deps.env, envelope, now())
+          }
+          const output = sessionActivationOutput(
+            harness, event === 'session-start' ? 'SessionStart' : 'SubagentStart',
+            cwd, deps.env, notice,
+          )
+          if (output === undefined || output.trim().length === 0) return 'activation-unavailable'
+          recordSessionStart(
+            sessionKey, deps.env, harness, cwd, undefined, lifecycleStamp(now()), generation.id,
+          )
+          writeOpenclawGeneration(sessionKey, deps.env, { ...generation, activated: true })
+          deps.io.out(output)
+          return 'context-added'
+        })
+        logger.info('hook.end', { hook: event, outcome, decided: false })
+      } catch (err) {
+        logger.error('hook.end', {
+          hook: event, outcome: 'record-failed', reason: 'session-state-failed', ...failureData(err),
+        })
+      }
+      return EXIT.ok
+    }
     const stdout = sessionActivationOutput(
       harness,
       event === 'session-start' ? 'SessionStart' : 'SubagentStart',
@@ -443,7 +520,28 @@ export async function hookRunCommand(
       // wait that long, and a busy log must never preserve ended-session state
       // or its inherited configuration. The resolved config above is retained
       // in memory so logging still uses the ending session's settings afterwards.
-      const outcome = handleSessionEnd(deps.env, envelope, (deps.now ?? Date.now)())
+      const outcome = harness === 'openclaw' && envelope.session_id !== undefined
+        ? withFileLock(openclawGenerationLockPath(envelope.session_id, deps.env), (): HookOutcome => {
+            const sessionKey = envelope.session_id!
+            const current = readOpenclawGeneration(sessionKey, deps.env)
+            const reason = envelope.openclaw_reason
+            if (reason === 'new' || reason === 'reset') {
+              // These can arrive after a same-ID replacement. before_reset
+              // owns cleanup; an end event alone cannot identify the old ID.
+              return { notes: [], log: { outcome: 'ignored', reason: 'reset-end' } }
+            }
+            if (current === null || current.ended ||
+              (envelope.openclaw_session_id !== undefined && current.sessionId !== undefined &&
+                envelope.openclaw_session_id !== current.sessionId)) {
+              return { notes: [], log: { outcome: 'ignored', reason: 'stale-openclaw-generation' } }
+            }
+            const ended = current.activated
+              ? handleSessionEnd(deps.env, envelope, now())
+              : { notes: [], log: { outcome: 'ignored', reason: 'inactive-openclaw-generation' } }
+            writeOpenclawGeneration(sessionKey, deps.env, { ...current, ended: true })
+            return ended
+          })
+        : handleSessionEnd(deps.env, envelope, now())
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
       if (config !== null) logConfigResolved(logger, config)
       const data = { hook: event, decided: false, ...outcome.log }

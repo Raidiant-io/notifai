@@ -79,12 +79,15 @@ import { dropPendingQuestion, inspectQuestionState } from './hook-question-state
 import {
   clearSessionState,
   pruneAbandonedSessions,
+  readSessionIncarnation,
   readSessionState,
+  sessionHasEnded,
   sessionNotified,
   sessionStatePath,
   writeSessionState as persistSessionState,
 } from './hook-session-state.js'
 import { type PendingQuestion, type SessionState } from './hook-types.js'
+import { readOpenclawGeneration } from './openclaw-generation.js'
 import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -387,6 +390,105 @@ function harness(replies: ReplyView[] = []): Harness {
     },
   }
 }
+
+describe('OpenClaw generation fencing at the CLI boundary', () => {
+  it('rotates on a new generation without an end and ignores a late old end', async () => {
+    const h = harness()
+    const sessionId = 'agent:main:main'
+    const envelope = (transcript: string) => ({
+      session_id: sessionId,
+      cwd: h.deps.cwd,
+      openclaw_session_id: transcript,
+    })
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope('transcript-a'), hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-a')), 'openclaw')
+    const first = readSessionIncarnation(sessionId, h.env)
+    expect(first?.openclaw_generation).toBe(readOpenclawGeneration(sessionId, h.env)?.id)
+    writeSessionState(sessionId, h.env, { last_prompt_at: NOW })
+
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope('transcript-b'), openclaw_resumed_from: 'transcript-a',
+      hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-b')), 'openclaw')
+    const second = readSessionIncarnation(sessionId, h.env)
+    expect(second?.openclaw_generation).toBe(readOpenclawGeneration(sessionId, h.env)?.id)
+    expect(second?.incarnation).not.toBe(first?.incarnation)
+    expect(readSessionState(sessionId, h.env).last_prompt_at).toBeUndefined()
+
+    await hookRunCommand(h.deps, 'session-end', stdin({
+      ...envelope('transcript-a'), openclaw_reason: 'idle',
+    }), 'openclaw')
+    expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(second?.incarnation)
+    expect(sessionHasEnded(sessionId, h.env)).toBe(false)
+    await hookRunCommand(h.deps, 'session-end', stdin({
+      ...envelope('transcript-b'), openclaw_reason: 'shutdown',
+    }), 'openclaw')
+    expect(sessionHasEnded(sessionId, h.env)).toBe(true)
+  })
+
+  it('rotates twice on same-ID resets and suppresses duplicate activation', async () => {
+    const h = harness()
+    const sessionId = 'agent:main:reset-probe'
+    const envelope = {
+      session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a',
+    }
+    const start = async () => hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart', openclaw_resumed_from: 'transcript-a',
+    }), 'openclaw')
+    const prompt = async () => hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    await start()
+    await prompt()
+    const first = readSessionIncarnation(sessionId, h.env)?.incarnation
+    await prompt()
+    expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(first)
+    for (const reason of ['new', 'reset']) {
+      await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+        ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: reason,
+      }), 'openclaw')
+      await hookRunCommand(h.deps, 'session-end', stdin({
+        ...envelope, openclaw_reason: reason,
+      }), 'openclaw')
+      await start()
+      await start()
+      await prompt()
+      const current = readSessionIncarnation(sessionId, h.env)?.incarnation
+      expect(current).toBeDefined()
+      expect(current).not.toBe(first)
+      await prompt()
+      expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(current)
+    }
+    expect(h.io.outLines).toHaveLength(3)
+  })
+
+  it('treats a first resumedFrom as a generation signal without an end', async () => {
+    const h = harness()
+    const envelope = {
+      session_id: 'agent:main:resumed-probe', cwd: h.deps.cwd,
+      openclaw_session_id: 'transcript-a',
+    }
+    const start = async (resumedFrom?: string) => hookRunCommand(
+      h.deps, 'openclaw-lifecycle', stdin({
+        ...envelope, hook_event_name: 'SessionStart',
+        ...(resumedFrom === undefined ? {} : { openclaw_resumed_from: resumedFrom }),
+      }), 'openclaw',
+    )
+    const prompt = async () => hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    await start()
+    await prompt()
+    const first = readSessionIncarnation(envelope.session_id, h.env)?.incarnation
+    await start('transcript-a')
+    await prompt()
+    const second = readSessionIncarnation(envelope.session_id, h.env)?.incarnation
+    expect(second).not.toBe(first)
+    await start('transcript-a')
+    await prompt()
+    expect(readSessionIncarnation(envelope.session_id, h.env)?.incarnation).toBe(second)
+    expect(h.io.outLines).toHaveLength(2)
+  })
+})
 
 function runFixtureGit(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], {
