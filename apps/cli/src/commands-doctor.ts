@@ -1194,7 +1194,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     checks.push({
       name: 'hooks',
       ok: true,
-      detail: 'not installed (optional) — `notifai hooks install` adds question routing',
+      detail: 'not installed (optional) — `notifai hooks install` adds supported lifecycle wiring; Question Routing depends on the harness',
     })
     return checks
   }
@@ -1225,6 +1225,14 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   const wired = new Set(installations.map((installation) => installation.harness))
+  if (wired.has('grok')) {
+    checks.push({
+      name: 'hooks (Grok activation)',
+      ok: false,
+      reportOnly: true,
+      detail: 'Grok discards SessionStart and allowed UserPromptSubmit stdout, so hook activation context is unsupported; load the Notifai skill directly',
+    })
+  }
   const unwired = detectedHarnesses(deps.cwd, deps.env).filter((harness) => !wired.has(harness))
   if (unwired.length > 0) {
     checks.push({
@@ -1711,6 +1719,15 @@ function wakeRouteCheck(
         readiness.state === 'ready'
           ? `the Stop hook returns at once and the answer is queued into this thread's own inbox in ${codexQueueHomeDirectory(deps.env)}, so it starts a turn here without you — within seconds when this session is live, and at its next opening when it is not`
           : `${readiness.reason}. Answers are still delivered, at this session's next turn rather than on their own`,
+    }
+  }
+  if (active.harness === 'grok') {
+    return {
+      name: 'hooks (wake route)',
+      ok: false,
+      reportOnly: true,
+      technical: { direct_wake_optional: true },
+      detail: 'Grok has no out-of-band wake route; its held Stop returns the answer to this same Agent Session within the complete answer window',
     }
   }
   return null

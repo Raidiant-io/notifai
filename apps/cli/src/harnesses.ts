@@ -6,6 +6,7 @@ export const SOURCE_CONTEXT_HARNESSES = [
   'opencode',
   'openclaw',
   'hermes',
+  'grok',
 ] as const
 
 export type SourceContextHarness = (typeof SOURCE_CONTEXT_HARNESSES)[number]
@@ -23,6 +24,7 @@ export const HOOK_INSTALLABLE_HARNESSES = [
   'cursor',
   'opencode',
   'openclaw',
+  'grok',
 ] as const
 
 export type HookInstallableHarness = (typeof HOOK_INSTALLABLE_HARNESSES)[number]
@@ -38,6 +40,7 @@ export const HARNESS_LABELS: Record<SourceContextHarness, string> = {
   opencode: 'OpenCode',
   openclaw: 'OpenClaw',
   hermes: 'Hermes',
+  grok: 'Grok',
 }
 
 export type DeliveryRoute =
@@ -102,6 +105,13 @@ const OPENCLAW_CAPABILITY: HarnessCapability = {
     'no proven answer continuation after agent_end; use a blocking reply command',
 }
 
+const GROK_CAPABILITY: HarnessCapability = {
+  stopContinuation: 'decision-block',
+  deliveryRoutes: ['hook-continuation', 'hold-for-next-turn'],
+  deliveryContract:
+    'the Stop hook holds the complete answer window, then returns a decision block carrying the answer into the same Grok Agent Session; the successor Stop confirms consumption',
+}
+
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
@@ -164,6 +174,7 @@ export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapabil
   cursor: CURSOR_CAPABILITY,
   opencode: OPENCODE_CAPABILITY,
   openclaw: OPENCLAW_CAPABILITY,
+  grok: GROK_CAPABILITY,
 }
 
 /** Question-routing capability for the active harness integration on this host. */

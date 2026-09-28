@@ -115,6 +115,9 @@ export async function attendHook(
   if (sessionId === undefined) return end('ignored', { reason: 'missing-session-id' })
   const support = attendantSupport(harness, deps.hookPlatform ?? process.platform)
   if (!support.supported) return end('unsupported', { reason: support.reason })
+  if (harness !== 'claude-code' && harness !== 'codex') {
+    return end('unsupported', { reason: 'harness-has-no-attendant' })
+  }
 
   const starting = envelope.hook_event_name === 'SessionStart' || envelope.source !== undefined
   const claimFile = attendantClaimPath(sessionId, deps.env)
@@ -328,6 +331,7 @@ function sessionMessageWriter(input: {
     log: logger,
   })
   if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, sequencerFor })
+  if (input.harness !== 'claude-code') return null
   const adapters: ClaudeWakeAdapters = deps.claudeWake ?? systemClaudeWakeAdapters(deps.env)
   const inbox = inspectClaudeInbox({
     pid: harnessPid,

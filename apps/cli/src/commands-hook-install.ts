@@ -13,7 +13,7 @@ import {
 } from './harnesses.js'
 import { installHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
 import type { HookEvent } from './hook-events.js'
-import { HOOK_EVENT_COMMAND_RE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
+import { HOOK_EVENT_COMMAND_RE, HOOK_EVENT_TABLE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   applyPlan,
@@ -221,6 +221,14 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         nodePath,
         ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
       }),
+    )
+  }
+  if (harness === 'grok') {
+    return finishInstall(
+      deps,
+      harness,
+      scriptPath,
+      installGrokHooks(deps, settingsTarget, { adapterPath, platform: hookPlatform, nodePath }, flags.narrate),
     )
   }
 
@@ -445,6 +453,71 @@ function installOpencodePlugin(
   return EXIT.ok
 }
 
+/** Grok merges global hook files. This entire file is ours; leave foreign files untouched. */
+function installGrokHooks(
+  deps: CommandDeps,
+  file: string,
+  options: { adapterPath: string; platform: NodeJS.Platform; nodePath: string },
+  narrate: boolean | undefined,
+): number {
+  const before = installationBytes([file])
+  try {
+    withTargetFileLock(file, () => {
+      if (existsSync(file)) {
+        assertOwnedRegularFile(file)
+        if (!isOurGrokHookFile(readFileSync(file, 'utf8'))) {
+          throw new Error(`${file} exists and was not written by Notifai; move it aside first.`)
+        }
+      }
+      atomicWriteFileSync(file, `${JSON.stringify({ hooks: buildHookConfig({
+        adapterPath: options.adapterPath,
+        harness: 'grok',
+        platform: options.platform,
+        nodePath: options.nodePath,
+      }) }, null, 2)}\n`, {
+        mode: 0o600,
+        preserveMode: false,
+        requireCurrentUserOwner: true,
+      })
+    })
+  } catch (err) {
+    deps.io.err(String(err))
+    return EXIT.failed
+  }
+  if (narrate !== false) printHooksInstallClose(deps, 'grok', file, before !== installationBytes([file]))
+  return EXIT.ok
+}
+
+function isOurGrokHookFile(source: string): boolean {
+  let parsed: unknown
+  try { parsed = JSON.parse(source) } catch { return false }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
+  const document = parsed as Record<string, unknown>
+  if (Object.keys(document).length !== 1 || typeof document['hooks'] !== 'object' || document['hooks'] === null || Array.isArray(document['hooks'])) return false
+  const events = Object.entries(document['hooks'] as Record<string, unknown>)
+  const knownEvents = new Set<string>(HOOK_EVENT_TABLE.flatMap((row) => row.document === null ? [] : [row.document]))
+  return events.length > 0 && events.every(([event, groups]) =>
+    knownEvents.has(event) && Array.isArray(groups) && groups.length > 0 && groups.every((group) =>
+      typeof group === 'object' && group !== null && !Array.isArray(group) &&
+      Object.keys(group).every((key) => key === 'matcher' || key === 'hooks') &&
+      (group.matcher === undefined || typeof group.matcher === 'string') &&
+      Array.isArray(group.hooks) && group.hooks.length > 0 && group.hooks.every((handler: unknown) =>
+        isOurGrokHookHandler(handler),
+      ),
+    ),
+  )
+}
+
+function isOurGrokHookHandler(handler: unknown): boolean {
+  if (typeof handler !== 'object' || handler === null || Array.isArray(handler)) return false
+  const fields = handler as Record<string, unknown>
+  const command = fields['command']
+  return Object.keys(fields).every((key) => key === 'type' || key === 'command' || key === 'timeout') &&
+    fields['type'] === 'command' && typeof command === 'string' &&
+    (fields['timeout'] === undefined || typeof fields['timeout'] === 'number') &&
+    HOOK_EVENT_COMMAND_RE.test(command) && command.includes('--owner notifai --harness grok')
+}
+
 function installOpenclawPlugin(
   deps: CommandDeps,
   file: string,
@@ -627,7 +700,18 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
         parseOpenclawConfig(readFileSync(configFile, 'utf8'), configFile)
       }
     }
-    if (harness === 'opencode' || harness === 'openclaw') {
+    if (harness === 'grok') {
+      const outcome = withTargetFileLock(file, () => {
+        if (!existsSync(file)) return 'absent' as const
+        assertOwnedRegularFile(file)
+        if (!isOurGrokHookFile(readFileSync(file, 'utf8'))) return 'foreign' as const
+        rmSync(file, { force: true })
+        return 'removed' as const
+      })
+      if (outcome === 'removed') deps.io.out(`Removed the Notifai Grok hooks at ${file}`)
+      else if (outcome === 'foreign') deps.io.out(`Left ${file} alone: Notifai did not write it.`)
+      else deps.io.out(`Nothing to remove: ${file} does not exist.`)
+    } else if (harness === 'opencode' || harness === 'openclaw') {
       const outcome = removeNotifaiPluginFile(harness, file)
       if (outcome === 'removed') {
         if (harness === 'openclaw') {

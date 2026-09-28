@@ -99,6 +99,7 @@ not part of the current public support claim.
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenClaw hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
+| Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
 Each `send --reply` fallback owns the complete answer window in its foreground
 process: keep it alive and set `--reply-timeout` equal to `--reply-window`.

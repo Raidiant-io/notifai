@@ -185,6 +185,16 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   `npx skills`; no Hermes plugin may vendor a copy. Nested inherited harness
   markers fail closed. TUI, gateway, API, ACP, and remote backends are not
   this baseline.
+- **Grok:** `notifai hooks install --harness grok` writes only the Notifai-owned
+  Machine hook file under `~/.grok/hooks/` (or `GROK_HOME/hooks/`). Start a fresh
+  Grok Agent Session and send one prompt to observe lifecycle state. Grok
+  discards SessionStart and allowed UserPromptSubmit output, so these hooks do
+  not activate model-visible guidance; load the Notifai skill from
+  `~/.agents/skills` directly. `GROK_SESSION_ID` supplies exact Source Context
+  in an uncontested tool subprocess. Grok's Stop hook holds the complete answer
+  window, then returns a decision block to continue this same Agent Session;
+  its successor Stop confirms consumption. Grok has no Session Attendant,
+  Session Notes, or post-consumption Answer Edits.
 
 Do not claim managed hook, activation, or Question Routing support for a
 harness that is absent from `notifai hooks install --help`. Classic Hermes CLI
@@ -217,6 +227,10 @@ meter differs per harness:
   fails so Notifai's journal can recover the answer. Never queue and resume the
   same answer separately: a resume can consume the queue and the repeated
   prompt, producing two copies.
+- **Grok:** the Stop hook stays held through the complete answer window and
+  returns the answer as a decision block to the same Agent Session. Its native
+  `stopHookActive` flag on the successor Stop confirms consumption. There is no
+  out-of-band wake route or Session Attendant.
 - **Crash recovery:** the answer journal protects an accepted answer if an
   owner process or its route fails. It is not the normal last meter for an
   unexpired question.

@@ -253,6 +253,9 @@ function stopHandler(
   if (stopHandlerIsDetached(harness, options.platform)) {
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
+  if (harness === 'grok') {
+    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
+  }
   if (harness === 'codex' || harness === 'claude-code') {
     return {
       type: 'command',
@@ -370,6 +373,8 @@ export function settingsFile(
       return path.join(harnessAccountHome(env, platform), '.cursor', 'hooks.json')
     case 'claude-code':
       return path.join(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude', platform), 'settings.json')
+    case 'grok':
+      return path.join(configHome(env, 'GROK_HOME', '.grok', platform), 'hooks', 'notifai.json')
     case 'codex':
       return inspectCodexLayer(codexMachineLayerPaths(env, platform)).writeTarget
     default:
@@ -399,6 +404,8 @@ export function legacyProjectHookFiles(
       return [path.join(cwd, '.cursor', 'hooks.json')]
     case 'claude-code':
       return [path.join(cwd, '.claude', 'settings.local.json')]
+    case 'grok':
+      return []
     case 'codex':
       return codexLegacyProjectLayers(cwd).flatMap((paths) => [paths.hooksJson, paths.configToml])
     default:
@@ -670,6 +677,17 @@ export function machineHookFiles(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string[] {
+  if (harness === 'grok') {
+    const target = settingsFile('grok', env, platform)
+    const directory = path.dirname(target)
+    let names: string[]
+    try {
+      names = readdirSync(directory).filter((name) => name.endsWith('.json')).sort()
+    } catch {
+      return [target]
+    }
+    return [target, ...names.map((name) => path.join(directory, name)).filter((file) => file !== target)]
+  }
   if (harness !== 'codex') return [settingsFile(harness, env, platform)]
   const paths = codexMachineLayerPaths(env, platform)
   return [paths.hooksJson, paths.configToml]
@@ -799,6 +817,7 @@ function localHarnessEvidence(cwd: string): HookInstallableHarness[] {
   if (existsSync(path.join(cwd, '.cursor'))) found.push('cursor')
   if (existsSync(path.join(cwd, '.opencode'))) found.push('opencode')
   if (existsSync(path.join(cwd, '.openclaw'))) found.push('openclaw')
+  if (existsSync(path.join(cwd, '.grok'))) found.push('grok')
   return found
 }
 
@@ -814,6 +833,7 @@ function globalHarnessEvidence(
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
   if (existsSync(opencodeConfigDir(env, platform))) found.push('opencode')
   if (openclawHasGlobalEvidence(existsSync, env, platform)) found.push('openclaw')
+  if (existsSync(configHome(env, 'GROK_HOME', '.grok', platform))) found.push('grok')
   return found
 }
 

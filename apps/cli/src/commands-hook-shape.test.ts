@@ -34,6 +34,15 @@ describe('Stop continuation lifetime admission', () => {
     ).toEqual([])
   })
 
+  it('requires a full-window blocking Stop for Grok', () => {
+    expect(stopShapeProblems(installation('grok', false, 600), 'darwin'))
+      .toEqual([expect.stringContaining('complete answer window')])
+    expect(stopShapeProblems(installation('grok', true, QUESTION_STOP_TIMEOUT_SECONDS), 'darwin'))
+      .toEqual([expect.stringContaining('blocking continuation')])
+    expect(stopShapeProblems(installation('grok', false, QUESTION_STOP_TIMEOUT_SECONDS), 'darwin'))
+      .toEqual([])
+  })
+
   it.each(['win32', 'darwin', 'linux'] as const)(
     'needs an async codex Stop on %s, and stops demanding a full-window budget for it',
     (platform) => {

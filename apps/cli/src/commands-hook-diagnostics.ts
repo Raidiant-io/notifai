@@ -180,5 +180,8 @@ export function hookActivationAdvice(installations: Installation[]): string {
       'OpenClaw: restart the Gateway, then send one prompt; plugins load at startup, but non-blocking question continuation is intentionally unsupported',
     )
   }
+  if (harnesses.has('grok')) {
+    advice.push('Grok: start one fresh Agent Session and send one prompt; hooks observe lifecycle events, while model-visible hook activation is unsupported, so load the Notifai skill directly')
+  }
   return `${advice.join('. ')}.`
 }
