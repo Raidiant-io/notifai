@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { doctorCommand } from './commands-doctor.js'
 import { hooksInstallCommand, hooksUninstallCommand } from './commands-hook-install.js'
-import { parseOpenclawConfig } from './openclaw-plugin.js'
+import {
+  parseOpenclawConfig,
+  removeOpenclawLoadPathConfigText,
+  removeOpenclawNotifaiConfigText,
+} from './openclaw-plugin.js'
 
 const roots: string[] = []
 
@@ -71,6 +75,117 @@ function fixture(config: string) {
 }
 
 describe('OpenClaw JSONC config edits', () => {
+  it('keeps the comment immediately before a following foreign plugin', () => {
+    const source = `{
+  "plugins": {
+    "entries": {
+      "notifai": { "enabled": true },
+      // Keep this: settings for my other plugin
+      "other": { "enabled": true }
+    }
+  }
+}\n`
+    const result = removeOpenclawNotifaiConfigText(source, 'probe', '/fake/notifai')
+    expect(result).toContain('      // Keep this: settings for my other plugin\n      "other": { "enabled": true }')
+    expect(result).not.toContain('"notifai"')
+    expect(parseOpenclawConfig(result)).toEqual({ plugins: { entries: { other: { enabled: true } } } })
+  })
+
+  it('keeps a commented foreign plugin when notifai is the last property', () => {
+    const source = `{
+  "plugins": {
+    "entries": {
+      // Keep this comment and the foreign property
+      "other": { "enabled": true },
+      "notifai": { /* owned comment */ "enabled": true }
+    }
+  }
+}\n`
+    const result = removeOpenclawNotifaiConfigText(source, 'probe', '/fake/notifai')
+    expect(result).toBe(source.replace(',\n      "notifai": { /* owned comment */ "enabled": true }', ''))
+  })
+
+  it('keeps comments between a foreign plugin and the last notifai property', () => {
+    const source = `{
+  "plugins": {
+    "entries": {
+      "other": { "enabled": true },
+      // Keep this note on the foreign plugin.
+      "notifai": { "enabled": true },
+    }
+  }
+}\n`
+    const result = removeOpenclawNotifaiConfigText(source, 'probe', '/fake/notifai')
+    expect(result).toContain('"other": { "enabled": true }\n      // Keep this note on the foreign plugin.')
+    expect(result).not.toContain('"notifai"')
+    expect(parseOpenclawConfig(result)).toEqual({ plugins: { entries: { other: { enabled: true } } } })
+  })
+
+  it('removes a middle or only notifai property without pruning its containers', () => {
+    const middle = '{"plugins":{"entries":{"before":1,"notifai":{/*owned*/"enabled":true},"after":2}}}'
+    const middleResult = removeOpenclawNotifaiConfigText(middle, 'probe', '/fake/notifai')
+    expect(middleResult).toBe('{"plugins":{"entries":{"before":1,"after":2}}}')
+
+    const only = '{"plugins":{"entries":{"notifai":{"enabled":true}}}}'
+    expect(removeOpenclawNotifaiConfigText(only, 'probe', '/fake/notifai'))
+      .toBe('{"plugins":{"entries":{}}}')
+  })
+
+  it('preserves a pre-existing commented-empty entries container byte-for-byte after install and uninstall', () => {
+    const original = `{
+  "plugins": {
+    "entries": {
+      // Keep this even while there are no plugin entries.
+    }
+  }
+}\n`
+    const f = fixture(original)
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(hooksUninstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(readFileSync(f.configFile, 'utf8')).toBe(original)
+  })
+
+  it('round trips a richly commented config with no original Notifai content byte-for-byte', () => {
+    const original = `{
+  // Account-level settings
+  "identity": "keep // and /* literal */",
+  "plugins": {
+    /* Preserve plugin order. */
+    "entries": {
+      // This belongs to another plugin.
+      "other": {
+        "enabled": true
+      }
+    }
+  },
+  "url": "https://example.test/a//b"
+}\n`.replace(/\n/g, '\r\n')
+    const f = fixture(original)
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(hooksUninstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(readFileSync(f.configFile, 'utf8')).toBe(original)
+  })
+
+  it('removes only the matching legacy load path and retains neighboring comments', () => {
+    const source = `{
+  "plugins": {
+    "load": {
+      "paths": [
+        "/other",
+        "/fake/notifai",
+        // Keep this path.
+        "/still-here"
+      ]
+    }
+  }
+}\n`
+    const result = removeOpenclawLoadPathConfigText(source, 'probe', '/fake/notifai')
+    expect(result).toContain('        // Keep this path.\n        "/still-here"')
+    expect(parseOpenclawConfig(result)).toEqual({
+      plugins: { load: { paths: ['/other', '/still-here'] } },
+    })
+  })
+
   it('preserves foreign comments, key order and comment-like string contents through install and uninstall', () => {
     const original = `{
   // keep this line comment
