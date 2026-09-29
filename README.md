@@ -317,9 +317,12 @@ It reports Session Presence for the question route but does not
 accept Session Notes or Answer Edits.
 
 The attendant also hands a note, or a change to an answer the agent already
-received, from your devices into that running session in place, over the same
-route a detached answer uses: Claude Code's inbox socket, or the Codex thread's
-own queue. Each hand-off is claimed first, so an edited answer can only follow
+received, from your devices into that running session. Claude Code uses its
+inbox socket. Once its exact session has run a trusted synchronous `PostToolUse`
+hook, Codex uses that hook during active turns and its native queue when idle.
+Before that observation, or without that trusted handler,
+Codex retains queue delivery; if no tool boundary occurs, delivery waits for
+turn end. Each hand-off is claimed first, so an edited answer can only follow
 the answer it replaces, and nothing is written twice. The agent acknowledges
 each one with `notifai acknowledge sm_…`, exactly as it acknowledges an
 answered request. A Claude Code session without an inbox socket (for example

@@ -64,6 +64,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Exact incarnation observed executing the currently trusted Codex tool hook. */
+  codex_tool_hook?: { incarnation: string; fingerprint: string }
   /** Harness that owns this exact lifecycle state. */
   harness?: HookHarness
   /** Checkout whose hook definition activated this session; lifecycle diagnostics only. */

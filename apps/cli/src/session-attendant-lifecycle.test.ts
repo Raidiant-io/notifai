@@ -24,8 +24,8 @@ import {
   refreshSessionMarkers,
   sessionHasEnded,
 } from './hook-session-state.js'
-import { inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
-import { buildHookConfig } from './install-hooks.js'
+import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
+import { buildHookConfig, codexTrustKey, codexHookIdentityHash, findInstallations } from './install-hooks.js'
 import { nullLogger } from './logging.js'
 import { currentProcessIdentity, processExecutableName } from './process-identity.js'
 import { disableProject, enableProject, projectBinding } from './project-enablement.js'
@@ -47,6 +47,7 @@ import {
   writeAttendantStatus,
 } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
+import { codexToolHookReady, readCodexToolMessages } from './codex-tool-messages.js'
 
 const HARNESS = { pid: 4242, start: 'Fri Sep 25 11:12:08 2026' }
 
@@ -780,6 +781,96 @@ describe('notifai hook attend for Codex', () => {
     markSessionEnded(THREAD, env, Date.now() + 1)
     await running
     expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'ended' }])
+  })
+
+  it.each(['tool-hook', 'turn-end', 'missing-hook', 'first-hook', 'turn-start-race'])('routes a staged Note safely: %s', async (mode) => {
+    const { env, root } = codexEnv()
+    enableProject(projectBinding(root, env, undefined))
+    const home = env['CODEX_HOME']!
+    mkdirSync(home, { recursive: true })
+    writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(), harness: 'codex' }) }))
+    const installed = findInstallations(env).find((entry) => entry.harness === 'codex')!
+    writeFileSync(path.join(home, 'config.toml'), installed.handlers
+      .filter((handler) => ['PostToolUse', 'UserPromptSubmit'].includes(handler.event))
+      .map((handler) => `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
+    const owner = currentProcessIdentity()!
+    env['NOTIFAI_HOOK_SOURCE_PID'] = String(owner.pid)
+    const output: string[] = []
+    const queued: string[] = []
+    let offered = false
+    let delivered = false
+    let claims = 0
+    const outcomes: string[] = []
+    const client = {
+      compatibility: async () => ({ server_capabilities: ['session_attendance'] }),
+      attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+        if (body.state !== 'running') return { status: 'withdrawn' }
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return { status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c', messages:
+          offered && !delivered
+            ? [{ message_id: 'sm_tool', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note', body: 'Use the tool hook' }] : [] }
+      },
+      claimDeliveryAttempt: async () => {
+        claims += 1
+        if (mode === 'turn-start-race' && claims === 1) {
+          recordTurnStart(THREAD, env, readSessionIncarnation(THREAD, env)!.key, 'busy')
+        }
+        return { attempt_id: `att_tool_${claims}`, claim_remaining_ms: 30_000 }
+      },
+      reportDeliveryAttempt: async (id: string, body: { outcome: string }) => {
+        outcomes.push(body.outcome)
+        delivered = body.outcome === 'handed_off'
+        return { attempt_id: id, ...body, replayed: false }
+      },
+    } as unknown as ApiClient
+    const deps = attendDeps(env, root, { clientFactory: () => client,
+      codexWake: { queue: async (_id, _cwd, text) => { queued.push(text) } } })
+    deps.attendant!.harnessProcess = owner
+    if (mode !== 'first-hook') deps.attendant!.codexToolHookReady = () => mode !== 'missing-hook'
+    deps.attendant!.probeAdapters!.readStart = () => owner.start
+    deps.attendant!.probeAdapters!.parentPid = () => owner.pid
+    deps.io.out = (text) => { output.push(text) }
+    recordSessionNotified(THREAD, env, Date.now())
+    const running = hookRunCommand(deps, 'attend', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }), 'codex')
+    try {
+      await until(() => readAttendantLease(THREAD, env) !== null, 'lease')
+      const incarnation = readSessionIncarnation(THREAD, env)!
+      if (mode !== 'turn-start-race') recordTurnStart(THREAD, env, incarnation.key, 'busy')
+      offered = true
+      if (mode === 'missing-hook' || mode === 'first-hook') {
+        await until(() => delivered, 'queue fallback without tool hook')
+        expect(queued).toHaveLength(1)
+        if (mode === 'first-hook') {
+          await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
+          expect(codexToolHookReady(deps, THREAD)).toBe(true)
+          expect(claims).toBe(1)
+        }
+        expect(output).toEqual([])
+        return
+      }
+      await until(() => readCodexToolMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')
+      if (mode === 'turn-start-race') await until(() => outcomes.includes('released'), 'idle claim released after turn start')
+      else expect(claims).toBe(0)
+      expect(queued).toEqual([])
+      if (mode === 'turn-end') {
+        recordTurnEnd(THREAD, env, 'busy')
+        await until(() => delivered, 'queue fallback after turn completion')
+        expect(queued).toHaveLength(1)
+        expect(output).toEqual([])
+        return
+      }
+      await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
+      expect(output).toHaveLength(1)
+      expect(output[0]).toContain('sm_tool')
+      expect(delivered).toBe(true)
+      recordTurnEnd(THREAD, env, 'busy')
+      await until(() => listAttendantReports(env)[0]?.activity === 'idle', 'idle after hook')
+      expect(queued).toEqual([])
+      expect(claims).toBe(mode === 'turn-start-race' ? 2 : 1)
+    } finally {
+      markSessionEnded(THREAD, env, Date.now() + 1)
+      await running
+    }
   })
 
   it('stays presence-only, accepting no notes, when no codex executable can write the thread queue', async () => {

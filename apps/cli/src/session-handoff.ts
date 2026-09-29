@@ -24,7 +24,7 @@ import { WriteAbortedError, WriteDeadlineError, type WriteGuard } from './wake-s
 export type SessionWriteResult =
   | {
       status: 'written'
-      route: 'inbox-socket' | 'session-queue'
+      route: 'inbox-socket' | 'session-queue' | 'tool-hook'
       /** Claude only: whether the session was idle or busy when the message was posted. */
       sessionState?: 'live-idle' | 'live-busy'
     }

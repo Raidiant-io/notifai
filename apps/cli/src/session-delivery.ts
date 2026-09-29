@@ -118,6 +118,8 @@ export interface SequencerDeps {
   liveness?: (identity: ProcessIdentity) => ProcessLiveness
   /** Test seam: whether any process of a recorded process group still runs. */
   groupAlive?: (pgid: number) => boolean
+  /** Monotonic recovery budget for a short synchronous hook; remaining work stays journaled. */
+  recoveryDeadline?: number
 }
 
 export type ClaimRefusal = DeliveryClaimRefusalReason | 'not_found' | 'unavailable'
@@ -260,6 +262,7 @@ export async function recoverDeliveryJournal(deps: SequencerDeps): Promise<numbe
   const liveness = deps.liveness ?? ((identity: ProcessIdentity) => processIdentityLiveness(identity))
   let reported = 0
   for (const entry of readDeliveryJournal(deps.sessionId, deps.env)) {
+    if (deps.recoveryDeadline !== undefined && deps.monotonic() >= deps.recoveryDeadline) break
     if (!reportable(entry, deps.writer, liveness)) continue
     if (entry.unclaimed === true) {
       if (await recordUnclaimed(deps, entry)) reported += 1

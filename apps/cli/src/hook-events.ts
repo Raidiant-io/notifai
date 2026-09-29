@@ -16,6 +16,14 @@ import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
  */
 export const HOOK_EVENT_TABLE = [
   {
+    notifai: 'post-tool-use',
+    document: 'PostToolUse',
+    cursor: null,
+    openclaw: false,
+    opencodeDiscovery: false,
+    timeoutSeconds: 10,
+  },
+  {
     notifai: 'session-start',
     document: 'SessionStart',
     cursor: 'sessionStart',
@@ -135,7 +143,9 @@ export function requiredHookEvents(
 ): readonly HookEvent[] {
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
-    row.notifai === 'attend'
+    row.notifai === 'post-tool-use'
+      ? harness === 'codex' && installsSessionAttendant(harness, platform)
+      : row.notifai === 'attend'
       ? installsSessionAttendant(harness, platform)
       : harness === 'cursor'
         ? row.cursor !== null

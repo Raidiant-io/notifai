@@ -7,8 +7,13 @@ While this session runs, the User can send into it from their device:
 - an **edited answer**: a change to an answer you already received. It
   replaces the earlier answer and is their current word.
 
-Each arrives as a turn beginning `Notifai —` that names a Session Message
+Each arrives as context beginning `Notifai —` that names a Session Message
 (`sm_…`). The User's words are one quoted value; the command stands outside it.
+It can arrive after a tool call within the current turn or as a new turn.
+
+`notifai replies --pending` lists outstanding questions. It does not inspect
+Session Notes waiting in the harness; an empty result establishes only that
+there are no outstanding questions.
 
 ## Acknowledge each one once, before acting on it
 

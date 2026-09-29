@@ -318,8 +318,7 @@ On `no_active_devices`, run `notifai init --json`, close its gap, then repeat th
 exact original send with `--retry`. A verification Notification does not deliver
 the original Agent Event.
 
-Question routing needs a proven harness continuation; an installed Hermes
-plugin supplies activation but does not make `ask` available. `ask` refuses to
+Question Routing needs a proven continuation. `ask` refuses to
 register a question it cannot route back to you — the diagnosis names what to fix. The
 mechanics of installing, activating, and recovering that route are in
 [Harness setup and recovery](references/harness-setup.md). Read it when you are

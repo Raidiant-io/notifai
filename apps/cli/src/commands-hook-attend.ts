@@ -66,9 +66,12 @@ import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThrea
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
+import { codexToolHookReady, stageCodexToolMessages } from './codex-tool-messages.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
 export interface AttendantSeams {
+  /** Isolated tests only; production proves the installed hook and its trust. */
+  codexToolHookReady?: () => boolean
   harnessProcess?: ProcessIdentity
   probeAdapters?: ClaudeProbeAdapters
   clock?: AttendantClock
@@ -387,11 +390,10 @@ function sessionMessageWriter(input: {
 }
 
 /**
- * Codex takes a Session Message through the thread's own durable inbox: the
- * `codex queue` writer runs as a subprocess in its own process group, so it is
- * journaled as a subprocess write and its group recorded the moment it exists.
- * The attendant lives only while Codex keeps this thread loaded, and a loaded
- * thread starts a turn for a queued message whether it was idle or working.
+ * Busy Codex turns leave messages unclaimed for PostToolUse. Once idle,
+ * `codex queue` wakes the thread through its durable inbox. Both paths claim
+ * under the same delivery sequencer before writing; neither retries a write
+ * that the other may have made.
  */
 function codexMessageWriter(input: {
   deps: CommandDeps
@@ -412,8 +414,25 @@ function codexMessageWriter(input: {
     logger.info('attendant.state', { messages: 'unavailable', reason: 'codex-executable-not-found' })
     return null
   }
-  return (client, batch, attendant) =>
-    handOffSessionMessages(batch, attendant, {
+  return async (client, batch, attendant) => {
+    const incarnation = readSessionIncarnation(sessionId, deps.env)
+    const generation = attendant.generation()
+    if (incarnation === null || generation === null || !attendant.mayWrite()) return 'retry-soon'
+    const toolReady = (deps.attendant?.codexToolHookReady ?? (() => codexToolHookReady(deps, sessionId)))()
+    // Stage before choosing the route. A hook and an idle writer may race;
+    // the shared delivery claim is their sole irreversible ownership point.
+    stageCodexToolMessages(sessionId, deps.env, {
+      incarnation: attendant.incarnation(), generation,
+    }, toolReady ? batch : [])
+    const idle = (): boolean => readTurnActivity(sessionId, deps.env, incarnation.key) === 'idle'
+    if (toolReady && !idle()) return 'retry-soon'
+    return handOffSessionMessages(batch, {
+      incarnation: () => attendant.incarnation(),
+      generation: () => attendant.generation(),
+      // A new prompt during the claim returns the message unwritten. The
+      // tool hook can claim it at its next boundary instead of losing to queue.
+      mayWrite: () => attendant.mayWrite() && (!toolReady || idle()),
+    }, {
       sequencer: input.sequencerFor(client),
       write: (text, begin, guard, writerGroup) =>
         deliverIntoCodexThread({
@@ -427,6 +446,7 @@ function codexMessageWriter(input: {
           onSpawn: writerGroup,
         }),
     })
+  }
 }
 
 /** Record the Codex turn this turn end or interrupt closes. */

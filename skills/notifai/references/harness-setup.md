@@ -127,6 +127,12 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   skill and guidance as the new Notification Request owner.
 - **Codex:** run `notifai hooks install --harness codex`. If `hooks-trust`
   fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
+  The synchronous `PostToolUse` handler delivers Session Notes and Answer Edits
+  after tools during an active turn. Install and approve that handler, then
+  start a fresh Agent Session to use the new attendant and hook definitions.
+  Busy delivery starts after that exact session first runs the trusted hook;
+  until then, and while idle, Notes use the native queue. A running tool must
+  return before its hook runs.
   Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
   SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same
