@@ -396,7 +396,7 @@ function harness(replies: ReplyView[] = []): Harness {
 }
 
 describe('OpenClaw generation fencing at the CLI boundary', () => {
-  it('discovers a question only after its exact enabled turn ends', async () => {
+  it('inventories an activated session across turn boundaries and drops it when disabled', async () => {
     const h = harness()
     const sessionId = 'agent:main:inventory-probe'
     const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
@@ -409,7 +409,9 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       pending: [{ question: 'Ready?', summary: 'Ready?', asked_at: NOW }],
     })
     await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
-    expect(JSON.parse(h.io.outLines.at(-1)!) as unknown[]).toEqual([])
+    expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
+      expect.objectContaining({ session_key: sessionId }),
+    ])
     await hookRunCommand(h.deps, 'openclaw-turn-end', stdin(envelope), 'openclaw')
     await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
     expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
