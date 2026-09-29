@@ -219,3 +219,10 @@ export function readTurnActivity(sessionId: string, env: NodeJS.ProcessEnv, key:
   const { key: recorded, current, ended } = readTurns(turnActivityPath(sessionId, env))
   return recorded === key && current !== null && !ended.includes(current) ? 'working' : 'idle'
 }
+
+/** Exact active turn, used to reject a tool hook that outlived interruption. */
+export function currentCodexTurn(sessionId: string, env: NodeJS.ProcessEnv, key: string): string | null {
+  const record = readTurns(turnActivityPath(sessionId, env))
+  return record.key === key && record.current !== null && !record.ended.includes(record.current)
+    ? record.current : null
+}

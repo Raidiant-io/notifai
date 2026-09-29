@@ -3,6 +3,7 @@ import { agentUpdateNotice } from './agent-update-notice.js'
 import { claudeWakeRoute } from './claude-wake.js'
 import { ApiCallError } from './client.js'
 import { codexWakeRoute } from './codex-wake.js'
+import { deliverCodexToolMessage } from './codex-tool-messages.js'
 import {
   EXIT,
   SETUP_COMMAND,
@@ -295,6 +296,16 @@ export async function hookRunCommand(
       !sessionHasEnded(envelope.session_id, deps.env) &&
       (envelope.openclaw_session_id === undefined || current.sessionId === envelope.openclaw_session_id)
       ? current.id : null
+  }
+  if (event === 'post-tool-use') {
+    start({ cwd })
+    try {
+      if (harness === 'codex' && lifecycleEnabled()) await deliverCodexToolMessage(deps, envelope, logger)
+      logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
+    }
+    return EXIT.ok
   }
   if (event === 'openclaw-generation') {
     start({ cwd })

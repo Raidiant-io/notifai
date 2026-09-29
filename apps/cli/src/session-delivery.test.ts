@@ -262,6 +262,20 @@ describe('per-session delivery sequencer', () => {
 })
 
 describe('journal recovery for writers that died before reporting', () => {
+  it('stops recovery at a synchronous hook budget and leaves the rest for another owner', async () => {
+    const h = setup(() => 'gone')
+    seedJournal(h.env, Array.from({ length: 5 }, (_, i) => ({
+      attempt_id: `att_budget_${i}`, subject: { type: 'session_message' as const, message_id: `sm_${i}` },
+      stage: 'claimed' as const, writer: GONE, claimed_at: h.deps.wall(),
+    })))
+    const report = h.deps.client.reportDeliveryAttempt
+    h.deps.client.reportDeliveryAttempt = async (...args) => { h.advance(600); return report(...args) }
+    h.deps.recoveryDeadline = h.deps.monotonic() + 500
+    expect(await recoverDeliveryJournal(h.deps)).toBe(1)
+    expect(readDeliveryJournal(SESSION, h.env).filter((entry) => entry.reported === undefined)).toHaveLength(4)
+    delete h.deps.recoveryDeadline
+    expect(await recoverDeliveryJournal(h.deps)).toBe(4)
+  })
   const stages = [
     ['claimed', 'released'],
     ['writing', 'unconfirmed'],

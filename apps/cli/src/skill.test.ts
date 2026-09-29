@@ -520,10 +520,10 @@ describe('Notifai agent skill', () => {
       expect(harnessReference).toContain(`**${harness}:**`)
     }
     expect(harnessReference).toMatch(/exact `HERMES_SESSION_ID`/i)
-    expect(harnessReference).toMatch(/Do not run `notifai hooks install --harness hermes`/i)
+    expect(harnessReference).toMatch(/`notifai hooks install --harness hermes`\s+installs and enables Notifai's native plugin/i)
     expect(harnessReference).toMatch(/blocking `notifai send --reply`/i)
     expect(harnessReference).toMatch(/npx skills/i)
-    expect(harnessReference).toMatch(/no Hermes plugin may vendor/i)
+    expect(harnessReference).toMatch(/Hermes plugin does not include a copy/i)
     // The agent runs what a process can run; the human only does the human part.
     expect(harnessReference).toMatch(/there is no scope to ask about/i)
     expect(harnessReference).toContain('notifai init --hooks --json')

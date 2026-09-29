@@ -28,6 +28,8 @@ export type MessageHandOffResult = 'done' | 'retry-soon'
 
 export interface MessageHandOffDeps {
   sequencer: SequencerDeps
+  /** Short synchronous hooks must not wait behind another delivery writer. */
+  lockWaitMs?: number
   /**
    * The in-place write: `begin` is its commit point and `guard` is checked at
    * the write itself, before the first byte. A write made by a harness
@@ -68,6 +70,7 @@ export async function handOffSessionMessages(
           sequencer.groupAlive,
         ),
       mayWrite: () => attendant.mayWrite(),
+      ...(deps.lockWaitMs === undefined ? {} : { lockWaitMs: deps.lockWaitMs }),
     })
     if (handOff === null) return 'retry-soon'
     const refusal = handOff.refused[0]

@@ -46,6 +46,10 @@ describe('harness-neutral Agent Session titles', () => {
         active: { harness: 'hermes', label: 'Hermes', sessionId: 'hermes-session' },
         expected: undefined,
       },
+      grok: {
+        active: { harness: 'grok', label: 'Grok', sessionId: 'grok-session' },
+        expected: undefined,
+      },
     }
     expect(Object.keys(cases).sort()).toEqual([...SOURCE_CONTEXT_HARNESSES].sort())
 

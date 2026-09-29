@@ -281,6 +281,8 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   const hooks: HookConfig = Object.create(null)
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
+    if (row.notifai === 'post-tool-use' &&
+        (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform))) continue
     if (row.notifai === 'stop') {
       hooks[row.document] = [{ hooks: [stopHandler(adapterPath, options.harness, commandOptions)] }]
       continue
@@ -1510,7 +1512,7 @@ export function codexRoutingTrustProblems(
   return codexTrustProblems(
     installations.map((installation) => ({
       ...installation,
-      handlers: installation.handlers.filter((handler) => handlerEvent(handler.command) !== 'attend'),
+      handlers: installation.handlers.filter((handler) => !['attend', 'post-tool-use'].includes(handlerEvent(handler.command) ?? '')),
     })),
     env,
   )

@@ -125,6 +125,14 @@ describe('choice labels', () => {
 })
 
 describe('hook config', () => {
+  it('installs synchronous tool-boundary delivery only for Codex on POSIX', () => {
+    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'darwin' })
+    expect(config['PostToolUse']?.[0]?.hooks).toEqual([
+      { type: 'command', command: expect.stringContaining('hook post-tool-use'), timeout: 10 },
+    ])
+    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })['PostToolUse']).toBeUndefined()
+    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'win32' })['PostToolUse']).toBeUndefined()
+  })
   it('activates Notifai at the session lifecycle seam for every native hook adapter', () => {
     const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
     const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
