@@ -176,8 +176,8 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   overwrite a foreign one. Exact Agent Session identity is the OpenClaw
   `sessionKey`; the transcript `sessionId` can stay the same across `/new` and
   `/reset`, while idle or daily rollover can change it. Notifai gives each
-  observed generation one activation on its first prompt, using the typed
-  lifecycle events to fence same-`sessionId` resets. A session key containing
+  observed generation one activation on its first prompt, using the native
+  lifecycle revision and typed events to fence same-`sessionId` resets. A session key containing
   `:subagent:` or an ACP nested context
   is a worker. Missing identity fails safe as a non-sending worker; only a
   proven parent Agent Session receives owner context. Explicit textual
@@ -189,9 +189,17 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   Question Routing requires the current generation marker, an enabled Project,
   and a local Gateway whose CLI version and process identity match the plugin.
   If this Project is disabled, run `notifai project enable` before `notifai ask`.
-  Session Notes and post-consumption Answer Edits remain unsupported on this
-  route. Use a blocking `notifai send --reply` when those limits matter. Do not
-  treat `/stop` as turn-end.
+  On macOS, the same Gateway service attends the current generation and queues
+  Session Notes and post-consumption Answer Edits as followup turns. It keeps
+  the message in a private local delivery journal and sends only an opaque
+  pointer in the CLI call. The matching prompt receives the full context once,
+  only within its original native generation and Gateway instance. Journal
+  text is discarded after that prompt claims it, a generation change, or a
+  Gateway restart. The agent acknowledges each `sm_` message after reading it.
+  If a Gateway crash interrupts a turn, OpenClaw may replay its pointer after
+  the staged context was consumed. The pointer instructs the agent to say the
+  context is missing and leave that message unacknowledged; the User may send
+  a new message. Do not treat `/stop` as turn-end.
 - **Hermes:** with Hermes v0.21.5, `notifai hooks install --harness hermes`
   installs and enables Notifai's native plugin through `hermes plugins`. Start a
   fresh local classic CLI Agent Session after installation. Its bounded system
@@ -201,9 +209,17 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   `notifai guidance` before deciding whether or how to notify. Notifai reads
   exact `HERMES_SESSION_ID` for Source Context and derives git branch and
   worktree from the actual invocation cwd. Install the Notifai skill through
-  `npx skills`; the Hermes plugin does not include a copy. Question Routing is
-  unsupported, so use a blocking `notifai send --reply` question. TUI, gateway,
-  API, ACP, and remote terminal backends remain outside this proven cell.
+  `npx skills`; the Hermes plugin does not include a copy. On local classic CLI
+  sessions the plugin supervises a Session Attendant for that exact session.
+  After the first Notification Request, it reports Session Presence and hands
+  Session Notes and post-consumption Answer Edits into the attached CLI;
+  a Note may interrupt a working turn. The plugin checks the current session
+  before each write, and the agent must acknowledge the message. An attended
+  classic CLI session can route an `ask` answer into that same live session;
+  end the asking turn and leave Hermes running for the answer window. If the
+  process exits first, it does not cold-resume and the answer is not delivered.
+  TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
+  this proven cell.
   Nested inherited harness markers fail closed.
 - **Grok:** `notifai hooks install --harness grok` writes only the Notifai-owned
   Machine hook file under `~/.grok/hooks/` (or `GROK_HOME/hooks/`). Start a fresh

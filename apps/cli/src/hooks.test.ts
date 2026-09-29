@@ -91,7 +91,7 @@ import {
 } from './hook-session-state.js'
 import { type PendingQuestion, type SessionState } from './hook-types.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
-import { activeOpenclawGeneration, openclawOwnsReply } from './openclaw-session-access.js'
+import { activeOpenclawGeneration, openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-access.js'
 import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -396,7 +396,7 @@ function harness(replies: ReplyView[] = []): Harness {
 }
 
 describe('OpenClaw generation fencing at the CLI boundary', () => {
-  it('discovers a question only after its exact enabled turn ends', async () => {
+  it('inventories an activated session across turn boundaries and drops it when disabled', async () => {
     const h = harness()
     const sessionId = 'agent:main:inventory-probe'
     const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
@@ -409,7 +409,9 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       pending: [{ question: 'Ready?', summary: 'Ready?', asked_at: NOW }],
     })
     await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
-    expect(JSON.parse(h.io.outLines.at(-1)!) as unknown[]).toEqual([])
+    expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
+      expect.objectContaining({ session_key: sessionId }),
+    ])
     await hookRunCommand(h.deps, 'openclaw-turn-end', stdin(envelope), 'openclaw')
     await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
     expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
@@ -452,6 +454,39 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     }), 'openclaw')
     await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
     expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
+  })
+
+  it('preserves old message debt after reset without granting the new generation acknowledgement ownership', async () => {
+    const h = harness()
+    const sessionId = 'agent:main:message-reset'
+    const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
+    const activate = async () => {
+      await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({ ...envelope, hook_event_name: 'SessionStart' }), 'openclaw')
+      await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+      return readOpenclawGeneration(sessionId, h.env)!.id
+    }
+    const first = await activate()
+    recordMessageAcknowledgementDue(sessionId, h.env, {
+      message_id: 'sm_old', recorded_at: NOW, text_required: true, openclaw_generation: first,
+    })
+    const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: sessionId,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: first }
+    expect(openclawOwnsMessage(sessionId, 'sm_old', env, h.deps.cwd)).toBe(true)
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
+    }), 'openclaw')
+    const second = await activate()
+    expect(second).not.toBe(first)
+    expect(readSessionState(sessionId, h.env).message_acknowledgement_due).toEqual([
+      expect.objectContaining({ message_id: 'sm_old', openclaw_generation: first }),
+    ])
+    expect(openclawOwnsMessage(sessionId, 'sm_old', env, h.deps.cwd)).toBe(false)
+    env.NOTIFAI_ACTIVE_OPENCLAW_GENERATION = second
+    expect(openclawOwnsMessage(sessionId, 'sm_old', env, h.deps.cwd)).toBe(false)
+    recordMessageAcknowledgementDue(sessionId, h.env, {
+      message_id: 'sm_new', recorded_at: NOW, text_required: true, openclaw_generation: second,
+    })
+    expect(openclawOwnsMessage(sessionId, 'sm_new', env, h.deps.cwd)).toBe(true)
   })
 
   it('rotates on a new generation without an end and ignores a late old end', async () => {
@@ -523,6 +558,54 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(current)
     }
     expect(h.io.outLines).toHaveLength(3)
+  })
+
+  it('keeps the prompt-observed native revision when old same-ID hooks arrive late', async () => {
+    const h = harness()
+    const envelope = { session_id: 'agent:main:native-reset', cwd: h.deps.cwd,
+      openclaw_session_id: 'same-transcript' }
+    const prompt = async (revision: string) => hookRunCommand(h.deps, 'session-start', stdin({
+      ...envelope, openclaw_lifecycle_revision: revision,
+    }), 'openclaw')
+    await prompt('R1')
+    const first = readOpenclawGeneration(envelope.session_id, h.env)!
+    await prompt('R2')
+    const second = readOpenclawGeneration(envelope.session_id, h.env)!
+    expect(second.id).not.toBe(first.id)
+    expect(second.lifecycleRevision).toBe('R2')
+    expect(second.supersededLifecycleRevisions).toContain('R1')
+    for (const revision of ['R1', null, 'R2']) {
+      await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+        ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
+        openclaw_lifecycle_revision: revision,
+      }), 'openclaw')
+    }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart', openclaw_resumed_from: 'same-transcript',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-end', stdin({
+      ...envelope, openclaw_reason: 'reset',
+    }), 'openclaw')
+    await prompt('R1')
+    expect(readOpenclawGeneration(envelope.session_id, h.env)).toMatchObject({
+      id: second.id, lifecycleRevision: 'R2', activated: true, ended: false,
+    })
+    await hookRunCommand(h.deps, 'openclaw-generation', stdin({
+      ...envelope, openclaw_lifecycle_revision: 'R2',
+    }), 'openclaw')
+    expect(h.io.outLines.at(-1)).toBe(second.id)
+    await hookRunCommand(h.deps, 'session-end', stdin({
+      ...envelope, openclaw_reason: 'shutdown',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await prompt('R2')
+    const restarted = readOpenclawGeneration(envelope.session_id, h.env)!
+    expect(restarted.id).not.toBe(second.id)
+    expect(restarted.lifecycleRevision).toBe('R2')
+    expect(restarted.supersededLifecycleRevisions).toEqual(['R1'])
+    expect(restarted.activated).toBe(true)
   })
 
   it('treats a first resumedFrom as a generation signal without an end', async () => {

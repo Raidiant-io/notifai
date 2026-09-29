@@ -72,7 +72,7 @@ describe('harness contract', () => {
       expect(capability.deliveryRoutes, harness).not.toContain('unsupported')
       // Hook-driven writers need a next-turn fallback. OpenClaw's Gateway
       // service owns a durable journal and replays its own session queue.
-      if (capability.stopContinuation !== 'gateway-service') {
+      if (capability.stopContinuation === 'decision-block') {
         expect(capability.deliveryRoutes, harness).toContain('hold-for-next-turn')
       }
     }
@@ -138,7 +138,7 @@ describe('harness contract', () => {
     }
   })
 
-  it('keeps Hermes Question Routing unsupported after managed activation', () => {
+  it('scopes Hermes Question Routing to the live classic CLI plugin', () => {
     expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.instance).toEqual(PINNED_HERMES_TRACE.instance)
     expect(PINNED_HERMES_TRACE.supported).toContain('deliberate-send')
     expect(PINNED_HERMES_TRACE.unsupported).toContain('question-routing')
@@ -149,6 +149,10 @@ describe('harness contract', () => {
     expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.activation).toBe('project-enabled-system-prompt-section')
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.stopContinuation).toBe('unsupported')
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryRoutes).toEqual(['unsupported'])
+    expect(HARNESS_CAPABILITIES.hermes).toMatchObject({
+      stopContinuation: 'plugin-attendant', deliveryRoutes: ['session-queue'],
+    })
+    expect(questionRoutingCapability('hermes', 'win32').deliveryRoutes).toEqual(['unsupported'])
   })
 
   it('resolves only the pinned classic CLI/local marker envelope', () => {

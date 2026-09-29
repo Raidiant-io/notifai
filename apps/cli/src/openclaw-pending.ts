@@ -13,7 +13,7 @@ export interface OpenclawPendingSession {
   session_id?: string
 }
 
-/** Scan CLI-owned state so a Gateway restart finds unanswered questions. */
+/** Scan CLI-owned state so a Gateway restart finds every live activated session. */
 export function listPendingOpenclawSessions(env: NodeJS.ProcessEnv): OpenclawPendingSession[] {
   const directory = path.join(stateDir(env), 'sessions')
   if (!existsSync(directory)) return []
@@ -36,10 +36,6 @@ export function listPendingOpenclawSessions(env: NodeJS.ProcessEnv): OpenclawPen
           readSessionIncarnation(sessionKey, env)?.openclaw_generation !== generation.id) continue
       const config = loadConfig({ cwd, env, sessionId: sessionKey })
       if (!projectEnabled(projectBinding(cwd, env, config.project.value))) continue
-      const stopped = state.last_stop_at
-      if (stopped === undefined ||
-          !((state.pending ?? []).some((entry) => (entry.asked_at ?? Infinity) <= stopped) ||
-            (state.accepted !== undefined && state.accepted.delivered_at === undefined))) continue
       sessions.push({ session_key: sessionKey, cwd, generation: generation.id,
         ...(generation.sessionId === undefined ? {} : { session_id: generation.sessionId }) })
     } catch {

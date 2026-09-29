@@ -15,6 +15,12 @@ It can arrive after a tool call within the current turn or as a new turn.
 Session Notes waiting in the harness; an empty result establishes only that
 there are no outstanding questions.
 
+OpenClaw starts that turn with a pointer naming the message. If the full note
+or edit context is absent, say the message is missing and do not acknowledge
+it. A Gateway crash during the turn can replay the pointer without the staged
+context; Notifai leaves that message handed off and unacknowledged, and the
+User may send a new message.
+
 ## Acknowledge each one once, before acting on it
 
 ```bash

@@ -52,6 +52,13 @@ export function attendantSupport(
       ? { supported: true }
       : { supported: false, reason: `openclaw-${platform}-unproven` }
   }
+  if (harness === 'hermes') {
+    // The local classic CLI plugin owns an in-process writer and its child.
+    // Python select() cannot watch that pipe on Windows.
+    return platform === 'darwin' || platform === 'linux'
+      ? { supported: true }
+      : { supported: false, reason: `hermes-${platform}-unproven` }
+  }
   return { supported: false, reason: 'harness-has-no-exact-session-probe' }
 }
 
@@ -62,6 +69,7 @@ export function openclawAttendanceProbe(options: {
   gateway: ProcessIdentity
   env: NodeJS.ProcessEnv
   endedByHook: () => boolean
+  activity?: () => SessionActivity | null
   readStart?: (pid: number) => string | null
   exists?: (pid: number) => boolean
 }): () => HarnessProbe {
@@ -81,7 +89,10 @@ export function openclawAttendanceProbe(options: {
         incarnation?.openclaw_generation !== options.generationId) {
       return { state: 'ended', reason: 'session-replaced' }
     }
-    return { state: 'running', activity: 'idle' }
+    const activity = options.activity?.() ?? null
+    return activity === null
+      ? { state: 'uncertain', reason: 'gateway-session-unobserved' }
+      : { state: 'running', activity }
   }
 }
 

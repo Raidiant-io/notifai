@@ -120,6 +120,15 @@ function setup() {
 }
 
 describe('Session Message hand-off', () => {
+  it('records the receiving OpenClaw generation with its message debt', async () => {
+    const h = setup()
+    await handOffSessionMessages([note('sm_owned', 'Stay in this generation')], h.attendant.handle(), {
+      ...h.deps, openclawGeneration: 'generation-a',
+    })
+    expect(readSessionState(SESSION, h.env).message_acknowledgement_due).toEqual([
+      expect.objectContaining({ message_id: 'sm_owned', openclaw_generation: 'generation-a' }),
+    ])
+  })
   it('keeps a queued Codex Edit out of acknowledgement reminders until its complete context enters the turn', async () => {
     const h = setup()
     const message = edit('sm_green', 'req_color', 'Green')

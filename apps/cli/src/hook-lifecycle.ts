@@ -61,6 +61,7 @@ import {
   markSessionEnded,
   pendingList,
   readSessionState,
+  readSessionIncarnation,
   sessionHasEnded,
   sessionStatePath,
   updateSessionState,
@@ -493,7 +494,7 @@ function answerCloseDisposition(
   // question, but an immediate reply can beat the first lease exchange. The
   // service retains the exact-session owner and retries after the lease is
   // ready, so preserve the server's selected delivery claim at close.
-  if (ctx.harness === 'openclaw' && route.kind === 'session-queue') return 'deliver'
+  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes') && route.kind === 'session-queue') return 'deliver'
   return claimableRoute(route) && ctx.answerClaims?.lease() != null ? 'deliver' : undefined
 }
 
@@ -660,7 +661,9 @@ function withReminder(reminder: PromptReminder, context: string): string {
  * the service, or null when none is.
  */
 async function messageAcknowledgementReminder(ctx: HookContext, sessionId: string): Promise<string | null> {
+  const generation = ctx.harness === 'openclaw' ? readSessionIncarnation(sessionId, ctx.env)?.openclaw_generation : undefined
   const owed = presentedMessageAcknowledgements(readSessionState(sessionId, ctx.env))
+    .filter((entry) => ctx.harness !== 'openclaw' || (generation !== undefined && entry.openclaw_generation === generation))
   if (owed.length === 0) return null
   const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
   return still.length === 0 ? null : acknowledgementBlockContext(still)
@@ -1326,6 +1329,8 @@ async function deliverAcceptedAnswers(
   await handOff?.finish(
     delivered.acknowledgement === 'delivered'
       ? 'written'
+      : delivered.log?.['reason'] === 'write-unconfirmed'
+        ? 'failed'
       : delivered.log?.['reason'] === WRITE_ABORTED_REASON
         ? 'aborted'
         : 'not-written',
@@ -1562,7 +1567,13 @@ async function claimAnswerHandOff(
     const fenced =
       handOff.claimed.length === 0 &&
       handOff.refused.every((refusal) => refusal.reason === 'generation_fenced')
-    if (!fenced || round >= ANSWER_CLAIM_ROUNDS) return handOff
+    if (!fenced || round >= ANSWER_CLAIM_ROUNDS) {
+      if (ctx.harness === 'hermes' && handOff.claimed.length !== subjects.length) {
+        await handOff.finish('not-written')
+        return null
+      }
+      return handOff
+    }
     await handOff.finish('not-written')
     await ctx.sleep(ANSWER_CLAIM_RETRY_MS)
   }
@@ -2340,6 +2351,7 @@ export function handleSessionEnd(
   env: NodeJS.ProcessEnv,
   envelope: HookEnvelope,
   now: number = Date.now(),
+  preserveAccepted = true,
 ): HookOutcome {
   const notes: string[] = []
   const sessionId = envelope.session_id
@@ -2400,11 +2412,12 @@ export function handleSessionEnd(
     )
   }
   if (
-    state.accepted !== undefined ||
+    (preserveAccepted && state.accepted !== undefined) ||
     (state.acknowledgement_due?.length ?? 0) > 0 ||
     (state.message_acknowledgement_due?.length ?? 0) > 0
   ) {
     const preserved: SessionState = { ...stateWithHistory }
+    if (!preserveAccepted) delete preserved.accepted
     delete preserved.pending
     delete preserved.retiring
     delete preserved.acknowledgement_blocks
@@ -2416,14 +2429,14 @@ export function handleSessionEnd(
     }
     writeSessionState(sessionId, env, preserved)
     notes.push(
-      state.accepted !== undefined
+      preserveAccepted && state.accepted !== undefined
         ? 'preserved an accepted device answer for this exact session to resume'
         : 'preserved required Agent Acknowledgement obligations for this exact session',
     )
     return {
       notes,
       log: {
-        outcome: state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
+        outcome: preserveAccepted && state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
         queued_retirements: orphans.length,
         accepted_answers: state.accepted?.answers.length ?? 0,
         acknowledgement_due: state.acknowledgement_due?.length ?? 0,

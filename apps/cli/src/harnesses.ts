@@ -53,7 +53,7 @@ export type DeliveryRoute =
   | 'hold-for-next-turn'
   | 'unsupported'
 
-export type StopContinuation = 'decision-block' | 'gateway-service' | 'unsupported'
+export type StopContinuation = 'decision-block' | 'gateway-service' | 'plugin-attendant' | 'unsupported'
 
 export interface HarnessCapability {
   /** How an answer is admitted to another turn in the already-open session. */
@@ -62,6 +62,8 @@ export interface HarnessCapability {
   deliveryRoutes: readonly DeliveryRoute[]
   /** Concise, honest readiness text for doctor and installation guidance. */
   deliveryContract: string
+  /** Whether this integration can queue Session Notes and post-consumption Answer Edits. */
+  sessionMessages?: 'gateway-service' | 'unsupported'
 }
 
 const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
@@ -104,6 +106,7 @@ const OPENCLAW_CAPABILITY: HarnessCapability = {
   deliveryRoutes: ['session-queue'],
   deliveryContract:
     'the Gateway service owns the complete answer window and queues a pointer-only follow-up into the exact current session after claiming the answer; the agent fetches the reply and acknowledges it in that session',
+  sessionMessages: 'gateway-service',
 }
 
 const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
@@ -111,6 +114,7 @@ const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
   deliveryRoutes: ['unsupported'],
   deliveryContract:
     'OpenClaw asynchronous answer continuation is verified on macOS only; use a blocking reply command on this host',
+  sessionMessages: 'unsupported',
 }
 
 const GROK_CAPABILITY: HarnessCapability = {
@@ -120,11 +124,17 @@ const GROK_CAPABILITY: HarnessCapability = {
     'the Stop hook holds the complete answer window, then returns a decision block carrying the answer into the same Grok Agent Session; the successor Stop confirms consumption',
 }
 
+export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
+  stopContinuation: 'plugin-attendant',
+  deliveryRoutes: ['session-queue'],
+  deliveryContract:
+    'the live classic CLI plugin owns the complete answer window and injects the claimed answer into its exact attached session; a stopped process cannot resume or receive an answer',
+}
+
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
-  deliveryContract:
-    'Hermes asynchronous ask has no proven continuation owner on this integration surface. Use a blocking `notifai send --reply` question',
+  deliveryContract: 'Hermes Question Routing is available only in an attended local classic CLI session; use a blocking `notifai send --reply` question on other Hermes surfaces',
 }
 
 /**
@@ -142,7 +152,9 @@ export const HERMES_CLASSIC_CLI_LOCAL_CAPABILITY = {
   setup: 'hermes-plugin',
   activation: 'project-enabled-system-prompt-section',
   sourceContext: 'hermes-session-id-and-invocation-cwd',
-  continuation: 'unsupported',
+  continuation: 'plugin-attendant-exact-session-injection',
+  sessionPresence: 'plugin-owned-attendant',
+  sessionMessages: 'in-process-exact-session-injection',
 } as const
 
 export type HermesClassicCliLocalInstance =
@@ -173,7 +185,7 @@ export function hermesClassicCliLocalInstance(
 /**
  * Question-routing contract for hook-installable harnesses.
  *
- * Hermes has managed activation but no Question Routing continuation.
+ * Hermes Question Routing is scoped to its proved local classic CLI instance.
  */
 export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapability> = {
   'claude-code': CLAUDE_CODE_CAPABILITY,
@@ -181,7 +193,7 @@ export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapabil
   cursor: CURSOR_CAPABILITY,
   opencode: OPENCODE_CAPABILITY,
   openclaw: OPENCLAW_CAPABILITY,
-  hermes: HERMES_QUESTION_ROUTING_UNAVAILABLE,
+  hermes: HERMES_CLASSIC_CLI_QUESTION_CAPABILITY,
   grok: GROK_CAPABILITY,
 }
 
@@ -190,6 +202,9 @@ export function questionRoutingCapability(
   harness: HookInstallableHarness,
   platform: NodeJS.Platform = process.platform,
 ): HarnessCapability {
+  if (harness === 'hermes' && platform !== 'darwin' && platform !== 'linux') {
+    return HERMES_QUESTION_ROUTING_UNAVAILABLE
+  }
   if (harness === 'claude-code' && platform === 'win32') {
     return CLAUDE_CODE_WINDOWS_CAPABILITY
   }

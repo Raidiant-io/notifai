@@ -28,6 +28,8 @@ export type MessageHandOffResult = 'done' | 'retry-soon'
 
 export interface MessageHandOffDeps {
   sequencer: SequencerDeps
+  /** The OpenClaw writer's pinned generation, never a replacement read at acknowledgement time. */
+  openclawGeneration?: string
   /** Short synchronous hooks must not wait behind another delivery writer. */
   lockWaitMs?: number
   /**
@@ -41,6 +43,7 @@ export interface MessageHandOffDeps {
     begin: (writer?: 'subprocess') => boolean,
     guard: WriteGuard,
     writerGroup: (pgid: number) => void,
+    message: AttendanceMessage,
   ): Promise<SessionWriteResult>
 }
 
@@ -99,6 +102,7 @@ export async function handOffSessionMessages(
           message_id: message.message_id,
           recorded_at: sequencer.wall(),
           text_required: message.agent_acknowledgement_text_required,
+          ...(deps.openclawGeneration === undefined ? {} : { openclaw_generation: deps.openclawGeneration }),
           ...(writer === 'subprocess' ? { queued_context: sessionMessageContext(message) } : {}),
         })
         owed = true
@@ -111,7 +115,7 @@ export async function handOffSessionMessages(
         // deadline is judged after it, at the last moment before the byte.
         writable: () => attendant.mayWrite() && handOff.writable(),
         remainingMs: () => handOff.remainingMs(),
-      }, (pgid) => handOff.recordGroup(pgid))
+      }, (pgid) => handOff.recordGroup(pgid), message)
     } catch (err) {
       // Thrown before the write (state I/O): nothing reached the harness.
       if (owed) clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)

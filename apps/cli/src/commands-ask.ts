@@ -21,6 +21,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
 import { registerQuestion } from './hook-lifecycle.js'
 import { readSessionState } from './hook-session-state.js'
+import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
@@ -524,7 +525,8 @@ export function askCommand(
         'use the documented foreground `notifai send --reply` flow with --reply-timeout equal to --reply-window, or run ask from an unambiguous harness session',
       )
     }
-    if (active.harness === 'hermes' || !isHookInstallableHarness(active.harness)) {
+    if ((active.harness === 'hermes' && active.integrationInstance === undefined) ||
+        !isHookInstallableHarness(active.harness)) {
       const capability = HERMES_QUESTION_ROUTING_UNAVAILABLE
       return askFailure(
         deps,
@@ -626,7 +628,8 @@ export function askCommand(
         'restart the Gateway with the installed Notifai plugin, then run `notifai doctor`',
       )
     }
-    if (state.harness !== active.harness || state.last_prompt_at === undefined) {
+    if (state.harness !== active.harness ||
+        (active.harness !== 'hermes' && state.last_prompt_at === undefined)) {
       return askFailure(
         deps,
         flags,
@@ -634,6 +637,14 @@ export function askCommand(
         'user_prompt_submit',
         `This exact ${active.label} session has not fired UserPromptSubmit.`,
         `send one prompt in this ${active.label} session, then retry \`notifai ask --json\``,
+      )
+    }
+    if (active.harness === 'hermes' &&
+        !hermesQuestionRouteReady(active.sessionId, deps.env, now)) {
+      return askFailure(
+        deps, flags, 'question_routing_unavailable', 'plugin_writer',
+        'This exact Hermes classic CLI session has no current attending plugin writer.',
+        'start a fresh local classic CLI session with the Notifai plugin enabled, then retry',
       )
     }
     sessionId = active.sessionId

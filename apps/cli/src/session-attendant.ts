@@ -87,6 +87,8 @@ export interface AttendantStatus {
   reason: string | null
   /** Whether this attendant hands Session Messages in, so the service accepts notes. */
   accepts_messages: boolean
+  /** Fresh in-process proof that a harness writer still targets this session. */
+  writer_ready?: boolean
   updated_at: number
 }
 
@@ -133,6 +135,10 @@ export interface SessionAttendantOptions {
   writeStatus(status: AttendantStatus): void
   /** Periodic housekeeping (e.g. keep markers younger than pruning). */
   heartbeat?: () => void
+  /** Harness-owned work that needs the fresh probe while attendance continues. */
+  onProbe?: (probe: HarnessProbe) => void
+  /** Publish fresh writer evidence for ask admission. */
+  publishProbeStatus?: boolean
   /** Resolves when a termination signal arrived. */
   signalled?: Promise<void>
   probeIntervalMs?: number
@@ -199,6 +205,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
         activity,
         reason: phaseReason,
         accepts_messages: options.acceptsMessages,
+        ...(options.publishProbeStatus ? { writer_ready: probe.state === 'running' } : {}),
         updated_at: clock.wall(),
       })
     } catch {
@@ -313,6 +320,15 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   const tick = (): void => {
     refresh()
     if (exit !== null) return
+    if (options.publishProbeStatus) writeStatus()
+    try {
+      options.onProbe?.(probe)
+    } catch (err) {
+      logger.error('attendant.state', {
+        phase, reason: 'probe-work-failed',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
     if (!networkStarted && options.notified()) nudge()
     const mono = clock.monotonic()
     if (mono - lastHeartbeat >= 60 * 60_000) {

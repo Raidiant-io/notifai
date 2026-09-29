@@ -9848,7 +9848,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('another-grok-session', env).pending).toBeUndefined()
   })
 
-  it('refuses Hermes ask as unsupported rather than as missing hooks', () => {
+  it('refuses Hermes ask without a loaded plugin rather than guessing a writer', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-ask-unsupported-'))
     const io = new CapturedIo()
     const env = {
@@ -9859,10 +9859,9 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
     const payload = JSON.parse(io.outLines.join('\n')) as { code: string; message: string; remedy: string }
-    expect(payload.code).toBe('question_routing_unavailable')
-    expect(payload.message).toMatch(/no proven continuation owner/i)
-    expect(payload.message).not.toMatch(/hooks are not installed/i)
-    expect(payload.remedy).toMatch(/send --reply/)
+    expect(payload.code).toBe('hooks_not_installed')
+    expect(payload.message).toMatch(/hooks are not installed/i)
+    expect(payload.remedy).toMatch(/notifai init/)
   })
 
   it('fails closed when Hermes nested markers leave session ownership ambiguous', () => {
@@ -9916,7 +9915,7 @@ describe('asking before the hooks have ever run', () => {
     expect(JSON.stringify(hooks)).not.toContain('hooks install --harness claude-code')
   })
 
-  it('offers managed Hermes activation while keeping Question Routing unsupported', async () => {
+  it('offers managed Hermes activation before Question Routing', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-doctor-'))
     const io = new CapturedIo()
     const env = {
@@ -9930,8 +9929,8 @@ describe('asking before the hooks have ever run', () => {
     expect(hooks?.remedy?.command).toBe('notifai hooks install --harness hermes')
     expect(hooks?.detail).toMatch(/plugin is not installed/i)
     expect(readiness.states.find((state) => state.id === 'question-routing-settings')).toMatchObject({
-      status: 'optional-gap',
-      detail: expect.stringMatching(/unsupported/),
+      status: 'ready',
+      detail: expect.stringMatching(/ask_notifications/),
     })
   })
 

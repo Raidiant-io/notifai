@@ -104,7 +104,7 @@ import {
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
-import { listAttendantReports, type AttendantReport } from './session-attendant-state.js'
+import { hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 
 // ---------------------------------------------------------------------------
@@ -1038,12 +1038,7 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
     (deps.now ?? Date.now)(),
   )
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
-  const settings: ReadinessState = active?.harness === 'hermes' ? {
-    id: 'question-routing-settings',
-    title: 'Question routing settings',
-    status: 'optional-gap',
-    detail: 'Hermes Question Routing is unsupported; ask_notifications cannot enable it',
-  } : {
+  const settings: ReadinessState = {
     id: 'question-routing-settings',
     title: 'Question routing settings',
     status: config.ask_notifications.value ? 'ready' : 'gap',
@@ -1090,7 +1085,7 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
           id: 'hooks',
           title: 'Hermes activation',
           status: 'gap',
-          detail: 'the Notifai Hermes plugin is not installed; Project Enablement cannot activate this Agent Session, and Question Routing remains unsupported',
+          detail: 'the Notifai Hermes plugin is not installed; Project Enablement and classic CLI Question Routing need it',
           remedy: {
             by: 'cli',
             summary: 'install the native Hermes plugin for Project activation',
@@ -1258,7 +1253,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       detail: !version
         ? 'Hermes v0.21.5 is required for the proven plugin activation path'
         : enabled
-          ? 'Hermes lists the Notifai plugin as enabled; local CLI prompt activation follows Project Enablement'
+          ? 'Hermes lists the Notifai plugin as enabled; an enabled local classic CLI session starts the writer for Questions, Notes, and Answer Edits'
           : 'Hermes does not list the Notifai plugin as enabled',
       ...(enabled && version ? {} : {
         remedy: {
@@ -1682,11 +1677,15 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   ]
   const openclawContinuationReady = !continuationHarnesses.includes('openclaw') ||
     openclawGatewayReady(deps.env)
+  const hermesContinuationReady = !continuationHarnesses.includes('hermes') ||
+    (active?.harness === 'hermes' && active.integrationInstance !== undefined &&
+      active.sessionId !== undefined && hermesQuestionRouteReady(active.sessionId, deps.env))
   checks.push({
     name: 'hooks (answer continuation)',
     ok:
       continuationHarnesses.length > 0 &&
       openclawContinuationReady &&
+      hermesContinuationReady &&
       continuationHarnesses.every(
         (harness) =>
           questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
@@ -1700,6 +1699,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           : `the active ${active.label} session has no matching continuation adapter`
         : !openclawContinuationReady
           ? 'openclaw: local Gateway service has not verified its CLI version and process identity'
+          : !hermesContinuationReady
+            ? 'Hermes: this exact local classic CLI session has no current attending plugin writer'
           : continuationHarnesses
             .map(
               (harness) =>
@@ -1820,17 +1821,22 @@ function sessionAttendantCheck(
       ? undefined
       : reports.find((report) => report.session_id === active.sessionId)
   const attended =
-    (active?.harness === 'claude-code' || active?.harness === 'codex') &&
+    (active?.harness === 'claude-code' || active?.harness === 'codex' ||
+      active?.harness === 'hermes' || active?.harness === 'openclaw') &&
     attendantSupport(active.harness, deps.hookPlatform ?? process.platform).supported
   if (reports.length === 0 && !attended) return null
   const parts: string[] = []
   if (attended && active.sessionId !== undefined) {
     parts.push(
       own === undefined
-        ? `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
+        ? active.harness === 'openclaw'
+          ? 'this OpenClaw session has no attendant yet (the local Gateway service starts one after its first prompt)'
+          : `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
         : own.alive
           ? `this session: ${describe(own)}`
-          : `this session's attendant stopped (${describe(own)}); its next prompt starts another`,
+          : active.harness === 'openclaw'
+            ? `this session's attendant stopped (${describe(own)}); the local Gateway service starts another while the generation remains current`
+            : `this session's attendant stopped (${describe(own)}); its next prompt starts another`,
     )
   }
   parts.push(`${live.length} running on this machine`)
