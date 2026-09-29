@@ -128,15 +128,21 @@ export class HermesWriterBridge {
     if (this.probe(sessionId).state !== 'running') return { status: 'unavailable', reason: 'Hermes plugin writer is not current' }
     if (!begin()) return { status: 'cancelled' }
     if (!guard.writable()) return { status: 'aborted', reason: 'claim or lease lapsed before Hermes injection' }
+    const budget = Math.floor(Math.min(5_000, guard.remainingMs()))
+    if (!Number.isFinite(budget) || budget <= 0) {
+      return { status: 'aborted', reason: 'claim or lease lapsed before Hermes injection' }
+    }
     const id = ++this.nextId
     const result = new Promise<Result | null>(resolve => this.pending.set(id, resolve))
     try {
-      this.output.write(`${JSON.stringify({ type: 'write', id, session_id: sessionId, text })}\n`)
+      // The plugin checks this again immediately before calling inject_message.
+      // A queued pipe write must not outlive the delivery claim.
+      this.output.write(`${JSON.stringify({ type: 'write', id, session_id: sessionId, text,
+        deadline_ms: Date.now() + budget })}\n`)
     } catch (error) {
       this.pending.delete(id)
       return { status: 'failed', reason: 'Hermes writer pipe failed', error }
     }
-    const budget = Math.min(5_000, Math.max(1, guard.remainingMs()))
     let timer: ReturnType<typeof setTimeout> | undefined
     const reply = await Promise.race([
       result,

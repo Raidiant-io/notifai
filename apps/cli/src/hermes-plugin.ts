@@ -24,6 +24,7 @@ import os
 import select
 import subprocess
 import threading
+import time
 
 COMMAND = ${JSON.stringify(command)}
 _attendants = {}
@@ -35,6 +36,8 @@ def _attached_session(ctx):
 
 def _run_attendant(ctx, session_id, cwd, stopped):
     proc = None
+    wall_anchor = time.time_ns()
+    mono_anchor = time.monotonic_ns()
     try:
         proc = subprocess.Popen(COMMAND + ["hook", "hermes-attend", "--owner", "notifai", "--harness", "hermes"],
                                 cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -83,7 +86,16 @@ def _run_attendant(ctx, session_id, cwd, stopped):
                     continue
                 accepted = False
                 with _lock:
-                    if not stopped.is_set() and frame.get("session_id") == session_id and _attached_session(ctx) == session_id:
+                    wall_now = time.time_ns()
+                    mono_now = time.monotonic_ns()
+                    # Fail closed after a backward wall-clock step. Node's
+                    # deadline is wall time because its monotonic origin may
+                    # differ from Python's on the same macOS host.
+                    clock_stable = wall_now - wall_anchor + 100_000_000 >= mono_now - mono_anchor
+                    deadline = frame.get("deadline_ms")
+                    if (not stopped.is_set() and frame.get("session_id") == session_id and
+                            _attached_session(ctx) == session_id and
+                            type(deadline) is int and wall_now < deadline * 1_000_000 and clock_stable):
                         try:
                             accepted = bool(ctx.inject_message(frame.get("text", "")))
                         except Exception:

@@ -1,8 +1,9 @@
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, expect, it } from 'vitest'
-import { hermesPluginDir, installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import { hermesPluginDir, hermesPluginSource, installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 
 const roots: string[] = []
 afterAll(() => roots.forEach(root => rmSync(root, { recursive: true, force: true })))
@@ -34,4 +35,23 @@ it.skipIf(process.platform === 'win32')('refuses a discovered foreign entry poin
 
   expect(() => preflightHermesPlugin(env)).toThrow(/foreign plugin/)
   expect(() => installHermesPlugin('/unused/adapter', env)).toThrow(/foreign plugin/)
+})
+
+it.skipIf(process.platform === 'win32')('rejects a queued Hermes write after its claim deadline', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-expired-write-'))
+  roots.push(root)
+  const plugin = path.join(root, 'plugin.py')
+  const child = path.join(root, 'child.py')
+  const resultFile = path.join(root, 'result.json')
+  writeFileSync(plugin, hermesPluginSource('/unused/adapter'))
+  writeFileSync(child, `import json, sys\nfor line in sys.stdin:\n    frame = json.loads(line)\n    if frame.get('type') == 'state':\n        print(json.dumps({'type': 'write', 'id': 1, 'session_id': 'same', 'text': 'expired', 'deadline_ms': 0}), flush=True)\n    elif frame.get('type') == 'result':\n        with open(sys.argv[1], 'w') as out:\n            json.dump(frame, out)\n        break\n`)
+  const harness = `import importlib.util, sys, threading\nspec = importlib.util.spec_from_file_location('plugin', sys.argv[1])\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\nmodule.COMMAND = [sys.executable, sys.argv[2], sys.argv[3]]\nclass Cli:\n    session_id = 'same'\n    _agent_running = False\nclass Manager:\n    _cli_ref = Cli()\nclass Ctx:\n    _manager = Manager()\n    def inject_message(self, text):\n        raise AssertionError('expired message reached Hermes')\nmodule._run_attendant(Ctx(), 'same', sys.argv[4], threading.Event())\n`
+  const run = spawnSync('python3', ['-c', harness, plugin, child, resultFile, root], {
+    encoding: 'utf8', timeout: 10_000,
+  })
+  expect(run.error).toBeUndefined()
+  expect(run.status).toBe(0)
+  expect(JSON.parse(readFileSync(resultFile, 'utf8'))).toMatchObject({
+    type: 'result', id: 1, accepted: false,
+  })
 })

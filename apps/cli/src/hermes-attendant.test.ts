@@ -22,12 +22,15 @@ it('requires a current exact Hermes session and confirms one fenced injection', 
   expect(rejected.status).toBe('unavailable')
   expect(beginnings).toBe(0)
 
-  const outbound = new Promise<{ id: number; session_id: string; text: string }>(resolve => {
-    output.once('data', chunk => resolve(JSON.parse(String(chunk)) as { id: number; session_id: string; text: string }))
+  const outbound = new Promise<{ id: number; session_id: string; text: string; deadline_ms: number }>(resolve => {
+    output.once('data', chunk => resolve(JSON.parse(String(chunk)) as { id: number; session_id: string; text: string; deadline_ms: number }))
   })
+  const before = Date.now()
   const write = bridge.write('session-a', 'quoted note', () => { beginnings += 1; return true }, guard)
   const frame = await outbound
   expect(frame).toMatchObject({ session_id: 'session-a', text: 'quoted note' })
+  expect(frame.deadline_ms).toBeGreaterThan(before)
+  expect(frame.deadline_ms).toBeLessThanOrEqual(Date.now() + 5_000)
   input.write(`${JSON.stringify({ type: 'result', id: frame.id, accepted: true })}\n`)
   expect(await write).toMatchObject({ status: 'written', route: 'session-queue' })
   expect(beginnings).toBe(1)
