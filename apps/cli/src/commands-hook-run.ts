@@ -215,6 +215,8 @@ export async function hookRunCommand(
           const next = observeOpenclawStart(
             current, envelope.openclaw_session_id, envelope.openclaw_resumed_from,
           )
+          if (envelope.openclaw_session_id !== undefined &&
+              next.sessionId !== envelope.openclaw_session_id) return 'stale-start-ignored'
           writeOpenclawGeneration(sessionKey, deps.env, next)
           return 'start-observed'
         }
@@ -384,6 +386,8 @@ export async function hookRunCommand(
           const generation = observeOpenclawPrompt(
             readOpenclawGeneration(sessionKey, deps.env), envelope.openclaw_session_id,
           )
+          if (envelope.openclaw_session_id !== undefined &&
+              generation.sessionId !== envelope.openclaw_session_id) return 'stale-prompt-ignored'
           writeOpenclawGeneration(sessionKey, deps.env, generation)
           if (generation.activated) return 'already-activated'
           const previous = readSessionIncarnation(sessionKey, deps.env)

@@ -381,7 +381,8 @@ export function findOwningSession(
     )
     const acknowledgementMatch =
       (state.acknowledgement_due ?? []).some((entry) => entry.request_id === id) ||
-      (state.message_acknowledgement_due ?? []).some((entry) => entry.message_id === id)
+      (state.message_acknowledgement_due ?? []).some((entry) => entry.message_id === id) ||
+      (state.openclaw_foreground_replies ?? []).some((entry) => entry.request_id === id)
     const acceptedMatch = state.accepted?.answers.some(
       ({ pending }) => pending.question_id === id || pending.request_id === id,
     ) ?? false

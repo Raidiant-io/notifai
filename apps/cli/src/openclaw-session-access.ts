@@ -1,6 +1,7 @@
 /** Exact-generation access to OpenClaw reply pointers in agent tool subprocesses. */
-import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
-import { readOpenclawGeneration } from './openclaw-generation.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
+import { openclawGenerationLockPath, readOpenclawGeneration } from './openclaw-generation.js'
+import { withFileLock } from './file-lock.js'
 import { loadConfig } from './config.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 
@@ -41,10 +42,39 @@ export function openclawOwnsReply(
   env: NodeJS.ProcessEnv,
   cwd?: string,
 ): boolean {
-  if (activeOpenclawGeneration(sessionKey, env, cwd) === null) return false
-  const state = readSessionState(sessionKey, env)
-  return (state.pending ?? []).some((entry) => entry.request_id === requestId) ||
-    (state.delivered_answers ?? []).some((entry) => entry.pending.request_id === requestId) ||
-    (state.acknowledgement_due ?? []).some((entry) => entry.request_id === requestId) ||
-    (state.accepted?.answers ?? []).some((entry) => entry.pending.request_id === requestId)
+  return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
+    const generation = activeOpenclawGeneration(sessionKey, env, cwd)
+    if (generation === null) return false
+    const state = readSessionState(sessionKey, env)
+    return (state.pending ?? []).some((entry) => entry.request_id === requestId) ||
+      (state.delivered_answers ?? []).some((entry) => entry.pending.request_id === requestId) ||
+      (state.acknowledgement_due ?? []).some((entry) => entry.request_id === requestId) ||
+      (state.accepted?.answers ?? []).some((entry) => entry.pending.request_id === requestId) ||
+      (state.openclaw_foreground_replies ?? []).some((entry) =>
+        entry.request_id === requestId && entry.generation === generation)
+  })
+}
+
+/** Record ownership as soon as a foreground submission returns its request ID. */
+export function recordOpenclawForegroundReply(
+  sessionKey: string,
+  requestId: string,
+  generation: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): boolean {
+  return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
+    if (activeOpenclawGeneration(sessionKey, env, cwd) !== generation) return false
+    let recorded = false
+    updateSessionState(sessionKey, env, (state) => {
+      recorded = true
+      const entries = state.openclaw_foreground_replies ?? []
+      return entries.some((entry) => entry.request_id === requestId && entry.generation === generation)
+        ? state
+        : { ...state, openclaw_foreground_replies: [
+          ...entries, { request_id: requestId, generation },
+        ] }
+    })
+    return recorded
+  })
 }

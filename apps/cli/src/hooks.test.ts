@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { CAPABILITIES_V1 } from '@raidiant/notifai-protocol'
 import {
   existsSync,
   mkdirSync,
@@ -41,6 +42,8 @@ import {
   buildQuestions,
   closeCommand,
   hookRunCommand,
+  repliesCommand,
+  sendCommand,
   type CommandDeps,
   type CommandIo,
 } from './commands.js'
@@ -546,6 +549,248 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     await prompt()
     expect(readSessionIncarnation(envelope.session_id, h.env)?.incarnation).toBe(second)
     expect(h.io.outLines).toHaveLength(2)
+  })
+
+  it('reconciles a delayed reset start with the generation already activated by its prompt', async () => {
+    const h = harness()
+    const envelope = {
+      session_id: 'agent:main:delayed-reset', cwd: h.deps.cwd,
+      openclaw_session_id: 'transcript-a',
+    }
+    const start = async (resumedFrom?: string) => hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+      ...(resumedFrom === undefined ? {} : { openclaw_resumed_from: resumedFrom }),
+    }), 'openclaw')
+    const prompt = async () => hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    await start()
+    await prompt()
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
+    }), 'openclaw')
+    await prompt()
+    const activated = readOpenclawGeneration(envelope.session_id, h.env)
+    const incarnation = readSessionIncarnation(envelope.session_id, h.env)?.incarnation
+    expect(activated?.startSeen).toBe(false)
+    await start('transcript-a')
+    await start('transcript-a')
+    await prompt()
+    expect(readOpenclawGeneration(envelope.session_id, h.env)).toMatchObject({
+      id: activated?.id, resumedFrom: 'transcript-a', startSeen: true, activated: true,
+    })
+    expect(readSessionIncarnation(envelope.session_id, h.env)?.incarnation).toBe(incarnation)
+    expect(h.io.outLines).toHaveLength(2)
+  })
+
+  it('fences delayed old starts and prompts after a new transcript starts across hook instances', async () => {
+    const h = harness()
+    const other = { ...h.deps, io: new CapturedIo() }
+    const sessionId = 'agent:main:delayed-old'
+    const envelope = (transcript: string) => ({
+      session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: transcript,
+    })
+    const start = async (deps: CommandDeps, transcript: string, resumedFrom?: string) =>
+      hookRunCommand(deps, 'openclaw-lifecycle', stdin({
+        ...envelope(transcript), hook_event_name: 'SessionStart',
+        ...(resumedFrom === undefined ? {} : { openclaw_resumed_from: resumedFrom }),
+      }), 'openclaw')
+    await start(h.deps, 'transcript-a')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-a')), 'openclaw')
+    await start(other, 'transcript-b', 'transcript-a')
+    const next = readOpenclawGeneration(sessionId, h.env)
+    await start(h.deps, 'transcript-a')
+    await start(other, 'transcript-b', 'transcript-a')
+    expect(readOpenclawGeneration(sessionId, h.env)?.id).toBe(next?.id)
+    await hookRunCommand(other, 'session-start', stdin(envelope('transcript-b')), 'openclaw')
+    const incarnation = readSessionIncarnation(sessionId, h.env)?.incarnation
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-a')), 'openclaw')
+    await hookRunCommand(h.deps, 'session-end', stdin({
+      ...envelope('transcript-a'), openclaw_reason: 'idle',
+    }), 'openclaw')
+    expect(readOpenclawGeneration(sessionId, h.env)).toMatchObject({
+      id: next?.id, sessionId: 'transcript-b', activated: true, ended: false,
+    })
+    expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(incarnation)
+    expect(h.io.outLines).toHaveLength(1)
+    expect(other.io.outLines).toHaveLength(1)
+  })
+
+  it('reconciles a new transcript prompt with its delayed resumed start', async () => {
+    const h = harness()
+    const sessionId = 'agent:main:resumed-prompt-first'
+    const envelope = (transcript: string) => ({
+      session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: transcript,
+    })
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope('transcript-a'), hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-a')), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-b')), 'openclaw')
+    const activated = readOpenclawGeneration(sessionId, h.env)
+    const incarnation = readSessionIncarnation(sessionId, h.env)?.incarnation
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope('transcript-b'), hook_event_name: 'SessionStart',
+      openclaw_resumed_from: 'transcript-a',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-b')), 'openclaw')
+    expect(readOpenclawGeneration(sessionId, h.env)).toMatchObject({
+      id: activated?.id, sessionId: 'transcript-b', resumedFrom: 'transcript-a',
+      startSeen: true, activated: true,
+    })
+    expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(incarnation)
+    expect(h.io.outLines).toHaveLength(2)
+  })
+
+  it('lets a foreground OpenClaw question acknowledge and inspect its answer only in its creating generation', async () => {
+    const h = harness([reply()])
+    const sessionId = 'agent:main:foreground'
+    const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: sessionId,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(sessionId, h.env)?.id }
+    const client = {
+      ...fakeClient(h.recorder, [reply()]),
+      capabilities: async (platform: 'ios' | 'android' | 'macos') => CAPABILITIES_V1.describe(platform),
+      closeReplies: async (requestId: string) => ({
+        request_id: requestId, reply_expires_at: new Date(NOW + 60_000).toISOString(),
+        agent_acknowledgement_required: true, agent_acknowledgement_text_required: true,
+        agent_acknowledgement: null, replies: [reply()],
+        close_disposition: 'deliver' as const, delivered_reply_seq: 1,
+      }),
+      claimDeliveryAttempt: async () => ({ attempt_id: 'att_foreground', claim_remaining_ms: 0,
+        outcome: 'handed_off' as const }),
+    } as ApiClient
+    const deps = { ...h.deps, env, clientFactory: () => client }
+    expect(await sendCommand(deps, {
+      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
+      replyTimeout: 60, replyWindow: 60, json: true,
+    })).toBe(EXIT.ok)
+    const requestId = h.recorder.receipts[0]!
+    expect(await acknowledgeCommand(deps, requestId, { text: 'Proceeding.', json: true })).toBe(EXIT.ok)
+    expect(await repliesCommand(deps, requestId, { json: true })).toBe(EXIT.ok)
+
+    const other = { ...envelope, session_id: 'agent:main:other' }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...other, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(other), 'openclaw')
+    const otherDeps = { ...deps, env: { ...env,
+      NOTIFAI_ACTIVE_SESSION_ID: other.session_id,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(other.session_id, h.env)?.id,
+    } }
+    expect(await acknowledgeCommand(otherDeps, requestId, { text: 'Wrong owner.' })).toBe(EXIT.usage)
+    expect(await repliesCommand(otherDeps, requestId, {})).toBe(EXIT.usage)
+
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    const nextDeps = { ...deps, env: { ...env,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(sessionId, h.env)?.id,
+    } }
+    expect(await acknowledgeCommand(nextDeps, requestId, { text: 'Old owner.' })).toBe(EXIT.usage)
+    expect(await repliesCommand(nextDeps, requestId, {})).toBe(EXIT.usage)
+    expect(h.recorder.acknowledged).toEqual(new Set([requestId]))
+  })
+
+  it('retains foreground question ownership when its blocking wait times out', async () => {
+    const h = harness()
+    const envelope = {
+      session_id: 'agent:main:foreground-timeout', cwd: h.deps.cwd,
+      openclaw_session_id: 'transcript-a',
+    }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: envelope.session_id,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(envelope.session_id, h.env)?.id }
+    const client = {
+      ...fakeClient(h.recorder, []),
+      capabilities: async (platform: 'ios' | 'android' | 'macos') => CAPABILITIES_V1.describe(platform),
+    } as ApiClient
+    const deps = { ...h.deps, env, clientFactory: () => client }
+    expect(await sendCommand(deps, {
+      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
+      replyTimeout: 1, replyWindow: 60, json: true,
+    })).toBe(EXIT.noReply)
+    const requestId = h.recorder.receipts[0]!
+    h.recorder.repliesFor = () => [reply()]
+    expect(await repliesCommand(deps, requestId, { json: true })).toBe(EXIT.ok)
+    expect(await acknowledgeCommand(deps, requestId, { text: 'Proceeding.' })).toBe(EXIT.ok)
+  })
+
+  it('retains foreground question ownership when its blocking wait loses the connection', async () => {
+    const h = harness()
+    const envelope = {
+      session_id: 'agent:main:foreground-interrupted', cwd: h.deps.cwd,
+      openclaw_session_id: 'transcript-a',
+    }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: envelope.session_id,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(envelope.session_id, h.env)?.id }
+    const client = {
+      ...fakeClient(h.recorder, []),
+      capabilities: async (platform: 'ios' | 'android' | 'macos') => CAPABILITIES_V1.describe(platform),
+    } as ApiClient
+    const deps = { ...h.deps, env, clientFactory: () => client }
+    h.recorder.beforeReplies = async () => { throw new NetworkError('interrupted wait') }
+    expect(await sendCommand(deps, {
+      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
+      replyTimeout: 60, replyWindow: 60, json: true,
+    })).toBe(EXIT.network)
+    const requestId = h.recorder.receipts[0]!
+    h.recorder.beforeReplies = undefined
+    h.recorder.repliesFor = () => [reply()]
+    expect(await repliesCommand(deps, requestId, { json: true })).toBe(EXIT.ok)
+    expect(await acknowledgeCommand(deps, requestId, { text: 'Proceeding.' })).toBe(EXIT.ok)
+  })
+
+  it('does not assign an in-flight foreground request to a replacement generation', async () => {
+    const h = harness()
+    const envelope = {
+      session_id: 'agent:main:foreground-race', cwd: h.deps.cwd,
+      openclaw_session_id: 'transcript-a',
+    }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    const oldGeneration = readOpenclawGeneration(envelope.session_id, h.env)?.id
+    const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: envelope.session_id,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: oldGeneration }
+    const baseClient = fakeClient(h.recorder, [])
+    const client = {
+      ...baseClient,
+      capabilities: async (platform: 'ios' | 'android' | 'macos') => CAPABILITIES_V1.describe(platform),
+      submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => {
+        const receipt = await baseClient.submit(body, waitSeconds)
+        await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+          ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
+        }), 'openclaw')
+        await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+        return receipt
+      },
+    } as ApiClient
+    const deps = { ...h.deps, env, clientFactory: () => client }
+    expect(await sendCommand(deps, {
+      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
+      replyTimeout: 60, replyWindow: 60, json: true,
+    })).toBe(EXIT.failed)
+    const requestId = h.recorder.receipts[0]!
+    const nextEnv = { ...env,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(envelope.session_id, h.env)?.id }
+    expect(openclawOwnsReply(envelope.session_id, requestId, nextEnv, h.deps.cwd)).toBe(false)
+    expect(await acknowledgeCommand({ ...deps, env: nextEnv }, requestId, { text: 'Wrong owner.' })).toBe(EXIT.usage)
   })
 })
 

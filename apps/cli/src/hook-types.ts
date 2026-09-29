@@ -135,6 +135,8 @@ export interface SessionState {
    * the service confirms the agent-authored follow-up exists.
    */
   acknowledgement_due?: AcknowledgementDue[]
+  /** Foreground `send --reply` requests owned by one OpenClaw generation. */
+  openclaw_foreground_replies?: Array<{ request_id: string; generation: string }>
   /**
    * Agent Acknowledgements owed for Session Messages (Session Notes and Answer
    * Edits) handed into this session. A sibling of `acknowledgement_due`, never

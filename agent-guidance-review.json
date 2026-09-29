@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ad0f666a0b647d8706a28fafc6f73f6e5cd22dce9073e13da7176c7b81dd57fe",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed the combined Hermes managed prompt plugin and OpenClaw Gateway continuation against every shipped Agent Guidance surface: lifecycle hooks, packaged Notifai skill, harness setup and update references, CLI readiness and Doctor, README, TRUST, and protocol Agent Session and Source Context terms. Hermes v0.21.5 local classic CLI keeps its bounded Project activation and Source Context, while asynchronous ask remains unsupported. OpenClaw on macOS gains a pointer-only Question Routing path with current-generation, Project, Gateway process, and CLI target gates; Linux and Windows remain unsupported for asynchronous return, as do Session Notes and Answer Edits. Parent Notification Request ownership, acknowledgement, User guidance authority, non-exfiltration, and domain terms remain intact; no User answer text enters OpenClaw CLI arguments.",
+  "behavior_digest": "sha256:4baa47af85aced234cde238a66ff7d62c9f6e11d1a7ad6a64fba814f23d730a9",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle activation and reply commands, the packaged Notifai skill and harness setup guidance, CLI readiness and Doctor, README, TRUST, and Agent Session and Source Context terms. Delayed OpenClaw lifecycle metadata now reconciles with the active generation, and foreground send replies remain available to that exact generation after a wait or timeout. Existing guidance already instructs agents to inspect the original request, acknowledge its answer, and avoid duplicate sends; capability claims, User guidance authority, and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
