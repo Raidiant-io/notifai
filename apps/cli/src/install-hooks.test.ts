@@ -1359,7 +1359,7 @@ describe('the OpenCode adapter', () => {
 
   it('is a harness `hooks install` knows about', () => {
     expect(HOOK_INSTALLABLE_HARNESSES).toContain('opencode')
-    expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
+    expect(HOOK_INSTALLABLE_HARNESSES).toContain('hermes')
     expect(settingsFile('opencode', {})).toContain('notifai.js')
   })
 

@@ -99,6 +99,7 @@ not part of the current public support claim.
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenClaw hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
+| Hermes plugin | v0.21.5 local classic CLI: managed Project activation and Source Context; use blocking `notifai send --reply` for questions | Unverified | Unverified |
 | Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
 Each `send --reply` fallback owns the complete answer window in its foreground
@@ -222,17 +223,17 @@ For unattended use, pass `--skills-scope project` or `--skills-scope global`.
 
 ## The installed hooks
 
-`notifai hooks install` wires Agent Session activation, the prompt the user
-submits, the end of the agent's turn, and the end of the Agent Session into the
-harness. It installs one owned mechanism per harness, in the current user's
+`notifai hooks install` installs one owned lifecycle mechanism per harness, in the current user's
 account and that harness's active home; whether Notifai acts in a project is
 `notifai project enable` / `notifai project disable`, not a second install.
 How they appear depends on the harness — Claude Code names them in
 `~/.claude/settings.json`, Codex in `~/.codex/hooks.json` (or inline
 `[hooks]` in that layer's `config.toml`, when the user's own hooks already live
-there), Cursor uses its own hook shapes, and OpenCode and OpenClaw get a
-generated plugin. They are how a question reaches your devices and how the
-answer comes back, without the agent keeping any of that in its context.
+there), Cursor uses its own hook shapes, OpenCode and OpenClaw get generated
+plugins, and Hermes gets a native Python plugin through Hermes's own CLI.
+Hermes's plugin supplies a bounded system-prompt section for an enabled
+Project; it does not provide Question Routing. Other harnesses have their
+own documented answer path, or require a blocking `send --reply` question.
 
 **SessionStart** (`session-start`) gives the main owner the small model-visible
 activation context that makes it evaluate Notifai proactively. **SubagentStart**
@@ -246,6 +247,10 @@ relationship data to give parent Agent Sessions owner context and child Agent
 Sessions worker context; missing or unusable relationship data fails safe as
 worker. OpenClaw uses the `sessionKey` the same way: a `:subagent:` or ACP
 nested key is a worker, and missing identity fails safe as worker.
+Hermes v0.21.5 freezes the root or delegated worker context into the local
+classic CLI prompt. Its prompt budget can be smaller than the full guidance;
+the bounded fallback directs the agent to run `notifai guidance` before a
+Notification Request.
 Cursor currently drops the context it
 accepts at SessionStart, so after the first completed turn Notifai uses one
 bounded native Stop follow-up: Cursor shows a synthetic follow-up turn, the

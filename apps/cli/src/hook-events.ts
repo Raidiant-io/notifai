@@ -133,7 +133,7 @@ export function requiredHookEvents(
   harness: HookInstallableHarness,
   platform?: NodeJS.Platform | HookHostPlatform,
 ): readonly HookEvent[] {
-  if (harness === 'opencode' || harness === 'openclaw') return []
+  if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
     row.notifai === 'attend'
       ? installsSessionAttendant(harness, platform)

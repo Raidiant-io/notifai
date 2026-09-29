@@ -372,6 +372,16 @@ describe('guidance commands', () => {
 })
 
 describe('lifecycle guidance budget', () => {
+  it('keeps Hermes root activation inside its 4,000-character prompt-section limit', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-guidance-'))
+    const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
+    const context = sessionActivationOutput('hermes', 'SessionStart', root, env)!
+    expect(context.length).toBeLessThanOrEqual(4000)
+    expect(context).toContain('Notifai is enabled for this Project')
+    expect(context).toContain('run `notifai guidance` once')
+    expect(sessionActivationOutput('hermes', 'SubagentStart', root, env)).toContain('Notifai worker context:')
+  })
+
   it('keeps the default owner context at least 10% under the lifecycle limit', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-budget-'))
     const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }

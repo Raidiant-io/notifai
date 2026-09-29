@@ -9862,8 +9862,6 @@ describe('asking before the hooks have ever run', () => {
     expect(payload.message).toMatch(/no proven continuation owner/i)
     expect(payload.message).not.toMatch(/hooks are not installed/i)
     expect(payload.remedy).toMatch(/send --reply/)
-    expect(hooksInstallCommand(deps, { harness: 'hermes', execPath, scriptPath })).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/Unknown harness "hermes"/)
   })
 
   it('fails closed when Hermes nested markers leave session ownership ambiguous', () => {
@@ -9917,7 +9915,7 @@ describe('asking before the hooks have ever run', () => {
     expect(JSON.stringify(hooks)).not.toContain('hooks install --harness claude-code')
   })
 
-  it('does not tell an active Hermes session to install managed hooks', async () => {
+  it('offers managed Hermes activation while keeping Question Routing unsupported', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-doctor-'))
     const io = new CapturedIo()
     const env = {
@@ -9927,10 +9925,13 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     const readiness = await assessReadiness(deps)
     const hooks = readiness.states.find((state) => state.id === 'hooks')
-    expect(hooks?.status).toBe('optional-gap')
-    expect(hooks?.remedy).toBeUndefined()
-    expect(JSON.stringify(hooks)).not.toContain('hooks install --harness hermes')
-    expect(hooks?.detail).toMatch(/no proven continuation owner/i)
+    expect(hooks?.status).toBe('gap')
+    expect(hooks?.remedy?.command).toBe('notifai hooks install --harness hermes')
+    expect(hooks?.detail).toMatch(/plugin is not installed/i)
+    expect(readiness.states.find((state) => state.id === 'question-routing-settings')).toMatchObject({
+      status: 'optional-gap',
+      detail: expect.stringMatching(/unsupported/),
+    })
   })
 
   it('refuses Cursor when its active-agent marker has no exact conversation id', () => {

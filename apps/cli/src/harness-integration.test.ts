@@ -174,7 +174,7 @@ describe('Hermes classic CLI/local Source Context seam', () => {
   it('does not invent a Question Routing route for the pinned Hermes instance', () => {
     expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.instance).toEqual(PINNED.instance)
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.stopContinuation).toBe('unsupported')
-    expect(Object.keys(HARNESS_CAPABILITIES)).not.toContain('hermes')
+    expect(HARNESS_CAPABILITIES.hermes.deliveryRoutes).toEqual(['unsupported'])
   })
 
   it('keeps unproven Hermes surfaces out of Source Context', () => {

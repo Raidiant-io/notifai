@@ -32,6 +32,7 @@ import {
   openclawPluginTarget,
 } from './openclaw-plugin.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
+import { hermesPluginCurrent, hermesPluginDir, isOurHermesPlugin } from './hermes-plugin.js'
 import {
   attendDocumentEvents,
   HOOK_EVENT_COMMAND_RE,
@@ -369,6 +370,8 @@ export function settingsFile(
       return opencodePluginPath(env, platform)
     case 'openclaw':
       return openclawPluginPath(env, platform)
+    case 'hermes':
+      return path.join(hermesPluginDir(env), '__init__.py')
     case 'cursor':
       return path.join(harnessAccountHome(env, platform), '.cursor', 'hooks.json')
     case 'claude-code':
@@ -405,6 +408,8 @@ export function legacyProjectHookFiles(
     case 'claude-code':
       return [path.join(cwd, '.claude', 'settings.local.json')]
     case 'grok':
+      return []
+    case 'hermes':
       return []
     case 'codex':
       return codexLegacyProjectLayers(cwd).flatMap((paths) => [paths.hooksJson, paths.configToml])
@@ -833,6 +838,9 @@ function globalHarnessEvidence(
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
   if (existsSync(opencodeConfigDir(env, platform))) found.push('opencode')
   if (openclawHasGlobalEvidence(existsSync, env, platform)) found.push('openclaw')
+  if (env['HERMES_SESSION_ID'] || (env['HERMES_HOME']?.trim() && existsSync(env['HERMES_HOME']))) {
+    found.push('hermes')
+  }
   if (existsSync(configHome(env, 'GROK_HOME', '.grok', platform))) found.push('grok')
   return found
 }
@@ -1669,7 +1677,7 @@ export function findInstallations(
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): Installation[] {
   return HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
-    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform),
+    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env),
   )
 }
 
@@ -1699,6 +1707,7 @@ export function findLegacyProjectInstallations(
       legacyProjectHookFiles(harness, cwd).filter((file) => !machine.has(path.resolve(file))),
       adapterHome,
       platform,
+      env,
     ),
   )
 }
@@ -1708,6 +1717,7 @@ function collectInstallations(
   files: readonly string[],
   adapterHome: string | undefined,
   platform: NodeJS.Platform | HookHostPlatform,
+  env: NodeJS.ProcessEnv,
 ): Installation[] {
   const nodePath = inspectHookAdapter(adapterHome, platform).target?.execPath
   const commandOptions: HookCommandOptions = {
@@ -1717,6 +1727,18 @@ function collectInstallations(
   const found: Installation[] = []
   for (const file of files) {
     if (!existsSync(file)) continue
+    if (harness === 'hermes') {
+      if (!isOurHermesPlugin(path.dirname(file))) continue
+      found.push({
+        harness,
+        file,
+        handlers: [],
+        ...(hermesPluginCurrent(adapterHome, env) ? {} : {
+          problems: ['Hermes plugin does not match the current Notifai adapter; rerun `notifai hooks install --harness hermes`'],
+        }),
+      })
+      continue
+    }
     // OpenCode's adapter is a plugin module, not a settings document, so it
     // is reported as one installation covering all three events rather than
     // parsed for handlers.

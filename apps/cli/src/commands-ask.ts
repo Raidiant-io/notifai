@@ -518,7 +518,7 @@ export function askCommand(
         'use the documented foreground `notifai send --reply` flow with --reply-timeout equal to --reply-window, or run ask from an unambiguous harness session',
       )
     }
-    if (!isHookInstallableHarness(active.harness)) {
+    if (active.harness === 'hermes' || !isHookInstallableHarness(active.harness)) {
       const capability = HERMES_QUESTION_ROUTING_UNAVAILABLE
       return askFailure(
         deps,

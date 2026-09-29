@@ -180,14 +180,19 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   so `notifai ask` fails closed instead of accepting an answer into a void.
   Use a blocking `notifai send --reply` question when its answer must return to
   the agent without another human prompt. Do not treat `/stop` as turn-end.
-- **Hermes:** classic CLI on the local terminal backend can send. Notifai reads
-  exact `HERMES_SESSION_ID` and derives git branch and worktree from the actual
-  invocation cwd. Do not run `notifai hooks install --harness hermes` — managed
-  setup, lifecycle activation, and Question Routing are unsupported. Use a
-  blocking `notifai send --reply` question. Install the Notifai skill through
-  `npx skills`; no Hermes plugin may vendor a copy. Nested inherited harness
-  markers fail closed. TUI, gateway, API, ACP, and remote backends are not
-  this baseline.
+- **Hermes:** with Hermes v0.21.5, `notifai hooks install --harness hermes`
+  installs and enables Notifai's native plugin through `hermes plugins`. Start a
+  fresh local classic CLI Agent Session after installation. Its bounded system
+  prompt section checks Project Enablement and gives root or delegated worker
+  guidance. Hermes's prompt budget cannot hold every effective guidance topic;
+  when the full set exceeds it, the section directs the agent to run
+  `notifai guidance` before deciding whether or how to notify. Notifai reads
+  exact `HERMES_SESSION_ID` for Source Context and derives git branch and
+  worktree from the actual invocation cwd. Install the Notifai skill through
+  `npx skills`; the Hermes plugin does not include a copy. Question Routing is
+  unsupported, so use a blocking `notifai send --reply` question. TUI, gateway,
+  API, ACP, and remote terminal backends remain outside this proven cell.
+  Nested inherited harness markers fail closed.
 - **Grok:** `notifai hooks install --harness grok` writes only the Notifai-owned
   Machine hook file under `~/.grok/hooks/` (or `GROK_HOME/hooks/`). Start a fresh
   Grok Agent Session and send one prompt to observe lifecycle state. Grok
@@ -199,9 +204,8 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   its successor Stop confirms consumption. Grok has no Session Attendant,
   Session Notes, or post-consumption Answer Edits.
 
-Do not claim managed hook, activation, or Question Routing support for a
-harness that is absent from `notifai hooks install --help`. Classic Hermes CLI
-can send with Source Context without those.
+Do not infer Question Routing from managed installation. `notifai doctor`
+reports each harness's supported route separately.
 
 ## How the answer gets back to the agent
 

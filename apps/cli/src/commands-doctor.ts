@@ -5,6 +5,7 @@ import {
   type RoutableDevice,
 } from '@raidiant/notifai-protocol'
 import { existsSync } from 'node:fs'
+import { hermesPluginListed, hermesVersionSupported } from './hermes-plugin.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
@@ -1036,7 +1037,12 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
     (deps.now ?? Date.now)(),
   )
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
-  const settings: ReadinessState = {
+  const settings: ReadinessState = active?.harness === 'hermes' ? {
+    id: 'question-routing-settings',
+    title: 'Question routing settings',
+    status: 'optional-gap',
+    detail: 'Hermes Question Routing is unsupported; ask_notifications cannot enable it',
+  } : {
     id: 'question-routing-settings',
     title: 'Question routing settings',
     status: config.ask_notifications.value ? 'ready' : 'gap',
@@ -1073,6 +1079,22 @@ function hookStates(deps: CommandDeps): ReadinessState[] {
           title: 'Question routing',
           status: 'optional-gap',
           detail: `${active.label}: ${HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryContract}`,
+        },
+        settings,
+      ]
+    }
+    if (active?.harness === 'hermes') {
+      return [
+        {
+          id: 'hooks',
+          title: 'Hermes activation',
+          status: 'gap',
+          detail: 'the Notifai Hermes plugin is not installed; Project Enablement cannot activate this Agent Session, and Question Routing remains unsupported',
+          remedy: {
+            by: 'cli',
+            summary: 'install the native Hermes plugin for Project activation',
+            command: 'notifai hooks install --harness hermes',
+          },
         },
         settings,
       ]
@@ -1124,6 +1146,7 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (answer continuation)': 'How an answer returns',
   'hooks (wake route)': 'Direct wake route',
   'hooks (openclaw plugin)': 'OpenClaw plugin loadability',
+  'hooks (hermes plugin)': 'Hermes plugin activation',
 }
 
 function checkTitle(name: string): string {
@@ -1224,6 +1247,28 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
+  if (installations.some((installation) => installation.harness === 'hermes')) {
+    let enabled = false
+    try { enabled = hermesPluginListed(deps.env) } catch { /* CLI unavailable is a gap. */ }
+    const version = hermesVersionSupported(deps.env)
+    checks.push({
+      name: 'hooks (hermes plugin)',
+      ok: enabled && version,
+      detail: !version
+        ? 'Hermes v0.21.5 is required for the proven plugin activation path'
+        : enabled
+          ? 'Hermes lists the Notifai plugin as enabled; local CLI prompt activation follows Project Enablement'
+          : 'Hermes does not list the Notifai plugin as enabled',
+      ...(enabled && version ? {} : {
+        remedy: {
+          by: 'user-here' as const,
+          summary: 'enable the Notifai plugin through Hermes',
+          command: 'hermes plugins enable notifai',
+        },
+      }),
+    })
+  }
+
   const wired = new Set(installations.map((installation) => installation.harness))
   if (wired.has('grok')) {
     checks.push({
@@ -1291,7 +1336,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       const exactState = active.sessionId === undefined
         ? null
         : readSessionState(active.sessionId, deps.env)
-      const activated = exactState?.harness === active.harness && exactState.last_prompt_at !== undefined
+      const activated = exactState?.harness === active.harness &&
+        (active.harness === 'hermes' || exactState.last_prompt_at !== undefined)
       if (!activated) {
         // The normal condition of hooks installed moments ago: the pointer
         // appears when the harness next fires a hook, and no command can
@@ -1301,9 +1347,13 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           name: 'hooks (active session)',
           ok: false,
           reportOnly: true,
-          detail: `active ${active.label} session has not published exact lifecycle state — send one ${active.label} prompt, then check again`,
+          detail: active.harness === 'hermes'
+            ? 'this Hermes Agent Session has not rendered the Notifai prompt section for an enabled Project; start a fresh local classic CLI session after enabling the Project'
+            : `active ${active.label} session has not published exact lifecycle state — send one ${active.label} prompt, then check again`,
           remedy: {
-            summary: `send one ${active.label} prompt — its hook publishes the routing pointer`,
+            summary: active.harness === 'hermes'
+              ? 'start a fresh local classic CLI Agent Session after enabling this Project'
+              : `send one ${active.label} prompt — its hook publishes the routing pointer`,
             command: 'notifai doctor',
           },
         })
@@ -1311,7 +1361,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         checks.push({
           name: 'hooks (active session)',
           ok: true,
-          detail: `the exact active ${active.label} session has published lifecycle state`,
+          detail: active.harness === 'hermes'
+            ? 'the exact active Hermes Agent Session rendered Notifai activation for this enabled Project'
+            : `the exact active ${active.label} session has published lifecycle state`,
         })
       }
     }
@@ -1517,6 +1569,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     checks.push({
       name: 'hooks (question admission)',
       ok: admissionProblems.length === 0,
+      ...(active.harness === 'hermes' ? { reportOnly: true } : {}),
       detail:
         admissionProblems.length === 0
           ? `the active ${active.label} route is exact, current, singular, trusted where applicable, and bounded by a live owner`
@@ -1560,7 +1613,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
   const promptFired = firedState?.last_prompt_at !== undefined
   const stopFired = firedState?.last_stop_at !== undefined
-  const fired = firedPointer !== null && promptFired
+  const hermesActivated = firedPointer?.harness === 'hermes' && firedState?.harness === 'hermes'
+  const fired = firedPointer !== null && (promptFired || hermesActivated)
   // Installations for other harnesses are irrelevant to the active one, and an
   // active harness with none of its own has nothing to activate: say that
   // instead of advising a prompt in some other harness. When the environment
@@ -1590,7 +1644,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     // a first-turn question impossible even after the current Stop definition,
     // trust, shape, and continuation owner had all been proven above.
     reportOnly: true,
-    detail: fired
+    detail: hermesActivated
+      ? 'the exact Hermes Agent Session rendered its native Notifai prompt section for this enabled Project'
+      : fired
       ? active === null
         ? `a session in this directory has run UserPromptSubmit and is ready for this turn's Stop${stopFired ? '; an earlier Stop was also observed' : ''}`
         : `the active ${active.label} session has run UserPromptSubmit and is ready for this turn's Stop${stopFired ? '; an earlier Stop was also observed' : ''}`
@@ -1632,7 +1688,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
             .stopContinuation !== 'unsupported',
       ),
-    reportOnly: active === null,
+    reportOnly: active === null || active.harness === 'hermes',
     detail:
       continuationHarnesses.length === 0
         ? active === null
