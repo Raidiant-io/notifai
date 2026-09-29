@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.5.0](https://github.com/Raidiant-io/notifai/compare/v11.4.1...v11.5.0) (2026-09-29)
+
+
+### Features
+
+* **cli:** deliver Codex notes at tool boundaries ([#214](https://github.com/Raidiant-io/notifai/issues/214)) ([ed6b733](https://github.com/Raidiant-io/notifai/commit/ed6b7337ba5520ffde7d664842ab688cd315c6d7))
+* **cli:** OpenClaw answer continuation and Hermes managed activation ([56f2187](https://github.com/Raidiant-io/notifai/commit/56f21878d8f5950c235ef50c197a3fbabab1b588))
+* **cli:** support Grok and preserve OpenClaw JSONC config ([42d22ea](https://github.com/Raidiant-io/notifai/commit/42d22ead8c553c389cff0b4bf1c1a0645bb00d16))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.1.1 to 8.1.2
+
 ## [11.4.1](https://github.com/Raidiant-io/notifai/compare/v11.4.0...v11.4.1) (2026-09-27)
 
 
