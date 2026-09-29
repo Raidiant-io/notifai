@@ -115,7 +115,7 @@ describe('Notifai agent skill', () => {
     const decide = section('## Decide whether to notify')
     expect(decide).toMatch(/never touches config/i)
     expect(decide).toMatch(/words\s+verbatim/i)
-    expect(decide).toMatch(/paraphrase must never masquerade/i)
+    expect(decide).toMatch(/paraphrase\s+must never masquerade/i)
     expect(decide).toMatch(/`--yes` skips the\s+CLI's confirmation/i)
   })
 
@@ -254,19 +254,18 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/2-6 words/i)
     expect(send).toMatch(/when the current environment exposes its exact\s+identifier/i)
     expect(send).toMatch(/without an exact Agent Session[\s\S]{0,160}usage\s+error/i)
-    expect(send).toMatch(/omit `--session-label`/i)
-    expect(send).toMatch(/name the\s+environment supplies wins/i)
-    expect(send).toMatch(/freezes one semantic name/i)
-    expect(send).toMatch(/safe to repeat the same `--session-label` on every send and ask/i)
-    // The one exception to permanence: garbage names are recoverable.
-    expect(send).toMatch(/generated fallback name[\s\S]*replaced by a later\s+semantic name/i)
+    expect(send).toMatch(/without that identifier, omit\s+`--session-label`/i)
+    expect(send).toMatch(/initial name comes from the environment when available, then your label,\s+then a generated fallback/i)
+    expect(send).toMatch(/repeat the same `--session-label` on sends and asks;\s+changing that flag does not rename an existing semantic name/i)
+    expect(send).toMatch(/later semantic\s+name can replace a generated fallback/i)
     expect(send).toMatch(/never pass\s+`--session-id`/i)
     expect(send).toMatch(/identifier, hash, or\s+filesystem path/i)
     expect(send).toContain('notifai session rename')
-    expect(send).toMatch(/job changed completely[\s\S]{0,100}current\s+name would now mislead/i)
-    expect(send).toMatch(/never rename for milestones, ordinary progress/i)
+    expect(send).toMatch(/job changed completely[\s\S]{0,100}old name would mislead/i)
+    expect(send).toMatch(/without\s+waiting for a notification or User reminder/i)
+    expect(send).toMatch(/keep the name for milestones,\s+ordinary progress, and same-job refinements/i)
     expect(send).toMatch(/accepts no Agent Session id/i)
-    expect(send).toMatch(/active harness proves the exact current Agent Session/i)
+    expect(send).toMatch(/active harness to\s+prove the exact current Agent Session/i)
   })
 
   it('never teaches by enumerating environments the CLI can detect itself', () => {
@@ -418,7 +417,7 @@ describe('Notifai agent skill', () => {
   it('teaches retirement of a registration that has not been pushed yet', () => {
     expect(skill).toContain('notifai close --pending')
     expect(skill).toContain('question_id')
-    expect(skill).toMatch(/answer\s+in the conversation/i)
+    expect(skill).toMatch(/answered\s+in the conversation/i)
   })
 
   it('makes the agent the operator and the human only the human', () => {
