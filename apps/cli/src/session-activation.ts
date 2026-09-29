@@ -4,6 +4,7 @@ import { GUIDANCE_CONTEXT_MAX_BYTES, boundedEffectiveGuidance } from './guidance
 
 const ROOT_OWNERSHIP =
   'Notifai is enabled for this Project. You own Notification Requests unless explicitly assigned elsewhere. Load the Notifai skill before your first Notification Request. ' +
+  'Load the skill\'s naming rules on a change of job. ' +
   'Follow the effective guidance below. Under it, when owned or coordinated work needs a User decision, approval, sign-in, credential setup or physical action, register with `notifai ask` in the same turn as the conversation question; conversation alone misses an away User. Ask for safe setup or readiness, never for credentials. Harness permission prompts stay in the harness. ' +
   'Missing readiness: `notifai init --json`.'
 

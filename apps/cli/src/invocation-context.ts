@@ -147,7 +147,7 @@ export interface SourceContextInput {
 }
 
 export type SourceContextBuild =
-  | { ok: true; source?: SourceContextT; generatedSessionLabel?: string }
+  | { ok: true; source?: SourceContextT; generatedSessionLabel?: string; unchangedSessionLabel?: string }
   | { ok: false; error: string }
 
 /** Resolve per-field Source Context precedence without fabricating Agent Session identity. */
@@ -204,6 +204,9 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
     : {
         ok: true,
         source,
+        ...(label?.ignoredExplicitLabel === true
+          ? { unchangedSessionLabel: label.label }
+          : {}),
         ...(label !== undefined && label.ok && label.source === 'fallback'
           ? { generatedSessionLabel: label.label }
           : {}),

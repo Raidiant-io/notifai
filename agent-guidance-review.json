@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a44f7a02e9903f3ff5ec3423b11628f48ccdcb01600c7d8b25969c417ff06375",
+  "behavior_digest": "sha256:c982ab3cc945c5c3e7310aaade20ff5ef21e7d4b3c581c41edd5f162704d2374",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle activation, rendered Note/Edit acknowledgement demands, the shipped skill and note reference, harness setup, CLI readiness and Codex trust diagnostics, README, TRUST and domain terms. Notes can now arrive as PostToolUse context inside a turn; guidance recognizes that shape, distinguishes pending questions from Session Notes, and explains native approval, fresh sessions, idle queue fallback and tool completion limits. Question routing keeps its existing trust requirements. Notification ownership, transported-text authority and acknowledgement obligations remain unchanged. Focused tests exercise hook rendering, custody, claims, interruption and fallback. Busy delivery additionally requires a live hook observation in this exact incarnation; a first-tool Note may use the existing later-turn queue. This bootstrap limit is documented and covered by integration tests.",
+  "reason": "Reviewed lifecycle activation, skill discovery and naming guidance, send/ask help and diagnostics, harness setup, CLI readiness, README, TRUST and domain terms. Root activation now reaches naming guidance on a change of job; the skill makes the existing narrow rename duty proactive. Ordinary label flags still preserve semantic names, but a differing valid explicit label now reports the retained local name and the exact-session rename command. No native-title mirroring, authorization, notification ownership, trust, readiness or wire behavior changed. Focused command tests prove the warning, explicit rename and subsequent sends preserve identity; lifecycle budget and packaged skill installation are verified.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
