@@ -55,6 +55,20 @@ export function openclawOwnsReply(
   })
 }
 
+/** A Session Message belongs to the generation that accepted its acknowledgement debt. */
+export function openclawOwnsMessage(
+  sessionKey: string,
+  messageId: string,
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+): boolean {
+  return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
+    if (activeOpenclawGeneration(sessionKey, env, cwd) === null) return false
+    return (readSessionState(sessionKey, env).message_acknowledgement_due ?? [])
+      .some((entry) => entry.message_id === messageId)
+  })
+}
+
 /** Record ownership as soon as a foreground submission returns its request ID. */
 export function recordOpenclawForegroundReply(
   sessionKey: string,

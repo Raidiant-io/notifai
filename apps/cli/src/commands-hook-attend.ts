@@ -67,6 +67,7 @@ import { handOffSessionMessages, type MessageHandOffResult } from './session-mes
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
 import { codexToolHookReady, stageCodexToolMessages } from './codex-tool-messages.js'
+import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
 export interface AttendantSeams {
@@ -243,6 +244,7 @@ export async function attendHook(
             gateway: harnessProcess,
             env: deps.env,
             endedByHook,
+            activity: openclawBridgeActivity,
           })
         : claudeAttendanceProbe({ sessionId, harness: harnessProcess, endedByHook, adapters: probeAdapters })
 
@@ -356,6 +358,21 @@ function sessionMessageWriter(input: {
     log: logger,
   })
   if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, sequencerFor })
+  if (input.harness === 'openclaw') {
+    if (!openclawMessageBridgeAvailable(deps.env)) return null
+    const send = openclawMessageBridge()
+    return (client, batch, attendant) =>
+      handOffSessionMessages(batch, attendant, {
+        sequencer: sequencerFor(client),
+        write: (text, begin, guard, _writerGroup, message) => {
+          const generation = readOpenclawGeneration(sessionId, deps.env)
+          if (generation === null || generation.ended) {
+            return Promise.resolve({ status: 'unavailable', reason: 'OpenClaw generation ended' })
+          }
+          return send(message.message_id, sessionId, generation.id, text, begin, guard)
+        },
+      })
+  }
   if (input.harness !== 'claude-code') return null
   const adapters: ClaudeWakeAdapters = deps.claudeWake ?? systemClaudeWakeAdapters(deps.env)
   const inbox = inspectClaudeInbox({

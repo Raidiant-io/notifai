@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:95bcff4f1d4b1d3ff85694f4342f6ba791e16091c3e62f85ac000f2db5cf296c",
+  "behavior_digest": "sha256:986d8e45bffd031f035f90192c24235d71d63787d1acc98ee339fcab96f72448",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup, CLI readiness and Doctor, README, TRUST, and domain terms for both Codex and Hermes. Codex Notes can arrive at a PostToolUse boundary with the documented live-hook bootstrap limit, approval requirement, later-turn fallback, and acknowledgement duty. Hermes classic CLI now hosts an exact-session attendant for Notes and post-consumption Answer Edits, with documented busy-turn interruption and acknowledgement duty; Hermes Question Routing remains unsupported. Project Enablement, User guidance authority, Notification Request ownership, and transported-text authority remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup, CLI readiness and Doctor, README, TRUST, and domain terms for Codex, Hermes, and OpenClaw. Codex Notes can arrive at a PostToolUse boundary with the documented live-hook bootstrap limit, approval requirement, later-turn fallback, and acknowledgement duty. Hermes classic CLI hosts an exact-session attendant for Notes and post-consumption Answer Edits; busy delivery interrupts and Question Routing remains unsupported. On macOS, the current OpenClaw Gateway generation attends its session and queues messages through a pointer-only followup with in-process context. Guidance requires acknowledgement of full context and explains that a crash may replay a pointer without context; such a pointer must not be acknowledged or automatically reinjected. Project Enablement, User guidance authority, Notification Request ownership, and transported-text authority remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

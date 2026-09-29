@@ -1820,17 +1820,22 @@ function sessionAttendantCheck(
       ? undefined
       : reports.find((report) => report.session_id === active.sessionId)
   const attended =
-    (active?.harness === 'claude-code' || active?.harness === 'codex' || active?.harness === 'hermes') &&
+    (active?.harness === 'claude-code' || active?.harness === 'codex' ||
+      active?.harness === 'hermes' || active?.harness === 'openclaw') &&
     attendantSupport(active.harness, deps.hookPlatform ?? process.platform).supported
   if (reports.length === 0 && !attended) return null
   const parts: string[] = []
   if (attended && active.sessionId !== undefined) {
     parts.push(
       own === undefined
-        ? `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
+        ? active.harness === 'openclaw'
+          ? 'this OpenClaw session has no attendant yet (the local Gateway service starts one after its first prompt)'
+          : `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
         : own.alive
           ? `this session: ${describe(own)}`
-          : `this session's attendant stopped (${describe(own)}); its next prompt starts another`,
+          : active.harness === 'openclaw'
+            ? `this session's attendant stopped (${describe(own)}); the local Gateway service starts another while the generation remains current`
+            : `this session's attendant stopped (${describe(own)}); its next prompt starts another`,
     )
   }
   parts.push(`${live.length} running on this machine`)

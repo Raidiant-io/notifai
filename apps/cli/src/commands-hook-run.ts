@@ -341,7 +341,13 @@ export async function hookRunCommand(
   if (event === 'openclaw-attendance-ready') {
     start({ cwd })
     if (currentOpenclawOwner() !== null && envelope.session_id !== undefined &&
-        readAttendantLease(envelope.session_id, deps.env) !== null) deps.io.out('ready')
+        readAttendantLease(envelope.session_id, deps.env) !== null &&
+        (() => {
+          try {
+            const config = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
+            return projectEnabled(projectBinding(cwd, deps.env, config.project.value))
+          } catch { return false }
+        })()) deps.io.out('ready')
     return EXIT.ok
   }
   if (event === 'openclaw-verify-prepared') {
@@ -721,7 +727,10 @@ export async function hookRunCommand(
         event === 'openclaw-settlement' && envelope.session_id !== undefined
           ? openclawContinuationRoute(envelope.session_id, currentOpenclawOwner()!)
           : stopWakeRoute(deps, harness, envelope.session_id, cwd),
-        event === 'stop' || event === 'openclaw-settlement',
+        // The Gateway settlement process is not an agent turn boundary. Only
+        // agent_end records Stop; a background poll must not spend the three
+        // acknowledgement reminders or abandon a Session Message debt.
+        event === 'stop',
       )
     }
     if (

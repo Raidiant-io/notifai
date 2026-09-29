@@ -98,7 +98,7 @@ not part of the current public support claim.
 | Codex hooks | Asynchronous Stop and durable session queue; CLI/app-server verified | Same queue implementation; live Codex verification pending | Same queue implementation; live Codex verification pending |
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenClaw hooks | Asynchronous Question Routing through the local Gateway service and exact-session followup queue; Session Notes and Answer Edits unsupported | Lifecycle hooks; asynchronous Question Routing unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
+| OpenClaw hooks | Asynchronous Question Routing, Session Presence, Session Notes, and post-consumption Answer Edits through the local Gateway service and exact-session followup queue | Lifecycle hooks; asynchronous Question Routing and Session Messages unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
 | Hermes plugin | v0.21.5 local classic CLI: managed Project activation and Source Context; use blocking `notifai send --reply` for questions | Unverified | Unverified |
 | Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
@@ -313,8 +313,12 @@ removed. Only an opaque id leaves the machine: never process ids, paths, or
 session files. The UserPromptSubmit and Stop copies restart it if it died and
 otherwise exit at once. `notifai doctor` shows each attendant's state.
 OpenClaw's Gateway service also owns a current-generation attendant on macOS.
-It reports Session Presence for the question route but does not
-accept Session Notes or Answer Edits.
+It reports Session Presence and accepts Session Notes and post-consumption
+Answer Edits while its local writer is ready. It stages the full message in
+Gateway memory and queues a pointer-only followup; the agent acknowledges the
+message after reading it. If an interrupted turn restarts without the staged
+context, the pointer tells the agent to report the missing message and leave it
+unacknowledged. The User can send a new message if needed.
 
 The attendant also hands a note, or a change to an answer the agent already
 received, from your devices into that running session. Claude Code uses its

@@ -41,6 +41,7 @@ export interface MessageHandOffDeps {
     begin: (writer?: 'subprocess') => boolean,
     guard: WriteGuard,
     writerGroup: (pgid: number) => void,
+    message: AttendanceMessage,
   ): Promise<SessionWriteResult>
 }
 
@@ -111,7 +112,7 @@ export async function handOffSessionMessages(
         // deadline is judged after it, at the last moment before the byte.
         writable: () => attendant.mayWrite() && handOff.writable(),
         remainingMs: () => handOff.remainingMs(),
-      }, (pgid) => handOff.recordGroup(pgid))
+      }, (pgid) => handOff.recordGroup(pgid), message)
     } catch (err) {
       // Thrown before the write (state I/O): nothing reached the harness.
       if (owed) clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)

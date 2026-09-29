@@ -69,6 +69,7 @@ export function openclawAttendanceProbe(options: {
   gateway: ProcessIdentity
   env: NodeJS.ProcessEnv
   endedByHook: () => boolean
+  activity?: () => SessionActivity | null
   readStart?: (pid: number) => string | null
   exists?: (pid: number) => boolean
 }): () => HarnessProbe {
@@ -88,7 +89,10 @@ export function openclawAttendanceProbe(options: {
         incarnation?.openclaw_generation !== options.generationId) {
       return { state: 'ended', reason: 'session-replaced' }
     }
-    return { state: 'running', activity: 'idle' }
+    const activity = options.activity?.() ?? null
+    return activity === null
+      ? { state: 'uncertain', reason: 'gateway-session-unobserved' }
+      : { state: 'running', activity }
   }
 }
 

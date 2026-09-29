@@ -62,6 +62,8 @@ export interface HarnessCapability {
   deliveryRoutes: readonly DeliveryRoute[]
   /** Concise, honest readiness text for doctor and installation guidance. */
   deliveryContract: string
+  /** Whether this integration can queue Session Notes and post-consumption Answer Edits. */
+  sessionMessages?: 'gateway-service' | 'unsupported'
 }
 
 const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
@@ -104,6 +106,7 @@ const OPENCLAW_CAPABILITY: HarnessCapability = {
   deliveryRoutes: ['session-queue'],
   deliveryContract:
     'the Gateway service owns the complete answer window and queues a pointer-only follow-up into the exact current session after claiming the answer; the agent fetches the reply and acknowledges it in that session',
+  sessionMessages: 'gateway-service',
 }
 
 const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
@@ -111,6 +114,7 @@ const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
   deliveryRoutes: ['unsupported'],
   deliveryContract:
     'OpenClaw asynchronous answer continuation is verified on macOS only; use a blocking reply command on this host',
+  sessionMessages: 'unsupported',
 }
 
 const GROK_CAPABILITY: HarnessCapability = {
