@@ -19,6 +19,8 @@ import {
 } from './process-identity.js'
 import type { HarnessProbe } from './session-attendant.js'
 import type { SessionActivity } from '@raidiant/notifai-protocol'
+import { readOpenclawGeneration } from './openclaw-generation.js'
+import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js'
 
 /** Whether this build runs a Session Attendant for a harness on a platform, and why not. */
 export type AttendantSupport = { supported: true } | { supported: false; reason: string }
@@ -45,7 +47,42 @@ export function attendantSupport(
       ? { supported: true }
       : { supported: false, reason: `codex-${platform}-unproven` }
   }
+  if (harness === 'openclaw') {
+    return platform === 'darwin'
+      ? { supported: true }
+      : { supported: false, reason: `openclaw-${platform}-unproven` }
+  }
   return { supported: false, reason: 'harness-has-no-exact-session-probe' }
+}
+
+/** The Gateway process plus current CLI-owned generation prove OpenClaw presence. */
+export function openclawAttendanceProbe(options: {
+  sessionKey: string
+  generationId: string
+  gateway: ProcessIdentity
+  env: NodeJS.ProcessEnv
+  endedByHook: () => boolean
+  readStart?: (pid: number) => string | null
+  exists?: (pid: number) => boolean
+}): () => HarnessProbe {
+  const readStart = options.readStart ?? processStartTime
+  const exists = options.exists ?? pidExists
+  return () => {
+    if (options.endedByHook() || sessionHasEnded(options.sessionKey, options.env)) {
+      return { state: 'ended', reason: 'session-end-hook' }
+    }
+    if (processIdentityLiveness(options.gateway, readStart, exists) !== 'alive') {
+      return { state: 'ended', reason: 'harness-gone' }
+    }
+    const current = readOpenclawGeneration(options.sessionKey, options.env)
+    const incarnation = readSessionIncarnation(options.sessionKey, options.env)
+    if (current === null || current.ended || !current.activated ||
+        current.id !== options.generationId ||
+        incarnation?.openclaw_generation !== options.generationId) {
+      return { state: 'ended', reason: 'session-replaced' }
+    }
+    return { state: 'running', activity: 'idle' }
+  }
 }
 
 export interface ClaudeProbeAdapters {

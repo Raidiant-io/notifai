@@ -4333,7 +4333,7 @@ describe('harness activation guidance', () => {
     expect(inspectHookAdapter(deps.hookAdapterHome).target?.scriptPath).toBe(scriptPath)
   })
 
-  it('installs an owned OpenClaw plugin and reports unsupported continuation', async () => {
+  it('installs an owned OpenClaw plugin and reports an unready continuation without a live Gateway', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-activation-'))
     const io = new CapturedIo()
     const client = {
@@ -4375,7 +4375,7 @@ describe('harness activation guidance', () => {
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('no proven answer continuation')
+    expect(io.outLines.join('\n')).toContain('local Gateway service has not verified')
   })
 
   it('refuses to overwrite a foreign OpenClaw plugin', () => {
@@ -9795,7 +9795,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('opencode-current', env).pending).toBeUndefined()
   })
 
-  it('rejects OpenClaw before registration even with an exact matching pointer', () => {
+  it('rejects OpenClaw without a current generation marker', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-openclaw-unsupported-'))
     const io = new CapturedIo()
     const env = {
@@ -9813,8 +9813,9 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
+    expect(io.errLines.join('\n')).toMatch(/generation|OpenClaw/i)
     expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
+    expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
   })
 
   it('admits Grok ask only for the exact active Agent Session', async () => {
@@ -9862,8 +9863,6 @@ describe('asking before the hooks have ever run', () => {
     expect(payload.message).toMatch(/no proven continuation owner/i)
     expect(payload.message).not.toMatch(/hooks are not installed/i)
     expect(payload.remedy).toMatch(/send --reply/)
-    expect(hooksInstallCommand(deps, { harness: 'hermes', execPath, scriptPath })).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/Unknown harness "hermes"/)
   })
 
   it('fails closed when Hermes nested markers leave session ownership ambiguous', () => {
@@ -9917,7 +9916,7 @@ describe('asking before the hooks have ever run', () => {
     expect(JSON.stringify(hooks)).not.toContain('hooks install --harness claude-code')
   })
 
-  it('does not tell an active Hermes session to install managed hooks', async () => {
+  it('offers managed Hermes activation while keeping Question Routing unsupported', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-doctor-'))
     const io = new CapturedIo()
     const env = {
@@ -9927,10 +9926,13 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
     const readiness = await assessReadiness(deps)
     const hooks = readiness.states.find((state) => state.id === 'hooks')
-    expect(hooks?.status).toBe('optional-gap')
-    expect(hooks?.remedy).toBeUndefined()
-    expect(JSON.stringify(hooks)).not.toContain('hooks install --harness hermes')
-    expect(hooks?.detail).toMatch(/no proven continuation owner/i)
+    expect(hooks?.status).toBe('gap')
+    expect(hooks?.remedy?.command).toBe('notifai hooks install --harness hermes')
+    expect(hooks?.detail).toMatch(/plugin is not installed/i)
+    expect(readiness.states.find((state) => state.id === 'question-routing-settings')).toMatchObject({
+      status: 'optional-gap',
+      detail: expect.stringMatching(/unsupported/),
+    })
   })
 
   it('refuses Cursor when its active-agent marker has no exact conversation id', () => {

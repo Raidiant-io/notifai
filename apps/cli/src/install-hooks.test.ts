@@ -1,18 +1,21 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { parseChoices } from './send.js'
 import {
@@ -1357,7 +1360,7 @@ describe('the OpenCode adapter', () => {
 
   it('is a harness `hooks install` knows about', () => {
     expect(HOOK_INSTALLABLE_HARNESSES).toContain('opencode')
-    expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
+    expect(HOOK_INSTALLABLE_HARNESSES).toContain('hermes')
     expect(settingsFile('opencode', {})).toContain('notifai.js')
   })
 
@@ -1380,19 +1383,28 @@ describe('the OpenCode adapter', () => {
 })
 
 describe('the OpenClaw adapter', () => {
+  let pluginImportId = 0
+  const mockDirs: string[] = []
+  afterEach(() => {
+    for (const dir of mockDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
   const source = openclawPluginSource({
     adapterPath: ADAPTER,
     timeoutSeconds: 240,
   })
 
-  async function loadPlugin() {
-    return (await import(
-      `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
-    )) as {
+  async function loadPlugin(pluginSource = source) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-module-'))
+    mockDirs.push(dir)
+    const modulePath = path.join(dir, `index-${pluginImportId++}.mjs`)
+    writeFileSync(modulePath, pluginSource)
+    return (await import(pathToFileURL(modulePath).href)) as {
       default: {
         id: string
         register(api: {
           on(name: string, handler: (...args: never[]) => unknown): void
+          registerService(service: object): void
         }): void
       }
     }
@@ -1404,8 +1416,38 @@ describe('the OpenClaw adapter', () => {
       on(name, handler) {
         handlers.set(name, handler)
       },
+      registerService() {},
     })
     return handlers
+  }
+
+  async function recordingPlugin() {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-handler-'))
+    mockDirs.push(dir)
+    const callsPath = path.join(dir, 'calls.jsonl')
+    const adapterPath = path.join(dir, 'adapter.cjs')
+    writeFileSync(callsPath, '')
+    writeFileSync(adapterPath, `const fs = require('node:fs')\nlet input = ''\nprocess.stdin.on('data', chunk => input += chunk)\nprocess.stdin.on('end', () => {\n  fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ event: process.argv[3], envelope: JSON.parse(input) }) + '\\n')\n  process.stdout.write('activation guidance')\n})\n`)
+    chmodSync(adapterPath, 0o755)
+    const pluginSource = openclawPluginSource({
+      adapterPath,
+      timeoutSeconds: 5,
+      platform: 'win32',
+      nodePath: process.execPath,
+    })
+    const invokeFrom = (handlers: ReturnType<typeof handlersOf>) => async (
+      name: string, event: object, ctx: object,
+    ) => {
+      const handler = handlers.get(name) as ((event: object, ctx: object) => Promise<unknown>) | undefined
+      expect(handler, `missing OpenClaw hook ${name}`).toBeDefined()
+      return handler!(event, ctx)
+    }
+    const invoke = invokeFrom(handlersOf(await loadPlugin(pluginSource)))
+    const newInstance = async () => invokeFrom(handlersOf(await loadPlugin(pluginSource)))
+    const calls = (): Array<{ event: string; envelope: Record<string, string> }> =>
+      readFileSync(callsPath, 'utf8').trim().split('\n').filter(Boolean).map((line) =>
+        JSON.parse(line) as { event: string; envelope: Record<string, string> })
+    return { invoke, newInstance, calls }
   }
 
   it('shells out to the same hook commands the other harnesses run', () => {
@@ -1416,6 +1458,8 @@ describe('the OpenClaw adapter', () => {
   })
 
   it('wires current plugin joints and leaves user abort alone', () => {
+    expect(source).toContain('"session_start"')
+    expect(source).toContain('"before_reset"')
     expect(source).toContain('api.on("before_prompt_build"')
     expect(source).toContain('api.on("message_received"')
     expect(source).toContain('api.on("agent_end"')
@@ -1445,29 +1489,123 @@ describe('the OpenClaw adapter', () => {
   })
 
   it('does not treat heartbeat or cron traffic as User presence', async () => {
-    const handlers = handlersOf(await loadPlugin())
-    const presence = handlers.get('message_received') as (
-      event: object,
-      ctx: object,
-    ) => Promise<void>
-    await presence({ from: '' }, { sessionKey: 'agent:main:main' })
-    await presence({ from: 'cron' }, { sessionKey: 'agent:main:main', trigger: 'cron' })
-    await presence({ from: 'hb' }, { sessionKey: 'agent:main:main', trigger: 'heartbeat' })
-    expect(source).toContain('trigger === "cron" || trigger === "heartbeat"')
+    const { invoke, calls } = await recordingPlugin()
+    const ctx = { sessionKey: 'agent:main:main' }
+    await invoke('message_received', { from: '' }, ctx)
+    await invoke('message_received', { from: 'cron' }, { ...ctx, trigger: 'cron' })
+    await invoke('message_received', { from: 'hb' }, { ...ctx, trigger: 'heartbeat' })
+    expect(calls()).toEqual([])
+    await invoke('message_received', { from: 'user' }, ctx)
+    expect(calls().map((call) => call.event)).toEqual(['user-prompt-submit'])
   })
 
-  it('publishes exact sessionKey markers into exec without PATH', async () => {
-    const handlers = handlersOf(await loadPlugin())
+  it('forwards a typed start and prompt from separate plugin instances', async () => {
+    const { invoke, newInstance, calls } = await recordingPlugin()
+    const promptInstance = await newInstance()
+    const ctx = { sessionKey: 'agent:main:main', sessionId: 'transcript-a' }
+    await invoke('session_start', { sessionId: 'transcript-a' }, ctx)
+    await promptInstance('before_prompt_build', {}, { ...ctx, workspaceDir: '/project' })
+    await invoke('before_reset', { sessionId: 'transcript-a' }, ctx)
+    await invoke('session_start', { sessionId: 'transcript-a', resumedFrom: 'transcript-a' }, ctx)
+    await promptInstance('before_prompt_build', {}, { ...ctx, workspaceDir: '/project' })
+    expect(calls().map((call) => [call.event, call.envelope.hook_event_name])).toEqual([
+      ['openclaw-lifecycle', 'SessionStart'],
+      ['session-start', 'SessionStart'],
+      ['openclaw-turn-start', 'BeforePromptBuild'],
+      ['openclaw-lifecycle', 'BeforeReset'],
+      ['openclaw-lifecycle', 'SessionStart'],
+      ['session-start', 'SessionStart'],
+      ['openclaw-turn-start', 'BeforePromptBuild'],
+    ])
+    expect(calls().filter((call) => call.event === 'session-start')
+      .map((call) => call.envelope.cwd)).toEqual(['/project', '/project'])
+  })
+
+  it('keeps prompt activation available when older OpenClaw lacks typed hooks', async () => {
+    const handlers = new Map<string, (...args: never[]) => unknown>()
+    const mod = await loadPlugin()
+    mod.default.register({ on(name, handler) {
+      if (name === 'session_start' || name === 'before_reset') throw new Error('unknown hook')
+      handlers.set(name, handler)
+    } })
+    const prompt = handlers.get('before_prompt_build') as (
+      event: object, ctx: object,
+    ) => Promise<{ prependContext?: string } | undefined>
+    expect((await prompt({}, { sessionKey: 'agent:main:main' }))?.prependContext)
+      .toBe(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)
+  })
+
+  it('forwards same-ID /new and /reset boundaries with the stable sessionKey', async () => {
+    const { invoke, calls } = await recordingPlugin()
+    const ctx = { sessionKey: 'agent:main:main', workspaceDir: '/ws' }
+    const start = { sessionId: 'transcript-a' }
+    await invoke('session_start', start, ctx)
+    await invoke('before_prompt_build', {}, ctx)
+    await invoke('before_prompt_build', {}, ctx)
+    for (const reason of ['new', 'reset']) {
+      await invoke('before_reset', { ...start, reason }, ctx)
+      await invoke('session_end', { ...start, reason }, ctx)
+      await invoke('session_start', { ...start, reason, resumedFrom: 'transcript-a' }, ctx)
+      await invoke('session_start', { ...start, reason, resumedFrom: 'transcript-a' }, ctx)
+      await invoke('before_prompt_build', {}, ctx)
+      await invoke('session_end', { ...start, reason }, ctx) // late old end
+    }
+    const lifecycle = calls().filter((call) => call.event === 'openclaw-lifecycle')
+    expect(lifecycle.filter((call) => call.envelope.hook_event_name === 'BeforeReset')).toHaveLength(2)
+    expect(lifecycle.filter((call) => call.envelope.hook_event_name === 'SessionStart')).toHaveLength(5)
+    expect(lifecycle.filter((call) => call.envelope.hook_event_name === 'SessionStart')
+      .slice(1).map((call) => call.envelope.openclaw_resumed_from)).toEqual(Array(4).fill('transcript-a'))
+    expect(calls().filter((call) => call.event === 'session-start')).toHaveLength(4)
+    expect(calls().every((call) => call.envelope.session_id === ctx.sessionKey)).toBe(true)
+    expect(calls().every((call) => call.envelope.openclaw_session_id === 'transcript-a' ||
+      call.envelope.openclaw_session_id === undefined)).toBe(true)
+  })
+
+  it('forwards idle and daily rollover identities despite missing and late ends', async () => {
+    const { invoke, calls } = await recordingPlugin()
+    const ctx = { sessionKey: 'agent:main:main' }
+    await invoke('session_start', { sessionId: 'a' }, ctx)
+    await invoke('before_prompt_build', {}, ctx)
+    await invoke('session_start', { sessionId: 'b', resumedFrom: 'a', reason: 'idle' }, ctx)
+    await invoke('before_prompt_build', {}, ctx)
+    await invoke('session_end', { sessionId: 'a', reason: 'idle' }, ctx)
+    await invoke('session_start', { sessionId: 'b', resumedFrom: 'a', reason: 'idle' }, ctx)
+    await invoke('session_end', { sessionId: 'b', reason: 'daily' }, ctx)
+    await invoke('session_start', { sessionId: 'c', resumedFrom: 'b', reason: 'daily' }, ctx)
+    await invoke('before_prompt_build', {}, ctx)
+    await invoke('session_end', { sessionId: 'b', reason: 'daily' }, ctx)
+    const starts = calls().filter((call) => call.event === 'openclaw-lifecycle' &&
+      call.envelope.hook_event_name === 'SessionStart')
+    expect(starts.map((call) => call.envelope.openclaw_session_id)).toEqual(['a', 'b', 'b', 'c'])
+    expect(starts.map((call) => call.envelope.openclaw_resumed_from)).toEqual([
+      undefined, 'a', 'a', 'b',
+    ])
+    expect(calls().filter((call) => call.event === 'session-end').map((call) =>
+      call.envelope.openclaw_session_id)).toEqual(['a', 'b', 'b'])
+  })
+
+  it('publishes exact sessionKey markers only after a current generation check', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-generation-'))
+    mockDirs.push(dir)
+    const adapterPath = path.join(dir, 'adapter.cjs')
+    writeFileSync(adapterPath, "process.stdout.write('11111111-1111-4111-8111-111111111111')\n")
+    const generated = openclawPluginSource({
+      adapterPath, timeoutSeconds: 5, platform: 'win32', nodePath: process.execPath,
+    })
+    const handlers = handlersOf(await loadPlugin(generated))
     const resolve = handlers.get('resolve_exec_env') as (
-      event: object,
-      ctx: object,
-    ) => Record<string, string> | undefined
-    expect(resolve({}, { sessionKey: 'agent:main:telegram:dm:1' })).toEqual({
+      event: object, ctx: object,
+    ) => Promise<Record<string, string> | undefined>
+    expect(await resolve({}, { sessionKey: 'agent:main:telegram:dm:1' })).toEqual({
       NOTIFAI_ACTIVE_HARNESS: 'openclaw',
       NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:telegram:dm:1',
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: '11111111-1111-4111-8111-111111111111',
     })
-    expect(resolve({}, {})).toBeUndefined()
-    expect(source).not.toContain('PATH:')
+    expect(await resolve({}, {})).toBeUndefined()
+    expect(await (handlersOf(await loadPlugin()).get('resolve_exec_env') as (
+      event: object, ctx: object,
+    ) => Promise<Record<string, string> | undefined>)({}, { sessionKey: 'agent:main:main' }))
+      .toBeUndefined()
   })
 
   it('retries failed guidance loading on the next parent prompt', async () => {

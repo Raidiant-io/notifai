@@ -63,6 +63,7 @@ import {
   removeOpenclawNotifaiConfigText,
 } from './openclaw-plugin.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
+import { installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 import { packageVersion } from './release.js'
 import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
 import { activeNpmCli } from './npm-invocation.js'
@@ -164,6 +165,20 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   }
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
+  if (harness === 'hermes') {
+    try {
+      preflightHermesPlugin(deps.env)
+      const target = resolveHookAdapterTarget(deps, flags)
+      const adapter = installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)
+      const file = installHermesPlugin(adapter.path, deps.env,
+        (deps.hookPlatform ?? process.platform) === 'win32' ? target.execPath : undefined)
+      deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Start a fresh local Hermes CLI Agent Session; Question Routing remains unavailable.`)
+      return EXIT.ok
+    } catch (err) {
+      deps.io.err(`Could not install Hermes plugin: ${String(err)}`)
+      return EXIT.failed
+    }
+  }
   const adapterTarget = resolveHookAdapterTarget(deps, flags)
   const scriptPath =
     flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
@@ -688,6 +703,17 @@ function stripNotifaiHandlers(
 export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
+  if (harness === 'hermes') {
+    try {
+      deps.io.out(uninstallHermesPlugin(deps.env)
+        ? 'Removed the Notifai Hermes plugin through Hermes.'
+        : 'No Notifai Hermes plugin is installed.')
+      return EXIT.ok
+    } catch (err) {
+      deps.io.err(`Could not remove Hermes plugin: ${String(err)}`)
+      return EXIT.failed
+    }
+  }
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
   const codexPaths =
     harness === 'codex' ? codexMachineLayerPaths(deps.env, deps.hookPlatform) : null

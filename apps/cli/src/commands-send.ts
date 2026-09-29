@@ -35,6 +35,11 @@ import {
 } from './commands-core.js'
 import { sourceContextHarnessSession } from './commands-harness-context.js'
 import { resolveCommandSession } from './command-session.js'
+import {
+  activeOpenclawGeneration,
+  openclawOwnsReply,
+  recordOpenclawForegroundReply,
+} from './openclaw-session-access.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { readDeliveryJournal, recordUnclaimedHandOffs } from './session-delivery.js'
 import {
@@ -266,6 +271,11 @@ export async function sendCommand(
     return reportError(deps, err)
   }
   const submissionDraft = draftForServerCapabilities(build.draft, serverCapabilities)
+  const foregroundSession = flags.reply && activeSession?.sessionId !== undefined &&
+    submissionDraft.source?.session_id === activeSession.sessionId
+    ? activeSession.sessionId : null
+  const foregroundGeneration = foregroundSession === null ? null
+    : activeOpenclawGeneration(foregroundSession, deps.env, deps.cwd)
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
@@ -313,6 +323,21 @@ export async function sendCommand(
     return exit
   }
   settleSendAttempt(deps.env, attempt.attemptId)
+  if (foregroundSession !== null && foregroundGeneration !== null) {
+    let recorded = false
+    try {
+      recorded = recordOpenclawForegroundReply(
+        foregroundSession, receipt.request_id, foregroundGeneration, deps.env, deps.cwd,
+      )
+    } catch (err) {
+      deps.io.err(`Could not retain ownership of ${receipt.request_id}: ${String(err)}`)
+    }
+    if (!recorded) {
+      deps.io.err(`The creating OpenClaw generation can no longer own ${receipt.request_id}; inspect the submitted request before acting on a reply.`)
+      if (flags.json) deps.io.out(JSON.stringify(unansweredReplyResultJson(receipt, false)))
+      return EXIT.failed
+    }
+  }
   const notifiedSession = submissionDraft.source?.session_id
   if (notifiedSession !== undefined) {
     // Wakes this session's dormant Session Attendant.
@@ -513,6 +538,14 @@ export async function repliesCommand(
   requestedId: string | undefined,
   flags: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean },
 ): Promise<number> {
+  if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
+    const sessionKey = deps.env['NOTIFAI_ACTIVE_SESSION_ID'] ?? ''
+    if (activeOpenclawGeneration(sessionKey, deps.env, deps.cwd) === null ||
+        (requestedId !== undefined && !openclawOwnsReply(sessionKey, requestedId, deps.env, deps.cwd))) {
+      deps.io.err('This reply pointer does not belong to the current OpenClaw session generation.')
+      return EXIT.usage
+    }
+  }
   const waitSeconds = flags.wait ?? 0
   const afterSeq = flags.after ?? 0
   if (!isNonNegativeInteger(waitSeconds)) {

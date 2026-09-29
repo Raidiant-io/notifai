@@ -168,23 +168,37 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   startup, then start one fresh Agent Session, send one prompt, and run
   `notifai doctor`. Notifai owns its generated Gateway plugin and will not
   overwrite a foreign one. Exact Agent Session identity is the OpenClaw
-  `sessionKey`; `sessionId` is a rotating generation and is never used as the
-  session id. A session key containing `:subagent:` or an ACP nested context
+  `sessionKey`; the transcript `sessionId` can stay the same across `/new` and
+  `/reset`, while idle or daily rollover can change it. Notifai gives each
+  observed generation one activation on its first prompt, using the typed
+  lifecycle events to fence same-`sessionId` resets. A session key containing
+  `:subagent:` or an ACP nested context
   is a worker. Missing identity fails safe as a non-sending worker; only a
   proven parent Agent Session receives owner context. Explicit textual
   delegation promotes that worker through the same skill-and-guidance rule.
-  OpenClaw has no locally proven exactly-once continuation after `agent_end`,
-  so `notifai ask` fails closed instead of accepting an answer into a void.
-  Use a blocking `notifai send --reply` question when its answer must return to
-  the agent without another human prompt. Do not treat `/stop` as turn-end.
-- **Hermes:** classic CLI on the local terminal backend can send. Notifai reads
-  exact `HERMES_SESSION_ID` and derives git branch and worktree from the actual
-  invocation cwd. Do not run `notifai hooks install --harness hermes` — managed
-  setup, lifecycle activation, and Question Routing are unsupported. Use a
-  blocking `notifai send --reply` question. Install the Notifai skill through
-  `npx skills`; no Hermes plugin may vendor a copy. Nested inherited harness
-  markers fail closed. TUI, gateway, API, ACP, and remote backends are not
-  this baseline.
+  On macOS, the loaded Gateway service can route an asynchronous `notifai ask` answer
+  into the same Agent Session after the asking turn ends. It queues a pointer
+  through OpenClaw's followup route; run `notifai replies <id>` from that
+  session to read the answer and `notifai acknowledge <id>` after acting on it.
+  Question Routing requires the current generation marker, an enabled Project,
+  and a local Gateway whose CLI version and process identity match the plugin.
+  If this Project is disabled, run `notifai project enable` before `notifai ask`.
+  Session Notes and post-consumption Answer Edits remain unsupported on this
+  route. Use a blocking `notifai send --reply` when those limits matter. Do not
+  treat `/stop` as turn-end.
+- **Hermes:** with Hermes v0.21.5, `notifai hooks install --harness hermes`
+  installs and enables Notifai's native plugin through `hermes plugins`. Start a
+  fresh local classic CLI Agent Session after installation. Its bounded system
+  prompt section checks Project Enablement and gives root or delegated worker
+  guidance. Hermes's prompt budget cannot hold every effective guidance topic;
+  when the full set exceeds it, the section directs the agent to run
+  `notifai guidance` before deciding whether or how to notify. Notifai reads
+  exact `HERMES_SESSION_ID` for Source Context and derives git branch and
+  worktree from the actual invocation cwd. Install the Notifai skill through
+  `npx skills`; the Hermes plugin does not include a copy. Question Routing is
+  unsupported, so use a blocking `notifai send --reply` question. TUI, gateway,
+  API, ACP, and remote terminal backends remain outside this proven cell.
+  Nested inherited harness markers fail closed.
 - **Grok:** `notifai hooks install --harness grok` writes only the Notifai-owned
   Machine hook file under `~/.grok/hooks/` (or `GROK_HOME/hooks/`). Start a fresh
   Grok Agent Session and send one prompt to observe lifecycle state. Grok
@@ -196,9 +210,8 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   its successor Stop confirms consumption. Grok has no Session Attendant,
   Session Notes, or post-consumption Answer Edits.
 
-Do not claim managed hook, activation, or Question Routing support for a
-harness that is absent from `notifai hooks install --help`. Classic Hermes CLI
-can send with Source Context without those.
+Do not infer Question Routing from managed installation. `notifai doctor`
+reports each harness's supported route separately.
 
 ## How the answer gets back to the agent
 

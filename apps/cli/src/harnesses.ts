@@ -15,8 +15,8 @@ export type SourceContextHarness = (typeof SOURCE_CONTEXT_HARNESSES)[number]
  * Harnesses whose lifecycle Notifai can install and manage.
  *
  * Source Context is the broader vocabulary. Managed hook installation is a
- * narrower, independently proven cell: Hermes can appear in Source Context
- * without being hook-installable.
+ * narrower, independently proven cell. Hermes owns a native prompt plugin,
+ * while its Question Routing remains unsupported.
  */
 export const HOOK_INSTALLABLE_HARNESSES = [
   'claude-code',
@@ -24,6 +24,7 @@ export const HOOK_INSTALLABLE_HARNESSES = [
   'cursor',
   'opencode',
   'openclaw',
+  'hermes',
   'grok',
 ] as const
 
@@ -52,7 +53,7 @@ export type DeliveryRoute =
   | 'hold-for-next-turn'
   | 'unsupported'
 
-export type StopContinuation = 'decision-block' | 'unsupported'
+export type StopContinuation = 'decision-block' | 'gateway-service' | 'unsupported'
 
 export interface HarnessCapability {
   /** How an answer is admitted to another turn in the already-open session. */
@@ -99,10 +100,17 @@ const OPENCODE_CAPABILITY: HarnessCapability = {
 }
 
 const OPENCLAW_CAPABILITY: HarnessCapability = {
+  stopContinuation: 'gateway-service',
+  deliveryRoutes: ['session-queue'],
+  deliveryContract:
+    'the Gateway service owns the complete answer window and queues a pointer-only follow-up into the exact current session after claiming the answer; the agent fetches the reply and acknowledges it in that session',
+}
+
+const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'no proven answer continuation after agent_end; use a blocking reply command',
+    'OpenClaw asynchronous answer continuation is verified on macOS only; use a blocking reply command on this host',
 }
 
 const GROK_CAPABILITY: HarnessCapability = {
@@ -131,8 +139,8 @@ export const HERMES_CLASSIC_CLI_LOCAL_CAPABILITY = {
     surface: 'classic-cli',
     terminalBackend: 'local',
   },
-  setup: 'unsupported',
-  activation: 'unsupported',
+  setup: 'hermes-plugin',
+  activation: 'project-enabled-system-prompt-section',
   sourceContext: 'hermes-session-id-and-invocation-cwd',
   continuation: 'unsupported',
 } as const
@@ -165,8 +173,7 @@ export function hermesClassicCliLocalInstance(
 /**
  * Question-routing contract for hook-installable harnesses.
  *
- * Hermes is deliberately absent: a send-only surface must not occupy this
- * table with a fake managed-hook continuation route.
+ * Hermes has managed activation but no Question Routing continuation.
  */
 export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapability> = {
   'claude-code': CLAUDE_CODE_CAPABILITY,
@@ -174,6 +181,7 @@ export const HARNESS_CAPABILITIES: Record<HookInstallableHarness, HarnessCapabil
   cursor: CURSOR_CAPABILITY,
   opencode: OPENCODE_CAPABILITY,
   openclaw: OPENCLAW_CAPABILITY,
+  hermes: HERMES_QUESTION_ROUTING_UNAVAILABLE,
   grok: GROK_CAPABILITY,
 }
 
@@ -184,6 +192,9 @@ export function questionRoutingCapability(
 ): HarnessCapability {
   if (harness === 'claude-code' && platform === 'win32') {
     return CLAUDE_CODE_WINDOWS_CAPABILITY
+  }
+  if (harness === 'openclaw' && platform !== 'darwin') {
+    return OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY
   }
   return HARNESS_CAPABILITIES[harness]
 }

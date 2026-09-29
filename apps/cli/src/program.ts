@@ -696,7 +696,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option(
       '--harness <name>',
-      'claude-code | codex | cursor | opencode | openclaw | grok (default: every detected harness)',
+      'claude-code | codex | cursor | opencode | openclaw | hermes | grok (default: every detected harness)',
     )
     .action((opts: { harness?: string }) => {
       exit(runners.hooksInstall(deps, opts))
@@ -704,7 +704,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   hooks
     .command('uninstall')
     .description('Remove the hooks this CLI installed for this machine')
-    .option('--harness <name>', 'claude-code | codex | cursor | opencode | openclaw | grok (default: detected)')
+    .option('--harness <name>', 'claude-code | codex | cursor | opencode | openclaw | hermes | grok (default: detected)')
     .action((opts: { harness?: string }) => {
       exit(runners.hooksUninstall(deps, opts))
     })

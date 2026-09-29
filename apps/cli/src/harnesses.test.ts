@@ -33,22 +33,23 @@ describe('harness contract', () => {
     expect(Object.keys(HARNESS_LABELS).sort()).toEqual([...SOURCE_CONTEXT_HARNESSES].sort())
   })
 
-  it('keeps managed hook installation a strict subset of Source Context', () => {
+  it('tracks managed lifecycle mechanisms independently of Question Routing', () => {
     expect(HOOK_INSTALLABLE_HARNESSES).toEqual([
       'claude-code',
       'codex',
       'cursor',
       'opencode',
       'openclaw',
+      'hermes',
       'grok',
     ])
     expect(SOURCE_CONTEXT_HARNESSES).toContain('hermes')
-    expect(HOOK_INSTALLABLE_HARNESSES).not.toContain('hermes')
+    expect(HOOK_INSTALLABLE_HARNESSES).toContain('hermes')
     expect(Object.keys(HARNESS_CAPABILITIES).sort()).toEqual([...HOOK_INSTALLABLE_HARNESSES].sort())
     for (const harness of HOOK_INSTALLABLE_HARNESSES) {
       expect(isHookInstallableHarness(harness)).toBe(true)
     }
-    expect(isHookInstallableHarness('hermes')).toBe(false)
+    expect(isHookInstallableHarness('hermes')).toBe(true)
   })
 
   it('gives a harness that cannot continue a turn no route to pretend with', () => {
@@ -69,9 +70,11 @@ describe('harness contract', () => {
       if (capability.stopContinuation === 'unsupported') continue
       expect(capability.deliveryRoutes.length, harness).toBeGreaterThan(0)
       expect(capability.deliveryRoutes, harness).not.toContain('unsupported')
-      // The journal is the floor under every supported route: without it an
-      // answer that misses its turn has nowhere to wait.
-      expect(capability.deliveryRoutes, harness).toContain('hold-for-next-turn')
+      // Hook-driven writers need a next-turn fallback. OpenClaw's Gateway
+      // service owns a durable journal and replays its own session queue.
+      if (capability.stopContinuation !== 'gateway-service') {
+        expect(capability.deliveryRoutes, harness).toContain('hold-for-next-turn')
+      }
     }
   })
 
@@ -106,8 +109,8 @@ describe('harness contract', () => {
     })
     expect(HARNESS_CAPABILITIES.opencode.stopContinuation).toBe('unsupported')
     expect(HARNESS_CAPABILITIES.opencode.deliveryRoutes).toEqual(['unsupported'])
-    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('unsupported')
-    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
+    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('gateway-service')
+    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['session-queue'])
     expect(HARNESS_CAPABILITIES.grok.stopContinuation).toBe('decision-block')
     expect(HARNESS_CAPABILITIES.grok.deliveryRoutes).toEqual([
       'hook-continuation',
@@ -126,7 +129,16 @@ describe('harness contract', () => {
     expect(capability.deliveryContract).not.toContain('returns at once')
   })
 
-  it('treats the pinned Hermes classic CLI/local trace as send-only', () => {
+  it('keeps OpenClaw Question Routing on the verified macOS host', () => {
+    expect(questionRoutingCapability('openclaw', 'darwin').deliveryRoutes)
+      .toEqual(['session-queue'])
+    for (const platform of ['linux', 'win32'] as const) {
+      expect(questionRoutingCapability('openclaw', platform).deliveryRoutes)
+        .toEqual(['unsupported'])
+    }
+  })
+
+  it('keeps Hermes Question Routing unsupported after managed activation', () => {
     expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.instance).toEqual(PINNED_HERMES_TRACE.instance)
     expect(PINNED_HERMES_TRACE.supported).toContain('deliberate-send')
     expect(PINNED_HERMES_TRACE.unsupported).toContain('question-routing')
@@ -134,6 +146,7 @@ describe('harness contract', () => {
     expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.sourceContext).toBe(
       'hermes-session-id-and-invocation-cwd',
     )
+    expect(HERMES_CLASSIC_CLI_LOCAL_CAPABILITY.activation).toBe('project-enabled-system-prompt-section')
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.stopContinuation).toBe('unsupported')
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryRoutes).toEqual(['unsupported'])
   })

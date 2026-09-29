@@ -177,8 +177,11 @@ export function hookActivationAdvice(installations: Installation[]): string {
   }
   if (harnesses.has('openclaw')) {
     advice.push(
-      'OpenClaw: restart the Gateway, then send one prompt; plugins load at startup, but non-blocking question continuation is intentionally unsupported',
+      'OpenClaw: restart the Gateway, then send one prompt; the loaded plugin owns Question Routing through its Gateway service',
     )
+  }
+  if (harnesses.has('hermes')) {
+    advice.push('Hermes: start a fresh local classic CLI Agent Session; its native prompt section activates only when this Project is enabled')
   }
   if (harnesses.has('grok')) {
     advice.push('Grok: start one fresh Agent Session and send one prompt; hooks observe lifecycle events, while model-visible hook activation is unsupported, so load the Notifai skill directly')

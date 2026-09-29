@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:67a3aaa07f7ecfab58b2ed34bfbce5262b01a97b0fff501a54f3f213b5f3f02b",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed every changed behavior input against lifecycle hooks, the packaged Notifai skill, harness setup and update recovery, CLI readiness and help, README guidance, TRUST, and protocol domain terms. The harness setup and update references now describe Grok's managed hooks, exact Source Context from an uncontested session marker, held Stop Question Routing, and the need to load the skill directly because hook output cannot activate model-visible guidance. They also correctly exclude a Grok Session Attendant, Session Notes, post-consumption Answer Edits, and an out-of-band wake route. CLI help, Doctor, and both READMEs distinguish supported lifecycle wiring from harness-specific Question Routing and give the OpenClaw trust remedy without changing User-owned allow or deny settings. OpenClaw uninstall now preserves foreign JSONC comments and pre-existing containers; this changes no agent decision or recovery instruction. The skill's ownership, acknowledgement, bounded recovery, and non-exfiltration rules and the protocol terms remain accurate.",
+  "behavior_digest": "sha256:4baa47af85aced234cde238a66ff7d62c9f6e11d1a7ad6a64fba814f23d730a9",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle activation and reply commands, the packaged Notifai skill and harness setup guidance, CLI readiness and Doctor, README, TRUST, and Agent Session and Source Context terms. Delayed OpenClaw lifecycle metadata now reconciles with the active generation, and foreground send replies remain available to that exact generation after a wait or timeout. Existing guidance already instructs agents to inspect the original request, acknowledge its answer, and avoid duplicate sends; capability claims, User guidance authority, and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

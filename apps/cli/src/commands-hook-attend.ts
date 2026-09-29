@@ -44,6 +44,7 @@ import {
   attendantSupport,
   claudeAttendanceProbe,
   codexAttendanceProbe,
+  openclawAttendanceProbe,
   systemClaudeProbeAdapters,
   type ClaudeProbeAdapters,
 } from './session-attendant-probe.js'
@@ -64,6 +65,7 @@ import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } fr
 import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThread } from './session-handoff.js'
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
+import { readOpenclawGeneration } from './openclaw-generation.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
 export interface AttendantSeams {
@@ -115,7 +117,7 @@ export async function attendHook(
   if (sessionId === undefined) return end('ignored', { reason: 'missing-session-id' })
   const support = attendantSupport(harness, deps.hookPlatform ?? process.platform)
   if (!support.supported) return end('unsupported', { reason: support.reason })
-  if (harness !== 'claude-code' && harness !== 'codex') {
+  if (harness !== 'claude-code' && harness !== 'codex' && harness !== 'openclaw') {
     return end('unsupported', { reason: 'harness-has-no-attendant' })
   }
 
@@ -130,7 +132,9 @@ export async function attendHook(
   if (envelope.hook_event_name === 'Interrupt') return end('recorded')
   // The hook adapter names the harness process that ran it. Claude Code also
   // names itself; Codex is only ever the declared parent.
-  const pid = harness === 'codex' ? declaredHookSourcePid(deps.env) : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env)
+  const pid = harness === 'codex' || harness === 'openclaw'
+    ? declaredHookSourcePid(deps.env)
+    : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env)
   if (pid === undefined) return end('ignored', { reason: 'harness-process-unproven' })
   if (!starting) {
     // Re-arm fast path, before any configuration or gate work: this runs on
@@ -171,12 +175,22 @@ export async function attendHook(
     })()
   if (harnessProcess === null) return end('ignored', { reason: 'harness-process-unproven' })
 
+  const openclawGeneration = harness === 'openclaw'
+    ? readOpenclawGeneration(sessionId, deps.env)
+    : null
+  if (harness === 'openclaw' && (openclawGeneration === null ||
+      openclawGeneration.ended || !openclawGeneration.activated ||
+      readSessionIncarnation(sessionId, deps.env)?.openclaw_generation !== openclawGeneration.id)) {
+    return end('ignored', { reason: 'stale-openclaw-generation' })
+  }
+
   const clock = seams.clock ?? systemAttendantClock
   let record = await withLockRetry(clock, () =>
     beginSessionIncarnation(sessionId, deps.env, {
       stamp: input.invokedAt,
       harnessProcess,
       clearEarlierEnd: starting,
+      ...(openclawGeneration === null ? {} : { openclawGeneration: openclawGeneration.id }),
     }),
   )
 
@@ -219,7 +233,15 @@ export async function attendHook(
           activity: () => readTurnActivity(sessionId, deps.env, served.key),
           adapters: probeAdapters,
         })
-      : claudeAttendanceProbe({ sessionId, harness: harnessProcess, endedByHook, adapters: probeAdapters })
+      : harness === 'openclaw'
+        ? openclawAttendanceProbe({
+            sessionKey: sessionId,
+            generationId: served.openclaw_generation ?? '',
+            gateway: harnessProcess,
+            env: deps.env,
+            endedByHook,
+          })
+        : claudeAttendanceProbe({ sessionId, harness: harnessProcess, endedByHook, adapters: probeAdapters })
 
   let client: ApiClient | null | undefined
   const connect = (): ApiClient | null => {
@@ -463,7 +485,9 @@ export function attendantGates(
     ...findLegacyProjectInstallations(cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform),
   ]
     .filter((installation) => installation.harness === harness)
-    .some((installation) => installation.handlers.some((handler) => handlerEvent(handler.command) === 'attend'))
+    .some((installation) => harness === 'openclaw'
+      ? (installation.problems ?? []).length === 0
+      : installation.handlers.some((handler) => handlerEvent(handler.command) === 'attend'))
   if (!attendInstalled) return { ok: false, reason: 'attend-handler-removed' }
   // Fail closed: an installed contract this attendant cannot establish is not
   // one it may keep attending under.

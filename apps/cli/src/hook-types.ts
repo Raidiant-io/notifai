@@ -33,6 +33,14 @@ import type { WriteGuard } from './wake-support.js'
 /** Fields we read from harness hook JSON. Everything else is passed through. */
 export interface HookEnvelope {
   session_id?: string
+  /** OpenClaw's current transcript ID; session_id remains its stable sessionKey. */
+  openclaw_session_id?: string
+  /** OpenClaw's lifecycle reason, when its typed hook supplies one. */
+  openclaw_reason?: string
+  /** OpenClaw's previous transcript ID on a resumed session_start. */
+  openclaw_resumed_from?: string
+  /** Internal Gateway-service reconciliation of a prepared answer hand-off. */
+  openclaw_request_ids?: string[]
   cwd?: string
   hook_event_name?: string
   /** How a harness lifecycle began: startup, resume, clear, compact, or fork. */
@@ -127,6 +135,8 @@ export interface SessionState {
    * the service confirms the agent-authored follow-up exists.
    */
   acknowledgement_due?: AcknowledgementDue[]
+  /** Foreground `send --reply` requests owned by one OpenClaw generation. */
+  openclaw_foreground_replies?: Array<{ request_id: string; generation: string }>
   /**
    * Agent Acknowledgements owed for Session Messages (Session Notes and Answer
    * Edits) handed into this session. A sibling of `acknowledgement_due`, never

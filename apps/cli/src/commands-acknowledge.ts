@@ -14,6 +14,7 @@ import {
 } from './commands-core.js'
 import type { ApiClient } from './client.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
+import { openclawOwnsReply } from './openclaw-session-access.js'
 
 /**
  * Record the one Agent Acknowledgement associated with a replied-to request
@@ -32,6 +33,13 @@ export async function acknowledgeCommand(
 ): Promise<number> {
   const requestId = id
   const subject = id.startsWith(SESSION_MESSAGE_ID_PREFIX) ? 'message' : 'request'
+  if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
+    const sessionKey = deps.env['NOTIFAI_ACTIVE_SESSION_ID'] ?? ''
+    if (subject !== 'request' || !openclawOwnsReply(sessionKey, requestId, deps.env, deps.cwd)) {
+      deps.io.err('This acknowledgement does not belong to the current OpenClaw session generation.')
+      return EXIT.usage
+    }
+  }
   const text = flags.text?.trim() ?? ''
   if (flags.text !== undefined && text.length === 0) {
     deps.io.err('--text must contain non-whitespace text. Drop it to acknowledge without text.')

@@ -23,6 +23,8 @@ import { registerQuestion } from './hook-lifecycle.js'
 import { readSessionState } from './hook-session-state.js'
 import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
+import { activeOpenclawGeneration } from './openclaw-session-access.js'
+import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
   CHOICE_USAGE,
@@ -488,7 +490,11 @@ export function askCommand(
   const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferInvocationContext(deps.cwd).project
   if (explicitProject !== null) {
     const binding = projectBinding(deps.cwd, deps.env, explicitProject)
-    if (binding !== null) enableProject(binding)
+    // A disabled OpenClaw Project must remain disabled until the User or agent
+    // explicitly enables it; the exact-generation route cannot infer consent.
+    if (binding !== null && deps.env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw') {
+      enableProject(binding)
+    }
   }
   if (deps.store.load() === null) {
     return askFailure(
@@ -518,7 +524,7 @@ export function askCommand(
         'use the documented foreground `notifai send --reply` flow with --reply-timeout equal to --reply-window, or run ask from an unambiguous harness session',
       )
     }
-    if (!isHookInstallableHarness(active.harness)) {
+    if (active.harness === 'hermes' || !isHookInstallableHarness(active.harness)) {
       const capability = HERMES_QUESTION_ROUTING_UNAVAILABLE
       return askFailure(
         deps,
@@ -605,6 +611,21 @@ export function askCommand(
       )
     }
     const state = readSessionState(active.sessionId, deps.env)
+    if (active.harness === 'openclaw' &&
+        activeOpenclawGeneration(active.sessionId, deps.env, deps.cwd) === null) {
+      return askFailure(
+        deps, flags, 'openclaw_generation_stale', 'exact_session',
+        'This OpenClaw tool subprocess cannot prove the current enabled Gateway session generation.',
+        'enable the Project if needed, then run the question from a current OpenClaw turn after the Notifai plugin has activated',
+      )
+    }
+    if (active.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {
+      return askFailure(
+        deps, flags, 'openclaw_gateway_unready', 'hook_contract',
+        'The local OpenClaw Gateway service has not proved a matching CLI and live process.',
+        'restart the Gateway with the installed Notifai plugin, then run `notifai doctor`',
+      )
+    }
     if (state.harness !== active.harness || state.last_prompt_at === undefined) {
       return askFailure(
         deps,
