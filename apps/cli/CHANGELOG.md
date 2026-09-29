@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.5.0...v11.6.0-beta.1) (2026-09-29)
+
+### Features
+
+* **cli:** deliver Session Notes, answer edits and attended question answers in Hermes local classic CLI sessions ([#213](https://github.com/Raidiant-io/notifai/pull/213)).
+* **cli:** deliver OpenClaw Session Notes and answer edits through macOS Gateway followups, with native reset fencing and one-time private context ([#213](https://github.com/Raidiant-io/notifai/pull/213)).
+
+### Bug Fixes
+
+* **cli:** prompt exact-session renaming when the job changes and explain ignored label flags ([#217](https://github.com/Raidiant-io/notifai/pull/217)).
+* **cli:** preserve note acknowledgement ownership and journal replay protection across OpenClaw resets and restarts ([#213](https://github.com/Raidiant-io/notifai/pull/213)).
+
 ## [11.5.0](https://github.com/Raidiant-io/notifai/compare/v11.4.1...v11.5.0) (2026-09-29)
 
 
