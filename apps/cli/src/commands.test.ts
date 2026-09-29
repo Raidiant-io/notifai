@@ -10799,6 +10799,48 @@ describe('a second device that disagrees', () => {
 })
 
 describe('Agent Session rename command', () => {
+  it('explains an ignored label change and keeps the renamed label on later sends', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-label-change-'))
+    const io = new CapturedIo()
+    const submitted: SubmitNotificationRequestT[] = []
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted.push(body)
+        return receipt
+      },
+      putAgentSessionLabel: async (body: { session_id: string; label: string }) => ({
+        ...body, renamed_by: 'agent' as const, updated_at: '2026-08-28T10:00:00.000Z',
+      }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client), cwd,
+      env: {
+        ...isolatedEnv(cwd),
+        CODEX_THREAD_ID: 'label-change-session',
+      },
+      codexSessionTitle: () => undefined,
+    }
+    const send = (sessionLabel: string) => sendCommand(deps, {
+      title: 'Work update', summary: 'The requested work is progressing.', kind: 'update', sessionLabel,
+    })
+
+    expect(await send('Account creation')).toBe(EXIT.ok)
+    io.errLines = []
+    expect(await send('Repair search indexing')).toBe(EXIT.ok)
+    expect(submitted.at(-1)?.draft.source?.session_label).toBe('Account creation')
+    expect(io.errLines.join('\n')).toContain('notifai session rename')
+    expect(io.errLines.join('\n')).toContain('Account creation')
+    expect(submitted.at(-1)?.draft.source).not.toHaveProperty('ignoredExplicitLabel')
+    expect(submitted.at(-1)?.draft.source).not.toHaveProperty('unchangedSessionLabel')
+
+    expect(await agentSessionRenameCommand(deps, 'Repair search indexing')).toBe(EXIT.ok)
+    io.errLines = []
+    expect(await send('Repair search indexing')).toBe(EXIT.ok)
+    expect(submitted.at(-1)?.draft.source?.session_label).toBe('Repair search indexing')
+    expect(io.errLines.join('\n')).not.toContain('notifai session rename')
+    expect(new Set(submitted.map((body) => body.draft.source?.session_id)).size).toBe(1)
+  })
+
   it('renames only the exact active Agent Session and updates its local frozen label', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-rename-'))
     const io = new CapturedIo()
