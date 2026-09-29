@@ -74,10 +74,11 @@ This repository is published, and `@raidiant/notifai` and
 `@raidiant/notifai-protocol` are on npm as of 2026-08-05. That does not
 make the next release routine.
 
-Do not merge a release-please PR, do not `npm publish`, and do not create
-tags, without the maintainer asking for a release in that instance. A
-version, once published, cannot be taken back. Git pushes of ordinary
-commits are fine. The machine is documented in `docs/RELEASING.md`.
+Before choosing a channel, dispatching release automation, merging a Release
+PR, or publishing, read `docs/RELEASING.md`: it owns the beta-first default,
+the maintainer's immediate beta/public path, and the evidence for promotion.
+Authorization must cover the release scope and channel. A version, once
+published, cannot be taken back. Git pushes of ordinary commits are fine.
 
 The skill's human-readable release source (`SKILLS_SOURCE`) is derived at
 runtime from the package version in `apps/cli/src/release.ts`. Installation
@@ -122,7 +123,9 @@ serving and compares it against the local checkout: the compiled files byte
 for byte, and the manifest metadata installs resolve from (dependencies, bin,
 exports, engines). Pre-publish gates can only ever vouch for the tree they ran
 in; this is the only check that vouches for the artifact users install. A
-release is not done until it passes.
+publication is not verified until it passes. Report the verified channel and
+remaining validation, promotion or communication work explicitly; artifact
+verification alone does not finish the overall release.
 
 ## npm credentials
 
