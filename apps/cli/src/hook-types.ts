@@ -35,6 +35,7 @@ export interface HookEnvelope {
   session_id?: string
   /** OpenClaw's current transcript ID; session_id remains its stable sessionKey. */
   openclaw_session_id?: string
+  openclaw_lifecycle_revision?: string
   /** OpenClaw's lifecycle reason, when its typed hook supplies one. */
   openclaw_reason?: string
   /** OpenClaw's previous transcript ID on a resumed session_start. */
@@ -165,6 +166,8 @@ export interface AcknowledgementDue {
 export interface MessageAcknowledgementDue {
   message_id: string
   recorded_at: number
+  /** OpenClaw reuses sessionKey across resets; only this generation received the message. */
+  openclaw_generation?: string
   /** The account's snapshot taken when the Session Message was accepted. */
   text_required: boolean
   /**

@@ -63,9 +63,10 @@ export function openclawOwnsMessage(
   cwd?: string,
 ): boolean {
   return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
-    if (activeOpenclawGeneration(sessionKey, env, cwd) === null) return false
+    const generation = activeOpenclawGeneration(sessionKey, env, cwd)
+    if (generation === null) return false
     return (readSessionState(sessionKey, env).message_acknowledgement_due ?? [])
-      .some((entry) => entry.message_id === messageId)
+      .some((entry) => entry.message_id === messageId && entry.openclaw_generation === generation)
   })
 }
 

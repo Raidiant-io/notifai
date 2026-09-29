@@ -316,10 +316,13 @@ session files. The UserPromptSubmit and Stop copies restart it if it died and
 otherwise exit at once. `notifai doctor` shows each attendant's state.
 OpenClaw's Gateway service also owns a current-generation attendant on macOS.
 It reports Session Presence and accepts Session Notes and post-consumption
-Answer Edits while its local writer is ready. It stages the full message in
-Gateway memory and queues a pointer-only followup; the agent acknowledges the
-message after reading it. If an interrupted turn restarts without the staged
-context, the pointer tells the agent to report the missing message and leave it
+Answer Edits while its local writer is ready. It stores full message text in a
+private local delivery journal and queues a pointer-only followup. The exact
+pointer turn reads that text once, only while its native Gateway generation
+still matches. The journal discards the text after that turn claims it, after
+a generation change, or on Gateway restart. The agent acknowledges the
+message after reading it. If a pointer reaches a turn without its full context,
+the pointer tells the agent to report the missing message and leave it
 unacknowledged. The User can send a new message if needed.
 
 The attendant also hands a note, or a change to an answer the agent already

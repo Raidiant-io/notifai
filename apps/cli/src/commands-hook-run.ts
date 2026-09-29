@@ -222,6 +222,15 @@ export async function hookRunCommand(
           return 'start-observed'
         }
         if (envelope.hook_event_name === 'BeforeReset' && current !== null && !current.ended) {
+          // OpenClaw dispatches before_reset after committing its new entry and
+          // does not await the hook. A late old reset must not end a generation
+          // already observed from the replacement entry's native revision.
+          if (current.lifecycleRevision !== undefined &&
+              (typeof envelope.openclaw_lifecycle_revision !== 'string' ||
+                envelope.openclaw_lifecycle_revision === current.lifecycleRevision ||
+                current.supersededLifecycleRevisions?.includes(envelope.openclaw_lifecycle_revision))) {
+            return 'stale-reset-ignored'
+          }
           if (
             envelope.openclaw_session_id !== undefined && current.sessionId !== undefined &&
             envelope.openclaw_session_id !== current.sessionId
@@ -294,6 +303,8 @@ export async function hookRunCommand(
     return current !== null && current.activated && !current.ended &&
       incarnation?.openclaw_generation === current.id &&
       !sessionHasEnded(envelope.session_id, deps.env) &&
+      (envelope.openclaw_lifecycle_revision === undefined ||
+        current.lifecycleRevision === envelope.openclaw_lifecycle_revision) &&
       (envelope.openclaw_session_id === undefined || current.sessionId === envelope.openclaw_session_id)
       ? current.id : null
   }
@@ -400,8 +411,14 @@ export async function hookRunCommand(
       try {
         const sessionKey = envelope.session_id
         const outcome = withFileLock(openclawGenerationLockPath(sessionKey, deps.env), () => {
+          const current = readOpenclawGeneration(sessionKey, deps.env)
+          if (envelope.openclaw_lifecycle_revision !== undefined &&
+              current?.supersededLifecycleRevisions?.includes(envelope.openclaw_lifecycle_revision)) {
+            return 'stale-prompt-ignored'
+          }
           const generation = observeOpenclawPrompt(
-            readOpenclawGeneration(sessionKey, deps.env), envelope.openclaw_session_id,
+            current, envelope.openclaw_session_id,
+            envelope.openclaw_lifecycle_revision,
           )
           if (envelope.openclaw_session_id !== undefined &&
               generation.sessionId !== envelope.openclaw_session_id) return 'stale-prompt-ignored'

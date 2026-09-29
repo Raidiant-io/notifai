@@ -61,6 +61,7 @@ import {
   markSessionEnded,
   pendingList,
   readSessionState,
+  readSessionIncarnation,
   sessionHasEnded,
   sessionStatePath,
   updateSessionState,
@@ -660,7 +661,9 @@ function withReminder(reminder: PromptReminder, context: string): string {
  * the service, or null when none is.
  */
 async function messageAcknowledgementReminder(ctx: HookContext, sessionId: string): Promise<string | null> {
+  const generation = ctx.harness === 'openclaw' ? readSessionIncarnation(sessionId, ctx.env)?.openclaw_generation : undefined
   const owed = presentedMessageAcknowledgements(readSessionState(sessionId, ctx.env))
+    .filter((entry) => ctx.harness !== 'openclaw' || (generation !== undefined && entry.openclaw_generation === generation))
   if (owed.length === 0) return null
   const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
   return still.length === 0 ? null : acknowledgementBlockContext(still)

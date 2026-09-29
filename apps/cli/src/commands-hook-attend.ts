@@ -360,15 +360,14 @@ function sessionMessageWriter(input: {
   if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, sequencerFor })
   if (input.harness === 'openclaw') {
     if (!openclawMessageBridgeAvailable(deps.env)) return null
+    const generation = readOpenclawGeneration(sessionId, deps.env)
+    if (generation === null || generation.ended) return null
     const send = openclawMessageBridge()
     return (client, batch, attendant) =>
       handOffSessionMessages(batch, attendant, {
         sequencer: sequencerFor(client),
+        openclawGeneration: generation.id,
         write: (text, begin, guard, _writerGroup, message) => {
-          const generation = readOpenclawGeneration(sessionId, deps.env)
-          if (generation === null || generation.ended) {
-            return Promise.resolve({ status: 'unavailable', reason: 'OpenClaw generation ended' })
-          }
           return send(message.message_id, sessionId, generation.id, text, begin, guard)
         },
       })

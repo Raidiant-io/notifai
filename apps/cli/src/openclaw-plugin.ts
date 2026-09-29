@@ -103,6 +103,9 @@ function openclawContinuationServiceSource(): string {
 let continuationService = null
 let JOURNAL_DIR = null
 let MESSAGE_JOURNAL_DIR = null
+let pendingMessageJournals = null
+let awaitingMessageContexts = new Map()
+const GATEWAY_BOOT_ID = randomUUID()
 
 function readinessPath() {
   return path.join(path.dirname(JOURNAL_DIR), "continuation-ready.json")
@@ -118,7 +121,7 @@ function writeReadiness(target) {
   const file = readinessPath()
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temp = file + "." + randomUUID() + ".tmp"
-  writeFileSync(temp, JSON.stringify({ pid: process.pid, start,
+  writeFileSync(temp, JSON.stringify({ pid: process.pid, start, boot_id: GATEWAY_BOOT_ID,
     script: target.script, script_mtime: statSync(target.script).mtimeMs }) + "\\n",
     { mode: 0o600, flag: "wx" })
   renameSync(temp, file)
@@ -169,35 +172,97 @@ function messageJournalPath(deliveryId) {
   return path.join(MESSAGE_JOURNAL_DIR, deliveryId + ".json")
 }
 
+function messageContextMarkerPath(deliveryId) {
+  return path.join(MESSAGE_JOURNAL_DIR, deliveryId + ".context-used")
+}
+
 function saveMessageJournal(record) {
   mkdirSync(MESSAGE_JOURNAL_DIR, { recursive: true, mode: 0o700 })
   const file = messageJournalPath(record.delivery_id)
   const temp = file + "." + randomUUID() + ".tmp"
-  writeFileSync(temp, JSON.stringify(record) + "\\n", { mode: 0o600, flag: "wx" })
+  const { text: _text, ...withoutText } = record
+  const stored = existsSync(messageContextMarkerPath(record.delivery_id)) ? withoutText : record
+  writeFileSync(temp, JSON.stringify(stored) + "\\n", { mode: 0o600, flag: "wx" })
   const fd = openSync(temp, "r")
   try { fsyncSync(fd) } finally { closeSync(fd) }
   renameSync(temp, file)
+  if (pendingMessageJournals !== null) {
+    if (stored.phase === "transcript" || stored.phase === "unconfirmed") pendingMessageJournals.delete(stored.delivery_id)
+    else pendingMessageJournals.set(stored.delivery_id, stored)
+  }
+  if (stored.phase === "transcript" && stored.text !== undefined) {
+    awaitingMessageContexts.set(stored.delivery_id, stored)
+  } else {
+    awaitingMessageContexts.delete(stored.delivery_id)
+  }
   try {
     const directory = openSync(MESSAGE_JOURNAL_DIR, "r")
     try { fsyncSync(directory) } finally { closeSync(directory) }
   } catch { /* Directory fsync is unavailable on some hosts. */ }
+  // The prompt hook runs in another plugin process. If it consumed the context
+  // during this synchronous save, its marker wins and text is redacted again.
+  if (stored.text !== undefined && existsSync(messageContextMarkerPath(record.delivery_id))) {
+    saveMessageJournal(withoutText)
+  }
 }
 
-function readMessageJournals() {
+function readMessageJournal(deliveryId) {
   try {
-    return readdirSync(MESSAGE_JOURNAL_DIR).filter((name) => name.endsWith(".json"))
-      .flatMap((name) => {
-        try {
-          const record = JSON.parse(readFileSync(path.join(MESSAGE_JOURNAL_DIR, name), "utf8"))
-          return record && typeof record.delivery_id === "string" ? [record] : []
-        } catch { return [] }
-      })
-  } catch { return [] }
+    const record = JSON.parse(readFileSync(messageJournalPath(deliveryId), "utf8"))
+    if (!record || record.delivery_id !== deliveryId) throw new Error("Invalid message journal")
+    return record
+  } catch (error) {
+    if (error?.code === "ENOENT") return null
+    throw error
+  }
+}
+
+function retryMessageJournals() {
+  if (pendingMessageJournals === null) {
+    let names
+    try { names = readdirSync(MESSAGE_JOURNAL_DIR) }
+    catch (error) { if (error?.code !== "ENOENT") throw error; names = [] }
+    const pending = new Map()
+    awaitingMessageContexts = new Map()
+    for (const name of names.filter((value) => value.endsWith(".json"))) {
+      const record = readMessageJournal(name.slice(0, -5))
+      if (record !== null && record.boot_id !== GATEWAY_BOOT_ID) {
+        if (record.text !== undefined) {
+          settleMessageJournal(record, record.phase === "transcript" ? "transcript" : "unconfirmed")
+        }
+        continue
+      }
+      if (record !== null && record.phase !== "transcript" && record.phase !== "unconfirmed") {
+        pending.set(record.delivery_id, record)
+      } else if (record !== null && record.phase === "transcript" &&
+          record.text !== undefined) {
+        awaitingMessageContexts.set(record.delivery_id, record)
+      }
+    }
+    pendingMessageJournals = pending
+  }
+  return [...pendingMessageJournals.values()]
 }
 
 function settleMessageJournal(record, phase) {
   const { text: _text, ...rest } = record
-  saveMessageJournal({ ...rest, phase })
+  // A committed pointer can begin its model turn after chat.history sees the
+  // user transcript. Keep context until that exact turn claims it once.
+  saveMessageJournal(phase === "transcript" && record.boot_id === GATEWAY_BOOT_ID &&
+    !existsSync(messageContextMarkerPath(record.delivery_id))
+    ? { ...record, phase } : { ...rest, phase })
+}
+
+function nativeSessionRevision(api, sessionKey, sessionId) {
+  if (typeof sessionId !== "string" || sessionId === "") return null
+  try {
+    const entry = api.runtime?.agent?.session?.getSessionEntry?.({
+      sessionKey, readConsistency: "latest",
+    })
+    return entry?.sessionId === sessionId &&
+      typeof entry.lifecycleRevision === "string" && entry.lifecycleRevision !== ""
+      ? entry.lifecycleRevision : null
+  } catch { return null }
 }
 
 function claimTimeAvailable(record) {
@@ -351,6 +416,41 @@ function messagePointer(record) {
     " with the concrete work you will do when text is required."
 }
 
+/** Attach private text only to the admitted pointer turn of its native generation. */
+async function messageContextForPointer(api, event, ctx, sessionKey, nativeRevision) {
+  if (MESSAGE_JOURNAL_DIR === null || JOURNAL_DIR === null || nativeRevision === null) return null
+  const prompt = typeof event?.currentUserMessage === "string"
+    ? event.currentUserMessage : event?.prompt
+  if (typeof prompt !== "string" || !prompt.startsWith("Notifai Session Message ")) return null
+  const messageId = prompt.slice("Notifai Session Message ".length).split(" ", 1)[0]
+  if (!/^sm_[A-Za-z0-9_-]+$/.test(messageId)) return null
+  const envelope = { ...envelopeFor(sessionKey, event, ctx, "BeforePromptBuild"),
+    openclaw_lifecycle_revision: nativeRevision }
+  const generation = (await runHook("openclaw-generation", envelope))?.trim()
+  if (typeof generation !== "string" || !/^[0-9a-f-]{36}$/i.test(generation)) return null
+  const deliveryId = createHash("sha256").update(generation + "\\0" + messageId)
+    .digest("hex").slice(0, 32)
+  try {
+    const record = readMessageJournal(deliveryId)
+    const readiness = JSON.parse(readFileSync(readinessPath(), "utf8"))
+    if (record === null || record.message_id !== messageId ||
+        record.session_key !== sessionKey || record.generation !== generation ||
+        record.native_revision !== nativeRevision ||
+        record.openclaw_session_id !== sessionIdOf(event, ctx) ||
+        record.boot_id !== readiness?.boot_id ||
+        typeof record.text !== "string" ||
+        (record.phase !== "submitting" && record.phase !== "admitted" &&
+          record.phase !== "transcript") ||
+        prompt !== messagePointer(record) ||
+        existsSync(messageContextMarkerPath(deliveryId)) ||
+        nativeSessionRevision(api, sessionKey, sessionIdOf(event, ctx)) !== nativeRevision) return null
+    ctx?.hookInvocation?.assertActive?.()
+    writeFileSync(messageContextMarkerPath(deliveryId), "used\\n", { mode: 0o600, flag: "wx" })
+    saveMessageJournal(record)
+    return record.text
+  } catch { return null }
+}
+
 async function gatewaySessions(target) {
   let offset = 0
   const sessions = new Map()
@@ -454,13 +554,23 @@ function makeContinuationService(config, logger, api) {
 
   async function deliverMessageOnce(record) {
     try {
+      if (record.boot_id !== GATEWAY_BOOT_ID) {
+        settleMessageJournal(record, "unconfirmed")
+        return false
+      }
       if (!claimTimeAvailable(record) && record.phase !== "admitted" &&
           record.phase !== "transcript") {
         settleMessageJournal(record, "unconfirmed")
         return false
       }
       const envelope = { session_id: record.session_key, cwd: record.cwd,
-        openclaw_session_id: record.openclaw_session_id }
+        openclaw_session_id: record.openclaw_session_id,
+        openclaw_lifecycle_revision: record.native_revision }
+      if (nativeSessionRevision(api, record.session_key, record.openclaw_session_id) !==
+          record.native_revision) {
+        settleMessageJournal(record, "unconfirmed")
+        return false
+      }
       const generation = (await runHook("openclaw-generation", envelope))?.trim()
       if (generation !== record.generation) {
         settleMessageJournal(record, "unconfirmed")
@@ -472,23 +582,6 @@ function makeContinuationService(config, logger, api) {
       if (target === null) return false
       const session = await currentSession(target, record)
       if (session === null) return false
-      if (record.phase === "prepared") {
-        if (!claimTimeAvailable(record)) {
-          settleMessageJournal(record, "unconfirmed")
-          return false
-        }
-        const injection = await api.session.workflow.enqueueNextTurnInjection({
-          sessionKey: record.session_key, text: record.text,
-          idempotencyKey: "notifai-" + record.delivery_id,
-          placement: "prepend_context",
-        })
-        if (injection?.enqueued !== true || injection.sessionKey !== record.session_key) {
-          settleMessageJournal(record, "unconfirmed")
-          return false
-        }
-        record = { ...record, phase: "injected" }
-        saveMessageJournal(record)
-      }
       const state = await inspectSubmission(target, record)
       if (state === "transcript") {
         settleMessageJournal(record, "transcript")
@@ -505,6 +598,11 @@ function makeContinuationService(config, logger, api) {
         return false
       }
       if ((await runHook("openclaw-generation", envelope))?.trim() !== record.generation) {
+        settleMessageJournal(record, "unconfirmed")
+        return false
+      }
+      if (nativeSessionRevision(api, record.session_key, record.openclaw_session_id) !==
+          record.native_revision) {
         settleMessageJournal(record, "unconfirmed")
         return false
       }
@@ -562,17 +660,18 @@ function makeContinuationService(config, logger, api) {
           const record = { delivery_id: deliveryId, message_id: payload.message_id,
             session_key: session.session_key, cwd: session.cwd,
             openclaw_session_id: session.session_id, generation: session.generation,
-            text: payload.text, deadline_ns: payload.deadline_ns,
+            native_revision: nativeSessionRevision(api, session.session_key, session.session_id),
+            boot_id: GATEWAY_BOOT_ID, text: payload.text, deadline_ns: payload.deadline_ns,
             attempt: 1, phase: "prepared" }
-          const existing = readMessageJournals().find((item) => item.delivery_id === deliveryId)
+          const existing = readMessageJournal(deliveryId)
           const current = active.get(session.session_key)
           let written = false
-          if (current?.attendant === child &&
-              (existing === undefined ||
+          if (current?.attendant === child && record.native_revision !== null &&
+              (existing === null ||
                 (existing.message_id === record.message_id &&
                   existing.session_key === record.session_key &&
                   existing.generation === record.generation))) {
-            if (existing === undefined) saveMessageJournal(record)
+            if (existing === null) saveMessageJournal(record)
             written = await deliverMessage(existing ?? record)
           }
           child.stdio[4].write(JSON.stringify({ message_id: payload.message_id,
@@ -711,13 +810,32 @@ function makeContinuationService(config, logger, api) {
         active.delete(key)
       }
       for (const record of readJournals()) void deliver(record)
-      for (const record of readMessageJournals()) void deliverMessage(record)
+      for (const [deliveryId] of awaitingMessageContexts) {
+        const record = readMessageJournal(deliveryId)
+        if (record === null || record.text === undefined) {
+          awaitingMessageContexts.delete(deliveryId)
+        } else if (record.boot_id !== GATEWAY_BOOT_ID ||
+            nativeSessionRevision(api, record.session_key, record.openclaw_session_id) !==
+              record.native_revision) {
+          const { text: _text, ...withoutText } = record
+          saveMessageJournal(withoutText)
+        }
+      }
+      for (const pending of retryMessageJournals()) {
+        const record = readMessageJournal(pending.delivery_id)
+        if (record === null) continue
+        if (record.phase === "transcript" || record.phase === "unconfirmed") {
+          pendingMessageJournals?.delete(record.delivery_id)
+          continue
+        }
+        void deliverMessage(record)
+      }
     } catch { /* The next Gateway tick retries discovery. */ }
     finally { scanning = false }
   }
 
   return {
-    start() { timer = setInterval(() => { void tick() }, 2_000); void tick() },
+    start() { pendingMessageJournals = null; timer = setInterval(() => { void tick() }, 2_000); void tick() },
     stop() {
       stopped = true
       clearReadiness()
@@ -894,6 +1012,13 @@ function onIfSupported(api, name, handler) {
 ${openclawContinuationServiceSource()}
 
 function register(api) {
+  try {
+    const stateDir = api.runtime?.state?.resolveStateDir?.()
+    if (typeof stateDir === "string" && path.isAbsolute(stateDir)) {
+      JOURNAL_DIR = path.join(stateDir, "notifai", "continuation-journal")
+      MESSAGE_JOURNAL_DIR = path.join(stateDir, "notifai", "message-journal")
+    }
+  } catch { /* No private journal is available in this plugin instance. */ }
   api.registerService?.({
     id: "notifai-continuation",
     start(ctx) {
@@ -917,25 +1042,32 @@ function register(api) {
   onIfSupported(api, "before_reset", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return
-    await runHook("openclaw-lifecycle", envelopeFor(sessionKey, event, ctx, "BeforeReset"))
+    const nativeRevision = nativeSessionRevision(api, sessionKey, sessionIdOf(event, ctx))
+    await runHook("openclaw-lifecycle", { ...envelopeFor(sessionKey, event, ctx, "BeforeReset"),
+      ...(nativeRevision === null ? {} : { openclaw_lifecycle_revision: nativeRevision }) })
   })
 
   api.on("before_prompt_build", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return { prependContext: WORKER_ACTIVATION_CONTEXT }
     const worker = isWorkerSession(sessionKey, ctx)
+    const nativeRevision = nativeSessionRevision(api, sessionKey, sessionIdOf(event, ctx))
+    const envelope = { ...envelopeFor(sessionKey, event, ctx, "BeforePromptBuild"),
+      ...(nativeRevision === null ? {} : { openclaw_lifecycle_revision: nativeRevision }) }
     const resolved = await runHook(worker ? "subagent-start" : "session-start",
-      envelopeFor(sessionKey, event, ctx, worker ? "SubagentStart" : "SessionStart"))
+      { ...envelope, hook_event_name: worker ? "SubagentStart" : "SessionStart" })
     // chat.send does not emit message_received on this supported Gateway path.
     // The prompt build is the exact session's authoritative turn-start seam.
-    await runHook("openclaw-turn-start", envelopeFor(sessionKey, event, ctx, "BeforePromptBuild"))
+    await runHook("openclaw-turn-start", envelope)
+    const messageContext = worker ? null :
+      await messageContextForPointer(api, event, ctx, sessionKey, nativeRevision)
     // Successful empty output means this Project is disabled or this
     // generation was already activated. A later prompt rechecks enablement.
-    if (resolved !== null && resolved.trim().length === 0) return
+    if (resolved !== null && resolved.trim().length === 0 && messageContext === null) return
     const context = typeof resolved === "string" && resolved.trim().length > 0
       ? resolved.trim()
-      : worker ? WORKER_ACTIVATION_CONTEXT : MISSING_LIFECYCLE_GUIDANCE_CONTEXT
-    return { prependContext: context }
+      : resolved === null ? worker ? WORKER_ACTIVATION_CONTEXT : MISSING_LIFECYCLE_GUIDANCE_CONTEXT : ""
+    return { prependContext: [context, messageContext].filter(Boolean).join("\\n\\n") }
   })
 
   api.on("message_received", async (event, ctx) => {

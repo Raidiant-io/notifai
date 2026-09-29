@@ -28,6 +28,8 @@ export type MessageHandOffResult = 'done' | 'retry-soon'
 
 export interface MessageHandOffDeps {
   sequencer: SequencerDeps
+  /** The OpenClaw writer's pinned generation, never a replacement read at acknowledgement time. */
+  openclawGeneration?: string
   /** Short synchronous hooks must not wait behind another delivery writer. */
   lockWaitMs?: number
   /**
@@ -100,6 +102,7 @@ export async function handOffSessionMessages(
           message_id: message.message_id,
           recorded_at: sequencer.wall(),
           text_required: message.agent_acknowledgement_text_required,
+          ...(deps.openclawGeneration === undefined ? {} : { openclaw_generation: deps.openclawGeneration }),
           ...(writer === 'subprocess' ? { queued_context: sessionMessageContext(message) } : {}),
         })
         owed = true
