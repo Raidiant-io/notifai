@@ -143,6 +143,8 @@ export const HERMES_CLASSIC_CLI_LOCAL_CAPABILITY = {
   activation: 'project-enabled-system-prompt-section',
   sourceContext: 'hermes-session-id-and-invocation-cwd',
   continuation: 'unsupported',
+  sessionPresence: 'plugin-owned-attendant',
+  sessionMessages: 'in-process-exact-session-injection',
 } as const
 
 export type HermesClassicCliLocalInstance =

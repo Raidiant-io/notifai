@@ -668,6 +668,11 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--owner <name>', 'internal ownership marker')
     .option('--harness <name>', 'internal harness output adapter')
     .action(async (event: string, opts: { harness?: string }) => {
+      if (event === 'hermes-attend' && opts.harness === 'hermes') {
+        const { hermesAttendCommand } = await import('./hermes-attendant.js')
+        exit(await hermesAttendCommand(deps, process.stdin, process.stdout))
+        return
+      }
       const harness = HOOK_INSTALLABLE_HARNESSES.find((candidate) => candidate === opts.harness)
       const settlementInput = deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
       if (event === 'question-settlement') {

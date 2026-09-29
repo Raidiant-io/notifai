@@ -40,7 +40,7 @@ export const HARNESS_UPDATE_EFFECTS: Record<SourceContextHarness, string> = {
   cursor: 'Existing hooks use the updated adapter. Reread changed guidance in this conversation. New lifecycle activation needs a fresh conversation and its first completed turn. Asynchronous ask remains unsupported.',
   opencode: 'The loaded plugin invokes the updated adapter on later events and refreshes guidance per model request. Restart OpenCode only if the generated plugin changed or lifecycle activation is missing; a CLI-only update does not require it.',
   openclaw: 'The Gateway plugin invokes the updated adapter and refreshes guidance before model prompts. Restart the Gateway only if the generated plugin changed or lifecycle activation is missing; a CLI-only update does not require it.',
-  hermes: 'Use the updated CLI and reread changed guidance in the current local classic CLI Agent Session. Notifai has no managed Hermes hooks or plugin, and requires no Hermes restart for a CLI update. Asynchronous ask remains unsupported.',
+  hermes: 'Use the updated CLI and reread changed guidance in the current local classic CLI Agent Session. Refresh the managed Hermes plugin with `notifai hooks install --harness hermes`, then start a fresh classic CLI Agent Session for its current prompt and Session Attendant. Asynchronous ask remains unsupported.',
   grok: 'Existing native Grok hooks use the updated adapter on their next invocation. Reread changed guidance in this Agent Session. Hook output does not activate Notifai context; load the Notifai skill directly. A newly installed Stop definition needs a fresh Agent Session.',
 }
 

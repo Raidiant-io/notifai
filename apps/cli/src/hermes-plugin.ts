@@ -17,12 +17,128 @@ export function hermesPluginDir(env: NodeJS.ProcessEnv = process.env): string {
 export function hermesPluginSource(adapterPath: string, nodePath?: string): string {
   const command = nodePath === undefined ? [adapterPath] : [nodePath, adapterPath]
   return `${HERMES_PLUGIN_MARKER}
-"""Notifai activation for a proven local Hermes CLI Agent Session."""
+"""Notifai activation and Session Attendant for a local Hermes CLI session."""
+import atexit
 import json
 import os
+import select
 import subprocess
+import threading
 
 COMMAND = ${JSON.stringify(command)}
+_attendants = {}
+_lock = threading.RLock()
+
+def _attached_session(ctx):
+    cli = getattr(ctx._manager, "_cli_ref", None)
+    return str(getattr(cli, "session_id", "") or "") if cli is not None else ""
+
+def _run_attendant(ctx, session_id, cwd, stopped):
+    proc = None
+    try:
+        proc = subprocess.Popen(COMMAND + ["hook", "hermes-attend", "--owner", "notifai", "--harness", "hermes"],
+                                cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        with _lock:
+            _attendants[session_id] = (stopped, proc)
+        def send(frame):
+            with _lock:
+                if proc.stdin is None or proc.stdin.closed:
+                    return False
+                try:
+                    proc.stdin.write(json.dumps(frame, ensure_ascii=False) + "\\n")
+                    proc.stdin.flush()
+                    return True
+                except (OSError, ValueError):
+                    return False
+        if not send({"type": "hello", "session_id": session_id, "cwd": cwd, "pid": os.getpid()}):
+            return
+        pending = bytearray()
+        while not stopped.is_set() and proc.poll() is None:
+            with _lock:
+                current = _attached_session(ctx)
+                working = bool(getattr(ctx._manager._cli_ref, "_agent_running", False)) if current == session_id else False
+            if current != session_id:
+                break
+            if not send({"type": "state", "session_id": session_id,
+                         "activity": "working" if working else "idle"}):
+                break
+            readable, _, _ = select.select([proc.stdout], [], [], 1.0)
+            if not readable:
+                continue
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            pending.extend(chunk)
+            if len(pending) > 2 * 1024 * 1024:
+                break
+            while b"\\n" in pending:
+                raw, _, rest = pending.partition(b"\\n")
+                pending = bytearray(rest)
+                try:
+                    frame = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    continue
+                if frame.get("type") != "write" or not isinstance(frame.get("id"), int):
+                    continue
+                accepted = False
+                with _lock:
+                    if not stopped.is_set() and frame.get("session_id") == session_id and _attached_session(ctx) == session_id:
+                        try:
+                            accepted = bool(ctx.inject_message(frame.get("text", "")))
+                        except Exception:
+                            pass
+                send({"type": "result", "id": frame["id"], "accepted": accepted,
+                      "reason": "session-replaced" if not accepted else ""})
+        send({"type": "end", "session_id": session_id})
+    except (OSError, ValueError):
+        pass
+    finally:
+        with _lock:
+            if _attendants.get(session_id, (None, None))[0] is stopped:
+                _attendants.pop(session_id, None)
+        if proc is not None:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                proc.wait(timeout=4)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+def _start_attendant(ctx, session_id, cwd):
+    if os.name == "nt":
+        return
+    with _lock:
+        if _attached_session(ctx) != session_id or os.environ.get("HERMES_SESSION_ID") != session_id:
+            return
+        if session_id in _attendants:
+            return
+        stopped = threading.Event()
+        _attendants[session_id] = (stopped, None)
+        threading.Thread(target=_run_attendant, args=(ctx, session_id, cwd, stopped),
+                         daemon=True, name="notifai-hermes-attendant").start()
+
+def _stop_attendant(session_id):
+    with _lock:
+        item = _attendants.get(session_id)
+        if item is None:
+            return
+        stopped, proc = item
+        stopped.set()
+        if proc is not None and proc.stdin is not None and not proc.stdin.closed:
+            try:
+                proc.stdin.write(json.dumps({"type": "end", "session_id": session_id}) + "\\n")
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                pass
+
+def _stop_all():
+    for session_id in list(_attendants):
+        _stop_attendant(session_id)
 
 def _activation(info):
     platform = str(info.get("platform") or "")
@@ -30,7 +146,9 @@ def _activation(info):
         return ""
     if os.environ.get("HERMES_SESSION_SOURCE", "").lower() not in ("", "cli"):
         return ""
-    if os.environ.get("_HERMES_GATEWAY") == "1" or os.environ.get("HERMES_TUI_ACTIVE_SESSION_FILE"):
+    # Hermes may import gateway.run inside a classic CLI and set its process
+    # marker there. The attached CLI object and exact session are the proof.
+    if os.environ.get("HERMES_TUI_ACTIVE_SESSION_FILE"):
         return ""
     if os.environ.get("TERMINAL_ENV", "").lower() not in ("", "local"):
         return ""
@@ -60,11 +178,19 @@ def _activation(info):
                                 timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+    content = result.stdout.strip() if result.returncode == 0 else ""
+    if content and not worker:
+        _start_attendant(_ctx, session_id, cwd)
+    return content
 
 def register(ctx):
+    global _ctx
+    _ctx = ctx
     ctx.register_system_prompt_section("notifai.activation", _activation,
                                        position="after_memory", max_chars=4000)
+    ctx.register_hook("on_session_finalize", lambda session_id=None, **_: _stop_attendant(str(session_id or "")))
+    ctx.register_hook("on_session_reset", lambda session_id=None, **_: _stop_all())
+    atexit.register(_stop_all)
 `
 }
 
@@ -127,7 +253,7 @@ export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv 
   } else {
     const temp = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-plugin-'))
     try {
-      writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai Project Enablement and agent guidance"\n')
+      writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai activation and Session Attendant"\nprovides_hooks:\n  - on_session_finalize\n  - on_session_reset\n')
       writeFileSync(path.join(temp, '__init__.py'), source)
       const git = (args: string[]) => {
         const result = spawnSync('git', args, { cwd: temp, env, encoding: 'utf8', timeout: 10_000 })

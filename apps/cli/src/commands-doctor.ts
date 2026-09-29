@@ -1258,7 +1258,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       detail: !version
         ? 'Hermes v0.21.5 is required for the proven plugin activation path'
         : enabled
-          ? 'Hermes lists the Notifai plugin as enabled; local CLI prompt activation follows Project Enablement'
+          ? 'Hermes lists the Notifai plugin as enabled; an enabled local classic CLI session starts a Session Attendant that accepts Notes and Answer Edits after its first Notification Request'
           : 'Hermes does not list the Notifai plugin as enabled',
       ...(enabled && version ? {} : {
         remedy: {
@@ -1820,7 +1820,7 @@ function sessionAttendantCheck(
       ? undefined
       : reports.find((report) => report.session_id === active.sessionId)
   const attended =
-    (active?.harness === 'claude-code' || active?.harness === 'codex') &&
+    (active?.harness === 'claude-code' || active?.harness === 'codex' || active?.harness === 'hermes') &&
     attendantSupport(active.harness, deps.hookPlatform ?? process.platform).supported
   if (reports.length === 0 && !attended) return null
   const parts: string[] = []

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a44f7a02e9903f3ff5ec3423b11628f48ccdcb01600c7d8b25969c417ff06375",
+  "behavior_digest": "sha256:95bcff4f1d4b1d3ff85694f4342f6ba791e16091c3e62f85ac000f2db5cf296c",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle activation, rendered Note/Edit acknowledgement demands, the shipped skill and note reference, harness setup, CLI readiness and Codex trust diagnostics, README, TRUST and domain terms. Notes can now arrive as PostToolUse context inside a turn; guidance recognizes that shape, distinguishes pending questions from Session Notes, and explains native approval, fresh sessions, idle queue fallback and tool completion limits. Question routing keeps its existing trust requirements. Notification ownership, transported-text authority and acknowledgement obligations remain unchanged. Focused tests exercise hook rendering, custody, claims, interruption and fallback. Busy delivery additionally requires a live hook observation in this exact incarnation; a first-tool Note may use the existing later-turn queue. This bootstrap limit is documented and covered by integration tests.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill, harness setup, CLI readiness and Doctor, README, TRUST, and domain terms for both Codex and Hermes. Codex Notes can arrive at a PostToolUse boundary with the documented live-hook bootstrap limit, approval requirement, later-turn fallback, and acknowledgement duty. Hermes classic CLI now hosts an exact-session attendant for Notes and post-consumption Answer Edits, with documented busy-turn interruption and acknowledgement duty; Hermes Question Routing remains unsupported. Project Enablement, User guidance authority, Notification Request ownership, and transported-text authority remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

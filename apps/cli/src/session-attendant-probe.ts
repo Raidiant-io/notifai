@@ -52,6 +52,13 @@ export function attendantSupport(
       ? { supported: true }
       : { supported: false, reason: `openclaw-${platform}-unproven` }
   }
+  if (harness === 'hermes') {
+    // The local classic CLI plugin owns an in-process writer and its child.
+    // Python select() cannot watch that pipe on Windows.
+    return platform === 'darwin' || platform === 'linux'
+      ? { supported: true }
+      : { supported: false, reason: `hermes-${platform}-unproven` }
+  }
   return { supported: false, reason: 'harness-has-no-exact-session-probe' }
 }
 

@@ -323,6 +323,9 @@ register a question it cannot route back to you — the diagnosis names what to 
 mechanics of installing, activating, and recovering that route are in
 [Harness setup and recovery](references/harness-setup.md). Read it when you are
 installing hooks or diagnosing routing, not before.
+The local Hermes classic CLI plugin can accept Session Notes and post-consumption
+Answer Edits into the exact running Agent Session. A Note can interrupt a turn;
+acknowledge it after reading it. This does not enable asynchronous questions.
 
 ## Check what happened
 

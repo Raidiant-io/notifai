@@ -201,9 +201,15 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   `notifai guidance` before deciding whether or how to notify. Notifai reads
   exact `HERMES_SESSION_ID` for Source Context and derives git branch and
   worktree from the actual invocation cwd. Install the Notifai skill through
-  `npx skills`; the Hermes plugin does not include a copy. Question Routing is
-  unsupported, so use a blocking `notifai send --reply` question. TUI, gateway,
-  API, ACP, and remote terminal backends remain outside this proven cell.
+  `npx skills`; the Hermes plugin does not include a copy. On local classic CLI
+  sessions the plugin supervises a Session Attendant for that exact session.
+  After the first Notification Request, it reports Session Presence and hands
+  Session Notes and post-consumption Answer Edits into the attached CLI;
+  a Note may interrupt a working turn. The plugin checks the current session
+  before each write, and the agent must acknowledge the message. Question
+  Routing is unsupported, so use a blocking `notifai send --reply` question.
+  TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
+  this proven cell.
   Nested inherited harness markers fail closed.
 - **Grok:** `notifai hooks install --harness grok` writes only the Notifai-owned
   Machine hook file under `~/.grok/hooks/` (or `GROK_HOME/hooks/`). Start a fresh
