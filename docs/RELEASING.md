@@ -4,6 +4,26 @@
 under [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and
 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## Select the release path first
+
+The standard CLI flow is **publish beta, validate that beta, then obtain
+approval to promote to public**. A generic request to release or publish
+selects the beta path; it does not authorize a stable release. Surface scope
+(such as CLI-only) does not select a channel. Preparation and ordinary merges
+do not authorize npm publication.
+
+The maintainer may explicitly authorize **beta and public immediately** for
+the same named scope. Publish and verify the beta first, then promote and
+verify public; there is no required soak period or redundant second approval.
+Artifact and service-compatibility gates still apply. Reuse valid scoped
+authorization, and resolve scope changes or failed gates before proceeding.
+
+Before publication, record the owner, exact versions and candidate commits,
+selected path, authorization, planned live validation and next action. After
+a beta-only release, the next action is validation or a promotion decision,
+not an automatic stable cut. The beta publication procedure below and
+[public promotion](#public-promotion) are separate stages.
+
 ## SemVer mapping
 
 | Commit | Bump |
@@ -41,7 +61,8 @@ after the moving `beta` dist-tag advances.
 
 ## Beta CLI releases
 
-A beta is a separately authorized npm publication, not a release-please cut.
+A beta is an authorized npm publication, not a release-please cut. Authorization
+may cover beta alone or the explicit beta-and-public path above.
 Prepare a short-lived candidate branch from the current public `main`; keep
 `.release-please-manifest.json` at the previous stable version. Select the next
 unused `X.Y.Z-beta.N` whose numeric base is newer than npm `latest`, checking
@@ -82,6 +103,44 @@ metadata entered `main`. Human public release notes use that same stable-to-
 stable range. Each beta is listed in the website's Beta view; stable entries
 stay in the Public view.
 
+Install the exact published beta, verify its installed artifact and wiring,
+and exercise the changed behavior through the real integrations it affects.
+Record the beta version, tag SHA, publish/registry evidence, environment,
+results and unresolved findings. A unit test, version number, older beta, or
+beta updater selecting a newer stable is not a trial of this candidate.
+
+## Public promotion
+
+Before starting a stable cut, establish all of the following:
+
+- A published, verified beta of the proposed product changes, identified by
+  exact version and tag SHA. Keep its validation results and disposition of
+  unresolved findings with the release record. On the immediate path, record
+  the checks performed in that run and the maintainer's selection of that path.
+- A reviewed comparison from that beta to the proposed stable candidate.
+  Product source, shipped skill, runtime dependencies and build/package logic
+  must represent the tested changes. Review expected promotion differences:
+  prerelease-to-stable version metadata, exact protocol package identity,
+  generated lockfile changes, README release markers and release notes.
+  A new runtime dependency version or product fix requires another beta;
+  calling a change “metadata” does not exempt runtime behavior.
+- Explicit authorization for this public version and scope, or the existing
+  beta-and-public authorization that still covers them. No new approval is
+  needed solely because the already-approved sequence reached this stage.
+
+Then follow the stable cut below. Repeat the comparison against the generated
+Release PR before merging it: newer main commits must not slip into promotion.
+When protocol receives a metadata-only stable bump, compare its source with
+the protocol used by the tested beta and verify the exact packed CLI/protocol
+pair. Record those identities; do not expect the beta and stable tarballs to be
+byte-identical after version changes. Verify each against its own exact tag.
+
+If any prerequisite is missing, leave public pending with its owner and next
+action. The current workflows enforce artifact, CI and provider evidence;
+they do not establish beta acceptance or interpret maintainer authorization.
+The release owner checks these promotion prerequisites before dispatching
+release-please, merging its Release PR, or approving stable publication.
+
 ## Commits
 
 ```
@@ -118,7 +177,10 @@ reads stdin on create). After GitHub stores the description, read the API
 in prose is stored literally; keep a visible `\n` example inside backticks or
 a fenced block. Leave generated release-please changelog bodies unchanged.
 
-## Cutting a release
+## Cutting a stable release
+
+This is the implementation of an authorized [public promotion](#public-promotion),
+not the entrypoint for an unspecified request to release.
 
 [release-please](https://github.com/googleapis/release-please) opens and
 updates one combined Release PR only when a maintainer explicitly dispatches

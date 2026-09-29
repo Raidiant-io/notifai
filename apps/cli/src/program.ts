@@ -438,7 +438,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)')
     .option(
       '--session-label <text>',
-      'human Agent Session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
+      'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
     )
     .optionsGroup(SEND_GROUP.presentation)
     .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -581,7 +581,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--project <id>', 'Project identifier override (otherwise configured or inferred)')
     .option(
       '--session-label <text>',
-      'human Agent Session name; safe to repeat, with the first accepted name frozen (env: NOTIFAI_SESSION_LABEL)',
+      'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
     )
     .action(async (question: string | undefined, opts: {
       choice?: string[]

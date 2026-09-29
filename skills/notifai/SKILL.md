@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Use when work needs a User decision, approval, sign-in, credential setup or physical action, or substantial work finishes or fails, even if the User was recently active or does not mention Notifai. For Notification Request owners; parent owns by default, workers only by explicit delegation. Read guidance.
+description: Use when work needs a User decision, approval, sign-in, credential setup or physical action, substantial work finishes or fails, or an enabled Agent Session changes jobs and needs renaming, even if the User was recently active or does not mention Notifai. For Notification Request owners; parent owns by default, workers only by explicit delegation. Read guidance.
 ---
 
 # Notifai
@@ -135,16 +135,26 @@ opaque attempt or refuses ambiguity.
 Project and Agent Session are inferred; never pass `--session-id`.
 `--session-label` is 2-6 words about the Agent Session, never the Project, branch,
 status, result, identifier, hash, or filesystem path.
-The CLI freezes one semantic name; the name the environment supplies wins, then yours.
-It is safe to repeat the same `--session-label` on every send and ask; the first
-accepted semantic name remains authoritative. Only a generated fallback name
-can be replaced by a later semantic name.
+The initial name comes from the environment when available, then your label,
+then a generated fallback. Repeat the same `--session-label` on sends and asks;
+changing that flag does not rename an existing semantic name. A later semantic
+name can replace a generated fallback. The Account's current label, including a
+User rename, controls what Companion Apps show.
 
-An agent may run
-`notifai session rename "New job"` only when its job changed completely and its
-current name would now mislead. Never rename for milestones, ordinary progress,
-or same-job refinement. The command accepts no Agent Session id and fails unless
-the active harness proves the exact current Agent Session.
+### Keep the Agent Session name current
+
+At each change of job, check whether the current name still describes the work.
+If the job changed completely enough that the old name would mislead the User,
+run `notifai session rename "New job"` as part of starting that job, without
+waiting for a notification or a User reminder. Keep the name for milestones,
+ordinary progress, and refinements of the same job. For example, moving from
+account creation to search indexing merits a rename; testing account creation
+does not.
+
+The command updates the Account label and then the local name; continue using
+the new name in later sends and asks. It accepts no Agent Session id and fails
+unless the active harness proves the exact current Agent Session. A renamed
+harness title alone does not update an existing Notifai semantic label.
 
 ## Ask a question
 

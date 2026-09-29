@@ -70,6 +70,8 @@ export type SessionLabelResolution =
       source: SessionLabelSource
       /** Durable proof that this stored semantic label replaced a fallback. */
       previousSource?: 'fallback'
+      /** An ordinary send cannot rename an existing semantic label. */
+      ignoredExplicitLabel?: true
     }
   | { ok: false; error: string }
 
@@ -402,10 +404,15 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
           }
         }
         if (!isLegacyDateFallback(existing)) {
+          const explicit = explicitCandidate(input.explicitLabel, input)
           return {
             ok: true,
             label: existing.label,
             source: existing.source,
+            ...(existing.source !== 'fallback' && explicit !== null &&
+              !('error' in explicit) && explicit.label !== existing.label
+              ? { ignoredExplicitLabel: true as const }
+              : {}),
             ...(existing.previous_source === undefined
               ? {}
               : { previousSource: existing.previous_source }),

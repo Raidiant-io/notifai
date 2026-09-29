@@ -46,7 +46,7 @@ describe('semantic session labels', () => {
         harness: 'claude-code',
         explicitLabel: 'A later unrelated label',
       }),
-    ).toEqual({ ok: true, label: 'Semantic session names', source: 'explicit' })
+    ).toEqual({ ok: true, label: 'Semantic session names', source: 'explicit', ignoredExplicitLabel: true })
     expect(
       resolveSessionLabel({
         env,
@@ -180,6 +180,7 @@ describe('semantic session labels', () => {
       label: 'Fix checkout retries',
       source: 'explicit',
       previousSource: 'fallback',
+      ignoredExplicitLabel: true,
     })
   })
 
@@ -507,7 +508,7 @@ describe('semantic session labels', () => {
         harness: 'codex',
         explicitLabel: 'A later unrelated label',
       }),
-    ).toEqual({ ok: true, label: 'Valid work', source: 'explicit' })
+    ).toEqual({ ok: true, label: 'Valid work', source: 'explicit', ignoredExplicitLabel: true })
 
     const recovered = JSON.parse(readFileSync(file, 'utf8')) as {
       sessions: Record<string, { label: string; harness?: string }>
