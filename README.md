@@ -99,7 +99,7 @@ not part of the current public support claim.
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenClaw hooks | Asynchronous Question Routing, Session Presence, Session Notes, and post-consumption Answer Edits through the local Gateway service and exact-session followup queue | Lifecycle hooks; asynchronous Question Routing and Session Messages unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
-| Hermes plugin | v0.21.5 local classic CLI: managed Project activation and Source Context; use blocking `notifai send --reply` for questions | Unverified | Unverified |
+| Hermes plugin | v0.21.5 local classic CLI: managed Project activation, Source Context, Question Routing, Session Presence, Session Notes, and Answer Edits through its live plugin writer | Same implementation; live Hermes verification pending | Unverified |
 | Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
 Each `send --reply` fallback owns the complete answer window in its foreground
@@ -230,8 +230,10 @@ How they appear depends on the harness — Claude Code names them in
 there), Cursor uses its own hook shapes, OpenCode and OpenClaw get generated
 plugins, and Hermes gets a native Python plugin through Hermes's own CLI.
 Hermes's plugin supplies a bounded system-prompt section for an enabled
-Project; it does not provide Question Routing. Other harnesses have their
-own documented answer path, or require a blocking `send --reply` question.
+Project. In an attended local classic CLI session, its live writer also routes
+question answers to that exact session. Other Hermes surfaces require a
+blocking `send --reply` question. Other harnesses have their own documented
+answer path, or require a blocking `send --reply` question.
 
 **SessionStart** (`session-start`) gives the main owner the small model-visible
 activation context that makes it evaluate Notifai proactively. **SubagentStart**

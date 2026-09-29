@@ -9,18 +9,21 @@ import readline from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
 import type { AttendanceMessage } from '@raidiant/notifai-protocol'
 import { log, makeClient, type CommandDeps } from './commands-core.js'
+import { waitForReply } from './commands-send-support.js'
 import { loadConfig } from './config.js'
 import { hermesPluginCurrent } from './hermes-plugin.js'
 import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import {
   beginSessionIncarnation, lifecycleStamp, readSessionIncarnation,
-  refreshSessionMarkers, rotateSessionIncarnation, sessionNotified,
+  readSessionState, refreshSessionMarkers, rotateSessionIncarnation, sessionNotified,
 } from './hook-session-state.js'
+import { handleSessionEnd, runEscalationWaiter } from './hook-lifecycle.js'
+import type { EscalationDeliveryRoute, HookContext } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { currentProcessIdentity, processStartTime } from './process-identity.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { runSessionAttendant, systemAttendantClock, type AttendantHandle, type GateResult, type HarnessProbe } from './session-attendant.js'
-import { attendantClaimPath, attendantStatusPath, writeAttendantStatus } from './session-attendant-state.js'
+import { attendantClaimPath, attendantStatusPath, readAttendantLease, writeAttendantStatus } from './session-attendant-state.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import type { ApiClient } from './client.js'
 import type { SessionWriteResult } from './session-handoff.js'
@@ -147,6 +150,25 @@ export class HermesWriterBridge {
   }
 }
 
+/** The only Hermes answer route: the plugin's attached classic CLI instance. */
+export function hermesAnswerRoute(bridge: HermesWriterBridge, sessionId: string): EscalationDeliveryRoute {
+  return {
+    kind: 'session-queue',
+    deliver: async event => {
+      if (event.writeGuard === undefined) return { acknowledgement: 'held', notes: [] }
+      const result = await bridge.write(sessionId, event.context, () => event.commitDelivery(), event.writeGuard)
+      if (result.status === 'written') return {
+        acknowledgement: 'delivered', notes: [],
+        log: { route: 'session-queue', stage: 'plugin-injection' },
+      }
+      return {
+        acknowledgement: 'held', notes: [],
+        log: { reason: result.status === 'failed' ? 'write-unconfirmed' : result.status === 'aborted' ? 'write-aborted' : result.status },
+      }
+    },
+  }
+}
+
 function hermesGates(deps: CommandDeps, cwd: string, sessionId: string): GateResult {
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
@@ -211,6 +233,36 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
       : null
     return client
   }
+  let observer: Promise<void> | null = null
+  const observeQuestions = (): void => {
+    const probe = bridge.probe(sessionId)
+    if (observer !== null || probe.state !== 'running' || probe.activity !== 'idle') return
+    const state = readSessionState(sessionId, deps.env)
+    if (state.harness !== 'hermes' ||
+        ((state.pending?.length ?? 0) === 0 && state.accepted === undefined)) return
+    const api = connect()
+    if (api === null) return
+    const now = deps.now ?? Date.now
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+    const ctx: HookContext = {
+      client: api, config: loadConfig({ cwd, env: deps.env, sessionId }), env: deps.env,
+      now, sleep, harness: 'hermes', log: logger,
+      waitForFirstReply: async (requestId, timeoutSeconds) => {
+        const result = await waitForReply(api, requestId, { timeoutSeconds, afterSeq: 0, now, sleep })
+        return { replies: result.response.replies, timedOut: result.timedOut, degraded: result.degraded }
+      },
+      answerClaims: {
+        lease: () => readAttendantLease(sessionId, deps.env), writer,
+        monotonic: () => systemAttendantClock.monotonic(),
+      },
+    }
+    observer = runEscalationWaiter(ctx, {
+      sessionId, envelope: { session_id: sessionId, cwd },
+      route: hermesAnswerRoute(bridge, sessionId), recordStop: false,
+    }).then(() => undefined).catch(err => {
+      logger.error('hook.end', { hook: 'hermes-question', outcome: 'failed', reason: String(err) })
+    }).finally(() => { observer = null })
+  }
   try {
     await runSessionAttendant({
       sessionId,
@@ -231,6 +283,8 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
       serverSupportsAttendance: async api =>
         (await api.compatibility()).server_capabilities.includes('session_attendance'),
       acceptsMessages: true,
+      publishProbeStatus: true,
+      onProbe: probe => { if (probe.state === 'running' && probe.activity === 'idle') observeQuestions() },
       onMessages: (messages: AttendanceMessage[], attendant: AttendantHandle) => {
         const api = connect()
         if (api === null) return Promise.resolve('done')
@@ -252,6 +306,8 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
     })
   } finally {
     bridge.close()
+    handleSessionEnd(deps.env, { session_id: sessionId, cwd }, Date.now(), false)
+    await observer
     if (token !== null) releaseClaimFile(claimFile, token)
   }
   return 0

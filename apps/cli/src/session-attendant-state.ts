@@ -39,6 +39,7 @@ export interface AttendantReport {
   activity: string | null
   reason: string | null
   accepts_messages: boolean
+  writer_ready: boolean
   updated_at: number
 }
 
@@ -78,6 +79,7 @@ export function listAttendantReports(env: NodeJS.ProcessEnv): AttendantReport[] 
         activity: typeof parsed['activity'] === 'string' ? parsed['activity'] : null,
         reason: typeof parsed['reason'] === 'string' ? parsed['reason'] : null,
         accepts_messages: parsed['accepts_messages'] === true,
+        writer_ready: parsed['writer_ready'] === true,
         updated_at: typeof parsed['updated_at'] === 'number' ? parsed['updated_at'] : 0,
       })
     } catch {
@@ -85,6 +87,18 @@ export function listAttendantReports(env: NodeJS.ProcessEnv): AttendantReport[] 
     }
   }
   return reports.sort((a, b) => b.updated_at - a.updated_at)
+}
+
+/** Admission proof from the exact, live classic-CLI plugin writer. */
+export function hermesQuestionRouteReady(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  now: number = Date.now(),
+): boolean {
+  const report = listAttendantReports(env).find((entry) => entry.session_id === sessionId)
+  return report !== undefined && report.alive && report.writer_ready &&
+    now >= report.updated_at && now - report.updated_at <= 5_000 &&
+    (report.phase === 'dormant' || report.phase === 'acquiring' || report.phase === 'attending')
 }
 
 /**

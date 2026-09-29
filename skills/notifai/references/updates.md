@@ -69,6 +69,7 @@ and harness follow-up. If `handoff_error` is present, run
 | Hermes | The local classic CLI can use the new executable and reread guidance in the same Agent Session. `notifai guidance` carries the shared weekly notice. | When the managed plugin changes, start a fresh classic CLI Agent Session so Hermes freezes the current section into its prompt. The v0.21.5 plugin can be refreshed with `notifai hooks install --harness hermes`. |
 | Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | A newly installed SessionStart hook needs a fresh Agent Session for lifecycle observation; hook output cannot activate model-visible context. |
 
-Cursor, OpenCode, and Hermes do not gain asynchronous Question Routing merely
-by updating. OpenClaw needs its loaded Gateway plugin and a current generation;
+Cursor and OpenCode do not gain asynchronous Question Routing merely by
+updating. Hermes needs a fresh local classic CLI session with its current
+plugin and a live attendant. OpenClaw needs its loaded Gateway plugin and a current generation;
 see [Harness setup](harness-setup.md) for that route and its limits.

@@ -172,7 +172,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       const adapter = installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)
       const file = installHermesPlugin(adapter.path, deps.env,
         (deps.hookPlatform ?? process.platform) === 'win32' ? target.execPath : undefined)
-      deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Start a fresh local Hermes CLI Agent Session; Question Routing remains unavailable.`)
+      deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Start a fresh local classic CLI Agent Session; its live attendant can route questions after activation.`)
       return EXIT.ok
     } catch (err) {
       deps.io.err(`Could not install Hermes plugin: ${String(err)}`)

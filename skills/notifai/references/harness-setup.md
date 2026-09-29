@@ -211,8 +211,10 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   After the first Notification Request, it reports Session Presence and hands
   Session Notes and post-consumption Answer Edits into the attached CLI;
   a Note may interrupt a working turn. The plugin checks the current session
-  before each write, and the agent must acknowledge the message. Question
-  Routing is unsupported, so use a blocking `notifai send --reply` question.
+  before each write, and the agent must acknowledge the message. An attended
+  classic CLI session can route an `ask` answer into that same live session;
+  end the asking turn and leave Hermes running for the answer window. If the
+  process exits first, it does not cold-resume and the answer is not delivered.
   TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
   this proven cell.
   Nested inherited harness markers fail closed.
