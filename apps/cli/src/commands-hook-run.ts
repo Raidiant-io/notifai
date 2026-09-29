@@ -33,6 +33,7 @@ import {
   pruneAbandonedSessions,
   readSessionIncarnation,
   readSessionState,
+  updateSessionState,
   recordSessionStart,
   resetCursorStopActivation,
   sessionHasEnded,
@@ -60,7 +61,15 @@ import { cursorStopActivationOutput, sessionActivationOutput } from './session-a
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
-const INTERNAL_HOOK_EVENTS = ['question-settlement', 'openclaw-lifecycle'] as const
+import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
+import { listPendingOpenclawSessions } from './openclaw-pending.js'
+import { readDeliveryJournal } from './session-delivery.js'
+const INTERNAL_HOOK_EVENTS = [
+  'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
+  'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
+  'openclaw-attendance-ready', 'openclaw-settlement',
+  'openclaw-verify-prepared',
+] as const
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
 export function hookDefersDiagnosticsUntilAfterCleanup(
@@ -275,6 +284,69 @@ export async function hookRunCommand(
       return false
     }
   }
+  const currentOpenclawOwner = (): string | null => {
+    if (harness !== 'openclaw' || envelope.session_id === undefined || !lifecycleEnabled()) return null
+    const current = readOpenclawGeneration(envelope.session_id, deps.env)
+    const incarnation = readSessionIncarnation(envelope.session_id, deps.env)
+    return current !== null && current.activated && !current.ended &&
+      incarnation?.openclaw_generation === current.id &&
+      !sessionHasEnded(envelope.session_id, deps.env) &&
+      (envelope.openclaw_session_id === undefined || current.sessionId === envelope.openclaw_session_id)
+      ? current.id : null
+  }
+  if (event === 'openclaw-generation') {
+    start({ cwd })
+    const generation = currentOpenclawOwner()
+    if (generation !== null) deps.io.out(generation)
+    return EXIT.ok
+  }
+  if (event === 'openclaw-turn-start') {
+    start({ cwd })
+    const generation = currentOpenclawOwner()
+    if (generation !== null && envelope.session_id !== undefined) {
+      updateSessionState(envelope.session_id, deps.env, (state) => ({
+        ...state, last_prompt_at: now(),
+      }))
+    }
+    return EXIT.ok
+  }
+  if (event === 'openclaw-turn-end') {
+    start({ cwd })
+    const generation = currentOpenclawOwner()
+    if (generation !== null && envelope.session_id !== undefined) {
+      updateSessionState(envelope.session_id, deps.env, (state) => ({
+        ...state, last_stop_at: now(),
+      }))
+    }
+    return EXIT.ok
+  }
+  if (event === 'openclaw-list-pending') {
+    start({ cwd })
+    if (harness === 'openclaw') deps.io.out(JSON.stringify(listPendingOpenclawSessions(deps.env)))
+    return EXIT.ok
+  }
+  if (event === 'openclaw-attendance-ready') {
+    start({ cwd })
+    if (currentOpenclawOwner() !== null && envelope.session_id !== undefined &&
+        readAttendantLease(envelope.session_id, deps.env) !== null) deps.io.out('ready')
+    return EXIT.ok
+  }
+  if (event === 'openclaw-verify-prepared') {
+    start({ cwd })
+    const ids = envelope.openclaw_request_ids
+    if (currentOpenclawOwner() !== null && envelope.session_id !== undefined &&
+        Array.isArray(ids) && ids.length > 0 &&
+        ids.every((id) => typeof id === 'string' && /^req_[A-Za-z0-9_-]+$/.test(id))) {
+      const entries = readDeliveryJournal(envelope.session_id, deps.env)
+      if (ids.every((id) => entries.some((entry) =>
+        entry.subject.type === 'answer' && entry.subject.request_id === id &&
+        (entry.stage === 'writing' || entry.stage === 'written' || entry.stage === 'failed')))) {
+        deps.io.out('committed')
+      }
+    }
+    return EXIT.ok
+  }
+  if (event === 'openclaw-settlement' && currentOpenclawOwner() === null) return EXIT.ok
   // Installation only makes lifecycle hooks available. Model-visible
   // activation is a separate User-owned Project decision, checked anew on
   // every run so disabling takes effect without reinstalling anything.
@@ -619,7 +691,7 @@ export async function hookRunCommand(
     // Daily state pruning is housekeeping, not part of the Stop delivery
     // contract. Its directory scan has no useful bound, so keep it on the
     // short prompt path and never spend the answer owner's finite budget on it.
-    if (event !== 'stop' && event !== 'question-settlement') {
+    if (event !== 'stop' && event !== 'question-settlement' && event !== 'openclaw-settlement') {
       pruneAbandonedSessions(deps.env)
     }
 
@@ -631,12 +703,14 @@ export async function hookRunCommand(
         ctx,
         envelope,
         processDeadlineAt,
-        stopWakeRoute(deps, harness, envelope.session_id, cwd),
-        event === 'stop',
+        event === 'openclaw-settlement' && envelope.session_id !== undefined
+          ? openclawContinuationRoute(envelope.session_id, currentOpenclawOwner()!)
+          : stopWakeRoute(deps, harness, envelope.session_id, cwd),
+        event === 'stop' || event === 'openclaw-settlement',
       )
     }
     if (
-      outcome.settlementRequired === true && harness !== undefined &&
+      outcome.settlementRequired === true && harness !== undefined && harness !== 'openclaw' &&
       questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
         .stopContinuation !== 'unsupported'
     ) {
@@ -735,7 +809,8 @@ function answerClaimsFor(
   sessionId: string | undefined,
   event: string,
 ): Pick<HookContext, 'answerClaims'> {
-  if (sessionId === undefined || (event !== 'stop' && event !== 'question-settlement')) return {}
+  if (sessionId === undefined ||
+      (event !== 'stop' && event !== 'question-settlement' && event !== 'openclaw-settlement')) return {}
   if (!attendantSupport(harness, deps.hookPlatform ?? process.platform).supported) return {}
   const writer = deps.answerWriter === undefined ? currentProcessIdentity() : deps.answerWriter
   if (writer === null) return {}

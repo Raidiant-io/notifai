@@ -301,8 +301,8 @@ describe('OpenClaw agent-local Source Context seam', () => {
     ])
   })
 
-  it('keeps OpenClaw Question Routing unsupported', () => {
-    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('unsupported')
-    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
+  it('routes OpenClaw Question Routing through its Gateway service', () => {
+    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('gateway-service')
+    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['session-queue'])
   })
 })

@@ -176,10 +176,16 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   is a worker. Missing identity fails safe as a non-sending worker; only a
   proven parent Agent Session receives owner context. Explicit textual
   delegation promotes that worker through the same skill-and-guidance rule.
-  OpenClaw has no locally proven exactly-once continuation after `agent_end`,
-  so `notifai ask` fails closed instead of accepting an answer into a void.
-  Use a blocking `notifai send --reply` question when its answer must return to
-  the agent without another human prompt. Do not treat `/stop` as turn-end.
+  On macOS, the loaded Gateway service can route an asynchronous `notifai ask` answer
+  into the same Agent Session after the asking turn ends. It queues a pointer
+  through OpenClaw's followup route; run `notifai replies <id>` from that
+  session to read the answer and `notifai acknowledge <id>` after acting on it.
+  Question Routing requires the current generation marker, an enabled Project,
+  and a local Gateway whose CLI version and process identity match the plugin.
+  If this Project is disabled, run `notifai project enable` before `notifai ask`.
+  Session Notes and post-consumption Answer Edits remain unsupported on this
+  route. Use a blocking `notifai send --reply` when those limits matter. Do not
+  treat `/stop` as turn-end.
 - **Hermes:** with Hermes v0.21.5, `notifai hooks install --harness hermes`
   installs and enables Notifai's native plugin through `hermes plugins`. Start a
   fresh local classic CLI Agent Session after installation. Its bounded system

@@ -88,6 +88,7 @@ import {
 } from './hook-session-state.js'
 import { type PendingQuestion, type SessionState } from './hook-types.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
+import { activeOpenclawGeneration, openclawOwnsReply } from './openclaw-session-access.js'
 import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -392,6 +393,64 @@ function harness(replies: ReplyView[] = []): Harness {
 }
 
 describe('OpenClaw generation fencing at the CLI boundary', () => {
+  it('discovers a question only after its exact enabled turn ends', async () => {
+    const h = harness()
+    const sessionId = 'agent:main:inventory-probe'
+    const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    writeSessionState(sessionId, h.env, {
+      ...readSessionState(sessionId, h.env),
+      pending: [{ question: 'Ready?', summary: 'Ready?', asked_at: NOW }],
+    })
+    await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
+    expect(JSON.parse(h.io.outLines.at(-1)!) as unknown[]).toEqual([])
+    await hookRunCommand(h.deps, 'openclaw-turn-end', stdin(envelope), 'openclaw')
+    await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
+    expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
+      expect.objectContaining({ session_key: sessionId }),
+    ])
+    disableProject(projectBinding(h.deps.cwd, h.env)!)
+    await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
+    expect(JSON.parse(h.io.outLines.at(-1)!) as unknown[]).toEqual([])
+  })
+
+  it('lets only the current enabled generation read its own reply pointer', async () => {
+    const h = harness()
+    const sessionId = 'agent:main:reply-probe'
+    const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    const generation = readOpenclawGeneration(sessionId, h.env)?.id
+    expect(generation).toBeDefined()
+    writeSessionState(sessionId, h.env, {
+      pending: [{ question: 'Ready?', summary: 'Ready?', request_id: 'req_owned' }],
+    })
+    const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw',
+      NOTIFAI_ACTIVE_SESSION_ID: sessionId, NOTIFAI_ACTIVE_OPENCLAW_GENERATION: generation }
+    expect(openclawOwnsReply(sessionId, 'req_owned', env, h.deps.cwd)).toBe(true)
+    expect(openclawOwnsReply(sessionId, 'req_other', env, h.deps.cwd)).toBe(false)
+    await hookRunCommand(h.deps, 'openclaw-generation', stdin(envelope), 'openclaw')
+    expect(h.io.outLines.at(-1)).toBe(generation)
+
+    const binding = projectBinding(h.deps.cwd, h.env)!
+    disableProject(binding)
+    expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
+    enableProject(binding)
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
+      ...envelope, hook_event_name: 'SessionStart',
+    }), 'openclaw')
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
+  })
+
   it('rotates on a new generation without an end and ignores a late old end', async () => {
     const h = harness()
     const sessionId = 'agent:main:main'

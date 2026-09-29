@@ -177,7 +177,7 @@ export function hookActivationAdvice(installations: Installation[]): string {
   }
   if (harnesses.has('openclaw')) {
     advice.push(
-      'OpenClaw: restart the Gateway, then send one prompt; plugins load at startup, but non-blocking question continuation is intentionally unsupported',
+      'OpenClaw: restart the Gateway, then send one prompt; the loaded plugin owns Question Routing through its Gateway service',
     )
   }
   if (harnesses.has('hermes')) {

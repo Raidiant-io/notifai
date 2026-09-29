@@ -35,6 +35,7 @@ import {
 } from './commands-core.js'
 import { sourceContextHarnessSession } from './commands-harness-context.js'
 import { resolveCommandSession } from './command-session.js'
+import { activeOpenclawGeneration, openclawOwnsReply } from './openclaw-session-access.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { readDeliveryJournal, recordUnclaimedHandOffs } from './session-delivery.js'
 import {
@@ -513,6 +514,14 @@ export async function repliesCommand(
   requestedId: string | undefined,
   flags: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean },
 ): Promise<number> {
+  if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
+    const sessionKey = deps.env['NOTIFAI_ACTIVE_SESSION_ID'] ?? ''
+    if (activeOpenclawGeneration(sessionKey, deps.env, deps.cwd) === null ||
+        (requestedId !== undefined && !openclawOwnsReply(sessionKey, requestedId, deps.env, deps.cwd))) {
+      deps.io.err('This reply pointer does not belong to the current OpenClaw session generation.')
+      return EXIT.usage
+    }
+  }
   const waitSeconds = flags.wait ?? 0
   const afterSeq = flags.after ?? 0
   if (!isNonNegativeInteger(waitSeconds)) {

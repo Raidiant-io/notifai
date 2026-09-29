@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { afterEach, describe, expect, it } from 'vitest'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
@@ -1394,13 +1395,16 @@ describe('the OpenClaw adapter', () => {
   })
 
   async function loadPlugin(pluginSource = source) {
-    return (await import(
-      `data:text/javascript;base64,${Buffer.from(pluginSource).toString('base64')}#instance-${pluginImportId++}`
-    )) as {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-module-'))
+    mockDirs.push(dir)
+    const modulePath = path.join(dir, `index-${pluginImportId++}.mjs`)
+    writeFileSync(modulePath, pluginSource)
+    return (await import(pathToFileURL(modulePath).href)) as {
       default: {
         id: string
         register(api: {
           on(name: string, handler: (...args: never[]) => unknown): void
+          registerService(service: object): void
         }): void
       }
     }
@@ -1412,6 +1416,7 @@ describe('the OpenClaw adapter', () => {
       on(name, handler) {
         handlers.set(name, handler)
       },
+      registerService() {},
     })
     return handlers
   }
@@ -1506,9 +1511,11 @@ describe('the OpenClaw adapter', () => {
     expect(calls().map((call) => [call.event, call.envelope.hook_event_name])).toEqual([
       ['openclaw-lifecycle', 'SessionStart'],
       ['session-start', 'SessionStart'],
+      ['openclaw-turn-start', 'BeforePromptBuild'],
       ['openclaw-lifecycle', 'BeforeReset'],
       ['openclaw-lifecycle', 'SessionStart'],
       ['session-start', 'SessionStart'],
+      ['openclaw-turn-start', 'BeforePromptBuild'],
     ])
     expect(calls().filter((call) => call.event === 'session-start')
       .map((call) => call.envelope.cwd)).toEqual(['/project', '/project'])
@@ -1577,18 +1584,28 @@ describe('the OpenClaw adapter', () => {
       call.envelope.openclaw_session_id)).toEqual(['a', 'b', 'b'])
   })
 
-  it('publishes exact sessionKey markers into exec without PATH', async () => {
-    const handlers = handlersOf(await loadPlugin())
+  it('publishes exact sessionKey markers only after a current generation check', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-generation-'))
+    mockDirs.push(dir)
+    const adapterPath = path.join(dir, 'adapter.cjs')
+    writeFileSync(adapterPath, "process.stdout.write('11111111-1111-4111-8111-111111111111')\n")
+    const generated = openclawPluginSource({
+      adapterPath, timeoutSeconds: 5, platform: 'win32', nodePath: process.execPath,
+    })
+    const handlers = handlersOf(await loadPlugin(generated))
     const resolve = handlers.get('resolve_exec_env') as (
-      event: object,
-      ctx: object,
-    ) => Record<string, string> | undefined
-    expect(resolve({}, { sessionKey: 'agent:main:telegram:dm:1' })).toEqual({
+      event: object, ctx: object,
+    ) => Promise<Record<string, string> | undefined>
+    expect(await resolve({}, { sessionKey: 'agent:main:telegram:dm:1' })).toEqual({
       NOTIFAI_ACTIVE_HARNESS: 'openclaw',
       NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:telegram:dm:1',
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: '11111111-1111-4111-8111-111111111111',
     })
-    expect(resolve({}, {})).toBeUndefined()
-    expect(source).not.toContain('PATH:')
+    expect(await resolve({}, {})).toBeUndefined()
+    expect(await (handlersOf(await loadPlugin()).get('resolve_exec_env') as (
+      event: object, ctx: object,
+    ) => Promise<Record<string, string> | undefined>)({}, { sessionKey: 'agent:main:main' }))
+      .toBeUndefined()
   })
 
   it('retries failed guidance loading on the next parent prompt', async () => {

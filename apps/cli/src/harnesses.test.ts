@@ -70,9 +70,11 @@ describe('harness contract', () => {
       if (capability.stopContinuation === 'unsupported') continue
       expect(capability.deliveryRoutes.length, harness).toBeGreaterThan(0)
       expect(capability.deliveryRoutes, harness).not.toContain('unsupported')
-      // The journal is the floor under every supported route: without it an
-      // answer that misses its turn has nowhere to wait.
-      expect(capability.deliveryRoutes, harness).toContain('hold-for-next-turn')
+      // Hook-driven writers need a next-turn fallback. OpenClaw's Gateway
+      // service owns a durable journal and replays its own session queue.
+      if (capability.stopContinuation !== 'gateway-service') {
+        expect(capability.deliveryRoutes, harness).toContain('hold-for-next-turn')
+      }
     }
   })
 
@@ -107,8 +109,8 @@ describe('harness contract', () => {
     })
     expect(HARNESS_CAPABILITIES.opencode.stopContinuation).toBe('unsupported')
     expect(HARNESS_CAPABILITIES.opencode.deliveryRoutes).toEqual(['unsupported'])
-    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('unsupported')
-    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['unsupported'])
+    expect(HARNESS_CAPABILITIES.openclaw.stopContinuation).toBe('gateway-service')
+    expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['session-queue'])
     expect(HARNESS_CAPABILITIES.grok.stopContinuation).toBe('decision-block')
     expect(HARNESS_CAPABILITIES.grok.deliveryRoutes).toEqual([
       'hook-continuation',
@@ -125,6 +127,15 @@ describe('harness contract', () => {
     expect(capability.deliveryContract).toContain('same Agent Session')
     expect(capability.deliveryContract).not.toContain('inbox socket')
     expect(capability.deliveryContract).not.toContain('returns at once')
+  })
+
+  it('keeps OpenClaw Question Routing on the verified macOS host', () => {
+    expect(questionRoutingCapability('openclaw', 'darwin').deliveryRoutes)
+      .toEqual(['session-queue'])
+    for (const platform of ['linux', 'win32'] as const) {
+      expect(questionRoutingCapability('openclaw', platform).deliveryRoutes)
+        .toEqual(['unsupported'])
+    }
   })
 
   it('keeps Hermes Question Routing unsupported after managed activation', () => {

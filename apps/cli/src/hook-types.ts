@@ -39,6 +39,8 @@ export interface HookEnvelope {
   openclaw_reason?: string
   /** OpenClaw's previous transcript ID on a resumed session_start. */
   openclaw_resumed_from?: string
+  /** Internal Gateway-service reconciliation of a prepared answer hand-off. */
+  openclaw_request_ids?: string[]
   cwd?: string
   hook_event_name?: string
   /** How a harness lifecycle began: startup, resume, clear, compact, or fork. */

@@ -98,7 +98,7 @@ not part of the current public support claim.
 | Codex hooks | Asynchronous Stop and durable session queue; CLI/app-server verified | Same queue implementation; live Codex verification pending | Same queue implementation; live Codex verification pending |
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenClaw hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | WSL2 only; native Windows Gateway unproven |
+| OpenClaw hooks | Asynchronous Question Routing through the local Gateway service and exact-session followup queue; Session Notes and Answer Edits unsupported | Lifecycle hooks; asynchronous Question Routing unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
 | Hermes plugin | v0.21.5 local classic CLI: managed Project activation and Source Context; use blocking `notifai send --reply` for questions | Unverified | Unverified |
 | Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
@@ -108,16 +108,14 @@ After a timeout, retain the request ID, inspect that original with `notifai
 replies` and `notifai status`, and never send a duplicate.
 
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
-journal
-for the next hook rather than starting an unproven or divergent agent turn.
+journal until an exact continuation path can prove ownership, rather than
+starting an unproven or divergent agent turn.
 Claude Code live inbox wake requires Claude Code 2.1.224 or newer and is an
 upstream macOS/Linux capability; on Windows, Notifai keeps Stop open and returns
 the accepted answer through Claude Code's ordinary continuation channel. Cursor does not expose the conversation
-identity needed to prove asynchronous return, OpenCode has no proven
-exactly-once continuation after `session.idle`, and OpenClaw has no proven
-exactly-once continuation after `agent_end`; their hooks still support
-lifecycle cleanup and routing diagnostics, while blocking reply mode provides
-the reliable question path. OpenClaw's advertised Windows cell is WSL2 only;
+identity needed to prove asynchronous return, and OpenCode has no proven
+exactly-once continuation after `session.idle`; blocking reply mode provides
+their reliable question path. OpenClaw's advertised Windows cell is WSL2 only;
 a native Windows Gateway plus native Notifai CLI in one process is unproven.
 
 ## Companion App installation
@@ -285,6 +283,11 @@ can submit the question and queue its answer while the new turn is active.
 The answer queue does not itself promote registrations, so agents still end
 the asking turn to start the normal submission path.
 
+OpenClaw's Gateway service keeps the complete answer window and queues a
+pointer-only `followup` into the same `sessionKey` after the asking turn. The
+agent reads the answer with `notifai replies` and persists its own
+`notifai acknowledge`; queue admission alone does not prove consumption.
+
 An `ask` success is a local registration, not a submitted Notification Request:
 it has no Provider Acceptance until question settlement promotes its stable
 `q_...` identity to a `req_...` identity. `notifai status <question_id>` reads
@@ -309,6 +312,9 @@ terminal closes, and withdraws when the Project is disabled or the hooks are
 removed. Only an opaque id leaves the machine: never process ids, paths, or
 session files. The UserPromptSubmit and Stop copies restart it if it died and
 otherwise exit at once. `notifai doctor` shows each attendant's state.
+OpenClaw's Gateway service also owns a current-generation attendant on macOS.
+It reports Session Presence for the question route but does not
+accept Session Notes or Answer Edits.
 
 The attendant also hands a note, or a change to an answer the agent already
 received, from your devices into that running session in place, over the same

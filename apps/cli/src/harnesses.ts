@@ -53,7 +53,7 @@ export type DeliveryRoute =
   | 'hold-for-next-turn'
   | 'unsupported'
 
-export type StopContinuation = 'decision-block' | 'unsupported'
+export type StopContinuation = 'decision-block' | 'gateway-service' | 'unsupported'
 
 export interface HarnessCapability {
   /** How an answer is admitted to another turn in the already-open session. */
@@ -100,10 +100,17 @@ const OPENCODE_CAPABILITY: HarnessCapability = {
 }
 
 const OPENCLAW_CAPABILITY: HarnessCapability = {
+  stopContinuation: 'gateway-service',
+  deliveryRoutes: ['session-queue'],
+  deliveryContract:
+    'the Gateway service owns the complete answer window and queues a pointer-only follow-up into the exact current session after claiming the answer; the agent fetches the reply and acknowledges it in that session',
+}
+
+const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'no proven answer continuation after agent_end; use a blocking reply command',
+    'OpenClaw asynchronous answer continuation is verified on macOS only; use a blocking reply command on this host',
 }
 
 const GROK_CAPABILITY: HarnessCapability = {
@@ -185,6 +192,9 @@ export function questionRoutingCapability(
 ): HarnessCapability {
   if (harness === 'claude-code' && platform === 'win32') {
     return CLAUDE_CODE_WINDOWS_CAPABILITY
+  }
+  if (harness === 'openclaw' && platform !== 'darwin') {
+    return OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY
   }
   return HARNESS_CAPABILITIES[harness]
 }

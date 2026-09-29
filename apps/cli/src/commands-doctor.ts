@@ -26,6 +26,7 @@ import {
   readProjectSessionPointer,
 } from './hook-project-sessions.js'
 import { readSessionState } from './hook-session-state.js'
+import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
@@ -1679,10 +1680,13 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const continuationHarnesses = [
     ...new Set(continuationInstallations.map((installation) => installation.harness)),
   ]
+  const openclawContinuationReady = !continuationHarnesses.includes('openclaw') ||
+    openclawGatewayReady(deps.env)
   checks.push({
     name: 'hooks (answer continuation)',
     ok:
       continuationHarnesses.length > 0 &&
+      openclawContinuationReady &&
       continuationHarnesses.every(
         (harness) =>
           questionRoutingCapability(harness, deps.hookPlatform ?? process.platform)
@@ -1694,7 +1698,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         ? active === null
           ? 'no installed harness route to assess'
           : `the active ${active.label} session has no matching continuation adapter`
-        : continuationHarnesses
+        : !openclawContinuationReady
+          ? 'openclaw: local Gateway service has not verified its CLI version and process identity'
+          : continuationHarnesses
             .map(
               (harness) =>
                 `${harness}: ${questionRoutingCapability(harness, deps.hookPlatform ?? process.platform).deliveryContract}`,

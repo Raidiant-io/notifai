@@ -581,6 +581,16 @@ describe('Codex process probe', () => {
     })
   })
 
+  it('starts an OpenClaw attendant only on the verified macOS host', () => {
+    expect(attendantSupport('openclaw', 'darwin')).toEqual({ supported: true })
+    expect(attendantSupport('openclaw', 'linux')).toEqual({
+      supported: false, reason: 'openclaw-linux-unproven',
+    })
+    expect(attendantSupport('openclaw', 'win32')).toEqual({
+      supported: false, reason: 'openclaw-win32-unproven',
+    })
+  })
+
   it('reports running with the activity the thread’s own turns recorded', () => {
     expect(probeWith()).toEqual({ state: 'running', activity: 'idle' })
     expect(probeWith({}, { activity: 'working' })).toEqual({ state: 'running', activity: 'working' })

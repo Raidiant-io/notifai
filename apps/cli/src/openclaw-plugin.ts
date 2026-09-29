@@ -33,8 +33,8 @@ import {
  *   session_end         -> session-end                     (retire local state)
  *   resolve_exec_env    -> NOTIFAI_ACTIVE_* markers        (exact Source Context)
  *
- * `command:stop` is a User abort and is deliberately not wired. Asynchronous
- * ask is unsupported until a live continuation probe.
+ * `command:stop` is a User abort and is deliberately not wired. The Gateway
+ * service owns answer continuation after agent_end records its turn boundary.
  */
 
 export const OPENCLAW_PLUGIN_MARKER = '// notifai managed openclaw plugin'
@@ -43,7 +43,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 3
+const OPENCLAW_ADAPTER_VERSION = 4
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -97,6 +97,404 @@ export interface OpenclawPluginOptions {
   nodePath?: string
 }
 
+/** Gateway-owned answer pointer delivery. The generated module stays standalone. */
+function openclawContinuationServiceSource(): string {
+  return `
+let continuationService = null
+let JOURNAL_DIR = null
+
+function readinessPath() {
+  return path.join(path.dirname(JOURNAL_DIR), "continuation-ready.json")
+}
+
+function writeReadiness(target) {
+  const start = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+    encoding: "utf8", timeout: 2_000,
+    env: { PATH: process.env.PATH ?? "/bin:/usr/bin", TZ: "UTC", LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim().replace(/\\s+/g, " ")
+  if (start === "") return false
+  const file = readinessPath()
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  const temp = file + "." + randomUUID() + ".tmp"
+  writeFileSync(temp, JSON.stringify({ pid: process.pid, start,
+    script: target.script, script_mtime: statSync(target.script).mtimeMs }) + "\\n",
+    { mode: 0o600, flag: "wx" })
+  renameSync(temp, file)
+  return true
+}
+
+function clearReadiness() {
+  try { unlinkSync(readinessPath()) } catch { /* Already absent. */ }
+}
+
+function journalPath(deliveryId) {
+  return path.join(JOURNAL_DIR, deliveryId + ".json")
+}
+
+function saveJournal(record) {
+  mkdirSync(JOURNAL_DIR, { recursive: true, mode: 0o700 })
+  const file = journalPath(record.delivery_id)
+  const temp = file + "." + randomUUID() + ".tmp"
+  writeFileSync(temp, JSON.stringify(record) + "\\n", { mode: 0o600, flag: "wx" })
+  const fd = openSync(temp, "r")
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+  renameSync(temp, file)
+  try {
+    const directory = openSync(JOURNAL_DIR, "r")
+    try { fsyncSync(directory) } finally { closeSync(directory) }
+  } catch { /* Directory fsync is unavailable on some hosts. */ }
+}
+
+function readJournals() {
+  try {
+    return readdirSync(JOURNAL_DIR).filter((name) => name.endsWith(".json"))
+      .flatMap((name) => {
+        try {
+          const record = JSON.parse(readFileSync(path.join(JOURNAL_DIR, name), "utf8"))
+          return record && typeof record.delivery_id === "string" ? [record] : []
+        } catch { return [] }
+      })
+  } catch { return [] }
+}
+
+function existingJournal(deliveryId) {
+  try {
+    return JSON.parse(readFileSync(journalPath(deliveryId), "utf8"))
+  } catch { return null }
+}
+
+function openclawCliTarget(config) {
+  if (process.env.OPENCLAW_SHELL === "exec") return null
+  const gateway = config?.gateway ?? {}
+  if (gateway.mode === "remote" || (gateway.bind !== undefined && gateway.bind !== "loopback")) return null
+  let script
+  try { script = realpathSync(process.argv[1]) } catch { return null }
+  let folder = path.dirname(script)
+  let packageVersion = null
+  for (;;) {
+    try {
+      const manifest = JSON.parse(readFileSync(path.join(folder, "package.json"), "utf8"))
+      if (manifest.name === "openclaw" && typeof manifest.version === "string") {
+        packageVersion = manifest.version
+        break
+      }
+    } catch { /* Keep walking within this executable's ancestors. */ }
+    const parent = path.dirname(folder)
+    if (parent === folder) return null
+    folder = parent
+  }
+  const explicit = []
+  for (let i = 0; i < process.argv.length - 1; i += 1) {
+    if (process.argv[i] === "--port") explicit.push(Number(process.argv[i + 1]))
+  }
+  if (explicit.length > 1) return null
+  const configured = Number(gateway.port ?? process.env.OPENCLAW_GATEWAY_PORT ?? 18789)
+  const port = explicit[0] ?? configured
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+  return { script, port, packageVersion }
+}
+
+function openclawExec(target, args) {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [target.script, ...args], {
+      shell: false, windowsHide: true, timeout: 20_000, maxBuffer: 2_000_000,
+      env: process.env,
+    }, (error, stdout) => {
+      if (error) reject(new Error("OpenClaw CLI call failed"))
+      else resolve(stdout.trim())
+    })
+  })
+}
+
+async function gatewayCall(target, method, params) {
+  const output = await openclawExec(target, ["gateway", "call", method,
+    "--port", String(target.port), "--params", JSON.stringify(params), "--json"])
+  return JSON.parse(output)
+}
+
+async function verifiedGatewayTarget(config, logger) {
+  const target = openclawCliTarget(config)
+  if (target === null) {
+    logger?.warn?.("notifai continuation target: local CLI path or Gateway bind unavailable")
+    return null
+  }
+  try {
+    const banner = (await openclawExec(target, ["--version"])).trim()
+    const cliVersion = /^OpenClaw ([0-9]+\\.[0-9]+\\.[0-9]+)(?: \\([0-9a-f]+\\))?$/.exec(banner)?.[1]
+    const status = await gatewayCall(target, "status", {})
+    if (cliVersion !== target.packageVersion || status?.runtimeVersion !== cliVersion) {
+      logger?.warn?.("notifai continuation target: CLI and Gateway versions differ")
+      return null
+    }
+    if (status?.pid !== process.pid) {
+      logger?.warn?.("notifai continuation target: Gateway process identity differs")
+      return null
+    }
+    return target
+  } catch {
+    logger?.warn?.("notifai continuation target: local CLI status unavailable")
+    return null
+  }
+}
+
+function submissionKey(record) {
+  return "notifai-" + record.delivery_id + "-a" + record.attempt
+}
+
+function submissionIdentity(message) {
+  const meta = message?.metadata ?? message?.__openclaw ?? {}
+  return message?.idempotencyKey ?? meta.idempotencyKey ?? null
+}
+
+async function inspectSubmission(target, record) {
+  let offset = 0
+  let before
+  let pendingFinished = false
+  let interrupted = false
+  for (let page = 0; page < 1000; page += 1) {
+    const params = { sessionKey: record.session_key, limit: 200, offset,
+      ...(before === undefined ? {} : { pendingBefore: before }) }
+    const history = await gatewayCall(target, "chat.history", params)
+    if (history?.kind === "reset" || history?.truncationReason ||
+        (record.openclaw_session_id && history?.sessionInfo?.sessionId &&
+          history.sessionInfo.sessionId !== record.openclaw_session_id)) return "unconfirmed"
+    const messages = history?.messages
+    if (!Array.isArray(messages)) return "unconfirmed"
+    if (messages.some((entry) => entry?.role === "user" &&
+        submissionIdentity(entry) === submissionKey(record) + ":user")) return "transcript"
+    const pending = history?.pendingInputs
+    if (!pending || !Array.isArray(pending.items) ||
+        !Number.isInteger(pending.total) || pending.total < pending.items.length ||
+        typeof history.hasMore !== "boolean") return "unconfirmed"
+    for (const item of pending.items) {
+      if (item?.runId !== submissionKey(record) &&
+          item?.idempotencyKey !== submissionKey(record)) continue
+      if (item.state === "queued" || item.state === "running") return "pending"
+      if (item.state === "interrupted" || item.state === "cancelled") interrupted = true
+      else return "unconfirmed"
+    }
+    const nextOffset = history.nextOffset
+    const hasMore = history.hasMore === true
+    const nextBefore = pending.nextBefore
+    if (!pendingFinished && typeof nextBefore === "string" && nextBefore !== before) {
+      before = nextBefore
+      continue
+    }
+    if (!pendingFinished && pending.total > pending.items.length) return "unconfirmed"
+    pendingFinished = true
+    if (hasMore && Number.isInteger(nextOffset) && nextOffset > offset) {
+      offset = nextOffset
+      before = undefined
+      continue
+    }
+    if (hasMore) return "unconfirmed"
+    return interrupted ? "interrupted" : "absent"
+  }
+  return "unconfirmed"
+}
+
+function pointerMessage(record) {
+  return "A Notifai reply is waiting for this session. " +
+    record.request_ids.map((id) => "Run notifai replies " + id +
+      " --json, then notifai acknowledge " + id +
+      " with the concrete work you will do.").join(" ")
+}
+
+function spawnOwnedHook(event, envelope, extraFds = false) {
+  const child = spawn(HOOK_COMMAND, [...HOOK_PREFIX, "hook", event,
+    "--owner", "notifai", "--harness", "openclaw"], {
+    cwd: envelope.cwd,
+    env: { ...process.env, NOTIFAI_HOOK_SOURCE_PID: String(process.pid) },
+    shell: false, windowsHide: true,
+    stdio: extraFds ? ["pipe", "ignore", "ignore", "pipe", "pipe"] : ["pipe", "ignore", "ignore"],
+  })
+  child.stdin.end(JSON.stringify(envelope))
+  return child
+}
+
+function makeContinuationService(config, logger) {
+  const active = new Map()
+  const delivering = new Set()
+  const reported = new Map()
+  let stopped = false
+  let timer = null
+  let scanning = false
+  let ready = false
+
+  function report(record, reason) {
+    if (reported.get(record.delivery_id) === reason) return
+    reported.set(record.delivery_id, reason)
+    logger?.warn?.("notifai continuation " + record.delivery_id + ": " + reason)
+  }
+
+  async function deliver(record) {
+    if (delivering.has(record.delivery_id) || record.phase === "transcript") return
+    delivering.add(record.delivery_id)
+    try {
+      const envelope = { session_id: record.session_key, cwd: record.cwd,
+        openclaw_session_id: record.openclaw_session_id }
+      const generation = (await runHook("openclaw-generation", envelope))?.trim()
+      if (generation !== record.generation) { report(record, "generation-fenced"); return }
+      if (record.phase === "prepared") {
+        const proved = await runHook("openclaw-verify-prepared", {
+          ...envelope, openclaw_request_ids: record.request_ids })
+        if (proved?.trim() !== "committed") return
+        record = { ...record, phase: "committed" }
+        saveJournal(record)
+      }
+      const target = await verifiedGatewayTarget(config, logger)
+      if (target === null) { report(record, "gateway-target-unverified"); return }
+      const state = await inspectSubmission(target, record)
+      if (state === "unconfirmed") { report(record, "history-unconfirmed"); return }
+      if (state === "transcript") {
+        saveJournal({ ...record, phase: "transcript" })
+        return
+      }
+      if (state === "pending") {
+        if (record.phase !== "admitted") saveJournal({ ...record, phase: "admitted" })
+        return
+      }
+      if (state === "interrupted" || (state === "absent" && record.phase === "admitted")) {
+        record = { ...record, attempt: record.attempt + 1, phase: "committed" }
+        saveJournal(record)
+      }
+      if (state !== "absent" && state !== "interrupted") return
+      saveJournal({ ...record, phase: "submitting" })
+      report(record, "submitting-pointer")
+      await gatewayCall(target, "chat.send", { sessionKey: record.session_key,
+        message: pointerMessage(record), queueMode: "followup",
+        idempotencyKey: submissionKey(record) })
+      saveJournal({ ...record, phase: "admitted" })
+      report(record, "pointer-admitted")
+    } catch {
+      // An uncertain RPC is reconciled by identity before any retry.
+      report(record, "rpc-or-journal-unconfirmed")
+    } finally {
+      delivering.delete(record.delivery_id)
+    }
+  }
+
+  function startSettlement(session, entry) {
+    const envelope = { session_id: session.session_key, cwd: session.cwd,
+      openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
+    const child = spawnOwnedHook("openclaw-settlement", envelope, true)
+    entry.child = child
+    let buffer = ""
+    let prepared = null
+    child.stdio[3].setEncoding("utf8")
+    child.stdio[3].on("data", (chunk) => {
+      buffer += chunk
+      for (;;) {
+        const end = buffer.indexOf("\\n")
+        if (end < 0) break
+        const line = buffer.slice(0, end)
+        buffer = buffer.slice(end + 1)
+        let payload
+        try { payload = JSON.parse(line) } catch { continue }
+        if (payload.type === "prepare") {
+          const ids = payload.request_ids
+          if (payload.session_key !== session.session_key ||
+              payload.generation !== session.generation || !Array.isArray(ids) ||
+              ids.length < 1 || ids.some((id) => typeof id !== "string" ||
+                !/^req_[A-Za-z0-9_-]+$/.test(id))) continue
+          const deliveryId = createHash("sha256")
+            .update(session.generation + "\\0" + ids.join("\\0"))
+            .digest("hex").slice(0, 32)
+          const existing = existingJournal(deliveryId)
+          if (existing === null && existsSync(journalPath(deliveryId))) continue
+          if (existing !== null && (existing.session_key !== session.session_key ||
+              existing.generation !== session.generation ||
+              JSON.stringify(existing.request_ids) !== JSON.stringify(ids))) continue
+          prepared = existing ?? { delivery_id: deliveryId, session_key: session.session_key,
+            cwd: session.cwd, generation: session.generation,
+            openclaw_session_id: session.session_id, request_ids: ids,
+            attempt: 1, phase: "prepared" }
+          if (existing === null) saveJournal(prepared)
+          child.stdio[4].write('{"type":"prepared"}\\n')
+        } else if (payload.type === "committed" && prepared !== null) {
+          if (prepared.phase === "prepared") {
+            prepared = { ...prepared, phase: "committed" }
+            saveJournal(prepared)
+          }
+          void deliver(prepared)
+        }
+      }
+    })
+    child.on("close", () => {
+      const current = active.get(session.session_key)
+      if (current?.child === child) {
+        current.child = null
+      }
+    })
+  }
+
+  function startSession(session) {
+    const envelope = { session_id: session.session_key, cwd: session.cwd,
+      openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
+    const entry = { generation: session.generation,
+      attendant: spawnOwnedHook("attend", envelope), child: null }
+    active.set(session.session_key, entry)
+    startSettlement(session, entry)
+  }
+
+  async function tick() {
+    if (stopped || scanning) return
+    scanning = true
+    try {
+      if (!ready) {
+        const target = await verifiedGatewayTarget(config, logger)
+        if (target === null || !writeReadiness(target)) return
+        ready = true
+      }
+      const raw = await runHook("openclaw-list-pending", { cwd: process.cwd() })
+      const pending = raw === null ? [] : JSON.parse(raw)
+      if (Array.isArray(pending)) for (const session of pending) {
+        if (typeof session?.session_key !== "string" ||
+            typeof session?.cwd !== "string" ||
+            typeof session?.generation !== "string") continue
+        const current = active.get(session.session_key)
+        if (current?.generation === session.generation) {
+          if (current.attendant.exitCode !== null) {
+            active.delete(session.session_key)
+            if (current.child !== null) current.child.kill("SIGTERM")
+            startSession(session)
+          } else if (current.child === null) {
+            const ready = await runHook("openclaw-attendance-ready", {
+              session_id: session.session_key, cwd: session.cwd,
+              openclaw_session_id: session.session_id })
+            if (ready?.trim() === "ready") startSettlement(session, current)
+          }
+          continue
+        }
+        if (current) {
+          if (current.child !== null) current.child.kill("SIGTERM")
+          current.attendant.kill("SIGTERM")
+        }
+        startSession(session)
+      }
+      for (const record of readJournals()) void deliver(record)
+    } catch { /* The next Gateway tick retries discovery. */ }
+    finally { scanning = false }
+  }
+
+  return {
+    start() { timer = setInterval(() => { void tick() }, 2_000); void tick() },
+    stop() {
+      stopped = true
+      clearReadiness()
+      if (timer !== null) clearInterval(timer)
+      for (const entry of active.values()) {
+        if (entry.child !== null) entry.child.kill("SIGTERM")
+        entry.attendant.kill("SIGTERM")
+      }
+      active.clear()
+    },
+  }
+}
+`
+}
+
 export function openclawPluginManifest(): string {
   return `${JSON.stringify(
     {
@@ -137,9 +535,14 @@ export function openclawPluginSource(options: OpenclawPluginOptions): string {
   return `${OPENCLAW_PLUGIN_MARKER}
 // Generated by \`notifai hooks install --harness openclaw\`. Edits are lost on
 // the next install; change the CLI instead, which is where the logic lives.
-import { spawn } from "node:child_process"
+import { spawn, execFile, execFileSync } from "node:child_process"
+import { createHash, randomUUID } from "node:crypto"
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import path from "node:path"
 
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
+const HOOK_COMMAND = ${JSON.stringify(win32 ? options.nodePath ?? process.execPath : adapterPath)}
+const HOOK_PREFIX = ${JSON.stringify(win32 ? [adapterPath] : [])}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCLAW_ADAPTER_VERSION}
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}
@@ -250,7 +653,22 @@ function onIfSupported(api, name, handler) {
   }
 }
 
+${openclawContinuationServiceSource()}
+
 function register(api) {
+  api.registerService?.({
+    id: "notifai-continuation",
+    start(ctx) {
+      if (typeof ctx.stateDir !== "string" || !path.isAbsolute(ctx.stateDir)) return
+      JOURNAL_DIR = path.join(ctx.stateDir, "notifai", "continuation-journal")
+      continuationService = makeContinuationService(ctx.config, ctx.logger)
+      continuationService.start()
+    },
+    stop() {
+      continuationService?.stop()
+      continuationService = null
+    },
+  })
   onIfSupported(api, "session_start", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return
@@ -269,6 +687,9 @@ function register(api) {
     const worker = isWorkerSession(sessionKey, ctx)
     const resolved = await runHook(worker ? "subagent-start" : "session-start",
       envelopeFor(sessionKey, event, ctx, worker ? "SubagentStart" : "SessionStart"))
+    // chat.send does not emit message_received on this supported Gateway path.
+    // The prompt build is the exact session's authoritative turn-start seam.
+    await runHook("openclaw-turn-start", envelopeFor(sessionKey, event, ctx, "BeforePromptBuild"))
     // Successful empty output means this Project is disabled or this
     // generation was already activated. A later prompt rechecks enablement.
     if (resolved !== null && resolved.trim().length === 0) return
@@ -292,11 +713,7 @@ function register(api) {
   api.on("agent_end", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return
-    await runHook("stop", {
-      session_id: sessionKey,
-      cwd: workspaceDirOf(event, ctx),
-      hook_event_name: "Stop",
-    })
+    await runHook("openclaw-turn-end", envelopeFor(sessionKey, event, ctx, "Stop"))
   })
 
   api.on("session_end", async (event, ctx) => {
@@ -305,12 +722,16 @@ function register(api) {
     await runHook("session-end", envelopeFor(sessionKey, event, ctx, "SessionEnd"))
   })
 
-  api.on("resolve_exec_env", (event, ctx) => {
+  api.on("resolve_exec_env", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)
     if (sessionKey === "") return
+    const generation = await runHook("openclaw-generation",
+      envelopeFor(sessionKey, event, ctx, "ResolveExecEnv"))
+    if (generation === null || !/^[0-9a-f-]{36}$/i.test(generation.trim())) return
     return {
       NOTIFAI_ACTIVE_HARNESS: "openclaw",
       NOTIFAI_ACTIVE_SESSION_ID: sessionKey,
+      NOTIFAI_ACTIVE_OPENCLAW_GENERATION: generation.trim(),
     }
   })
 }

@@ -4333,7 +4333,7 @@ describe('harness activation guidance', () => {
     expect(inspectHookAdapter(deps.hookAdapterHome).target?.scriptPath).toBe(scriptPath)
   })
 
-  it('installs an owned OpenClaw plugin and reports unsupported continuation', async () => {
+  it('installs an owned OpenClaw plugin and reports an unready continuation without a live Gateway', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-activation-'))
     const io = new CapturedIo()
     const client = {
@@ -4375,7 +4375,7 @@ describe('harness activation guidance', () => {
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).toContain('no proven answer continuation')
+    expect(io.outLines.join('\n')).toContain('local Gateway service has not verified')
   })
 
   it('refuses to overwrite a foreign OpenClaw plugin', () => {
@@ -9795,7 +9795,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('opencode-current', env).pending).toBeUndefined()
   })
 
-  it('rejects OpenClaw before registration even with an exact matching pointer', () => {
+  it('rejects OpenClaw without a current generation marker', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-openclaw-unsupported-'))
     const io = new CapturedIo()
     const env = {
@@ -9813,8 +9813,9 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
+    expect(io.errLines.join('\n')).toMatch(/generation|OpenClaw/i)
     expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
+    expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
   })
 
   it('admits Grok ask only for the exact active Agent Session', async () => {
