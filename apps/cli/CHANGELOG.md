@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.0-beta.3](https://github.com/Raidiant-io/notifai/compare/v11.6.0-beta.2...v11.6.0-beta.3) (2026-09-30)
+
+### Bug Fixes
+
+* **cli:** migrate owned integration during updates and detect local drift without repeated notices ([#219](https://github.com/Raidiant-io/notifai/pull/219)) ([fea78df](https://github.com/Raidiant-io/notifai/commit/fea78df36ba3d0378e9df15dd8e35f83c82ac3ce)).
+* **cli:** isolate healthy lifecycle fixtures and verify one-time native-approval diagnostics ([#220](https://github.com/Raidiant-io/notifai/pull/220)) ([51ef7c9](https://github.com/Raidiant-io/notifai/commit/51ef7c927e8a100c0280db51c8ad2330d9371e00)).
+
+This beta includes the harness and session-naming improvements from beta.2. The protocol remains 8.1.2. Updates preserve pending questions, answers, acknowledgements and native approval; native activation is reported separately from package installation.
+
 ## [11.5.0](https://github.com/Raidiant-io/notifai/compare/v11.4.1...v11.5.0) (2026-09-29)
 
 
