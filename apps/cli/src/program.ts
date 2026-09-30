@@ -11,6 +11,7 @@ import {
   cliUpdateCommand,
   cliUpdateCheckCommand,
   updateSkillCommand,
+  updateResumeCommand,
   configExplainCommand,
   configSetCommand,
   configShowCommand,
@@ -87,6 +88,7 @@ const defaultRunners = {
   update: cliUpdateCommand,
   updateCheck: cliUpdateCheckCommand,
   updateSkill: updateSkillCommand,
+  updateResume: updateResumeCommand,
   login: loginCommand,
   logout: logoutCommand,
   authStatus: authStatusCommand,
@@ -274,30 +276,31 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable installation and session handoff')
     .option('--check', 'inspect release notes, guidance, and session effects without installing')
     .option('--refresh-skill', 'refresh the existing skill scope without login, hooks, or delivery setup')
+    .option('--resume', 'finish integration in the existing installation without reinstalling or changing channel')
     .option('--channel <channel>', 'choose stable or beta; explicit stable can switch from a newer beta (default: stable)')
-    .option('--from <version>', 'show installed changelog entries after this version (requires --check)')
-    .action(async (opts: { json?: boolean; check?: boolean; from?: string; refreshSkill?: boolean; channel?: string }) => {
+    .option('--from <version>', 'show installed changelog entries after this version (requires --check or --resume)')
+    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string }) => {
       if (opts.channel !== undefined && opts.channel !== 'stable' && opts.channel !== 'beta') {
         deps.io.err('--channel must be stable or beta')
         exit(2)
         return
       }
-      if (opts.channel !== undefined && (opts.check || opts.refreshSkill || opts.from !== undefined)) {
+      if (opts.channel !== undefined && (opts.check || opts.resume || opts.refreshSkill || opts.from !== undefined)) {
         deps.io.err('--channel can only be used when installing an update')
         exit(2)
         return
       }
-      if (opts.refreshSkill && (opts.check || opts.from !== undefined)) {
-        deps.io.err('--refresh-skill cannot be combined with --check or --from')
+      if ((opts.refreshSkill && (opts.check || opts.resume || opts.from !== undefined)) || (opts.resume && opts.check)) {
+        deps.io.err('Choose only one of --check, --resume, or --refresh-skill; --from is available with --check or --resume')
         exit(2)
         return
       }
-      if (opts.from !== undefined && opts.check !== true) {
-        deps.io.err('--from requires --check')
+      if (opts.from !== undefined && opts.check !== true && opts.resume !== true) {
+        deps.io.err('--from requires --check or --resume')
         exit(2)
         return
       }
-      exit(opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : runners.update(deps, opts))
+      exit(opts.resume ? await runners.updateResume(deps, opts) : opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : runners.update(deps, opts))
     })
 
   const project = program

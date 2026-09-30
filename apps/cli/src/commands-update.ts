@@ -25,6 +25,7 @@ import { cliReleaseTarget, parseCliDistTags, type CliReleaseTarget } from './cli
 import { pathContainsDirectory } from './local-path.js'
 import { npmInvocation } from './npm-invocation.js'
 import { compareReleasePrecedence } from './version.js'
+import { updateWorkPending } from './commands-update-resume.js'
 
 export interface CliUpdateFlags {
   json?: boolean
@@ -173,6 +174,9 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
     json: requested.json === true || deps.io.interactive !== true,
     explicitStableSwitch: explicitlySwitchingToStable,
   }
+  const waiting = updateWorkPending(deps)
+  if (waiting !== null) return failed(deps, flags, { code: 'outstanding_session_work', message: waiting,
+    recoveryCommand: 'notifai update --check --json' }, before, null)
   let target: CliReleaseTarget | null = null
   if (channel === 'beta' || cliUpdateChannel(installed) === 'beta') {
     const tags = publishedDistTags(deps)
@@ -288,20 +292,27 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
   // The old updater has already imported its modules. Only the newly installed
   // artifact can describe the new release's guidance and harness requirements.
   const previousVersion = before.effective?.version ?? before.current.version
-  const handoffArgs = [effective.artifact_path, 'update', '--check', '--json']
+  const handoffArgs = [effective.artifact_path, 'update', '--resume', '--json']
   if (previousVersion !== null) handoffArgs.push('--from', previousVersion)
   const handoffProbe = spawnSync(process.execPath, handoffArgs, {
     encoding: 'utf8', env: deps.env, cwd: deps.cwd,
-    stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000, killSignal: 'SIGKILL',
+    stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, killSignal: 'SIGKILL',
   })
   let handoff: Record<string, unknown> | null = null
   try {
     const value: unknown = JSON.parse(handoffProbe.stdout ?? '')
-    if (handoffProbe.status === 0 && typeof value === 'object' && value !== null &&
-        (value as Record<string, unknown>).ok === true &&
-        (value as Record<string, unknown>).read_only === true &&
-        (value as Record<string, unknown>).running_version === effective.version) {
-      handoff = value as Record<string, unknown>
+    if (typeof value === 'object' && value !== null) {
+      const record = value as Record<string, unknown>
+      // Preserve structured partial progress from the new executable too.
+      // A successful package probe alone cannot prove integration finished.
+      if (record.read_only === false && record.running_version === effective.version &&
+          typeof record.files_complete === 'boolean' && record.ok === record.files_complete &&
+          handoffProbe.status === (record.files_complete ? EXIT.ok : EXIT.failed) &&
+          typeof record.migration_complete === 'boolean' && Array.isArray(record.pending_actions) &&
+          record.pending_actions.every(action => typeof action === 'string') &&
+          record.migration_complete === (record.files_complete && record.pending_actions.length === 0)) {
+        handoff = record
+      }
     }
   } catch {
     // Package installation succeeded; failure to inspect session effects is
@@ -318,8 +329,10 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
       update_prefix: targetPrefix,
       target: target ?? { version: null, dist_tag: 'latest' },
       handoff,
-      follow_up_required: true,
-      handoff_error: handoff === null ? 'Run notifai update --check --json with the updated CLI before claiming guidance or session readiness.' : null,
+      integration_complete: handoff?.migration_complete === true,
+      follow_up_required: handoff?.migration_complete !== true,
+      guidance_reread_required: true,
+      handoff_error: handoff === null ? 'Run notifai update --resume --json with the updated CLI to finish integration; update --check --json is read-only diagnosis.' : null,
       before,
       after,
       hook_adapter: adapterInspection === null
@@ -327,8 +340,8 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
         : { path: adapterInspection.path, target: adapterInspection.target, retargeted: adapterRetargeted },
     }, null, 2))
   } else {
-    deps.io.out('The CLI is updated. Read the new release notes and guidance before continuing Notifai work.')
-    deps.io.out('Run `notifai update --check --json` for skill refresh and session requirements; a restart is not automatic.')
+    deps.io.out(handoff?.migration_complete === true ? 'The CLI and integration are verified. Read changed agent guidance.' : 'The package is installed; integration still needs follow-up. Run `notifai update --resume --json`.')
+    deps.io.out('Use `notifai update --check --json` for diagnosis; a restart is not automatic.')
   }
   return EXIT.ok
 }

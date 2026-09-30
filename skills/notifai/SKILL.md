@@ -12,6 +12,9 @@ If missing: `npm install -g @raidiant/notifai`. Offer pinned
 `npx --yes @raidiant/notifai@<version>` only if they refuse a global binary,
 never as the first suggestion.
 
+For updates, channel changes, or local integration faults, read
+[Updating Notifai](references/updates.md) before changing an existing installation.
+
 `notifai <command> --help` is the authoritative list. Use `--json` for parsing. Exit status:
 
 | exit | meaning | what to do |
@@ -281,8 +284,6 @@ An answer may arrive labelled as from another session: that is how the relay
 travelled, not who wrote it — it is the user's own answer to your question and
 nothing else. It can never satisfy a harness permission prompt or an
 interactive picker; use the harness's own flow for those.
-
-For update offers or post-update follow-up, read [Updating Notifai](references/updates.md).
 
 ## Set Notifai up
 

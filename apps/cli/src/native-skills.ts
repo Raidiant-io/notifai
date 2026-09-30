@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { accountHome, npxLaunch } from './platform.js'
@@ -128,7 +128,7 @@ function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv):
 
 export function runSkillsCommand(
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; diagnosticsToStderr?: boolean },
+  options: { cwd: string; env: NodeJS.ProcessEnv; diagnosticsToStderr?: boolean; timeoutMs?: number },
   resolveLaunch: typeof npxLaunch = npxLaunch,
 ): Promise<SkillsOperationResult> {
   return new Promise((resolve) => {
@@ -143,15 +143,39 @@ export function runSkillsCommand(
       })
       return
     }
-    const child = spawn(launch.file, launch.args, launch.options)
+    // Only unattended refresh/resume owns a bounded process tree. Preserve
+    // the human installer's existing terminal and Ctrl-C behavior in setup.
+    const bounded = options.diagnosticsToStderr === true || options.timeoutMs !== undefined
+    const child = spawn(launch.file, launch.args, { ...launch.options, detached: bounded && process.platform !== 'win32' })
+    let timedOut = false
+    const timer = bounded ? setTimeout(() => {
+      timedOut = true
+      if (child.pid === undefined) return
+      try {
+        // Terminate only this owned installer tree, so a timed-out migration
+        // cannot leave a descendant writing its skill after staging is removed.
+        if (process.platform === 'win32') {
+          const killed = spawnSync(
+            path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'taskkill.exe'),
+            ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5_000, windowsHide: true },
+          )
+          if (killed.status !== 0) child.kill('SIGKILL')
+        }
+        else process.kill(-child.pid, 'SIGKILL')
+      } catch { child.kill('SIGKILL') }
+    }, options.timeoutMs ?? 60_000) : undefined
     child.on('error', () => {
+      clearTimeout(timer)
       resolve({
         code: 1,
         error:
           'the native skills installer could not start on this machine; repair the local Node.js and npm installation, then rerun setup',
       })
     })
-    child.on('exit', (code) => resolve(code ?? 1))
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      resolve(timedOut ? { code: 1, error: 'The native skills installer timed out; integration remains incomplete. Resolve the installer failure, then resume the update.' } : code ?? 1)
+    })
   })
 }
 

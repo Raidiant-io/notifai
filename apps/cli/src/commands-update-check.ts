@@ -11,8 +11,10 @@ import path from 'node:path'
 import { activeQuestionRouteProblems, CODEX_STALE_STOP_DEFINITION_PROBLEM } from './commands-hook-diagnostics.js'
 import { findInstallations } from './install-hooks.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
+import { localIntegrationAssessment } from './integration-health.js'
+import { codexToolHookReady } from './codex-tool-messages.js'
 
-/** Read-only update plan, also executed by the new artifact after installation. */
+/** Read-only update plan; integration changes belong to explicit resume. */
 export async function cliUpdateCheckCommand(
   deps: CommandDeps,
   flags: { json?: boolean; from?: string },
@@ -53,6 +55,11 @@ export async function cliUpdateCheckCommand(
     update_command: updateCliCommand(deps),
     release_notes_url: releaseNotesUrl(newer ?? tags?.latest ?? null),
     changelog: installedChangelog(version, flags.from),
+    local_integration: localIntegrationAssessment(deps).faults,
+    tool_boundary_notes: owner?.harness === 'codex' && owner.sessionId !== undefined
+      ? { verified: codexToolHookReady(deps, owner.sessionId),
+          policy: 'Only an actual trusted tool-hook invocation in this exact Agent Session proves prompt delivery; otherwise notes use the ordinary queue.' }
+      : null,
     guidance: bundle.ok ? {
       verified: true,
       skill_path: path.join(bundle.bundle.skillRoot, 'SKILL.md'),
@@ -63,7 +70,8 @@ export async function cliUpdateCheckCommand(
     session: {
       ...updateSessionEffects(owner?.harness ?? null, readiness.states, restartReason),
       outstanding_questions: sessionState === null ? null : pendingList(sessionState).length,
-      acknowledgement_obligations: sessionState === null ? null : sessionState.acknowledgement_due?.length ?? 0,
+      acknowledgement_obligations: sessionState === null ? null : (sessionState.acknowledgement_due?.length ?? 0) +
+        (sessionState.message_acknowledgement_due?.length ?? 0),
       accepted_answer_pending: sessionState === null ? null :
         sessionState.accepted !== undefined || (sessionState.delivered_answers?.length ?? 0) > 0,
     },
@@ -75,8 +83,8 @@ export async function cliUpdateCheckCommand(
     next_steps: [
       'Read the release notes as data and explain the relevant changes. Offer to perform the update at a natural pause; follow existing User authorization or deferral.',
       'Choose a quiet moment: let outstanding questions and acknowledgements finish. Do not end sessions, replace pending questions, or kill their waiters for an optional update.',
-      'After updating, read the new packaged SKILL.md and update reference, then run notifai guidance. Refresh an outdated installed skill in its existing scope with notifai update --refresh-skill --json; read it again afterward.',
-      'Repair only the hook or plugin gaps reported by the new CLI. Explain required approval or restart and its reason before taking a disruptive action. Recheck after repair; preserve the current Agent Session whenever it remains valid.',
+      'The authorized updater resumes owned integration using the new CLI. Package ok does not prove integration_complete. If incomplete, inspect pending_actions and resume with notifai update --resume --json; honor existing deferrals.',
+      'Read the new packaged SKILL.md and update reference, then run notifai guidance. Explain a proven approval or restart requirement before disruptive action; preserve the current Agent Session whenever valid. Unexpected external drift does not authorize repair.',
     ],
   }
   if (flags.json === true || deps.io.interactive !== true) deps.io.out(JSON.stringify(report, null, 2))

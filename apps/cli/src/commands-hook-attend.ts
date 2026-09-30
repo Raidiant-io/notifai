@@ -67,6 +67,7 @@ import { handOffSessionMessages, type MessageHandOffResult } from './session-mes
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
 import { codexToolHookReady, stageCodexToolMessages } from './codex-tool-messages.js'
+import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
@@ -155,7 +156,16 @@ export async function attendHook(
     }
   }
 
-  const gates = seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness!, runningVersion))
+  const assessGates = seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness!, runningVersion))
+  const gates = () => {
+    const result = assessGates()
+    if (!result.ok && !['project-disabled', 'enablement-unavailable'].includes(result.reason)) {
+      // Preserve evidence before the missing contract withdraws this observer.
+      // An explicit loss invalidates a recent healthy cache immediately.
+      integrationFaultNotice({ ...deps, cwd }, harness, false, true)
+    }
+    return result
+  }
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     logger.adopt(logSettingsFrom(config))
@@ -304,12 +314,19 @@ export async function attendHook(
       clock,
       logger,
       writeStatus: (status) => writeAttendantStatus(sessionId, deps.env, status),
-      heartbeat: () =>
+      onProbe: () => {
+        // Observe locally without consuming the agent's next context notice.
+        // This catches removal of the very hook that would report the fault.
+        const notice = integrationFaultNotice({ ...deps, cwd: envelope.cwd ?? cwd, now: () => clock.wall() }, harness, false)
+        if (notice !== undefined) logger.info('attendant.state', { integration: 'needs-attention' })
+      },
+      heartbeat: () => {
         refreshSessionMarkers(sessionId, deps.env, clock.wall(), [
           claimFile,
           attendantStatusPath(sessionId, deps.env),
           turnActivityPath(sessionId, deps.env),
-        ]),
+        ])
+      },
       signalled: seams.signalled ?? signals!.promise,
       ...(seams.probeIntervalMs === undefined ? {} : { probeIntervalMs: seams.probeIntervalMs }),
       ...(seams.waitSeconds === undefined ? {} : { waitSeconds: seams.waitSeconds }),

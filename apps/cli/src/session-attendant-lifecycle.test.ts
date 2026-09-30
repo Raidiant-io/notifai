@@ -48,6 +48,7 @@ import {
 } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import { codexToolHookReady, readCodexToolMessages } from './codex-tool-messages.js'
+import { integrationFaultNotice } from './integration-health.js'
 
 const HARNESS = { pid: 4242, start: 'Fri Sep 25 11:12:08 2026' }
 
@@ -378,6 +379,28 @@ async function until(predicate: () => boolean, label: string): Promise<void> {
 }
 
 describe('notifai hook attend', () => {
+  it('records a removed contract before withdrawal without consuming the agent fault notice', async () => {
+    const { env, root } = isolatedEnv()
+    const service = fakeAttendance()
+    let removed = false
+    const deps = attendDeps(env, root, { clientFactory: () => service.client })
+    deps.attendant!.gates = () => removed ? { ok: false, reason: 'attend-handler-removed' } : { ok: true }
+    recordSessionNotified('sess-a', env, Date.now())
+    const running = hookRunCommand(deps, 'attend', stdin({ session_id: 'sess-a', cwd: root,
+      hook_event_name: 'SessionStart', source: 'startup' }), 'claude-code')
+    try {
+      await until(() => service.calls.length > 0, 'resident observer')
+      removed = true
+      await running
+      expect(deps.exits).toEqual([{ reason: 'gate:attend-handler-removed', reported: 'withdrawn' }])
+      expect(integrationFaultNotice(deps, 'claude-code')).toContain('hooks-missing')
+      expect(integrationFaultNotice(deps, 'claude-code')).toBeUndefined()
+    } finally {
+      markSessionEnded('sess-a', env, Date.now() + 1)
+      await running
+    }
+  })
+
   it('becomes the attendant despite a stale end marker, and a second start exits at once', async () => {
     const { env, root } = isolatedEnv()
     const deps = attendDeps(env, root)
@@ -845,7 +868,17 @@ describe('notifai hook attend for Codex', () => {
           expect(codexToolHookReady(deps, THREAD)).toBe(true)
           expect(claims).toBe(1)
         }
-        expect(output).toEqual([])
+        if (mode === 'first-hook') {
+          // Diagnostics may use this callback, but the already queued Note
+          // cannot be claimed or rendered a second time through tool stdout.
+          expect(output).toHaveLength(1)
+          expect(output[0]).toContain('local integration needs attention')
+          expect(output[0]).not.toContain('sm_tool')
+          expect(output[0]).not.toContain('Use the tool hook')
+          await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
+          expect(output).toHaveLength(1)
+          expect(claims).toBe(1)
+        } else expect(output).toEqual([])
         return
       }
       await until(() => readCodexToolMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')

@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
 } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -61,13 +62,22 @@ function portableRelative(root: string, file: string): string {
   return path.relative(root, file).split(path.sep).join('/')
 }
 
-function skillFiles(root: string): Array<{ path: string; contents: Buffer }> {
+export interface SkillInspectionBudget { maxFiles: number; maxBytes: number; deadlineAt: number }
+
+function skillFiles(root: string, budget?: SkillInspectionBudget): Array<{ path: string; contents: Buffer }> {
   const files: Array<{ path: string; contents: Buffer }> = []
+  let bytes = 0
   const walk = (directory: string): void => {
+    if (budget !== undefined && Date.now() >= budget.deadlineAt) throw new Error('local skill inspection budget exhausted')
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (budget !== undefined && Date.now() >= budget.deadlineAt) throw new Error('local skill inspection budget exhausted')
       const absolute = path.join(directory, entry.name)
       if (entry.isDirectory()) walk(absolute)
       else if (entry.isFile()) {
+        if (budget !== undefined) {
+          bytes += statSync(absolute).size
+          if (files.length >= budget.maxFiles || bytes > budget.maxBytes) throw new Error('local skill inspection size exceeded')
+        }
         files.push({ path: portableRelative(root, absolute), contents: readFileSync(absolute) })
       } else {
         throw new Error(`skill contains unsupported filesystem entry ${portableRelative(root, absolute)}`)
@@ -79,8 +89,8 @@ function skillFiles(root: string): Array<{ path: string; contents: Buffer }> {
 }
 
 /** Build the exact content identity stored beside the skill in the npm tarball. */
-export function createSkillManifest(skillRoot: string, packageVersion: string): SkillManifest {
-  const files = skillFiles(skillRoot)
+export function createSkillManifest(skillRoot: string, packageVersion: string, budget?: SkillInspectionBudget): SkillManifest {
+  const files = skillFiles(skillRoot, budget)
   const digest = createHash('sha256')
   const manifestFiles = files.map((file): SkillManifestFile => {
     digest.update(file.path)
@@ -128,6 +138,7 @@ function sameManifest(expected: SkillManifest, actual: SkillManifest): boolean {
 export function verifySkillBundle(
   sourceRoot: string,
   expectedPackageVersion?: string,
+  budget?: SkillInspectionBudget,
 ): SkillBundleResult {
   const skillRoot = path.join(sourceRoot, 'notifai')
   const manifestFile = path.join(sourceRoot, 'manifest.json')
@@ -150,7 +161,7 @@ export function verifySkillBundle(
           `not CLI ${expectedPackageVersion}`,
       }
     }
-    const actual = createSkillManifest(skillRoot, parsed.package_version)
+    const actual = createSkillManifest(skillRoot, parsed.package_version, budget)
     if (!sameManifest(parsed, actual)) {
       return {
         ok: false,
@@ -164,13 +175,13 @@ export function verifySkillBundle(
 }
 
 /** Locate the generated bundle in a published install or a built source checkout. */
-export function shippedSkillBundle(expectedPackageVersion?: string): SkillBundleResult {
+export function shippedSkillBundle(expectedPackageVersion?: string, budget?: SkillInspectionBudget): SkillBundleResult {
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
   const sourceRoot = path.join(
     moduleDirectory,
     path.basename(moduleDirectory) === 'dist' ? 'skill-source' : '../dist/skill-source',
   )
-  return verifySkillBundle(sourceRoot, expectedPackageVersion)
+  return verifySkillBundle(sourceRoot, expectedPackageVersion, budget)
 }
 
 /**
