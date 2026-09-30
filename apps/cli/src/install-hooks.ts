@@ -1019,20 +1019,21 @@ export interface MergeResult {
 }
 
 /**
- * Adds our handlers without disturbing anyone else's. Re-running replaces only
- * the groups we previously wrote, so an upgrade that changes a timeout does not
- * accumulate duplicate hooks.
+ * Refresh owned handlers in their existing slots. Codex's approval identity
+ * includes group and handler indices, so stripping then appending an unchanged
+ * handler can revoke its approval and stale an active session's Stop definition.
+ * Missing handlers append after existing slots; foreign handlers and matcher
+ * metadata stay in place.
  *
- * Handlers are stripped from EVERY event, not just the ones being installed.
- * Only rewriting incoming events left a dropped event's handler in place for
- * ever, and since the binary no longer implements it, it exited 2 with
- * "Unknown hook event" every time the harness fired it — a permanent hook
- * failure that reinstalling could not clear.
+ * Retired handlers are considered in every event. Hosts without index-based
+ * approval can remove them; strict Codex repair refuses ambiguous removal so
+ * an explicit migration can account for native trust and active sessions.
  */
 export function mergeHooks(
   existing: SettingsDocument,
   incoming: HookConfig,
   scriptPath: string,
+  options: { preserveIdentities?: boolean } = {},
 ): MergeResult {
   const hooks: HookConfig = Object.create(null)
   const added: string[] = []
@@ -1045,17 +1046,48 @@ export function mergeHooks(
       ;(hooks as Record<string, unknown>)[event] = groups
       continue
     }
-    const { groups: foreign, removed: hadOurs } = withoutOurs(groups, scriptPath)
+    const desired = (incoming[event] ?? []).map(group => ({ ...group, hooks: [...group.hooks] }))
+    const refreshed: HookGroup[] = []
+    let hadOurs = false
+    for (const group of groups) {
+      const next: HookHandler[] = []
+      for (const handler of group.hooks) {
+        if (!isOurHandler(handler, scriptPath)) {
+          next.push(handler)
+          continue
+        }
+        hadOurs = true
+        const replacementGroup = desired.find(candidate => candidate.hooks.some(replacement =>
+          handlerEvent(replacement.command) === handlerEvent(handler.command)))
+        const index = replacementGroup?.hooks.findIndex(replacement =>
+          handlerEvent(replacement.command) === handlerEvent(handler.command)) ?? -1
+        if (replacementGroup !== undefined && index >= 0) {
+          next.push(replacementGroup.hooks.splice(index, 1)[0]!)
+        } else if (options.preserveIdentities === true) {
+          throw new Error(`Cannot preserve Codex hook identities for ${event}: duplicate or retired owned handlers require explicit migration. Review the existing hooks before retrying; the hook document was not changed.`)
+        }
+      }
+      // Empty native groups also occupy an approval index.
+      if (next.length > 0 || options.preserveIdentities === true) refreshed.push({ ...group, hooks: next })
+    }
+    for (const group of desired.filter(candidate => candidate.hooks.length > 0)) {
+      // Append to a matching owned group without inserting before a foreign
+      // handler. An omitted matcher and '*' both cover the complete event.
+      const target = refreshed.find(candidate => (candidate.matcher ?? '*') === (group.matcher ?? '*') &&
+        candidate.hooks.some(handler => isOurHandler(handler, scriptPath)))
+      if (target === undefined) refreshed.push(group)
+      else target.hooks.push(...group.hooks)
+    }
     if (hadOurs) {
       if (event in incoming) replaced.push(event)
       else removed.push(event)
     }
-    if (foreign.length > 0) hooks[event] = foreign
+    if (refreshed.length > 0) hooks[event] = refreshed
   }
 
   for (const [event, groups] of Object.entries(incoming)) {
     if (!replaced.includes(event)) added.push(event)
-    hooks[event] = [...(hooks[event] ?? []), ...groups]
+    if (!(event in (existing.hooks ?? {}))) hooks[event] = groups
   }
 
   return { document: { ...existing, hooks }, added, replaced, removed }

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as atomicFile from './atomic-file.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { hooksInstallCommand, hooksUninstallCommand } from './commands-hook-install.js'
-import { buildHookConfig, notifaiNativePluginEnablementKeys } from './install-hooks.js'
+import { buildHookConfig, codexHookIdentityHash, codexStopDefinitionFingerprint, codexTrustKey, codexTrustProblems, findInstallations, notifaiNativePluginEnablementKeys } from './install-hooks.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -50,6 +50,78 @@ function fixture(source: string) {
 }
 
 const commands = { install: hooksInstallCommand, uninstall: hooksUninstallCommand }
+
+describe('Codex approval identity through actual hook repair', () => {
+  it('adds missing tool wiring without moving approved hooks, empty groups or foreign groups', () => {
+    const f = fixture('model = "keep-model"\n')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const document = JSON.parse(readFileSync(f.hooks, 'utf8'))
+    const foreign = { matcher: '*', hooks: [{ type: 'command', command: 'foreign-handler', timeout: 10 }] }
+    for (const groups of Object.values(document.hooks) as { hooks: unknown[] }[][]) groups.push(foreign)
+    document.hooks.Stop.unshift({ matcher: 'Shell', hooks: [] })
+    document.hooks.PostToolUse = [foreign]
+    writeFileSync(f.hooks, JSON.stringify(document))
+    const before = findInstallations(f.deps.env, f.deps.hookAdapterHome).filter(i => i.harness === 'codex')
+    const installation = before[0]!
+    const trust = 'model = "keep-model"\n' + installation.handlers.map(handler =>
+      `[hooks.state.${JSON.stringify(codexTrustKey(installation, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`,
+    ).join('\n')
+    writeFileSync(f.toml, trust)
+    expect(codexTrustProblems(before, f.deps.env)).toEqual([])
+    const fingerprint = codexStopDefinitionFingerprint(before)
+
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const after = findInstallations(f.deps.env, f.deps.hookAdapterHome).filter(i => i.harness === 'codex')
+    expect(codexStopDefinitionFingerprint(after)).toBe(fingerprint)
+    expect(codexTrustProblems(after, f.deps.env)).toEqual([expect.stringMatching(/PostToolUse.*not trusted/)])
+    expect(readFileSync(f.toml, 'utf8')).toBe(trust)
+    const repaired = JSON.parse(readFileSync(f.hooks, 'utf8'))
+    expect(repaired.hooks.Stop[0]).toEqual(document.hooks.Stop[0])
+    for (const [event, groups] of Object.entries(document.hooks) as [string, unknown[]][]) {
+      expect(repaired.hooks[event][groups.length - 1]).toEqual(foreign)
+    }
+    const bytes = readFileSync(f.hooks, 'utf8')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(readFileSync(f.hooks, 'utf8')).toBe(bytes)
+    expect(codexStopDefinitionFingerprint(findInstallations(f.deps.env, f.deps.hookAdapterHome))).toBe(fingerprint)
+  })
+
+  it('refreshes owned slots and appends an attendant without moving a shared foreign handler', () => {
+    const f = fixture('model = "keep-model"\n')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const document = JSON.parse(readFileSync(f.hooks, 'utf8'))
+    const stop = document.hooks.Stop[0].hooks[0]
+    const foreign = { type: 'command', command: 'foreign-stop', timeout: 10 }
+    document.hooks.Stop = [{ matcher: '*', hooks: [{ ...stop, timeout: 1 }, foreign] }]
+    writeFileSync(f.hooks, JSON.stringify(document))
+
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const repaired = JSON.parse(readFileSync(f.hooks, 'utf8'))
+    expect(repaired.hooks.Stop).toHaveLength(1)
+    expect(repaired.hooks.Stop[0].matcher).toBe('*')
+    expect(repaired.hooks.Stop[0].hooks[0]).toEqual(stop)
+    expect(repaired.hooks.Stop[0].hooks[1]).toEqual(foreign)
+    expect(repaired.hooks.Stop[0].hooks[2].command).toContain('hook attend')
+    const bytes = readFileSync(f.hooks, 'utf8')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(readFileSync(f.hooks, 'utf8')).toBe(bytes)
+  })
+
+  it('refuses ambiguous duplicate slots before changing the hook document or trust', () => {
+    const f = fixture('model = "keep-model"\n')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const document = JSON.parse(readFileSync(f.hooks, 'utf8'))
+    document.hooks.Stop[0].hooks.push(document.hooks.Stop[0].hooks[0])
+    const bytes = JSON.stringify(document)
+    writeFileSync(f.hooks, bytes)
+    const trust = readFileSync(f.toml, 'utf8')
+
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.failed)
+    expect(readFileSync(f.hooks, 'utf8')).toBe(bytes)
+    expect(readFileSync(f.toml, 'utf8')).toBe(trust)
+    expect(f.err.join('\n')).toContain('duplicate or retired owned handlers require explicit migration')
+  })
+})
 
 describe('Codex native plugin cleanup through actual commands', () => {
   for (const [action, command] of Object.entries(commands)) {
