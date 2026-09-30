@@ -61,3 +61,4 @@ export { agentSessionRenameCommand } from './commands-agent-sessions.js'
 export { realIo } from './commands-io.js'
 
 export { updateSkillCommand } from './commands-update-skill.js'
+export { updateResumeCommand } from './commands-update-resume.js'

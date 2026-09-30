@@ -38,24 +38,57 @@ hook execution during installation.
 
 Run the locally generated `update_command`. The updater verifies the selected
 installation and stable adapter, then invokes the new executable for its
-handoff. `ok: true` confirms the package update, not completion of all guidance
-and harness follow-up. If `handoff_error` is present, run
-`notifai update --check --json` using the new CLI and resolve its result.
+handoff with `update --resume`. It refreshes an existing installer-managed skill
+in its original scope and repairs diagnosed Notifai-owned definitions. With a
+selected Codex home, it also repairs existing source-home definitions before
+the selected copy; other accounts are untouched. Foreign hooks, settings,
+Guidance Topics, native approval and pending work remain User-owned.
+
+`ok: true` confirms the package update. `integration_complete: true` separately
+confirms integration; `handoff.files_complete` and `handoff.pending_actions`
+explain partial progress and remaining activation or approval. If the handoff
+failed or was interrupted, run `notifai update --resume --json` with the new
+effective CLI. Resume diagnoses current files without reinstalling the package,
+changing channel, selecting a new skill scope, or granting native trust.
+Honor existing approval deferrals; repeating resume does not grant permission.
 
 1. Read the new packaged `guidance.skill_path` and this update reference. Run
    `notifai guidance` to reread the effective provenance-marked Guidance Topics.
-2. If `guidance.installed` reports stale skill content, run `notifai update --refresh-skill --json` to refresh its existing scope.
-   This uses the native installer without login, hook, or delivery setup. Do not choose a new scope, overwrite User-owned
-   guidance, or count a failed installer as success. Read the refreshed skill
-   and the relevant changed references explicitly in this Agent Session;
+2. Resolve the reported `pending_actions`. An unreadable or duplicate skill
+   scope requires a decision rather than guessing. A failed native installer
+   remains incomplete; report its failure and resume only after resolving it.
+   Read the refreshed skill and relevant changed references explicitly;
    replacing files does not replace the agent's existing context.
-3. Repair only diagnosed hooks or plugins. Explain any approval or restart
+3. Explain any diagnosed approval or restart
    requirement and its reason. The User owns Codex hook approval. An unchanged
    installation does not need restarting because it was reinstalled.
 4. Recheck `notifai update --check --json`. Read the changes since the old
    installed version with `--from <old-version>`. Report the installed version,
    relevant changes, guidance refresh, and any remaining session limitation.
    Preserve the current Agent Session whenever its route remains valid.
+
+## Local faults during ordinary work
+
+Local integrity notices are separate from optional release notices. Enabled
+lifecycle callbacks and an existing Session Attendant check local integration
+at most once per minute and surface one notice per changed fault. Healthy
+callbacks stay silent; checks use no registry, service or native installer and
+do not block ordinary sends. A resident observer can record missing wiring,
+but agent context needs an available callback; this does not force another turn.
+
+When a notice appears, run `notifai doctor --json` and identify the lost
+capability. Report an actionable fault once to the Notification Request owner
+and honor existing deferrals. Unexpected external drift is diagnosis, not
+authorization to repair settings, switch prefixes or restart an agent. Use
+`update --resume` only within an authorized update or integration repair.
+For an existing CLI, channel changes use its generated update flow rather than
+an independent global install that can split CLI, adapter and skill identity.
+
+For Codex, `update --check --json` reports `tool_boundary_notes.verified` for
+the exact active Agent Session. Only an actual trusted tool callback proves
+that route. Until then Notes retain ordinary queue delivery; queue handoff
+does not prove model consumption. A missing proof alone calls for observing a
+callback, not a restart.
 
 ## Harness differences
 

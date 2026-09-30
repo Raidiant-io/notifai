@@ -209,7 +209,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     f.setPlan({
       version: stable,
       tags: { latest: stable, beta },
-      script: `#!${process.execPath}\nif (process.argv[2] === '--version') process.stdout.write(${JSON.stringify(`${stable}\n`)}); else process.stdout.write(JSON.stringify({ ok: true, read_only: true, running_version: ${JSON.stringify(stable)} }));\n`,
+      script: `#!${process.execPath}\nif (process.argv[2] === '--version') process.stdout.write(${JSON.stringify(`${stable}\n`)}); else process.stdout.write(JSON.stringify({ ok: true, read_only: false, files_complete: true, migration_complete: true, pending_actions: [], running_version: ${JSON.stringify(stable)} }));\n`,
     })
 
     expect(cliUpdateCommand(f.deps, { channel: 'stable', json: true })).toBe(0)
@@ -218,7 +218,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
       ok: true,
       update_prefix: realpathSync(f.installed.prefix),
       target: { version: stable, dist_tag: 'latest' },
-      handoff: { ok: true, read_only: true, running_version: stable },
+      handoff: { ok: true, read_only: false, files_complete: true, migration_complete: true, pending_actions: [], running_version: stable },
     })
     expect(f.npmCalls().at(-1)).toContain(`@raidiant/notifai@${stable}`)
     expect(f.installedVersion()).toBe(stable)
@@ -261,7 +261,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     symlinkSync(artifact, path.join(bin, 'notifai'))
     f.deps.hookInstallTarget = { execPath: process.execPath, scriptPath: artifact }
     f.deps.env.PATH = `${bin}:${f.deps.env.PATH}`
-    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(f.version)},path:process.env.PATH}));` })
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:false,files_complete:true,migration_complete:false,pending_actions:['Verify exact-session activation'],running_version:${JSON.stringify(f.version)},path:process.env.PATH}));` })
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     const report = JSON.parse(f.io.outLines[0]!)
     expect(report.update_prefix).toBe(realpathSync(f.installed.prefix))
@@ -347,23 +347,40 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
   })
 
-  it('gets the handoff from the installed artifact using the previous PATH version', () => {
+  it('resumes integration in the installed artifact using the previous PATH version', () => {
     const f = recoveryFixture()
-    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:true,running_version:${JSON.stringify(f.version)},args:process.argv.slice(2),new_release_marker:'new artifact'}));` })
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:false,files_complete:true,migration_complete:false,pending_actions:['Verify exact-session activation'],running_version:${JSON.stringify(f.version)},args:process.argv.slice(2),new_release_marker:'new artifact'}));` })
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     const report = JSON.parse(f.io.outLines[0]!)
-    expect(report.handoff).toMatchObject({ new_release_marker: 'new artifact', args: ['update', '--check', '--json', '--from', '3.0.1'] })
+    expect(report.handoff).toMatchObject({ new_release_marker: 'new artifact', args: ['update', '--resume', '--json', '--from', '3.0.1'] })
     expect(report.handoff_error).toBeNull()
     expect(report.follow_up_required).toBe(true)
+    expect(report.integration_complete).toBe(false)
   })
 
   it('reports incomplete follow-up when the new artifact rejects its handoff', () => {
     const f = recoveryFixture()
-    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:false,read_only:true,running_version:${JSON.stringify(f.version)}}));` })
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:false,read_only:false,running_version:${JSON.stringify(f.version)}}));` })
     expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
     const report = JSON.parse(f.io.outLines[0]!)
     expect(report.handoff).toBeNull()
     expect(report.handoff_error).toContain('update --check --json')
+  })
+
+  it('preserves failed migration evidence from the installed artifact', () => {
+    const f = recoveryFixture()
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else {process.stdout.write(JSON.stringify({ok:false,read_only:false,files_complete:false,migration_complete:false,pending_actions:['Native installer failed'],running_version:${JSON.stringify(f.version)}}));process.exitCode=1}` })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({ ok: true, integration_complete: false,
+      follow_up_required: true, handoff_error: null,
+      handoff: { files_complete: false, pending_actions: ['Native installer failed'] } })
+  })
+
+  it('reports verified integration only after a consistent successful handoff', () => {
+    const f = recoveryFixture()
+    f.setPlan({ script: `#!${process.execPath}\nif(process.argv[2]==='--version')process.stdout.write(${JSON.stringify(f.version)});else process.stdout.write(JSON.stringify({ok:true,read_only:false,files_complete:true,migration_complete:true,pending_actions:[],running_version:${JSON.stringify(f.version)}}));` })
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(0)
+    expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({ integration_complete: true, follow_up_required: false })
   })
 
   it('gives unattended failures structured retry evidence without requiring --json', () => {
@@ -443,6 +460,21 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(projectEnabled(enabled)).toBe(true)
     expect(projectEnabled(disabled)).toBe(false)
     expect(spawnSync(inspectHookAdapter(f.home).path, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(f.version)
+  })
+
+  it('leaves package files, routing and existing question IDs intact while an exact session owes an answer', () => {
+    const f = recoveryFixture()
+    f.deps.env['CODEX_THREAD_ID'] = 'exact-owner'
+    f.deps.env['XDG_STATE_HOME'] = path.join(f.root, 'state')
+    writeSessionState('exact-owner', f.deps.env, { pending: [{ question_id: 'existing-question',
+      question: 'Proceed?', summary: 'Proceed?', asked_at: 1_800_000_000_000 }] })
+    const artifact = readFileSync(f.installed.artifact, 'utf8')
+    expect(cliUpdateCommand(f.deps, { json: true })).toBe(1)
+    expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({ code: 'outstanding_session_work' })
+    expect(existsSync(f.calls)).toBe(false)
+    expect(readFileSync(f.installed.artifact, 'utf8')).toBe(artifact)
+    expect(readFileSync(inspectHookAdapter(f.home).path, 'utf8')).toBe(f.adapterBefore)
+    expect(readSessionState('exact-owner', f.deps.env).pending?.[0]?.question_id).toBe('existing-question')
   })
 
   it.each(RUNNING_BUILDS)('updates the PATH winner prefix and retargets the shared hook adapter in one action from a $channel build', (build) => {

@@ -1,5 +1,6 @@
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { agentUpdateNotice } from './agent-update-notice.js'
+import { integrationFaultNotice } from './integration-health.js'
 import { claudeWakeRoute } from './claude-wake.js'
 import { ApiCallError } from './client.js'
 import { codexWakeRoute } from './codex-wake.js'
@@ -58,7 +59,7 @@ import {
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { cursorStopActivationOutput, sessionActivationOutput } from './session-activation.js'
+import { cursorStopActivationOutput, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
@@ -71,6 +72,26 @@ const INTERNAL_HOOK_EVENTS = [
   'openclaw-attendance-ready', 'openclaw-settlement',
   'openclaw-verify-prepared',
 ] as const
+
+/** Keep diagnostic context in the same document as an answer or Session Note. */
+function appendIntegrationContext(output: string | undefined, notice: string | undefined,
+  harness: HookHarness | undefined, event: 'UserPromptSubmit' | 'PostToolUse'): string {
+  if (notice === undefined) return output ?? ''
+  if (harness === 'opencode' || harness === 'openclaw') return [output, notice].filter(Boolean).join('\n\n')
+  if (output === undefined) {
+    return event === 'UserPromptSubmit' ? userPromptContextOutput(harness, notice) ?? ''
+      : JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: notice } })
+  }
+  try {
+    const value = JSON.parse(output)
+    if (harness === 'cursor') value.additional_context = [value.additional_context, notice].filter(Boolean).join('\n\n')
+    else {
+      value.hookSpecificOutput ??= { hookEventName: event }
+      value.hookSpecificOutput.additionalContext = [value.hookSpecificOutput.additionalContext, notice].filter(Boolean).join('\n\n')
+    }
+    return JSON.stringify(value)
+  } catch { return output }
+}
 
 /** SessionEnd cleanup must precede every diagnostic that can wait on a file lock. */
 export function hookDefersDiagnosticsUntilAfterCleanup(
@@ -311,7 +332,16 @@ export async function hookRunCommand(
   if (event === 'post-tool-use') {
     start({ cwd })
     try {
-      if (harness === 'codex' && lifecycleEnabled()) await deliverCodexToolMessage(deps, envelope, logger)
+      if (harness === 'codex' && lifecycleEnabled()) {
+        const notice = integrationFaultNotice({ ...deps, cwd }, harness)
+        let wrote = false
+        const io = { ...deps.io, out: (line: string) => {
+          wrote = true
+          deps.io.out(appendIntegrationContext(line, notice, harness, 'PostToolUse'))
+        } }
+        await deliverCodexToolMessage({ ...deps, io }, envelope, logger)
+        if (!wrote && notice !== undefined) deps.io.out(appendIntegrationContext(undefined, notice, harness, 'PostToolUse'))
+      }
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
@@ -402,11 +432,14 @@ export async function hookRunCommand(
         })
       }
     }
-    const notice = event === 'session-start' &&
+    const updateNotice = event === 'session-start' &&
       ['claude-code', 'codex', 'opencode', 'openclaw'].includes(harness ?? '')
       ? await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
           ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
       : undefined
+    const faultNotice = event === 'session-start' && harness !== undefined && harness !== 'grok'
+      ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
+    const notice = [updateNotice, faultNotice].filter(part => part !== undefined).join('\n\n') || undefined
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
       try {
         const sessionKey = envelope.session_id
@@ -585,8 +618,9 @@ export async function hookRunCommand(
       decided: claimed,
     })
     if (claimed) {
-      const notice = await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
+      const updateNotice = await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
         ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
+      const notice = [updateNotice, integrationFaultNotice({ ...deps, cwd }, 'cursor')].filter(Boolean).join('\n\n') || undefined
       deps.io.out(cursorStopActivationOutput(cwd, deps.env, notice))
     }
     return EXIT.ok
@@ -735,7 +769,10 @@ export async function hookRunCommand(
 
     let outcome: HookOutcome
     if (event === 'user-prompt-submit') {
+      const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
+        ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
       outcome = await handleUserPromptSubmit(ctx, envelope)
+      if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
     } else {
       outcome = await handleStop(
         ctx,

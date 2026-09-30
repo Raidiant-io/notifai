@@ -93,6 +93,12 @@ describe('skillsAddArgv', () => {
 })
 
 describe('runSkillsCommand', () => {
+  it('bounds a stalled native installer and reports incomplete integration', async () => {
+    const result = await runSkillsCommand([], { cwd: os.tmpdir(), env: {}, timeoutMs: 100 }, () => ({
+      file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], options: { stdio: 'ignore' },
+    }))
+    expect(result).toMatchObject({ code: 1, error: expect.stringContaining('timed out') })
+  })
   it('keeps native installer stdout out of structured command output', () => {
     const moduleUrl = new URL('../dist/native-skills.js', import.meta.url).href
     const script = `import { runSkillsCommand } from ${JSON.stringify(moduleUrl)};

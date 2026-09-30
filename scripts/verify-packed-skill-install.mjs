@@ -18,7 +18,7 @@
  *   node scripts/verify-packed-skill-install.mjs --cli-tarball a.tgz --protocol-tarball b.tgz
  *   node scripts/verify-packed-skill-install.mjs --if-changed
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -115,6 +115,7 @@ async function verifyPackedSkillInstaller(prepared, scratch) {
   const release = await import(pathToFileURL(path.join(installedCli, 'dist', 'release.js')).href)
   const integrity = await import(pathToFileURL(path.join(installedCli, 'dist', 'skill-integrity.js')).href)
   const commandsSkill = await import(pathToFileURL(path.join(installedCli, 'dist', 'commands-skill.js')).href)
+  const adapter = await import(pathToFileURL(path.join(installedCli, 'dist', 'hook-adapter.js')).href)
 
   const sourceLabel = release.skillsSource()
   if (typeof sourceLabel !== 'string') throw new Error('packed CLI could not derive its skill release identity')
@@ -223,6 +224,74 @@ async function verifyPackedSkillInstaller(prepared, scratch) {
   const altered = await commandsSkill.skillReadiness(readinessDeps, 'project')
   if (altered.status !== 'gap' || altered.technical?.resolution !== 'installed-skill-content-mismatch') {
     throw new Error(`altered installed skill did not fail content readiness (${JSON.stringify(altered)})`)
+  }
+
+  // Exercise the packed production command tree and real native installer.
+  // Adapter tests must supply an explicit fixture home: mutable HOME alone
+  // cannot redirect the account's trusted shared adapter.
+  const migrationEnv = { ...skillEnv,
+    CODEX_HOME: path.join(skillHome, 'codex'),
+    PATH: [path.join(installDir, 'node_modules', '.bin'), skillEnv.PATH].join(path.delimiter),
+  }
+  for (const key of ['CODEX_THREAD_ID', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CURSOR_AGENT',
+    'GROK_SESSION_ID', 'HERMES_SESSION_ID', 'NOTIFAI_ACTIVE_HARNESS', 'NOTIFAI_ACTIVE_SESSION_ID']) delete migrationEnv[key]
+  const runner = path.join(scratch, 'packed-migration-runner.mjs')
+  writeFileSync(runner, `
+const base = ${JSON.stringify(pathToFileURL(path.join(installedCli, 'dist')).href + '/')};
+const { buildProgram } = await import(base + 'program.js');
+const { realIo } = await import(base + 'commands.js');
+const { nativeSkills } = await import(base + 'native-skills.js');
+const forbidden = () => { throw new Error('local migration accessed service or credentials'); };
+const deps = { env: process.env, cwd: process.cwd(), io: realIo(), nativeSkills,
+  hookAdapterHome: ${JSON.stringify(skillHome)},
+  hookInstallTarget: { execPath: process.execPath, scriptPath: ${JSON.stringify(path.join(installedCli, 'dist', 'main.js'))} },
+  fetchImpl: forbidden, clientFactory: forbidden,
+  store: { load: forbidden, save: forbidden, clear: forbidden, describe: forbidden } };
+await buildProgram(deps).parseAsync([process.execPath, 'notifai', ...process.argv.slice(2)]);
+`)
+  const execute = (args, phase) => {
+    const result = runExternal(process.execPath, [runner, ...args], {
+      cwd: skillProject, env: migrationEnv, timeoutMs: TIMEOUTS.npmExecSkills + 15_000, phase,
+    })
+    requireStatus(result)
+    return result
+  }
+  execute(['hooks', 'install', '--harness', 'codex'], 'packed-migration-hooks')
+  const hookFile = path.join(migrationEnv.CODEX_HOME, 'hooks.json')
+  const hooks = JSON.parse(readFileSync(hookFile, 'utf8'))
+  hooks.hooks.PostToolUse = [{ hooks: [{ type: 'command', command: 'foreign-tool-handler' }] }]
+  writeFileSync(hookFile, JSON.stringify(hooks))
+  const trustFile = path.join(migrationEnv.CODEX_HOME, 'config.toml')
+  const trust = '# User-owned native trust is unchanged\n'
+  writeFileSync(trustFile, trust)
+  const resume = JSON.parse(execute(['update', '--resume', '--json'], 'packed-update-resume').stdout)
+  if (resume.files_complete !== true || resume.migration_complete !== false ||
+      !resume.pending_actions.some(action => action.includes('native-approval-pending'))) {
+    throw new Error(`packed migration did not distinguish files from native approval (${JSON.stringify(resume)})`)
+  }
+  const refreshed = await commandsSkill.skillReadiness(readinessDeps, 'project')
+  const repaired = readFileSync(hookFile, 'utf8')
+  if (refreshed.status !== 'ready' || !repaired.includes('post-tool-use') ||
+      !repaired.includes('foreign-tool-handler') || readFileSync(trustFile, 'utf8') !== trust) {
+    throw new Error('packed migration did not preserve foreign hooks/trust while refreshing owned files')
+  }
+  const retried = JSON.parse(execute(['update', '--resume', '--json'], 'packed-update-resume-retry').stdout)
+  if (retried.files_complete !== true || retried.changed.length !== 0 ||
+      readFileSync(hookFile, 'utf8') !== repaired || readFileSync(trustFile, 'utf8') !== trust) {
+    throw new Error('packed migration retry changed already repaired files or User-owned trust')
+  }
+  const competitor = path.join(scratch, 'competing prefix')
+  cpSync(path.join(installDir, 'node_modules'), path.join(competitor, 'node_modules'), { recursive: true, verbatimSymlinks: true })
+  const adapterFile = adapter.hookAdapterPath(skillHome)
+  const adapterBefore = readFileSync(adapterFile, 'utf8')
+  const competingResult = runExternal(process.execPath, [runner, 'update', '--resume', '--json'], {
+    cwd: skillProject, env: { ...migrationEnv,
+      PATH: [path.join(competitor, 'node_modules', '.bin'), migrationEnv.PATH].join(path.delimiter) },
+    timeoutMs: TIMEOUTS.cliCommand, phase: 'packed-competing-installation',
+  })
+  if (competingResult.status !== 1 || JSON.parse(competingResult.stdout).files_complete !== false ||
+      readFileSync(adapterFile, 'utf8') !== adapterBefore || readFileSync(hookFile, 'utf8') !== repaired) {
+    throw new Error('packed migration did not refuse a competing effective artifact without shared-file changes')
   }
 
   console.log(

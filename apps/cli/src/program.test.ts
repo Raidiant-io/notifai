@@ -359,3 +359,13 @@ it('routes read-only update inspection separately from package installation', as
   expect(update).not.toHaveBeenCalled()
   expect(updateCheck).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ check: true, json: true, from: '11.0.6' }))
 })
+
+it('resumes integration without reinstalling or changing channel', async () => {
+  const update = vi.fn(() => 0)
+  const updateResume = vi.fn(async () => 0)
+  expect((await parse(['update', '--resume', '--json', '--from', '11.0.6'], { update, updateResume })).exitCode).toBe(0)
+  expect(update).not.toHaveBeenCalled()
+  expect(updateResume).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ resume: true, from: '11.0.6' }))
+  expect((await parse(['update', '--resume', '--channel', 'stable'], { update, updateResume })).exitCode).toBe(2)
+  expect(updateResume).toHaveBeenCalledTimes(1)
+})
