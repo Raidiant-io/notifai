@@ -2,10 +2,11 @@ import type { AttendanceMessage, ClaimDeliveryAttemptRequestT } from '@raidiant/
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
-import { hookAdapterPath } from './hook-adapter.js'
+import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { codexToolHookReady, stageCodexToolMessages, readCodexToolMessages } from './codex-tool-messages.js'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
@@ -16,6 +17,7 @@ import { enableProject, projectBinding } from './project-enablement.js'
 import { attendantClaimPath, recordTurnEnd, recordTurnStart, writeAttendantStatus } from './session-attendant-state.js'
 import { acquireDeliveryLock, readDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
+import { localIntegrationAssessment } from './integration-health.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -25,10 +27,9 @@ const note = (id: string): AttendanceMessage => ({ message_id: id, kind: 'note',
 function installTrustedHooks(env: NodeJS.ProcessEnv): void {
   const home = env['CODEX_HOME']!
   mkdirSync(home, { recursive: true })
-  writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(), harness: 'codex' }) }))
+  writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(env['HOME']), harness: 'codex' }) }))
   const installed = findInstallations(env).find((entry) => entry.harness === 'codex')!
   writeFileSync(path.join(home, 'config.toml'), installed.handlers
-    .filter((handler) => ['PostToolUse', 'UserPromptSubmit'].includes(handler.event))
     .map((handler) => `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
 }
 
@@ -36,7 +37,8 @@ function setup() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-tool-notes-'))
   roots.push(root)
   const owner = currentProcessIdentity()!
-  const env = { XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'), CODEX_HOME: path.join(root, 'codex'), NOTIFAI_HOOK_SOURCE_PID: String(owner.pid) }
+  const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'), CODEX_HOME: path.join(root, 'codex'), NOTIFAI_HOOK_SOURCE_PID: String(owner.pid) }
+  installHookAdapter({ execPath: process.execPath, scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)) }, root)
   installTrustedHooks(env)
   enableProject(projectBinding(root, env, undefined))
   const incarnation = beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: owner })
@@ -64,7 +66,7 @@ function setup() {
     },
   } as unknown as ApiClient
   const deps: CommandDeps = {
-    cwd: root, env,
+    cwd: root, env, hookAdapterHome: root,
     io: { out: (s) => { output.push(s) }, err: () => {}, confirm: async () => false, openUrl: () => {} },
     store: { load: () => ({ machineId: 'mac_test', secret: 'test-secret', baseUrl: 'https://test.notifai.invalid', machineName: 'test' }), save: () => {}, clear: () => {} } as unknown as CommandDeps['store'],
     clientFactory: () => client,
@@ -120,10 +122,24 @@ describe('Codex tool-boundary Session Messages', () => {
 
   it('does no authenticated work when no message is staged', async () => {
     const h = setup()
+    expect(localIntegrationAssessment(h.deps, 'codex').faults).toEqual([])
     h.deps.store.load = () => { throw new Error('must not read credentials') }
     await h.hook()
     expect(h.claims).toEqual([])
     expect(h.output).toEqual([])
+  })
+
+  it('reports unresolved native approval once without authenticated work or a staged message', async () => {
+    const h = setup()
+    h.deps.store.load = () => { throw new Error('must not read credentials') }
+    writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '')
+    await h.hook()
+    await h.hook()
+    expect(h.claims).toEqual([])
+    expect(h.output).toHaveLength(1)
+    expect(JSON.parse(h.output[0]!)).toMatchObject({ hookSpecificOutput: {
+      hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('native-approval-pending'),
+    } })
   })
 
   it('rejects stale turns, foreign owners, generations, and ended sessions', async () => {

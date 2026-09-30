@@ -14,6 +14,7 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import * as sessionStateModule from './hook-session-state.js'
 import * as fileLockModule from './file-lock.js'
@@ -93,7 +94,8 @@ import { type PendingQuestion, type SessionState } from './hook-types.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
 import { activeOpenclawGeneration, openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-access.js'
 import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
-import { QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
+import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations, QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
+import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { GUIDANCE_CONTEXT_MAX_BYTES } from './guidance-render.js'
 import {
@@ -350,10 +352,28 @@ const NOW = 1_800_000_000_000
 
 function harness(replies: ReplyView[] = []): Harness {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-'))
+  const home = path.join(root, 'home')
   const env: NodeJS.ProcessEnv = {
+    HOME: home,
     XDG_CONFIG_HOME: path.join(root, 'config'),
     XDG_STATE_HOME: path.join(root, 'state'),
   }
+  // Lifecycle assertions start from a healthy, per-test installation. Never
+  // discover another fixture's hooks or inspect the account's shared adapter.
+  installHookAdapter({ execPath: process.execPath, scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)) }, home)
+  for (const [directory, file, kind] of [
+    ['.claude', 'settings.json', 'claude-code'],
+    ['.codex', 'hooks.json', 'codex'],
+  ] as const) {
+    mkdirSync(path.join(home, directory), { recursive: true })
+    writeFileSync(path.join(home, directory, file), JSON.stringify({
+      hooks: buildHookConfig({ adapterPath: hookAdapterPath(home), harness: kind }),
+    }))
+  }
+  const codex = findInstallations(env, home).find(entry => entry.harness === 'codex')!
+  writeFileSync(path.join(home, '.codex', 'config.toml'), codex.handlers.map(handler =>
+    `[hooks.state.${JSON.stringify(codexTrustKey(codex, handler))}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
+  ).join('\n'))
   const io = new CapturedIo()
   const recorder: Recorder = { submitted: [], receipts: [], closed: [], aliases: new Map() }
   // Virtual clock: sleeps advance it instead of costing wall time. A frozen
@@ -384,6 +404,7 @@ function harness(replies: ReplyView[] = []): Harness {
       },
       env,
       cwd: root,
+      hookAdapterHome: home,
       clientFactory: () => fakeClient(recorder, replies),
       fetchImpl: async () => { throw new Error('registry unused in lifecycle fixtures') },
       now: () => clock,
@@ -956,6 +977,10 @@ function runSessionEndLogLockHolder(
       env: {
         ...process.env,
         ...env,
+        // This nested Vitest process uses the same disposable account as its
+        // fixture, rather than the outer runner's account marker and Codex home.
+        NOTIFAI_TEST_HOME: env['HOME'],
+        CODEX_HOME: path.join(env['HOME']!, '.codex'),
         NOTIFAI_SESSION_END_LOG_LOCK_WORKER_MODE: 'hold',
         NOTIFAI_SESSION_END_LOG_LOCK_PATH: lockPath,
         NOTIFAI_SESSION_END_LOG_LOCK_READY: readyPath,
