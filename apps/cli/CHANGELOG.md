@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.0](https://github.com/Raidiant-io/notifai/compare/v11.5.0...v11.6.0) (2026-09-30)
+
+
+### Features
+
+* **cli:** Session Notes for Hermes classic CLI and OpenClaw ([#213](https://github.com/Raidiant-io/notifai/issues/213)) ([bc0cee4](https://github.com/Raidiant-io/notifai/commit/bc0cee423335947f8d9e80bd1967d468637ee397))
+
+
+### Bug Fixes
+
+* **cli:** migrate integration on updates and detect local drift ([#219](https://github.com/Raidiant-io/notifai/issues/219)) ([fea78df](https://github.com/Raidiant-io/notifai/commit/fea78df36ba3d0378e9df15dd8e35f83c82ac3ce))
+* **cli:** preserve Codex approval identities during hook repair ([#221](https://github.com/Raidiant-io/notifai/issues/221)) ([e085037](https://github.com/Raidiant-io/notifai/commit/e085037365965cae49c3fb5de0ba4c1d58876aa7))
+* **cli:** prompt session renames when the job changes ([#217](https://github.com/Raidiant-io/notifai/issues/217)) ([d7aee4e](https://github.com/Raidiant-io/notifai/commit/d7aee4e565d34f28666ce7fd36787f72f1af00e4))
+* **skill:** fit guidance budget and align naming checks ([#218](https://github.com/Raidiant-io/notifai/issues/218)) ([3d5b796](https://github.com/Raidiant-io/notifai/commit/3d5b79619e721e14f389005e3dff95ef5d2e95a8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.1.2 to 8.1.3
+
 ## [11.5.0](https://github.com/Raidiant-io/notifai/compare/v11.4.1...v11.5.0) (2026-09-29)
 
 
