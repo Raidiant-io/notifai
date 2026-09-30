@@ -287,6 +287,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         nodePath,
       }),
       scriptPath,
+      { preserveIdentities: harness === 'codex' },
     )
     // JSON settings can carry leftover native plugin enablement in the same
     // document as hooks. Strip it in this write so a crash cannot leave both
