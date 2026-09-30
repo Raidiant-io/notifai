@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.0-beta.4](https://github.com/Raidiant-io/notifai/compare/v11.6.0-beta.3...v11.6.0-beta.4) (2026-09-30)
+
+### Bug Fixes
+
+* **cli:** preserve Codex approval identities during missing-hook repair, including empty groups and foreign handlers ([#221](https://github.com/Raidiant-io/notifai/pull/221)) ([e085037](https://github.com/Raidiant-io/notifai/commit/e085037365965cae49c3fb5de0ba4c1d58876aa7)).
+* **cli:** migrate owned integration during updates and detect local drift without repeated notices ([#219](https://github.com/Raidiant-io/notifai/pull/219)) ([fea78df](https://github.com/Raidiant-io/notifai/commit/fea78df36ba3d0378e9df15dd8e35f83c82ac3ce)).
+* **cli:** isolate healthy lifecycle fixtures and verify one-time native-approval diagnostics ([#220](https://github.com/Raidiant-io/notifai/pull/220)) ([51ef7c9](https://github.com/Raidiant-io/notifai/commit/51ef7c927e8a100c0280db51c8ad2330d9371e00)).
+
+This beta replaces beta.3's missing-hook repair, which could reorder otherwise healthy Codex handlers and invalidate their approval. Existing hooks now refresh in place; ambiguous duplicate or retired Codex slots require an explicit migration. The protocol remains 8.1.2. Pending work, native trust and existing matcher restrictions remain User-owned. This beta also includes beta.2's harness and session-naming improvements.
+
 ## [11.5.0](https://github.com/Raidiant-io/notifai/compare/v11.4.1...v11.5.0) (2026-09-29)
 
 
