@@ -8,9 +8,10 @@ import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './ses
  * never delays: the harness does not wait for an async handler), and on
  * UserPromptSubmit and Stop to re-arm a session whose attendant died.
  */
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
 import { loadConfig } from './config.js'
@@ -79,7 +80,15 @@ import { readNativeTurnSnapshot } from './codex-native-turn.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
-export const attendantRuntimeRevision = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex')
+export const attendantRuntimeRevision = (() => {
+  const file = fileURLToPath(import.meta.url), extension = path.extname(file), directory = path.dirname(file)
+  const hash = createHash('sha256')
+  for (const name of readdirSync(directory).filter(name => name.endsWith(extension) &&
+    !name.endsWith('.d.ts') && !name.endsWith('.test.ts')).sort()) {
+    hash.update(name).update('\0').update(readFileSync(path.join(directory, name)))
+  }
+  return hash.digest('hex')
+})()
 
 /** Test seams; production reads the real harness, clocks, and signals. */
 export interface AttendantSeams {

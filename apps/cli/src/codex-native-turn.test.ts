@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { nativeTranscriptOwned, readNativeTurnSnapshot } from './codex-native-turn.js'
 import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js'
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
@@ -58,22 +58,35 @@ it('does not reactivate ended work or create a replacement incarnation during re
   expect(reconcileNativeTurn('root', f.env, 'other-incarnation', 'one', f.snapshot(), () => true)).toBe(false)
 })
 
+it('confirms an already-ended native turn as Idle during update recovery', () => {
+  const f = fixture()
+  recordTurnStart('root', f.env, f.key, 'previous'); recordTurnEnd('root', f.env, 'previous')
+  f.event('task_started', 'latest'); f.event('task_complete', 'latest')
+  recordTurnEnd('root', f.env, 'latest')
+  expect(reconcileNativeTurn('root', f.env, f.key, 'latest', f.snapshot(), () => true)).toBe(true)
+  expect(readTurnActivity('root', f.env, f.key)).toBe('idle')
+})
+
 it('rejects wrong roots, child transcripts, symlinks and partial native records', () => {
   const f = fixture(); f.event('task_started', 'one')
   expect(readNativeTurnSnapshot(f.file, 'another-root', f.env)).toBeNull()
+  expect(nativeTranscriptOwned(f.file, 'another-root', f.env)).toBe(false)
   const link = path.join(path.dirname(f.file), 'linked.jsonl'); symlinkSync(f.file, link)
   expect(readNativeTurnSnapshot(link, 'root', f.env)).toBeNull()
+  expect(nativeTranscriptOwned(link, 'root', f.env)).toBe(false)
   appendFileSync(f.file, '{"type":"event_msg"')
   expect(f.snapshot()).toBeNull()
   writeFileSync(f.file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'root', source: { subagent: {} } } })}\n`)
   f.event('task_started', 'one')
   expect(f.snapshot()).toBeNull()
+  expect(nativeTranscriptOwned(f.file, 'root', f.env)).toBe(false)
 })
 
 it('never guesses a current start when a large conversation record exceeds the bounded tail', () => {
   const f = fixture(); f.event('task_started', 'one')
   appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload: { text: 'x'.repeat(9 * 1024 * 1024) } })}\n`)
   expect(f.snapshot()).toBeNull()
+  expect(nativeTranscriptOwned(f.file, 'root', f.env)).toBe(true)
 })
 
 it('fences the exact old writer without releasing its live process claim to a concurrent successor', () => {
