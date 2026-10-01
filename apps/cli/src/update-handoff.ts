@@ -55,13 +55,15 @@ export function updateSessionEffects(harness: SourceContextHarness | null, state
     return informational
   })
   const gaps = diagnostics.filter(state => state.status === 'gap' || state.status === 'unknown' ||
-    (['hooks-active-session', 'hooks-fired'].includes(state.id) && state.status !== 'ready'))
+    (['hooks-active-session', 'hooks-fired', 'hooks-native-activity'].includes(state.id) && state.status !== 'ready'))
+  const currentNativeProofMissing = harness === 'codex' &&
+    !diagnostics.some(state => state.id === 'hooks-native-activity' && state.status === 'ready')
   const inspected = harness === 'hermes' || diagnostics.some(state => state.id === 'hooks')
   return {
     harness,
-    assessment: restartReason !== undefined ? 'fresh_session' : harness === null ? 'unknown' : gaps.length > 0 ? 'needs_attention' : !inspected ? 'unknown' : 'continue',
+    assessment: restartReason !== undefined ? 'fresh_session' : harness === null ? 'unknown' : gaps.length > 0 ? 'needs_attention' : !inspected || currentNativeProofMissing ? 'unknown' : 'continue',
     // A diagnosis requiring repair is not itself proof that a restart is needed.
-    restart_required: restartReason !== undefined ? true : harness === 'hermes' || (harness !== null && inspected && gaps.length === 0) ? false : null,
+    restart_required: restartReason !== undefined ? true : harness === 'hermes' || (harness !== null && inspected && gaps.length === 0 && !currentNativeProofMissing) ? false : null,
     restart_reason: restartReason ?? null,
     policy: harness === null ? 'No unambiguous active harness was identified. Do not infer a restart requirement.' : HARNESS_UPDATE_EFFECTS[harness],
     diagnostics,

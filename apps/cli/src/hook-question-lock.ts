@@ -15,6 +15,7 @@ import { pendingList, readSessionState } from './hook-session-state.js'
 import type { PendingQuestion } from './hook-types.js'
 import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
 import { LEGACY_QUESTION_CLAIM_TTL_SECONDS } from './question-timing.js'
+import { atomicWriteFileSync } from './atomic-file.js'
 /**
  * One question, one push, even with two Stop hooks racing.
  *
@@ -155,6 +156,24 @@ export function releaseClaimFile(file: string, token: string): void {
   if (!acquireClaimGuard(guard)) return
   try {
     if (readClaimFile(file)?.['token'] === token) rmSync(file, { force: true })
+  } finally {
+    rmSync(guard, { force: true })
+  }
+}
+
+/** Fence the exact resident writer; its ordinary claim-lost path cancels writes.
+ * Keep its process identity until it exits, so a successor cannot overlap it.
+ */
+export function requestClaimHandoff(file: string, expectedToken: string, incarnation: string): boolean {
+  const guard = `${file}.guard`
+  if (!acquireClaimGuard(guard)) return false
+  try {
+    const holder = readClaimFile(file)
+    if (holder?.['token'] !== expectedToken || holder['incarnation'] !== incarnation ||
+        typeof holder['pid'] !== 'number' || typeof holder['start'] !== 'string' ||
+        processIdentityLiveness({ pid: holder['pid'], start: holder['start'] }) !== 'alive') return false
+    atomicWriteFileSync(file, `${JSON.stringify({ ...holder, token: randomBytes(12).toString('base64url'), handoff: true })}\n`)
+    return true
   } finally {
     rmSync(guard, { force: true })
   }

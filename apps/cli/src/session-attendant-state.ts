@@ -4,11 +4,12 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
-import { readSessionIncarnation } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import type { AttendantPhase, AttendantStatus } from './session-attendant.js'
 import type { SessionActivity } from '@raidiant/notifai-protocol'
 import type { DeliveryLease } from './session-delivery.js'
+import { readNativeTurnSnapshot, type NativeTurnSnapshot } from './codex-native-turn.js'
 
 /** One live attendant per Agent Session: PID + process start time + incarnation. */
 export function attendantClaimPath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -178,6 +179,7 @@ interface TurnRecord {
   /** Turn ids already started in this incarnation, oldest first. */
   started: string[]
   ended: string[]
+  native?: { file: string; identity: string; offset: number }
 }
 
 /** Turn ids kept to recognise a late hook; a late hook trails its turn by seconds. */
@@ -188,11 +190,16 @@ function readTurns(file: string): TurnRecord {
     Array.isArray(value) ? value.filter((turn): turn is string => typeof turn === 'string') : []
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    const native = parsed['native'] as Partial<NonNullable<TurnRecord['native']>> | null | undefined
     return {
       key: typeof parsed['key'] === 'string' ? parsed['key'] : null,
       current: typeof parsed['current'] === 'string' ? parsed['current'] : null,
       started: ids(parsed['started']),
       ended: ids(parsed['ended']),
+      ...(native !== null && typeof native === 'object' &&
+        typeof native.file === 'string' && typeof native.identity === 'string' &&
+        typeof native.offset === 'number' && Number.isSafeInteger(native.offset) && native.offset >= 0
+        ? { native: { file: native.file, identity: native.identity, offset: native.offset } } : {}),
     }
   } catch {
     return { key: null, current: null, started: [], ended: [] }
@@ -223,6 +230,34 @@ export function recordTurnStart(sessionId: string, env: NodeJS.ProcessEnv, key: 
   })
 }
 
+/** An async callback may advance only with native order and the same live owner. */
+export function reconcileNativeTurn(
+  sessionId: string, env: NodeJS.ProcessEnv, key: string, turnId: string,
+  snapshot: NativeTurnSnapshot, stillOwned: () => boolean, starting = false,
+): boolean {
+  let recorded = false
+  updateTurns(sessionId, env, record => {
+    if (!stillOwned() || snapshot.latest.id !== turnId) return record
+    // A re-arm cannot establish a new incarnation from an older transcript.
+    if (record.key !== key && !starting) return record
+    const same: TurnRecord = record.key === key ? record : { key, current: null, started: [], ended: record.ended }
+    if (same.native !== undefined && (same.native.identity !== snapshot.identity ||
+        same.native.file !== snapshot.file || same.native.offset > snapshot.latest.offset)) return record
+    if (same.current !== null && same.current !== turnId && !same.ended.includes(same.current)) {
+      const currentOffset = snapshot.positions.get(same.current)
+      if (currentOffset === undefined || currentOffset > snapshot.latest.offset) return record
+    }
+    if (same.ended.includes(turnId)) return record
+    recorded = true
+    return {
+      ...same, current: turnId, started: keep(same.started, turnId),
+      ended: snapshot.latest.ended ? keep(same.ended, turnId) : same.ended,
+      native: { file: snapshot.file, identity: snapshot.identity, offset: snapshot.latest.offset },
+    }
+  })
+  return recorded
+}
+
 /** A turn ended (or was interrupted), whenever its hook got to run. */
 export function recordTurnEnd(sessionId: string, env: NodeJS.ProcessEnv, turnId: string): void {
   updateTurns(sessionId, env, (record) => ({ ...record, ended: keep(record.ended, turnId) }))
@@ -239,4 +274,15 @@ export function currentCodexTurn(sessionId: string, env: NodeJS.ProcessEnv, key:
   const record = readTurns(turnActivityPath(sessionId, env))
   return record.key === key && record.current !== null && !record.ended.includes(record.current)
     ? record.current : null
+}
+
+/** Historical hook success is not proof that the current native turn was seen. */
+export function codexNativeActivityObserved(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  const proof = readSessionState(sessionId, env).codex_native_turn
+  const owner = readSessionIncarnation(sessionId, env)
+  if (proof === undefined || owner?.key !== proof.key) return false
+  const native = readNativeTurnSnapshot(proof.transcript_path, sessionId, env)
+  const record = readTurns(turnActivityPath(sessionId, env))
+  return native !== null && record.key === owner.key && record.current === native.latest.id &&
+    proof.turn_id === native.latest.id && (native.latest.ended === record.ended.includes(native.latest.id))
 }
