@@ -12,6 +12,8 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ### Bug Fixes
 
+* Start question submission immediately so agents can continue independent work; preserve answer observation across concurrent questions and uncertain network responses.
+* Preserve accepted note order across release and retry, and wake the resident Claude delivery process promptly when answers become available.
 * Deliver pending notes and answers together at supported Codex and Claude input boundaries, and queue content-free wake prompts to avoid stale answer copies.
 * Observe automatic Codex turns at trusted tool callbacks so busy sessions can receive pending input without waiting for another human prompt.
 * Record delivery stages, batch sizes and oldest pending note age for clearer local diagnostics.
