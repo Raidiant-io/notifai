@@ -130,10 +130,10 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   The synchronous `PostToolUse` handler delivers pending answers, Session Notes and Answer Edits
   after tools during an active turn. Install and approve that handler, then
   start a fresh Agent Session to use the new attendant and hook definitions.
-  Busy delivery starts after that exact session first runs the trusted hook;
-  until then, and while idle, the native queue carries a wake-up to read current
-  pending input. It never carries note or answer text. A running tool must
-  return before its hook runs.
+  Pending input also queues one coalesced wake-up, whether the session is
+  working or idle. It carries no note or answer text. A trusted hook can drain
+  the input first; a late wake-up may then find nothing pending. A running tool
+  must return before its hook runs.
   Automatic goal continuations are observed at their first trusted tool
   callback even when the harness emits no prompt hook. Notes still need an
   available callback; a long tool or uninterrupted reasoning cannot be cut
@@ -142,7 +142,8 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same
   reporting-only worker contract and explicit textual delegation rule as
-  Claude. A fresh install writes the Machine layer's `~/.codex/hooks.json`, or
+  Claude. Child callbacks cannot consume the parent's input or change its
+  activity. A fresh install writes the Machine layer's `~/.codex/hooks.json`, or
   joins inline `[hooks]` when the User already keeps their own hooks there.
   Notifai-owned inline handlers with no foreign inline neighbours are moved to
   `hooks.json`; Codex will ask for `/hooks` approval because it keys trust by

@@ -321,11 +321,11 @@ unacknowledged. The User can send a new message if needed.
 
 The attendant also hands a note, or a change to an answer the agent already
 received, from your devices into that running session. Claude Code uses its
-inbox socket. Once its exact session has run a trusted synchronous `PostToolUse`
-hook, Codex uses that hook during active turns and its native queue when idle.
-Before that observation, or without that trusted handler,
-Codex retains queue delivery; if no tool boundary occurs, delivery waits for
-turn end. Each hand-off is claimed first, so an edited answer can only follow
+inbox socket. Codex uses its trusted synchronous `PostToolUse` hook during
+active turns and also queues a content-free wake while input is pending,
+whether working or idle. If no tool boundary occurs, the queued wake preserves
+delivery at turn end. Child callbacks cannot consume the parent session's input
+or change its activity. Each hand-off is claimed first, so an edited answer can only follow
 the answer it replaces, and nothing is written twice. The agent acknowledges
 each one with `notifai acknowledge sm_…`, exactly as it acknowledges an
 answered request. A Claude Code session without an inbox socket (for example
