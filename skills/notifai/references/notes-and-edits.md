@@ -11,7 +11,7 @@ Each arrives as context beginning `Notifai —` that names a Session Message
 (`sm_…`). The User's words are one quoted value; the command stands outside it.
 It can arrive after a tool call within the current turn or as a new turn.
 Codex and Claude Code may instead receive a wake-up naming
-`notifai receive --session <id>`. Run that command when instructed. It reads
+`notifai receive`. Run that command when instructed. It reads
 the current pending batch, which may contain notes and question answers
 together. A late wake-up can find nothing pending; it carries no User words
 and creates no acknowledgement obligation of its own.

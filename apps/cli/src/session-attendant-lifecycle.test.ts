@@ -523,7 +523,7 @@ describe('notifai hook attend', () => {
     expect(posted).toHaveLength(1)
     const line = JSON.parse(posted[0]!) as { type: string; message: { content: string } }
     expect(line.type).toBe('user')
-    expect(line.message.content).toBe(sessionInputWake('sess-a'))
+    expect(line.message.content).toBe(sessionInputWake())
     expect(line.message.content).not.toContain('Use the staging database')
     expect(reports).toEqual([])
     expect(readSessionState('sess-a', env).message_acknowledgement_due).toBeUndefined()
@@ -792,7 +792,7 @@ describe('notifai hook attend for Codex', () => {
     await until(() => queued.length === 1, 'the note wake')
     expect(claims).toEqual([])
     expect(queued).toHaveLength(1)
-    expect(queued[0]).toEqual({ threadId: THREAD, cwd: root, context: sessionInputWake(THREAD) })
+    expect(queued[0]).toEqual({ threadId: THREAD, cwd: root, context: sessionInputWake() })
     expect(reports).toEqual([])
     expect(readDeliveryJournal(THREAD, env)).toEqual([])
 
@@ -854,7 +854,7 @@ describe('notifai hook attend for Codex', () => {
       offered = true
       if (mode === 'missing-hook' || mode === 'first-hook') {
         await until(() => queued.length === 1, 'wake without a proven tool hook')
-        expect(queued).toEqual([sessionInputWake(THREAD)])
+        expect(queued).toEqual([sessionInputWake()])
         expect(claims).toBe(0)
         if (mode === 'first-hook') {
           await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')

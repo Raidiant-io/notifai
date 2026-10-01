@@ -534,8 +534,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   program
     .command('receive')
     .description('Read pending user input for the current Agent Session')
-    .requiredOption('--session <id>', 'exact Agent Session named by the wake-up')
-    .action(async (opts: { session: string }) => { exit(await runners.receive(deps, opts)) })
+    .action(async () => { exit(await runners.receive(deps)) })
 
   program
     .command('acknowledge <request_or_message_id>')

@@ -791,7 +791,7 @@ export async function hookRunCommand(
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
         ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
-      outcome = envelope.session_id !== undefined && envelope.prompt === sessionInputWake(envelope.session_id)
+      outcome = envelope.session_id !== undefined && envelope.prompt === sessionInputWake()
         ? { notes: [], log: { stage: 'input-wake-observed' } }
         : await handleUserPromptSubmit(ctx, envelope)
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')

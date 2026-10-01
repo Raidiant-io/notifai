@@ -18,8 +18,8 @@ import { currentProcessIdentity, processIdentityLiveness } from './process-ident
 import type { Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type SequencerDeps } from './session-delivery.js'
 
-export function sessionInputWake(sessionId: string): string {
-  return `Notifai — user input may be waiting for this session. Run \`notifai receive --session ${sanitizeSessionId(sessionId)}\` before continuing. If no input remains, continue your work. This wake-up contains no note, answer, or approval.`
+export function sessionInputWake(): string {
+  return `Notifai — user input may be waiting for this session. Run \`notifai receive\` before continuing. If no input remains, continue your work. This wake-up contains no note, answer, or approval.`
 }
 
 /** Atomically coalesce native wakes until one actually reaches its consumer. */
@@ -43,7 +43,7 @@ export async function wakeSessionInputs(
   }
   let sent = false
   try {
-    sent = await send(sessionInputWake(sessionId))
+    sent = await send(sessionInputWake())
     log?.info('delivery.handoff', { route: 'input-wake', stage: sent ? 'queued' : 'deferred', session: sessionId })
     if (sent) updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
       ? { ...state, input_wake: { ...state.input_wake, queued: true } } : state)
@@ -58,7 +58,7 @@ export async function wakeSessionInputs(
 }
 
 export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined): void {
-  if (prompt !== sessionInputWake(sessionId)) return
+  if (prompt !== sessionInputWake()) return
   updateSessionState(sessionId, env, (state) => {
     const next = { ...state }
     delete next.input_wake
