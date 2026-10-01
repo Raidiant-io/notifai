@@ -54,7 +54,7 @@ export async function handOffSessionMessages(
 ): Promise<MessageHandOffResult> {
   const { sequencer } = deps
   const log = sequencer.log
-  // The service lists messages in acceptance (revision) order, which is the
+  // The service lists messages in immutable acceptance order, which is the
   // User's order. Timestamps can tie and identifiers are random, so neither
   // may reorder them: a later edit must never land before an earlier one.
   for (const message of messages) {

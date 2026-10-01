@@ -1,3 +1,4 @@
+import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -66,7 +67,7 @@ import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThrea
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
-import { codexToolHookReady, stageCodexToolMessages } from './codex-tool-messages.js'
+import { codexToolHookReady } from './codex-tool-messages.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 
@@ -374,7 +375,7 @@ function sessionMessageWriter(input: {
     writer,
     log: logger,
   })
-  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, sequencerFor })
+  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger })
   if (input.harness === 'openclaw') {
     if (!openclawMessageBridgeAvailable(deps.env)) return null
     const generation = readOpenclawGeneration(sessionId, deps.env)
@@ -401,39 +402,29 @@ function sessionMessageWriter(input: {
     logger.info('attendant.state', { messages: 'unavailable', reason: inbox.reason })
     return null
   }
-  return (client, batch, attendant) =>
-    handOffSessionMessages(batch, attendant, {
-      sequencer: sequencerFor(client),
-      write: (text, begin, guard) =>
-        deliverIntoClaudeSession({
-          sessionId,
-          sourcePid: harnessPid,
-          // Read at each write: the probe keeps proving this harness hosts the
-          // session, and Claude Code rewrites its descriptor as it runs.
-          sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
-          adapters,
-          text,
-          begin,
-          guard,
-          // Resident: the attendant outlives the ancestry check without waiting.
-          holdAfterSend: false,
-          writer: 'Session Attendant',
-        }),
-    })
+  return async (_client, batch, attendant) => {
+    const generation = attendant.generation()
+    if (generation === null || !attendant.mayWrite()) return 'retry-soon'
+    stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
+    if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
+    await wakeSessionInputs(sessionId, deps.env, async (text) => {
+      const result = await deliverIntoClaudeSession({
+        sessionId, sourcePid: harnessPid,
+        sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
+        adapters, text, begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
+      })
+      return result.status === 'written'
+    }, logger)
+    return 'done'
+  }
 }
 
-/**
- * Busy Codex turns leave messages unclaimed for PostToolUse. Once idle,
- * `codex queue` wakes the thread through its durable inbox. Both paths claim
- * under the same delivery sequencer before writing; neither retries a write
- * that the other may have made.
- */
+/** Stage pending input for foreground consumption; idle sessions get one wake. */
 function codexMessageWriter(input: {
   deps: CommandDeps
   sessionId: string
   cwd: string
   logger: Logger
-  sequencerFor(client: ApiClient): SequencerDeps
 }): SessionMessageWriter | null {
   const { deps, sessionId, cwd, logger } = input
   const queue = inspectCodexQueue(sessionId, deps.env)
@@ -447,38 +438,22 @@ function codexMessageWriter(input: {
     logger.info('attendant.state', { messages: 'unavailable', reason: 'codex-executable-not-found' })
     return null
   }
-  return async (client, batch, attendant) => {
+  return async (_client, batch, attendant) => {
     const incarnation = readSessionIncarnation(sessionId, deps.env)
     const generation = attendant.generation()
     if (incarnation === null || generation === null || !attendant.mayWrite()) return 'retry-soon'
     const toolReady = (deps.attendant?.codexToolHookReady ?? (() => codexToolHookReady(deps, sessionId)))()
-    // Stage before choosing the route. A hook and an idle writer may race;
-    // the shared delivery claim is their sole irreversible ownership point.
-    stageCodexToolMessages(sessionId, deps.env, {
-      incarnation: attendant.incarnation(), generation,
-    }, toolReady ? batch : [])
-    const idle = (): boolean => readTurnActivity(sessionId, deps.env, incarnation.key) === 'idle'
-    if (toolReady && !idle()) return 'retry-soon'
-    return handOffSessionMessages(batch, {
-      incarnation: () => attendant.incarnation(),
-      generation: () => attendant.generation(),
-      // A new prompt during the claim returns the message unwritten. The
-      // tool hook can claim it at its next boundary instead of losing to queue.
-      mayWrite: () => attendant.mayWrite() && (!toolReady || idle()),
-    }, {
-      sequencer: input.sequencerFor(client),
-      write: (text, begin, guard, writerGroup) =>
-        deliverIntoCodexThread({
-          threadId: queue.threadId,
-          cwd,
-          env: deps.env,
-          adapters,
-          text,
-          begin: () => begin('subprocess'),
-          guard,
-          onSpawn: writerGroup,
-        }),
-    })
+    stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
+    if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
+    if (toolReady && readTurnActivity(sessionId, deps.env, incarnation.key) !== 'idle') return 'retry-soon'
+    await wakeSessionInputs(sessionId, deps.env, async (text) => {
+      const result = await deliverIntoCodexThread({
+        threadId: queue.threadId, cwd, env: deps.env, adapters, text,
+        begin: () => attendant.mayWrite(),
+      })
+      return result.status === 'written'
+    }, logger)
+    return 'done'
   }
 }
 

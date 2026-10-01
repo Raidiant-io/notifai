@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { Command } from 'commander'
 import {
   acknowledgeCommand,
+  receiveCommand,
   askCommand,
   accessStatusCommand,
   agentSessionRenameCommand,
@@ -103,6 +104,7 @@ const defaultRunners = {
   send: sendCommand,
   replies: repliesCommand,
   acknowledge: acknowledgeCommand,
+  receive: receiveCommand,
   status: statusCommand,
   ask: askCommand,
   close: closeCommand,
@@ -528,6 +530,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action(async (requestId: string | undefined, opts: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean }) => {
       exit(await runners.replies(deps, requestId, opts))
     })
+
+  program
+    .command('receive')
+    .description('Read pending user input for the current Agent Session')
+    .requiredOption('--session <id>', 'exact Agent Session named by the wake-up')
+    .action(async (opts: { session: string }) => { exit(await runners.receive(deps, opts)) })
 
   program
     .command('acknowledge <request_or_message_id>')

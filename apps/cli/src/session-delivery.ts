@@ -610,13 +610,17 @@ function refusalReason(details: unknown): ClaimRefusal {
 export async function beginHandOff(
   deps: SequencerDeps,
   request: {
-    lease: DeliveryLease
+    lease: DeliveryLease | null
     subjects: readonly HandOffSubject[]
     /** Answer Edits: attach the writer-gone proof for this subject's fenced answer. */
     earlierAnswerWriterGone?: (subject: HandOffSubject) => boolean
     /** Re-checked at `begin`, after the claim deadlines. */
     mayWrite?: () => boolean
     lockWaitMs?: number
+    /** Keep a batch's later inputs behind the first temporarily refused item. */
+    stopAtRefusal?: boolean
+    /** Leave time to present and settle the claims already collected. */
+    mayClaim?: () => boolean
   },
 ): Promise<HandOff | null> {
   const lock = await acquireDeliveryLock(deps, request.lockWaitMs)
@@ -626,10 +630,17 @@ export async function beginHandOff(
   try {
     await recoverDeliveryJournal(deps)
     for (const subject of request.subjects) {
+      if (request.lease === null) {
+        refused.push({ subject, reason: 'unavailable' })
+        break
+      }
+      if (request.mayClaim?.() === false) break
+      if (request.stopAtRefusal && request.mayWrite?.() === false) break
       const result = await claimOne(deps, request.lease, subject, request.earlierAnswerWriterGone?.(subject) ?? false)
       if ('reason' in result) {
         refused.push({ subject, reason: result.reason })
         deps.log?.info('delivery.claimed', { ...subjectFields(subject), claimed: false, reason: result.reason })
+        if (request.stopAtRefusal && result.reason !== 'not_claimable' && result.reason !== 'not_found') break
         continue
       }
       claimed.push(result.attempt)

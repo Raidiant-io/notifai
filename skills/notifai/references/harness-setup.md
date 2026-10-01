@@ -127,11 +127,12 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   skill and guidance as the new Notification Request owner.
 - **Codex:** run `notifai hooks install --harness codex`. If `hooks-trust`
   fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
-  The synchronous `PostToolUse` handler delivers Session Notes and Answer Edits
+  The synchronous `PostToolUse` handler delivers pending answers, Session Notes and Answer Edits
   after tools during an active turn. Install and approve that handler, then
   start a fresh Agent Session to use the new attendant and hook definitions.
   Busy delivery starts after that exact session first runs the trusted hook;
-  until then, and while idle, Notes use the native queue. A running tool must
+  until then, and while idle, the native queue carries a wake-up to read current
+  pending input. It never carries note or answer text. A running tool must
   return before its hook runs.
   Automatic goal continuations are observed at their first trusted tool
   callback even when the harness emits no prompt hook. Notes still need an
@@ -247,9 +248,11 @@ meter differs per harness:
 - **Claude Code on POSIX:** the Stop hook is asynchronous. It returns at once,
   so the turn is never held and the terminal stays the user's, and the same
   process keeps waiting out of band for the complete answer window. When the
-  answer arrives it is posted to that Agent Session's own inbox socket: an idle
-  Agent Session starts a new turn with it, and a busy one receives it when its
-  current turn ends. An Agent Session that is provably gone is cold-resumed
+  answer arrives it is stored with the session's pending inputs. Its own inbox
+  socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
+  one receives it when its current turn ends. The prompt hook or the named
+  `notifai receive` command drains the current notes and answers together.
+  An Agent Session that is provably gone is cold-resumed with the wake-up
   instead — never one whose liveness probe cannot rule it out.
 - **Claude Code on Windows:** the Stop hook stays held through the complete
   answer window. When the answer arrives it returns `decision: block`, starting
@@ -259,13 +262,12 @@ meter differs per harness:
 - **Codex:** the asynchronous Stop hook releases the turn and waits in the
   background for the complete answer window. When an answer arrives, Notifai
   invokes `codex queue` for the exact Agent Session in the same Codex home.
-  A live idle session starts a turn, a busy one consumes the answer after its
-  current turn, and a closed one keeps the queued answer until it is reopened.
-  Queue success proves storage, not consumption; UserPromptSubmit observes
-  consumption. Keep the original question and request identities if the route
-  fails so Notifai's journal can recover the answer. Never queue and resume the
-  same answer separately: a resume can consume the queue and the repeated
-  prompt, producing two copies.
+  Only a wake-up is queued. Pending notes and answers remain in Notifai until
+  a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
+  A late wake-up cannot repeat an acknowledged answer: it contains no answer
+  text. Queue success proves wake storage, not input presentation. Inputs are
+  claimed immediately before presentation; uncertain writes are never replayed.
+  Keep the original question and request identities when investigating a delay.
 - **Grok:** the Stop hook stays held through the complete answer window and
   returns the answer as a decision block to the same Agent Session. Its native
   `stopHookActive` flag on the successor Stop confirms consumption. There is no
@@ -356,8 +358,9 @@ Those are three different controls and only the last one decides whether an
 answer is still wanted. Question Routing owns that complete window. Claude Code
 waits out of band and wakes the Agent Session on POSIX; on Windows its Stop
 stays held and returns the answer as the same Agent Session's continuation,
-while Codex queues the answer into its Agent Session's durable inbox. The
-journal is crash recovery, not the ordinary delivery path.
+while Codex queues a wake-up into its Agent Session's durable inbox. Codex and
+POSIX Claude keep pending input locally until a foreground drain; the native
+wake never stores a second copy of the User's answer.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the

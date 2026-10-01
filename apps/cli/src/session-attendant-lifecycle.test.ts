@@ -47,7 +47,8 @@ import {
   writeAttendantStatus,
 } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
-import { codexToolHookReady, readCodexToolMessages } from './codex-tool-messages.js'
+import { codexToolHookReady } from './codex-tool-messages.js'
+import { readSessionMessages, sessionInputWake } from './session-inputs.js'
 import { integrationFaultNotice } from './integration-health.js'
 
 const HARNESS = { pid: 4242, start: 'Fri Sep 25 11:12:08 2026' }
@@ -448,7 +449,7 @@ describe('notifai hook attend', () => {
     expect(service.calls.at(-1)).toMatchObject({ state: 'ended', generation: 1 })
   })
 
-  it('hands a Session Note into the session in place: claimed, posted over the inbox, reported, and owed', async () => {
+  it('stages a Claude Session Note and sends only a coalesced wake to its inbox', async () => {
     const { env, root } = isolatedEnv()
     const socket = path.join(root, 'inbox.sock')
     writeFileSync(socket, '')
@@ -506,25 +507,18 @@ describe('notifai hook attend', () => {
     recordSessionNotified('sess-a', env, Date.now())
     const envelope = { session_id: 'sess-a', cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
     const running = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
-    await until(() => reports.length === 1, 'the note hand-off report')
+    await until(() => posted.length === 1, 'the note wake')
 
     expect(calls[0]).toMatchObject({ state: 'running', accepts_messages: true })
-    expect(claims).toEqual([
-      {
-        incarnation: readSessionIncarnation('sess-a', env)?.incarnation,
-        generation: 1,
-        subject: { type: 'session_message', message_id: 'sm_note' },
-      },
-    ])
+    expect(claims).toEqual([])
     expect(posted).toHaveLength(1)
     const line = JSON.parse(posted[0]!) as { type: string; message: { content: string } }
     expect(line.type).toBe('user')
-    expect(line.message.content).toContain('"Use the staging database"')
-    expect(line.message.content).toContain('`notifai acknowledge sm_note --text <text>`')
-    expect(reports).toEqual([{ attemptId: 'att_note', outcome: 'handed_off' }])
-    expect(readSessionState('sess-a', env).message_acknowledgement_due).toEqual([
-      { message_id: 'sm_note', recorded_at: expect.any(Number), text_required: true },
-    ])
+    expect(line.message.content).toBe(sessionInputWake('sess-a'))
+    expect(line.message.content).not.toContain('Use the staging database')
+    expect(reports).toEqual([])
+    expect(readSessionState('sess-a', env).message_acknowledgement_due).toBeUndefined()
+    expect(readSessionMessages('sess-a', env, { incarnation: readSessionIncarnation('sess-a', env)!.incarnation, generation: 1 })).toHaveLength(1)
 
     markSessionEnded('sess-a', env, Date.now() + 1)
     await running
@@ -689,7 +683,7 @@ describe('notifai hook attend for Codex', () => {
     return isolated
   }
 
-  it('attends a loaded thread, reports its turns as activity, and queues a Session Note into it as a subprocess write', async () => {
+  it('attends a loaded thread, reports activity, and queues a wake without claiming the Note', async () => {
     const { env, root } = codexEnv()
     const calls: AttendanceRequestT[] = []
     const claims: unknown[] = []
@@ -785,28 +779,19 @@ describe('notifai hook attend for Codex', () => {
     expect(deps.exits).toHaveLength(0)
 
     noteOffered = true
-    await until(() => reports.length === 1, 'the note hand-off report')
-    expect(claims).toEqual([
-      {
-        incarnation: readSessionIncarnation(THREAD, env)?.incarnation,
-        generation: 1,
-        subject: { type: 'session_message', message_id: 'sm_codex' },
-      },
-    ])
+    await until(() => queued.length === 1, 'the note wake')
+    expect(claims).toEqual([])
     expect(queued).toHaveLength(1)
-    expect(queued[0]).toMatchObject({ threadId: THREAD, cwd: root })
-    expect(queued[0]!.context).toContain('"Check the staging logs first"')
-    expect(reports).toEqual([{ attemptId: 'att_codex', outcome: 'handed_off' }])
-    expect(readDeliveryJournal(THREAD, env)).toEqual([
-      expect.objectContaining({ attempt_id: 'att_codex', stage: 'written', subprocess: true, groups: [98_765] }),
-    ])
+    expect(queued[0]).toEqual({ threadId: THREAD, cwd: root, context: sessionInputWake(THREAD) })
+    expect(reports).toEqual([])
+    expect(readDeliveryJournal(THREAD, env)).toEqual([])
 
     markSessionEnded(THREAD, env, Date.now() + 1)
     await running
     expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'ended' }])
   })
 
-  it.each(['tool-hook', 'turn-end', 'missing-hook', 'first-hook', 'turn-start-race'])('routes a staged Note safely: %s', async (mode) => {
+  it.each(['tool-hook', 'turn-end', 'missing-hook', 'first-hook'])('routes a staged Note safely: %s', async (mode) => {
     const { env, root } = codexEnv()
     enableProject(projectBinding(root, env, undefined))
     const home = env['CODEX_HOME']!
@@ -835,9 +820,6 @@ describe('notifai hook attend for Codex', () => {
       },
       claimDeliveryAttempt: async () => {
         claims += 1
-        if (mode === 'turn-start-race' && claims === 1) {
-          recordTurnStart(THREAD, env, readSessionIncarnation(THREAD, env)!.key, 'busy')
-        }
         return { attempt_id: `att_tool_${claims}`, claim_remaining_ms: 30_000 }
       },
       reportDeliveryAttempt: async (id: string, body: { outcome: string }) => {
@@ -858,36 +840,29 @@ describe('notifai hook attend for Codex', () => {
     try {
       await until(() => readAttendantLease(THREAD, env) !== null, 'lease')
       const incarnation = readSessionIncarnation(THREAD, env)!
-      if (mode !== 'turn-start-race') recordTurnStart(THREAD, env, incarnation.key, 'busy')
+      recordTurnStart(THREAD, env, incarnation.key, 'busy')
       offered = true
       if (mode === 'missing-hook' || mode === 'first-hook') {
-        await until(() => delivered, 'queue fallback without tool hook')
-        expect(queued).toHaveLength(1)
+        await until(() => queued.length === 1, 'wake without a proven tool hook')
+        expect(queued).toEqual([sessionInputWake(THREAD)])
+        expect(claims).toBe(0)
         if (mode === 'first-hook') {
           await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
           expect(codexToolHookReady(deps, THREAD)).toBe(true)
           expect(claims).toBe(1)
-        }
-        if (mode === 'first-hook') {
-          // Diagnostics may use this callback, but the already queued Note
-          // cannot be claimed or rendered a second time through tool stdout.
-          expect(output).toHaveLength(1)
-          expect(output[0]).toContain('local integration needs attention')
-          expect(output[0]).not.toContain('sm_tool')
-          expect(output[0]).not.toContain('Use the tool hook')
+          expect(output[0]).toContain('sm_tool')
           await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
           expect(output).toHaveLength(1)
           expect(claims).toBe(1)
         } else expect(output).toEqual([])
         return
       }
-      await until(() => readCodexToolMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')
-      if (mode === 'turn-start-race') await until(() => outcomes.includes('released'), 'idle claim released after turn start')
-      else expect(claims).toBe(0)
+      await until(() => readSessionMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')
+      expect(claims).toBe(0)
       expect(queued).toEqual([])
       if (mode === 'turn-end') {
         recordTurnEnd(THREAD, env, 'busy')
-        await until(() => delivered, 'queue fallback after turn completion')
+        await until(() => queued.length === 1, 'wake after turn completion')
         expect(queued).toHaveLength(1)
         expect(output).toEqual([])
         return
@@ -899,7 +874,7 @@ describe('notifai hook attend for Codex', () => {
       recordTurnEnd(THREAD, env, 'busy')
       await until(() => listAttendantReports(env)[0]?.activity === 'idle', 'idle after hook')
       expect(queued).toEqual([])
-      expect(claims).toBe(mode === 'turn-start-race' ? 2 : 1)
+      expect(claims).toBe(1)
     } finally {
       markSessionEnded(THREAD, env, Date.now() + 1)
       await running

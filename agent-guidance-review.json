@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c8dcfb30d950dae843843b5e52426303b9827120ee9713f26d11e78854895aad",
+  "behavior_digest": "sha256:2a0a9d3baa7508920759f6dbee394bda7611bab688dab9a4993e1f5b22c763ce",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms. The Codex tool hook now observes automatic continuation turns under the exact trusted owner, retaining ended-turn and incarnation fences. Harness setup explains the first available tool boundary and long-tool/reasoning limit. Attendant activity changes refresh diagnostic status. No new hook definition, trust approval, command or scope is introduced; other harness transports and acknowledgement obligations are unchanged.",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms. Codex and POSIX Claude now queue content-free wakes and drain pending answers and Session Messages through one bounded foreground consumer. The skill teaches the exact-session receive command, empty wakes, batching and unchanged per-item acknowledgements. Existing trusted Codex tool hooks also drain answers; no new hook definition or native trust approval is required. Held Stop and generation-bound gateway integrations keep their native delivery contracts. Diagnostics distinguish queued wakes from presented input without logging User text.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

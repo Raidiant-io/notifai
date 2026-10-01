@@ -125,6 +125,10 @@ export interface SessionState {
    * reaches the harness replays it instead of erasing it.
    */
   accepted?: AcceptedAnswerDelivery
+  /** Captured answers waiting for the same foreground drain as Session Messages. */
+  waiting_answers?: AnsweredPending[]
+  /** A content-free native wake is outstanding for this incarnation. */
+  input_wake?: { incarnation: string; token: string; queued: boolean; writer: ProcessIdentity }
   /**
    * Native-queue writes that committed, retained per request until the agent
    * acknowledges them. They never occupy the in-flight delivery slot or block
@@ -390,6 +394,8 @@ export interface DeliveryOutcome {
 /** Host adapter injected into the waiter; no route is implemented by the waiter. */
 export interface EscalationDeliveryRoute {
   kind: Exclude<DeliveryRoute, 'unsupported'>
+  /** Store input locally and wake its consumer; this is not a hand-off. */
+  defer?(accepted: AcceptedAnswerDelivery): Promise<void>
   deliver(event: ContinuationEvent): Promise<DeliveryOutcome>
 }
 

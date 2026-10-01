@@ -247,6 +247,12 @@ resume later. Never create a duplicate. On exit 0, act on the answer.
 
 ## When the answer arrives
 
+A wake-up may ask you to run `notifai receive --session <id>`. Run the exact
+command: it reads this session's pending notes and answers together. The wake-up
+itself contains no answer and needs no acknowledgement. If the command says no
+input remains, continue; never recover an old answer from the wake-up. Hooks may
+already have delivered the input while that wake-up waited.
+
 The latest reply is the user's current word: later choices correct earlier
 ones; typed parts are read together in order. A relayed answer uses the chosen
 label; `notifai replies <request_id> --json` has stable choice ids.

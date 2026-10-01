@@ -1,3 +1,4 @@
+import { sessionInputWake } from './session-inputs.js'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { CAPABILITIES_V1 } from '@raidiant/notifai-protocol'
 import {
@@ -1985,7 +1986,8 @@ describe('the waiter owning one question to the end', () => {
     )
 
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
-    expect(queued.at(-1)).toContain('Answer near the one-day edge')
+    expect(queued.at(-1)).toBe(sessionInputWake('019ff700-1111-7161-ab6e-bd06b3b93c8e'))
+    expect(readSessionState('019ff700-1111-7161-ab6e-bd06b3b93c8e', h.env).waiting_answers?.[0]?.reply.text).toBe('Answer near the one-day edge')
   })
 
   it('delivers a reply that commits while the server close fence is finalizing silence', async () => {
@@ -2764,26 +2766,22 @@ describe('several questions in flight', () => {
     expect(successors).toHaveLength(1)
     await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
 
-    expect(queued).toHaveLength(mode === 'manual' ? 1 : 2)
-    if (mode === 'unacknowledged') {
-      expect(queued[1]).toContain('Second decision')
-      expect(queued[1]).not.toContain('First decision')
-    }
+    expect(queued).toEqual([sessionInputWake(sessionId)])
     const state = readSessionState(sessionId, h.env)
     expect(state.pending).toBeUndefined()
     expect(state.acknowledgement_due?.map((entry) => entry.request_id))
       .toEqual(mode === 'manual' ? [h.recorder.receipts[0]] : h.recorder.receipts)
-    expect(state.delivered_answers?.map((entry) => entry.reply.text))
+    expect(state.waiting_answers?.map((entry) => entry.reply.text))
       .toEqual(mode === 'manual' ? ['First decision'] : ['First decision', 'Second decision'])
     expect(successors).toEqual([])
     expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
       text: 'Acting on the first decision.',
     })).toBe(EXIT.ok)
-    expect((readSessionState(sessionId, h.env).delivered_answers ?? []).map((entry) => entry.reply.text))
+    expect((readSessionState(sessionId, h.env).waiting_answers ?? []).map((entry) => entry.reply.text))
       .toEqual(mode === 'manual' ? [] : ['Second decision'])
   })
 
-  it.each(['launch-failed', 'session-ended', 'after-launch'] as const)('preserves queue commits across successor handoff (%s)', async (interruption) => {
+  it.each(['launch-failed', 'session-ended', 'after-launch'] as const)('preserves pending inputs across successor handoff (%s)', async (interruption) => {
     const h = harness([])
     const sessionId = '11111111-2222-4333-8444-555555555555'
     const byRequest = new Map([['req_hook_1', [reply({ text: 'First decision' })]]])
@@ -2816,7 +2814,7 @@ describe('several questions in flight', () => {
     expect(queued).toHaveLength(1)
     expect(successors).toHaveLength(interruption === 'after-launch' ? 1 : 0)
     if (interruption === 'after-launch') handleSessionEnd(h.env, { session_id: sessionId }, NOW)
-    expect(readSessionState(sessionId, h.env).delivered_answers?.[0]?.reply.text).toBe('First decision')
+    expect(readSessionState(sessionId, h.env).waiting_answers?.[0]?.reply.text).toBe('First decision')
     if (interruption !== 'launch-failed') {
       await hookRunCommand(deps, 'question-settlement', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
       expect(queued).toHaveLength(1)
@@ -2830,8 +2828,8 @@ describe('several questions in flight', () => {
     expect(successors).toHaveLength(1)
     await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
     expect(queued).toHaveLength(2)
-    expect(queued[1]).toContain('Second decision')
-    expect(queued[1]).not.toContain('First decision')
+    expect(queued.every((text) => text === sessionInputWake(sessionId))).toBe(true)
+    expect(readSessionState(sessionId, h.env).waiting_answers?.map((entry) => entry.reply.text)).toEqual(['First decision', 'Second decision'])
     expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
   })
 
@@ -2861,12 +2859,12 @@ describe('several questions in flight', () => {
     await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
     for (let index = 0; index < count; index += 1) {
       expect(successors).toHaveLength(1)
+      byRequest.set(`req_hook_${index + 1}`, [reply({ text: `Decision ${index + 1}` })])
       await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
     }
 
-    expect(queued).toHaveLength(count)
-    for (let index = 0; index < count; index += 1) expect(queued[index]).toContain(`Decision ${index + 1}`)
-    expect(readSessionState(sessionId, h.env).delivered_answers).toHaveLength(count)
+    expect(queued).toEqual([sessionInputWake(sessionId)])
+    expect(readSessionState(sessionId, h.env).waiting_answers).toHaveLength(count)
     expect(readSessionState(sessionId, h.env).acknowledgement_due).toHaveLength(count)
     expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
     expect(successors).toEqual([])
@@ -2900,10 +2898,9 @@ describe('several questions in flight', () => {
     await hookRunCommand(deps, 'question-settlement', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
 
     expect(queued).toHaveLength(1)
-    expect(queued[0]).toContain('Second decision')
-    expect(queued[0]).not.toContain('First decision')
-    expect(readSessionState(sessionId, h.env).delivered_answers?.map((entry) => entry.reply.text))
-      .toEqual(['First decision', 'Second decision'])
+    expect(queued[0]).toBe(sessionInputWake(sessionId))
+    expect(readSessionState(sessionId, h.env).delivered_answers?.map((entry) => entry.reply.text)).toEqual(['First decision'])
+    expect(readSessionState(sessionId, h.env).waiting_answers?.map((entry) => entry.reply.text)).toEqual(['Second decision'])
   })
 
   it.each([true, false])('collects the next reply at prompt start with a queued answer (acknowledged=%s)', async (acknowledged) => {
@@ -3051,7 +3048,8 @@ describe('several questions in flight', () => {
     expect(h.recorder.closed).toContain(h.recorder.receipts[0])
     expect(readSessionState('019ff701-2222-7161-ab6e-bd06b3b93c8e', h.env).pending).toBeUndefined()
     expect(queued).toHaveLength(1)
-    expect(queued[0]).toContain('Yes — start personally')
+    expect(queued[0]).toBe(sessionInputWake('019ff701-2222-7161-ab6e-bd06b3b93c8e'))
+    expect(readSessionState('019ff701-2222-7161-ab6e-bd06b3b93c8e', h.env).waiting_answers?.[0]?.reply.text).toBe('Yes — start personally')
   })
 
   it('stops retrying and names a permanent rejection during the blocking multi-wait', async () => {
@@ -3410,7 +3408,8 @@ describe('Codex question owner lifetime', () => {
     await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
 
     expect(queued).toHaveLength(1)
-    expect(queued[0]).toContain('Continue')
+    expect(queued[0]).toBe(sessionInputWake(sessionId))
+    expect(readSessionState(sessionId, h.env).waiting_answers?.[0]?.reply.text).toBe('Continue')
     expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
   })
 })
@@ -6042,13 +6041,10 @@ describe('Claude Code Stop wake route', () => {
       message: { role: string; content: string }
     }
     expect(message).toMatchObject({ type: 'user', message: { role: 'user' } })
-    expect(message.message.content).toContain('question_id')
-    expect(message.message.content).toContain('"Which rollout option?"')
-    expect(message.message.content).toContain('"BETA"')
-    expect(message.message.content).toContain(TRANSPORT_LIMIT)
-    expect(message.message.content.replace(TRANSPORT_LIMIT, '')).not.toMatch(/trusted|urgent|permission|approval/i)
+    expect(message.message.content).toBe(sessionInputWake('claude-route'))
+    expect(message.message.content).not.toContain('BETA')
     expect(wake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
-    expect(readSessionState('claude-route', h.env).accepted).toBeDefined()
+    expect(readSessionState('claude-route', h.env).waiting_answers?.[0]?.reply.text).toBe('BETA')
   })
 
   it('keeps the detached owner through the default one-day answer window', async () => {
@@ -6090,7 +6086,7 @@ describe('Claude Code Stop wake route', () => {
 
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThan(8 * 60 * 1000)
     expect(wake.sent).toHaveLength(1)
-    expect(wake.sent[0]).toContain('Wake near the one-day edge')
+    expect(readSessionState('claude-route', h.env).waiting_answers?.[0]?.reply.text).toBe('Wake near the one-day edge')
   })
 
   it('stops a detached observer when SessionEnd removes its ownership', async () => {
@@ -6294,9 +6290,8 @@ describe('Claude Code Stop wake route', () => {
     await stop(false)
 
     expect(wake.sent).toHaveLength(1)
-    const delivered = readSessionState('claude-route', h.env).accepted
-    expect(delivered?.delivered_route).toBe('inbox-socket')
-    expect(typeof delivered?.delivered_at).toBe('number')
+    expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
+    expect(readSessionState('claude-route', h.env).waiting_answers).toHaveLength(1)
 
     // Three more turn-ends of the woken session, none of them a continuation.
     await stop(false)
@@ -6306,7 +6301,7 @@ describe('Claude Code Stop wake route', () => {
     expect(wake.sent).toHaveLength(1)
     expect(wake.resumed).toEqual([])
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
-    expect(h.recorder.closed).toContain('req_existing')
+    expect(readSessionState('claude-route', h.env).waiting_answers).toHaveLength(1)
     expect(
       h.recorder.submitted.filter((entry) => isRetirementSubmit(entry)),
     ).toHaveLength(0)
@@ -6437,7 +6432,7 @@ describe('Claude Code Stop wake route', () => {
     return { closes, claims, reports }
   }
 
-  it('closes with deliver and claims the fenced answer under the attendant lease before the inbox write', async () => {
+  it('closes with deliver but leaves the answer unclaimed until foreground consumption', async () => {
     const h = harness([reply({ text: 'Ship it', seq: 3 })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
@@ -6455,19 +6450,11 @@ describe('Claude Code Stop wake route', () => {
 
     const requestId = h.recorder.receipts[0]!
     expect(service.closes).toEqual([{ requestId, disposition: 'deliver' }])
-    expect(service.claims).toEqual([
-      {
-        incarnation: 'inc_answerclaimtest',
-        generation: 4,
-        subject: { type: 'answer', request_id: requestId },
-      },
-    ])
+    expect(service.claims).toEqual([])
     expect(wake.sent).toHaveLength(1)
-    expect(service.reports).toEqual([{ attemptId: 'att_answer_1', outcome: 'handed_off' }])
-    expect(readDeliveryJournal('claude-route', h.env)).toMatchObject([
-      { attempt_id: 'att_answer_1', stage: 'written', reported: 'handed_off' },
-    ])
-    expect(readSessionState('claude-route', h.env).accepted?.answers[0]?.delivery_claim).toBe(true)
+    expect(service.reports).toEqual([])
+    expect(readDeliveryJournal('claude-route', h.env)).toEqual([])
+    expect(readSessionState('claude-route', h.env).waiting_answers?.[0]?.delivery_claim).toBe(true)
   })
 
   it('closes without a disposition and claims nothing when no attendant holds the lease', async () => {
@@ -6491,7 +6478,7 @@ describe('Claude Code Stop wake route', () => {
     expect(readSessionState('claude-route', h.env).accepted?.answers[0]?.delivery_claim).toBeUndefined()
   })
 
-  it('still writes the answer, unclaimed, when the claim is refused', async () => {
+  it('keeps the answer pending instead of claiming or writing its text during the wake', async () => {
     const h = harness([reply({ text: 'Ship it' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
@@ -6522,10 +6509,9 @@ describe('Claude Code Stop wake route', () => {
     expect(service.closes.map((close) => close.disposition)).toEqual(['deliver'])
     expect(wake.sent).toHaveLength(1)
     expect(service.reports).toEqual([])
-    // Written without a claim, so recorded after the fact: its edits follow it.
-    expect(afterTheFact).toEqual([
-      { subject: { type: 'answer', request_id: h.recorder.receipts[0]! }, already_handed_off: true },
-    ])
+    // A refused delivery claim cannot force an unclaimed native payload.
+    expect(afterTheFact).toEqual([])
+    expect(readSessionState('claude-route', h.env).waiting_answers).toHaveLength(1)
   })
 
   /** A journaled, selected answer to `question`, as a Stop that died after closing left it. */
@@ -6728,7 +6714,7 @@ describe('Codex Stop wake route', () => {
     })
   }
 
-  it('claims the fenced answer under the attendant lease and journals the thread-queue writer as a subprocess', async () => {
+  it('stages the fenced answer and queues only a wake without a delivery claim', async () => {
     const h = harness([reply({ text: 'Ship it', seq: 3 })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
@@ -6784,17 +6770,12 @@ describe('Codex Stop wake route', () => {
       'codex',
     )
 
-    const requestId = h.recorder.receipts[0]!
     expect(closes).toEqual(['deliver'])
-    expect(claims).toEqual([
-      { incarnation: 'inc_codexclaim', generation: 2, subject: { type: 'answer', request_id: requestId } },
-    ])
-    expect(queued).toHaveLength(1)
-    expect(queued[0]).toContain('Ship it')
-    expect(reports).toEqual([{ attemptId: 'att_codex_answer', outcome: 'handed_off' }])
-    expect(readDeliveryJournal(CODEX_THREAD, h.env)).toMatchObject([
-      { attempt_id: 'att_codex_answer', stage: 'written', subprocess: true, groups: [4_321], reported: 'handed_off' },
-    ])
+    expect(claims).toEqual([])
+    expect(queued).toEqual([sessionInputWake(CODEX_THREAD)])
+    expect(reports).toEqual([])
+    expect(readDeliveryJournal(CODEX_THREAD, h.env)).toEqual([])
+    expect(readSessionState(CODEX_THREAD, h.env).waiting_answers?.[0]?.delivery_claim).toBe(true)
   })
 
   it('settles once when UserPromptSubmit overtakes the asking turn Stop', async () => {
@@ -6847,9 +6828,9 @@ describe('Codex Stop wake route', () => {
     // answer over: it queues as soon as the answer settles, which is what
     // removes the held turn from the critical path.
     expect(wake.queued).toHaveLength(1)
-    expect(wake.queued[0]).toContain('Ship it')
+    expect(wake.queued[0]).toBe(sessionInputWake(CODEX_THREAD))
     expect(wake.threads).toEqual([CODEX_THREAD])
-    expect(readSessionState(CODEX_THREAD, h.env).delivered_answers?.[0]?.reply.text).toBe('Ship it')
+    expect(readSessionState(CODEX_THREAD, h.env).waiting_answers?.[0]?.reply.text).toBe('Ship it')
     expect(readSessionState(CODEX_THREAD, h.env).last_stop_at).toBeUndefined()
 
     await hookRunCommand(
@@ -6858,15 +6839,8 @@ describe('Codex Stop wake route', () => {
       stdin({ session_id: CODEX_THREAD, cwd: h.deps.cwd }),
       'codex',
     )
-    // The only thing left on stdout is the acknowledgement obligation, which is
-    // a separate mechanism from answer delivery and still blocks the turn. The
-    // answer itself is not queued a second time beside the copy Codex holds.
-    expect(h.io.outLines.map((line) => JSON.parse(line))).toEqual([
-      expect.objectContaining({
-        decision: 'block',
-        reason: expect.stringContaining('Agent Acknowledgement still missing'),
-      }),
-    ])
+    // Unpresented input cannot demand acknowledgement or hold this turn.
+    expect(h.io.outLines).toEqual([])
     expect(wake.queued).toHaveLength(1)
 
     expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
@@ -6891,11 +6865,9 @@ describe('Codex Stop wake route', () => {
     )
 
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
-    // One queue write for one answer, and the journal settled on it: no later
-    // Stop queues the same answer again beside the copy Codex holds. The single
-    // stdout line remains the earlier acknowledgement block, now satisfied.
+    // One coalesced wake, no native answer copy and no unpresented-ack block.
     expect(wake.queued).toHaveLength(1)
-    expect(h.io.outLines).toHaveLength(1)
+    expect(h.io.outLines).toHaveLength(0)
     expect(readSessionState(CODEX_THREAD, h.env).pending).toBeUndefined()
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
   })
@@ -6962,11 +6934,11 @@ describe('Codex Stop wake route', () => {
     expect(h.io.outLines).toEqual([])
     expect(wake.threads).toEqual([CODEX_THREAD])
     expect(wake.queued).toHaveLength(1)
-    expect(wake.queued[0]).toContain('"BETA"')
+    expect(wake.queued[0]).toBe(sessionInputWake(CODEX_THREAD))
     // The queue write settles the journal: Codex now holds the copy that will
     // be delivered, and replaying it would answer the same question twice.
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
-    expect(readSessionState(CODEX_THREAD, h.env).delivered_answers?.[0]?.reply.text).toBe('BETA')
+    expect(readSessionState(CODEX_THREAD, h.env).waiting_answers?.[0]?.reply.text).toBe('BETA')
   })
 
   it('continues a Windows Claude Code held Stop in the exact Agent Session', async () => {
@@ -7036,9 +7008,9 @@ describe('Codex Stop wake route', () => {
 
     expect(h.io.outLines).toEqual([])
     expect(wake.queued).toHaveLength(acknowledged ? 0 : 1)
-    if (!acknowledged) expect(wake.queued[0]).toContain('"BETA"')
+    if (!acknowledged) expect(wake.queued[0]).toBe(sessionInputWake(CODEX_THREAD))
     expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeUndefined()
-    expect(readSessionState(CODEX_THREAD, h.env).delivered_answers?.[0]?.reply.text)
+    expect(readSessionState(CODEX_THREAD, h.env).waiting_answers?.[0]?.reply.text)
       .toBe(acknowledged ? undefined : 'BETA')
     expect((readSessionState(CODEX_THREAD, h.env).acknowledgement_due ?? []).map((entry) => entry.request_id))
       .toEqual(acknowledged ? [] : ['req_existing'])
@@ -7080,8 +7052,8 @@ describe('Codex Stop wake route', () => {
 
     expect(h.io.outLines).toEqual([])
     expect(wake.queued).toEqual([])
-    expect(readSessionState(CODEX_THREAD, h.env).accepted).toBeDefined()
-    expect(h.io.errLines.join('\n')).toContain('holding the accepted answer for the next turn')
+    expect(readSessionState(CODEX_THREAD, h.env).waiting_answers).toHaveLength(1)
+    expect(readSessionState(CODEX_THREAD, h.env).input_wake).toBeUndefined()
   })
 })
 
