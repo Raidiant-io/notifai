@@ -15,6 +15,7 @@ import { isSemVer } from './version.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
 import { sameLocalPath } from './local-path.js'
 import { codexToolHookReady } from './codex-tool-messages.js'
+import { activateInstalledAttendants, type AttendantActivation } from './attendant-update.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -36,10 +37,11 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   }
   const pending: string[] = []
   const changed: string[] = []
+  let attendants: AttendantActivation[] = []
   const report = (filesComplete: boolean): number => {
     const complete = filesComplete && pending.length === 0
     const result = { ok: filesComplete, read_only: false, running_version: packageVersion(),
-      files_complete: filesComplete, migration_complete: complete, pending_actions: pending, changed,
+      files_complete: filesComplete, migration_complete: complete, pending_actions: pending, changed, attendants,
       resume_command: 'notifai update --resume --json', changelog: installedChangelog(packageVersion(), flags.from),
       next_step: 'Read this package’s SKILL.md and references/updates.md, then run notifai guidance in the active Agent Session. Preserve outstanding work and existing User deferrals.' }
     if (flags.json === true || deps.io.interactive !== true) deps.io.out(JSON.stringify(result, null, 2))
@@ -115,6 +117,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       if (owner.harness === 'codex' && owner.sessionId !== undefined && !codexToolHookReady(deps, owner.sessionId)) {
         pending.push('Tool-boundary Notes are not yet verified in this exact Agent Session; ordinary queue delivery remains available. Check the next tool callback before considering an approved fresh session.')
       }
+    }
+    if (assessment.faults.length === 0) {
+      attendants = await activateInstalledAttendants(deps, effective.artifact_path!)
+      if (attendants.some(entry => entry.state === 'activated')) changed.push('resident-attendants')
+      const unresolved = attendants.filter(entry => entry.state === 'pending' || !entry.native_activity)
+      if (unresolved.length > 0) pending.push(`${unresolved.length} existing Codex session(s) still need native activity or resident activation verification; keep their Agent Sessions and pending inputs intact.`)
     }
     return report(repairFaults.length === 0)
   } catch {

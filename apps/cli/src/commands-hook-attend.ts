@@ -10,6 +10,7 @@ import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './ses
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
 import { claudeSessionPid } from './commands-harness-context.js'
 import { loadConfig } from './config.js'
@@ -76,6 +77,10 @@ import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 
+// Captured when this module loads, so an in-place build cannot make a resident
+// writer mistake the replacement files for its own loaded implementation.
+export const attendantRuntimeRevision = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex')
+
 /** Test seams; production reads the real harness, clocks, and signals. */
 export interface AttendantSeams {
   harnessProcess?: ProcessIdentity
@@ -111,12 +116,15 @@ export async function attendHook(
     cwd: string
     invokedAt: LifecycleStamp
     logger: Logger
+    /** Explicit updater recovery, never a fabricated native hook invocation. */
+    recovery?: { key: string; harnessProcess: ProcessIdentity; transcriptPath: string }
   },
 ): Promise<number> {
   const { envelope, harness, cwd, logger } = input
   const seams = deps.attendant ?? {}
   const end = (outcome: string, data: Record<string, unknown> = {}): number => {
-    logger.info('hook.end', { hook: 'attend', outcome, decided: false, ...data })
+    if (input.recovery !== undefined) logger.info('attendant.state', { source: 'update-resume', outcome, ...data })
+    else logger.info('hook.end', { hook: 'attend', outcome, decided: false, ...data })
     return EXIT.ok
   }
   // Read once, now: an in-place reinstall replaces the manifest on disk, and
@@ -134,9 +142,9 @@ export async function attendHook(
   const claimFile = attendantClaimPath(sessionId, deps.env)
   // The hook adapter names the harness process that ran it. Claude Code also
   // names itself; Codex is only ever the declared parent.
-  const pid = harness === 'codex' || harness === 'openclaw'
+  const pid = input.recovery?.harnessProcess.pid ?? (harness === 'codex' || harness === 'openclaw'
     ? declaredHookSourcePid(deps.env)
-    : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env)
+    : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env))
   if (pid === undefined) return end('ignored', { reason: 'harness-process-unproven' })
   const nativeOwner = harness === 'codex'
     ? seams.harnessProcess ?? (() => {
@@ -149,6 +157,7 @@ export async function attendHook(
     return nativeOwner !== null && current?.key === key &&
       envelope.agent_id === undefined && envelope.agent_type === undefined &&
       current.harness_process?.pid === nativeOwner.pid && current.harness_process.start === nativeOwner.start &&
+      (input.recovery === undefined || current.key === input.recovery.key) &&
       !happenedBefore(input.invokedAt, current.start) && !sessionHasEnded(sessionId, deps.env)
   }
   const observeNative = (key: string, initial = false): void => {
@@ -157,18 +166,23 @@ export async function attendHook(
       recordCodexTurnEnd(envelope, sessionId, deps.env)
       return
     }
-    if (!initial && envelope.hook_event_name !== 'UserPromptSubmit') return
-    const native = readNativeTurnSnapshot(envelope.transcript_path, sessionId, deps.env)
-    const turnId = envelope.turn_id ?? (initial ? native?.latest.id : undefined)
+    if (!initial && envelope.hook_event_name !== 'UserPromptSubmit' && input.recovery === undefined) return
+    const native = readNativeTurnSnapshot(input.recovery?.transcriptPath ?? envelope.transcript_path, sessionId, deps.env)
+    const turnId = envelope.turn_id ?? (initial || input.recovery !== undefined ? native?.latest.id : undefined)
     if (native === null || turnId === undefined) return
-    if (reconcileNativeTurn(sessionId, deps.env, key, turnId, native, () => ownsNative(key), initial)) {
-      updateSessionState(sessionId, deps.env, state => ({ ...state, codex_native_turn: {
-        key, turn_id: turnId, transcript_path: native.file,
-      } }))
-    }
+    try {
+      if (reconcileNativeTurn(sessionId, deps.env, key, turnId, native, () => ownsNative(key), initial)) {
+        updateSessionState(sessionId, deps.env, state => ({ ...state, codex_native_turn: {
+          key, turn_id: turnId, transcript_path: native.file,
+        } }))
+      }
+    } catch { /* A busy observation lock must not cost this session its attendant. */ }
   }
   if (harness === 'codex') {
     const current = readSessionIncarnation(sessionId, deps.env)
+    if (input.recovery !== undefined && (current === null || !ownsNative(current.key))) {
+      return end('ignored', { reason: 'recovery-owner-changed' })
+    }
     if (current !== null) observeNative(current.key)
   }
   // Interrupt is a bounded observation, never a replacement attendant.
@@ -187,7 +201,8 @@ export async function attendHook(
       // An authenticated native event can hand the resident writer over to
       // installed code. The old owner exits through claim-lost, not SessionEnd.
       const upgrade = harness === 'codex' && ownsNative(current.key) &&
-        runningVersion !== null && holder['runtime_version'] !== runningVersion && holder['pid'] !== process.pid &&
+        runningVersion !== null && (holder['runtime_version'] !== runningVersion ||
+          holder['runtime_revision'] !== attendantRuntimeRevision) && holder['pid'] !== process.pid &&
         (seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness, runningVersion)))().ok &&
         (holder['handoff'] === true || (typeof holder['token'] === 'string' &&
           requestClaimHandoff(claimFile, holder['token'], current.incarnation)))
@@ -239,7 +254,7 @@ export async function attendHook(
   }
 
   const clock = seams.clock ?? systemAttendantClock
-  let record = await withLockRetry(clock, () =>
+  let record = input.recovery !== undefined ? readSessionIncarnation(sessionId, deps.env) : await withLockRetry(clock, () =>
     beginSessionIncarnation(sessionId, deps.env, {
       stamp: input.invokedAt,
       harnessProcess,
@@ -247,6 +262,7 @@ export async function attendHook(
       ...(openclawGeneration === null ? {} : { openclawGeneration: openclawGeneration.id }),
     }),
   )
+  if (record === null || (input.recovery !== undefined && !ownsNative(record.key))) return end('ignored', { reason: 'recovery-owner-changed' })
   if (harness === 'codex' && starting) observeNative(record.key, true)
 
   // One live attendant per session. A holder serving an older incarnation of
@@ -255,7 +271,7 @@ export async function attendHook(
   const waitUntil = clock.monotonic() + (seams.supersededOwnerWaitMs ?? SUPERSEDED_OWNER_WAIT_MS)
   let token: string | null = null
   while (true) {
-    token = acquireClaimFile(claimFile, { incarnation: record.incarnation, runtime_version: runningVersion }, clock.wall())
+    token = acquireClaimFile(claimFile, { incarnation: record.incarnation, runtime_version: runningVersion, runtime_revision: attendantRuntimeRevision }, clock.wall())
     if (token !== null) break
     const holder = readClaimFile(claimFile)
     if ((holder?.['incarnation'] === record.incarnation && holder['handoff'] !== true) || clock.monotonic() >= waitUntil) {
@@ -265,14 +281,15 @@ export async function attendHook(
       })
     }
     await clock.sleep(250, new AbortController().signal).catch(() => undefined)
+    if (input.recovery !== undefined && !ownsNative(record.key)) return end('ignored', { reason: 'recovery-owner-changed' })
     record = readSessionIncarnation(sessionId, deps.env) ?? record
   }
 
-  logger.info('hook.end', {
+  logger.info(input.recovery === undefined ? 'hook.end' : 'attendant.state', {
     hook: 'attend',
     outcome: 'attending',
     decided: false,
-    source: envelope.source ?? envelope.hook_event_name ?? null,
+    source: input.recovery === undefined ? envelope.source ?? envelope.hook_event_name ?? null : 'update-resume',
   })
 
   const served = record
@@ -329,7 +346,7 @@ export async function attendHook(
         if (next === null) return null
         // Keep the claim naming the incarnation it serves.
         releaseClaimFile(claimFile, token!)
-        token = acquireClaimFile(claimFile, { incarnation: next.incarnation, runtime_version: runningVersion }, clock.wall())
+        token = acquireClaimFile(claimFile, { incarnation: next.incarnation, runtime_version: runningVersion, runtime_revision: attendantRuntimeRevision }, clock.wall())
         return token === null ? null : next.incarnation
       },
       probe,
