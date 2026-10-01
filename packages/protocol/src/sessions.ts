@@ -259,6 +259,8 @@ export const DELIVERY_CLAIM_REFUSAL_REASONS = [
   'not_claimable',
   /** An Answer Edit waits for the fenced answer's attempt to report an outcome. */
   'awaiting_earlier_answer',
+  /** An earlier Session Message must be claimed first; retry after refreshing the pending batch. */
+  'awaiting_earlier_message',
   /**
    * An after-the-fact record waits: another attempt for that answer has no
    * outcome yet. Record again once it reports; a `released` report frees it.

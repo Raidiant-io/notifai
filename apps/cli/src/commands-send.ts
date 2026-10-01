@@ -150,7 +150,7 @@ export async function sendCommand(
     deps.io.err(
       'A question needs someone to hear the answer, so --reply cannot be combined ' +
         'with --reply-timeout 0.\n' +
-        'To ask and end the turn, use `notifai ask` — Question Routing owns submission and the answer return path.\n' +
+        'To ask and continue independent work, use `notifai ask` — Question Routing owns submission and the answer return path.\n' +
         'To announce finished work, drop --reply and its choices.',
     )
     return EXIT.usage

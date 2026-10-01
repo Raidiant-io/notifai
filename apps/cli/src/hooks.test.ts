@@ -60,6 +60,7 @@ import {
 import {
   handleSessionEnd,
   runEscalationWaiter,
+  submitSessionQuestions,
   MAX_CONTINUATION_COUNT,
   MAX_HELD_DELIVERIES,
   registerQuestion as persistQuestion,
@@ -1232,10 +1233,10 @@ describe('what the hook leaves behind', () => {
     const h = harness([])
     writeSessionState('held', h.env, { accepted: undefined })
     registerQuestion('held', h.env, { question: 'Ship it?' }, NOW)
-    // A continuation turn must not re-ask the question it is continuing from.
+    // The shared admission policy bounds unanswered continuation chains.
     writeSessionState('held', h.env, {
       ...readSessionState('held', h.env),
-      continuation: { answered_at: NOW + 1000, count: 1 },
+      continuation: { answered_at: NOW + 1000, count: MAX_CONTINUATION_COUNT },
     })
 
     await hookRunCommand(
@@ -1244,7 +1245,7 @@ describe('what the hook leaves behind', () => {
       stdin({ session_id: 'held', cwd: h.deps.cwd, stop_hook_active: true }),
     )
 
-    const held = gates(h).find((record) => record.data?.['reason'] === 'continuation-repeat')
+    const held = gates(h).find((record) => record.data?.['reason'] === 'continuation-limit')
     expect(held).toBeDefined()
     expect(held!.data).toMatchObject({ verdict: 'held' })
     expect(h.recorder.submitted).toHaveLength(0)
@@ -1617,15 +1618,13 @@ describe('nagging guards', () => {
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
   })
 
-  it('respects the harness recursion guard', async () => {
+  it('does not suppress a distinct pending question just because Stop follows a continuation', async () => {
     const h = harness([reply({ text: 'Yes' })])
     writeSessionState('n2', h.env, { last_prompt_at: AWAY })
     registerQuestion('n2', h.env, { question: 'Ship it?' })
-
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n2', stop_hook_active: true }))
-
-    expect(h.recorder.submitted).toEqual([])
-    expect(h.io.outLines).toEqual([])
+    expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+    expect(h.io.outLines.join('\n')).toContain('Yes')
   })
 
   it('delivers a new question registered during an answer continuation', async () => {
@@ -5516,7 +5515,6 @@ describe('two hooks racing one question', () => {
       .map((entry) => entry.draft.presentation.summary)
     expect(sent).toEqual(['Older question?', 'Newer question?'])
     expect(h.io.outLines.join('\n')).toContain('Answer the newer question')
-    expect(h.io.errLines.join('\n')).toContain('yielding the answer owner')
   })
 })
 
@@ -5864,7 +5862,7 @@ describe('serialized question admission and withdrawal', () => {
 })
 
 describe('question registration racing a Stop submission', () => {
-  it('preserves both questions while the old owner yields to the new ask', async () => {
+  it('submits a racing question without waiting for the earlier answer window', async () => {
     const h = harness([])
     writeSessionState('submit-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('submit-race', h.env, { question: 'Old question?' }, NOW)
@@ -5875,19 +5873,12 @@ describe('question registration racing a Stop submission', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'submit-race' }))
 
-    // The racing ask is a handoff signal. This owner leaves the delivered old
-    // question and the new unasked one intact for the successor Stop.
-    const state = readSessionState('submit-race', h.env)
-    expect(state.pending?.map((entry) => entry.question)).toEqual([
-      'Old question?',
-      'New question?',
-    ])
-    expect(state.pending?.[0]?.request_id).toBe(h.recorder.receipts[0])
-    expect(state.pending?.[1]?.request_id).toBeUndefined()
-    expect(h.io.errLines.join('\n')).toContain('yielding the answer owner')
+    expect(h.recorder.submitted.filter(isQuestionSubmit).map((entry) => entry.draft.presentation.summary))
+      .toEqual(['Old question?', 'New question?'])
+    expect(readSessionState('submit-race', h.env).pending).toBeUndefined()
   })
 
-  it('lets the successor owner collect an old answer without losing the newer question', async () => {
+  it('collects a racing question alongside the older answer without losing either', async () => {
     const h = harness([reply({ text: 'Old answer' })])
     writeSessionState('answer-race', h.env, { last_prompt_at: AWAY })
     registerQuestion('answer-race', h.env, { question: 'Old question?' }, NOW)
@@ -5900,10 +5891,13 @@ describe('question registration racing a Stop submission', () => {
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'answer-race' }))
 
     const state = readSessionState('answer-race', h.env)
-    expect(state.pending?.map((entry) => entry.question)).toEqual(['New question?'])
-    expect(state.accepted?.answers[0]?.pending.request_id).toBe(h.recorder.receipts[0])
-    expect(state.accepted?.answers[0]?.reply.text).toBe('Old answer')
+    expect(h.recorder.submitted.filter(isQuestionSubmit).map((entry) => entry.draft.presentation.summary))
+      .toEqual(['Old question?', 'New question?'])
+    expect(state.pending).toBeUndefined()
+    expect(state.accepted?.answers.map((entry) => entry.pending.question)).toEqual(['Old question?', 'New question?'])
+    expect(state.accepted?.answers.every((entry) => entry.reply.text === 'Old answer')).toBe(true)
   })
+
 })
 
 describe('Claude Code Stop wake route', () => {
@@ -5954,7 +5948,7 @@ describe('Claude Code Stop wake route', () => {
     }
   }
 
-  it('settles a pre-Stop registration through the detached Claude owner', async () => {
+  it('stages a detached Claude answer for its resident writer without borrowing inbox ancestry', async () => {
     const h = harness([reply({ text: 'Ship it' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     registerQuestion('claude-route', h.env, { question: 'Ship it?' }, NOW)
@@ -5987,7 +5981,8 @@ describe('Claude Code Stop wake route', () => {
     )
 
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
-    expect(wake.sent).toHaveLength(1)
+    expect(wake.sent).toHaveLength(0)
+    expect(readSessionState('claude-route', h.env).waiting_answers?.[0]?.reply.text).toBe('Ship it')
     expect(wake.resumed).toEqual([])
     expect(h.io.outLines).toEqual([])
 
@@ -6009,7 +6004,7 @@ describe('Claude Code Stop wake route', () => {
     )
 
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
-    expect(wake.sent).toHaveLength(1)
+    expect(wake.sent).toHaveLength(0)
     expect(readSessionState('claude-route', h.env).pending).toBeUndefined()
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
   })
@@ -7076,6 +7071,80 @@ describe('escalation waiter delivery seam', () => {
       harness: 'codex' as const,
     }
   }
+
+  it.each([
+    ['codex', 'darwin', 1], ['claude-code', 'darwin', 1],
+    ['claude-code', 'win32', 0], ['grok', 'darwin', 0],
+  ] as const)('starts %s submission on %s without consuming a reply', async (harnessName, platform, observers) => {
+    const h = harness([reply({ text: 'Already answered' })])
+    writeSessionState('submission-event', h.env, { harness: harnessName })
+    registerQuestion('submission-event', h.env, { question: 'Submit now?' }, NOW)
+    const launch = vi.fn()
+    let polls = 0
+    const factory = h.deps.clientFactory!
+    const code = await hookRunCommand({ ...h.deps, hookPlatform: platform,
+      spawnQuestionSettlement: launch,
+      clientFactory: (...args) => ({ ...factory(...args), replies: async () => {
+        polls++; throw new Error('submission must not consume replies')
+      } }) as ApiClient,
+    }, 'question-submission', stdin({ session_id: 'submission-event', cwd: h.deps.cwd }), harnessName)
+    expect(code).toBe(EXIT.ok)
+    expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+    expect(readSessionState('submission-event', h.env).pending?.[0]?.request_id).toBeDefined()
+    expect(h.io.outLines).toEqual([])
+    expect(polls).toBe(0)
+    expect(launch).toHaveBeenCalledTimes(observers)
+  })
+
+  it('submits immediately while another owner is waiting, without polling answers', async () => {
+    const h = harness([])
+    writeSessionState('immediate', h.env, { harness: 'codex' })
+    expect(claimQuestionPush('immediate', h.env)).toBe(true)
+    registerQuestion('immediate', h.env, { question: 'Deploy now?' }, NOW)
+    let polls = 0
+    const context = waiterContext(h)
+    context.waitForFirstReply = async () => { polls++; throw new Error('submission must not wait') }
+    try {
+      const submitted = await submitSessionQuestions(context, { session_id: 'immediate' })
+      expect(submitted).toHaveLength(1)
+      expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+      expect(readSessionState('immediate', h.env).pending?.[0]?.request_id).toBe(submitted[0]?.request_id)
+      expect(polls).toBe(0)
+      expect(h.deps.now?.()).toBe(NOW)
+      expect(claimQuestionPush('immediate', h.env)).toBe(false)
+    } finally { releaseQuestionPush('immediate', h.env) }
+  })
+
+  it('serializes concurrent immediate submitters around one frozen identity', async () => {
+    const h = harness([])
+    registerQuestion('concurrent-submit', h.env, { question: 'Deploy once?' }, NOW)
+    const context = waiterContext(h)
+    await Promise.all([
+      submitSessionQuestions(context, { session_id: 'concurrent-submit' }),
+      submitSessionQuestions(context, { session_id: 'concurrent-submit' }),
+    ])
+    expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+    expect(readSessionState('concurrent-submit', h.env).pending).toHaveLength(1)
+  })
+
+  it('observes a fresh answer without spending invisible acknowledgement reminders', async () => {
+    const h = harness([reply({ text: 'New answer' })])
+    writeSessionState('background-debt', h.env, {
+      acknowledgement_due: [{ request_id: 'req_previous', recorded_at: NOW }],
+      acknowledgement_blocks: 2,
+    })
+    registerQuestion('background-debt', h.env, { question: 'Next decision?' }, NOW)
+    const deferred = vi.fn(async () => undefined)
+    const outcome = await runEscalationWaiter({ ...waiterContext(h), harness: 'claude-code' }, {
+      sessionId: 'background-debt', envelope: { session_id: 'background-debt' },
+      route: { kind: 'inbox-socket', deliver: vi.fn(), defer: deferred }, recordStop: false,
+    })
+    expect(deferred).toHaveBeenCalledTimes(1)
+    expect(deferred.mock.calls[0]?.[0]).toMatchObject({ answers: [expect.objectContaining({ reply: expect.objectContaining({ text: 'New answer' }) })] })
+    expect(outcome.stdout).toBeUndefined()
+    expect(readSessionState('background-debt', h.env).acknowledgement_blocks).toBe(2)
+    expect(readSessionState('background-debt', h.env).acknowledgement_due).toContainEqual(expect.objectContaining({ request_id: 'req_previous' }))
+  })
 
   it('waits through grace, routes the fenced answer, and holds the claim until delivery settles', async () => {
     const h = harness([reply({ text: 'Ship it' })])

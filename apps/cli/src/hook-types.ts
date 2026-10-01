@@ -22,12 +22,9 @@ import type { WriteGuard } from './wake-support.js'
  * and Codex can continue directly from a turn-end answer. Harnesses without a
  * proven exact-session continuation fail closed at question admission.
  *
- * Where the user is standing no longer decides anything here. It used to: the
- * old turn-end route held the terminal briefly and made keyboard presence an
- * input to whether it waited. The current policy is explicit instead: Claude
- * Code owns the complete answer window out of band, while Codex owns it by
- * holding the asking turn. Neither infers notification preference from
- * keystrokes.
+ * Submission starts at registration. Native observers and held Stop routes
+ * own answer delivery separately; neither infers notification preference from
+ * keyboard presence.
  */
 
 /** Fields we read from harness hook JSON. Everything else is passed through. */

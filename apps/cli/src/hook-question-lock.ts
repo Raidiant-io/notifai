@@ -169,10 +169,8 @@ export function claimHandoffState(
   sessionId: string,
   env: NodeJS.ProcessEnv,
 ): { hasNewQuestion: boolean; ownerDeadlineAt?: number } {
-  const unasked = pendingList(readSessionState(sessionId, env)).filter(
-    (entry) => entry.request_id === undefined,
-  )
-  if (unasked.length === 0) return { hasNewQuestion: false }
+  const pending = pendingList(readSessionState(sessionId, env))
+  if (pending.length === 0) return { hasNewQuestion: false }
   try {
     const held = JSON.parse(readFileSync(claimPath(sessionId, env), 'utf8')) as {
       pending_question_ids?: unknown
@@ -183,7 +181,7 @@ export function claimHandoffState(
       held.pending_question_ids.filter((entry): entry is string => typeof entry === 'string'),
     )
     return {
-      hasNewQuestion: unasked.some(
+      hasNewQuestion: pending.some(
         (entry) => !snapshotted.has(claimQuestionIdentity(entry)),
       ),
       ...(typeof held.owner_deadline_at === 'number' &&

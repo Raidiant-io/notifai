@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:2a0a9d3baa7508920759f6dbee394bda7611bab688dab9a4993e1f5b22c763ce",
+  "behavior_digest": "sha256:5e5b026f7d6992402b67216d1c940054a9b1a44d6b16526d50de93b63f2e141e",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms. Codex and POSIX Claude now queue content-free wakes and drain pending answers and Session Messages through one bounded foreground consumer. The skill teaches the exact-session receive command, empty wakes, batching and unchanged per-item acknowledgements. Existing trusted Codex tool hooks also drain answers; no new hook definition or native trust approval is required. Held Stop and generation-bound gateway integrations keep their native delivery contracts. Diagnostics distinguish queued wakes from presented input without logging User text.",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms. Codex and POSIX Claude now queue content-free wakes and drain pending answers and Session Messages through one bounded foreground consumer. The skill teaches the exact-session receive command, empty wakes, batching and unchanged per-item acknowledgements. Existing trusted Codex tool hooks also drain answers; no new hook definition or native trust approval is required. Held Stop and generation-bound gateway integrations keep their native delivery contracts. Diagnostics distinguish queued wakes from presented input without logging User text. Follow-up review compresses duplicate skill prose under its reading budget without changing the delivery contract; routing assertions tolerate Markdown wrapping. Immediate ask submission now runs independently of answer ownership; removed turn-ending guidance and duplicate Stop admission guards, preserving exact identities and full answer windows. Detached Claude observers stage answers for the genuine resident writer; its existing local probe interrupts a quiet attendance poll when an unwoken answer is staged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

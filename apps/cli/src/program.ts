@@ -563,8 +563,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   program
     .command('ask [question]')
     .helpGroup(GROUP.agent)
-    .summary('Register a question, then end the turn')
-    .description('Register a question for the turn-end hook to route to your devices, subject to your question-routing settings')
+    .summary('Ask now and continue independent work')
+    .description('Register a question and immediately start background submission, subject to your question-routing settings')
     .option(
       '--choice <label>',
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',
@@ -659,7 +659,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Retire a question so late answers are rejected')
     .description(
-      'Retire a question so late answers are rejected rather than lost. Pass --pending to withdraw this Agent Session\'s outstanding registrations, including ones the turn-end hook has not pushed yet.',
+      'Retire a question so late answers are rejected rather than lost. Pass --pending to withdraw this Agent Session\'s outstanding registrations, including ones Question Routing has not submitted yet.',
     )
     .option('--pending', 'retire this Agent Session\'s outstanding questions, including ones not yet pushed')
     .option('--json', 'machine-readable output')
@@ -686,13 +686,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       }
       const harness = HOOK_INSTALLABLE_HARNESSES.find((candidate) => candidate === opts.harness)
       const settlementInput = deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
-      if (event === 'question-settlement') {
+      if (event === 'question-settlement' || event === 'question-submission') {
         delete deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
       }
       exit(await runners.hookRun(
         deps,
         event,
-        event === 'question-settlement' && settlementInput !== undefined
+        (event === 'question-settlement' || event === 'question-submission') && settlementInput !== undefined
           ? async () => settlementInput
           : () => readStdinWithTimeout(),
         harness,

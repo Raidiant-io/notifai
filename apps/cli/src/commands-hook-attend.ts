@@ -22,6 +22,7 @@ import {
   readSessionEndMarker,
   type LifecycleStamp,
   readSessionIncarnation,
+  readSessionState,
   refreshSessionMarkers,
   rotateSessionIncarnation,
   sessionNotified,
@@ -304,6 +305,10 @@ export async function attendHook(
       // The service accepts notes for this session only while an attendant
       // that can hand them in place says so.
       acceptsMessages: messages !== null,
+      ...(harness === 'claude-code' && messages !== null ? {
+        localInputPending: () => !readSessionState(sessionId, deps.env).input_wake?.queued &&
+          hasSessionInputs(sessionId, deps.env, null),
+      } : {}),
       ...(messages === null
         ? {}
         : {

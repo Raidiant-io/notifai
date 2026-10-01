@@ -3,19 +3,21 @@ import { fileURLToPath } from 'node:url'
 import type { HookInstallableHarness } from './harnesses.js'
 import type { HookEnvelope } from './hook-types.js'
 
-/** Private handoff from the short prompt hook to its detached question owner. */
+/** Private handoff to detached question submission or answer ownership. */
 export const QUESTION_SETTLEMENT_INPUT_ENV = 'NOTIFAI_INTERNAL_QUESTION_SETTLEMENT_INPUT'
 
 export interface QuestionSettlementLaunch {
   envelope: Pick<HookEnvelope, 'session_id' | 'cwd'>
   harness: HookInstallableHarness
+  /** Submission never consumes an answer or writes discarded harness stdout. */
+  purpose?: 'submission'
 }
 
 /**
  * Launch the exact installed CLI build as a detached owner.
  *
- * UserPromptSubmit sits in front of the User's new turn, so it may only pay the
- * process-spawn cost. The child owns submission and the complete answer window.
+ * Ask and prompt hooks pay only process startup. Submission owns admission;
+ * settlement separately observes the complete answer window.
  */
 export function spawnQuestionSettlement(launch: QuestionSettlementLaunch): void {
   const child = spawn(
@@ -23,7 +25,7 @@ export function spawnQuestionSettlement(launch: QuestionSettlementLaunch): void 
     [
       fileURLToPath(new URL('./main.js', import.meta.url)),
       'hook',
-      'question-settlement',
+      launch.purpose === 'submission' ? 'question-submission' : 'question-settlement',
       '--owner',
       'notifai',
       '--harness',

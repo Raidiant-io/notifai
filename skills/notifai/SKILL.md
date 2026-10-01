@@ -92,16 +92,13 @@ without an exact Agent Session is a usage error. With an exact identifier:
 notifai send --kind done \
   --session-label "Account creation" \
   --title "Users can now create accounts" \
-  --summary "Sign-up, verification, and login now work on staging." \
-  --body "Sign-up, email verification, and login work end to end on staging. Next: password reset, unless you want something else first."
+  --summary "Sign-up, verification, and login now work on staging."
 ```
-
-Without that identifier, omit `--session-label` and carry only Project context.
 
 Outside a Project, or on a Projectless request, pass `--projectless`; it stops
 cwd or config from inventing a Project.
 
-`--kind` is required, and it is the most consequential word you choose:
+`--kind` is required and controls insistence:
 
 | kind | what it means | how it arrives |
 | --- | --- | --- |
@@ -111,7 +108,7 @@ cwd or config from inventing a Project.
 | `blocked` | no User reply would resume the work | attention tone |
 | `question` | set for you by `--reply` and by `ask` — never pass it | attention tone |
 
-**Declare the kind that is true**: it sets the notification's insistence.
+**Declare the kind that is true.**
 
 Work needs a User response? [Ask an answerable question](#ask-a-question).
 Use one-way blocked only when no User reply would resume the work.
@@ -132,14 +129,13 @@ Images (`--image`, referenced in Body as `media:1`), grouping, replacement,
 and the User-owned `--sound`, `--level`, and `--device`:
 [Sending details](references/send-details.md).
 
+Without that identifier, omit `--session-label`.
 Project and Agent Session are inferred; never pass `--session-id`.
 `--session-label` is 2-6 words about the Agent Session, never the Project, branch,
 status, result, identifier, hash, or filesystem path.
 The initial name comes from the environment when available, then your label,
 then a generated fallback. Repeat the same `--session-label` on sends and asks;
-changing that flag does not rename an existing semantic name. A later semantic
-name can replace a generated fallback. Companion Apps show the Account's current
-label, including a User rename.
+changing that flag does not rename an existing semantic name. A semantic name can replace a generated fallback; Companion Apps show the current Account label.
 
 ### Keep the Agent Session name current
 
@@ -147,12 +143,10 @@ At each change of job, check whether the current name still describes the work.
 If the job changed completely enough that the old name would mislead the User,
 run `notifai session rename "New job"` when starting the new job, without
 waiting for a notification or User reminder. Keep the name for milestones,
-ordinary progress, and same-job refinements. Account creation to search
-indexing merits a rename; testing account creation does not.
+ordinary progress, and same-job refinements. Rename for a new job, never its testing milestone.
 
-The command updates the Account, then the local name; use the new name in later
-sends and asks. It accepts no Agent Session id and needs the active harness to
-prove the exact current Agent Session. A harness title change alone does not
+The command updates the Account and local name; use it in later sends and asks.
+It takes no Agent Session id: the active harness must prove the exact session. A harness title change alone does not
 rename an existing Notifai semantic label.
 
 ## Ask a question
@@ -183,8 +177,8 @@ notifai ask "Which environment should I roll out to?" \
 
 `--json` returns choice ids and `question_id`.
 
-`registered: true` is local only. It has not yet been submitted as a
-Notification Request and has no Provider Acceptance. Never call a question sent
+`registered: true` confirms local registration only, not submission or
+Provider Acceptance. Background submission starts immediately. Never call a question sent
 or delivered from registration alone. Settlement adds `request_id`, keeping
 `question_id`. Inspect:
 
@@ -195,9 +189,9 @@ notifai status <question_id> --json
 States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 
 **Registering is not the end of the turn.** Ask in plain conversational text,
-say what each answer will make you do, then end the turn to start submission.
-A harness form can remain pending after a reply. Follow higher-priority rules;
-neither path retires the other.
+say what each answer will make you do, and continue independent work.
+Submission does not wait for turn end; answer-dependent work waits for the reply.
+A harness form can remain pending after a reply; neither path retires the other.
 
 **Never say where the answer must arrive** ("tell me here"). The harness owns routing.
 
@@ -247,11 +241,10 @@ resume later. Never create a duplicate. On exit 0, act on the answer.
 
 ## When the answer arrives
 
-A wake-up may ask you to run `notifai receive --session <id>`. Run the exact
-command: it reads this session's pending notes and answers together. The wake-up
-itself contains no answer and needs no acknowledgement. If the command says no
-input remains, continue; never recover an old answer from the wake-up. Hooks may
-already have delivered the input while that wake-up waited.
+When a wake-up names `notifai receive --session <id>`, run that exact command
+to read pending notes and answers together. An empty result means continue.
+The wake-up contains no answer and needs no acknowledgement; never recover an
+old answer from it. Hooks may have delivered the input already.
 
 The latest reply is the user's current word: later choices correct earlier
 ones; typed parts are read together in order. A relayed answer uses the chosen
@@ -276,8 +269,8 @@ notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report
 Keep it under 200 characters and name only the concrete work their reply
 causes: it is a receipt, not a report.
 
-If the written reply is off, Notifai prints the command without `--text`; run
-exactly that. The acknowledgement is never optional.
+If written replies are off, run the printed command without `--text`.
+Acknowledgement is required.
 
 Then resume the committed work without asking them to confirm again; it is
 work you are resuming, not approval you received.

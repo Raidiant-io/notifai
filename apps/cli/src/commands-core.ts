@@ -95,7 +95,7 @@ export interface CommandDeps {
   /** Test seams for the Codex thread-writer probe and cold resume. */
   codexWake?: CodexWakeAdapters
   codexSourcePid?: number
-  /** Test seam for the detached owner recovered from a pre-Stop User prompt. */
+  /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills

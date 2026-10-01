@@ -38,10 +38,11 @@ export async function receiveSessionInputs(deps: CommandDeps, sessionId: string,
 
 export async function receiveCommand(deps: CommandDeps, flags: { session: string }): Promise<number> {
   const current = resolveCommandSession(deps)
-  if (current === null || current.sessionId !== flags.session) {
+  if (current?.source !== 'exact-harness' || current.sessionId !== flags.session) {
     deps.io.err('Pending input belongs to a different or unresolved Agent Session; no input was read.')
     return EXIT.usage
   }
+  log(deps).bind({ session: current.sessionId })
   observeSessionInputWake(flags.session, deps.env, sessionInputWake(flags.session))
   const received = await receiveSessionInputs(deps, flags.session, (text) => deps.io.out(text))
   if (!received) deps.io.out('No user input is ready for this session. Continue your work; pending input will be offered at a later boundary.')
