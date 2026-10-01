@@ -15,7 +15,7 @@ import type { HookEnvelope } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
-import { currentCodexTurn, readAttendantLease } from './session-attendant-state.js'
+import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session-attendant-state.js'
 import { readDeliveryJournal, type DeliveryLease } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 
@@ -85,7 +85,7 @@ export async function deliverCodexToolMessage(
 ): Promise<void> {
   const sessionId = envelope.session_id
   if (sessionId === undefined || envelope.hook_event_name !== 'PostToolUse' ||
-      typeof envelope.turn_id !== 'string') return
+      typeof envelope.turn_id !== 'string' || envelope.turn_id === '') return
   const incarnation = readSessionIncarnation(sessionId, deps.env)
   const lease = readAttendantLease(sessionId, deps.env)
   const sourcePid = Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])
@@ -103,7 +103,16 @@ export async function deliverCodexToolMessage(
   // Seeing a definition on disk does not prove an already-running Codex loaded
   // it. Only this exact session's real tool invocation enables busy delivery.
   const fingerprint = toolHookFingerprint(deps)
-  if (fingerprint === null || !mayWrite()) return
+  if (fingerprint === null || sessionHasEnded(sessionId, deps.env) ||
+      processIdentityLiveness(owner) !== 'alive') return
+  // Automatic continuations need not emit UserPromptSubmit. A trusted,
+  // synchronous tool callback from this exact owner is also a turn observation.
+  // recordTurnStart ignores previously seen/ended turns, so a late callback
+  // cannot resurrect an interrupted turn or replace a newer observed turn.
+  if (currentCodexTurn(sessionId, deps.env, incarnation.key) !== envelope.turn_id) {
+    recordTurnStart(sessionId, deps.env, incarnation.key, envelope.turn_id)
+  }
+  if (!mayWrite()) return
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
   if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint) {
     updateSessionState(sessionId, deps.env, (state) => ({

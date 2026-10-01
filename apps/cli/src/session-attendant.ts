@@ -289,6 +289,10 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     }
     const changed = activity !== probe.activity
     activity = probe.activity
+    if (changed) {
+      logger.info('attendant.state', { phase, activity, reason: 'activity-changed', generation })
+      writeStatus()
+    }
     if (previous.state !== 'running' || changed) {
       // A held exchange carries the old activity; cut it so the next one reports this.
       exchange?.abort()

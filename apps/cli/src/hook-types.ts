@@ -60,7 +60,7 @@ export interface HookEnvelope {
   status?: string
   /** The prompt the user just submitted, when the harness includes it. */
   prompt?: string
-  /** Codex's id for the turn a UserPromptSubmit or Stop belongs to. */
+  /** Codex's exact turn id on prompt, tool, Stop and Interrupt callbacks. */
   turn_id?: string
 }
 

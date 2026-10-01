@@ -160,9 +160,9 @@ export function readAttendantEndingLease(sessionId: string, env: NodeJS.ProcessE
  * A thread's own turn boundaries, for a harness that publishes no activity of
  * its own (Codex), scoped to one session incarnation (its stable start key).
  *
- * Starts are recorded by the synchronous prompt hook, which Codex runs before
- * each turn and one turn at a time, so recorded starts keep the thread's own
- * order. Ends come from asynchronous hooks (Stop, Interrupt) that may run late
+ * Starts are observed by synchronous prompt and tool hooks. Automatic goal
+ * continuations can omit the prompt hook; their first trusted tool callback
+ * observes the turn instead. Ends come from asynchronous hooks (Stop, Interrupt) that may run late
  * or before the start they close, so they are matched by turn id. A start of a
  * turn already seen — started or ended — is stale and never replaces the
  * current turn. The thread is working while its current turn has no end.

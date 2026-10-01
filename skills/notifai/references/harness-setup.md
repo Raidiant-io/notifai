@@ -133,6 +133,10 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   Busy delivery starts after that exact session first runs the trusted hook;
   until then, and while idle, Notes use the native queue. A running tool must
   return before its hook runs.
+  Automatic goal continuations are observed at their first trusted tool
+  callback even when the harness emits no prompt hook. Notes still need an
+  available callback; a long tool or uninterrupted reasoning cannot be cut
+  short by this route.
   Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
   SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
   UserPromptSubmit does not activate it. Codex SubagentStart uses the same

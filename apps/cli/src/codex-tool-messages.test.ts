@@ -14,7 +14,7 @@ import { acquireClaimFile } from './hook-question-lock.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { enableProject, projectBinding } from './project-enablement.js'
-import { attendantClaimPath, recordTurnEnd, recordTurnStart, writeAttendantStatus } from './session-attendant-state.js'
+import { attendantClaimPath, recordTurnEnd, recordTurnStart, readTurnActivity, writeAttendantStatus } from './session-attendant-state.js'
 import { acquireDeliveryLock, readDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment } from './integration-health.js'
@@ -120,6 +120,38 @@ describe('Codex tool-boundary Session Messages', () => {
     ])
   })
 
+  it('observes an automatic continuation at its first tool boundary without a prompt', async () => {
+    const h = setup()
+    await h.hook()
+    recordTurnEnd(SESSION, h.env, 'turn-1')
+    h.stage([note('sm_goal')])
+    await h.hook('goal-turn-2')
+    expect(h.output).toHaveLength(1)
+    expect(h.output[0]).toContain('sm_goal')
+    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('working')
+    // Neither an old callback nor a delayed Stop can reopen/end the wrong turn.
+    h.stage([note('sm_next')])
+    await h.hook('turn-1')
+    recordTurnEnd(SESSION, h.env, 'turn-1')
+    expect(h.output).toHaveLength(1)
+    await h.hook('goal-turn-2')
+    expect(h.output[1]).toContain('sm_next')
+  })
+
+  it('observes a new tool turn before the previous asynchronous Stop arrives', async () => {
+    const h = setup()
+    h.stage([note('sm_continuation')])
+    await h.hook('goal-turn-2')
+    recordTurnEnd(SESSION, h.env, 'turn-1')
+    expect(h.output[0]).toContain('sm_continuation')
+    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('working')
+    recordTurnEnd(SESSION, h.env, 'goal-turn-2')
+    h.stage([note('sm_interrupted')])
+    await h.hook('goal-turn-2')
+    expect(h.output).toHaveLength(1)
+    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('idle')
+  })
+
   it('does no authenticated work when no message is staged', async () => {
     const h = setup()
     expect(localIntegrationAssessment(h.deps, 'codex').faults).toEqual([])
@@ -145,6 +177,7 @@ describe('Codex tool-boundary Session Messages', () => {
   it('rejects stale turns, foreign owners, generations, and ended sessions', async () => {
     const h = setup()
     h.stage([note('sm_stale')])
+    recordTurnEnd(SESSION, h.env, 'old-turn')
     await h.hook('old-turn')
     h.deps.env['NOTIFAI_HOOK_SOURCE_PID'] = '1'
     await h.hook()
