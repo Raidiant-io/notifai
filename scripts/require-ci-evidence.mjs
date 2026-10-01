@@ -14,15 +14,9 @@ const PENDING_RUN_STATUSES = new Set(['queued', 'in_progress', 'pending', 'reque
 
 class PendingCiEvidenceError extends Error {}
 
-export function validateCiEvidence({runs, jobs, expectedSha}) {
-  const successful = runs.filter(run =>
-    run.head_sha === expectedSha && run.status === 'completed' && run.conclusion === 'success',
-  )
-  if (successful.length !== 1) {
-    throw new Error(
-      `expected exactly one successful CI run for the release SHA; found ${successful.length}. ` +
-      'Run CI manually at the exact SHA before publishing.',
-    )
+export function validateCiEvidence({run, jobs, expectedSha}) {
+  if (run?.head_sha !== expectedSha || run.status !== 'completed' || run.conclusion !== 'success') {
+    throw new Error('A successful exact-SHA CI run is required. Run CI manually at the exact SHA before publishing.')
   }
 
   const byName = new Map()
@@ -41,7 +35,7 @@ export function validateCiEvidence({runs, jobs, expectedSha}) {
       throw new Error(`${name} must succeed when applicable or be explicitly skipped`)
     }
   }
-  return successful[0]
+  return run
 }
 
 async function githubJson(path, token, fetcher) {
@@ -66,22 +60,25 @@ async function readCiEvidence({repository, expectedSha, token, fetcher}) {
   )
   const exactRuns = (runPayload.workflow_runs ?? []).filter(run => run.head_sha === expectedSha)
   const candidates = exactRuns.filter(run => run.status === 'completed' && run.conclusion === 'success')
-  if (candidates.length !== 1) {
-    if (candidates.length === 0 && (exactRuns.length === 0 || exactRuns.some(run => PENDING_RUN_STATUSES.has(run.status)))) {
+    .sort((a, b) => b.id - a.id)
+  if (candidates.length === 0) {
+    if (exactRuns.length === 0 || exactRuns.some(run => PENDING_RUN_STATUSES.has(run.status))) {
       throw new PendingCiEvidenceError('exact-SHA CI has not completed successfully yet')
     }
-    return validateCiEvidence({runs: candidates, jobs: [], expectedSha})
+    return validateCiEvidence({run: undefined, jobs: [], expectedSha})
   }
 
+  // Reruns and paired tags may supply equivalent evidence. Bind every job to one run.
+  const run = candidates[0]
   const jobsPayload = await githubJson(
-    `/repos/${repository}/actions/runs/${candidates[0].id}/jobs?filter=latest&per_page=100`,
+    `/repos/${repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`,
     token,
     fetcher,
   )
   if ((jobsPayload.total_count ?? 0) > (jobsPayload.jobs ?? []).length) {
     throw new Error('exact-SHA CI job evidence is incomplete; run CI manually and retry')
   }
-  return validateCiEvidence({runs: candidates, jobs: jobsPayload.jobs ?? [], expectedSha})
+  return validateCiEvidence({run, jobs: jobsPayload.jobs ?? [], expectedSha})
 }
 
 function validateInputs({repository, expectedSha, token}) {
