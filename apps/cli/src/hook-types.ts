@@ -59,6 +59,9 @@ export interface HookEnvelope {
   prompt?: string
   /** Codex's exact turn id on prompt, tool, Stop and Interrupt callbacks. */
   turn_id?: string
+  /** Codex child hooks carry the root session_id but name the child here. */
+  agent_id?: string
+  agent_type?: string
 }
 
 export interface SessionState {
