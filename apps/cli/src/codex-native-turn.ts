@@ -1,5 +1,5 @@
 /** Read only typed lifecycle records from the transcript named by a native hook. */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
 
@@ -13,6 +13,27 @@ export interface NativeTurnSnapshot {
 
 const HEADER_BYTES = 64 * 1024
 const TAIL_BYTES = 8 * 1024 * 1024
+
+/** Bounded filename discovery for an existing owner during an explicit update.
+ * The reader below still verifies native metadata; filenames are not identity.
+ */
+export function findNativeTranscript(sessionId: string, env: NodeJS.ProcessEnv): string | null {
+  if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return null
+  const matches: string[] = []
+  let remaining = 50_000
+  const visit = (directory: string, depth: number): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (--remaining < 0) throw new Error('discovery-bound')
+      const file = path.join(directory, entry.name)
+      if (entry.isDirectory() && depth < 3) visit(file, depth + 1)
+      else if (entry.isFile() && entry.name.endsWith(`-${sessionId}.jsonl`)) matches.push(file)
+    }
+  }
+  try {
+    visit(path.join(configHome(env, 'CODEX_HOME', '.codex'), 'sessions'), 0)
+    return matches.length === 1 ? matches[0]! : null
+  } catch { return null }
+}
 
 /** Unknown, replaced, partial or unowned records never supply activity evidence. */
 export function readNativeTurnSnapshot(

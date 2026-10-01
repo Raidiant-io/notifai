@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { AttendanceRequestT, AttendanceResponse } from '@raidiant/notifai-protocol'
 import { describe, expect, it } from 'vitest'
 import type { ApiClient } from './client.js'
-import { attendantGates } from './commands-hook-attend.js'
+import { attendHook, attendantGates } from './commands-hook-attend.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CommandDeps, CommandIo } from './commands.js'
 import { sanitizeSessionId, stateDir } from './config.js'
@@ -692,6 +692,41 @@ describe('notifai hook attend for Codex', () => {
     isolated.env['CODEX_HOME'] = path.join(isolated.root, 'codex')
     return isolated
   }
+
+  it('recovers an existing native turn during update without a hook event or a new incarnation', async () => {
+    const { env, root } = codexEnv()
+    delete env['NOTIFAI_HOOK_SOURCE_PID']
+    const service = fakeAttendance()
+    const deps = attendDeps(env, root, { clientFactory: () => service.client })
+    deps.attendant!.probeAdapters!.parentPid = () => HARNESS.pid
+    const owner = beginSessionIncarnation(THREAD, env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
+    recordSessionNotified(THREAD, env, Date.now())
+    recordTurnStart(THREAD, env, owner.key, 'previous')
+    recordTurnEnd(THREAD, env, 'previous')
+    updateSessionState(THREAD, env, state => ({ ...state,
+      pending: [{ question: 'Existing question', request_id: 'req_pending' }],
+      message_acknowledgement_due: [{ message_id: 'sm_pending', recorded_at: Date.now(), text_required: true }],
+    }))
+    const transcript = path.join(env['CODEX_HOME']!, 'sessions', 'recovery.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: THREAD, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'already-running' } },
+    ].map(value => JSON.stringify(value)).join('\n') + '\n')
+    const running = attendHook(deps, { envelope: { session_id: THREAD, cwd: root }, harness: 'codex', cwd: root,
+      invokedAt: lifecycleStamp(), logger: nullLogger(),
+      recovery: { key: owner.key, harnessProcess: HARNESS, transcriptPath: transcript },
+    })
+    try {
+      await until(() => service.calls.some(call => call.activity === 'working'), 'recovered working turn')
+      expect(readSessionIncarnation(THREAD, env)?.incarnation).toBe(owner.incarnation)
+      expect(readSessionState(THREAD, env).pending?.[0]?.request_id).toBe('req_pending')
+      expect(readSessionState(THREAD, env).message_acknowledgement_due?.[0]?.message_id).toBe('sm_pending')
+    } finally {
+      markSessionEnded(THREAD, env, Date.now() + 1)
+      await running
+    }
+  })
 
   it('attends a loaded thread, reports activity, and queues a wake without claiming the Note', async () => {
     const { env, root } = codexEnv()

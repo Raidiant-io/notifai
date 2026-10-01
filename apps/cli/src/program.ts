@@ -48,6 +48,7 @@ import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.
 import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { resumeAttendantCommand } from './attendant-update.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -304,6 +305,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       }
       exit(opts.resume ? await runners.updateResume(deps, opts) : opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : runners.update(deps, opts))
     })
+
+  // Owned updater subprocess; never an agent-facing lifecycle or session-creation API.
+  program.command('attendant-resume <session-id> <incarnation-key>', { hidden: true })
+    .action(async (sessionId: string, key: string) => { exit(await resumeAttendantCommand(deps, sessionId, key)) })
 
   const project = program
     .command('project')
