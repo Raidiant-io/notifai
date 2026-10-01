@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.1-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.6.0...v11.6.1-beta.1) (2026-10-01)
+
+### Bug Fixes
+
+* Deliver pending notes and answers together at supported Codex and Claude input boundaries, and queue content-free wake prompts to avoid stale answer copies.
+* Observe automatic Codex turns at trusted tool callbacks so busy sessions can receive pending input without waiting for another human prompt.
+* Record delivery stages, batch sizes and oldest pending note age for clearer local diagnostics.
+
 ## [11.6.0](https://github.com/Raidiant-io/notifai/compare/v11.5.0...v11.6.0) (2026-09-30)
 
 
