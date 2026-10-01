@@ -1,27 +1,12 @@
-/**
- * Busy Codex Notes wait here, unclaimed, for the next synchronous tool hook.
- * This is a cache of the service's ordered batch, not a second delivery queue.
- * Both tool stdout and idle queue writes claim through the same sequencer;
- * an ambiguous write is never retried through the other route.
- */
-import type { AttendanceMessage } from '@raidiant/notifai-protocol'
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
-import { atomicWriteFileSync } from './atomic-file.js'
+/** A trusted Codex tool boundary observes the turn and drains shared pending input. */
+import { drainSessionInputs, hasSessionInputs } from './session-inputs.js'
 import { type CommandDeps, makeClient } from './commands-core.js'
-import { sanitizeSessionId, stateDir } from './config.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import type { HookEnvelope } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
-import { currentCodexTurn, readAttendantLease } from './session-attendant-state.js'
-import { readDeliveryJournal, type DeliveryLease } from './session-delivery.js'
-import { handOffSessionMessages } from './session-message-handoff.js'
-
-export function codexToolMessagesPath(sessionId: string, env: NodeJS.ProcessEnv): string {
-  return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.tool-messages.json`)
-}
+import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session-attendant-state.js'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
 function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' | 'hookPlatform'>): string | null {
@@ -46,46 +31,13 @@ export function codexToolHookReady(
     proof.incarnation === readSessionIncarnation(sessionId, deps.env)?.incarnation
 }
 
-export function stageCodexToolMessages(
-  sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease,
-  messages: readonly AttendanceMessage[],
-): void {
-  atomicWriteFileSync(codexToolMessagesPath(sessionId, env), JSON.stringify({
-    session_id: sessionId, ...lease, messages,
-  }))
-}
-
-function isMessage(value: unknown): value is AttendanceMessage {
-  if (typeof value !== 'object' || value === null) return false
-  const m = value as Record<string, unknown>
-  return typeof m['message_id'] === 'string' && /^sm_[A-Za-z0-9_-]+$/.test(m['message_id']) &&
-    typeof m['created_at'] === 'string' && typeof m['agent_acknowledgement_text_required'] === 'boolean' &&
-    ((m['kind'] === 'note' && typeof m['body'] === 'string') ||
-      (m['kind'] === 'answer_edit' && typeof m['request_id'] === 'string' &&
-        typeof m['text'] === 'string' && Array.isArray(m['answers'])))
-}
-
-export function readCodexToolMessages(
-  sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease,
-): AttendanceMessage[] {
-  try {
-    const data = JSON.parse(readFileSync(codexToolMessagesPath(sessionId, env), 'utf8')) as Record<string, unknown>
-    if (data['session_id'] !== sessionId || data['incarnation'] !== lease.incarnation ||
-        data['generation'] !== lease.generation || !Array.isArray(data['messages']) ||
-        !data['messages'].every(isMessage)) return []
-    return data['messages']
-  } catch {
-    return []
-  }
-}
-
-/** One Note per boundary keeps stdout a single JSON document and the hook bounded. */
+/** Notes and answers share one bounded stdout document at the trusted boundary. */
 export async function deliverCodexToolMessage(
   deps: CommandDeps, envelope: HookEnvelope, logger: Logger,
 ): Promise<void> {
   const sessionId = envelope.session_id
   if (sessionId === undefined || envelope.hook_event_name !== 'PostToolUse' ||
-      typeof envelope.turn_id !== 'string') return
+      typeof envelope.turn_id !== 'string' || envelope.turn_id === '') return
   const incarnation = readSessionIncarnation(sessionId, deps.env)
   const lease = readAttendantLease(sessionId, deps.env)
   const sourcePid = Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])
@@ -103,19 +55,23 @@ export async function deliverCodexToolMessage(
   // Seeing a definition on disk does not prove an already-running Codex loaded
   // it. Only this exact session's real tool invocation enables busy delivery.
   const fingerprint = toolHookFingerprint(deps)
-  if (fingerprint === null || !mayWrite()) return
+  if (fingerprint === null || sessionHasEnded(sessionId, deps.env) ||
+      processIdentityLiveness(owner) !== 'alive') return
+  // Automatic continuations need not emit UserPromptSubmit. A trusted,
+  // synchronous tool callback from this exact owner is also a turn observation.
+  // recordTurnStart ignores previously seen/ended turns, so a late callback
+  // cannot resurrect an interrupted turn or replace a newer observed turn.
+  if (currentCodexTurn(sessionId, deps.env, incarnation.key) !== envelope.turn_id) {
+    recordTurnStart(sessionId, deps.env, incarnation.key, envelope.turn_id)
+  }
+  if (!mayWrite()) return
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
   if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint) {
     updateSessionState(sessionId, deps.env, (state) => ({
       ...state, codex_tool_hook: { incarnation: lease.incarnation, fingerprint },
     }))
   }
-  const attempted = new Set(readDeliveryJournal(sessionId, deps.env)
-    .filter((entry) => ['writing', 'written', 'failed'].includes(entry.stage))
-    .flatMap((entry) => entry.subject.type === 'session_message' ? [entry.subject.message_id] : []))
-  const message = readCodexToolMessages(sessionId, deps.env, lease)
-    .find((entry) => !attempted.has(entry.message_id))
-  if (message === undefined || !mayWrite()) return
+  if (!hasSessionInputs(sessionId, deps.env, lease) || !mayWrite()) return
   const credential = deps.store.load()
   const writer = currentProcessIdentity()
   if (credential === null || writer === null) return
@@ -124,28 +80,15 @@ export async function deliverCodexToolMessage(
   const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
     timeoutMs: 750, deadlineAt, now,
   })
-  await handOffSessionMessages([message], {
+  await drainSessionInputs({
+    lease,
     mayWrite: () => now() < deadlineAt && mayWrite(),
-    generation: () => lease.generation,
-    incarnation: () => lease.incarnation,
-  }, {
-    lockWaitMs: 0,
     sequencer: {
       sessionId, env: deps.env, client, writer, log: logger,
       monotonic: () => performance.now(), wall: now,
       recoveryDeadline: performance.now() + 500,
       sleep: async (ms) => { if (now() < deadlineAt) await new Promise((resolve) => setTimeout(resolve, Math.min(ms, deadlineAt - now()))) },
     },
-    write: async (text, begin, guard) => {
-      const output = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text } })
-      if (!guard.writable() || !begin()) return { status: 'cancelled' }
-      if (!guard.writable()) return { status: 'aborted', reason: 'tool-hook-fenced' }
-      try {
-        deps.io.out(output)
-      } catch (error) {
-        return { status: 'failed', reason: 'tool-hook-output-failed', error }
-      }
-      return { status: 'written', route: 'tool-hook' }
-    },
+    write: (text) => deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text } })),
   })
 }

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:03a95f0691f26f9795798ea471483ea690300b4742bbced31292db76a236aa0d",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle-hook merge and native document planning, packaged skill and update reference, harness setup and activation cells, CLI readiness and structured repair diagnostics, README, TRUST and domain terms. In-place replacement now fulfills the existing promise to preserve healthy Codex approval and active Stop identity: owned/foreign handler positions, empty groups and matcher restrictions remain intact; missing handlers append. Ambiguous duplicate or retired Codex slots refuse before document/trust writes and the actual installer diagnostic reaches resumable pending actions. No new command, flag, scope, permission, automatic restart, native approval or service dependency is introduced. The shipped update guidance already requires concrete diagnosis, explicit approval for changed identity and honoring deferrals. Ordinary notification submission, exact question ownership, Notes/answers/acknowledgements, URL/guidance trust and public domain terms remain unchanged. Actual installer trust/fingerprint regressions fail on the prior merge and pass now; independent review confirmed the empty-group correction. Loaded native activation remains separate from file readiness.",
+  "behavior_digest": "sha256:2a0a9d3baa7508920759f6dbee394bda7611bab688dab9a4993e1f5b22c763ce",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms. Codex and POSIX Claude now queue content-free wakes and drain pending answers and Session Messages through one bounded foreground consumer. The skill teaches the exact-session receive command, empty wakes, batching and unchanged per-item acknowledgements. Existing trusted Codex tool hooks also drain answers; no new hook definition or native trust approval is required. Held Stop and generation-bound gateway integrations keep their native delivery contracts. Diagnostics distinguish queued wakes from presented input without logging User text.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

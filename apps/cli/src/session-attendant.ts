@@ -289,6 +289,10 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     }
     const changed = activity !== probe.activity
     activity = probe.activity
+    if (changed) {
+      logger.info('attendant.state', { phase, activity, reason: 'activity-changed', generation })
+      writeStatus()
+    }
     if (previous.state !== 'running' || changed) {
       // A held exchange carries the old activity; cut it so the next one reports this.
       exchange?.abort()
@@ -485,7 +489,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       if (acquired) writeStatus()
       setPhase('attending')
       let handedOff: 'done' | 'retry-soon' = 'done'
-      if (response.messages.length > 0 && options.acceptsMessages && options.onMessages !== undefined) {
+      if (options.acceptsMessages && options.onMessages !== undefined) {
         try {
           handedOff = await options.onMessages(response.messages, handle)
         } catch (err) {

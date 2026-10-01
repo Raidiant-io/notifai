@@ -66,6 +66,8 @@ import { readAttendantEndingLease, readAttendantLease } from './session-attendan
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
 import { readDeliveryJournal } from './session-delivery.js'
+import { sessionInputRoute, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
+import { receiveSessionInputs } from './commands-receive.js'
 const INTERNAL_HOOK_EVENTS = [
   'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
@@ -311,6 +313,7 @@ export async function hookRunCommand(
   const lifecycleEnabled = (): boolean => {
     try {
       const activationConfig = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
+      logger.bind({ project: activationConfig.project.value })
       return projectEnabled(projectBinding(cwd, deps.env, activationConfig.project.value))
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'enablement-unavailable', ...failureData(err) })
@@ -769,9 +772,12 @@ export async function hookRunCommand(
 
     let outcome: HookOutcome
     if (event === 'user-prompt-submit') {
+      if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
         ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
-      outcome = await handleUserPromptSubmit(ctx, envelope)
+      outcome = envelope.session_id !== undefined && envelope.prompt === sessionInputWake(envelope.session_id)
+        ? { notes: [], log: { stage: 'input-wake-observed' } }
+        : await handleUserPromptSubmit(ctx, envelope)
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
     } else {
       outcome = await handleStop(
@@ -805,7 +811,16 @@ export async function hookRunCommand(
       ...outcome.log,
     })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
-    if (outcome.stdout !== undefined) {
+    let inputWritten = false
+    if (event === 'user-prompt-submit' && (harness === 'codex' || harness === 'claude-code') &&
+        envelope.session_id !== undefined && outcome.commitStdout === undefined &&
+        readSessionIncarnation(envelope.session_id, deps.env)?.harness_process?.pid === declaredHookSourcePid(deps)) {
+      inputWritten = await receiveSessionInputs(deps, envelope.session_id, (text) => {
+        deps.io.out(appendIntegrationContext(outcome.stdout, text, harness, 'UserPromptSubmit'))
+      })
+      if (inputWritten) await outcome.afterOutput?.()
+    }
+    if (!inputWritten && outcome.stdout !== undefined) {
       // No work, await, or diagnostic may sit between this cross-process
       // SessionEnd fence and the irreversible harness stdout write.
       if (outcome.commitStdout === undefined || outcome.commitStdout()) {
@@ -858,20 +873,20 @@ function stopWakeRoute(
   const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {
     if ((deps.hookPlatform ?? process.platform) === 'win32') return undefined
-    return claudeWakeRoute({
+    return sessionInputRoute(sessionId, deps.env, claudeWakeRoute({
       sessionId,
       cwd,
       sourcePid: deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env),
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
-    })
+    }), log(deps))
   }
   if (harness === 'codex') {
-    return codexWakeRoute({
+    return sessionInputRoute(sessionId, deps.env, codexWakeRoute({
       threadId: sessionId,
       cwd,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
-    })
+    }), log(deps))
   }
   return undefined
 }

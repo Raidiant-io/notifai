@@ -27,6 +27,7 @@ export {
 /** @public The private service's CLI contract test drives replies through this. */
 export { waitForReply } from './commands-send-support.js'
 export { acknowledgeCommand } from './commands-acknowledge.js'
+export { receiveCommand } from './commands-receive.js'
 export { askCommand, buildQuestions, reportAskFailure } from './commands-ask.js'
 export { closeCommand } from './commands-close.js'
 export {

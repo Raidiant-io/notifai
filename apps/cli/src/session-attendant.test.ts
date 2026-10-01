@@ -318,6 +318,7 @@ describe('Session Attendant', () => {
     await h.clock.advance(2_000)
     expect(held.aborted).toBe(true)
     expect(h.service.last().body.activity).toBe('working')
+    expect(h.statuses.at(-1)).toMatchObject({ activity: 'working', phase: 'attending' })
     h.signal()
     await h.clock.advance(1)
   })

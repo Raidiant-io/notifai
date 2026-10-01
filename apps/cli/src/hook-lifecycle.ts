@@ -684,7 +684,10 @@ async function answerPrompt(
     // interrupted command can leave debt after the service recorded its
     // acknowledgement. Reconcile both before replaying recovery context.
     await reconcileAcknowledgementObligations(ctx, sessionId, state.acknowledgement_due ?? [])
-    if (sessionHasEnded(sessionId, ctx.env)) return { notes }
+    if (sessionHasEnded(sessionId, ctx.env)) {
+      notes.push('the Agent Session ended before answer delivery; stopping this observer')
+      return { notes }
+    }
     state = readSessionState(sessionId, ctx.env)
     if (
       state.accepted !== undefined &&
@@ -1200,14 +1203,17 @@ async function deliverAcceptedAnswers(
   notes: string[],
   cwd?: string,
 ): Promise<HookOutcome> {
-  if (route.kind === 'session-queue') {
+  if (route.kind === 'session-queue' || route.defer !== undefined) {
     accepted = classifyJournaledAcknowledgements(sessionId, ctx.env) ?? accepted
     const ids = new Set(accepted.answers.map((answer) => answer.pending.request_id))
     await reconcileAcknowledgementObligations(
       ctx, sessionId,
       (readSessionState(sessionId, ctx.env).acknowledgement_due ?? []).filter((entry) => ids.has(entry.request_id)),
     )
-    if (sessionHasEnded(sessionId, ctx.env)) return { notes }
+    if (sessionHasEnded(sessionId, ctx.env)) {
+      notes.push('the Agent Session ended before answer delivery; stopping this observer')
+      return { notes }
+    }
     const unresolved = acceptedAnswersAwaitingAcknowledgement(accepted, readSessionState(sessionId, ctx.env))
     if (unresolved.length === 0) {
       settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
@@ -1229,6 +1235,14 @@ async function deliverAcceptedAnswers(
   }
   const replayed = await suppressWrittenReplay(ctx, sessionId, accepted, notes, cwd)
   if (replayed !== null) return replayed
+  if (route.defer !== undefined) {
+    await route.defer(accepted)
+    return {
+      notes,
+      log: { stage: 'input-staged', route: route.kind, answers: accepted.answers.length },
+      settlementRequired: pendingList(readSessionState(sessionId, ctx.env)).length > 0,
+    }
+  }
   const held = accepted.held_deliveries ?? 0
   if (held >= MAX_HELD_DELIVERIES) {
     gate(ctx, 'held', 'delivery-limit', {
@@ -2370,7 +2384,7 @@ export function handleSessionEnd(
       entry.request_id === undefined && entry.submission === undefined ? 'withdrawn' : 'retired',
     )
   }
-  for (const answer of [...(state.accepted?.answers ?? []), ...(state.delivered_answers ?? [])]) {
+  for (const answer of [...(state.accepted?.answers ?? []), ...(state.delivered_answers ?? []), ...(state.waiting_answers ?? [])]) {
     stateWithHistory = rememberQuestionState(stateWithHistory, answer.pending, 'answered')
   }
   for (const retirement of state.retiring ?? []) {
@@ -2385,6 +2399,7 @@ export function handleSessionEnd(
     ...pendingList(state),
     ...(state.accepted?.answers.map((entry) => entry.pending) ?? []),
     ...(state.delivered_answers?.map((entry) => entry.pending) ?? []),
+    ...(state.waiting_answers?.map((entry) => entry.pending) ?? []),
   ]
   for (const entry of retirementCandidates) {
     try {
@@ -2418,6 +2433,8 @@ export function handleSessionEnd(
   ) {
     const preserved: SessionState = { ...stateWithHistory }
     if (!preserveAccepted) delete preserved.accepted
+    if (!preserveAccepted) delete preserved.waiting_answers
+    delete preserved.input_wake
     delete preserved.pending
     delete preserved.retiring
     delete preserved.acknowledgement_blocks

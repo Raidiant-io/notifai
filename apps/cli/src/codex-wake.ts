@@ -77,32 +77,13 @@ export function inspectCodexQueue(
 }
 
 /**
- * Codex's answer-delivery route: the thread's own durable inbox.
+ * Low-level exact-thread wake transport. Production callers wrap this route
+ * with sessionInputRoute: only a content-free wake goes into the native queue,
+ * and the foreground consumer claims current input immediately before stdout.
  *
- * `codex queue --thread <id> --message <text>` is not an IPC call into a live
- * process. It writes one FIFO item into a per-thread inbox in `$CODEX_HOME`,
- * and whichever client owns that thread drains it: a live idle session within
- * seconds, a busy one at its next turn boundary, a stopped one the next time it
- * is opened. The answer arrives as an ordinary user turn, firing
- * `UserPromptSubmit` with the queued text.
- *
- * That is why this route replaced the writer-lock probe rather than joining it.
- * The probe existed so a cold resume could never ghost-write a thread another
- * process owned; queueing cannot ghost-write, because the message is delivered
- * *by* the owner and simply waits when there is none. There is no race to lose,
- * and nothing here depends on a BSD `O_EXLOCK`.
- *
- * Two limits are load-bearing and are honoured here:
- *
- * 1. **Exit 0 is not delivery.** `codex queue` reports the same success against
- *    an exited session as a live one, so this route never claims `delivered`.
- *    It reports `queued`, and Notifai's own `UserPromptSubmit` hook is what
- *    observes actual consumption.
- * 2. **Never queue and cold-resume the same answer.** `codex exec resume <id>
- *    "<prompt>"` drains the pending queue *and* runs the prompt, delivering it
- *    twice. This module therefore has no resume path at all: the routes must be
- *    mutually exclusive per answer, and the simplest way to guarantee that is
- *    for only one of them to exist.
+ * Queue exit 0 proves storage, never presentation. A busy owner may consume
+ * the wake much later; an exited thread keeps it until reopened. There is no
+ * cold-resume path here, which would consume the queue and a repeated prompt.
  */
 export function codexWakeRoute(options: {
   threadId: string

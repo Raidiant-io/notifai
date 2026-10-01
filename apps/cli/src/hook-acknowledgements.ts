@@ -41,7 +41,8 @@ export function presentedMessageAcknowledgements(state: SessionState): MessageAc
 
 /** Every presented acknowledgement this session still owes, request debt first. */
 export function owedAcknowledgements(state: SessionState): OwedAcknowledgement[] {
-  return [...(state.acknowledgement_due ?? []), ...presentedMessageAcknowledgements(state)]
+  const waiting = new Set(state.waiting_answers?.map((answer) => answer.pending.request_id))
+  return [...(state.acknowledgement_due ?? []).filter((entry) => !waiting.has(entry.request_id)), ...presentedMessageAcknowledgements(state)]
 }
 
 /** Exact queued text entering the owning Codex turn proves presentation, not action. */
@@ -360,6 +361,7 @@ export function clearAcknowledgementObligation(
     const due = current.acknowledgement_due ?? []
     const remaining = due.filter((entry) => entry.request_id !== requestId)
     const delivered = (current.delivered_answers ?? []).filter((entry) => entry.pending.request_id !== requestId)
+    const waiting = (current.waiting_answers ?? []).filter((entry) => entry.pending.request_id !== requestId)
     cleared = remaining.length !== due.length || delivered.length !== (current.delivered_answers?.length ?? 0)
     if (!cleared) return current
     const next = { ...current }
@@ -367,6 +369,8 @@ export function clearAcknowledgementObligation(
     else delete next.acknowledgement_due
     if (delivered.length > 0) next.delivered_answers = delivered
     else delete next.delivered_answers
+    if (waiting.length > 0) next.waiting_answers = waiting
+    else delete next.waiting_answers
     return next
   })
   return cleared
