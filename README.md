@@ -268,22 +268,16 @@ unrelated questions remain outstanding. It never substitutes activation when Ses
 the current hooks and begin a fresh Agent Session. It has to run here for presence:
 only this moment can tell that you were present for this turn.
 
-**Stop** (`stop`) runs when the agent turn ends. If the agent registered a
-question with `notifai ask`, this normally starts submission to your
-devices and ownership of the answer's return path. Question
-Routing keeps that exact return path alive for the complete answer window:
-Claude Code waits out of band and wakes the session on macOS/Linux; on Windows
-its Stop stays held and returns the answer as the same Agent Session's
-continuation. Codex waits in the background and uses `codex queue` to place the
-answer in the exact Agent Session's durable inbox. A live idle session starts
-a turn; a busy one consumes it at its next turn boundary; a closed one keeps
-it until reopened. Queue success proves storage; UserPromptSubmit observes
-consumption. Notifai does not also cold-resume that answer, which would risk
-consuming it twice. If a new User prompt overtakes Stop, UserPromptSubmit
-launches a detached settlement owner for unmatched registrations; that recovery
-can submit the question and queue its answer while the new turn is active.
-The answer queue does not itself promote registrations, so agents still end
-the asking turn to start the normal submission path.
+**Questions** start background submission when the agent runs `notifai ask`.
+The agent can keep working; only work that needs the answer waits. Registration
+alone is not proof of Provider Acceptance. **Stop** (`stop`) and
+**UserPromptSubmit** recover outstanding questions and own harness-specific
+answer delivery. Claude Code on macOS/Linux and Codex observe answers out of
+band. Claude Code on Windows holds Stop and returns the answer as a continuation.
+Codex queues only a wake-up for the exact Agent Session: current notes and
+answers drain together through a trusted tool hook, prompt hook, or
+`notifai receive`. Queue success proves wake storage, not presentation, and an
+old wake-up cannot repeat an answer that has already been acknowledged.
 
 OpenClaw's Gateway service keeps the complete answer window and queues a
 pointer-only `followup` into the same `sessionKey` after the asking turn. The

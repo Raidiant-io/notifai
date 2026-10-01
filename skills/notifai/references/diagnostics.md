@@ -22,7 +22,7 @@ hook never ran.
 `hook.gate` records carry a fixed `reason` — `notifications-off`,
 `claimed-elsewhere`, `no-question`, `no-session`, `answered`,
 `acknowledgement-required`, `acknowledgement-abandoned`, `harness-cannot-continue`,
-`continuation-repeat`, `continuation-limit`, `delivery-limit`, `proceeding` —
+`continuation-limit`, `delivery-limit`, `proceeding` —
 so filter on that, never on the wording of a message. `notifications-off` is
 the one the user deliberately never sees, which is why it is worth ruling out
 before concluding anything is broken.

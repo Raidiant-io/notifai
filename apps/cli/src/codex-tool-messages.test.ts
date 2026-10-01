@@ -1,6 +1,7 @@
 import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs } from './session-inputs.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
+import { writeProjectSession } from './hook-project-sessions.js'
 import type { AcceptedAnswerDelivery } from './hook-types.js'
 import type { AttendanceMessage, ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -118,6 +119,17 @@ describe('Codex tool-boundary Session Messages', () => {
     h.env['CODEX_THREAD_ID'] = SESSION
     h.deps.store.load = () => { throw new Error('must not load credentials') }
     expect(await receiveCommand(h.deps, { session: 'another-session' })).not.toBe(0)
+    expect(h.output).toEqual([])
+  })
+
+  it('does not let a matching worktree pointer consume another agent session input', async () => {
+    const h = setup()
+    delete h.env['CODEX_THREAD_ID']
+    writeProjectSession(h.deps.cwd, h.env, SESSION, Date.now(), 'codex')
+    h.stage([note('sm_private')])
+    h.deps.store.load = () => { throw new Error('must not load credentials') }
+    expect(await receiveCommand(h.deps, { session: SESSION })).not.toBe(0)
+    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
     expect(h.output).toEqual([])
   })
 

@@ -96,7 +96,7 @@ export const LOG_EVENTS = [
   'send.submitted',
   /** What became of it per device. */
   'send.outcome',
-  /** `notifai ask` registered a question for the turn-end hook. */
+  /** `notifai ask` registered a question for Question Routing. */
   'ask.registered',
   /** An answer came back from a device. */
   'reply.received',

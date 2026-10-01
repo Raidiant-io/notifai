@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
-import { gate, type GateReason } from './hook-gates.js'
+import { gate } from './hook-gates.js'
 import {
   acknowledgementBlockContext,
   amendAcceptedAnswers,
@@ -32,7 +32,7 @@ import {
   stopAnswerOutput,
 } from './hook-acknowledgements.js'
 import { clearMatchingProjectSession, writeProjectSession } from './hook-project-sessions.js'
-import { claimHandoffState, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import { acquireClaimFile, releaseClaimFile, claimHandoffState, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
 import {
   closeQuietly,
   drainOrphanRetirements,
@@ -359,13 +359,14 @@ async function waitForAnyReply(
  *
  * SessionEnd and terminal-side retirement remove an owned request from pending
  * state; the detached process must stop instead of recreating that session.
- * A new unpushed question asks this owner to yield the session claim so the
- * successor Stop can submit it promptly.
+ * A newly registered or submitted question asks a native observer to hand off
+ * to an owner whose lifetime covers the later answer window.
  */
 function waiterInterruption(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   requestIds: readonly string[],
+  attemptedLocal: ReadonlySet<string>,
 ): 'ownership-ended' | 'new-question' | null {
   if (sessionHasEnded(sessionId, env)) return 'ownership-ended'
   const pending = pendingList(readSessionState(sessionId, env))
@@ -375,8 +376,8 @@ function waiterInterruption(
   // the caller filters the changed set after each poll and keeps the rest.
   return pending.some(
     (entry) =>
-      entry.request_id === undefined &&
-      (entry.submission === undefined || !owned.has(entry.submission.request_id)),
+      entry.request_id !== undefined ? !owned.has(entry.request_id) :
+        !attemptedLocal.has(entry.question_id ?? entry.question),
   )
     ? 'new-question'
     : null
@@ -943,7 +944,7 @@ function acceptedAnswersAwaitingAcknowledgement(
 }
 
 // ---------------------------------------------------------------------------
-// Stop — the turn ended; escalate a registered question
+// Answer ownership — observe registered questions through a harness delivery route
 // ---------------------------------------------------------------------------
 
 /**
@@ -1015,6 +1016,9 @@ export async function runEscalationWaiter(
 ): Promise<HookOutcome> {
   const notes: string[] = []
   const { sessionId, envelope } = options
+  // Detached observers have no harness stdout consumer for Stop reminders.
+  // They must neither spend reminder attempts nor block fresh answer collection.
+  const canRemind = options.recordStop !== false
   const hardDeadlineAt =
     options.processDeadlineAt ?? ctx.now() + QUESTION_WAITER_CEILING_SECONDS * 1000
 
@@ -1043,13 +1047,12 @@ export async function runEscalationWaiter(
     notes.push('another hook is already handling this session; a newly registered question remains queued for the next owner')
     return { notes }
   }
-  let settledAnswerThisPass = false
   try {
     recoverQueuedAnswers(sessionId, ctx.env)
     let state = readSessionState(sessionId, ctx.env)
     if (state.accepted !== undefined) {
       const accepted = state.accepted
-      if (envelope.stop_hook_active === true && pendingList(state).length > 0) {
+      if (canRemind && envelope.stop_hook_active === true && pendingList(state).length > 0) {
         const due = await reconcileAcknowledgementObligations(
           ctx,
           sessionId,
@@ -1100,7 +1103,6 @@ export async function runEscalationWaiter(
         )
       }
       settleAcceptedAnswers(ctx, sessionId, accepted, envelope.cwd)
-      settledAnswerThisPass = true
       state = readSessionState(sessionId, ctx.env)
       const currentAcceptedIds = new Set(
         accepted.answers.flatMap(({ pending }) =>
@@ -1114,21 +1116,21 @@ export async function runEscalationWaiter(
           currentAcceptedIds.has(entry.request_id),
         ),
       )
-      const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+      const held = canRemind ? holdForAcknowledgement(ctx, sessionId, due, notes) : null
       if (held !== null) return held
       state = readSessionState(sessionId, ctx.env)
     }
 
     if (
       state.accepted === undefined && owedAcknowledgements(state).length > 0 &&
-      !(options.recordStop === false && options.route.kind === 'session-queue')
+      canRemind
     ) {
       const due = await reconcileAcknowledgementObligations(
         ctx,
         sessionId,
         owedAcknowledgements(state),
       )
-      const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+      const held = canRemind ? holdForAcknowledgement(ctx, sessionId, due, notes) : null
       if (held !== null) return held
       resetAcknowledgementBlocks(sessionId, ctx.env)
       state = readSessionState(sessionId, ctx.env)
@@ -1152,15 +1154,10 @@ export async function runEscalationWaiter(
       ctx,
       envelope,
       sessionId,
-      state,
       pending,
       notes,
       hardDeadlineAt,
       options.route,
-      // Every route's successor turn-end, named the same way: the harness flag
-      // for a blocking continuation, and the settle above for a route that woke
-      // a brand-new turn out of band.
-      envelope.stop_hook_active === true || settledAnswerThisPass,
       options.recordStop !== false && ctx.harness === 'codex' && options.route.kind === 'session-queue',
     )
   } finally {
@@ -1603,17 +1600,14 @@ async function handleClaimedStop(
   ctx: HookContext,
   envelope: HookEnvelope,
   sessionId: string,
-  state: SessionState,
   pending: PendingQuestion[],
   notes: string[],
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
-  continuingFromAnswer: boolean,
   handoffToDetachedOwner: boolean,
 ): Promise<HookOutcome> {
   const live = pending.filter((entry) => entry.request_id !== undefined)
   const unasked = pending.filter((entry) => entry.request_id === undefined)
-  let liveToEscalate = live
 
   if (
     ctx.harness !== undefined &&
@@ -1693,7 +1687,6 @@ async function handleClaimedStop(
     // can monopolize the per-session claim after expiry. Independent questions
     // whose lease is still running keep their successor wait.
     const stillOwned = recoverableLive.filter((entry) => ownerLeaseActive(entry, ctx.now()))
-    liveToEscalate = stillOwned
     if (unasked.length === 0) {
       if (recoverableLive.length === 0) return { notes }
       if (stillOwned.length === 0) {
@@ -1713,8 +1706,6 @@ async function handleClaimedStop(
         ctx,
         envelope,
         sessionId,
-        [],
-        stillOwned,
         notes,
         hardDeadlineAt,
         route,
@@ -1726,61 +1717,15 @@ async function handleClaimedStop(
     // question whose owner lease is still running.
   }
 
-  // A Stop answer may immediately produce a legitimate follow-up question.
-  // Allow that new generation, but never re-run an old pending question and
-  // never let answer continuations become an unbounded agent loop.
-  if (envelope.stop_hook_active === true) {
-    const continuation = state.continuation
-    const isNew =
-      continuation !== undefined &&
-      unasked.some(
-        (entry) => entry.asked_at !== undefined && entry.asked_at > continuation.answered_at,
-      )
-    if (!isNew) {
-      gate(ctx, 'held', 'continuation-repeat')
-      notes.push('already continuing from an answer; not asking again this turn')
-      return { notes }
-    }
-  }
-  // The cap is deliberately not keyed to `stop_hook_active`. That flag names one
-  // route's continuation; a route that wakes a brand-new turn never sets it, and
-  // a limit only one route consults bounds only that route. `continuingFromAnswer`
-  // is the same event named for every route, so the chain of answer → follow-up
-  // question → answer is bounded whatever delivered it.
-  if (
-    continuingFromAnswer &&
-    state.continuation !== undefined &&
-    state.continuation.count >= MAX_CONTINUATION_COUNT
-  ) {
-    gate(ctx, 'held', 'continuation-limit', {
-      count: state.continuation.count,
-      limit: MAX_CONTINUATION_COUNT,
-      route: route.kind,
-    })
-    notes.push(
-      `answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`,
-    )
-    return { notes }
-  }
-  // Silent to the user by design — they switched routing off, so saying so on
-  // every turn would be nagging about their own setting. That silence is also
-  // why it belongs in the log: from outside, "ask_notifications = false" and "a
-  // bug ate my question" look exactly the same.
-  if (!ctx.config.ask_notifications.value) {
-    gate(ctx, 'held', 'notifications-off', { source: ctx.config.ask_notifications.source })
-    return { notes }
-  }
   gate(ctx, 'proceeding', 'proceeding', {
     unasked: unasked.length,
-    already_live: liveToEscalate.length,
+    already_live: live.length,
     grace_seconds: ctx.config.ask_grace_seconds.value,
   })
   return await escalate(
     ctx,
     envelope,
     sessionId,
-    unasked,
-    liveToEscalate,
     notes,
     hardDeadlineAt,
     route,
@@ -1788,361 +1733,345 @@ async function handleClaimedStop(
   )
 }
 
+/** Submit independently of the long-lived answer owner, preserving frozen identities. */
+export async function submitSessionQuestions(
+  ctx: HookContext,
+  envelope: HookEnvelope,
+  hardDeadlineAt = ctx.now() + QUESTION_WAITER_CEILING_SECONDS * 1000,
+  notes: string[] = [],
+): Promise<PendingQuestion[]> {
+  const sessionId = envelope.session_id
+  if (sessionId === undefined || sessionHasEnded(sessionId, ctx.env)) return []
+  if (!ctx.config.ask_notifications.value) {
+    gate(ctx, 'held', 'notifications-off', { source: ctx.config.ask_notifications.source })
+    return []
+  }
+  const lock = `${sessionStatePath(sessionId, ctx.env)}.submission`
+  // This lock spans admission only, never reply polling or harness delivery.
+  const lockDeadline = Math.min(hardDeadlineAt, ctx.now() + 60_000)
+  let token = acquireClaimFile(lock, {}, Date.now())
+  while (token === null && ctx.now() < lockDeadline && !sessionHasEnded(sessionId, ctx.env)) {
+    await ctx.sleep(Math.min(50, lockDeadline - ctx.now()))
+    token = acquireClaimFile(lock, {}, Date.now())
+  }
+  if (token === null) {
+    notes.push('question submission is already owned; the durable registration remains available for recovery')
+    return []
+  }
+  try {
+    const ceilingAt = hardDeadlineAt
+    const state = readSessionState(sessionId, ctx.env)
+    const pending = pendingList(state)
+    if (state.continuation !== undefined && state.continuation.count >= MAX_CONTINUATION_COUNT) {
+      gate(ctx, 'held', 'continuation-limit', { count: state.continuation.count, limit: MAX_CONTINUATION_COUNT })
+      notes.push(`answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`)
+      return []
+    }
+    if (pending.length > 0 && pending.every((entry) => entry.request_id === undefined)) {
+      await awaitTerminalFirstWindow(ctx, Math.min(...pending.map((entry) => entry.asked_at ?? ctx.now())), ceilingAt)
+    }
+    // Phase one: every registered question reaches the user's devices, each as
+    // its own notification — one ask never stands in for another.
+    const submitted: PendingQuestion[] = []
+    for (const entry of pendingList(readSessionState(sessionId, ctx.env)).filter((entry) => entry.request_id === undefined)) {
+      if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
+        notes.push('the question was retired before submission; not uploading it')
+        continue
+      }
+      // The service owns how long the answer is accepted. This process begins
+      // before submission, so its larger maximum-window budget includes startup
+      // headroom and remains alive through the complete committed window.
+      const replyWindowSeconds = ctx.config.reply_window_seconds.value
+      if (
+        ceilingAt - ctx.now() <
+        (replyWindowSeconds + QUESTION_SUBMISSION_COMPLETION_HEADROOM_SECONDS) * 1000
+      ) {
+        notes.push(
+          'too little owner lifetime remains for the complete configured answer window; leaving this question frozen for a successor owner',
+        )
+        continue
+      }
+      const ownerDeadlineAt = ceilingAt
+      const questions = pendingQuestions(entry)
+      const eventSource = sourceContextAtHookEvent(entry.source, envelope.cwd)
+      let intent = entry.submission
+      if (intent === undefined) {
+        const prepared = await prepareQuestionSubmission(ctx, {
+          summary: entry.summary,
+          ...(entry.body !== undefined ? { body: entry.body } : {}),
+          questions,
+          ...(entry.media !== undefined ? { media: entry.media } : {}),
+          ...(entry.project !== undefined ? { project: entry.project } : {}),
+          ...(eventSource !== undefined ? { source: eventSource } : {}),
+          windowSeconds: replyWindowSeconds,
+          ownerDeadlineAt,
+        })
+        if ('error' in prepared) {
+          ctx.log?.error('hook.pushed', { ok: false, message: prepared.error })
+          notes.push(prepared.error)
+          continue
+        }
+        intent = prepared
+        // Durable before submit. If the server commits and the response is lost,
+        // the reserved request id still lets this owner poll and finalize the
+        // exact card; a successor can also replay the frozen draft/key.
+        updateSessionState(sessionId, ctx.env, (current) => {
+          const list = pendingList(current)
+          const index = list.findIndex((candidate) => isSamePending(candidate, entry))
+          if (index < 0) return current
+          const next = [...list]
+          next[index] = { ...next[index]!, submission: prepared }
+          return { ...current, pending: next }
+        })
+      } else if (intent.owner_deadline_at <= ctx.now()) {
+        // The frozen wire identity survives a crashed owner, but its local owner
+        // lease does not. Re-arm only the local deadline; request id, key,
+        // targets, and draft remain byte-identical for idempotent replay.
+        intent = { ...intent, owner_deadline_at: ceilingAt }
+        const rearmed = intent
+        updateSessionState(sessionId, ctx.env, (current) => {
+          const list = pendingList(current)
+          const index = list.findIndex((candidate) => isSamePending(candidate, entry))
+          if (index < 0) return current
+          const next = [...list]
+          next[index] = { ...next[index]!, submission: rearmed }
+          return { ...current, pending: next }
+        })
+      }
+      if (ctx.now() >= intent.owner_deadline_at) {
+        notes.push('the owner lifetime ended before submission; preserving the frozen intent')
+        continue
+      }
+      if (!canSubmitCompleteWindow(ctx, intent, replyWindowSeconds)) {
+        notes.push(
+          'setup consumed the admission allowance; preserving the frozen intent instead of publishing an answer window this owner cannot observe completely',
+        )
+        continue
+      }
+      if (sessionHasEnded(sessionId, ctx.env)) {
+        notes.push('the Agent Session ended before submission; preserving no live observer')
+        continue
+      }
+      let receipt: SubmissionReceipt | undefined
+      let admissionConfirmed = false
+      try {
+        const attempt = submitQuestion(ctx, sessionId, entry, intent, notes)
+        if (attempt === null) continue
+        receipt = await attempt
+        admissionConfirmed = true
+      } catch (caught) {
+        let err: unknown = caught
+        if (err instanceof ApiCallError && isTerminalDraftRejection(err)) {
+          ctx.log?.error('hook.pushed', {
+            ok: false,
+            request_id: intent.request_id,
+            status: err.status,
+            code: err.code,
+            message: err.message,
+          })
+          if (entry.submission !== undefined) {
+            notes.push(
+              `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
+            )
+            clearFrozenSubmission(sessionId, ctx.env, entry)
+            const reminted = await prepareQuestionSubmission(ctx, {
+              summary: entry.summary,
+              ...(entry.body !== undefined ? { body: entry.body } : {}),
+              questions,
+              ...(entry.media !== undefined ? { media: entry.media } : {}),
+              ...(entry.project !== undefined ? { project: entry.project } : {}),
+              ...(eventSource !== undefined ? { source: eventSource } : {}),
+              windowSeconds: replyWindowSeconds,
+              ownerDeadlineAt,
+            })
+            if ('error' in reminted) {
+              dropPendingQuestion(sessionId, ctx.env, entry)
+              notes.push(reminted.error)
+              continue
+            }
+            intent = reminted
+            updateSessionState(sessionId, ctx.env, (current) => {
+              const list = pendingList(current)
+              const index = list.findIndex((candidate) => isSamePending(candidate, entry))
+              if (index < 0) return current
+              const next = [...list]
+              next[index] = { ...next[index]!, submission: reminted }
+              return { ...current, pending: next }
+            })
+            try {
+              if (!canSubmitCompleteWindow(ctx, intent, replyWindowSeconds)) {
+                notes.push(
+                  'draft recovery consumed the admission allowance; preserving the frozen intent for a successor owner',
+                )
+                continue
+              }
+              if (sessionHasEnded(sessionId, ctx.env)) {
+                notes.push('the Agent Session ended before recovered submission')
+                continue
+              }
+              const attempt = submitQuestion(ctx, sessionId, entry, intent, notes)
+              if (attempt === null) continue
+              receipt = await attempt
+              admissionConfirmed = true
+            } catch (retryErr) {
+              if (retryErr instanceof ApiCallError && isTerminalDraftRejection(retryErr)) {
+                dropPendingQuestion(sessionId, ctx.env, entry)
+                notes.push(
+                  `reminted draft was also rejected (${retryErr.code}, HTTP ${retryErr.status}); retiring the question so it is not retried forever`,
+                )
+                ctx.log?.error('hook.pushed', {
+                  ok: false,
+                  request_id: intent.request_id,
+                  status: retryErr.status,
+                  code: retryErr.code,
+                  message: retryErr.message,
+                })
+                continue
+              }
+              err = retryErr
+            }
+          } else {
+            dropPendingQuestion(sessionId, ctx.env, entry)
+            notes.push(
+              `question submission was rejected (${err.code}, HTTP ${err.status}); retiring it because the current draft will never be accepted`,
+            )
+            continue
+          }
+        }
+        if (!admissionConfirmed && err instanceof ApiCallError && err.status < 500 && err.status !== 408) {
+          notes.push(
+            `question submission was rejected (${err.code}, HTTP ${err.status}); preserving it for recovery`,
+          )
+          ctx.log?.error('hook.pushed', {
+            ok: false,
+            request_id: intent.request_id,
+            status: err.status,
+            code: err.code,
+            message: err.message,
+          })
+          continue
+        }
+        if (!admissionConfirmed) {
+          notes.push(`question submission response was ambiguous; recovering ${intent.request_id}`)
+          ctx.log?.error('hook.pushed', { ok: false, request_id: intent.request_id, message: String(err) })
+        }
+      }
+      if (admissionConfirmed) {
+        ctx.log?.info('hook.pushed', {
+          ok: true,
+          request_id: intent.request_id,
+          devices: intent.device_ids.length,
+          questions: questions.length,
+          text_chars: questions[0]!.text.length,
+        })
+      }
+      const committedReplyDeadline =
+        receipt?.reply_expires_at === null || receipt?.reply_expires_at === undefined
+          ? intent.owner_deadline_at
+          : Date.parse(receipt.reply_expires_at)
+      const live: PendingQuestion = {
+        ...entry,
+        ...(intent.draft.source !== undefined ? { source: intent.draft.source } : {}),
+        request_id: intent.request_id,
+        collapse_key: intent.collapse_key,
+        device_ids: intent.device_ids,
+        // The server's committed answer deadline is authoritative. The local
+        // owner deadline starts earlier and includes startup headroom, so it may
+        // be later but must never be earlier.
+        reply_deadline_at: Number.isFinite(committedReplyDeadline)
+          ? committedReplyDeadline
+          : intent.owner_deadline_at,
+        owner_deadline_at: intent.owner_deadline_at,
+      }
+      if (intent.draft.source === undefined) delete live.source
+      delete live.submission
+      // Record what is now live on the user's devices BEFORE any wait. If we
+      // only learned these ids afterwards, a question that timed out would
+      // leave no trace, and the user returning to the terminal could never
+      // retire it — the notification would stay answerable for an hour with
+      // nobody listening.
+      if (admissionConfirmed) {
+        updateSessionState(sessionId, ctx.env, (current) => {
+          const list = pendingList(current)
+          const index = list.findIndex(
+            (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
+          )
+          if (index >= 0) {
+            const next = [...list]
+            next[index] = live
+            return { ...current, pending: next }
+          }
+          // The entry vanished while the submit was in flight (the user's prompt
+          // wiped the queue). The delivered notification must still be retirable,
+          // so park it rather than lose its only identifiers.
+          const retirement = retiringQuestion(live, 'answered_elsewhere', envelope.cwd)!
+          const retiring = [...(current.retiring ?? [])]
+          if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
+            retiring.push(retirement)
+          }
+          return rememberQuestionState({ ...current, retiring }, live, 'retired')
+        })
+      }
+      if (sessionHasEnded(sessionId, ctx.env)) {
+        // SessionEnd may have raced either the submit or promotion. Its snapshot
+        // usually already queued the frozen intent; this idempotent add closes
+        // the other ordering where the request committed just after cleanup.
+        orphanRetirements(
+          ctx.env,
+          [retiringQuestion(live, 'expired', envelope.cwd)!],
+          ctx.now(),
+        )
+        notes.push('the Agent Session ended during submission; queued the question for retirement')
+        continue
+      }
+      if (!pendingList(readSessionState(sessionId, ctx.env)).some((candidate) => isSamePending(candidate, entry))) {
+        // A local close won after admission. Never resurrect the queue or wait
+        // for an answer to a retired question; settle its reserved remote id.
+        await drainRetirements(ctx, sessionId, ctx.env)
+        continue
+      }
+      submitted.push(live)
+    }
+
+    return submitted
+  } finally {
+    releaseClaimFile(lock, token)
+  }
+}
+
+/** Merge this admission's uncertain receipts with fresh confirmed state. */
+function observableQuestions(state: SessionState, submitted: PendingQuestion[], now: number): PendingQuestion[] {
+  return pendingList(state).flatMap((entry) => {
+    if (entry.request_id !== undefined) return ownerLeaseActive(entry, now) ? [entry] : []
+    const attempted = submitted.findLast((candidate) =>
+      isSamePending(candidate, entry) && candidate.request_id === entry.submission?.request_id)
+    return attempted === undefined ? [] : [attempted]
+  })
+}
+
 /** The escalation itself, split out so the claim is released on every path. */
 async function escalate(
   ctx: HookContext,
   envelope: HookEnvelope,
   sessionId: string,
-  unasked: PendingQuestion[],
-  alreadyLive: PendingQuestion[],
   notes: string[],
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
   handoffToDetachedOwner: boolean,
 ): Promise<HookOutcome> {
-  // The questions still owe the user their terminal-first window before
-  // anything reaches their devices — measured from the oldest registration,
-  // because that is the question that has waited longest.
   const ceilingAt = hardDeadlineAt
-  if (unasked.length > 0 && alreadyLive.length === 0) {
-    const oldest = Math.min(...unasked.map((entry) => entry.asked_at ?? ctx.now()))
-    await awaitTerminalFirstWindow(ctx, oldest, ceilingAt)
-    ctx.log?.debug('hook.gate', {
-      verdict: 'grace',
-      reason: 'elapsed' satisfies GateReason,
-      waited_from: oldest,
-      grace_seconds: ctx.config.ask_grace_seconds.value,
-    })
-  }
-  // Phase one: every registered question reaches the user's devices, each as
-  // its own notification — one ask never stands in for another.
-  const submitted: PendingQuestion[] = []
-  const admissionAnswers: AnsweredPending[] = []
-  for (const entry of unasked) {
-    if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
-      notes.push('the question was retired before submission; not uploading it')
-      continue
-    }
-    // The service owns how long the answer is accepted. This process begins
-    // before submission, so its larger maximum-window budget includes startup
-    // headroom and remains alive through the complete committed window.
-    const replyWindowSeconds = ctx.config.reply_window_seconds.value
-    if (
-      ceilingAt - ctx.now() <
-      (replyWindowSeconds + QUESTION_SUBMISSION_COMPLETION_HEADROOM_SECONDS) * 1000
-    ) {
-      notes.push(
-        'too little owner lifetime remains for the complete configured answer window; leaving this question frozen for a successor owner',
-      )
-      continue
-    }
-    const ownerDeadlineAt = ceilingAt
-    const questions = pendingQuestions(entry)
-    const eventSource = sourceContextAtHookEvent(entry.source, envelope.cwd)
-    let intent = entry.submission
-    if (intent === undefined) {
-      const prepared = await prepareQuestionSubmission(ctx, {
-        summary: entry.summary,
-        ...(entry.body !== undefined ? { body: entry.body } : {}),
-        questions,
-        ...(entry.media !== undefined ? { media: entry.media } : {}),
-        ...(entry.project !== undefined ? { project: entry.project } : {}),
-        ...(eventSource !== undefined ? { source: eventSource } : {}),
-        windowSeconds: replyWindowSeconds,
-        ownerDeadlineAt,
-      })
-      if ('error' in prepared) {
-        ctx.log?.error('hook.pushed', { ok: false, message: prepared.error })
-        notes.push(prepared.error)
-        continue
-      }
-      intent = prepared
-      // Durable before submit. If the server commits and the response is lost,
-      // the reserved request id still lets this owner poll and finalize the
-      // exact card; a successor can also replay the frozen draft/key.
-      updateSessionState(sessionId, ctx.env, (current) => {
-        const list = pendingList(current)
-        const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-        if (index < 0) return current
-        const next = [...list]
-        next[index] = { ...next[index]!, submission: prepared }
-        return { ...current, pending: next }
-      })
-    } else if (intent.owner_deadline_at <= ctx.now()) {
-      // The frozen wire identity survives a crashed owner, but its local owner
-      // lease does not. Re-arm only the local deadline; request id, key,
-      // targets, and draft remain byte-identical for idempotent replay.
-      intent = { ...intent, owner_deadline_at: ceilingAt }
-      const rearmed = intent
-      updateSessionState(sessionId, ctx.env, (current) => {
-        const list = pendingList(current)
-        const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-        if (index < 0) return current
-        const next = [...list]
-        next[index] = { ...next[index]!, submission: rearmed }
-        return { ...current, pending: next }
-      })
-    }
-    if (ctx.now() >= intent.owner_deadline_at) {
-      notes.push('the owner lifetime ended before submission; preserving the frozen intent')
-      continue
-    }
-    if (!canSubmitCompleteWindow(ctx, intent, replyWindowSeconds)) {
-      notes.push(
-        'setup consumed the admission allowance; preserving the frozen intent instead of publishing an answer window this owner cannot observe completely',
-      )
-      continue
-    }
-    if (sessionHasEnded(sessionId, ctx.env)) {
-      notes.push('the Agent Session ended before submission; preserving no live observer')
-      continue
-    }
-    let receipt: SubmissionReceipt | undefined
-    let admissionConfirmed = false
-    try {
-      const attempt = submitQuestion(ctx, sessionId, entry, intent, notes)
-      if (attempt === null) continue
-      receipt = await attempt
-      admissionConfirmed = true
-    } catch (caught) {
-      let err: unknown = caught
-      if (err instanceof ApiCallError && isTerminalDraftRejection(err)) {
-        ctx.log?.error('hook.pushed', {
-          ok: false,
-          request_id: intent.request_id,
-          status: err.status,
-          code: err.code,
-          message: err.message,
-        })
-        if (entry.submission !== undefined) {
-          notes.push(
-            `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
-          )
-          clearFrozenSubmission(sessionId, ctx.env, entry)
-          const reminted = await prepareQuestionSubmission(ctx, {
-            summary: entry.summary,
-            ...(entry.body !== undefined ? { body: entry.body } : {}),
-            questions,
-            ...(entry.media !== undefined ? { media: entry.media } : {}),
-            ...(entry.project !== undefined ? { project: entry.project } : {}),
-            ...(eventSource !== undefined ? { source: eventSource } : {}),
-            windowSeconds: replyWindowSeconds,
-            ownerDeadlineAt,
-          })
-          if ('error' in reminted) {
-            dropPendingQuestion(sessionId, ctx.env, entry)
-            notes.push(reminted.error)
-            continue
-          }
-          intent = reminted
-          updateSessionState(sessionId, ctx.env, (current) => {
-            const list = pendingList(current)
-            const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-            if (index < 0) return current
-            const next = [...list]
-            next[index] = { ...next[index]!, submission: reminted }
-            return { ...current, pending: next }
-          })
-          try {
-            if (!canSubmitCompleteWindow(ctx, intent, replyWindowSeconds)) {
-              notes.push(
-                'draft recovery consumed the admission allowance; preserving the frozen intent for a successor owner',
-              )
-              continue
-            }
-            if (sessionHasEnded(sessionId, ctx.env)) {
-              notes.push('the Agent Session ended before recovered submission')
-              continue
-            }
-            const attempt = submitQuestion(ctx, sessionId, entry, intent, notes)
-            if (attempt === null) continue
-            receipt = await attempt
-            admissionConfirmed = true
-          } catch (retryErr) {
-            if (retryErr instanceof ApiCallError && isTerminalDraftRejection(retryErr)) {
-              dropPendingQuestion(sessionId, ctx.env, entry)
-              notes.push(
-                `reminted draft was also rejected (${retryErr.code}, HTTP ${retryErr.status}); retiring the question so it is not retried forever`,
-              )
-              ctx.log?.error('hook.pushed', {
-                ok: false,
-                request_id: intent.request_id,
-                status: retryErr.status,
-                code: retryErr.code,
-                message: retryErr.message,
-              })
-              continue
-            }
-            err = retryErr
-          }
-        } else {
-          dropPendingQuestion(sessionId, ctx.env, entry)
-          notes.push(
-            `question submission was rejected (${err.code}, HTTP ${err.status}); retiring it because the current draft will never be accepted`,
-          )
-          continue
-        }
-      }
-      if (!admissionConfirmed && err instanceof ApiCallError && err.status < 500 && err.status !== 408) {
-        notes.push(
-          `question submission was rejected (${err.code}, HTTP ${err.status}); preserving it for recovery`,
-        )
-        ctx.log?.error('hook.pushed', {
-          ok: false,
-          request_id: intent.request_id,
-          status: err.status,
-          code: err.code,
-          message: err.message,
-        })
-        continue
-      }
-      if (!admissionConfirmed) {
-        notes.push(`question submission response was ambiguous; recovering ${intent.request_id}`)
-        ctx.log?.error('hook.pushed', { ok: false, request_id: intent.request_id, message: String(err) })
-      }
-    }
-    if (admissionConfirmed) {
-      ctx.log?.info('hook.pushed', {
-        ok: true,
-        request_id: intent.request_id,
-        devices: intent.device_ids.length,
-        questions: questions.length,
-        text_chars: questions[0]!.text.length,
-      })
-    }
-    const committedReplyDeadline =
-      receipt?.reply_expires_at === null || receipt?.reply_expires_at === undefined
-        ? intent.owner_deadline_at
-        : Date.parse(receipt.reply_expires_at)
-    const live: PendingQuestion = {
-      ...entry,
-      ...(intent.draft.source !== undefined ? { source: intent.draft.source } : {}),
-      request_id: intent.request_id,
-      collapse_key: intent.collapse_key,
-      device_ids: intent.device_ids,
-      // The server's committed answer deadline is authoritative. The local
-      // owner deadline starts earlier and includes startup headroom, so it may
-      // be later but must never be earlier.
-      reply_deadline_at: Number.isFinite(committedReplyDeadline)
-        ? committedReplyDeadline
-        : intent.owner_deadline_at,
-      owner_deadline_at: intent.owner_deadline_at,
-    }
-    if (intent.draft.source === undefined) delete live.source
-    delete live.submission
-    if (live.reply_deadline_at! > live.owner_deadline_at!) {
-      const response = await finalizeReplies(ctx, live.request_id!, answerCloseDisposition(ctx, route))
-      if (response === null) {
-        // Closing was unreachable, so the question is still potentially live.
-        // Preserve it in the exact session instead of demoting it to the orphan
-        // retirement queue, whose later close has no route for an answer.
-        updateSessionState(sessionId, ctx.env, (current) => {
-          const list = pendingList(current)
-          const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-          if (index < 0) {
-            // Terminal input removed this registration while the anomalous
-            // close was in flight. Preserve retirement identity exactly as
-            // normal submit promotion does; the observer must not become the
-            // only remaining record of a live card.
-            const retirement = retiringQuestion(
-              live,
-              'answered_elsewhere',
-              envelope.cwd,
-            )!
-            const retiring = [...(current.retiring ?? [])]
-            if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
-              retiring.push(retirement)
-            }
-            return { ...current, retiring }
-          }
-          const next = [...list]
-          next[index] = live
-          return { ...current, pending: next }
-        })
-        submitted.push(live)
-        notes.push(
-          'the server committed an answer deadline beyond this process owner and immediate closure was unreachable; preserving the live question for exact-session recovery',
-        )
-        continue
-      } else if (response.replies.length > 0) {
-        admissionAnswers.push({
-          pending: live,
-          reply: response.replies.at(-1)!,
-          replies: response.replies,
-          agent_acknowledgement_required: response.agent_acknowledgement_required,
-          agent_acknowledgement_text_required:
-            response.agent_acknowledgement_text_required,
-          ...claimMarker(response),
-        })
-      }
-      dropPendingQuestion(sessionId, ctx.env, entry)
-      notes.push(
-        'the server committed an answer deadline beyond this process owner; closed the anomalous window instead of abandoning it early',
-      )
-      continue
-    }
-    // Record what is now live on the user's devices BEFORE any wait. If we
-    // only learned these ids afterwards, a question that timed out would
-    // leave no trace, and the user returning to the terminal could never
-    // retire it — the notification would stay answerable for an hour with
-    // nobody listening.
-    if (admissionConfirmed) {
-      updateSessionState(sessionId, ctx.env, (current) => {
-        const list = pendingList(current)
-        const index = list.findIndex(
-          (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
-        )
-        if (index >= 0) {
-          const next = [...list]
-          next[index] = live
-          return { ...current, pending: next }
-        }
-        // The entry vanished while the submit was in flight (the user's prompt
-        // wiped the queue). The delivered notification must still be retirable,
-        // so park it rather than lose its only identifiers.
-        const retirement = retiringQuestion(live, 'answered_elsewhere', envelope.cwd)!
-        const retiring = [...(current.retiring ?? [])]
-        if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
-          retiring.push(retirement)
-        }
-        return rememberQuestionState({ ...current, retiring }, live, 'retired')
-      })
-    }
-    if (sessionHasEnded(sessionId, ctx.env)) {
-      // SessionEnd may have raced either the submit or promotion. Its snapshot
-      // usually already queued the frozen intent; this idempotent add closes
-      // the other ordering where the request committed just after cleanup.
-      orphanRetirements(
-        ctx.env,
-        [retiringQuestion(live, 'expired', envelope.cwd)!],
-        ctx.now(),
-      )
-      notes.push('the Agent Session ended during submission; queued the question for retirement')
-      continue
-    }
-    if (!pendingList(readSessionState(sessionId, ctx.env)).some((candidate) => isSamePending(candidate, entry))) {
-      // A local close won after admission. Never resurrect the queue or wait
-      // for an answer to a retired question; settle its reserved remote id.
-      await drainRetirements(ctx, sessionId, ctx.env)
-      continue
-    }
-    submitted.push(live)
-  }
-
-  if (admissionAnswers.length > 0) {
-    const accepted = stageAcceptedAnswers(
-      ctx,
-      sessionId,
-      admissionAnswers,
-      pendingList(readSessionState(sessionId, ctx.env)).length,
-    )
-    for (const answer of admissionAnswers) reportAnswer(ctx, notes, answer, false)
-    return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
-  }
-
-  const staleLive = alreadyLive.filter(
+  const attemptedLocal = new Set(pendingList(readSessionState(sessionId, ctx.env))
+    .filter((entry) => entry.request_id === undefined).map((entry) => entry.question_id ?? entry.question))
+  const submitted = await submitSessionQuestions(ctx, envelope, hardDeadlineAt, notes)
+  // Another submitter may have promoted a question while this owner waited.
+  // The durable queue, not either caller's earlier snapshot, is authoritative.
+  const live = observableQuestions(readSessionState(sessionId, ctx.env), submitted, ctx.now())
+  const anomalous = live.filter((entry) => entry.reply_deadline_at !== undefined &&
+    entry.reply_deadline_at > ceilingAt)
+  if (anomalous.length > 0) notes.push('server committed an answer deadline beyond this process owner; reconciling the anomalous window')
+  const staleLive = live.filter(
     (entry) =>
-      entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now(),
+      entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now() || anomalous.includes(entry),
   )
   const finalizedStale = await finalizePendings(ctx, staleLive, answerCloseDisposition(ctx, route))
   const staleAnswers = finalizedStale
@@ -2160,7 +2089,7 @@ async function escalate(
   }
   if (staleUnproven.length > 0) {
     notes.push(
-      `could not finalize ${staleUnproven.length} expired question${staleUnproven.length === 1 ? '' : 's'}; preserving ownership for recovery`,
+      `could not finalize ${staleUnproven.length} question${staleUnproven.length === 1 ? '' : 's'}; preserving the live question and observing for recovery`,
     )
   }
   if (staleAnswers.length > 0) {
@@ -2172,12 +2101,15 @@ async function escalate(
     for (const answer of staleAnswers) reportAnswer(ctx, notes, answer, true)
     return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
   }
-  const waitingOn = [
-    ...alreadyLive.filter(
-      (entry) => entry.reply_deadline_at !== undefined && entry.reply_deadline_at > ctx.now(),
-    ),
-    ...submitted,
-  ]
+  // A terminal close can race the remote close fence. Retain its remote identity
+  // for retirement without resurrecting a removed local question.
+  const remaining = pendingList(readSessionState(sessionId, ctx.env))
+  const removed = staleUnproven.filter(({ pending }) => !remaining.some((entry) => isSamePending(entry, pending)))
+  if (removed.length > 0) await retirePendings(ctx, envelope, sessionId, removed.map(({ pending }) => pending), 'answered_elsewhere')
+  const waitingState = readSessionState(sessionId, ctx.env)
+  const waitingOn = observableQuestions(waitingState, submitted, ctx.now()).filter(
+    (entry) => entry.reply_deadline_at !== undefined && entry.reply_deadline_at > ctx.now(),
+  )
   if (waitingOn.length === 0) return { notes }
 
   // Codex has a durable exact-thread queue route. Release the short Stop hook
@@ -2193,6 +2125,10 @@ async function escalate(
   // its own server deadline and continue waiting on the rest. Reserving time by
   // closing early would make the advertised reply window untrue.
   let activeWaiting = waitingOn
+  const knownRequestIds = new Set([
+    ...pendingList(waitingState).flatMap((entry) => entry.request_id === undefined ? [] : [entry.request_id]),
+    ...waitingOn.map((entry) => entry.request_id!),
+  ])
   let timeoutSeconds = 0
   let waited: Awaited<ReturnType<typeof waitForAnyReply>>
   for (;;) {
@@ -2209,15 +2145,28 @@ async function escalate(
         waiterInterruption(
           sessionId,
           ctx.env,
-          activeWaiting.map((entry) => entry.request_id!),
+          [...knownRequestIds],
+          attemptedLocal,
         ),
     )
-    if (waited.interrupted !== null) {
-      notes.push(
-        waited.interrupted === 'new-question'
-          ? 'yielding the answer owner so a newly registered question can be sent now'
-          : 'answer ownership ended locally; stopping this observer without delivering into a closed session',
-      )
+    if (waited.interrupted === 'new-question') {
+      // Native observers can renew their process ceiling for a later question.
+      // A held Stop keeps its actual stdout owner and includes the new live ID.
+      if (route.kind === 'session-queue' || route.defer !== undefined) {
+        notes.push('yielding the answer owner to include the newly registered question')
+        return { notes, settlementRequired: true }
+      }
+      for (const entry of pendingList(readSessionState(sessionId, ctx.env))) {
+        if (entry.request_id === undefined) attemptedLocal.add(entry.question_id ?? entry.question)
+      }
+      submitted.push(...await submitSessionQuestions(ctx, envelope, hardDeadlineAt, notes))
+      activeWaiting = observableQuestions(readSessionState(sessionId, ctx.env), submitted, ctx.now())
+      for (const entry of activeWaiting) knownRequestIds.add(entry.request_id!)
+      if (activeWaiting.length === 0) return { notes }
+      continue
+    }
+    if (waited.interrupted === 'ownership-ended') {
+      notes.push('answer ownership ended locally; stopping this observer without delivering into a closed session')
       return { notes }
     }
     const currentRequestIds = new Set(

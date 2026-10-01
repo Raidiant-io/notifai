@@ -193,7 +193,7 @@ export function claudeAttendanceProbe(options: {
  *   and leaves the attendant behind in its own process group.
  * - The start time cannot be read: `uncertain`.
  *
- * Activity comes from this thread's own prompt and turn-end hooks.
+ * Activity comes from this thread's prompt, trusted tool, and turn-end hooks.
  */
 export function codexAttendanceProbe(options: {
   harness: ProcessIdentity

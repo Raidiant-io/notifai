@@ -190,7 +190,7 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   On macOS, the loaded Gateway service can route an asynchronous `notifai ask` answer
   into the same Agent Session after the asking turn ends. It queues a pointer
   through OpenClaw's followup route; run `notifai replies <id>` from that
-  session to read the answer and `notifai acknowledge <id>` after acting on it.
+  session to read the answer and `notifai acknowledge <id>` before acting on it.
   Question Routing requires the current generation marker, an enabled Project,
   and a local Gateway whose CLI version and process identity match the plugin.
   If this Project is disabled, run `notifai project enable` before `notifai ask`.
@@ -221,7 +221,8 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
   a Note may interrupt a working turn. The plugin checks the current session
   before each write, and the agent must acknowledge the message. An attended
   classic CLI session can route an `ask` answer into that same live session;
-  end the asking turn and leave Hermes running for the answer window. If the
+  keep Hermes running for the answer window. Submission starts immediately;
+  the plugin owns answer delivery. If the
   process exits first, it does not cold-resume and the answer is not delivered.
   TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
   this proven cell.
@@ -245,9 +246,10 @@ reports each harness's supported route separately.
 The session that registered a question owns the answer's return. The last
 meter differs per harness:
 
-- **Claude Code on POSIX:** the Stop hook is asynchronous. It returns at once,
-  so the turn is never held and the terminal stays the user's, and the same
-  process keeps waiting out of band for the complete answer window. When the
+- **Claude Code on POSIX:** a detached observer starts after submission and
+  waits out of band for the complete answer window. The resident Session
+  Attendant sends wakes with Claude's required child-process ancestry. Stop
+  can recover answer ownership without holding the turn. When the
   answer arrives it is stored with the session's pending inputs. Its own inbox
   socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
   one receives it when its current turn ends. The prompt hook or the named
@@ -259,8 +261,8 @@ meter differs per harness:
   the successor turn in the same Agent Session without another User prompt.
   Direct inbox wake is unavailable, but it is not needed while this exact Stop
   continuation owns the answer.
-- **Codex:** the asynchronous Stop hook releases the turn and waits in the
-  background for the complete answer window. When an answer arrives, Notifai
+- **Codex:** a detached observer starts after submission and waits in the
+  background for the complete answer window; Stop provides recovery. When an answer arrives, Notifai
   invokes `codex queue` for the exact Agent Session in the same Codex home.
   Only a wake-up is queued. Pending notes and answers remain in Notifai until
   a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
@@ -276,25 +278,22 @@ meter differs per harness:
   owner process or its route fails. It is not the normal last meter for an
   unexpired question.
 
-Registration alone starts no waiter. Normally the asking turn's Stop starts
-submission; if a new User prompt overtakes it, UserPromptSubmit launches a
-detached settlement owner for unmatched registrations. That recovery can
-submit and queue a Codex answer while the new turn is active. It does not make
-`ask` an immediate-send command or remove the installed Stop requirement.
+`ask` durably registers the question and immediately launches submission. It
+does not wait for Stop or hold the command for the answer window. Stop and
+UserPromptSubmit recover outstanding work; they are not required to begin
+normal submission. Registration is not evidence of Provider Acceptance.
 
-Keep supervision obligations when a question blocks only part of the work.
-If the coordinator must remain active, use the skill's foreground `send --reply`
-flow only when its managed command can stay alive for the complete answer
-window while the coordinator supervises, then consume and acknowledge its
-result. Otherwise settle or explicitly transfer supervision before an `ask`
-handoff. Ending a turn neither completes delegated work nor transfers ownership.
+Continue independent work and supervision while the question is outstanding.
+Only answer-dependent work waits. Delivery into the agent still follows the
+harness boundaries above; immediate submission does not make every harness
+able to inject an answer during a running turn.
 
 Keep the original identity when an answer has not arrived. Queue acceptance
 does not prove consumption, and expiry, retirement, or recovery failure can
 prevent resumption. Inspect `status` and `replies` instead of re-asking.
 
 At the `ask_grace_seconds` default of `0`, the question reaches devices as soon
-as the asking turn ends. A positive value keeps it in the terminal for that
+as registration starts background submission. A positive value keeps it in the terminal for that
 long first, so an answer typed there wins without a notification ever leaving.
 `reply_window_seconds` then controls how long the answer is accepted and how
 long Question Routing keeps an exact return path to this Agent Session. The

@@ -23,6 +23,7 @@ import {
   recordSessionStart,
   refreshSessionMarkers,
   sessionHasEnded,
+  updateSessionState,
 } from './hook-session-state.js'
 import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig, codexTrustKey, codexHookIdentityHash, findInstallations } from './install-hooks.js'
@@ -449,7 +450,7 @@ describe('notifai hook attend', () => {
     expect(service.calls.at(-1)).toMatchObject({ state: 'ended', generation: 1 })
   })
 
-  it('stages a Claude Session Note and sends only a coalesced wake to its inbox', async () => {
+  it.each(['note', 'answer'] as const)('wakes a Claude %s through its resident writer, including empty note batches', async (kind) => {
     const { env, root } = isolatedEnv()
     const socket = path.join(root, 'inbox.sock')
     writeFileSync(socket, '')
@@ -475,7 +476,15 @@ describe('notifai hook attend', () => {
         calls.push(body)
         if (body.state !== 'running') return { status: 'withdrawn' }
         if (calls.length > 1) await new Promise((resolve) => setTimeout(resolve, 20))
-        const messages = delivered
+        if (kind === 'answer' && calls.length === 1) {
+          const reply = { reply_id: 'rpl_test', seq: 1, delivery_id: 'del_test', device_id: 'dev_test',
+            device_name: 'Test device', text: 'Ship it', answers: [], source: null, created_at: new Date().toISOString() }
+          updateSessionState('sess-a', env, (state) => ({ ...state,
+            waiting_answers: [{ pending: { question: 'Deploy?', request_id: 'req_waiting' }, reply, replies: [reply] }],
+            acknowledgement_due: [{ request_id: 'req_waiting', recorded_at: Date.now() }],
+          }))
+        }
+        const messages = delivered || kind === 'answer'
           ? []
           : [{ message_id: 'sm_note', created_at: '2026-09-25T10:00:00.000Z', agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Use the staging database' }]
         return { status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c', messages }
@@ -518,7 +527,8 @@ describe('notifai hook attend', () => {
     expect(line.message.content).not.toContain('Use the staging database')
     expect(reports).toEqual([])
     expect(readSessionState('sess-a', env).message_acknowledgement_due).toBeUndefined()
-    expect(readSessionMessages('sess-a', env, { incarnation: readSessionIncarnation('sess-a', env)!.incarnation, generation: 1 })).toHaveLength(1)
+    expect(readSessionMessages('sess-a', env, { incarnation: readSessionIncarnation('sess-a', env)!.incarnation, generation: 1 })).toHaveLength(kind === 'note' ? 1 : 0)
+    if (kind === 'answer') expect(readSessionState('sess-a', env).waiting_answers).toHaveLength(1)
 
     markSessionEnded('sess-a', env, Date.now() + 1)
     await running
