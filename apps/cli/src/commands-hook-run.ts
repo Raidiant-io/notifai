@@ -27,6 +27,7 @@ import {
   handleStop,
   handleUserPromptSubmit,
   parseHookInput,
+  submitSessionQuestions,
 } from './hook-lifecycle.js'
 import {
   claimCursorStopActivation,
@@ -66,10 +67,10 @@ import { readAttendantEndingLease, readAttendantLease } from './session-attendan
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
 import { readDeliveryJournal } from './session-delivery.js'
-import { sessionInputRoute, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
+import { sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
 const INTERNAL_HOOK_EVENTS = [
-  'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
+  'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-attendance-ready', 'openclaw-settlement',
   'openclaw-verify-prepared',
@@ -133,8 +134,8 @@ export async function hookRunCommand(
   // Taken before stdin is read: an end the harness recorded before this
   // invocation began belongs to an earlier incarnation of the session.
   const invokedAt = lifecycleStamp(now())
-  // One owner lifetime covers startup and the longest answer window. Claude
-  // runs it detached; Codex holds the turn. The delivery mechanism does not
+  // One owner lifetime covers startup and the longest answer window. Native
+  // observers run detached; held Stop routes keep stdout. The delivery mechanism does not
   // change how long the exact Agent Session remains reachable.
   const processDeadlineAt = now() + QUESTION_WAITER_CEILING_SECONDS * 1000
 
@@ -760,6 +761,21 @@ export async function hookRunCommand(
       ...answerClaimsFor(deps, harness, envelope.session_id, event),
     }
 
+    if (event === 'question-submission') {
+      const notes: string[] = []
+      const sessionId = envelope.session_id
+      if (sessionId === undefined || harness === undefined ||
+          readSessionState(sessionId, deps.env).harness !== harness || !lifecycleEnabled()) return EXIT.ok
+      await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)
+      // Native queues can observe answers while the asking turn keeps working.
+      // Held Stop and plugin routes retain their own genuine output owner.
+      const nativeObserver = harness === 'codex' ||
+        (harness === 'claude-code' && (deps.hookPlatform ?? process.platform) !== 'win32')
+      logger.info('hook.end', { hook: event, outcome: 'submission-checked', notes,
+        ...(nativeObserver ? launchSettlement() : {}) })
+      return EXIT.ok
+    }
+
     // Real clock, deliberately, not `deps.now`. This compares against file
     // mtimes, which are wall-clock facts — handing it a virtual or skewed clock
     // would have it delete live session state as "abandoned".
@@ -786,7 +802,7 @@ export async function hookRunCommand(
         processDeadlineAt,
         event === 'openclaw-settlement' && envelope.session_id !== undefined
           ? openclawContinuationRoute(envelope.session_id, currentOpenclawOwner()!)
-          : stopWakeRoute(deps, harness, envelope.session_id, cwd),
+          : stopWakeRoute(deps, harness, envelope.session_id, cwd, event !== 'stop'),
         // The Gateway settlement process is not an agent turn boundary. Only
         // agent_end records Stop; a background poll must not spend the three
         // acknowledgement reminders or abandon a Session Message debt.
@@ -867,18 +883,25 @@ function stopWakeRoute(
   harness: HookInstallableHarness | undefined,
   sessionId: string | undefined,
   cwd: string,
+  background: boolean,
 ): EscalationDeliveryRoute | undefined {
   if (harness === 'grok') return undefined
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {
     if ((deps.hookPlatform ?? process.platform) === 'win32') return undefined
-    return sessionInputRoute(sessionId, deps.env, claudeWakeRoute({
+    const route = sessionInputRoute(sessionId, deps.env, claudeWakeRoute({
       sessionId,
       cwd,
       sourcePid: deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env),
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
     }), log(deps))
+    // A detached subprocess can be reparented after ask exits. Only the
+    // resident Session Attendant retains Claude's required own-child ancestry.
+    // Its ordinary attendance exchange wakes staged inputs, even with no notes.
+    return background ? { ...route, defer: async (accepted) => {
+      stageSessionAnswers(sessionId, deps.env, accepted)
+    } } : route
   }
   if (harness === 'codex') {
     return sessionInputRoute(sessionId, deps.env, codexWakeRoute({

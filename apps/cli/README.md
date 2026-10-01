@@ -69,20 +69,18 @@ notifai ask "Deploy the migration to production?" \
   --choice Yes --choice No
 ```
 
-The agent registers the question and ends the asking turn to start submission;
-your answer returns to that same Agent Session. Question Routing owns the
-complete answer window: Claude Code waits out of band and wakes it on
-macOS/Linux; on Windows its Stop stays held and returns the answer as the same
-Agent Session's continuation. Codex waits out of band and queues the answer
-into that thread's durable inbox: idle sessions consume it, busy sessions
-consume it at their next turn boundary, and stopped sessions retain it until
-reopened. Queue success proves storage, not consumption. On iPhone, press and hold the
-collapsed banner to answer; the choices appear on the expanded card, not on
-the lock screen.
+The agent registers the question and starts background submission immediately;
+it can continue independent work while your answer is outstanding. Registration
+alone does not prove Provider Acceptance. Question Routing keeps the exact
+Agent Session's answer path for the complete answer window. Claude Code on
+macOS/Linux and Codex observe answers out of band; Claude Code on Windows
+returns answers through a held Stop. Codex queues a wake-up, then drains current
+notes and answers together at a supported hook or `notifai receive` boundary.
+Queue success proves wake storage, not presentation.
 
-By default a question reaches your devices when the agent turn ends, whether or
-not you are at the keyboard (`ask_grace_seconds = 0`). Set a positive grace
-period for a terminal-only answer window first.
+By default submission begins without waiting for the turn to end
+(`ask_grace_seconds = 0`). Set a positive grace period for a terminal-only
+answer window first.
 
 When you answer, the agent acknowledges it before it does anything else, so you
 find out your reply landed and what it set in motion — not just that you sent

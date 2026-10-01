@@ -11,7 +11,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { answersContext, clearAcknowledgementObligation, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
 import { retiringQuestion } from './hook-question-retirement.js'
-import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, recordSessionNotified, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import type { AcceptedAnswerDelivery, EscalationDeliveryRoute } from './hook-types.js'
 import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
@@ -77,6 +77,9 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
     delete next.accepted
     return next
   })
+  // A reply proves submission even when its HTTP receipt was lost. Wake a
+  // dormant resident writer without depending on that missing receipt.
+  recordSessionNotified(sessionId, env, accepted.recorded_at)
 }
 
 /** The existing route wakes the exact owner, but no longer owns answer text. */
@@ -113,13 +116,24 @@ export function readSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, l
   } catch { return [] }
 }
 
-export function hasSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null): boolean {
+function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null) {
   const state = readSessionState(sessionId, env)
-  const written = new Set(readDeliveryJournal(sessionId, env).filter((entry) => ['writing', 'written', 'failed'].includes(entry.stage))
+  const written = new Set(readDeliveryJournal(sessionId, env)
+    .filter((entry) => ['writing', 'written', 'failed'].includes(entry.stage))
     .map((entry) => entry.subject.type === 'answer' ? entry.subject.request_id : entry.subject.message_id))
-  return (state.waiting_answers ?? []).some((answer) => !written.has(answer.pending.request_id!) &&
-    state.acknowledgement_due?.some((owed) => owed.request_id === answer.pending.request_id)) ||
-    (lease !== null && readSessionMessages(sessionId, env, lease).some((message) => !written.has(message.message_id)))
+  const owed = new Set(state.acknowledgement_due?.map((entry) => entry.request_id))
+  const answers = (state.waiting_answers ?? []).filter((answer) =>
+    answer.pending.request_id !== undefined && !written.has(answer.pending.request_id) &&
+    owed.has(answer.pending.request_id)).slice(0, 20)
+  // Answers precede their edits; notes retain the service's immutable order.
+  const messages = (lease === null ? [] : readSessionMessages(sessionId, env, lease))
+    .filter((message) => !written.has(message.message_id)).slice(0, 20 - answers.length)
+  return { answers, messages }
+}
+
+export function hasSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null): boolean {
+  const { answers, messages } = pendingSessionInputs(sessionId, env, lease)
+  return answers.length + messages.length > 0
 }
 
 /** One stdout document, at most 20 inputs, with ownership checked at the byte. */
@@ -130,17 +144,7 @@ export async function drainSessionInputs(input: {
   write(text: string): void
 }): Promise<boolean> {
   const { sequencer: deps, lease } = input
-  const state = readSessionState(deps.sessionId, deps.env)
-  const written = new Set(readDeliveryJournal(deps.sessionId, deps.env)
-    .filter((entry) => ['writing', 'written', 'failed'].includes(entry.stage))
-    .map((entry) => entry.subject.type === 'answer' ? entry.subject.request_id : entry.subject.message_id))
-  const answers = (state.waiting_answers ?? []).filter((answer) =>
-    answer.pending.request_id !== undefined && !written.has(answer.pending.request_id) &&
-    state.acknowledgement_due?.some((entry) => entry.request_id === answer.pending.request_id)).slice(0, 20)
-  // Preserve the service's immutable note/edit order. Fenced answers precede
-  // their edits; an edit refused pending its answer waits for the next drain.
-  const messages = (lease === null ? [] : readSessionMessages(deps.sessionId, deps.env, lease))
-    .filter((message) => !written.has(message.message_id)).slice(0, 20 - answers.length)
+  const { answers, messages } = pendingSessionInputs(deps.sessionId, deps.env, lease)
   if (answers.length + messages.length === 0 || !input.mayWrite()) return false
   // An unfenced answer has no server claim to reject a stale local copy.
   // Reconcile it before presentation; inability to check must defer it.

@@ -160,7 +160,7 @@ function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ) {
-  return askAuthoredCommand(deps, question, flags)
+  return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, flags)
 }
 
 /**
@@ -8554,7 +8554,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
-    expect(io.outLines.some((line) => line.startsWith('Question registered locally (q_'))).toBe(true)
+    expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
       harness: 'codex',
@@ -9360,7 +9360,9 @@ describe('asking before the hooks have ever run', () => {
       CODEX_HOME: path.join(cwd, 'codex-home'),
       CODEX_THREAD_ID: 'codex-commitment-thread',
     }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    const launches: unknown[] = []
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42,
+      spawnQuestionSettlement: (launch: unknown) => { launches.push(launch) } }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
@@ -9377,8 +9379,9 @@ describe('asking before the hooks have ever run', () => {
       }),
     ).toBe(EXIT.ok)
 
+    expect(launches).toEqual([{ envelope: { session_id: 'codex-commitment-thread', cwd }, harness: 'codex', purpose: 'submission' }])
     const said = io.outLines.join('\n')
-    expect(said).toContain('Before ending this turn')
+    expect(said).toContain('Submission starts without ending this turn')
     for (const answer of ['Staging', 'Production', 'Cancel']) {
       expect(said).toContain(`If the answer is "${answer}"`)
     }

@@ -323,6 +323,42 @@ describe('Session Attendant', () => {
     await h.clock.advance(1)
   })
 
+  it('interrupts a quiet attendance poll for locally staged input at the next probe', async () => {
+    let pending = false
+    let writes = 0
+    const h = startAttendant({
+      acceptsMessages: true,
+      localInputPending: () => pending,
+      onMessages: async () => {
+        if (pending) { writes++; pending = false }
+        return 'done'
+      },
+    })
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(1))
+    await h.clock.advance(1)
+    const held = h.service.last()
+    expect(held.waitSeconds).toBe(25)
+    pending = true
+    await h.clock.advance(2_000)
+    expect(held.aborted).toBe(true)
+    expect(h.service.last()).not.toBe(held)
+    expect(h.service.last().waitSeconds).toBe(0)
+    const refresh = h.service.last()
+    await h.clock.advance(2_000)
+    expect(h.service.last()).toBe(refresh)
+    expect(refresh.aborted).toBe(false)
+    refresh.respond(h.service.attending(1))
+    await h.clock.advance(1)
+    expect(writes).toBe(1)
+    const quietAgain = h.service.last()
+    await h.clock.advance(2_000)
+    expect(quietAgain.aborted).toBe(false)
+    h.signal()
+    await h.clock.advance(1)
+    await h.result
+  })
+
   it('hands messages over only when it accepts them, and re-asks at once for one that must wait', async () => {
     const note = { message_id: 'sm_1', created_at: 'x', agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'hi' }
     const silent = startAttendant()

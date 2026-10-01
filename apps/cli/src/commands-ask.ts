@@ -27,6 +27,7 @@ import { inferInvocationContext } from './invocation-context.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import { enableProject, projectBinding } from './project-enablement.js'
+import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
   CHOICE_USAGE,
   buildDraft,
@@ -323,6 +324,21 @@ function recordRegisteredQuestion(
     choices: built.questions[0]!.choices?.length ?? 0,
     media: draft.presentation.media?.length ?? 0,
   })
+  const harness = readSessionState(sessionId, deps.env).harness
+  let submission: 'starting' | 'launch-failed' = 'starting'
+  try {
+    if (harness === undefined) throw new Error('The admitted Agent Session lost its harness identity')
+    ;(deps.spawnQuestionSettlement ?? spawnQuestionSettlement)({
+      envelope: { session_id: sessionId, cwd: deps.cwd }, harness, purpose: 'submission',
+    })
+  } catch (err) {
+    submission = 'launch-failed'
+    log(deps).error('cli.error', { kind: 'question_submission_launch', session: sessionId, question_id: questionId, outcome: submission,
+      message: err instanceof Error ? err.message : String(err) })
+  }
+  const nextStep = submission === 'starting'
+    ? 'Submission starts without ending this turn. Continue independent work while Question Routing owns the answer return path.'
+    : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same
@@ -335,6 +351,7 @@ function recordRegisteredQuestion(
           question_id: questionId,
           state: 'local',
           submitted: false,
+          submission,
           request_id: null,
           provider_acceptance: 'not_available',
           questions: built.questions.map((entry) => ({
@@ -346,14 +363,14 @@ function recordRegisteredQuestion(
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
           next: {
-            end_turn: true,
+            end_turn: false,
             in_this_turn:
-              'Ask the question in the conversation and say what concrete work each possible answer will make you resume, then end the turn so Question Routing can start submission. Registration alone does not start submission.',
+              `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
             route_neutral:
               'Never say where the answer must arrive; it returns by whatever route the harness supports.',
             on_answer:
               'Acknowledge it, then resume the committed work without asking the user to confirm again.',
-            answered_outside_notifai: `If they answer in the conversation instead, run \`notifai close ${questionId}\` before ending the turn so a later Stop will not send this question.`,
+            answered_outside_notifai: `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`,
           },
         },
         null,
@@ -373,13 +390,13 @@ function recordRegisteredQuestion(
   }
   deps.io.out(
     built.questions.length > 1
-      ? `${built.questions.length} questions registered locally as one form (${questionId}); they have not been submitted as a Notification Request and have no Provider Acceptance yet. Ask them in the conversation, state the concrete work you will resume for their answers, then end your turn.`
-      : `Question registered locally (${questionId}); it has not been submitted as a Notification Request and has no Provider Acceptance yet. Ask it in the conversation, state the concrete work you will resume when the answer arrives, then end your turn.`,
+      ? `${built.questions.length} questions registered as one form (${questionId}); background submission is ${submission}. Provider Acceptance is not confirmed yet.`
+      : `Question registered (${questionId}); background submission is ${submission}. Provider Acceptance is not confirmed yet.`,
   )
   deps.io.out(
-    `Registration alone does not start submission. The asking turn's Stop normally starts question settlement; a later User prompt can recover an unmatched registration. Inspect the original identity with \`notifai status ${questionId}\`; never register a replacement to check whether this one was sent.`,
+    `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
-  deps.io.out('Before ending this turn, pre-commit in your own words to the work you will resume:')
+  deps.io.out('Ask in the conversation and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
     if (entry.choices !== undefined) {
@@ -404,7 +421,7 @@ function recordRegisteredQuestion(
     'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
   )
   deps.io.out(
-    `If they answer in this conversation instead, retire it with \`notifai close ${questionId}\` so a later Stop will not send it.`,
+    `If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`,
   )
   return EXIT.ok
 }
@@ -458,9 +475,8 @@ async function uploadAskMedia(
 }
 
 /**
- * Registers a question for turn-end routing. Returns immediately so the agent
- * can ask in prose and end its turn; the terminal keeps the question to itself
- * for `ask_grace_seconds` before it reaches any device.
+ * Registers and starts submission immediately, without waiting for turn end.
+ * The exact harness keeps ownership of answer delivery while work continues.
  */
 export function askCommand(
   deps: CommandDeps,

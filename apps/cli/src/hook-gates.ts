@@ -6,7 +6,6 @@ export const GATE_REASONS = [
   'no-session',
   'no-question',
   'answered',
-  'continuation-repeat',
   'continuation-limit',
   'delivery-limit',
   'acknowledgement-required',

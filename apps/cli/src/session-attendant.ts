@@ -131,6 +131,8 @@ export interface SessionAttendantOptions {
   ) => Promise<'done' | 'retry-soon'>
   clock: AttendantClock
   logger: Logger
+  /** Staged local input needs a fresh exchange rather than a quiet long-poll. */
+  localInputPending?: () => boolean
   /** Persist the local status `notifai doctor` reads. */
   writeStatus(status: AttendantStatus): void
   /** Periodic housekeeping (e.g. keep markers younger than pruning). */
@@ -183,6 +185,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   let networkStarted = false
   let exit: AttendantExitReason | null = probe.state === 'ended' ? probe.reason : null
   let exchange: AbortController | null = null
+  let exchangeHeld = false
   let wake: (() => void) | null = null
 
   const setPhase = (next: AttendantPhase, reason: string | null = null): void => {
@@ -334,6 +337,14 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       })
     }
     if (!networkStarted && options.notified()) nudge()
+    if (probe.state === 'running' && exchangeHeld && exchange !== null && options.localInputPending?.()) {
+      // A reply can arrive locally while attendance is holding for server notes.
+      // Refresh the lease and invoke the genuine resident writer on the next
+      // exchange, without waiting the server's entire quiet-poll interval.
+      reacquireNow = true
+      exchange.abort()
+      nudge()
+    }
     const mono = clock.monotonic()
     if (mono - lastHeartbeat >= 60 * 60_000) {
       lastHeartbeat = mono
@@ -404,6 +415,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       // above runs again before anything is sent.
       const discovery = new AbortController()
       exchange = discovery
+      exchangeHeld = false
       let supported: boolean
       try {
         supported = await abortable(options.serverSupportsAttendance(client), discovery.signal)
@@ -439,6 +451,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     const sentAt = clock.monotonic()
     const sentEpoch = epoch
     const hold = cursor !== undefined && !reacquireNow && messageRetries === 0
+    exchangeHeld = hold
     reacquireNow = false
     let response: AttendanceResponse
     try {

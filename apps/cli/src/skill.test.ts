@@ -257,15 +257,15 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/without that identifier, omit\s+`--session-label`/i)
     expect(send).toMatch(/initial name comes from the environment when available, then your label,\s+then a generated fallback/i)
     expect(send).toMatch(/repeat the same `--session-label` on sends and asks;\s+changing that flag does not rename an existing semantic name/i)
-    expect(send).toMatch(/later semantic\s+name can replace a generated fallback/i)
+    expect(send).toMatch(/semantic\s+name can replace a generated fallback/i)
     expect(send).toMatch(/never pass\s+`--session-id`/i)
     expect(send).toMatch(/identifier, hash, or\s+filesystem path/i)
     expect(send).toContain('notifai session rename')
     expect(send).toMatch(/job changed completely[\s\S]{0,100}old name would mislead/i)
     expect(send).toMatch(/without\s+waiting for a notification or User reminder/i)
     expect(send).toMatch(/keep the name for milestones,\s+ordinary progress, and same-job refinements/i)
-    expect(send).toMatch(/accepts no Agent Session id/i)
-    expect(send).toMatch(/active harness to\s+prove the exact current Agent Session/i)
+    expect(send).toMatch(/(?:accepts|takes) no Agent Session id/i)
+    expect(send).toMatch(/active harness (?:to|must)\s+prove the exact (?:current Agent )?session/i)
   })
 
   it('never teaches by enumerating environments the CLI can detect itself', () => {
@@ -353,7 +353,7 @@ describe('Notifai agent skill', () => {
       harnessReference.indexOf('## Bounded recovery'),
     )
 
-    expect(answerRoute).toMatch(/Claude Code.*POSIX.*inbox socket/is)
+    expect(answerRoute).toMatch(/Claude Code.*POSIX.*inbox\s+socket/is)
     const windowsRoute = answerRoute.slice(answerRoute.indexOf('Claude Code on Windows'))
     expect(windowsRoute).toMatch(/Stop hook stays held through the complete\s+answer window/i)
     expect(windowsRoute).toMatch(/same Agent Session/i)
@@ -381,8 +381,10 @@ describe('Notifai agent skill', () => {
   it('keeps local registration distinct from submission and delivery evidence', () => {
     const ask = section('## Ask a question')
     expect(ask).toMatch(/`registered: true`[\s\S]{0,180}local/i)
-    expect(ask).toMatch(/not yet been submitted as a\s+Notification\s+Request/i)
-    expect(ask).toMatch(/no Provider Acceptance/i)
+    expect(ask).toMatch(/not submission or\s+Provider Acceptance/i)
+    expect(ask).toMatch(/submission starts immediately/i)
+    expect(ask).toMatch(/continue independent work/i)
+    expect(ask).not.toMatch(/end the turn to start submission/i)
     expect(ask).toContain('notifai status <question_id> --json')
     expect(ask).toMatch(/local.*frozen.*live.*answered.*withdrawn.*retired/is)
     expect(ask).toMatch(/never call a question\s+sent\s+or\s+delivered\s+from registration alone/i)

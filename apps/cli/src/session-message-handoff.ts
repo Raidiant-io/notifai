@@ -81,6 +81,7 @@ export async function handOffSessionMessages(
       await handOff.finish('not-written')
       switch (refusal.reason) {
         case 'awaiting_earlier_answer':
+        case 'awaiting_earlier_message':
         case 'attempt_pending':
         case 'unavailable':
           // Later messages keep their order behind this one.
@@ -91,6 +92,10 @@ export async function handOffSessionMessages(
         case 'not_claimable':
         case 'not_found':
           continue
+        default: {
+          const unsupported: never = refusal.reason
+          throw new Error(`Unsupported claim refusal: ${unsupported}`)
+        }
       }
     }
 
