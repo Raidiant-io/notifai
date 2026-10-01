@@ -12,7 +12,7 @@ import { activeQuestionRouteProblems, CODEX_STALE_STOP_DEFINITION_PROBLEM } from
 import { findInstallations } from './install-hooks.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
 import { localIntegrationAssessment } from './integration-health.js'
-import { codexToolHookReady } from './codex-tool-messages.js'
+import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messages.js'
 
 /** Read-only update plan; integration changes belong to explicit resume. */
 export async function cliUpdateCheckCommand(
@@ -37,6 +37,8 @@ export async function cliUpdateCheckCommand(
   const restartReason = routeProblems.includes(CODEX_STALE_STOP_DEFINITION_PROBLEM)
     ? CODEX_STALE_STOP_DEFINITION_PROBLEM : undefined
   const sessionState = owner?.sessionId === undefined ? null : readSessionState(owner.sessionId, deps.env)
+  const toolNotesVerified = owner?.harness === 'codex' && owner.sessionId !== undefined
+    ? codexToolHookReady(deps, owner.sessionId) : null
   const bundle = shippedSkillBundle(version ?? undefined)
   const installedSkill = readiness.states.find(state => state.id === 'skill')
   if (installedSkill !== undefined && typeof installedSkill.technical === 'object' && installedSkill.technical !== null &&
@@ -57,8 +59,9 @@ export async function cliUpdateCheckCommand(
     changelog: installedChangelog(version, flags.from),
     local_integration: localIntegrationAssessment(deps).faults,
     tool_boundary_notes: owner?.harness === 'codex' && owner.sessionId !== undefined
-      ? { verified: codexToolHookReady(deps, owner.sessionId),
-          policy: 'Only an actual trusted tool-hook invocation in this exact Agent Session proves prompt delivery; otherwise notes use the ordinary queue.' }
+      ? { verified: toolNotesVerified,
+          policy: 'Busy delivery requires an observed root tool callback in the current turn. Installed files, trusted definitions, historical observations and queue acceptance do not prove it.',
+          recovery: toolNotesVerified ? null : CODEX_TOOL_HOOK_RECOVERY }
       : null,
     guidance: bundle.ok ? {
       verified: true,

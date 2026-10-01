@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1c6503b276c8b0d1c7b426a2c51e82a238d04661d6715f5db58d94d827effa97",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms for native Codex activity reconciliation and verified resident handover. The existing authorized update --resume guidance already covers installed-runtime activation, unchanged trust, preserved pending inputs and concrete pending actions. Native activity is presence evidence, separate from the trusted question route; missing bounded native evidence must not invalidate an otherwise current first-turn question route. Existing resident attendants can be activated by the authorized updater without restarting the User agent. No new agent-facing command, approval instruction, guidance authority or domain term is introduced.",
+  "behavior_digest": "sha256:654719e22ee24cc8a4cec4d3174734be1f7b62539bfeedef566201ee4129c847",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, packaged skill and update reference, harness setup, CLI readiness and domain terms. Busy Codex delivery now requires a root observation for the active turn, rejecting historical records that could predate child ownership fencing. The update reference and diagnostic describe the supported in-session refresh of an already-trusted delivery hook without changing approvals or ending the Agent Session. Queue acceptance remains distinct from consumption. Foreground receive distinguishes retained pending input from an empty local inbox and never acknowledges unseen input. Hook definitions, trust identities, question-routing admission and domain vocabulary are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

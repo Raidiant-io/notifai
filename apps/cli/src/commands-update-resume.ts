@@ -14,7 +14,7 @@ import { installedChangelog } from './update-handoff.js'
 import { isSemVer } from './version.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
 import { sameLocalPath } from './local-path.js'
-import { codexToolHookReady } from './codex-tool-messages.js'
+import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messages.js'
 import { activateInstalledAttendants, type AttendantActivation } from './attendant-update.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
@@ -115,7 +115,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
         pending.push('Changed hooks need exact-session activation verification; preserve the current Agent Session until a specific approval or fresh-session requirement is proven.')
       }
       if (owner.harness === 'codex' && owner.sessionId !== undefined && !codexToolHookReady(deps, owner.sessionId)) {
-        pending.push('Tool-boundary Notes are not yet verified in this exact Agent Session; ordinary queue delivery remains available. Check the next tool callback before considering an approved fresh session.')
+        pending.push(CODEX_TOOL_HOOK_RECOVERY)
       }
     }
     if (assessment.faults.length === 0) {

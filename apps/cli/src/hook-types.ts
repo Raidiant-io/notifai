@@ -70,7 +70,11 @@ export interface SessionState {
   /** Content-free native lifecycle proof, scoped to the current owner. */
   codex_native_turn?: { key: string; turn_id: string; transcript_path: string }
   /** Exact incarnation observed executing the currently trusted Codex tool hook. */
-  codex_tool_hook?: { incarnation: string; fingerprint: string }
+  codex_tool_hook?: {
+    incarnation: string; fingerprint: string
+    /** Absent in historical records that could have been written by a child. */
+    root_observed?: { turn_id: string; at: number }
+  }
   /** Harness that owns this exact lifecycle state. */
   harness?: HookHarness
   /** Checkout whose hook definition activated this session; lifecycle diagnostics only. */
