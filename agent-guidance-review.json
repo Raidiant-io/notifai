@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f610f7ce4e06e57036e73243294045d7345a0c3d82daa6dd90e7f82e1f2a8b0f",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms for Codex parent input isolation and unconditional coalesced wakes. SubagentStart retains reporting-only guidance; other child callbacks cannot consume parent input or change parent activity. Updated README and harness setup to describe queued wakes while working as well as idle, foreground claims, and harmless late empty receives. Existing skill receive and per-item acknowledgement instructions remain correct. No new hook definition, native trust permission, readiness command, or domain term is introduced. Existing resident attendants still require a fresh Agent Session to load the new code.",
+  "behavior_digest": "sha256:1c6503b276c8b0d1c7b426a2c51e82a238d04661d6715f5db58d94d827effa97",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, packaged skill, harness setup, CLI readiness and domain terms for native Codex activity reconciliation and verified resident handover. The existing authorized update --resume guidance already covers installed-runtime activation, unchanged trust, preserved pending inputs and concrete pending actions. Native activity is presence evidence, separate from the trusted question route; missing bounded native evidence must not invalidate an otherwise current first-turn question route. Existing resident attendants can be activated by the authorized updater without restarting the User agent. No new agent-facing command, approval instruction, guidance authority or domain term is introduced.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
