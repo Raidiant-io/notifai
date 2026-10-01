@@ -1,6 +1,7 @@
 import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs } from './session-inputs.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
+import { buildProgram } from './program.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import type { AcceptedAnswerDelivery } from './hook-types.js'
 import type { AttendanceMessage, ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
@@ -86,6 +87,23 @@ function setup() {
 }
 
 describe('Codex tool-boundary Session Messages', () => {
+  it('executes the advertised wake command and drains only the exact harness session', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_current')])
+    stageSessionMessages('another-session', h.env, h.lease, [note('sm_other')])
+    const command = sessionInputWake().match(/`notifai ([^`]+)`/)?.[1]
+    expect(command).toBeDefined()
+    let exitCode: number | undefined
+    const program = buildProgram(h.deps, { exit: (code) => { exitCode = code } })
+    await program.parseAsync(['node', 'notifai', ...command!.split(' ')])
+    expect(exitCode).toBe(0)
+    expect(h.claims).toEqual(['sm_current'])
+    expect(h.output.join('\n')).toContain('Read sm_current')
+    expect(h.output.join('\n')).not.toContain('sm_other')
+    expect(readSessionMessages('another-session', h.env, h.lease)).toHaveLength(1)
+  })
+
   it('presents a bounded prefix when claims are slow and leaves later notes in order', async () => {
     const h = setup()
     let clock = 0
@@ -114,11 +132,11 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
 
-  it('refuses a receive command for a different exact session without loading credentials', async () => {
+  it('refuses a receive command without exact identity before loading credentials', async () => {
     const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
+    delete h.env['CODEX_THREAD_ID']
     h.deps.store.load = () => { throw new Error('must not load credentials') }
-    expect(await receiveCommand(h.deps, { session: 'another-session' })).not.toBe(0)
+    expect(await receiveCommand(h.deps)).not.toBe(0)
     expect(h.output).toEqual([])
   })
 
@@ -128,7 +146,7 @@ describe('Codex tool-boundary Session Messages', () => {
     writeProjectSession(h.deps.cwd, h.env, SESSION, Date.now(), 'codex')
     h.stage([note('sm_private')])
     h.deps.store.load = () => { throw new Error('must not load credentials') }
-    expect(await receiveCommand(h.deps, { session: SESSION })).not.toBe(0)
+    expect(await receiveCommand(h.deps)).not.toBe(0)
     expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
     expect(h.output).toEqual([])
   })
@@ -170,7 +188,7 @@ describe('Codex tool-boundary Session Messages', () => {
     } })
     await route.defer!(accepted)
     await route.defer!(accepted)
-    expect(queued).toEqual([sessionInputWake(SESSION)])
+    expect(queued).toEqual([sessionInputWake()])
     expect(queued[0]).not.toContain(reply.text)
     expect(readSessionState(SESSION, h.env).accepted).toBeUndefined()
     expect(h.claims).toEqual([])
