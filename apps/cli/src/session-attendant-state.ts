@@ -247,7 +247,8 @@ export function reconcileNativeTurn(
       const currentOffset = snapshot.positions.get(same.current)
       if (currentOffset === undefined || currentOffset > snapshot.latest.offset) return record
     }
-    if (same.ended.includes(turnId)) return record
+    // Confirming native completion is an Idle observation, never resurrection.
+    if (same.ended.includes(turnId) && !snapshot.latest.ended) return record
     recorded = true
     return {
       ...same, current: turnId, started: keep(same.started, turnId),

@@ -58,6 +58,15 @@ it('does not reactivate ended work or create a replacement incarnation during re
   expect(reconcileNativeTurn('root', f.env, 'other-incarnation', 'one', f.snapshot(), () => true)).toBe(false)
 })
 
+it('confirms an already-ended native turn as Idle during update recovery', () => {
+  const f = fixture()
+  recordTurnStart('root', f.env, f.key, 'previous'); recordTurnEnd('root', f.env, 'previous')
+  f.event('task_started', 'latest'); f.event('task_complete', 'latest')
+  recordTurnEnd('root', f.env, 'latest')
+  expect(reconcileNativeTurn('root', f.env, f.key, 'latest', f.snapshot(), () => true)).toBe(true)
+  expect(readTurnActivity('root', f.env, f.key)).toBe('idle')
+})
+
 it('rejects wrong roots, child transcripts, symlinks and partial native records', () => {
   const f = fixture(); f.event('task_started', 'one')
   expect(readNativeTurnSnapshot(f.file, 'another-root', f.env)).toBeNull()
