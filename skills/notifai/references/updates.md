@@ -85,10 +85,18 @@ For an existing CLI, channel changes use its generated update flow rather than
 an independent global install that can split CLI, adapter and skill identity.
 
 For Codex, `update --check --json` reports `tool_boundary_notes.verified` for
-the exact active Agent Session. Only an actual trusted tool callback proves
-that route. Until then Notes retain ordinary queue delivery; queue handoff
-does not prove model consumption. A missing proof alone calls for observing a
-callback, not a restart.
+the exact active Agent Session. Proof requires a root callback in the current
+turn; an old record or a child callback does not establish busy delivery.
+The ordinary queue can wait until the current turn ends. Queue acceptance
+does not prove model consumption.
+
+If tools complete but proof remains absent, read `tool_boundary_notes.recovery`.
+Codex can retain old hooks in memory while `/hooks` displays current files as
+active and trusted. Within an authorized repair, toggle only the already-trusted
+Notifai PostToolUse handler off and back on in that session's `/hooks` to invoke
+Codex's configuration refresh. Verify a subsequent real callback. Preserve
+approvals, pending inputs and the running Agent Session; do not grant new trust
+or restart it merely because proof is missing.
 
 ## Harness differences
 

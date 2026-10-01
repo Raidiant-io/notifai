@@ -87,6 +87,22 @@ function setup() {
 }
 
 describe('Codex tool-boundary Session Messages', () => {
+  it('rejects historical observation without root ownership or current-turn evidence', async () => {
+    const h = setup()
+    await h.hook()
+    const proof = readSessionState(SESSION, h.env).codex_tool_hook!
+    updateSessionState(SESSION, h.env, state => ({ ...state, codex_tool_hook: {
+      incarnation: proof.incarnation, fingerprint: proof.fingerprint,
+    } }))
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
+    await h.hook()
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
+    recordTurnStart(SESSION, h.env, h.incarnation.key, 'turn-2')
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
+    await h.hook('turn-2')
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
+  })
+
   it.each([
     ['post-tool-use', 'PostToolUse'],
     ['user-prompt-submit', 'UserPromptSubmit'],
@@ -182,6 +198,22 @@ describe('Codex tool-boundary Session Messages', () => {
     await drainSessionInputs(input)
     expect(h.claims).toEqual(['sm_first', 'sm_second'])
     expect(h.output[1]).toContain('sm_second')
+  })
+
+  it('reports queued input instead of an empty inbox when an earlier answer blocks a claim', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_blocked')])
+    h.duringClaim(() => { throw new ApiCallError(409, 'claim_refused', 'Earlier answer pending', null, { reason: 'awaiting_earlier_answer' }) })
+    expect(await receiveCommand(h.deps)).toBe(0)
+    expect(h.output.join('\n')).toContain('User input is pending')
+    expect(h.output.join('\n')).not.toContain('No user input')
+    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
+    h.duringClaim(() => {})
+    await receiveCommand(h.deps)
+    expect(h.output.join('\n')).toContain('Read sm_blocked')
+    await receiveCommand(h.deps)
+    expect(h.output.at(-1)).toContain('No user input is pending')
   })
 
   it('retries a failed wake without losing input and coalesces the successful wake', async () => {

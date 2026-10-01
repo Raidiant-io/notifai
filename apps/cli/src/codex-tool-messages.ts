@@ -27,9 +27,14 @@ export function codexToolHookReady(
 ): boolean {
   const fingerprint = toolHookFingerprint(deps)
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
+  const incarnation = readSessionIncarnation(sessionId, deps.env)
+  const turn = incarnation === null ? null : currentCodexTurn(sessionId, deps.env, incarnation.key)
   return fingerprint !== null && proof?.fingerprint === fingerprint &&
-    proof.incarnation === readSessionIncarnation(sessionId, deps.env)?.incarnation
+    proof.incarnation === incarnation?.incarnation && proof.root_observed !== undefined &&
+    (turn === null || proof.root_observed.turn_id === turn)
 }
+
+export const CODEX_TOOL_HOOK_RECOVERY = 'Wait for a real tool callback in this turn. If tools complete but this remains unverified, Codex may retain an older hook configuration in memory even when /hooks lists trusted, active definitions. In the existing session, open /hooks and toggle only the already-trusted Notifai PostToolUse handler off and back on to refresh it, then verify the next callback. Do not change approvals or end the Agent Session. The ordinary queue can wait until the active turn finishes; queue acceptance does not prove busy delivery.'
 
 /** Notes and answers share one bounded stdout document at the trusted boundary. */
 export async function deliverCodexToolMessage(
@@ -66,9 +71,11 @@ export async function deliverCodexToolMessage(
   }
   if (!mayWrite()) return
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
-  if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint) {
+  if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint ||
+      proof.root_observed?.turn_id !== envelope.turn_id) {
     updateSessionState(sessionId, deps.env, (state) => ({
-      ...state, codex_tool_hook: { incarnation: lease.incarnation, fingerprint },
+      ...state, codex_tool_hook: { incarnation: lease.incarnation, fingerprint,
+        root_observed: { turn_id: envelope.turn_id!, at: (deps.now ?? Date.now)() } },
     }))
   }
   if (!hasSessionInputs(sessionId, deps.env, lease) || !mayWrite()) return

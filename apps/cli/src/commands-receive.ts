@@ -45,6 +45,11 @@ export async function receiveCommand(deps: CommandDeps): Promise<number> {
   log(deps).bind({ session: current.sessionId })
   observeSessionInputWake(current.sessionId, deps.env, sessionInputWake())
   const received = await receiveSessionInputs(deps, current.sessionId, (text) => deps.io.out(text))
-  if (!received) deps.io.out('No user input is ready for this session. Continue your work; pending input will be offered at a later boundary.')
+  if (!received) {
+    const pending = hasSessionInputs(current.sessionId, deps.env, readAttendantLease(current.sessionId, deps.env))
+    deps.io.out(pending
+      ? 'User input is pending but could not be handed over yet. It remains queued. Inspect notifai logs for the claim or delivery failure; do not treat this as an empty inbox or acknowledge unseen input.'
+      : 'No user input is pending in the local inbox for this session. Continue your work.')
+  }
   return EXIT.ok
 }
