@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.2](https://github.com/Raidiant-io/notifai/compare/v11.6.1...v11.6.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **cli:** verify current root delivery callbacks and report blocked input ([#235](https://github.com/Raidiant-io/notifai/issues/235)) ([76928a1](https://github.com/Raidiant-io/notifai/commit/76928a1b479c7541b965c774fb85c213ee6e86e7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.1.4 to 8.1.5
+
 ## [11.6.1](https://github.com/Raidiant-io/notifai/compare/v11.6.0...v11.6.1) (2026-10-01)
 
 
