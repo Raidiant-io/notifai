@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {validateCiEvidence, waitForCiEvidence} from './require-ci-evidence.mjs'
+import {requireCiEvidence, validateCiEvidence, waitForCiEvidence} from './require-ci-evidence.mjs'
 
 const sha = 'a'.repeat(40)
 const run = {id: 42, head_sha: sha, status: 'completed', conclusion: 'success'}
@@ -13,24 +13,20 @@ const jobs = [
 ]
 
 test('accepts one exact-SHA run whose applicable evidence succeeded', () => {
-  assert.equal(validateCiEvidence({runs: [run], jobs, expectedSha: sha}), run)
+  assert.equal(validateCiEvidence({run, jobs, expectedSha: sha}), run)
 })
 
-test('fails closed on absent or ambiguous exact-SHA CI runs', () => {
-  assert.throws(
-    () => validateCiEvidence({runs: [], jobs, expectedSha: sha}),
-    /Run CI manually at the exact SHA/,
-  )
-  assert.throws(
-    () => validateCiEvidence({runs: [run, {...run, id: 43}], jobs, expectedSha: sha}),
-    /found 2/,
-  )
+test('fails closed on absent, unsuccessful or different-SHA evidence', () => {
+  for (const candidate of [undefined, {...run, head_sha: 'b'.repeat(40)}, {...run, conclusion: 'failure'}]) {
+    assert.throws(() => validateCiEvidence({run: candidate, jobs, expectedSha: sha}),
+      /Run CI manually at the exact SHA/)
+  }
 })
 
 test('requires gates and every explicit native context', () => {
   assert.throws(
     () => validateCiEvidence({
-      runs: [run],
+      run,
       jobs: jobs.map(job => job.name === 'gates' ? {...job, conclusion: 'failure'} : job),
       expectedSha: sha,
     }),
@@ -38,7 +34,7 @@ test('requires gates and every explicit native context', () => {
   )
   assert.throws(
     () => validateCiEvidence({
-      runs: [run],
+      run,
       jobs: jobs.filter(job => job.name !== 'platform \(macos-latest\)'),
       expectedSha: sha,
     }),
@@ -94,7 +90,7 @@ test('stops immediately when exact-SHA CI reached a terminal failure', async () 
       now: () => 0,
       sleep: async () => { slept = true },
     }),
-    /expected exactly one successful CI run/u,
+    /successful exact-SHA CI run is required/u,
   )
   assert.equal(slept, false)
 })
@@ -115,4 +111,30 @@ test('bounds the wait when exact-SHA CI never finishes', async () => {
     }),
     /timed out waiting for exact-SHA CI/u,
   )
+})
+
+
+test('paired tags reuse the newest successful exact-SHA run without mixing job evidence', async () => {
+  const requested = []
+  const newer = {...run, id: 43}
+  const fetcher = async (input) => {
+    const url = String(input)
+    requested.push(url)
+    if (url.includes('/actions/workflows/ci.yml/runs?')) {
+      return Response.json({workflow_runs: [run, {...run, id: 99, head_sha: 'b'.repeat(40)}, newer]})
+    }
+    assert.ok(url.includes('/actions/runs/43/jobs?'))
+    return Response.json({total_count: jobs.length, jobs})
+  }
+  assert.deepEqual(await requireCiEvidence({repository: 'Raidiant-io/notifai', expectedSha: sha,
+    token: 'test-token', fetcher}), newer)
+  assert.equal(requested.length, 2)
+})
+
+test('another successful run cannot fill missing jobs in the selected run', async () => {
+  const fetcher = async (input) => String(input).includes('/actions/workflows/ci.yml/runs?')
+    ? Response.json({workflow_runs: [run, {...run, id: 43}]})
+    : Response.json({total_count: jobs.length, jobs: jobs.slice(1)})
+  await assert.rejects(requireCiEvidence({repository: 'Raidiant-io/notifai', expectedSha: sha,
+    token: 'test-token', fetcher}), /job evidence is incomplete/)
 })

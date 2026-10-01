@@ -78,8 +78,10 @@ Run the release gates on that exact candidate. With an explicit authorization
 for this beta cut, push the candidate branch and its exact version tag(s):
 `vX.Y.Z-beta.N` for CLI and, only when needed,
 `protocol-vX.Y.Z-beta.N` for protocol. Create an immutable GitHub Release for
-each tag **marked prerelease**. Dispatch `ci.yml` at each tagged SHA and wait
-for its exact-SHA success; then dispatch `publish.yml` for the tag(s) with
+each tag **marked prerelease**. Dispatch `ci.yml` once for each distinct tagged SHA and wait
+for its exact-SHA success; tags sharing a commit reuse that evidence. Repeated
+successful runs are allowed; publication validates every required job from the
+newest successful exact-SHA run. Then dispatch `publish.yml` for the tag(s) with
 `expected_sha` set to that SHA. The protected `npm-release` environment still
 requires maintainer approval, OIDC publication, byte verification, and the
 deployed-service contract gate. Protocol must be published and verified before
