@@ -68,14 +68,11 @@ import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThrea
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
-import { codexToolHookReady } from './codex-tool-messages.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 
 /** Test seams; production reads the real harness, clocks, and signals. */
 export interface AttendantSeams {
-  /** Isolated tests only; production proves the installed hook and its trust. */
-  codexToolHookReady?: () => boolean
   harnessProcess?: ProcessIdentity
   probeAdapters?: ClaudeProbeAdapters
   clock?: AttendantClock
@@ -447,10 +444,11 @@ function codexMessageWriter(input: {
     const incarnation = readSessionIncarnation(sessionId, deps.env)
     const generation = attendant.generation()
     if (incarnation === null || generation === null || !attendant.mayWrite()) return 'retry-soon'
-    const toolReady = (deps.attendant?.codexToolHookReady ?? (() => codexToolHookReady(deps, sessionId)))()
     stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
     if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
-    if (toolReady && readTurnActivity(sessionId, deps.env, incarnation.key) !== 'idle') return 'retry-soon'
+    // A prior tool callback does not promise another one. Queue one coalesced,
+    // content-free wake even while working; the foreground claim/journal still
+    // owns delivery if a tool hook drains the input before this wake arrives.
     await wakeSessionInputs(sessionId, deps.env, async (text) => {
       const result = await deliverIntoCodexThread({
         threadId: queue.threadId, cwd, env: deps.env, adapters, text,
