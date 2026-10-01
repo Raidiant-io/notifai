@@ -421,7 +421,7 @@ function sessionMessageWriter(input: {
   }
 }
 
-/** Stage pending input for foreground consumption; idle sessions get one wake. */
+/** Stage pending input for foreground consumption and coalesce its native wake. */
 function codexMessageWriter(input: {
   deps: CommandDeps
   sessionId: string
