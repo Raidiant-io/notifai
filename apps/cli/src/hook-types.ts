@@ -59,12 +59,16 @@ export interface HookEnvelope {
   prompt?: string
   /** Codex's exact turn id on prompt, tool, Stop and Interrupt callbacks. */
   turn_id?: string
+  /** Native Codex transcript; only typed lifecycle records are consumed. */
+  transcript_path?: string
   /** Codex child hooks carry the root session_id but name the child here. */
   agent_id?: string
   agent_type?: string
 }
 
 export interface SessionState {
+  /** Content-free native lifecycle proof, scoped to the current owner. */
+  codex_native_turn?: { key: string; turn_id: string; transcript_path: string }
   /** Exact incarnation observed executing the currently trusted Codex tool hook. */
   codex_tool_hook?: { incarnation: string; fingerprint: string }
   /** Harness that owns this exact lifecycle state. */

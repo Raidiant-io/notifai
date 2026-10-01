@@ -788,6 +788,33 @@ describe('notifai hook attend for Codex', () => {
     await until(() => calls.at(-1)?.activity === 'idle', 'idle after turn 3')
     expect(deps.exits).toHaveLength(0)
 
+    // The native async copy must recover activity even when synchronous hooks
+    // stop firing in a long-lived harness. The incumbent still owns attendance.
+    const transcript = path.join(env['CODEX_HOME']!, 'sessions', 'activity.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: THREAD, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'async-current' } },
+    ].map(value => JSON.stringify(value)).join('\n') + '\n')
+    await hookRunCommand(deps, 'attend', stdin({
+      session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
+      turn_id: 'async-current', transcript_path: transcript,
+    }), 'codex')
+    await until(() => calls.at(-1)?.activity === 'working', 'async-only working activity')
+    // Neither a child nor a different native process may end the root turn.
+    await hookRunCommand(deps, 'attend', stdin({
+      session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current', agent_id: 'child',
+    }), 'codex')
+    const wrongOwner = { ...deps, attendant: { ...deps.attendant, harnessProcess: { ...HARNESS, start: 'another-process-start' } } }
+    await hookRunCommand(wrongOwner, 'attend', stdin({
+      session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current',
+    }), 'codex')
+    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
+    await hookRunCommand(deps, 'attend', stdin({
+      session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current',
+    }), 'codex')
+    await until(() => calls.at(-1)?.activity === 'idle', 'async-only turn ended')
+
     noteOffered = true
     await until(() => queued.length === 1, 'the note wake')
     expect(claims).toEqual([])

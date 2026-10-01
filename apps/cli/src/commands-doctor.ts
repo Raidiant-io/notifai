@@ -104,7 +104,7 @@ import {
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
-import { hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
+import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 
 // ---------------------------------------------------------------------------
@@ -1608,6 +1608,15 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           : null
   const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
   const promptFired = firedState?.last_prompt_at !== undefined
+  if (active?.harness === 'codex') {
+    const observed = active.sessionId !== undefined && codexNativeActivityObserved(active.sessionId, deps.env)
+    checks.push({
+      name: 'hooks (native activity)', ok: observed, reportOnly: true,
+      detail: observed
+        ? 'the current Codex native lifecycle agrees with this exact session activity record'
+        : 'current Codex lifecycle activation is unverified; installed files and historical callbacks do not prove that the running session uses them',
+    })
+  }
   const stopFired = firedState?.last_stop_at !== undefined
   const hermesActivated = firedPointer?.harness === 'hermes' && firedState?.harness === 'hermes'
   const fired = firedPointer !== null && (promptFired || hermesActivated)

@@ -36,9 +36,17 @@ it('orders beta release notes before the stable release they lead to', () => {
   expect(onBeta).not.toContain('Previous')
 })
 
-it.each(SOURCE_CONTEXT_HARNESSES)('does not require a restart for a ready %s installation', harness => {
+it.each(SOURCE_CONTEXT_HARNESSES.filter(harness => harness !== 'codex'))('does not require a restart for a ready %s installation', harness => {
   expect(HARNESS_UPDATE_EFFECTS[harness]).toBeTruthy()
   expect(updateSessionEffects(harness, [{ id: 'hooks', title: 'Hooks', status: 'ready', detail: 'current' }])).toMatchObject({ restart_required: false, assessment: 'continue' })
+})
+
+it('does not confuse disk installation and old prompt callbacks with current Codex activation', () => {
+  const historical = ['hooks', 'hooks-fired'].map(id => ({ id, title: id, status: 'ready' as const, detail: 'historical' }))
+  expect(updateSessionEffects('codex', historical)).toMatchObject({ assessment: 'unknown', restart_required: null })
+  expect(updateSessionEffects('codex', [...historical, {
+    id: 'hooks-native-activity', title: 'Native activity', status: 'ready', detail: 'current native turn matched',
+  }])).toMatchObject({ assessment: 'continue', restart_required: false })
 })
 
 it('separates a proven stale Codex runtime from repair gaps and unknown ownership', () => {
