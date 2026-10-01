@@ -5,7 +5,7 @@ import { buildProgram } from './program.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import type { AcceptedAnswerDelivery } from './hook-types.js'
 import type { AttendanceMessage, ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,10 +17,10 @@ import { hookRunCommand } from './commands-hook-run.js'
 import { codexToolHookReady } from './codex-tool-messages.js'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
 import { acquireClaimFile } from './hook-question-lock.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, updateSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { enableProject, projectBinding } from './project-enablement.js'
-import { attendantClaimPath, recordTurnEnd, recordTurnStart, readTurnActivity, writeAttendantStatus } from './session-attendant-state.js'
+import { attendantClaimPath, currentCodexTurn, recordTurnEnd, recordTurnStart, readTurnActivity, turnActivityPath, writeAttendantStatus } from './session-attendant-state.js'
 import { acquireDeliveryLock, readDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment } from './integration-health.js'
@@ -87,6 +87,71 @@ function setup() {
 }
 
 describe('Codex tool-boundary Session Messages', () => {
+  it.each([
+    ['post-tool-use', 'PostToolUse'],
+    ['user-prompt-submit', 'UserPromptSubmit'],
+    ['attend', 'UserPromptSubmit'],
+    ['attend', 'Stop'],
+    ['attend', 'Interrupt'],
+    ['session-start', 'SessionStart'],
+    ['session-end', 'SessionEnd'],
+    ['stop', 'Stop'],
+  ])('ignores child %s/%s callbacks carrying the parent session id', async (event, hookEvent) => {
+    const h = setup()
+    h.stage([note('sm_parent_only')])
+    const before = readSessionState(SESSION, h.env)
+    const beforeTurns = readFileSync(turnActivityPath(SESSION, h.env), 'utf8')
+    h.deps.store.load = () => { throw new Error('child must not read parent credentials') }
+    const exit = await hookRunCommand(h.deps, event!, async () => JSON.stringify({
+      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: hookEvent,
+      turn_id: 'child-turn', agent_id: 'child-thread', agent_type: 'worker',
+    }), 'codex')
+    expect(exit).toBe(0)
+    expect(h.claims).toEqual([])
+    expect(h.output).toEqual([])
+    expect(readSessionState(SESSION, h.env)).toEqual(before)
+    expect(readSessionIncarnation(SESSION, h.env)).toEqual(h.incarnation)
+    expect(sessionHasEnded(SESSION, h.env)).toBe(false)
+    expect(readFileSync(turnActivityPath(SESSION, h.env), 'utf8')).toBe(beforeTurns)
+    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe('turn-1')
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
+    recordTurnEnd(SESSION, h.env, 'turn-1')
+    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('idle')
+    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
+  })
+
+  it('keeps SubagentStart worker guidance without activating or consuming parent input', async () => {
+    const h = setup()
+    h.stage([note('sm_parent_only')])
+    const before = readSessionState(SESSION, h.env)
+    await hookRunCommand(h.deps, 'subagent-start', async () => JSON.stringify({
+      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'SubagentStart',
+      turn_id: 'turn-1', agent_id: 'child-thread', agent_type: 'worker',
+    }), 'codex')
+    expect(h.claims).toEqual([])
+    expect(h.output).toHaveLength(1)
+    expect(h.output[0]).toContain('Notifai worker context')
+    expect(h.output[0]).not.toContain('You own Notification Requests')
+    expect(readSessionState(SESSION, h.env)).toEqual(before)
+    expect(readSessionIncarnation(SESSION, h.env)).toEqual(h.incarnation)
+    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe('turn-1')
+    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
+  })
+
+  it.each([{ agent_id: 'child-thread' }, { agent_type: 'worker' }])(
+    'fences partial child identity %j even when its turn id matches the parent', async (identity) => {
+      const h = setup()
+      h.stage([note('sm_parent_only')])
+      await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({
+        session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', ...identity,
+      }), 'codex')
+      expect(h.claims).toEqual([])
+      expect(h.output).toEqual([])
+      expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
+      expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
+    },
+  )
+
   it('executes the advertised wake command and drains only the exact harness session', async () => {
     const h = setup()
     h.env['CODEX_THREAD_ID'] = SESSION

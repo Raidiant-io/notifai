@@ -206,6 +206,18 @@ export async function hookRunCommand(
   }
 
   let envelope = parseHookInput(raw)
+  // Codex subagents share the root session_id and harness process, while
+  // turn_id belongs to the child. They must never own the root's lifecycle
+  // or consume its input. SubagentStart only teaches worker ownership and
+  // deliberately does not activate or update the parent session.
+  if (harness === 'codex' && event !== 'subagent-start' &&
+      (envelope.agent_id !== undefined || envelope.agent_type !== undefined)) {
+    start({ outcome: 'codex-child-callback-skipped' })
+    logger.info('hook.end', {
+      hook: event, outcome: 'ignored', reason: 'codex-subagent-owns-event', decided: false,
+    })
+    return EXIT.ok
+  }
   if (harness === 'cursor') {
     const sessionId = envelope.session_id ?? envelope.conversation_id
     const cwd = envelope.cwd ?? envelope.workspace_roots?.[0]

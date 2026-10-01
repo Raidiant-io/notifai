@@ -801,7 +801,7 @@ describe('notifai hook attend for Codex', () => {
     expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'ended' }])
   })
 
-  it.each(['tool-hook', 'turn-end', 'missing-hook', 'first-hook'])('routes a staged Note safely: %s', async (mode) => {
+  it.each(['tool-hook', 'turn-end', 'missing-hook', 'first-hook', 'busy-no-callback'])('routes a staged Note safely: %s', async (mode) => {
     const { env, root } = codexEnv()
     enableProject(projectBinding(root, env, undefined))
     const home = env['CODEX_HOME']!
@@ -818,10 +818,12 @@ describe('notifai hook attend for Codex', () => {
     let offered = false
     let delivered = false
     let claims = 0
+    let exchanges = 0
     const outcomes: string[] = []
     const client = {
       compatibility: async () => ({ server_capabilities: ['session_attendance'] }),
       attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
+        exchanges += 1
         if (body.state !== 'running') return { status: 'withdrawn' }
         await new Promise((resolve) => setTimeout(resolve, 20))
         return { status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c', messages:
@@ -841,7 +843,6 @@ describe('notifai hook attend for Codex', () => {
     const deps = attendDeps(env, root, { clientFactory: () => client,
       codexWake: { queue: async (_id, _cwd, text) => { queued.push(text) } } })
     deps.attendant!.harnessProcess = owner
-    if (mode !== 'first-hook') deps.attendant!.codexToolHookReady = () => mode !== 'missing-hook'
     deps.attendant!.probeAdapters!.readStart = () => owner.start
     deps.attendant!.probeAdapters!.parentPid = () => owner.pid
     deps.io.out = (text) => { output.push(text) }
@@ -851,6 +852,17 @@ describe('notifai hook attend for Codex', () => {
       await until(() => readAttendantLease(THREAD, env) !== null, 'lease')
       const incarnation = readSessionIncarnation(THREAD, env)!
       recordTurnStart(THREAD, env, incarnation.key, 'busy')
+      if (mode !== 'missing-hook' && mode !== 'first-hook') {
+        await hookRunCommand(deps, 'post-tool-use', stdin({
+          session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy',
+        }), 'codex')
+        expect(codexToolHookReady(deps, THREAD)).toBe(true)
+        expect(claims).toBe(0)
+        expect(output.join('\n')).not.toContain('sm_tool')
+        // This fixture only trusts prompt/tool handlers; discard the initial
+        // integration diagnostic before observing subsequent input delivery.
+        output.length = 0
+      }
       offered = true
       if (mode === 'missing-hook' || mode === 'first-hook') {
         await until(() => queued.length === 1, 'wake without a proven tool hook')
@@ -869,10 +881,34 @@ describe('notifai hook attend for Codex', () => {
       }
       await until(() => readSessionMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')
       expect(claims).toBe(0)
-      expect(queued).toEqual([])
+      if (mode === 'busy-no-callback') {
+        await until(() => queued.length === 1, 'content-free wake despite an unended turn and no tool callback')
+        const observed = exchanges
+        await until(() => exchanges >= observed + 2, 'repeated pending attendance')
+        expect(queued).toEqual([sessionInputWake()])
+        expect(readTurnActivity(THREAD, env, incarnation.key)).toBe('working')
+        expect(claims).toBe(0)
+        expect(output).toEqual([])
+        await hookRunCommand(deps, 'user-prompt-submit', stdin({
+          session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
+          turn_id: 'wake-turn', prompt: queued[0],
+        }), 'codex')
+        expect(claims).toBe(1)
+        expect(output).toHaveLength(1)
+        expect(output[0]).toContain('sm_tool')
+        await hookRunCommand(deps, 'post-tool-use', stdin({
+          session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy',
+        }), 'codex')
+        expect(claims).toBe(1)
+        expect(output).toHaveLength(1)
+        return
+      }
+      await until(() => queued.length === 1, 'fallback wake while working')
+      expect(queued).toEqual([sessionInputWake()])
       if (mode === 'turn-end') {
         recordTurnEnd(THREAD, env, 'busy')
-        await until(() => queued.length === 1, 'wake after turn completion')
+        const observed = exchanges
+        await until(() => exchanges >= observed + 2, 'wake stays coalesced after turn completion')
         expect(queued).toHaveLength(1)
         expect(output).toEqual([])
         return
@@ -883,7 +919,15 @@ describe('notifai hook attend for Codex', () => {
       expect(delivered).toBe(true)
       recordTurnEnd(THREAD, env, 'busy')
       await until(() => listAttendantReports(env)[0]?.activity === 'idle', 'idle after hook')
-      expect(queued).toEqual([])
+      expect(queued).toEqual([sessionInputWake()])
+      expect(claims).toBe(1)
+      // The tool hook won. Its queued wake later reaches the root, but has no
+      // User words and must not present or claim the already delivered note.
+      await hookRunCommand(deps, 'user-prompt-submit', stdin({
+        session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
+        turn_id: 'empty-wake-turn', prompt: queued[0],
+      }), 'codex')
+      expect(output).toHaveLength(1)
       expect(claims).toBe(1)
     } finally {
       markSessionEnded(THREAD, env, Date.now() + 1)
