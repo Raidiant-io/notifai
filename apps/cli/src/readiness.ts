@@ -155,6 +155,8 @@ export function questionRoutingReady(readiness: Readiness): boolean {
       state.id === 'question-routing-settings' ||
       (state.id === 'hooks' || state.id.startsWith('hooks-')) &&
         state.id !== 'hooks-detected' &&
+        // Native activity diagnoses presence, not the trusted answer route.
+        state.id !== 'hooks-native-activity' &&
         !(
           state.id === 'hooks-wake-route' &&
           typeof state.technical === 'object' &&

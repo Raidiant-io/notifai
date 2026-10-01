@@ -8573,6 +8573,8 @@ describe('asking before the hooks have ever run', () => {
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
     expect(fired).toMatchObject({ status: 'ready' })
     expect(fired?.detail).toMatch(/UserPromptSubmit.*ready for this turn's Stop/i)
+    expect(readiness.states.find((state) => state.id === 'hooks-native-activity'))
+      .toMatchObject({ status: 'optional-gap' })
     expect((readinessJson(readiness) as { question_routing_ready: boolean })
       .question_routing_ready).toBe(true)
 
