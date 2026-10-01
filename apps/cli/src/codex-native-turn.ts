@@ -39,6 +39,18 @@ export function findNativeTranscript(sessionId: string, env: NodeJS.ProcessEnv):
 export function readNativeTurnSnapshot(
   file: unknown, sessionId: string, env: NodeJS.ProcessEnv,
 ): NativeTurnSnapshot | null {
+  const observed = readNativeTranscript(file, sessionId, env, false)
+  return observed !== null && 'latest' in observed ? observed : null
+}
+
+/** Ownership can be proved even when a long turn exceeds the activity bound. */
+export function nativeTranscriptOwned(file: unknown, sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  return readNativeTranscript(file, sessionId, env, true) !== null
+}
+
+function readNativeTranscript(
+  file: unknown, sessionId: string, env: NodeJS.ProcessEnv, identityOnly: boolean,
+): NativeTurnSnapshot | Pick<NativeTurnSnapshot, 'file' | 'identity'> | null {
   if (typeof file !== 'string' || !path.isAbsolute(file)) return null
   let fd: number | undefined
   try {
@@ -59,6 +71,7 @@ export function readNativeTurnSnapshot(
     const meta = JSON.parse(header.slice(0, newline)) as { type?: string; payload?: { id?: string; source?: unknown } }
     if (meta.type !== 'session_meta' || meta.payload?.id !== sessionId ||
         !['cli', 'vscode', 'exec'].includes(String(meta.payload.source))) return null
+    if (identityOnly) return { file: canonical, identity: `${stat.dev}:${stat.ino}` }
     const at = Math.max(0, stat.size - TAIL_BYTES)
     const bytes = read(at, stat.size - at)
     // A trailing partial record may be a newer start: do not report an older one.
