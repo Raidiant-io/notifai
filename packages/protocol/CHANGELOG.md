@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.1.4-beta.2](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.3...protocol-v8.1.4-beta.2) (2026-10-01)
+
+### Bug Fixes
+
+* Expose a retryable claim result when an earlier accepted Session Note must be delivered first.
+
+## [8.1.4-beta.1](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.3...protocol-v8.1.4-beta.1) (2026-10-01)
+
+### Bug Fixes
+
+* Expose a retryable claim result when an earlier accepted Session Note must be delivered first.
+
 ## [8.1.3](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.2...protocol-v8.1.3) (2026-09-30)
 
 ## [8.1.2](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.1...protocol-v8.1.2) (2026-09-29)
