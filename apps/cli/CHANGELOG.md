@@ -15,6 +15,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+
+## [11.6.1-beta.3](https://github.com/Raidiant-io/notifai/compare/v11.6.0...v11.6.1-beta.3) (2026-10-01)
+
+### Bug Fixes
+
+* Start question submission immediately so agents can continue independent work; preserve answer observation across concurrent questions and uncertain network responses.
+* Preserve accepted note order across release and retry, and wake the resident Claude delivery process promptly when answers become available.
+* Deliver pending notes and answers together at supported Codex and Claude input boundaries, and queue content-free wake prompts to avoid stale answer copies.
+* Observe automatic Codex turns at trusted tool callbacks so busy sessions can receive pending input without waiting for another human prompt.
+* Record delivery stages, batch sizes and oldest pending note age for clearer local diagnostics.
+
+* Accept repeated successful CI evidence for one release commit while requiring all checks from one complete run.
+
+* Resolve queued receive commands from the exact active harness session instead of a filesystem key.
+
+## [11.6.1-beta.2](https://github.com/Raidiant-io/notifai/compare/v11.6.0...v11.6.1-beta.2) (2026-10-01)
+
+### Bug Fixes
+
+* Start question submission immediately so agents can continue independent work; preserve answer observation across concurrent questions and uncertain network responses.
+* Preserve accepted note order across release and retry, and wake the resident Claude delivery process promptly when answers become available.
+* Deliver pending notes and answers together at supported Codex and Claude input boundaries, and queue content-free wake prompts to avoid stale answer copies.
+* Observe automatic Codex turns at trusted tool callbacks so busy sessions can receive pending input without waiting for another human prompt.
+* Record delivery stages, batch sizes and oldest pending note age for clearer local diagnostics.
+
+* Accept repeated successful CI evidence for one release commit while requiring all checks from one complete run.
+
+## [11.6.1-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.6.0...v11.6.1-beta.1) (2026-10-01)
+
+### Bug Fixes
+
+* Start question submission immediately so agents can continue independent work; preserve answer observation across concurrent questions and uncertain network responses.
+* Preserve accepted note order across release and retry, and wake the resident Claude delivery process promptly when answers become available.
+* Deliver pending notes and answers together at supported Codex and Claude input boundaries, and queue content-free wake prompts to avoid stale answer copies.
+* Observe automatic Codex turns at trusted tool callbacks so busy sessions can receive pending input without waiting for another human prompt.
+* Record delivery stages, batch sizes and oldest pending note age for clearer local diagnostics.
+
 ## [11.6.0](https://github.com/Raidiant-io/notifai/compare/v11.5.0...v11.6.0) (2026-09-30)
 
 
