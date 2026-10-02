@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.6.3-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.6.2...v11.6.3-beta.1) (2026-10-02)
+
+### Bug Fixes
+
+* Avoid redundant permission changes when private state already has the required modes, including in sandboxes that deny `chmod`.
+* Report Project Enablement write failures as actionable question-command errors before registration.
+
 ## [11.6.2](https://github.com/Raidiant-io/notifai/compare/v11.6.1...v11.6.2) (2026-10-01)
 
 
