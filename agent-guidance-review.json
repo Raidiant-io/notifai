@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:654719e22ee24cc8a4cec4d3174734be1f7b62539bfeedef566201ee4129c847",
+  "behavior_digest": "sha256:899d20815cf7f593901ad830b8bbcd6dfb29f942cb2a63e6254eede578ea9d2d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, packaged skill and update reference, harness setup, CLI readiness and domain terms. Busy Codex delivery now requires a root observation for the active turn, rejecting historical records that could predate child ownership fencing. The update reference and diagnostic describe the supported in-session refresh of an already-trusted delivery hook without changing approvals or ending the Agent Session. Queue acceptance remains distinct from consumption. Foreground receive distinguishes retained pending input from an empty local inbox and never acknowledges unseen input. Hook definitions, trust identities, question-routing admission and domain vocabulary are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the packaged skill and update reference, harness setup, CLI readiness, README and trusted domain terms. The question command now reports Project Enablement persistence failure through its existing stable refusal contract before registration, with a filesystem or sandbox-access remedy rather than an uncaught exception. The skill already requires branching on code/check_id/exit_code/remedy and bounded recovery; no extra hook repair or fresh session is prescribed for this filesystem failure. Required private mode repair, ownership, symlink and replacement checks remain enforced. Native sandbox checks on Node20.19.4 prove both redundant-chmod recovery and clear all-writes-denied refusal. Explicit in-Project requests still require durable enablement; OpenClaw disabled-Project consent is preserved. Lifecycle definition bytes, exact-session admission, User-owned approvals, guidance authority, non-exfiltration rules and vocabulary are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
