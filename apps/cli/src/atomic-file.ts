@@ -63,7 +63,9 @@ export function atomicWriteFileSync(
     fsyncSync(handle)
     closeSync(handle)
     handle = undefined
-    chmodSync(temp, target.mode)
+    // Creation may already have the exact mode. Avoid a redundant operation
+    // that a sandbox can forbid while still allowing the private write.
+    if ((lstatSync(temp).mode & 0o7777) !== target.mode) chmodSync(temp, target.mode)
     assertSameDirectory(directory, parent)
     assertUnchangedTarget(file, target)
     renameSync(temp, file)
@@ -97,7 +99,11 @@ function ensureDirectory(
   if (options.mode === undefined) mkdirSync(directory, { recursive: true })
   else mkdirSync(directory, { recursive: true, mode: options.mode })
   const parent = safeDirectory(directory, options.requireCurrentUserOwner)
-  if (options.mode !== undefined && process.platform !== 'win32') {
+  if (
+    options.mode !== undefined &&
+    process.platform !== 'win32' &&
+    parent.mode !== options.mode
+  ) {
     chmodSync(directory, options.mode)
   }
   return parent
@@ -169,13 +175,13 @@ function assertUnchangedTarget(file: string, target: TargetMetadata): void {
 function safeDirectory(
   directory: string,
   requireCurrentUserOwner: boolean,
-): { dev: number; ino: number } {
+): { dev: number; ino: number; mode: number } {
   const stat = lstatSync(directory)
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error(`${directory} is not a regular directory; refusing to write inside it.`)
   }
   if (requireCurrentUserOwner) assertCurrentUserOwns(directory, stat.uid)
-  return { dev: stat.dev, ino: stat.ino }
+  return { dev: stat.dev, ino: stat.ino, mode: stat.mode & 0o7777 }
 }
 
 function assertSameDirectory(directory: string, expected: { dev: number; ino: number }): void {

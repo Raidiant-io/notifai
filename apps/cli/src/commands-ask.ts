@@ -510,7 +510,19 @@ export function askCommand(
     // A disabled OpenClaw Project must remain disabled until the User or agent
     // explicitly enables it; the exact-generation route cannot infer consent.
     if (binding !== null && deps.env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw') {
-      enableProject(binding)
+      try {
+        enableProject(binding)
+      } catch (err) {
+        return askFailure(
+          deps,
+          flags,
+          'project_enablement_failed',
+          'project_enablement',
+          `Project Enablement could not be saved: ${String(err)}`,
+          'check filesystem permissions or sandbox access for the Notifai state directory, then retry the same ask',
+          EXIT.failed,
+        )
+      }
     }
   }
   if (deps.store.load() === null) {
