@@ -42,6 +42,7 @@ import { configInfo } from './config-schema.js'
 import { readPendingPairing } from './pending-pairing.js'
 import type { ReadinessState } from './readiness.js'
 import * as installHooksModule from './install-hooks.js'
+import * as atomicFileModule from './atomic-file.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import {
@@ -133,6 +134,47 @@ import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 
 afterEach(() => {
   resetPublishedCliDistTagsForTest()
+})
+
+it.each([
+  { json: false, syscall: 'chmod' },
+  { json: true, syscall: 'chmod' },
+  { json: false, syscall: 'open' },
+  { json: true, syscall: 'open' },
+])('reports Project Enablement permission failures before question registration (json=$json, syscall=$syscall)', async ({ json, syscall }) => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-permissions-'))
+  mkdirSync(path.join(cwd, '.notifai'))
+  writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "permission-fixture"\n')
+  const io = new CapturedIo()
+  const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'permission-fixture-thread' }
+  const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+  const binding = projectBinding(cwd, env, 'permission-fixture')!
+  const denied = vi.spyOn(atomicFileModule, 'atomicWriteFileSync').mockImplementationOnce(() => {
+    throw Object.assign(new Error(`EPERM: operation not permitted, ${syscall} '${path.dirname(binding.markerPath)}'`), {
+      code: 'EPERM', syscall, path: path.dirname(binding.markerPath),
+    })
+  })
+  try {
+    expect(await askCommand(deps, 'Continue?', { json })).toBe(EXIT.failed)
+    if (json) {
+      expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+        ok: false, registered: false,
+        code: 'project_enablement_failed', check_id: 'project_enablement',
+        exit_code: EXIT.failed,
+        message: expect.stringMatching(/EPERM/),
+        remedy: expect.stringMatching(/filesystem permissions or sandbox access/i),
+      })
+    } else {
+      expect(io.errLines.join('\n')).toMatch(/Project Enablement.*EPERM/is)
+      expect(io.errLines.join('\n')).toMatch(/filesystem permissions or sandbox access/i)
+    }
+    expect([...io.outLines, ...io.errLines].join('\n')).not.toMatch(/fresh.*Codex/i)
+    expect(projectEnabled(binding)).toBe(false)
+    expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+  } finally {
+    denied.mockRestore()
+    rmSync(cwd, { recursive: true, force: true })
+  }
 })
 
 /** Keep unrelated command cases focused while exercising the current authored shape. */
