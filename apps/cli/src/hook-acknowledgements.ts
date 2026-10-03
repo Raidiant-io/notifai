@@ -113,7 +113,7 @@ function answerContext(answered: AnsweredPending): string {
   )
 }
 
-function acknowledgementContext(answered: AnsweredPending[]): string {
+export function acknowledgementContext(answered: AnsweredPending[]): string {
   const due = answered.filter(
     (entry) => entry.pending.request_id !== undefined,
   )

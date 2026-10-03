@@ -10,6 +10,8 @@ import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { observeCodexQuestions } from './codex-question-bindings.js'
+import { codexAnswerPresentation } from './codex-answer-presentation.js'
+import { isDeepStrictEqual } from 'node:util'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
 function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' | 'hookPlatform'>): string | null {
@@ -92,12 +94,18 @@ export async function deliverCodexToolMessage(
   if (credential === null || writer === null) return
   const now = deps.now ?? Date.now
   const deadlineAt = now() + 2_000
+  const mayDeliver = () => now() < deadlineAt && mayWrite()
   const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
     timeoutMs: 750, deadlineAt, now,
   })
   await drainSessionInputs({
     lease,
-    mayWrite: () => now() < deadlineAt && mayWrite(),
+    mayWrite: mayDeliver,
+    nativeAnswers: codexAnswerPresentation({ sessionId, env: deps.env, lease, ownerKey: incarnation.key,
+      turnId: envelope.turn_id, transcriptPath: envelope.transcript_path,
+      service: { base_url: credential.baseUrl, machine_id: credential.machineId },
+      deadline: performance.now() + 2_000, mayWrite: mayDeliver,
+      serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential) }),
     sequencer: {
       sessionId, env: deps.env, client, writer, log: logger,
       monotonic: () => performance.now(), wall: now,

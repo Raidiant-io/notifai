@@ -1,3 +1,5 @@
+import { codexAnswerPresentation } from './codex-answer-presentation.js'
+import { observeCodexQuestions } from './codex-question-bindings.js'
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import { type QueueControl } from './codex-queue-control.js'
@@ -8,7 +10,7 @@ import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
 import { buildProgram } from './program.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import type { AcceptedAnswerDelivery } from './hook-types.js'
-import type { AttendanceMessage, ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
+import type { AttendanceMessage, ClaimDeliveryAttemptRequestT, QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -25,7 +27,7 @@ import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionI
 import { currentProcessIdentity } from './process-identity.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { attendantClaimPath, attendantStatusPath, currentCodexTurn, recordTurnEnd, recordTurnStart, readTurnActivity, turnActivityPath, writeAttendantStatus } from './session-attendant-state.js'
-import { acquireDeliveryLock, readDeliveryJournal } from './session-delivery.js'
+import { acquireDeliveryLock, readDeliveryJournal, deliveryJournalPath, recoverDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment } from './integration-health.js'
 import { nativeQuestionTitle, reserveCodexQuestion } from './codex-question-bindings.js'
@@ -92,27 +94,228 @@ function setup() {
   }
 }
 
-function reserveBinding(h: ReturnType<typeof setup>) {
+function reserveBinding(h: ReturnType<typeof setup>, questions: QuestionT[] = [{ id: 'q1', text: 'Continue?' }]) {
   const file = path.join(h.env.CODEX_HOME, 'sessions', 'binding.jsonl')
   mkdirSync(path.dirname(file), { recursive: true })
   const append = (type: string, payload: unknown) => appendFileSync(file, `${JSON.stringify({ type, payload })}\n`)
   append('session_meta', { id: SESSION, source: 'cli' })
   append('event_msg', { type: 'task_started', turn_id: 'turn-1' })
   const pending = { question_id: 'q_bound', question: 'Continue?', summary: 'Continue?', request_id: 'req_bound', collapse_key: 'bound', device_ids: ['dev_test'],
-    service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }, questions: [{ id: 'q1', text: 'Continue?' }] }
+    service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }, questions }
   updateSessionState(SESSION, h.env, state => reserveCodexQuestion({ ...state, harness: 'codex' }, pending, h.incarnation.key, readNativeQuestionSnapshot(file, SESSION, h.env)!))
+  let emissions = 0
   const emit = () => {
-    const binding = readSessionState(SESSION, h.env).codex_question_bindings![0]!.questions[0]!
-    append('response_item', { type: 'function_call', name: 'request_user_input_async', call_id: 'bound_call', arguments: JSON.stringify({ questions: [{ title: nativeQuestionTitle(binding) }] }) })
-    append('response_item', { type: 'function_call_output', call_id: 'bound_call', output: '{"accepted":true}' })
+    const callId = emissions++ === 0 ? 'bound_call' : `bound_call_${emissions}`
+    const bindings = readSessionState(SESSION, h.env).codex_question_bindings![0]!.questions
+    append('response_item', { type: 'function_call', name: 'request_user_input_async', call_id: callId, arguments: JSON.stringify({ questions: bindings.map(binding => ({ title: nativeQuestionTitle(binding), options: binding.question.choices?.map(choice => choice.label) })) }) })
+    append('response_item', { type: 'function_call_output', call_id: callId, output: '{"accepted":true}' })
   }
   const hook = () => hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
     cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: file }), 'codex')
   const reply = { reply_id: 'rpl_bound', seq: 1, delivery_id: 'del_bound', device_id: 'dev_test', device_name: 'Test', text: 'Continue',
     answers: [{ question_id: 'q1', choice_ids: [], text: 'Continue' }], source: null, created_at: new Date().toISOString() }
   const answer = { pending, reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true as const }
-  return { emit, hook, answer }
+  return { emit, hook, answer, file }
 }
+
+function nativeDelivery(questions?: QuestionT[], parts?: ReplyAnswerT[]) {
+  const h = setup(); const binding = reserveBinding(h, questions)
+  if (parts !== undefined) binding.answer.reply.answers = parts
+  binding.emit()
+  updateSessionState(SESSION, h.env, state => ({
+    ...observeCodexQuestions(state, h.incarnation.key, readNativeQuestionSnapshot(binding.file, SESSION, h.env)),
+    waiting_answers: [binding.answer],
+    acknowledgement_due: [{ request_id: 'req_bound', recorded_at: Date.now(), text_required: true }],
+  }))
+  updateSessionState(SESSION, h.env, state => ({ ...state, codex_question_bindings: state.codex_question_bindings!.map(item =>
+    ({ ...item, confirmed_request_id: 'req_bound' })) }))
+  const native: string[] = []
+  let closed = 0
+  let available = true
+  let allowed = true
+  let serviceCurrent = true
+  let duringPrepare = () => {}
+  let duringWrite = () => {}
+  const adapter = codexAnswerPresentation({ sessionId: SESSION, env: h.env, lease: h.lease,
+    ownerKey: h.incarnation.key, turnId: 'turn-1', transcriptPath: binding.file,
+    service: binding.answer.pending.service_identity, deadline: performance.now() + 10_000,
+    mayWrite: () => allowed, serviceCurrent: () => serviceCurrent,
+    connect: async () => available ? { namespace: h.env.CODEX_HOME, threadId: SESSION,
+      currentTurn: async () => { duringPrepare(); return true },
+      steer: async (_turn, text) => {
+        expect(readDeliveryJournal(SESSION, h.env).at(-1)?.stage).toBe('writing')
+        expect(readDeliveryJournal(SESSION, h.env).at(-1)?.presentation?.replies).toEqual([{ reply_id: 'rpl_bound', seq: 1 }])
+        duringWrite(); native.push(text)
+      }, close: () => { closed++ } } : null,
+  })
+  const drain = () => drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => allowed,
+    nativeAnswers: adapter, write: text => h.output.push(text) })
+  return { ...h, ...binding, native, drain, adapter, closed: () => closed,
+    changeMachine: () => { serviceCurrent = false }, unavailable: () => { available = false }, loseOwner: () => { allowed = false },
+    duringPrepare: (fn: () => void) => { duringPrepare = fn }, duringWrite: (fn: () => void) => { duringWrite = fn } }
+}
+
+describe('exact native answer presentation', () => {
+  it('journals the exact presentation before native bytes and retains acknowledgement debt', async () => {
+    const h = nativeDelivery()
+    expect(await h.drain()).toBe(true)
+    expect(h.output).toEqual([])
+    expect(h.native).toHaveLength(1)
+    const payload = JSON.parse(h.native[0]!.split('\n')[1]!)
+    expect(payload[0].questionItemId).toBe('["request_user_input_async","bound_call",0]')
+    expect(payload[0].answer).toBe('Continue')
+    expect(payload[0].notifai.origin).toBe('companion')
+    expect(payload[0].notifai.instruction).toContain('notifai acknowledge req_bound')
+    const journal = readDeliveryJournal(SESSION, h.env)[0]!
+    expect(journal.presentation).toMatchObject({ kind: 'codex-answer', owner_key: h.incarnation.key,
+      incarnation: h.lease.incarnation, generation: 1, expected_turn_id: 'turn-1',
+      questions: [{ question_id: 'q1', turn_id: 'turn-1', call_id: 'bound_call', index: 0 }] })
+    expect(journal.stage).toBe('written')
+    expect(journal.presentation?.envelope_sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBeUndefined()
+    expect(await h.drain()).toBe(false)
+    expect(h.native).toHaveLength(1)
+    expect(h.closed()).toBe(1)
+  })
+
+  it('claims ordinary prefix, native answer, then suffix in separate ordered handoffs', async () => {
+    const h = nativeDelivery()
+    const first = { ...h.answer, pending: { ...h.answer.pending, question_id: 'q_first', request_id: 'req_first' } }
+    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [first, h.answer],
+      acknowledgement_due: [...state.acknowledgement_due!, { request_id: 'req_first', recorded_at: Date.now(), text_required: true }] }))
+    h.stage([note('sm_suffix')])
+    await h.drain()
+    expect(h.claims).toEqual(['req_first']); expect(h.native).toEqual([])
+    expect(h.output).toHaveLength(1); expect(h.output[0]).not.toContain('sm_suffix')
+    await h.drain()
+    expect(h.claims).toEqual(['req_first', 'req_bound']); expect(h.native).toHaveLength(1)
+    expect(h.output).toHaveLength(1)
+    await h.drain()
+    expect(h.claims).toEqual(['req_first', 'req_bound', 'sm_suffix']); expect(h.output).toHaveLength(2)
+  })
+
+  it('falls back before bytes using only the selected prefix when control is absent', async () => {
+    const h = nativeDelivery(); h.unavailable(); h.stage([note('sm_suffix')])
+    await h.drain()
+    expect(h.claims).toEqual(['req_bound']); expect(h.native).toEqual([])
+    expect(h.output).toHaveLength(1); expect(h.output[0]).not.toContain('sm_suffix')
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.presentation).toBeUndefined()
+  })
+
+  it('never echoes or restores an uncertain native write', async () => {
+    const h = nativeDelivery(); h.duringWrite(() => { throw new Error('lost native receipt') })
+    await expect(h.drain()).rejects.toThrow('lost native receipt')
+    expect(await h.drain()).toBe(false)
+    expect(h.output).toEqual([])
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('failed')
+    expect(readSessionState(SESSION, h.env).waiting_answers).toEqual([])
+    expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
+    expect(h.closed()).toBe(1)
+  })
+
+  it.each([true, false])('does not replay a dead native writer around consumption (still pending=%s)', async pending => {
+    const h = nativeDelivery()
+    await h.drain()
+    const entry = readDeliveryJournal(SESSION, h.env)[0]!
+    const orphan = { ...entry, attempt_id: 'att_orphan', stage: 'writing', writer: { pid: 999999, start: 'gone' } }
+    delete orphan.reported; delete orphan.reported_at
+    writeFileSync(deliveryJournalPath(SESSION, h.env), JSON.stringify({ session_id: SESSION, entries: [orphan] }))
+    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: pending ? [h.answer] : [] }))
+    const writes = h.native.length
+    expect(await recoverDeliveryJournal({ ...h.sequencer, liveness: () => 'gone' })).toBe(1)
+    expect(h.reports.at(-1)).toBe('unconfirmed')
+    expect(await h.drain()).toBe(false)
+    expect(h.native).toHaveLength(writes); expect(h.output).toEqual([])
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.presentation).toEqual(entry.presentation)
+    expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
+  })
+
+  it('releases a positively unsent write for a fresh handoff without echoing now', async () => {
+    const h = nativeDelivery(); h.duringWrite(() => { throw new CodexControlNotSent('endpoint replaced') })
+    expect(await h.drain()).toBe(false)
+    expect(h.output).toEqual([])
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('released')
+    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
+    h.unavailable()
+    expect(await h.drain()).toBe(true)
+    expect(h.output).toHaveLength(1)
+  })
+
+  it.each(['claim', 'prepare'])('preserves a changed revision during %s for its own later handoff', async boundary => {
+    const h = nativeDelivery()
+    const change = () => updateSessionState(SESSION, h.env, state => {
+      const answer = structuredClone(h.answer)
+      answer.reply = { ...answer.reply, seq: 2, text: 'Revised', answers: [{ question_id: 'q1', choice_ids: [], text: 'Revised' }] }
+      answer.replies = [answer.reply]
+      return { ...state, waiting_answers: [answer] }
+    })
+    if (boundary === 'claim') h.duringClaim(change)
+    else h.duringPrepare(change)
+    expect(await h.drain()).toBe(false)
+    expect(h.output).toEqual([]); expect(h.native).toEqual([])
+    expect(readSessionState(SESSION, h.env).waiting_answers?.[0]?.reply.seq).toBe(2)
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('released')
+  })
+
+  it('loses native authority on a duplicate marker during preparation and preserves sticky ambiguity', async () => {
+    const h = nativeDelivery(); h.duringPrepare(h.emit)
+    expect(await h.drain()).toBe(false)
+    expect(h.output).toEqual([]); expect(h.native).toEqual([])
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.questions[0]?.ambiguous).toBe(true)
+    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
+    expect(await h.drain()).toBe(true)
+    expect(h.output).toHaveLength(1)
+  })
+
+  it('does not write after owner loss during native preparation', async () => {
+    const h = nativeDelivery(); h.duringPrepare(h.loseOwner)
+    expect(await h.drain()).toBe(false)
+    expect(h.output).toEqual([]); expect(h.native).toEqual([])
+    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
+    expect(h.closed()).toBe(1)
+  })
+
+  it('restores without native bytes if the approved Machine changes after preparation', async () => {
+    const h = nativeDelivery(); h.duringPrepare(h.changeMachine)
+    expect(await h.drain()).toBe(false)
+    expect(h.native).toEqual([]); expect(h.output).toEqual([])
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('released')
+    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
+  })
+
+  it('targets only the answered part of a mixed choice and typed form', async () => {
+    const h = nativeDelivery([{ id: 'q1', text: 'First?' }, { id: 'q2', text: 'Second?',
+      choices: [{ id: 'green', label: 'Green' }, { id: 'blue', label: 'Blue' }] }],
+    [{ question_id: 'q2', choice_ids: ['green'], text: 'with extra detail' }])
+    await h.drain()
+    const payload = JSON.parse(h.native[0]!.split('\n')[1]!)
+    expect(payload).toHaveLength(1)
+    expect(payload[0].questionItemId).toBe('["request_user_input_async","bound_call",1]')
+    expect(payload[0].answer).toBe('Green\nwith extra detail')
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.presentation?.questions).toEqual([
+      { question_id: 'q2', turn_id: 'turn-1', call_id: 'bound_call', index: 1 },
+    ])
+  })
+
+  it.each(['foreign-choice', 'multiple-choices', 'empty', 'foreign-question'])('uses ordinary input for an unsupported %s answer', async shape => {
+    const part = { question_id: shape === 'foreign-question' ? 'unknown' : 'q1',
+      choice_ids: shape === 'foreign-choice' ? ['missing'] : shape === 'multiple-choices' ? ['green', 'blue'] : [],
+      text: shape === 'empty' ? '' : 'detail' }
+    const h = nativeDelivery([{ id: 'q1', text: 'Color?', choices: [{ id: 'green', label: 'Green' }, { id: 'blue', label: 'Blue' }] }], [part])
+    await h.drain()
+    expect(h.native).toEqual([]); expect(h.output).toHaveLength(1)
+  })
+
+  it('keeps multipart replies on the ordinary path', async () => {
+    const h = nativeDelivery()
+    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [{ ...h.answer,
+      replies: [h.answer.reply, { ...h.answer.reply, reply_id: 'rpl_more', seq: 2, text: 'More detail' }] }] }))
+    await h.drain()
+    expect(h.native).toEqual([]); expect(h.output[0]).toContain('More detail')
+  })
+})
 
 describe('Codex tool-boundary Session Messages', () => {
   it('observes accepted question bindings at a trusted tool hook with no pending inputs', async () => {
