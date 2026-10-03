@@ -20,7 +20,7 @@ import type {
   OverallState,
   EvidenceStage,
 } from './status.js'
-import type { SessionPresenceView } from './sessions.js'
+import type { AnswerVersionView, SessionPresenceView } from './sessions.js'
 import {
   CapabilityAdvertisement,
   type AffectedOperation,
@@ -526,6 +526,25 @@ export const ReplyAnswer = Type.Object(
 )
 export type ReplyAnswerT = Static<typeof ReplyAnswer>
 
+/** An Approved Machine reports a native answer its agent has already read. */
+export const RecordHarnessAnswerRequest = Type.Object({
+  session_id: Type.String({ minLength: 1, maxLength: 256 }),
+  /** Persist before sending; retries keep the same key and normalized answers. */
+  submission_id: Type.String({ minLength: 8, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' }),
+  answers: Type.Array(ReplyAnswer, { minItems: 1, maxItems: REPLY_MAX_QUESTIONS }),
+}, { additionalProperties: false })
+export type RecordHarnessAnswerRequestT = Static<typeof RecordHarnessAnswerRequest>
+
+export interface RecordHarnessAnswerResponse {
+  status: 'recorded' | 'replayed'
+  reply_seq: number
+  answer_version: AnswerVersionView
+  /** Independent accepted submissions; the agent must reconcile contradictions. */
+  other_submissions: AnswerVersionView[]
+  /** All questions have a reported native answer; partial reports never imply this. */
+  complete: boolean
+}
+
 export const SubmitReplyRequest = Type.Object(
   {
     delivery_id: Type.Optional(Type.String({ pattern: '^del_[A-Za-z0-9_-]+$' })),
@@ -592,7 +611,7 @@ export interface ReplyView {
   seq: number
   /** Null when answered through recovery or the native installation was removed. */
   delivery_id: string | null
-  device_id: string
+  device_id: string | null
   device_name: string
   /** Human-readable rendering of the whole reply, assembled server-side. */
   text: string
@@ -675,6 +694,9 @@ export const AGENT_ACKNOWLEDGEMENT_MAX_LENGTH = 200
  */
 export const PutAgentAcknowledgementRequest = Type.Object(
   {
+    /** Both fields are required together when acknowledging a reported native answer. */
+    reply_seq: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    session_id: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
     text: Type.Optional(
       Type.String({
         minLength: 1,

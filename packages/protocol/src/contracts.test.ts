@@ -34,6 +34,7 @@ import {
   SubmitFeedbackRequest,
   SubmitNotificationRequest,
   PutAgentAcknowledgementRequest,
+  RecordHarnessAnswerRequest,
   UpdateAccountPreferencesRequest,
   validateDraft,
   type ListRepliesResponse,
@@ -270,6 +271,23 @@ describe('submission wire contract', () => {
 })
 
 describe('Agent Acknowledgement wire contract', () => {
+  it('accepts explicit bounded harness reports without native identifiers or fabricated devices', () => {
+    const report = { session_id: 'session-one', submission_id: 'submission-one',
+      answers: [{ question_id: 'q1', text: 'Continue' }] }
+    expect(Value.Check(RecordHarnessAnswerRequest, report)).toBe(true)
+    for (const extra of [{ device_id: 'dev_fake' }, { native_question_id: 'local-only' }, { transcript: 'private' }]) {
+      expect(Value.Check(RecordHarnessAnswerRequest, { ...report, ...extra })).toBe(false)
+    }
+    for (const answers of [[], [{ question_id: 'q1', text: '' }], Array.from({ length: 11 }, () => report.answers[0])]) {
+      expect(Value.Check(RecordHarnessAnswerRequest, { ...report, answers })).toBe(false)
+    }
+    expect(Value.Check(RecordHarnessAnswerRequest, { ...report, submission_id: 'short' })).toBe(false)
+    expect(Value.Check(PutAgentAcknowledgementRequest, { session_id: 'session-one', reply_seq: 2, text: 'Continuing.' })).toBe(true)
+    for (const seq of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(Value.Check(PutAgentAcknowledgementRequest, { session_id: 'session-one', reply_seq: seq })).toBe(false)
+    }
+  })
+
   it('requires bounded non-empty text after service trimming', () => {
     expect(Value.Check(PutAgentAcknowledgementRequest, { text: 'I will deploy staging.' })).toBe(
       true,
