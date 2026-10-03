@@ -181,12 +181,20 @@ export function confirmNativeAnswerTarget(state: SessionState, question: Pending
       question.request_id === undefined) return state
   const requestId = question.request_id
   if (!/^req_[A-Za-z0-9_-]+$/.test(requestId)) return state
-  if (!state.native_answer_operations?.some(op => op.question_id === question.question_id &&
-      op.request_id === undefined && isDeepStrictEqual(op.service_identity, question.service_identity))) return state
-  return { ...state, native_answer_operations: state.native_answer_operations.map(op =>
+  const operationMatch = state.native_answer_operations?.some(op => op.question_id === question.question_id &&
+    op.request_id === undefined && isDeepStrictEqual(op.service_identity, question.service_identity))
+  const bindingMatch = state.codex_question_bindings?.some(binding => binding.question_id === question.question_id &&
+    binding.confirmed_request_id === undefined && isDeepStrictEqual(binding.service_identity, question.service_identity))
+  if (!operationMatch && !bindingMatch) return state
+  return { ...state, ...(operationMatch ? { native_answer_operations: state.native_answer_operations!.map(op =>
     op.question_id === question.question_id && op.request_id === undefined &&
     isDeepStrictEqual(op.service_identity, question.service_identity)
-      ? { ...op, request_id: requestId } : op) }
+      ? { ...op, request_id: requestId } : op) } : {}),
+    ...(bindingMatch ? { codex_question_bindings: state.codex_question_bindings!.map(binding =>
+      binding.question_id === question.question_id && binding.confirmed_request_id === undefined &&
+      isDeepStrictEqual(binding.service_identity, question.service_identity)
+        ? { ...binding, confirmed_request_id: requestId } : binding) } : {}),
+  }
 }
 
 /** A response may arrive after SessionEnd. Unlike a normal lifecycle writer,

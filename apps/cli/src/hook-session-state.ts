@@ -393,7 +393,7 @@ export function findOwningSession(
     ) ?? false
     const nativeMatch = state.native_answer_operations?.some(
       entry => entry.question_id === id || entry.request_id === id,
-    ) ?? false
+    ) || state.codex_question_bindings?.some(entry => entry.question_id === id || entry.confirmed_request_id === id) || false
     if (pendingMatch || retiringMatch || historyMatch || acknowledgementMatch || acceptedMatch || deliveredMatch || nativeMatch) {
       matches.push(sessionId)
       if (matches.length > 1) return { sessionId: null, ambiguous: true }
@@ -424,9 +424,11 @@ export function clearSessionState(sessionId: string, env: NodeJS.ProcessEnv): vo
 export function clearSessionStateUnlocked(sessionId: string, env: NodeJS.ProcessEnv): void {
   const file = sessionStatePath(sessionId, env)
   const current = readSessionState(sessionId, env)
-  if ((current.native_answer_operations?.length ?? 0) > 0) {
+  if ((current.native_answer_operations?.length ?? 0) > 0 || (current.codex_question_bindings?.length ?? 0) > 0) {
     writeSessionStateUnlocked(file, sessionId, {
-      native_answer_operations: current.native_answer_operations!,
+      ...(current.native_answer_operations === undefined ? {} : { native_answer_operations: current.native_answer_operations }),
+      ...(current.codex_question_bindings === undefined ? {} : { codex_question_bindings: current.codex_question_bindings }),
+      ...(current.codex_question_marker_counter === undefined ? {} : { codex_question_marker_counter: current.codex_question_marker_counter }),
       ...(current.question_history === undefined ? {} : { question_history: current.question_history }),
     })
   } else rmSync(file, { force: true })

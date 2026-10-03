@@ -14,6 +14,8 @@ export interface NativeTurnSnapshot {
 }
 
 export interface NativeQuestionEmission {
+  /** Byte position of the actual tool call, used to reject pre-registration calls. */
+  offset: number
   turn_id: string
   call_id: string
   index: number
@@ -132,7 +134,7 @@ function readNativeTranscript(
           for (const [index, question] of args.questions.entries()) {
             if (question === null || typeof question.title !== 'string' ||
                 (question.options !== undefined && (!Array.isArray(question.options) || !question.options.every(option => typeof option === 'string')))) return null
-            questions.push({ turn_id: latest.id, call_id: item.call_id, index, title: question.title,
+            questions.push({ offset: at + offset, turn_id: latest.id, call_id: item.call_id, index, title: question.title,
               ...(question.options === undefined ? {} : { options: question.options as string[] }), accepted: false })
           }
         } else if (item?.type === 'function_call_output' && typeof item.call_id === 'string' &&

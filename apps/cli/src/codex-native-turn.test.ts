@@ -38,9 +38,9 @@ it('observes only accepted native calls with their exact turn/call/question tupl
   append({ type: 'function_call', name: 'request_user_input_async', call_id: 'call_two', arguments: JSON.stringify({ questions: [{ title: '[nf:002] Free text?' }] }) })
   append({ type: 'function_call_output', call_id: 'call_two', output: '{"accepted":false}' })
   expect(readNativeQuestionSnapshot(f.file, 'root', f.env)?.questions).toEqual([
-    { turn_id: 'one', call_id: 'call_one', index: 0, ...questions[0], accepted: true },
-    { turn_id: 'one', call_id: 'call_one', index: 1, ...questions[1], accepted: true },
-    { turn_id: 'two', call_id: 'call_two', index: 0, title: '[nf:002] Free text?', accepted: false },
+    { offset: expect.any(Number), turn_id: 'one', call_id: 'call_one', index: 0, ...questions[0], accepted: true },
+    { offset: expect.any(Number), turn_id: 'one', call_id: 'call_one', index: 1, ...questions[1], accepted: true },
+    { offset: expect.any(Number), turn_id: 'two', call_id: 'call_two', index: 0, title: '[nf:002] Free text?', accepted: false },
   ])
   expect(readNativeTurnSnapshot(f.file, 'root', f.env)?.questions).toBeUndefined()
 })
@@ -81,7 +81,7 @@ it('does not associate a tail-only old call with a newer fully observed turn', (
   f.event('task_started', 'inside-tail')
   call('new')
   expect(readNativeQuestionSnapshot(f.file, 'root', f.env)?.questions).toEqual([
-    { turn_id: 'inside-tail', call_id: 'new', index: 0, title: '[nf:001] Same?', accepted: true },
+    { offset: expect.any(Number), turn_id: 'inside-tail', call_id: 'new', index: 0, title: '[nf:001] Same?', accepted: true },
   ])
 })
 

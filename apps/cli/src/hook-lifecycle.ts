@@ -11,6 +11,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
 import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import { markCodexOrdinaryPresentation, mayRetireFromPrompt } from './codex-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -740,7 +741,7 @@ async function answerPrompt(
     }
     const stdout = userPromptContextOutput(
       ctx.harness,
-      withReminder(reminder, answersContext(answers, state.accepted.remaining)),
+      withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, answers, state.accepted.remaining)),
     )
     if (stdout !== undefined) {
       notes.push('the journaled device answer was added to the user\'s new turn')
@@ -814,7 +815,7 @@ async function answerPrompt(
     const permanentFailure = permanentReplyFailureNote(permanentFailures)
     if (permanentFailure !== null) notes.push(permanentFailure)
   }
-  const matched = pendingAnsweredByPrompt(envelope.prompt, pendingList(state))
+  const matched = pendingAnsweredByPrompt(envelope.prompt, pendingList(state)).filter(entry => mayRetireFromPrompt(state, entry))
   for (const entry of matched) {
     ctx.log?.info('hook.retirement', {
       request_id: entry.request_id,
@@ -829,7 +830,7 @@ async function answerPrompt(
   // the gap after erasing the only request/collapse/device identifiers.
   const updated = updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
-    const matchedNow = pendingAnsweredByPrompt(envelope.prompt, pendingList(current))
+    const matchedNow = pendingAnsweredByPrompt(envelope.prompt, pendingList(current)).filter(entry => mayRetireFromPrompt(current, entry))
     const unmatched = pendingList(current).filter(
       (entry) => !matchedNow.some((item) => isSamePending(item, entry)),
     )
@@ -890,7 +891,7 @@ async function answerPrompt(
       ctx.harness,
       withReminder(
         reminder,
-        answersContext([...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
+        prepareOrdinaryAnswersContext(ctx, sessionId, [...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
       ),
     )
     if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
@@ -922,7 +923,7 @@ async function answerPrompt(
   }
   const delivered = readSessionState(sessionId, ctx.env).delivered_answers ?? []
   const stdout = delivered.length > 0
-    ? userPromptContextOutput(ctx.harness, withReminder(reminder, answersContext(delivered, pendingList(updated).length)))
+    ? userPromptContextOutput(ctx.harness, withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, delivered, pendingList(updated).length)))
     : undefined
   return {
     notes,
@@ -932,6 +933,17 @@ async function answerPrompt(
     }),
     settlementRequired: needsQuestionSettlement(updated, ctx.harness),
   }
+}
+
+/** Legacy prompt/Stop context routes bypass the common drain. Select ordinary
+ * presentation durably before returning any answer bytes to those writers.
+ */
+function prepareOrdinaryAnswersContext(ctx: HookContext, sessionId: string, answers: AnsweredPending[], remaining: number): string {
+  if (ctx.harness === 'codex') {
+    const ids = new Set(answers.flatMap(answer => answer.pending.question_id === undefined ? [] : [answer.pending.question_id]))
+    updateSessionState(sessionId, ctx.env, state => markCodexOrdinaryPresentation(state, ids))
+  }
+  return answersContext(answers, remaining)
 }
 
 function needsQuestionSettlement(state: SessionState, harness: HookContext['harness']): boolean {
@@ -1306,12 +1318,15 @@ async function deliverAcceptedAnswers(
     const file = sessionStatePath(sessionId, ctx.env)
     return withFileLock(`${file}.lock`, () => {
       if (sessionHasEnded(sessionId, ctx.env)) return false
-      const current = readSessionState(sessionId, ctx.env)
+      let current = readSessionState(sessionId, ctx.env)
       if (current.accepted === undefined) return false
+      const acceptedBeforeCommit = current.accepted
       deliveryCommitted = true
+      if (ctx.harness === 'codex') current = markCodexOrdinaryPresentation(current,
+        new Set(answered.flatMap(answer => answer.pending.question_id === undefined ? [] : [answer.pending.question_id])))
       writeSessionStateUnlocked(file, sessionId, {
         ...current,
-        accepted: { ...current.accepted, delivery_committed_at: ctx.now() },
+        accepted: { ...acceptedBeforeCommit, delivery_committed_at: ctx.now() },
       })
       return true
     })
@@ -2411,7 +2426,8 @@ export function handleSessionEnd(
       (preserveAccepted && state.accepted !== undefined) ||
       (state.acknowledgement_due?.length ?? 0) > 0 ||
       (state.message_acknowledgement_due?.length ?? 0) > 0 ||
-      (state.native_answer_operations?.length ?? 0) > 0
+      (state.native_answer_operations?.length ?? 0) > 0 ||
+      (state.codex_question_bindings?.length ?? 0) > 0
     ) {
       const preserved: SessionState = { ...stateWithHistory }
       if (!preserveAccepted) delete preserved.accepted

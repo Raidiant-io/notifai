@@ -4,6 +4,7 @@
  * presentation. A late wake therefore cannot resurrect an acknowledged answer.
  */
 import { randomUUID } from 'node:crypto'
+import { markCodexOrdinaryPresentation } from './codex-question-bindings.js'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AttendanceMessage } from '@raidiant/notifai-protocol'
@@ -323,6 +324,8 @@ async function drainSessionInputsOnce(input: {
     // Persist consumption before stdout; an ambiguous output is never replayed.
     const consumed = new Set(readyAnswers.map((answer) => answer.pending.request_id))
     updateSessionState(deps.sessionId, deps.env, (latest) => {
+      latest = markCodexOrdinaryPresentation(latest, new Set(readyAnswers.flatMap(answer =>
+        answer.pending.question_id === undefined ? [] : [answer.pending.question_id])))
       const retiring = [...(latest.retiring ?? [])]
       for (const answer of readyAnswers) {
         const entry = retiringQuestion(answer.pending, 'answered')

@@ -8,6 +8,8 @@ import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallat
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session-attendant-state.js'
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { observeCodexQuestions } from './codex-question-bindings.js'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
 function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' | 'hookPlatform'>): string | null {
@@ -72,6 +74,10 @@ export async function deliverCodexToolMessage(
   }
   if (!mayWrite()) return
   refreshCodexInputActivity(sessionId, deps.env, incarnation.key, envelope.transcript_path)
+  if (readSessionState(sessionId, deps.env).codex_question_bindings?.length) {
+    const snapshot = readNativeQuestionSnapshot(envelope.transcript_path, sessionId, deps.env)
+    updateSessionState(sessionId, deps.env, state => mayWrite() ? observeCodexQuestions(state, incarnation.key, snapshot) : state)
+  }
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
   if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint ||
       proof.root_observed?.turn_id !== envelope.turn_id) {

@@ -27,6 +27,8 @@ import { attendantClaimPath, attendantStatusPath, currentCodexTurn, recordTurnEn
 import { acquireDeliveryLock, readDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment } from './integration-health.js'
+import { nativeQuestionTitle, reserveCodexQuestion } from './codex-question-bindings.js'
+import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -89,7 +91,71 @@ function setup() {
   }
 }
 
+function reserveBinding(h: ReturnType<typeof setup>) {
+  const file = path.join(h.env.CODEX_HOME, 'sessions', 'binding.jsonl')
+  mkdirSync(path.dirname(file), { recursive: true })
+  const append = (type: string, payload: unknown) => appendFileSync(file, `${JSON.stringify({ type, payload })}\n`)
+  append('session_meta', { id: SESSION, source: 'cli' })
+  append('event_msg', { type: 'task_started', turn_id: 'turn-1' })
+  const pending = { question_id: 'q_bound', question: 'Continue?', summary: 'Continue?', request_id: 'req_bound', collapse_key: 'bound', device_ids: ['dev_test'],
+    service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }, questions: [{ id: 'q1', text: 'Continue?' }] }
+  updateSessionState(SESSION, h.env, state => reserveCodexQuestion({ ...state, harness: 'codex' }, pending, h.incarnation.key, readNativeQuestionSnapshot(file, SESSION, h.env)!))
+  const emit = () => {
+    const binding = readSessionState(SESSION, h.env).codex_question_bindings![0]!.questions[0]!
+    append('response_item', { type: 'function_call', name: 'request_user_input_async', call_id: 'bound_call', arguments: JSON.stringify({ questions: [{ title: nativeQuestionTitle(binding) }] }) })
+    append('response_item', { type: 'function_call_output', call_id: 'bound_call', output: '{"accepted":true}' })
+  }
+  const hook = () => hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
+    cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: file }), 'codex')
+  const reply = { reply_id: 'rpl_bound', seq: 1, delivery_id: 'del_bound', device_id: 'dev_test', device_name: 'Test', text: 'Continue',
+    answers: [{ question_id: 'q1', choice_ids: [], text: 'Continue' }], source: null, created_at: new Date().toISOString() }
+  const answer = { pending, reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true as const }
+  return { emit, hook, answer }
+}
+
 describe('Codex tool-boundary Session Messages', () => {
+  it('observes accepted question bindings at a trusted tool hook with no pending inputs', async () => {
+    const h = setup(); const binding = reserveBinding(h)
+    binding.emit()
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
+    await binding.hook()
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.questions[0]?.verified).toBe(true)
+    expect(h.output).toEqual([])
+    expect(h.claims).toEqual([])
+  })
+
+  it('keeps ordinary presentation sticky after an uncertain drain write and acknowledgement cleanup', async () => {
+    const h = setup(); const binding = reserveBinding(h)
+    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [binding.answer],
+      acknowledgement_due: [{ request_id: 'req_bound', recorded_at: Date.now(), text_required: true }] }))
+    await expect(drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
+      write: () => { throw new Error('stdout may have written') },
+    })).rejects.toThrow('stdout may have written')
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
+    clearAcknowledgementObligation(SESSION, h.env, 'req_bound')
+    binding.emit(); await binding.hook()
+    const registration = readSessionState(SESSION, h.env).codex_question_bindings?.[0]
+    expect(registration?.ordinary_only).toBe(true)
+    expect(registration?.questions[0]?.verified).toBe(true)
+    expect(h.output).toEqual([])
+  })
+
+  it('marks ordinary prompt-context recovery before a later native binding', async () => {
+    const h = setup(); const binding = reserveBinding(h)
+    updateSessionState(SESSION, h.env, state => ({ ...state, harness: 'codex',
+      accepted: { answers: [binding.answer], remaining: 0, recorded_at: Date.now() },
+      acknowledgement_due: [{ request_id: 'req_bound', recorded_at: Date.now(), text_required: true }],
+    }))
+    h.sequencer.client.agentAcknowledgement = async () => ({ request_id: 'req_bound', agent_acknowledgement: null })
+    await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({ session_id: SESSION,
+      cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-1', prompt: 'Continue working',
+    }), 'codex')
+    expect(h.output.join('\n')).toContain('Continue')
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
+    binding.emit(); await binding.hook()
+    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
+  })
+
   it('keeps a blocked Stop turn writable until actual native completion', async () => {
     const h = setup()
     const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'owned.jsonl')

@@ -1,5 +1,6 @@
 import type { InputWakeAttempt } from './session-input-wakes.js'
 import type { NativeAnswerOperation } from './native-answer-operation.js'
+import type { CodexQuestionRegistration } from './codex-question-bindings.js'
 import type { ServiceIdentity } from './credentials.js'
 /** Value-free contracts shared across hook state and lifecycle modules. */
 import type {
@@ -70,6 +71,10 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Exact native associations and sticky ordinary-presentation decisions. */
+  codex_question_bindings?: CodexQuestionRegistration[]
+  /** Never reuse a marker while any registration or operation is retained. */
+  codex_question_marker_counter?: number
   /** Frozen native-report commands and their independent report/ack receipts. */
   native_answer_operations?: NativeAnswerOperation[]
   /** Content-free native lifecycle proof, scoped to the current owner. */
