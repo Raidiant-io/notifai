@@ -87,6 +87,28 @@ function setup() {
 }
 
 describe('Codex tool-boundary Session Messages', () => {
+  it('keeps a blocked Stop turn writable until actual native completion', async () => {
+    const h = setup()
+    Object.assign(h.env, { NOTIFAI_CODEX_INPUT_POC: '1' })
+    const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'owned.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n')
+    await h.hook()
+    await hookRunCommand(h.deps, 'attend', async () => JSON.stringify({
+      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'Stop',
+      turn_id: 'turn-1', transcript_path: transcript, stop_hook_active: true,
+    }), 'codex')
+    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe('turn-1')
+    h.stage([note('sm_after_stop')])
+    await h.hook()
+    expect(h.claims).toEqual(['sm_after_stop'])
+    expect(h.output).toHaveLength(1)
+    expect(h.output[0]).toContain('sm_after_stop')
+  })
+
   it('rejects historical observation without root ownership or current-turn evidence', async () => {
     const h = setup()
     await h.hook()

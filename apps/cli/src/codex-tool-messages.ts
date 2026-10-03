@@ -7,6 +7,7 @@ import type { Logger } from './logging.js'
 import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session-attendant-state.js'
+import { codexInputLifecycleEnabled, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
 function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' | 'hookPlatform'>): string | null {
@@ -70,6 +71,7 @@ export async function deliverCodexToolMessage(
     recordTurnStart(sessionId, deps.env, incarnation.key, envelope.turn_id)
   }
   if (!mayWrite()) return
+  if (codexInputLifecycleEnabled(deps.env)) refreshCodexInputActivity(sessionId, deps.env, incarnation.key, envelope.transcript_path)
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
   if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint ||
       proof.root_observed?.turn_id !== envelope.turn_id) {

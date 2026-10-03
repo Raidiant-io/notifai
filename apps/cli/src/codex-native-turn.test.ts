@@ -6,20 +6,46 @@ import { nativeTranscriptOwned, readNativeTurnSnapshot } from './codex-native-tu
 import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js'
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function fixture() {
+function fixture(withOwner = false) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-turn-')); roots.push(root)
   const env = { CODEX_HOME: path.join(root, 'codex'), XDG_STATE_HOME: path.join(root, 'state') }
   const file = path.join(env.CODEX_HOME, 'sessions', 'sample.jsonl')
   mkdirSync(path.dirname(file), { recursive: true })
   writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'root', source: 'cli' } })}\n`)
-  const key = beginSessionIncarnation('root', env, { stamp: lifecycleStamp() }).key
+  const key = beginSessionIncarnation('root', env, { stamp: lifecycleStamp(), ...(withOwner ? { harnessProcess: currentProcessIdentity()! } : {}) }).key
   const event = (type: string, turn_id: string) => appendFileSync(file, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id } })}\n`)
   const snapshot = () => readNativeTurnSnapshot(file, 'root', env)!
   return { root, env, file, key, event, snapshot }
 }
+
+it('refreshes actual completion without a subsequent hook and distinguishes an abort', () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'one')
+  f.event('task_started', 'one')
+  expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('working')
+  expect(refreshCodexInputActivity('root', f.env, 'superseded', f.file)).toBe('unknown')
+  f.event('task_complete', 'one')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('idle')
+  f.event('task_started', 'two')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('working')
+  f.event('turn_aborted', 'two')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('aborted')
+})
+
+it('does not turn missing owner or a partial native record into idle', () => {
+  const unowned = fixture(); unowned.event('task_started', 'one')
+  expect(refreshCodexInputActivity('root', unowned.env, unowned.key, unowned.file)).toBe('unknown')
+  const f = fixture(true); recordTurnStart('root', f.env, f.key, 'one'); f.event('task_started', 'one')
+  expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('working')
+  appendFileSync(f.file, '{"type":"event_msg"')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('unknown')
+  expect(currentCodexTurn('root', f.env, f.key)).toBe('one')
+})
 
 it('recovers an async-only start and closes exactly that native turn', () => {
   const f = fixture()

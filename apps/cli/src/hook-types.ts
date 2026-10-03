@@ -68,7 +68,7 @@ export interface HookEnvelope {
 
 export interface SessionState {
   /** Content-free native lifecycle proof, scoped to the current owner. */
-  codex_native_turn?: { key: string; turn_id: string; transcript_path: string }
+  codex_native_turn?: { key: string; turn_id: string; transcript_path: string; observed_at?: number }
   /** Exact incarnation observed executing the currently trusted Codex tool hook. */
   codex_tool_hook?: {
     incarnation: string; fingerprint: string

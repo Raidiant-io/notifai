@@ -17,6 +17,8 @@ import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import type { Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type SequencerDeps } from './session-delivery.js'
+import { codexInputLifecycleEnabled } from './codex-input-lifecycle.js'
+import { readAttendantLease } from './session-attendant-state.js'
 
 export function sessionInputWake(): string {
   return `Notifai — user input may be waiting for this session. Run \`notifai receive\` before continuing. If no input remains, continue your work. This wake-up contains no note, answer, or approval.`
@@ -86,6 +88,9 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
 export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger): EscalationDeliveryRoute {
   return { ...route, defer: async (accepted) => {
     stageSessionAnswers(sessionId, env, accepted)
+    // A live resident owns scheduling; its completion probe also covers the
+    // case where no more tool callbacks occur. Preserve return when absent.
+    if (route.kind === 'session-queue' && codexInputLifecycleEnabled(env) && readAttendantLease(sessionId, env) !== null) return
     await wakeSessionInputs(sessionId, env, async (text) => {
       const result = await route.deliver({
         context: text, answers: 0, remaining: 0, request_ids: [], journal_recorded_at: accepted.recorded_at,
