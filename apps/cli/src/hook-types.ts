@@ -1,3 +1,4 @@
+import type { InputWakeAttempt } from './session-input-wakes.js'
 /** Value-free contracts shared across hook state and lifecycle modules. */
 import type {
   LifecycleEndState,
@@ -137,6 +138,9 @@ export interface SessionState {
   waiting_answers?: AnsweredPending[]
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: { incarnation: string; token: string; queued: boolean; writer: ProcessIdentity }
+  /** Candidate durable native wake ownership; not wired into normal routing yet. */
+  input_wake_attempts?: InputWakeAttempt[]
+  input_wake_recovery?: { incarnation: string; inputIds: string[] }
   /**
    * Native-queue writes that committed, retained per request until the agent
    * acknowledges them. They never occupy the in-flight delivery slot or block

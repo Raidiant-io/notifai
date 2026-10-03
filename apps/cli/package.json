@@ -23,9 +23,11 @@
     "commander": "^14.0.0",
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",
-    "smol-toml": "^1.4.0"
+    "smol-toml": "^1.4.0",
+    "ws": "8.18.3"
   },
   "devDependencies": {
+    "@types/ws": "8.18.1",
     "typescript": "^5.8.0",
     "vitest": "4.1.11"
   },
