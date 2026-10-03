@@ -35,7 +35,7 @@ export function refreshCodexInputActivity(
 export function codexInputObserver(
   sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string, monotonic: () => number,
   transcriptPath?: string,
-): { observe: () => CodexInputActivity; mayWake: () => boolean } {
+): { observe: () => CodexInputActivity; mayWake: () => boolean; unknownAllowed: () => boolean } {
   let unknownSince: number | undefined
   const observe = (): CodexInputActivity => {
     const activity = refreshCodexInputActivity(sessionId, env, expectedKey, transcriptPath)
@@ -45,6 +45,7 @@ export function codexInputObserver(
   }
   return {
     observe,
+    unknownAllowed: () => unknownSince !== undefined && monotonic() - unknownSince >= 6_000,
     mayWake: () => {
       if (readSessionIncarnation(sessionId, env)?.key !== expectedKey || sessionHasEnded(sessionId, env)) return false
       const activity = observe()

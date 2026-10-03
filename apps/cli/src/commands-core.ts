@@ -1,3 +1,4 @@
+import type { connectCodexQueue } from './codex-queue-control.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
   SHIPPED_CLI_CAPABILITIES,
@@ -94,6 +95,7 @@ export interface CommandDeps {
   attendant?: AttendantSeams
   /** Test seams for the Codex thread-writer probe and cold resume. */
   codexWake?: CodexWakeAdapters
+  codexQueueControl?: typeof connectCodexQueue
   codexSourcePid?: number
   /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void

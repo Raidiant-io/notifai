@@ -230,6 +230,25 @@ export function recordTurnStart(sessionId: string, env: NodeJS.ProcessEnv, key: 
   })
 }
 
+function nativeFollows(same: TurnRecord, snapshot: NativeTurnSnapshot): boolean {
+  const turnId = snapshot.latest.id
+  if (same.native !== undefined && (same.native.identity !== snapshot.identity ||
+    same.native.file !== snapshot.file || same.native.offset > snapshot.latest.offset)) return false
+  if (same.current !== null && same.current !== turnId && !same.ended.includes(same.current)) {
+    const currentOffset = snapshot.positions.get(same.current)
+    if (currentOffset === undefined || currentOffset > snapshot.latest.offset) return false
+  }
+  // Confirming native completion is an Idle observation, never resurrection.
+  if (same.ended.includes(turnId) && !snapshot.latest.ended) return false
+  return true
+}
+
+/** Mutation-free admission check; safe inside the session-state lock. */
+export function nativeTurnContinues(sessionId: string, env: NodeJS.ProcessEnv, key: string, snapshot: NativeTurnSnapshot): boolean {
+  const record = readTurns(turnActivityPath(sessionId, env))
+  return record.key === key && nativeFollows(record, snapshot)
+}
+
 /** An async callback may advance only with native order and the same live owner. */
 export function reconcileNativeTurn(
   sessionId: string, env: NodeJS.ProcessEnv, key: string, turnId: string,
@@ -241,14 +260,7 @@ export function reconcileNativeTurn(
     // A re-arm cannot establish a new incarnation from an older transcript.
     if (record.key !== key && !starting) return record
     const same: TurnRecord = record.key === key ? record : { key, current: null, started: [], ended: record.ended }
-    if (same.native !== undefined && (same.native.identity !== snapshot.identity ||
-        same.native.file !== snapshot.file || same.native.offset > snapshot.latest.offset)) return record
-    if (same.current !== null && same.current !== turnId && !same.ended.includes(same.current)) {
-      const currentOffset = snapshot.positions.get(same.current)
-      if (currentOffset === undefined || currentOffset > snapshot.latest.offset) return record
-    }
-    // Confirming native completion is an Idle observation, never resurrection.
-    if (same.ended.includes(turnId) && !snapshot.latest.ended) return record
+    if (!nativeFollows(same, snapshot)) return record
     recorded = true
     return {
       ...same, current: turnId, started: keep(same.started, turnId),

@@ -138,7 +138,7 @@ export interface SessionState {
   waiting_answers?: AnsweredPending[]
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: { incarnation: string; token: string; queued: boolean; writer: ProcessIdentity }
-  /** Candidate durable native wake ownership; not wired into normal routing yet. */
+  /** Exact Codex wake ownership, including detached reconciliation records. */
   input_wake_attempts?: InputWakeAttempt[]
   input_wake_recovery?: { incarnation: string; inputIds: string[] }
   /**
