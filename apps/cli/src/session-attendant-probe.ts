@@ -200,7 +200,7 @@ export function codexAttendanceProbe(options: {
   /** SessionEnd's marker for exactly this incarnation. */
   endedByHook: () => boolean
   /** Working while this thread's latest recorded turn has not ended. */
-  activity: () => SessionActivity
+  activity: () => SessionActivity | null
   adapters: Pick<ClaudeProbeAdapters, 'pidExists' | 'readStart' | 'parentPid'>
 }): () => HarnessProbe {
   const { adapters, harness } = options
@@ -212,6 +212,7 @@ export function codexAttendanceProbe(options: {
         : processIdentityLiveness(harness, adapters.readStart, adapters.pidExists)
     if (alive === 'gone') return { state: 'ended', reason: 'harness-gone' }
     if (alive === 'unknown') return { state: 'uncertain', reason: 'process-start-unreadable' }
-    return { state: 'running', activity: options.activity() }
+    const activity = options.activity()
+    return activity === null ? { state: 'uncertain', reason: 'turn-activity-unobserved' } : { state: 'running', activity }
   }
 }

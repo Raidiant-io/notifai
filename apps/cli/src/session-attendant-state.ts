@@ -270,6 +270,14 @@ export function readTurnActivity(sessionId: string, env: NodeJS.ProcessEnv, key:
   return recorded === key && current !== null && !ended.includes(current) ? 'working' : 'idle'
 }
 
+/** Last observed activity for this owner, never the missing-record idle default.
+ * This is a display projection only; queue admission requires a fresh native read. */
+export function observedCodexTurnActivity(sessionId: string, env: NodeJS.ProcessEnv, key: string): SessionActivity | null {
+  const record = readTurns(turnActivityPath(sessionId, env))
+  if (record.key !== key || record.current === null) return null
+  return record.ended.includes(record.current) ? 'idle' : 'working'
+}
+
 /** Exact active turn, used to reject a tool hook that outlived interruption. */
 export function currentCodexTurn(sessionId: string, env: NodeJS.ProcessEnv, key: string): string | null {
   const record = readTurns(turnActivityPath(sessionId, env))

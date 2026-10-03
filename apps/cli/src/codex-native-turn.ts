@@ -7,7 +7,7 @@ export interface NativeTurnSnapshot {
   file: string
   identity: string
   size: number
-  latest: { id: string; offset: number; ended: boolean }
+  latest: { id: string; offset: number; ended: boolean; outcome?: 'completed' | 'aborted' }
   positions: Map<string, number>
 }
 
@@ -92,7 +92,10 @@ function readNativeTranscript(
           latest = { id: event.turn_id, offset: at + offset, ended: false }
           positions.set(event.turn_id, at + offset)
         } else if (latest !== undefined && event?.turn_id === latest.id &&
-            ['task_complete', 'turn_aborted'].includes(event.type ?? '')) latest.ended = true
+            ['task_complete', 'turn_aborted'].includes(event.type ?? '')) {
+          latest.ended = true
+          latest.outcome = event.type === 'turn_aborted' ? 'aborted' : 'completed'
+        }
       }
       offset = end + 1
     }

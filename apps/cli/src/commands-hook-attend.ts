@@ -58,7 +58,8 @@ import {
 import {
   attendantClaimPath,
   attendantStatusPath,
-  readTurnActivity,
+  observedCodexTurnActivity,
+  readAttendantLease,
   recordTurnEnd,
   recordTurnStart,
   reconcileNativeTurn,
@@ -77,6 +78,7 @@ import { readOpenclawGeneration } from './openclaw-generation.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
@@ -171,7 +173,11 @@ export async function attendHook(
   }
   const observeNative = (key: string, initial = false): void => {
     if (!ownsNative(key)) return
-    if (envelope.hook_event_name === 'Stop' || envelope.hook_event_name === 'Interrupt') {
+    if (envelope.hook_event_name === 'Stop') {
+      refreshCodexInputActivity(sessionId, deps.env, key, envelope.transcript_path)
+      return
+    }
+    if (envelope.hook_event_name === 'Interrupt') {
       recordCodexTurnEnd(envelope, sessionId, deps.env)
       return
     }
@@ -302,6 +308,9 @@ export async function attendHook(
   })
 
   const served = record
+  const codexActivity = harness === 'codex'
+    ? codexInputObserver(sessionId, deps.env, served.key, clock.monotonic, input.recovery?.transcriptPath ?? envelope.transcript_path)
+    : null
   const probeAdapters = seams.probeAdapters ?? systemClaudeProbeAdapters(deps.env)
   // SessionEnd names the incarnation it ended; an end of any other one,
   // earlier or later, is not this attendant's.
@@ -311,7 +320,13 @@ export async function attendHook(
       ? codexAttendanceProbe({
           harness: harnessProcess,
           endedByHook,
-          activity: () => readTurnActivity(sessionId, deps.env, served.key),
+          activity: () => {
+            // Presence remains live through a read gap. The binary service
+            // activity is last-observed; scheduling reads afresh.
+            const activity = codexActivity!.observe()
+            if (activity === 'unknown') logger.debug('attendant.state', { activity: 'cached', reason: 'native-activity-unreadable' })
+            return observedCodexTurnActivity(sessionId, deps.env, served.key)
+          },
           adapters: probeAdapters,
         })
       : harness === 'openclaw'
@@ -334,6 +349,7 @@ export async function attendHook(
       : null
     return client
   }
+  const codexWakeNeeded = codexActivity?.mayWake ?? null
   const messages = sessionMessageWriter({
     deps,
     harness: harness!,
@@ -343,6 +359,7 @@ export async function attendHook(
     writer: seams.writer === undefined ? currentProcessIdentity() : seams.writer,
     clock,
     logger,
+    mayWake: codexWakeNeeded ?? (() => true),
   })
   const signals = seams.signalled === undefined ? terminationSignal() : null
   try {
@@ -374,6 +391,10 @@ export async function attendHook(
         localInputPending: () => !readSessionState(sessionId, deps.env).input_wake?.queued &&
           hasSessionInputs(sessionId, deps.env, null),
       } : {}),
+      ...(codexWakeNeeded === null ? {} : {
+        localInputPending: () => !readSessionState(sessionId, deps.env).input_wake?.queued &&
+          hasSessionInputs(sessionId, deps.env, readAttendantLease(sessionId, deps.env)) && codexWakeNeeded(),
+      }),
       ...(messages === null
         ? {}
         : {
@@ -432,6 +453,7 @@ function sessionMessageWriter(input: {
   writer: ProcessIdentity | null
   clock: AttendantClock
   logger: Logger
+  mayWake: () => boolean
 }): SessionMessageWriter | null {
   const { deps, sessionId, harnessPid, writer, clock, logger } = input
   if (writer === null) return null
@@ -445,7 +467,7 @@ function sessionMessageWriter(input: {
     writer,
     log: logger,
   })
-  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger })
+  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, mayWake: input.mayWake })
   if (input.harness === 'openclaw') {
     if (!openclawMessageBridgeAvailable(deps.env)) return null
     const generation = readOpenclawGeneration(sessionId, deps.env)
@@ -495,8 +517,9 @@ function codexMessageWriter(input: {
   sessionId: string
   cwd: string
   logger: Logger
+  mayWake: () => boolean
 }): SessionMessageWriter | null {
-  const { deps, sessionId, cwd, logger } = input
+  const { deps, sessionId, cwd, logger, mayWake } = input
   const queue = inspectCodexQueue(sessionId, deps.env)
   if (queue.state !== 'ready') {
     logger.info('attendant.state', { messages: 'unavailable', reason: queue.reason })
@@ -514,13 +537,17 @@ function codexMessageWriter(input: {
     if (incarnation === null || generation === null || !attendant.mayWrite()) return 'retry-soon'
     stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
     if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
-    // A prior tool callback does not promise another one. Queue one coalesced,
-    // content-free wake even while working; the foreground claim/journal still
-    // owns delivery if a tool hook drains the input before this wake arrives.
+    if (!mayWake()) return 'done'
+    // The resident observes completion even when no further tool runs. Recheck
+    // eligibility and pending input immediately before queue admission; a hook
+    // may have consumed the batch since the last attendance exchange.
     await wakeSessionInputs(sessionId, deps.env, async (text) => {
+      if (!attendant.mayWrite() || !mayWake() ||
+          !hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return false
       const result = await deliverIntoCodexThread({
         threadId: queue.threadId, cwd, env: deps.env, adapters, text,
-        begin: () => attendant.mayWrite(),
+        begin: () => attendant.mayWrite() && mayWake() &&
+          hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }),
       })
       return result.status === 'written'
     }, logger)

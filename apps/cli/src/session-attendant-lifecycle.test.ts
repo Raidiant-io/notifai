@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AttendanceRequestT, AttendanceResponse } from '@raidiant/notifai-protocol'
@@ -767,12 +767,24 @@ describe('notifai hook attend for Codex', () => {
         },
       },
     })
-    deps.attendant!.probeAdapters!.parentPid = () => HARNESS.pid
+    const owner = currentProcessIdentity()!
+    env['NOTIFAI_HOOK_SOURCE_PID'] = String(owner.pid)
+    deps.attendant!.harnessProcess = owner
+    deps.attendant!.probeAdapters!.readStart = () => owner.start
+    deps.attendant!.probeAdapters!.parentPid = () => owner.pid
+    const transcript = path.join(env['CODEX_HOME']!, 'sessions', 'activity.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: THREAD, source: 'cli' } }) + '\n')
+    const nativeEvent = (type: string, turnId: string): void => {
+      appendFileSync(transcript, JSON.stringify({ type: 'event_msg', payload: { type, turn_id: turnId } }) + '\n')
+    }
+    nativeEvent('task_started', 'initial')
+    nativeEvent('task_complete', 'initial')
     recordSessionNotified(THREAD, env, Date.now())
     const running = hookRunCommand(
       deps,
       'attend',
-      stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }),
+      stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup', transcript_path: transcript }),
       'codex',
     )
     await until(() => calls.length >= 1, 'attendance exchange')
@@ -781,7 +793,8 @@ describe('notifai hook attend for Codex', () => {
     // Codex runs the synchronous prompt hook (which records the turn's start)
     // and the asynchronous attend copy (which finds its owner present).
     const prompt = async (turnId: string): Promise<void> => {
-      const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit', turn_id: turnId }
+      nativeEvent('task_started', turnId)
+      const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit', turn_id: turnId, transcript_path: transcript }
       await hookRunCommand(deps, 'user-prompt-submit', stdin(envelope), 'codex')
       await hookRunCommand(deps, 'attend', stdin(envelope), 'codex')
     }
@@ -793,6 +806,8 @@ describe('notifai hook attend for Codex', () => {
       stdin({ session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'turn-1' }),
       'codex',
     )
+    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
+    nativeEvent('task_complete', 'turn-1')
     await until(() => calls.at(-1)?.activity === 'idle', 'idle activity')
     // An interrupted turn fires Interrupt instead of Stop; that copy records the end and exits.
     await prompt('turn-2')
@@ -803,6 +818,7 @@ describe('notifai hook attend for Codex', () => {
       stdin({ session_id: THREAD, cwd: root, hook_event_name: 'Interrupt', turn_id: 'turn-2' }),
       'codex',
     )
+    nativeEvent('turn_aborted', 'turn-2')
     await until(() => calls.at(-1)?.activity === 'idle', 'idle after the interrupt')
     // Turn 3 starts; a late async copy of turn 1's prompt hook changes nothing.
     await prompt('turn-3')
@@ -820,17 +836,14 @@ describe('notifai hook attend for Codex', () => {
       stdin({ session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'turn-3' }),
       'codex',
     )
+    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
+    nativeEvent('task_complete', 'turn-3')
     await until(() => calls.at(-1)?.activity === 'idle', 'idle after turn 3')
     expect(deps.exits).toHaveLength(0)
 
     // The native async copy must recover activity even when synchronous hooks
     // stop firing in a long-lived harness. The incumbent still owns attendance.
-    const transcript = path.join(env['CODEX_HOME']!, 'sessions', 'activity.jsonl')
-    mkdirSync(path.dirname(transcript), { recursive: true })
-    writeFileSync(transcript, [
-      { type: 'session_meta', payload: { id: THREAD, source: 'cli' } },
-      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'async-current' } },
-    ].map(value => JSON.stringify(value)).join('\n') + '\n')
+    nativeEvent('task_started', 'async-current')
     await hookRunCommand(deps, 'attend', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
       turn_id: 'async-current', transcript_path: transcript,
@@ -840,7 +853,7 @@ describe('notifai hook attend for Codex', () => {
     await hookRunCommand(deps, 'attend', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current', agent_id: 'child',
     }), 'codex')
-    const wrongOwner = { ...deps, attendant: { ...deps.attendant, harnessProcess: { ...HARNESS, start: 'another-process-start' } } }
+    const wrongOwner = { ...deps, attendant: { ...deps.attendant, harnessProcess: { ...owner, start: 'another-process-start' } } }
     await hookRunCommand(wrongOwner, 'attend', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current',
     }), 'codex')
@@ -848,6 +861,8 @@ describe('notifai hook attend for Codex', () => {
     await hookRunCommand(deps, 'attend', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current',
     }), 'codex')
+    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
+    nativeEvent('task_complete', 'async-current')
     await until(() => calls.at(-1)?.activity === 'idle', 'async-only turn ended')
 
     noteOffered = true
@@ -863,7 +878,7 @@ describe('notifai hook attend for Codex', () => {
     expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'ended' }])
   })
 
-  it.each(['tool-hook', 'turn-end', 'missing-hook', 'first-hook', 'busy-no-callback'])('routes a staged Note safely: %s', async (mode) => {
+  it.each(['tool-drain', 'completion', 'first-tool', 'missing-tool', 'abort'])('routes a staged Note safely: %s', async (mode) => {
     const { env, root } = codexEnv()
     enableProject(projectBinding(root, env, undefined))
     const home = env['CODEX_HOME']!
@@ -871,10 +886,15 @@ describe('notifai hook attend for Codex', () => {
     writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(), harness: 'codex' }) }))
     const installed = findInstallations(env).find((entry) => entry.harness === 'codex')!
     writeFileSync(path.join(home, 'config.toml'), installed.handlers
-      .filter((handler) => ['PostToolUse', 'UserPromptSubmit'].includes(handler.event))
+      .filter((handler) => (mode === 'missing-tool' ? ['UserPromptSubmit'] : ['PostToolUse', 'UserPromptSubmit']).includes(handler.event))
       .map((handler) => `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
     const owner = currentProcessIdentity()!
     env['NOTIFAI_HOOK_SOURCE_PID'] = String(owner.pid)
+    const transcript = path.join(home, 'sessions', 'owned.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: THREAD, source: 'cli' } }) + '\n')
+    const nativeEvent = (type: string) => appendFileSync(transcript, JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'busy' } }) + '\n')
+    nativeEvent('task_started')
     const output: string[] = []
     const queued: string[] = []
     let offered = false
@@ -909,14 +929,19 @@ describe('notifai hook attend for Codex', () => {
     deps.attendant!.probeAdapters!.parentPid = () => owner.pid
     deps.io.out = (text) => { output.push(text) }
     recordSessionNotified(THREAD, env, Date.now())
-    const running = hookRunCommand(deps, 'attend', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }), 'codex')
+    const running = hookRunCommand(deps, 'attend', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup', transcript_path: transcript }), 'codex')
     try {
       await until(() => readAttendantLease(THREAD, env) !== null, 'lease')
       const incarnation = readSessionIncarnation(THREAD, env)!
       recordTurnStart(THREAD, env, incarnation.key, 'busy')
-      if (mode !== 'missing-hook' && mode !== 'first-hook') {
+      {
+        // A native prompt observes the transcript before the first tool.
+        await hookRunCommand(deps, 'attend', stdin({ session_id: THREAD, cwd: root,
+          hook_event_name: 'UserPromptSubmit', turn_id: 'busy', transcript_path: transcript }), 'codex')
+      }
+      if (mode !== 'first-tool' && mode !== 'missing-tool') {
         await hookRunCommand(deps, 'post-tool-use', stdin({
-          session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy',
+          session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy', transcript_path: transcript,
         }), 'codex')
         expect(codexToolHookReady(deps, THREAD)).toBe(true)
         expect(claims).toBe(0)
@@ -926,71 +951,34 @@ describe('notifai hook attend for Codex', () => {
         output.length = 0
       }
       offered = true
-      if (mode === 'missing-hook' || mode === 'first-hook') {
-        await until(() => queued.length === 1, 'wake without a proven tool hook')
-        expect(queued).toEqual([sessionInputWake()])
-        expect(claims).toBe(0)
-        if (mode === 'first-hook') {
-          await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
-          expect(codexToolHookReady(deps, THREAD)).toBe(true)
-          expect(claims).toBe(1)
-          expect(output[0]).toContain('sm_tool')
-          await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
-          expect(output).toHaveLength(1)
-          expect(claims).toBe(1)
-        } else expect(output).toEqual([])
-        return
-      }
       await until(() => readSessionMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')
       expect(claims).toBe(0)
-      if (mode === 'busy-no-callback') {
-        await until(() => queued.length === 1, 'content-free wake despite an unended turn and no tool callback')
+      {
         const observed = exchanges
-        await until(() => exchanges >= observed + 2, 'repeated pending attendance')
-        expect(queued).toEqual([sessionInputWake()])
+        await until(() => exchanges >= observed + 2, 'busy input remains staged without a wake')
+        expect(queued).toEqual([])
+        await hookRunCommand(deps, 'attend', stdin({ session_id: THREAD, cwd: root,
+          hook_event_name: 'Stop', turn_id: 'busy', transcript_path: transcript, stop_hook_active: true }), 'codex')
         expect(readTurnActivity(THREAD, env, incarnation.key)).toBe('working')
-        expect(claims).toBe(0)
-        expect(output).toEqual([])
-        await hookRunCommand(deps, 'user-prompt-submit', stdin({
-          session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
-          turn_id: 'wake-turn', prompt: queued[0],
-        }), 'codex')
-        expect(claims).toBe(1)
-        expect(output).toHaveLength(1)
-        expect(output[0]).toContain('sm_tool')
-        await hookRunCommand(deps, 'post-tool-use', stdin({
-          session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy',
-        }), 'codex')
-        expect(claims).toBe(1)
-        expect(output).toHaveLength(1)
+        if (mode === 'tool-drain') {
+          await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root,
+            hook_event_name: 'PostToolUse', turn_id: 'busy', transcript_path: transcript }), 'codex')
+          expect(delivered).toBe(true)
+          expect(claims).toBe(1)
+        }
+        nativeEvent(mode === 'abort' ? 'turn_aborted' : 'task_complete')
+        await until(() => listAttendantReports(env)[0]?.activity === 'idle', 'actual native completion without another hook')
+        const completedAt = exchanges
+        await until(() => exchanges >= completedAt + 2, 'idle reconciliation')
+        expect(queued).toEqual(mode === 'tool-drain' ? [] : [sessionInputWake()])
+        if (mode !== 'tool-drain') {
+          await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: THREAD, cwd: root,
+            hook_event_name: 'UserPromptSubmit', turn_id: 'wake-turn', prompt: queued[0] }), 'codex')
+          expect(claims).toBe(1)
+          expect(output.join('\n')).toContain('sm_tool')
+        }
         return
       }
-      await until(() => queued.length === 1, 'fallback wake while working')
-      expect(queued).toEqual([sessionInputWake()])
-      if (mode === 'turn-end') {
-        recordTurnEnd(THREAD, env, 'busy')
-        const observed = exchanges
-        await until(() => exchanges >= observed + 2, 'wake stays coalesced after turn completion')
-        expect(queued).toHaveLength(1)
-        expect(output).toEqual([])
-        return
-      }
-      await hookRunCommand(deps, 'post-tool-use', stdin({ session_id: THREAD, cwd: root, hook_event_name: 'PostToolUse', turn_id: 'busy' }), 'codex')
-      expect(output).toHaveLength(1)
-      expect(output[0]).toContain('sm_tool')
-      expect(delivered).toBe(true)
-      recordTurnEnd(THREAD, env, 'busy')
-      await until(() => listAttendantReports(env)[0]?.activity === 'idle', 'idle after hook')
-      expect(queued).toEqual([sessionInputWake()])
-      expect(claims).toBe(1)
-      // The tool hook won. Its queued wake later reaches the root, but has no
-      // User words and must not present or claim the already delivered note.
-      await hookRunCommand(deps, 'user-prompt-submit', stdin({
-        session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
-        turn_id: 'empty-wake-turn', prompt: queued[0],
-      }), 'codex')
-      expect(output).toHaveLength(1)
-      expect(claims).toBe(1)
     } finally {
       markSessionEnded(THREAD, env, Date.now() + 1)
       await running
@@ -1004,8 +992,20 @@ describe('notifai hook attend for Codex', () => {
       clientFactory: () => service.client,
       codexWake: { available: () => false, queue: async () => {} },
     })
+    const owner = currentProcessIdentity()!
+    env['NOTIFAI_HOOK_SOURCE_PID'] = String(owner.pid)
+    deps.attendant!.harnessProcess = owner
+    deps.attendant!.probeAdapters!.readStart = () => owner.start
+    deps.attendant!.probeAdapters!.parentPid = () => owner.pid
+    const transcript = path.join(env['CODEX_HOME']!, 'sessions', 'idle.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: THREAD, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'initial' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'initial' } },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n')
     recordSessionNotified(THREAD, env, Date.now())
-    const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
+    const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup', transcript_path: transcript }
     const running = hookRunCommand(deps, 'attend', stdin(envelope), 'codex')
     await until(() => service.calls.length >= 1, 'attendance exchange')
     expect(service.calls[0]).toMatchObject({ state: 'running', accepts_messages: false })
