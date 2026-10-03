@@ -83,14 +83,16 @@ export interface SessionEndMarker {
   ends: string | null
 }
 
-export function markSessionEnded(sessionId: string, env: NodeJS.ProcessEnv, now: number): void {
+export function markSessionEnded(sessionId: string, env: NodeJS.ProcessEnv, now: number): SessionEndMarker {
   const stateFile = sessionStatePath(sessionId, env)
-  withFileLock(`${stateFile}.lock`, () => {
+  return withFileLock(`${stateFile}.lock`, () => {
     const current = readSessionIncarnation(sessionId, env)
+    const marker = { stamp: lifecycleStamp(now), ends: current?.key ?? null }
     atomicWriteFileSync(
       sessionEndMarkerPath(sessionId, env),
-      `${JSON.stringify({ stamp: lifecycleStamp(now), ends: current?.key ?? null })}\n`,
+      `${JSON.stringify(marker)}\n`,
     )
+    return marker
   })
 }
 
@@ -389,7 +391,10 @@ export function findOwningSession(
     const deliveredMatch = state.delivered_answers?.some(
       ({ pending }) => pending.question_id === id || pending.request_id === id,
     ) ?? false
-    if (pendingMatch || retiringMatch || historyMatch || acknowledgementMatch || acceptedMatch || deliveredMatch) {
+    const nativeMatch = state.native_answer_operations?.some(
+      entry => entry.question_id === id || entry.request_id === id,
+    ) ?? false
+    if (pendingMatch || retiringMatch || historyMatch || acknowledgementMatch || acceptedMatch || deliveredMatch || nativeMatch) {
       matches.push(sessionId)
       if (matches.length > 1) return { sessionId: null, ambiguous: true }
     }
@@ -409,11 +414,25 @@ export function writeSessionState(
 export function clearSessionState(sessionId: string, env: NodeJS.ProcessEnv): void {
   const file = sessionStatePath(sessionId, env)
   withFileLock(`${file}.lock`, () => {
-    rmSync(file, { force: true })
-    // The session override lives in a sibling file; leaving it behind meant a
-    // later session reusing the id silently inherited `ask_notifications = false`.
-    rmSync(sessionConfigPath(sessionId, env), { force: true })
+    clearSessionStateUnlocked(sessionId, env)
   })
+}
+
+/** Caller owns the session lock. Completed keys remain non-reusable until the
+ * whole abandoned session is pruned; unfinished operations pin that boundary.
+ */
+export function clearSessionStateUnlocked(sessionId: string, env: NodeJS.ProcessEnv): void {
+  const file = sessionStatePath(sessionId, env)
+  const current = readSessionState(sessionId, env)
+  if ((current.native_answer_operations?.length ?? 0) > 0) {
+    writeSessionStateUnlocked(file, sessionId, {
+      native_answer_operations: current.native_answer_operations!,
+      ...(current.question_history === undefined ? {} : { question_history: current.question_history }),
+    })
+  } else rmSync(file, { force: true })
+  // The session override lives in a sibling file; leaving it behind meant a
+  // later session reusing the id silently inherited `ask_notifications = false`.
+  rmSync(sessionConfigPath(sessionId, env), { force: true })
 }
 
 export function writeSessionStateUnlocked(file: string, sessionId: string, state: SessionState): void {
@@ -566,13 +585,25 @@ export function pruneAbandonedSessions(
     for (const name of readdirSync(directory)) {
       const file = path.join(directory, name)
       try {
-        const age = now - statSync(file).mtimeMs
-        // A negative age means the clock moved, not that the file is old.
-        // Deleting live session state on an NTP correction would lose a
-        // question already on the user's phone.
-        if (age <= maxAgeMs) continue
-        rmSync(file, { force: true })
-        removed += 1
+        if (!statSync(file).isFile()) continue
+        // Every sibling of an unfinished native operation shares the same
+        // lifecycle fence. Keep the state, incarnation and end marker together.
+        const stem = name.replace(/\..*$/, '')
+        const stateFile = path.join(directory, `${stem}.json`)
+        const prune = (): void => {
+          if (existsSync(stateFile)) {
+            const state = JSON.parse(readFileSync(stateFile, 'utf8')) as SessionState
+            if (state.native_answer_operations?.some(op => op.acknowledgement === undefined)) return
+          }
+          const age = now - statSync(file).mtimeMs
+          // A negative age means the clock moved, not that the file is old.
+          // Deleting live session state on an NTP correction would lose a
+          // question already on the user's phone.
+          if (age <= maxAgeMs) return
+          rmSync(file, { force: true })
+          removed += 1
+        }
+        withFileLock(`${stateFile}.lock`, prune)
       } catch {
         // A file that vanished under us, or one we may not read. Neither is
         // worth failing a hook for, and the next pass will see it again.

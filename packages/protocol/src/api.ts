@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox'
+import { Value } from '@sinclair/typebox/value'
 import {
   CUSTOM_SOUND_MAX_BYTES,
   KindSoundMap,
@@ -534,6 +535,10 @@ export const RecordHarnessAnswerRequest = Type.Object({
   answers: Type.Array(ReplyAnswer, { minItems: 1, maxItems: REPLY_MAX_QUESTIONS }),
 }, { additionalProperties: false })
 export type RecordHarnessAnswerRequestT = Static<typeof RecordHarnessAnswerRequest>
+
+export function isRecordHarnessAnswerRequest(value: unknown): value is RecordHarnessAnswerRequestT {
+  return Value.Check(RecordHarnessAnswerRequest, value)
+}
 
 export interface RecordHarnessAnswerResponse {
   status: 'recorded' | 'replayed'

@@ -57,15 +57,15 @@ import {
   summarizeRequestIds,
 } from './hook-question-state.js'
 import {
-  clearSessionState,
+  clearSessionStateUnlocked,
   markSessionEnded,
   pendingList,
   readSessionState,
   readSessionIncarnation,
+  readSessionEndMarker,
   sessionHasEnded,
   sessionStatePath,
   updateSessionState,
-  writeSessionState,
   writeSessionStateUnlocked,
   recordSessionNotified,
 } from './hook-session-state.js'
@@ -2321,7 +2321,7 @@ export function handleSessionEnd(
   if (!sessionId) return { notes, log: { outcome: 'ignored', reason: 'missing-session-id' } }
   // Publish cancellation before reading or clearing anything. In-flight Stop
   // writers use the same session lock, so none can recreate state after this.
-  markSessionEnded(sessionId, env, now)
+  const ending = markSessionEnded(sessionId, env, now)
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
 
   const state = readSessionState(sessionId, env)
@@ -2375,49 +2375,61 @@ export function handleSessionEnd(
       `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
     )
   }
-  if (
-    (preserveAccepted && state.accepted !== undefined) ||
-    (state.acknowledgement_due?.length ?? 0) > 0 ||
-    (state.message_acknowledgement_due?.length ?? 0) > 0
-  ) {
-    const preserved: SessionState = { ...stateWithHistory }
-    if (!preserveAccepted) delete preserved.accepted
-    if (!preserveAccepted) delete preserved.waiting_answers
-    delete preserved.input_wake
-    delete preserved.pending
-    delete preserved.retiring
-    delete preserved.acknowledgement_blocks
-    if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
-      delete preserved.acknowledgement_due
+  return withFileLock(`${sessionStatePath(sessionId, env)}.lock`, () => {
+    const marker = readSessionEndMarker(sessionId, env)
+    if (marker?.stamp?.mono !== ending.stamp?.mono ||
+        (readSessionIncarnation(sessionId, env)?.key ?? null) !== ending.ends) {
+      return { notes, log: { outcome: 'preserved', reason: 'session-resumed-during-cleanup' } }
     }
-    if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
-      delete preserved.message_acknowledgement_due
+    // A committed receipt can arrive after the end marker. Preserve the fresh
+    // obligation state rather than restoring the earlier cleanup snapshot.
+    const state = readSessionState(sessionId, env)
+    stateWithHistory = { ...state, ...(stateWithHistory.question_history === undefined ? {} : { question_history: stateWithHistory.question_history }) }
+    if (
+      (preserveAccepted && state.accepted !== undefined) ||
+      (state.acknowledgement_due?.length ?? 0) > 0 ||
+      (state.message_acknowledgement_due?.length ?? 0) > 0 ||
+      (state.native_answer_operations?.length ?? 0) > 0
+    ) {
+      const preserved: SessionState = { ...stateWithHistory }
+      if (!preserveAccepted) delete preserved.accepted
+      if (!preserveAccepted) delete preserved.waiting_answers
+      delete preserved.input_wake
+      delete preserved.pending
+      delete preserved.retiring
+      delete preserved.acknowledgement_blocks
+      if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
+        delete preserved.acknowledgement_due
+      }
+      if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
+        delete preserved.message_acknowledgement_due
+      }
+      writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, preserved)
+      notes.push(
+        preserveAccepted && state.accepted !== undefined
+          ? 'preserved an accepted device answer for this exact session to resume'
+          : 'preserved required Agent Acknowledgement obligations for this exact session',
+      )
+      return {
+        notes,
+        log: {
+          outcome: preserveAccepted && state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
+          queued_retirements: orphans.length,
+          accepted_answers: state.accepted?.answers.length ?? 0,
+          acknowledgement_due: state.acknowledgement_due?.length ?? 0,
+          ...(state.message_acknowledgement_due === undefined
+            ? {}
+            : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
+        },
+      }
     }
-    writeSessionState(sessionId, env, preserved)
-    notes.push(
-      preserveAccepted && state.accepted !== undefined
-        ? 'preserved an accepted device answer for this exact session to resume'
-        : 'preserved required Agent Acknowledgement obligations for this exact session',
-    )
-    return {
-      notes,
-      log: {
-        outcome: preserveAccepted && state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
-        queued_retirements: orphans.length,
-        accepted_answers: state.accepted?.answers.length ?? 0,
-        acknowledgement_due: state.acknowledgement_due?.length ?? 0,
-        ...(state.message_acknowledgement_due === undefined
-          ? {}
-          : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
-      },
+    const history = stateWithHistory.question_history
+    clearSessionStateUnlocked(sessionId, env)
+    if ((history?.length ?? 0) > 0) {
+      writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, { question_history: history! })
     }
-  }
-  const history = stateWithHistory.question_history
-  clearSessionState(sessionId, env)
-  if ((history?.length ?? 0) > 0) {
-    writeSessionState(sessionId, env, { question_history: history! })
-  }
-  return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
+    return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
+  })
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import type { InputWakeAttempt } from './session-input-wakes.js'
+import type { NativeAnswerOperation, ServiceIdentity } from './native-answer-operation.js'
 /** Value-free contracts shared across hook state and lifecycle modules. */
 import type {
   LifecycleEndState,
@@ -68,6 +69,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Frozen native-report commands and their independent report/ack receipts. */
+  native_answer_operations?: NativeAnswerOperation[]
   /** Content-free native lifecycle proof, scoped to the current owner. */
   codex_native_turn?: { key: string; turn_id: string; transcript_path: string; observed_at?: number }
   /** Exact incarnation observed executing the currently trusted Codex tool hook. */
@@ -272,6 +275,8 @@ export interface PendingSubmissionIntent {
 }
 
 export interface PendingQuestion {
+  /** Credential metadata frozen at registration; never contains the secret. */
+  service_identity?: ServiceIdentity
   /** Stable local identity across racing state writers and submit recovery. */
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */
