@@ -196,18 +196,24 @@ for this machine. Installing the skill does place files elsewhere, so at a
 human terminal that — and only that — asks once whether it is for this project
 or for this machine.
 
-On an unapproved machine, `notifai init` starts one machine approval and opens
-the trusted approval page; the User signs in and approves the machine in their
-browser. At a human terminal the command waits until approval or expiry. Run
-by an agent, or anywhere nobody is at the terminal, it never waits on a person:
-it prints the approval page and code, polls once, and returns, and the next
-run resumes that same approval — the handshake is kept on disk until it
-resolves or expires, so an approval given after the command ended is not
-lost. `notifai init --json` never prompts: progress goes to stderr while
-stdout contains one final readiness object whose `credential` state carries
-the page and code to relay. At a human terminal, choosing iPhone or Android
-opens its setup steps and starts a bounded wait; Ctrl-C stops the wait, and
-expiry offers more time.
+On an unapproved machine, `notifai init` starts one Machine approval and shows
+its QR and matching code. Scan it to review the Account and computer in a
+signed-in Companion App; no additional email code is needed while its Auth
+Session is valid. Approval is reusable until revoked. QR setup asks for no
+email, opens no browser, and sends no invitation. Select
+`--approval notification --approval-email <email>` for an Account-targeted
+invitation, or `--approval browser` for browser approval. Each route requires
+explicit review and approval of the same pairing.
+
+At a human terminal the command waits until approval or expiry. An agent run
+polls once and returns; the next run resumes the same approval, including an
+approval given after the first run ended. `notifai init --json` never prompts:
+progress goes to stderr, while stdout contains one final readiness object
+whose `credential` state carries the local `qr_path`, code, and browser
+alternative. The QR and approval link carry sensitive one-time proof: show them
+locally, never include them in Notification Request fields or media. At a human terminal,
+choosing iPhone or Android opens its setup steps and starts a bounded wait;
+Ctrl-C stops the wait, and expiry offers more time.
 
 `notifai init --skills` verifies the complete first-party skill against the
 copy and digest manifest shipped inside the installed npm package, stages that

@@ -293,10 +293,10 @@ Never tell the user to run a command you could have run yourself.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-`notifai init --json` starts browser approval without prompting and returns;
-its `credential` state carries `technical.pairing.approve_url` and `.code`.
-Relay both as T2 in <https://app.notifai.sh/setup.md>; once the User says it
-is approved, run it again to resume.
+For a QR-first credential gap, read [computer approval and browser fallback](references/harness-setup.md#signing-this-machine-in)
+before proceeding. Only the User approves. Keep the QR and proof-bearing link
+local; never infer an Account email. Resume the same pairing after approval.
+
 Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.
 Lifecycle wiring has no scope: one install per harness for this machine;

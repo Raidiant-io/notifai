@@ -41,6 +41,7 @@ export interface CommandIo {
    * Test fakes leave all of this undefined and exercise the plain paths.
    */
   interactive?: boolean
+  text?(message: string): Promise<string | null>
   select?(message: string, options: { value: string; label: string; hint?: string }[]): Promise<string | null>
   /** Interactive multi-select. `initial` are pre-selected values. */
   multiselect?(

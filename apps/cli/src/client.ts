@@ -92,6 +92,7 @@ export interface ApiClient {
     confirmation_hash: string
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
+  requestPairingNotification(pairingId: string, pollVerifier: string, email: string): Promise<{ status: 'requested' }>
   accessStatus(): Promise<AccountAccessResponse>
   /**
    * Read-only. There is no client-side write: filing this errand is the
@@ -316,6 +317,7 @@ export function createClient(
       call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/poll`, {
         poll_verifier: pollVerifier,
       }),
+    requestPairingNotification: (pairingId, pollVerifier, email) => call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/notification`, { poll_verifier: pollVerifier, email }),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     accessRequest: () => call('GET', '/api/v1/account/alpha-access-request'),
     listDevices: () => call('GET', '/api/v1/devices'),

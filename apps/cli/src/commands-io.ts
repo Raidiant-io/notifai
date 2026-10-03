@@ -54,6 +54,12 @@ export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
       const answer = await p.select({ message, options })
       return p.isCancel(answer) ? null : (answer as string)
     },
+    text: async (message) => {
+      if (!interactive()) return null
+      const p = await clack()
+      const answer = await p.text({ message })
+      return p.isCancel(answer) ? null : answer
+    },
     multiselect: async (message, options, initial) => {
       if (!interactive()) return null
       const p = await clack()
