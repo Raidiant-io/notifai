@@ -1,11 +1,14 @@
-import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs } from './session-inputs.js'
+import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { readInputWakes } from './session-input-wakes.js'
+import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
 import { buildProgram } from './program.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import type { AcceptedAnswerDelivery } from './hook-types.js'
 import type { AttendanceMessage, ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -538,4 +541,141 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.reports).toEqual(['unconfirmed'])
     expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('failed')
   })
+})
+
+
+function ownedWakeHarness() {
+  const h = setup()
+  const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'owned-wake.jsonl')
+  mkdirSync(path.dirname(transcript), { recursive: true })
+  const lifecycle = (ended: boolean) => {
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+      ...(ended ? [{ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }] : []),
+    ].map(row => JSON.stringify(row)).join('\n') + '\n')
+    updateSessionState(SESSION, h.env, state => ({ ...state,
+      codex_native_turn: { key: h.incarnation.key, turn_id: 'turn-1', transcript_path: transcript, observed_at: Date.now() } }))
+  }
+  lifecycle(true)
+  const queue = new Map<string, { token: string; text: string }>()
+  let adds = 0
+  const control: QueueControl = { namespace: h.env.CODEX_HOME, threadId: SESSION,
+    add: async (token, text) => { const id = 'owned-' + ++adds; queue.set(id, { token, text }); return id },
+    find: async (token, text) => {
+      const match = [...queue].find(([, v]) => v.token === token && v.text === text)
+      return match === undefined ? 'absent' : { id: match[0] }
+    },
+    remove: async id => queue.delete(id), close: () => {},
+  }
+  const schedule = (backend: QueueControl | null = control, options: { mayWrite?: () => boolean; mayWake?: () => boolean } = {}) => wakeCodexSessionInputs({ sessionId: SESSION, env: h.env,
+    lease: h.lease, mayWrite: options.mayWrite ?? (() => true), mayWake: options.mayWake ?? (() => true), connect: async () => backend })
+  return { ...h, control, queue, transcript, lifecycle, schedule, adds: () => adds,
+    wakes: () => readInputWakes({ sessionId: SESSION, env: h.env }) }
+}
+
+it('wires exact wake ownership through actual foreground drain bookkeeping', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_owned')])
+  expect(await h.schedule()).toBe(true)
+  const wake = h.wakes()[0]!
+  expect(h.adds()).toBe(1)
+  expect(wake.text).not.toContain('Read sm_owned')
+  const delivered = await drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
+    write: text => h.output.push(text) })
+  expect(delivered).toBe(true)
+  expect(h.output).toHaveLength(1)
+  expect(h.claims).toEqual(['sm_owned'])
+  expect(h.wakes()[0]?.detached).toBe(true)
+  h.queue.set('unrelated', { token: 'human', text: 'human prompt' })
+  await reconcileSessionInputWakes(SESSION, h.env, async () => h.control)
+  expect(h.wakes()[0]?.phase).toBe('cancelled')
+  expect([...h.queue.keys()]).toEqual(['unrelated'])
+  expect(await h.schedule()).toBe(true)
+  expect(h.adds()).toBe(1)
+})
+
+it('native working evidence overrides stale outside permission and blocks queueing', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_busy')]); h.lifecycle(false)
+  expect(await h.schedule()).toBe(true)
+  expect(h.adds()).toBe(0)
+})
+
+it('falls back only before owned native admission and does not replay uncertain writes', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_fallback')])
+  expect(await h.schedule(null)).toBe(false)
+  expect(await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain receipt') } })).toBe(true)
+  expect(h.wakes()[0]?.phase).toBe('unknown')
+  expect(await h.schedule(null)).toBe(true)
+  expect(h.adds()).toBe(0)
+})
+
+it('unknown pending cache cannot detach or replace an existing wake', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_cache')]); await h.schedule()
+  // Use the canonical state root located by the existing path helper.
+  const file = path.join(path.dirname(attendantStatusPath(SESSION, h.env)), SESSION + '.inputs.json')
+  writeFileSync(file, '{broken')
+  expect(await h.schedule()).toBe(true)
+  await reconcileSessionInputWakes(SESSION, h.env, async () => h.control)
+  expect(h.wakes()[0]?.detached).toBe(false)
+  expect(h.adds()).toBe(1)
+})
+
+it('observes only the exact owned token and preserves a later wake', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_a')]); await h.schedule()
+  const a = h.wakes()[0]!
+  observeSessionInputWake(SESSION, h.env, a.text)
+  h.stage([note('sm_a'), note('sm_b')]); await h.schedule()
+  const b = h.wakes().find(v => v.token !== a.token)!
+  observeSessionInputWake(SESSION, h.env, a.text)
+  expect(h.wakes().find(v => v.token === b.token)?.phase).toBe('accepted')
+})
+
+
+it('does not bypass detached uncertainty through the generic fallback', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_a')])
+  await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
+  h.stage([note('sm_a'), note('sm_b')])
+  await h.schedule({ ...h.control, add: async () => { throw new NativeQueueNotSent('not sent') } })
+  expect(h.wakes().some(a => a.phase === 'unknown' && a.detached)).toBe(true)
+  expect(await h.schedule(null)).toBe(true)
+})
+
+it('coalesces behind the existing generic wake when optional control becomes available', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_transition')])
+  expect(await h.schedule(null)).toBe(false)
+  let genericAdds = 0
+  await wakeSessionInputs(SESSION, h.env, async () => { genericAdds++; return true })
+  expect(await h.schedule()).toBe(true)
+  expect(genericAdds + h.adds()).toBe(1)
+})
+
+it.each(['replacement', 'regression'] as const)('rejects transcript %s after the outside observer allowed admission', async change => {
+  const h = ownedWakeHarness(); h.stage([note('sm_continuity')])
+  expect(refreshCodexInputActivity(SESSION, h.env, h.incarnation.key, h.transcript)).toBe('idle')
+  await h.schedule(h.control, { mayWake: () => {
+    if (change === 'replacement') {
+      writeFileSync(h.transcript + '.next', readFileSync(h.transcript))
+      renameSync(h.transcript + '.next', h.transcript)
+    } else {
+      const file = turnActivityPath(SESSION, h.env)
+      const record = JSON.parse(readFileSync(file, 'utf8'))
+      writeFileSync(file, JSON.stringify({ ...record, native: { ...record.native, offset: record.native.offset + 1000 } }))
+    }
+    return true
+  } })
+  expect(h.adds()).toBe(0)
+})
+
+it('rechecks in-process authorization after an awaited recovery lookup', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_lease')])
+  await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
+  await h.schedule() // establish the native uncertainty baseline
+  appendFileSync(h.transcript, [
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } },
+    { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-2' } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n')
+  let authorized = true
+  await h.schedule({ ...h.control, find: async () => { authorized = false; return 'absent' } }, { mayWrite: () => authorized })
+  expect(h.adds()).toBe(0)
+  expect(h.wakes().some(a => a.phase === 'cancelled')).toBe(true)
 })

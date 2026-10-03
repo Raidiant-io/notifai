@@ -1,4 +1,4 @@
-import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
+import { hasSessionInputs, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -360,7 +360,9 @@ export async function attendHook(
     clock,
     logger,
     mayWake: codexWakeNeeded ?? (() => true),
+    unknownAllowed: codexActivity?.unknownAllowed ?? (() => false),
   })
+  let wakeCleanup: Promise<void> | null = null
   const signals = seams.signalled === undefined ? terminationSignal() : null
   try {
     const result = await runSessionAttendant({
@@ -407,6 +409,10 @@ export async function attendHook(
       logger,
       writeStatus: (status) => writeAttendantStatus(sessionId, deps.env, status),
       onProbe: () => {
+        if (harness === 'codex' && wakeCleanup === null) {
+          wakeCleanup = reconcileSessionInputWakes(sessionId, deps.env, deps.codexQueueControl)
+            .catch(() => undefined).finally(() => { wakeCleanup = null })
+        }
         // Observe locally without consuming the agent's next context notice.
         // This catches removal of the very hook that would report the fault.
         const notice = integrationFaultNotice({ ...deps, cwd: envelope.cwd ?? cwd, now: () => clock.wall() }, harness, false)
@@ -454,6 +460,7 @@ function sessionMessageWriter(input: {
   clock: AttendantClock
   logger: Logger
   mayWake: () => boolean
+  unknownAllowed: () => boolean
 }): SessionMessageWriter | null {
   const { deps, sessionId, harnessPid, writer, clock, logger } = input
   if (writer === null) return null
@@ -467,7 +474,7 @@ function sessionMessageWriter(input: {
     writer,
     log: logger,
   })
-  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, mayWake: input.mayWake })
+  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, mayWake: input.mayWake, unknownAllowed: input.unknownAllowed })
   if (input.harness === 'openclaw') {
     if (!openclawMessageBridgeAvailable(deps.env)) return null
     const generation = readOpenclawGeneration(sessionId, deps.env)
@@ -518,6 +525,7 @@ function codexMessageWriter(input: {
   cwd: string
   logger: Logger
   mayWake: () => boolean
+  unknownAllowed: () => boolean
 }): SessionMessageWriter | null {
   const { deps, sessionId, cwd, logger, mayWake } = input
   const queue = inspectCodexQueue(sessionId, deps.env)
@@ -536,6 +544,12 @@ function codexMessageWriter(input: {
     const generation = attendant.generation()
     if (incarnation === null || generation === null || !attendant.mayWrite()) return 'retry-soon'
     stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
+    if (await wakeCodexSessionInputs({ sessionId, env: deps.env,
+      lease: { incarnation: attendant.incarnation(), generation },
+      mayWrite: () => attendant.mayWrite(), mayWake,
+      unknownAllowed: input.unknownAllowed,
+      ...(deps.codexQueueControl === undefined ? {} : { connect: deps.codexQueueControl }),
+    })) return 'done'
     if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
     if (!mayWake()) return 'done'
     // The resident observes completion even when no further tool runs. Recheck

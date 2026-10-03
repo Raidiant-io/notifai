@@ -12,14 +12,18 @@ import { sanitizeSessionId, stateDir } from './config.js'
 import { answersContext, clearAcknowledgementObligation, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
 import { retiringQuestion } from './hook-question-retirement.js'
 import { readSessionIncarnation, readSessionState, recordSessionNotified, sessionHasEnded, updateSessionState } from './hook-session-state.js'
-import type { AcceptedAnswerDelivery, EscalationDeliveryRoute } from './hook-types.js'
+import type { AcceptedAnswerDelivery, EscalationDeliveryRoute, SessionState } from './hook-types.js'
 import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import type { Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type SequencerDeps } from './session-delivery.js'
-import { readAttendantLease } from './session-attendant-state.js'
+import { connectCodexQueue, NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { admitInputWake, detachInputWakes, electInputWake, observeInputWake, readInputWakes, reconcileInputWakes, recoverUncertainInputWake } from './session-input-wakes.js'
+import { readAttendantLease, nativeTurnContinues } from './session-attendant-state.js'
 
-export function sessionInputWake(): string {
+export function sessionInputWake(token?: string): string {
+  if (token !== undefined) return `Notifai wake ${token}. Use any Notifai input supplied with this turn. Only if none was supplied, run \`notifai receive\` once; if it is empty, continue your work. This wake contains no note, answer, or approval.`
   return `Notifai — user input may be waiting for this session. Run \`notifai receive\` before continuing. If no input remains, continue your work. This wake-up contains no note, answer, or approval.`
 }
 
@@ -59,6 +63,14 @@ export async function wakeSessionInputs(
 }
 
 export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined): void {
+  if (prompt !== undefined) {
+    const matched = /^Notifai wake ([0-9a-f-]{36})\. /.exec(prompt)
+    if (matched !== null) {
+      const owned = readInputWakes({ sessionId, env }).find(a => a.token === matched[1] && a.text === prompt)
+      if (owned !== undefined) observeInputWake({ sessionId, env }, owned.token)
+      return
+    }
+  }
   if (prompt !== sessionInputWake()) return
   updateSessionState(sessionId, env, (state) => {
     const next = { ...state }
@@ -110,22 +122,27 @@ function messagesPath(sessionId: string, env: NodeJS.ProcessEnv): string {
 
 /** Cache only: the service remains authoritative and claims fence stale copies. */
 export function stageSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease, messages: readonly AttendanceMessage[]): void {
-  atomicWriteFileSync(messagesPath(sessionId, env), JSON.stringify({ session_id: sessionId, ...lease, messages }))
+  updateSessionState(sessionId, env, state => {
+    atomicWriteFileSync(messagesPath(sessionId, env), JSON.stringify({ session_id: sessionId, ...lease, messages }))
+    return state
+  })
 }
 
 export function readSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease): AttendanceMessage[] {
+  return readSessionMessageCache(sessionId, env, lease) ?? []
+}
+function readSessionMessageCache(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease): AttendanceMessage[] | null {
   try {
     const data = JSON.parse(readFileSync(messagesPath(sessionId, env), 'utf8'))
-    if (data.session_id !== sessionId || data.incarnation !== lease.incarnation || data.generation !== lease.generation || !Array.isArray(data.messages)) return []
+    if (data.session_id !== sessionId || data.incarnation !== lease.incarnation || data.generation !== lease.generation || !Array.isArray(data.messages)) return null
     if (!data.messages.every((m: AttendanceMessage) => typeof m.message_id === 'string' && /^sm_[A-Za-z0-9_-]+$/.test(m.message_id) &&
       typeof m.created_at === 'string' && typeof m.agent_acknowledgement_text_required === 'boolean' &&
-      (m.kind === 'note' ? typeof m.body === 'string' : m.kind === 'answer_edit' && typeof m.request_id === 'string' && typeof m.text === 'string' && Array.isArray(m.answers)))) return []
+      (m.kind === 'note' ? typeof m.body === 'string' : m.kind === 'answer_edit' && typeof m.request_id === 'string' && typeof m.text === 'string' && Array.isArray(m.answers)))) return null
     return data.messages
-  } catch { return [] }
+  } catch { return null }
 }
 
-function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null) {
-  const state = readSessionState(sessionId, env)
+function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null, state = readSessionState(sessionId, env), cachedMessages?: AttendanceMessage[]) {
   const written = new Set(readDeliveryJournal(sessionId, env)
     .filter((entry) => ['writing', 'written', 'failed'].includes(entry.stage))
     .map((entry) => entry.subject.type === 'answer' ? entry.subject.request_id : entry.subject.message_id))
@@ -134,7 +151,7 @@ function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: 
     answer.pending.request_id !== undefined && !written.has(answer.pending.request_id) &&
     owed.has(answer.pending.request_id)).slice(0, 20)
   // Answers precede their edits; notes retain the service's immutable order.
-  const messages = (lease === null ? [] : readSessionMessages(sessionId, env, lease))
+  const messages = (cachedMessages ?? (lease === null ? [] : readSessionMessages(sessionId, env, lease)))
     .filter((message) => !written.has(message.message_id)).slice(0, 20 - answers.length)
   return { answers, messages }
 }
@@ -144,8 +161,91 @@ export function hasSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, leas
   return answers.length + messages.length > 0
 }
 
+/** Read-only under the state lock. Unknown cache state is not an empty inbox. */
+export function pendingInputRevisionIds(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null, state?: SessionState): string[] | null {
+  const cached = lease === null ? [] : readSessionMessageCache(sessionId, env, lease)
+  if (cached === null) return null
+  const { answers, messages } = pendingSessionInputs(sessionId, env, lease, state, cached)
+  return [
+    ...answers.map(a => `answer:${a.pending.request_id!}:${a.replies.map(r => r.seq).join(',')}`),
+    ...messages.map(m => `message:${m.message_id}`),
+  ]
+}
+
+/** Optional exact queue integration. False means capability was unavailable
+ * before election, so the existing supported CLI wake remains the fallback. */
+export async function wakeCodexSessionInputs(input: {
+  sessionId: string; env: NodeJS.ProcessEnv; lease: DeliveryLease
+  mayWrite(): boolean; mayWake(): boolean; unknownAllowed?(): boolean
+  connect?: typeof connectCodexQueue
+}): Promise<boolean> {
+  const owner = readSessionIncarnation(input.sessionId, input.env)
+  if (owner === null || owner.incarnation !== input.lease.incarnation || !input.mayWrite()) return true
+  const generic = readSessionState(input.sessionId, input.env).input_wake
+  if (generic?.incarnation === owner.incarnation && (generic.queued || processIdentityLiveness(generic.writer) !== 'gone')) return true
+  const initial = pendingInputRevisionIds(input.sessionId, input.env, input.lease)
+  if (initial === null || (initial.length === 0 && !readInputWakes(input).some(a => !['consumed', 'cancelled'].includes(a.phase)))) return true
+  const control = await (input.connect ?? connectCodexQueue)(input.sessionId, input.env, performance.now() + 2_000)
+  if (control === null) {
+    const pending = pendingInputRevisionIds(input.sessionId, input.env, input.lease)
+    return pending === null || readInputWakes(input).some(a => a.incarnation === owner.incarnation &&
+      !['consumed', 'cancelled'].includes(a.phase) && a.inputIds.some(id => pending.includes(id)))
+  }
+  try {
+    // Mutating lifecycle/attendant observers run outside the wake-state lock.
+    const allowed = input.mayWrite() && input.mayWake()
+    const native = () => {
+      const proof = readSessionState(input.sessionId, input.env).codex_native_turn
+      return proof?.key === owner.key ? readNativeTurnSnapshot(proof.transcript_path, input.sessionId, input.env) : null
+    }
+    const gate = { ...input, owner: { key: owner.key, incarnation: owner.incarnation, generation: input.lease.generation },
+      namespace: control.namespace, control, native,
+      pendingIds: () => {
+        const lease = readAttendantLease(input.sessionId, input.env)
+        return lease?.incarnation === input.lease.incarnation && lease.generation === input.lease.generation
+          ? pendingInputRevisionIds(input.sessionId, input.env, lease) : null
+      },
+      mayWake: () => { const observed = native(); return allowed && (observed === null ? input.unknownAllowed?.() === true : observed.latest.ended && nativeTurnContinues(input.sessionId, input.env, owner.key, observed)) },
+      text: (token: string) => sessionInputWake(token) }
+    detachInputWakes(gate)
+    await reconcileInputWakes(input, control)
+    if (!allowed || !input.mayWrite()) return true
+    const elected = electInputWake(gate) ?? await recoverUncertainInputWake(gate)
+    if (elected !== null) await admitInputWake({ ...gate, token: elected.token, control: {
+      ...control, add: async (token, text) => {
+        // Recovery may have awaited a native lookup. Refresh in-process lease
+        // authority at the actual byte boundary, outside every state lock.
+        if (!input.mayWrite() || !input.mayWake()) throw new NativeQueueNotSent('Wake authorization changed before send')
+        return control.add(token, text)
+      },
+    } })
+    return true
+  } finally { control.close() }
+}
+
+/** Hook drains and the resident observer both call this bounded cleanup path.
+ * It never elects a wake, claims input, or acquires the delivery sequencer. */
+export async function reconcileSessionInputWakes(sessionId: string, env: NodeJS.ProcessEnv, connect: typeof connectCodexQueue = connectCodexQueue): Promise<void> {
+  const scope = { sessionId, env }
+  const attempts = readInputWakes(scope)
+  if (!attempts.some(a => !['consumed', 'cancelled'].includes(a.phase))) return
+  const lease = readAttendantLease(sessionId, env)
+  // Losing the lease does not prove cached Session Messages disappeared.
+  if (lease !== null || attempts.every(a => a.generation === null)) {
+    detachInputWakes({ ...scope, pendingIds: () => {
+      const current = readAttendantLease(sessionId, env)
+      if (current?.incarnation !== lease?.incarnation || current?.generation !== lease?.generation) return null
+      return pendingInputRevisionIds(sessionId, env, current)
+    } })
+  }
+  if (!readInputWakes(scope).some(a => a.detached && !['consumed', 'cancelled'].includes(a.phase) && (a.nextCheckAt ?? 0) <= Date.now())) return
+  const control: QueueControl | null = await connect(sessionId, env, performance.now() + 750)
+  if (control === null) return
+  try { await reconcileInputWakes(scope, control) } finally { control.close() }
+}
+
 /** One stdout document, at most 20 inputs, with ownership checked at the byte. */
-export async function drainSessionInputs(input: {
+async function drainSessionInputsOnce(input: {
   sequencer: SequencerDeps
   lease: DeliveryLease | null
   mayWrite(): boolean
@@ -254,5 +354,15 @@ export async function drainSessionInputs(input: {
     if (began && !outputAttempted) restoreUnwritten()
     await handOff.finish(outputAttempted ? 'failed' : began ? 'aborted' : 'not-written')
     throw error
+  }
+}
+
+
+export async function drainSessionInputs(input: Parameters<typeof drainSessionInputsOnce>[0]): Promise<boolean> {
+  try { return await drainSessionInputsOnce(input) }
+  finally {
+    // Delivery bookkeeping has released its sequencer before native cleanup.
+    await reconcileSessionInputWakes(input.sequencer.sessionId, input.sequencer.env)
+      .catch(() => undefined)
   }
 }
