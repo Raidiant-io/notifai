@@ -1,5 +1,6 @@
 import type { InputWakeAttempt } from './session-input-wakes.js'
-import type { NativeAnswerOperation, ServiceIdentity } from './native-answer-operation.js'
+import type { NativeAnswerOperation } from './native-answer-operation.js'
+import type { ServiceIdentity } from './credentials.js'
 /** Value-free contracts shared across hook state and lifecycle modules. */
 import type {
   LifecycleEndState,
@@ -260,6 +261,7 @@ export interface OrphanRetirement extends RetiringQuestion {
 
 /** A fully prepared question submission whose ownership deadline is fixed. */
 export interface PendingSubmissionIntent {
+  service_identity?: ServiceIdentity
   request_id: string
   idempotency_key: string
   collapse_key: string
@@ -427,6 +429,8 @@ export interface EscalationWaiterOptions {
 
 export interface HookContext {
   client: ApiClient
+  /** Metadata for this already-authenticated client; never the credential secret. */
+  service_identity?: ServiceIdentity
   config: CliConfig
   env: NodeJS.ProcessEnv
   now: () => number

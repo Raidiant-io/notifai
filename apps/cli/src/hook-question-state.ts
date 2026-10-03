@@ -18,6 +18,7 @@ import type {
   QuestionTerminalState,
   SessionState,
 } from './hook-types.js'
+import type { ServiceIdentity } from './credentials.js'
 import { inferInvocationContext } from './invocation-context.js'
 export interface QuestionStateView {
   question_id: string
@@ -273,6 +274,7 @@ export function admitQueuedQuestion<T>(
   intent: PendingSubmissionIntent,
   now: number,
   submit: () => Promise<T>,
+  serviceIdentity?: ServiceIdentity,
 ): Promise<T> | null {
   const file = sessionStatePath(sessionId, env)
   return withFileLock(`${file}.lock`, () => {
@@ -282,6 +284,10 @@ export function admitQueuedQuestion<T>(
     if (index < 0) return null
     const pending = [...pendingList(current)]
     const candidate = pending[index]!
+    for (const identity of [candidate.service_identity, intent.service_identity]) {
+      if (identity !== undefined && (identity.machine_id !== serviceIdentity?.machine_id ||
+          identity.base_url !== serviceIdentity?.base_url)) return null
+    }
     if (candidate.submission?.request_id !== intent.request_id) return null
     pending[index] = {
       ...candidate,

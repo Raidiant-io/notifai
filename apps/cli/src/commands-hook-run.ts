@@ -751,6 +751,7 @@ export async function hookRunCommand(
     )
     const ctx: HookContext = {
       client,
+      service_identity: { base_url: credential.baseUrl, machine_id: credential.machineId },
       config: resolved,
       env: deps.env,
       now,

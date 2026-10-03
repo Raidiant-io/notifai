@@ -231,9 +231,11 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
     return 0
   }
   let client: ApiClient | null | undefined
+  let serviceIdentity: HookContext['service_identity']
   const connect = (): ApiClient | null => {
     if (client !== undefined) return client
     const credential = deps.store.load()
+    if (credential !== null) serviceIdentity = { base_url: credential.baseUrl, machine_id: credential.machineId }
     client = credential
       ? makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
       : null
@@ -252,6 +254,7 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
     const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
     const ctx: HookContext = {
       client: api, config: loadConfig({ cwd, env: deps.env, sessionId }), env: deps.env,
+      ...(serviceIdentity === undefined ? {} : { service_identity: serviceIdentity }),
       now, sleep, harness: 'hermes', log: logger,
       waitForFirstReply: async (requestId, timeoutSeconds) => {
         const result = await waitForReply(api, requestId, { timeoutSeconds, afterSeq: 0, now, sleep })

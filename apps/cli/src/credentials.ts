@@ -11,6 +11,9 @@ export interface MachineCredential {
   machineName: string
 }
 
+/** Non-secret ownership metadata for a frozen authenticated operation. */
+export interface ServiceIdentity { base_url: string; machine_id: string }
+
 export interface CredentialStore {
   load(): MachineCredential | null
   save(credential: MachineCredential): void

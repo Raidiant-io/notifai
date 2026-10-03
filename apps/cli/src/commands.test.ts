@@ -9236,6 +9236,37 @@ describe('asking before the hooks have ever run', () => {
     })
   })
 
+  it.each(['another-machine', 'unpaired'] as const)('refuses to relabel question ownership when media upload races %s', async transition => {
+    const cwd = scratchDir('notifai-ask-media-owner-')
+    const media = path.join(cwd, 'image.png')
+    writeFileSync(media, 'image')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-media-owner' }
+    let entered!: () => void
+    let release!: () => void
+    const uploadEntered = new Promise<void>(resolve => { entered = resolve })
+    const heldUpload = new Promise<void>(resolve => { release = resolve })
+    const client = {
+      createMediaUpload: async () => ({ media_id: 'med_owned', upload_url: 'https://upload.invalid/owned', upload_headers: {}, expires_at: new Date(Date.now() + 60_000).toISOString() }),
+      uploadMedia: async () => { entered(); await heldUpload },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+    let credential = deps.store.load()
+    deps.store.load = () => credential
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeCurrentCodexSessionState(cwd, env, env.CODEX_THREAD_ID, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, env.CODEX_THREAD_ID, 42, 'codex')
+    const command = askCommand(deps, 'Use this image?', { image: [media], json: true })
+    await uploadEntered
+    expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+    credential = transition === 'unpaired' ? null : { ...credential!, machineId: 'machine_b' }
+    release()
+    expect(await command).toBe(EXIT.auth)
+    expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ registered: false, message: expect.stringContaining('Approved Machine changed') })
+  })
+
   // A harness exports its markers into everything it starts, so a nested
   // harness sees its parent's markers alongside its own. Neither order between
   // two markers can be right, and both nestings are ordinary: an orchestrator
@@ -9793,6 +9824,9 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(readSessionState('claude-current', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(readSessionState('claude-current', env).pending?.[0]?.service_identity).toEqual({
+      base_url: deps.store.load()!.baseUrl, machine_id: deps.store.load()!.machineId,
+    })
 
     const readiness = await assessReadiness(deps)
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')

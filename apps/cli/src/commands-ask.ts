@@ -8,6 +8,7 @@ import {
   type QuestionT,
 } from '@raidiant/notifai-protocol'
 import { EXIT, authedClient, log, type CommandDeps } from './commands-core.js'
+import type { ServiceIdentity } from './credentials.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
@@ -286,9 +287,16 @@ function recordRegisteredQuestion(
   sessionId: string,
   built: BuiltQuestions,
   draft: NotificationDraftT,
+  service: ServiceIdentity,
   json = false,
 ): number {
   let questionId: string
+  const credential = deps.store.load()
+  if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) {
+    return askFailure(deps, { json }, 'auth_required', 'credential',
+      'The Approved Machine changed before question registration completed.',
+      'retry the same ask from the intended signed-in machine', EXIT.auth)
+  }
   try {
     questionId = registerQuestion(
       sessionId,
@@ -296,6 +304,7 @@ function recordRegisteredQuestion(
       {
         question: built.questions[0]!.text,
         summary: draft.presentation.summary,
+        service_identity: service,
         questions: built.questions,
         ...(draft.presentation.body !== undefined ? { body: draft.presentation.body } : {}),
         ...(draft.project !== undefined ? { project: draft.project } : {}),
@@ -433,6 +442,7 @@ async function uploadAskMedia(
   built: BuiltQuestions,
   flags: AskFlags,
   invocation: DraftInvocation,
+  service: ServiceIdentity,
 ): Promise<number> {
   const authed = authedClient(deps, config)
   if (!authed) {
@@ -445,6 +455,11 @@ async function uploadAskMedia(
       'run `notifai init --json`',
       EXIT.auth,
     )
+  }
+  if (authed.service.base_url !== service.base_url || authed.service.machine_id !== service.machine_id) {
+    return askFailure(deps, flags, 'machine_changed', 'credential',
+      'The Approved Machine changed before the question media upload started.',
+      'retry the same ask from the intended signed-in machine', EXIT.auth)
   }
   const mediaIds: string[] = []
   for (const image of flags.image ?? []) {
@@ -471,7 +486,7 @@ async function uploadAskMedia(
   if (!ready.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
   }
-  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, flags.json === true)
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true)
 }
 
 /**
@@ -525,7 +540,8 @@ export function askCommand(
       }
     }
   }
-  if (deps.store.load() === null) {
+  const credential = deps.store.load()
+  if (credential === null) {
     return askFailure(
       deps,
       flags,
@@ -751,7 +767,9 @@ export function askCommand(
       built,
       flags,
       source.invocation,
+      { base_url: credential.baseUrl, machine_id: credential.machineId },
     )
   }
-  return recordRegisteredQuestion(deps, sessionId, built, preflight.draft, flags.json === true)
+  return recordRegisteredQuestion(deps, sessionId, built, preflight.draft,
+    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true)
 }

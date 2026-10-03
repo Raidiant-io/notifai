@@ -9,14 +9,13 @@ import {
   type ReplyAnswerT,
 } from '@raidiant/notifai-protocol'
 import type { ApiClient } from './client.js'
+import type { ServiceIdentity } from './credentials.js'
 import { withFileLock } from './file-lock.js'
 import {
   readSessionIncarnation, readSessionState, sessionHasEnded, sessionStatePath,
   writeSessionStateUnlocked,
 } from './hook-session-state.js'
 import type { SessionState } from './hook-types.js'
-
-export interface ServiceIdentity { base_url: string; machine_id: string }
 
 /** A command obligation, never a second answer-delivery queue. */
 export interface NativeAnswerOperation {

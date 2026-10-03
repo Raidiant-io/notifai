@@ -247,8 +247,8 @@ function submitQuestion(
       // Wakes this session's dormant Session Attendant.
       recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
-    })
-    if (attempt === null) notes.push('the question was retired before submission; not uploading it')
+    }, ctx.service_identity)
+    if (attempt === null) notes.push('the question was retired or its Approved Machine changed before submission; not uploading it')
     return attempt
   } catch (err) {
     // Only synchronous local admission failed. The callback returns a promise,
@@ -1774,6 +1774,13 @@ export async function submitSessionQuestions(
     // its own notification — one ask never stands in for another.
     const submitted: PendingQuestion[] = []
     for (const entry of pendingList(readSessionState(sessionId, ctx.env)).filter((entry) => entry.request_id === undefined)) {
+      if (entry.service_identity !== undefined && (
+        entry.service_identity.machine_id !== ctx.service_identity?.machine_id ||
+        entry.service_identity.base_url !== ctx.service_identity?.base_url
+      )) {
+        notes.push('the registered question belongs to a different Approved Machine; preserving it without uploading')
+        continue
+      }
       if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
         notes.push('the question was retired before submission; not uploading it')
         continue
@@ -1811,6 +1818,7 @@ export async function submitSessionQuestions(
           notes.push(prepared.error)
           continue
         }
+        if (entry.service_identity !== undefined) prepared.service_identity = entry.service_identity
         intent = prepared
         // Durable before submit. If the server commits and the response is lost,
         // the reserved request id still lets this owner poll and finalize the
@@ -1889,6 +1897,7 @@ export async function submitSessionQuestions(
               notes.push(reminted.error)
               continue
             }
+            if (entry.service_identity !== undefined) reminted.service_identity = entry.service_identity
             intent = reminted
             updateSessionState(sessionId, ctx.env, (current) => {
               const list = pendingList(current)
@@ -1994,7 +2003,11 @@ export async function submitSessionQuestions(
         updateSessionState(sessionId, ctx.env, (current) => {
           const list = pendingList(current)
           const index = list.findIndex(
-            (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
+            (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined &&
+              (candidate.service_identity === undefined || (
+                candidate.service_identity.machine_id === ctx.service_identity?.machine_id &&
+                candidate.service_identity.base_url === ctx.service_identity?.base_url
+              )),
           )
           if (index >= 0) {
             const next = [...list]
