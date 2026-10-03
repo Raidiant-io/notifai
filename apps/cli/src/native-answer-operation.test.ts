@@ -5,28 +5,31 @@ import { spawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RecordHarnessAnswerResponse } from '@raidiant/notifai-protocol'
 import {
-  executeNativeAnswerOperation, prepareNativeAnswerOperation,
+  confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget, executeNativeAnswerOperation, prepareNativeAnswerOperation, resolveNativeAnswerOperation,
   type NativeOperationOwner,
 } from './native-answer-operation.js'
 import {
   beginSessionIncarnation, clearSessionState, findOwningSession, lifecycleStamp,
   markSessionEnded, pruneAbandonedSessions, readSessionState, sessionStatePath,
-  writeSessionState,
+  writeSessionState, updateSessionState,
 } from './hook-session-state.js'
 import { handleSessionEnd } from './hook-lifecycle.js'
+import { stageAcceptedAnswers } from './hook-acknowledgements.js'
+import { retiringQuestion } from './hook-question-retirement.js'
+import type { HookContext, AnsweredPending } from './hook-types.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 const text = 'Deploying to staging now.'
 const answers = [{ question_id: 'q1', choice_ids: ['staging'] }]
 const service = { base_url: 'https://api.example.test', machine_id: 'machine_a' }
-async function prepareInChild(h: ReturnType<typeof setup>, crash: boolean): Promise<number | null> {
+async function prepareInChild(h: ReturnType<typeof setup>, crash: boolean, unresolved = false): Promise<number | null> {
   const moduleUrl = new URL('../dist/native-answer-operation.js', import.meta.url).href
   const source = `
     import { readFileSync } from 'node:fs';
     import { prepareNativeAnswerOperation } from ${JSON.stringify(moduleUrl)};
-    const { owner, input, crash } = JSON.parse(readFileSync(0, 'utf8'));
-    prepareNativeAnswerOperation(owner, process.env, input, () => ({ requestId: 'req_registered', service: owner.service }));
+    const { owner, input, crash, unresolved } = JSON.parse(readFileSync(0, 'utf8'));
+    prepareNativeAnswerOperation(owner, process.env, input, () => ({ ...(unresolved ? {} : { requestId: 'req_registered' }), service: owner.service }));
     process.exit(crash ? 73 : 0);
   `
   return new Promise((resolve, reject) => {
@@ -35,7 +38,7 @@ async function prepareInChild(h: ReturnType<typeof setup>, crash: boolean): Prom
     child.stderr.on('data', chunk => { error += String(chunk) })
     child.on('error', reject)
     child.on('exit', code => code === 0 || code === 73 ? resolve(code) : reject(new Error(error)))
-    child.stdin.end(JSON.stringify({ owner: h.owner, input: h.input, crash }))
+    child.stdin.end(JSON.stringify({ owner: h.owner, input: h.input, crash, unresolved }))
   })
 }
 function setup() {
@@ -74,6 +77,94 @@ function setup() {
 }
 
 describe('durable native answer operation', () => {
+  it('saves an early answer across a real crash, then resolves only after confirmed submission', async () => {
+    const h = setup()
+    expect(await prepareInChild(h, true, true)).toBe(73)
+    const op = prepareNativeAnswerOperation(h.owner, h.env, {
+      questionId: h.input.questionId, operationId: h.input.operationId,
+    }, h.admit)
+    expect(op.request_id).toBeUndefined()
+    expect(h.admit).not.toHaveBeenCalled()
+    await expect(executeNativeAnswerOperation(h.owner, h.env, op, h.client)).rejects.toThrow('not confirmed')
+    expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
+    expect(() => resolveNativeAnswerOperation(h.owner, h.env, op, () => null)).toThrow('not confirmed')
+    const resolved = resolveNativeAnswerOperation(h.owner, h.env, op, () => ({ requestId: 'req_registered', service }))
+    expect(resolved).toEqual({ ...op, request_id: 'req_registered' })
+    // The executing caller may still hold the pre-resolution snapshot.
+    await executeNativeAnswerOperation(h.owner, h.env, op, h.client)
+    expect(h.client.recordHarnessAnswer).toHaveBeenCalledWith('req_registered', {
+      session_id: h.owner.sessionId, submission_id: op.submission_id, answers: op.answers,
+    })
+  })
+
+  it('retains a positive submission receipt through end and cleanup, even after history eviction', () => {
+    const h = setup()
+    const op = prepareNativeAnswerOperation(h.owner, h.env, h.input, () => ({ service }))
+    handleSessionEnd(h.env, { session_id: h.owner.sessionId })
+    recordConfirmedNativeAnswerTarget(h.owner.sessionId, h.env, {
+      question_id: op.question_id, request_id: 'req_registered', service_identity: service, question: 'Where?', summary: 'Where?',
+    })
+    clearSessionState(h.owner.sessionId, h.env)
+    updateSessionState(h.owner.sessionId, h.env, state => ({ ...state, question_history: [] }))
+    expect(readSessionState(h.owner.sessionId, h.env).native_answer_operations?.[0]).toEqual({ ...op, request_id: 'req_registered' })
+    expect(readSessionState(h.owner.sessionId, h.env).pending).toBeUndefined()
+  })
+
+  it('ignores frozen-only history, including retirement through SessionEnd, before any HTTP', async () => {
+    const h = setup()
+    const op = prepareNativeAnswerOperation(h.owner, h.env, h.input, () => ({ service }))
+    updateSessionState(h.owner.sessionId, h.env, state => ({ ...state, pending: [], retiring: [retiringQuestion({
+      question_id: op.question_id, question: 'Where?', summary: 'Where?', service_identity: service,
+      submission: { request_id: 'req_frozen', collapse_key: 'collapse', device_ids: ['dev_test'] } as never,
+    }, 'answered_elsewhere')!] }))
+    handleSessionEnd(h.env, { session_id: h.owner.sessionId })
+    const resumed = h.resume()
+    await expect(executeNativeAnswerOperation(resumed, h.env, op, h.client)).rejects.toThrow('not confirmed')
+    expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
+  })
+
+  it('resolves from an accepted app reply without consuming it or clearing its acknowledgement', () => {
+    const h = setup()
+    const op = prepareNativeAnswerOperation(h.owner, h.env, h.input, () => ({ service }))
+    const answer = { pending: {
+      question_id: op.question_id, request_id: 'req_registered', service_identity: service, question: 'Where?', summary: 'Where?',
+    }, replies: [], reply: { text: 'Staging' } } as unknown as AnsweredPending
+    stageAcceptedAnswers({ env: h.env, now: () => 2 } as HookContext, h.owner.sessionId, [answer], 0)
+    const state = readSessionState(h.owner.sessionId, h.env)
+    expect(state.native_answer_operations?.[0]?.request_id).toBe('req_registered')
+    expect(state.accepted?.answers[0]?.reply.text).toBe('Staging')
+    expect(state.acknowledgement_due).toEqual([{ request_id: 'req_registered', recorded_at: 1 }])
+  })
+
+  it('does not adopt a confirmation from another service or Approved Machine', () => {
+    const h = setup()
+    prepareNativeAnswerOperation(h.owner, h.env, h.input, () => ({ service }))
+    const state = readSessionState(h.owner.sessionId, h.env)
+    for (const service_identity of [undefined, { ...service, machine_id: 'other' }, { ...service, base_url: 'https://other.example.test' }]) {
+      expect(confirmNativeAnswerTarget(state, { question_id: h.input.questionId, request_id: 'req_registered', question: 'Where?', summary: 'Where?', service_identity })).toBe(state)
+    }
+  })
+
+  it('keeps the first confirmed target when concurrent recovery holds an unresolved snapshot', () => {
+    const h = setup()
+    const op = prepareNativeAnswerOperation(h.owner, h.env, h.input, () => ({ service }))
+    const first = resolveNativeAnswerOperation(h.owner, h.env, op, () => ({ requestId: 'req_registered', service }))
+    const stale = vi.fn(() => ({ requestId: 'req_replacement', service }))
+    expect(resolveNativeAnswerOperation(h.owner, h.env, op, stale)).toEqual(first)
+    expect(stale).not.toHaveBeenCalled()
+    expect(readSessionState(h.owner.sessionId, h.env).native_answer_operations).toEqual([first])
+  })
+
+  it('refuses target resolution across ownership changes or termination', () => {
+    const h = setup()
+    const op = prepareNativeAnswerOperation(h.owner, h.env, h.input, () => ({ service }))
+    expect(() => resolveNativeAnswerOperation(h.owner, h.env, op, () => ({ requestId: 'req_registered', service: { ...service, machine_id: 'another' } }))).toThrow('different service')
+    expect(() => resolveNativeAnswerOperation({ ...h.owner, service: { ...service, machine_id: 'another' } }, h.env, op, () => null)).toThrow('Machine changed')
+    markSessionEnded(h.owner.sessionId, h.env, Date.now())
+    expect(() => resolveNativeAnswerOperation(h.owner, h.env, op, () => ({ requestId: 'req_registered', service }))).toThrow('incarnation changed')
+    expect(readSessionState(h.owner.sessionId, h.env).native_answer_operations?.[0]?.request_id).toBeUndefined()
+  })
+
   it('recovers a real process exit after durable preparation without inventing a new submission', async () => {
     const h = setup()
     expect(await prepareInChild(h, true)).toBe(73)

@@ -298,21 +298,29 @@ export function admitQueuedQuestion<T>(
   })
 }
 
-export function clearFrozenSubmission(
+/** Replace only the rejected frozen identity, atomically with the native
+ * obligation check. Preparing a replacement never erases the original first.
+ */
+export function replaceFrozenSubmission(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   entry: PendingQuestion,
-): void {
+  rejected: PendingSubmissionIntent,
+  replacement: PendingSubmissionIntent,
+): boolean {
+  let replaced = false
   updateSessionState(sessionId, env, (current) => {
+    if (sessionHasEnded(sessionId, env) || current.native_answer_operations?.some(op => op.question_id === entry.question_id)) return current
     const list = pendingList(current)
-    const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-    if (index < 0) return current
+    const index = queuedQuestionIndex(current, entry)
+    if (index < 0 || list[index]?.submission?.request_id !== rejected.request_id ||
+        list[index]?.submission?.idempotency_key !== rejected.idempotency_key) return current
     const next = [...list]
-    const copy = { ...next[index]! }
-    delete copy.submission
-    next[index] = copy
+    next[index] = { ...next[index]!, submission: replacement }
+    replaced = true
     return { ...current, pending: next }
   })
+  return replaced
 }
 
 /** The question set this pending record pushes, however it was registered. */

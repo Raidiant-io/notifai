@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { admitQueuedQuestion } from './hook-question-state.js'
+import { admitQueuedQuestion, replaceFrozenSubmission } from './hook-question-state.js'
 import { readSessionState, writeSessionState } from './hook-session-state.js'
 import type { PendingQuestion, PendingSubmissionIntent } from './hook-types.js'
 
@@ -47,4 +47,20 @@ it('starts the exact original client after durably recording admission', async (
   })
   expect(await admitQueuedQuestion('owner', h.env, h.entry, h.intent, 10, submit, identity)).toBe('submitted')
   expect(submit).toHaveBeenCalledOnce()
+})
+
+it('replaces only the exact rejected intent and refuses a racing native obligation', () => {
+  const h = fixture()
+  const replacement = { ...h.intent, request_id: 'req_replacement' }
+  expect(replaceFrozenSubmission('owner', h.env, h.entry, { ...h.intent, request_id: 'req_other' }, replacement)).toBe(false)
+  const state = readSessionState('owner', h.env)
+  writeSessionState('owner', h.env, { ...state, native_answer_operations: [{
+    question_id: 'q_one', operation_id: 'one', submission_id: 'opaque', service_identity: identity,
+    answers: [{ question_id: 'q1', text: 'Yes' }], acknowledgement_text: 'Continuing.',
+  }] })
+  expect(replaceFrozenSubmission('owner', h.env, h.entry, h.intent, replacement)).toBe(false)
+  expect(readSessionState('owner', h.env).pending?.[0]?.submission).toEqual(h.intent)
+  writeSessionState('owner', h.env, state)
+  expect(replaceFrozenSubmission('owner', h.env, h.entry, h.intent, replacement)).toBe(true)
+  expect(readSessionState('owner', h.env).pending?.[0]?.submission).toEqual(replacement)
 })

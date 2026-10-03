@@ -15,13 +15,14 @@ import {
   readSessionIncarnation, readSessionState, sessionHasEnded, sessionStatePath,
   writeSessionStateUnlocked,
 } from './hook-session-state.js'
-import type { SessionState } from './hook-types.js'
+import type { PendingQuestion, SessionState } from './hook-types.js'
 
 /** A command obligation, never a second answer-delivery queue. */
 export interface NativeAnswerOperation {
   question_id: string
   operation_id: string
-  request_id: string
+  /** Absent until ordinary submission confirms the original registration. */
+  request_id?: string
   submission_id: string
   service_identity: ServiceIdentity
   answers: ReplyAnswerT[]
@@ -50,7 +51,7 @@ export interface NativeOperationInput {
  * An explicit q_ selection alone is not native-form evidence.
  */
 export type AdmitNativeAnswer = (state: SessionState, answers: ReplyAnswerT[]) => {
-  requestId: string
+  requestId?: string
   service: ServiceIdentity
 }
 
@@ -112,12 +113,14 @@ export function prepareNativeAnswerOperation(
       throw new Error('A new native operation requires explicit answers and an authored acknowledgement; identity-only calls resume existing operations.')
     }
     const registration = admit(state, answers)
-    if (!isDeepStrictEqual(registration.service, owner.service) || !/^req_[A-Za-z0-9_-]+$/.test(registration.requestId)) {
+    if (!isDeepStrictEqual(registration.service, owner.service) ||
+        (registration.requestId !== undefined && !/^req_[A-Za-z0-9_-]+$/.test(registration.requestId))) {
       throw new Error('The native question does not belong to this service and Approved Machine.')
     }
     const operation: NativeAnswerOperation = {
       question_id: input.questionId, operation_id: input.operationId,
-      request_id: registration.requestId, submission_id: randomBytes(24).toString('base64url'),
+      ...(registration.requestId === undefined ? {} : { request_id: registration.requestId }),
+      submission_id: randomBytes(24).toString('base64url'),
       service_identity: { ...owner.service }, answers, acknowledgement_text: text,
     }
     writeSessionStateUnlocked(file, owner.sessionId, { ...state, native_answer_operations: [...operations, operation] })
@@ -129,7 +132,7 @@ function matchingOperation(state: SessionState, expected: NativeAnswerOperation)
   const current = state.native_answer_operations?.find(op =>
     op.question_id === expected.question_id && op.operation_id === expected.operation_id)
   if (current === undefined || current.submission_id !== expected.submission_id ||
-      current.request_id !== expected.request_id || !isDeepStrictEqual(current.answers, expected.answers) ||
+      (expected.request_id !== undefined && current.request_id !== expected.request_id) || !isDeepStrictEqual(current.answers, expected.answers) ||
       current.acknowledgement_text !== expected.acknowledgement_text ||
       !isDeepStrictEqual(current.service_identity, expected.service_identity)) {
     throw new Error('The durable native operation changed or disappeared; no new request was admitted.')
@@ -137,14 +140,75 @@ function matchingOperation(state: SessionState, expected: NativeAnswerOperation)
   return current
 }
 
+/** Fill the target once, from confirmed ordinary submission evidence. The
+ * caller recovers the original submission outside this transaction, after
+ * preparation has frozen the answer. A reserved/frozen request ID is not a
+ * receipt. The adapter must reject terminated or differently owned questions.
+ */
+export function resolveNativeAnswerOperation(
+  owner: NativeOperationOwner, env: NodeJS.ProcessEnv, operation: NativeAnswerOperation,
+  confirmed: (state: SessionState) => { requestId: string; service: ServiceIdentity } | null,
+): NativeAnswerOperation {
+  const file = sessionStatePath(owner.sessionId, env)
+  return withFileLock(`${file}.lock`, () => {
+    assertOwner(owner, env)
+    const state = readSessionState(owner.sessionId, env)
+    const current = matchingOperation(state, operation)
+    if (!isDeepStrictEqual(current.service_identity, owner.service)) throw new Error('The Approved Machine changed.')
+    // Another invocation may have resolved while this one recovered submission.
+    // Its confirmed target is immutable; no callback may replace it.
+    if (current.request_id !== undefined) return structuredClone(current)
+    const receipt = confirmed(state)
+    if (receipt === null) throw new Error('The original question submission is not confirmed; retry the same operation.')
+    if (!/^req_[A-Za-z0-9_-]+$/.test(receipt.requestId) || !isDeepStrictEqual(receipt.service, current.service_identity)) {
+      throw new Error('The confirmed question belongs to a different service or Approved Machine.')
+    }
+    const next = { ...current, request_id: receipt.requestId }
+    writeSessionStateUnlocked(file, owner.sessionId, {
+      ...state, native_answer_operations: state.native_answer_operations!.map(op => op === current ? next : op),
+    })
+    return structuredClone(next)
+  })
+}
+
+/** Called only while committing a successful submit receipt or an accepted
+ * app reply, never for an attempted submission, retirement or history row.
+ * Resolve in that same transaction so cleanup cannot erase the only proof.
+ * A late receipt enriches existing obligations without resurrecting a question.
+ */
+export function confirmNativeAnswerTarget(state: SessionState, question: PendingQuestion): SessionState {
+  if (question.question_id === undefined || question.service_identity === undefined ||
+      question.request_id === undefined) return state
+  const requestId = question.request_id
+  if (!/^req_[A-Za-z0-9_-]+$/.test(requestId)) return state
+  if (!state.native_answer_operations?.some(op => op.question_id === question.question_id &&
+      op.request_id === undefined && isDeepStrictEqual(op.service_identity, question.service_identity))) return state
+  return { ...state, native_answer_operations: state.native_answer_operations.map(op =>
+    op.question_id === question.question_id && op.request_id === undefined &&
+    isDeepStrictEqual(op.service_identity, question.service_identity)
+      ? { ...op, request_id: requestId } : op) }
+}
+
+/** A response may arrive after SessionEnd. Unlike a normal lifecycle writer,
+ * this can only enrich an existing immutable obligation, never restore state.
+ */
+export function recordConfirmedNativeAnswerTarget(sessionId: string, env: NodeJS.ProcessEnv, question: PendingQuestion): void {
+  const file = sessionStatePath(sessionId, env)
+  withFileLock(`${file}.lock`, () => {
+    const current = readSessionState(sessionId, env)
+    const next = confirmNativeAnswerTarget(current, question)
+    if (next !== current) writeSessionStateUnlocked(file, sessionId, next)
+  })
+}
+
 /** Admit each non-blocking HTTP start under the owner fence, never await under a lock. */
-function startPhase<T>(owner: NativeOperationOwner, env: NodeJS.ProcessEnv, operation: NativeAnswerOperation, start: () => Promise<T>): Promise<T> {
+function startPhase<T>(owner: NativeOperationOwner, env: NodeJS.ProcessEnv, operation: NativeAnswerOperation, start: (current: NativeAnswerOperation) => Promise<T>): Promise<T> {
   const file = sessionStatePath(owner.sessionId, env)
   return withFileLock(`${file}.lock`, () => {
     assertOwner(owner, env)
     const current = matchingOperation(readSessionState(owner.sessionId, env), operation)
     if (!isDeepStrictEqual(current.service_identity, owner.service)) throw new Error('The Approved Machine changed.')
-    return start()
+    return start(structuredClone(current))
   })
 }
 
@@ -172,9 +236,15 @@ export async function executeNativeAnswerOperation(
   owner: NativeOperationOwner, env: NodeJS.ProcessEnv, operation: NativeAnswerOperation,
   client: Pick<ApiClient, 'recordHarnessAnswer' | 'putAgentAcknowledgement'>,
 ): Promise<{ report: RecordHarnessAnswerResponse; acknowledgement: NativeAnswerOperation['acknowledgement'] }> {
-  const report = await startPhase(owner, env, operation, () => client.recordHarnessAnswer(operation.request_id, {
-    session_id: owner.sessionId, submission_id: operation.submission_id, answers: operation.answers,
-  }))
+  const submitted = await startPhase(owner, env, operation, async current => {
+    if (current.request_id === undefined) throw new Error('The original question submission is not confirmed; retry the same operation.')
+    const report = await client.recordHarnessAnswer(current.request_id, {
+      session_id: owner.sessionId, submission_id: current.submission_id, answers: current.answers,
+    })
+    return { report, operation: current, requestId: current.request_id }
+  })
+  operation = submitted.operation
+  const { report, requestId } = submitted
   if (report == null || !['recorded', 'replayed'].includes(report.status) ||
       !Number.isSafeInteger(report.reply_seq) || report.reply_seq < 1 ||
       !/^rpl_[A-Za-z0-9_-]+$/.test(report.answer_version?.version_id ?? '') ||
@@ -201,7 +271,7 @@ export async function executeNativeAnswerOperation(
     return { ...op, report: receipt }
   })
   if (current.acknowledgement === undefined) {
-    const result = await startPhase(owner, env, current, () => client.putAgentAcknowledgement(current.request_id, {
+    const result = await startPhase(owner, env, current, () => client.putAgentAcknowledgement(requestId, {
       session_id: owner.sessionId, reply_seq: receipt.reply_seq, text: current.acknowledgement_text,
     }))
     if (result == null || !['recorded', 'replayed'].includes(result.status) ||

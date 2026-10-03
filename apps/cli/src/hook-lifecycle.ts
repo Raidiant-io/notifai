@@ -10,6 +10,7 @@ import type {
   SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
+import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -46,7 +47,7 @@ import {
 } from './hook-question-retirement.js'
 import {
   admitQueuedQuestion,
-  clearFrozenSubmission,
+  replaceFrozenSubmission,
   dropPendingQuestion,
   isSamePending,
   pendingQuestions,
@@ -244,6 +245,7 @@ function submitQuestion(
           `server replay returned ${receipt.request_id}, expected reserved ${intent.request_id}`,
         )
       }
+      recordConfirmedNativeAnswerTarget(sessionId, ctx.env, { ...entry, request_id: receipt.request_id })
       // Wakes this session's dormant Session Attendant.
       recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
@@ -514,12 +516,16 @@ function claimMarker(
 /** Close several windows concurrently without confusing failure with silence. */
 async function finalizePendings(
   ctx: HookContext,
+  sessionId: string,
   pending: PendingQuestion[],
   disposition?: CloseDisposition,
 ): Promise<FinalizedPending[]> {
   return Promise.all(
     pending.map(async (entry) => {
       const response = await finalizeReplies(ctx, entry.request_id!, disposition)
+      if (response !== null && response.request_id === entry.request_id) {
+        recordConfirmedNativeAnswerTarget(sessionId, ctx.env, entry)
+      }
       ctx.log?.info('hook.retirement', {
         request_id: entry.request_id,
         attempted: true,
@@ -768,6 +774,7 @@ async function answerPrompt(
     )
     const finalized = await finalizePendings(
       ctx,
+      sessionId,
       answered.map((entry) => entry.pending),
     )
     lateAnswers = answered.map((entry) => {
@@ -1642,6 +1649,7 @@ async function handleClaimedStop(
     if (answered.length > 0) {
       const finalized = await finalizePendings(
         ctx,
+        sessionId,
         answered.map((entry) => entry.pending),
         answerCloseDisposition(ctx, route),
       )
@@ -1878,10 +1886,13 @@ export async function submitSessionQuestions(
             message: err.message,
           })
           if (entry.submission !== undefined) {
+            if (readSessionState(sessionId, ctx.env).native_answer_operations?.some(op => op.question_id === entry.question_id)) {
+              notes.push('the original submission was rejected; preserving its native answer operation without minting a replacement question')
+              continue
+            }
             notes.push(
               `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
             )
-            clearFrozenSubmission(sessionId, ctx.env, entry)
             const reminted = await prepareQuestionSubmission(ctx, {
               summary: entry.summary,
               ...(entry.body !== undefined ? { body: entry.body } : {}),
@@ -1893,20 +1904,17 @@ export async function submitSessionQuestions(
               ownerDeadlineAt,
             })
             if ('error' in reminted) {
-              dropPendingQuestion(sessionId, ctx.env, entry)
+              // Preserve the original intent; preparation can race an early
+              // native answer and is not proof that its obligation disappeared.
               notes.push(reminted.error)
               continue
             }
             if (entry.service_identity !== undefined) reminted.service_identity = entry.service_identity
+            if (!replaceFrozenSubmission(sessionId, ctx.env, entry, intent, reminted)) {
+              notes.push('the original submission changed or has a native answer obligation; no replacement was admitted')
+              continue
+            }
             intent = reminted
-            updateSessionState(sessionId, ctx.env, (current) => {
-              const list = pendingList(current)
-              const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-              if (index < 0) return current
-              const next = [...list]
-              next[index] = { ...next[index]!, submission: reminted }
-              return { ...current, pending: next }
-            })
             try {
               if (!canSubmitCompleteWindow(ctx, intent, replyWindowSeconds)) {
                 notes.push(
@@ -2001,6 +2009,7 @@ export async function submitSessionQuestions(
       // nobody listening.
       if (admissionConfirmed) {
         updateSessionState(sessionId, ctx.env, (current) => {
+          current = confirmNativeAnswerTarget(current, live)
           const list = pendingList(current)
           const index = list.findIndex(
             (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined &&
@@ -2086,7 +2095,7 @@ async function escalate(
     (entry) =>
       entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now() || anomalous.includes(entry),
   )
-  const finalizedStale = await finalizePendings(ctx, staleLive, answerCloseDisposition(ctx, route))
+  const finalizedStale = await finalizePendings(ctx, sessionId, staleLive, answerCloseDisposition(ctx, route))
   const staleAnswers = finalizedStale
     .map(finalizedAnswer)
     .filter((entry): entry is AnsweredPending => entry !== null)
@@ -2217,7 +2226,7 @@ async function escalate(
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
-    const finalized = await finalizePendings(ctx, expired, answerCloseDisposition(ctx, route))
+    const finalized = await finalizePendings(ctx, sessionId, expired, answerCloseDisposition(ctx, route))
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)
@@ -2271,7 +2280,7 @@ async function escalate(
   }
 
   const polledAnswered = activeWaiting.filter((entry) => waited.byRequest.has(entry.request_id!))
-  const finalizedAnswered = await finalizePendings(ctx, polledAnswered, answerCloseDisposition(ctx, route))
+  const finalizedAnswered = await finalizePendings(ctx, sessionId, polledAnswered, answerCloseDisposition(ctx, route))
   const answered: AnsweredPending[] = []
   for (const finalized of finalizedAnswered) {
     const entry = finalized.pending
