@@ -86,6 +86,7 @@ function normalizedAnswers(answers: ReplyAnswerT[], sessionId: string): ReplyAns
 export function prepareNativeAnswerOperation(
   owner: NativeOperationOwner, env: NodeJS.ProcessEnv, input: NativeOperationInput,
   admit: AdmitNativeAnswer,
+  observe?: (state: SessionState) => SessionState,
 ): NativeAnswerOperation {
   if (!/^q_[A-Za-z0-9_-]+$/.test(input.questionId) || !/^[A-Za-z0-9_-]{1,64}$/.test(input.operationId)) {
     throw new Error('Native reporting requires an exact q_ identity and a 1–64 character operation ID.')
@@ -98,7 +99,7 @@ export function prepareNativeAnswerOperation(
   const file = sessionStatePath(owner.sessionId, env)
   return withFileLock(`${file}.lock`, () => {
     assertOwner(owner, env)
-    const state = readSessionState(owner.sessionId, env)
+    let state = readSessionState(owner.sessionId, env)
     const operations = state.native_answer_operations ?? []
     const existing = operations.find(op => op.question_id === input.questionId && op.operation_id === input.operationId)
     if (existing !== undefined) {
@@ -111,6 +112,13 @@ export function prepareNativeAnswerOperation(
     }
     if (answers === undefined || text === undefined) {
       throw new Error('A new native operation requires explicit answers and an authored acknowledgement; identity-only calls resume existing operations.')
+    }
+    // Observation is durable even if admission fails. In particular, a
+    // duplicate native marker must remain ambiguous on a later retry.
+    if (observe !== undefined) {
+      const observed = observe(state)
+      if (observed !== state) writeSessionStateUnlocked(file, owner.sessionId, observed)
+      state = observed
     }
     const registration = admit(state, answers)
     if (!isDeepStrictEqual(registration.service, owner.service) ||

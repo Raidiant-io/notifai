@@ -105,7 +105,9 @@ import {
 import { opencodePluginSource } from './opencode-plugin.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
-import { readSessionState, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, readSessionState, writeSessionState } from './hook-session-state.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { recordTurnStart } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
   nativeSkills as realNativeSkills,
@@ -8550,6 +8552,47 @@ describe('asking before the hooks have ever run', () => {
     expect(io.outLines).not.toContain(
       'Question registered. Ask it in the conversation as usual and end your turn.',
     )
+  })
+
+  it('prints an exact optional native form only when this running Codex turn can bind it', () => {
+    const cwd = scratchDir('notifai-native-ask-output-')
+    const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
+    const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    mkdirSync(path.join(cwd, '.notifai'))
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    const owner = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    const file = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, [
+      { type: 'session_meta', payload: { id: sessionId, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+    ].map(item => JSON.stringify(item) + '\n').join(''))
+    recordTurnStart(sessionId, env, owner.key, 'turn-1')
+    writeCurrentCodexSessionState(cwd, env, sessionId, {
+      last_prompt_at: 42,
+      codex_native_turn: { key: owner.key, turn_id: 'turn-1', transcript_path: file },
+      codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
+    })
+    io.outLines = []
+    expect(askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    const output = JSON.parse(io.outLines.join('\n'))
+    expect(output.native_question).toMatchObject({ tool: 'request_user_input_async',
+      questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
+    })
+    expect(output.native_question.instructions).toContain(`notifai acknowledge ${output.question_id}`)
+    expect(output.native_question.instructions).toContain('first dependent command')
+    expect(readSessionState(sessionId, env).codex_question_bindings?.[0]?.question_id).toBe(output.question_id)
+    io.outLines = []
+    expect(askCommand(deps, 'Combine?', { choice: ['One', 'Two'], multi: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
+    writeSessionState(sessionId, env, { ...readSessionState(sessionId, env), codex_tool_hook: undefined })
+    io.outLines = []
+    expect(askCommand(deps, 'Ordinary?', { json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
   })
 
   it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {

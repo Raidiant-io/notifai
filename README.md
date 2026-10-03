@@ -62,7 +62,7 @@ notifai replies req_example --json
 notifai close req_example --json
 ```
 
-Every answered request is acknowledged, so the user always learns that an agent
+Every presented answer submission is acknowledged, so the user learns that an agent
 read their answer. `send --reply`, `replies`, and `close` expose
 `agent_acknowledgement_required`, the current `agent_acknowledgement`, and
 `acknowledgement_command` while it is still absent.
@@ -71,6 +71,12 @@ The one account setting governs the agent's brief written reply, not the
 acknowledgement itself: when `agent_acknowledgement_text_required` is false the
 printed command carries no `--text`, and `notifai acknowledge <request_id>`
 records the receipt on its own.
+
+When `ask` returns an optional `native_question`, follow its exact titles and
+instructions. An answer read from that bound native form uses the printed
+`acknowledge q_…` command to record its actual answers and authored
+acknowledgement. Keep the original app answer window; distinct native and app
+submissions remain separate in history. Native form closure is capability-dependent.
 
 Anywhere that is not a terminal — a script, a CI job, an agent — `notifai`
 prints help instead of prompting, output stays uncoloured, and `--json` is
@@ -274,9 +280,10 @@ alone is not proof of Provider Acceptance. **Stop** (`stop`) and
 **UserPromptSubmit** recover outstanding questions and own harness-specific
 answer delivery. Claude Code on macOS/Linux and Codex observe answers out of
 band. Claude Code on Windows holds Stop and returns the answer as a continuation.
-Codex queues only a wake-up for the exact Agent Session: current notes and
-answers drain together through a trusted tool hook, prompt hook, or
-`notifai receive`. Queue success proves wake storage, not presentation, and an
+Codex uses trusted tool hooks during working turns and a content-free wake when
+idle or live input capability is unavailable. Current notes and answers drain
+through a trusted tool hook, prompt hook, or `notifai receive` in the exact
+Agent Session. Queue success proves wake storage, not presentation, and an
 old wake-up cannot repeat an answer that has already been acknowledged.
 
 OpenClaw's Gateway service keeps the complete answer window and queues a

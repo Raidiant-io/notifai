@@ -542,15 +542,17 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action(async () => { exit(await runners.receive(deps)) })
 
   program
-    .command('acknowledge <request_or_message_id>')
+    .command('acknowledge <question_request_or_message_id>')
     .helpGroup(GROUP.agent)
     .summary("Tell the user what you'll do because of their reply or note")
     .description(
-      'Record the required Agent Acknowledgement for a replied-to notification request (req_…) or a Session Message the user sent into this session (sm_…: a note or an edited answer); never prompts',
+      'Record the required Agent Acknowledgement for a notification reply (req_…), Session Message (sm_…), or explicitly reported answer to an exactly bound native question (q_…); never prompts',
     )
     .option('--text <text>', 'concrete work you will do because of the reply or message')
+    .option('--operation-id <id>', 'native submission identity: reuse on retry, choose a new ID for a distinct answer')
+    .option('--native-answers <json>', 'actual native answers using the registered question/choice IDs; omit only to retry a saved operation')
     .option('--json', 'machine-readable output')
-    .action(async (id: string, opts: { text?: string; json?: boolean }) => {
+    .action(async (id: string, opts: { text?: string; json?: boolean; operationId?: string; nativeAnswers?: string }) => {
       exit(await runners.acknowledge(deps, id, opts))
     })
 

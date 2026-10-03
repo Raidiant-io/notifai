@@ -4,6 +4,10 @@ import type { QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
 import type { ServiceIdentity } from './credentials.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 import type { NativeTurnSnapshot } from './codex-native-turn.js'
+import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js'
+import { currentCodexTurn } from './session-attendant-state.js'
+import { processIdentityLiveness } from './process-identity.js'
 
 export interface CodexQuestionBinding {
   question: QuestionT
@@ -26,10 +30,27 @@ export interface CodexQuestionRegistration {
   confirmed_request_id?: string
   /** Ordinary presentation is sticky, including an uncertain stdout write. */
   ordinary_only?: true
+  /** Explicit retirement/withdrawal cannot become native authority again. */
+  terminated?: true
 }
 
 export function nativeQuestionTitle(binding: CodexQuestionBinding): string {
   return `[nf:${binding.marker}] ${binding.question.text}`
+}
+
+/** Called by registration while holding the session lock. Capability absence
+ * leaves the ordinary registration untouched and creates no native authority.
+ */
+export function reserveCurrentCodexQuestion(state: SessionState, pending: PendingQuestion, sessionId: string, env: NodeJS.ProcessEnv): SessionState {
+  const owner = readSessionIncarnation(sessionId, env)
+  const proof = state.codex_native_turn
+  if (state.harness !== 'codex' || owner === null || proof?.key !== owner.key || sessionHasEnded(sessionId, env) ||
+      owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive' ||
+      state.codex_tool_hook?.incarnation !== owner.incarnation || state.codex_tool_hook.root_observed?.turn_id !== proof.turn_id ||
+      currentCodexTurn(sessionId, env, owner.key) !== proof.turn_id) return state
+  const snapshot = readNativeQuestionSnapshot(proof.transcript_path, sessionId, env)
+  if (snapshot === null || snapshot.latest.id !== proof.turn_id) return state
+  return reserveCodexQuestion(state, pending, owner.key, snapshot)
 }
 
 /** Caller holds the registration transaction and has proved the current owner.
@@ -77,7 +98,7 @@ export function reserveCodexQuestion(
 export function observeCodexQuestions(state: SessionState, key: string, snapshot: NativeTurnSnapshot | null): SessionState {
   if (state.codex_question_bindings === undefined) return state
   return { ...state, codex_question_bindings: state.codex_question_bindings.map(registration => {
-    const covered = registration.owner_key === key && snapshot !== null &&
+    const covered = registration.terminated !== true && registration.owner_key === key && snapshot !== null &&
       snapshot.file === registration.transcript.file && snapshot.identity === registration.transcript.identity &&
       snapshot.size >= registration.transcript.registered_offset && snapshot.positions.has(registration.registration_turn_id)
     return { ...registration, questions: registration.questions.map(binding => {
@@ -108,6 +129,15 @@ export function markCodexOrdinaryPresentation(state: SessionState, questionIds: 
     questionIds.has(item.question_id) ? { ...item, ordinary_only: true } : item) }
 }
 
+/** Explicit cancellation only, in the transaction selecting the questions. */
+export function terminateCodexQuestions(state: SessionState, ids: ReadonlySet<string>): SessionState {
+  if (state.codex_question_bindings === undefined) return state
+  return { ...state, codex_question_bindings: state.codex_question_bindings.map(binding =>
+    ids.has(binding.question_id) || (binding.confirmed_request_id !== undefined && ids.has(binding.confirmed_request_id))
+      ? { ...binding, terminated: true } : binding),
+  }
+}
+
 /** Reservation protects early native answers before the emission observer runs.
  * Apply after matching all pending questions, so sibling ambiguity is preserved.
  */
@@ -122,7 +152,7 @@ export function admitBoundNativeAnswer(
   state: SessionState, questionId: string, key: string, service: ServiceIdentity, answers: ReplyAnswerT[],
 ): { requestId?: string; service: ServiceIdentity } {
   const registration = state.codex_question_bindings?.find(item => item.question_id === questionId)
-  if (registration === undefined || registration.owner_key !== key || !isDeepStrictEqual(registration.service_identity, service)) {
+  if (registration === undefined || registration.terminated === true || registration.owner_key !== key || !isDeepStrictEqual(registration.service_identity, service)) {
     throw new Error('The native question is not registered to this owner and Approved Machine.')
   }
   if (answers.length === 0 || new Set(answers.map(answer => answer.question_id)).size !== answers.length) throw new Error('Native answers must name distinct registered questions.')

@@ -188,21 +188,23 @@ notifai status <question_id> --json
 
 States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 
-**Registering is not the end of the turn.** Ask in plain conversational text,
-say what each answer will make you do, and continue independent work.
-Submission does not wait for turn end; answer-dependent work waits for the reply.
-A harness form can remain pending after a reply; neither path retires the other.
+**Registering is not the end of the turn.** Say what each answer will make you do
+and continue independent work. Submission starts immediately; dependent work
+waits for the reply.
+A harness form can remain pending after a reply; never promise linked closure.
+When `ask` returns `native_question`, read [native questions](references/native-questions.md)
+before emitting its form or acting on its answer.
 
-**Never say where the answer must arrive** ("tell me here"). The harness owns routing.
+**Never say where the answer must arrive** ("tell me here").
 
 Use `--multi` for combined answers, `--body-file` for Body, `--image` for
 evidence, or `--form <path|->` for up to 10 questions with one `summary`.
 
-Register independent questions separately. Retire an obsolete registration or
-one answered in the conversation with
+Register independent questions separately. Retire obsolete questions or unlinked
+ones answered in the conversation with
 `notifai close <question_id>` or `notifai close --pending`.
 
-Keep every ID after a timeout or unavailable route. Inspect the original with
+After a timeout or unavailable route, keep IDs and inspect
 `notifai status <question_id|request_id> --json` and `notifai replies
 <request_id> --json`; never create a duplicate.
 
@@ -246,19 +248,18 @@ to read pending notes and answers together. An empty result means continue.
 The wake-up contains no answer and needs no acknowledgement; never recover an
 old answer from it. Hooks may have delivered the input already.
 
-The latest reply is the user's current word: later choices correct earlier
-ones; typed parts are read together in order. A relayed answer uses the chosen
-label; `notifai replies <request_id> --json` has stable choice ids.
+Within one submission, the latest reply corrects earlier choices; read typed
+parts in order. Preserve distinct submissions and clarify conflicts before
+acting. Relays use choice labels; `notifai replies <request_id> --json` has IDs.
 
-Questions normally remain answerable for a day. Without a relayed answer,
-inspect the original `question_id`; if lost, list outstanding questions:
+Questions default to a day. Inspect `question_id` for a missing answer, or list:
 
 ```bash
 notifai replies --pending --json
 ```
 
 **Acknowledge before you resume.** The user needs to know their reply was read.
-Notifai tells you the exact command; run it once per answered request or
+Notifai tells you the exact command; run it once per presented submission or
 [note or edit](references/notes-and-edits.md) (`sm_…`) that arrived through
 Notifai, before the work it unblocks:
 
@@ -269,8 +270,8 @@ notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report
 Keep it under 200 characters and name only the concrete work their reply
 causes: it is a receipt, not a report.
 
-If written replies are off, run the printed command without `--text`.
-Acknowledgement is required.
+For app answers, notes and edits, omit `--text` when written replies are off.
+Acknowledgement remains required.
 
 Then resume the committed work without asking them to confirm again; it is
 work you are resuming, not approval you received.

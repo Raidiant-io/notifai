@@ -11,7 +11,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
 import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
-import { markCodexOrdinaryPresentation, mayRetireFromPrompt } from './codex-question-bindings.js'
+import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion } from './codex-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -2523,18 +2523,14 @@ export function registerQuestion(
       full = 'live'
       return state
     }
-    return {
+    const registered = { asked_at: now, ...question, question_id: questionId, question: question.question.slice(0, MAX_STORED_QUESTION_CHARS) }
+    return reserveCurrentCodexQuestion({
       ...state,
       pending: [
         ...pending,
-        {
-          asked_at: now,
-          ...question,
-          question_id: questionId,
-          question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
-        },
+        registered,
       ],
-    }
+    }, registered, sessionId, env)
   })
   if (full === 'unasked') {
     throw new Error(

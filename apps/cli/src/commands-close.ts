@@ -2,6 +2,7 @@
 import type { CloseRepliesResponse, ListRepliesResponse } from '@raidiant/notifai-protocol'
 import type { ApiClient } from './client.js'
 import { resolveCommandSession } from './command-session.js'
+import { terminateCodexQuestions } from './codex-question-bindings.js'
 import {
   EXIT,
   authedClient,
@@ -12,7 +13,7 @@ import {
 import { acknowledgementCommand, printAcknowledgementStatus } from './commands-send-support.js'
 import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
 import { dropPendingQuestion } from './hook-question-state.js'
-import { readSessionState } from './hook-session-state.js'
+import { readSessionState, updateSessionState } from './hook-session-state.js'
 import { type PendingQuestion } from './hook-types.js'
 
 /**
@@ -47,6 +48,9 @@ export async function closeCommand(
   if (flags.pending === true) {
     return closePendingQuestions(deps, flags.json === true)
   }
+
+  const bindingOwner = resolveCommandSession(deps, requestId!)
+  if (bindingOwner !== null) revokeNativeBindings(bindingOwner.sessionId, deps.env, new Set([requestId!]))
 
   const local = await closeLocalQuestion(deps, requestId!, flags.json === true)
   if (local !== null) return local
@@ -114,10 +118,12 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
   }
 
   const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env)
-  const live = (readSessionState(sessionId, deps.env).pending ?? []).filter(
-    (entry): entry is PendingQuestion & { request_id: string } =>
-      entry.request_id !== undefined,
-  )
+  let live: (PendingQuestion & { request_id: string })[] = []
+  updateSessionState(sessionId, deps.env, state => {
+    live = (state.pending ?? []).filter((entry): entry is PendingQuestion & { request_id: string } => entry.request_id !== undefined)
+    return terminateCodexQuestions(state, new Set(live.flatMap(entry =>
+      entry.question_id === undefined ? [entry.request_id] : [entry.question_id, entry.request_id])))
+  })
 
   const closed: string[] = []
   if (live.length > 0) {
@@ -162,6 +168,13 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     }
   }
   return EXIT.ok
+}
+
+/** Explicit cancellation revokes association locally even if the remote close
+ * needs retry. Natural expiry only ends the app window, not the native form.
+ */
+function revokeNativeBindings(sessionId: string, env: NodeJS.ProcessEnv, ids: ReadonlySet<string>): void {
+  updateSessionState(sessionId, env, state => terminateCodexQuestions(state, ids))
 }
 
 /**

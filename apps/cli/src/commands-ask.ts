@@ -21,7 +21,8 @@ import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
 import { registerQuestion } from './hook-lifecycle.js'
-import { readSessionState } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
+import { nativeQuestionTitle } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
@@ -348,6 +349,10 @@ function recordRegisteredQuestion(
   const nextStep = submission === 'starting'
     ? 'Submission starts without ending this turn. Continue independent work while Question Routing owns the answer return path.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
+  const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
+    binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
+  const nativeCommand = `notifai acknowledge ${questionId} --operation-id native-1 --native-answers '<actual answers JSON>' --text '<concrete work this answer sets in motion>' --json`
+  const nativeInstruction = `If you use request_user_input_async, copy the native titles and options exactly in this turn. For an answer you actually read from that native form, your first dependent command must be: ${nativeCommand}. Use the registered question/choice IDs. Use a distinct operation ID for each distinct submission; retry the same ID and immutable body after failure, omitting answers/text only after the command confirms the operation was saved. Do not report an app answer again as a native answer. Keep the app watcher; do not close the question after native acknowledgement. If you did not emit the exact marked native form, ordinary conversation answers still retire with notifai close ${questionId}. Native linking is optional and capability-dependent; never promise form closure.`
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same
@@ -369,6 +374,12 @@ function recordRegisteredQuestion(
             ...(entry.choices === undefined ? {} : { choices: entry.choices }),
             ...(entry.multi === true ? { multi: true } : {}),
           })),
+          ...(native === undefined ? {} : { native_question: {
+            tool: 'request_user_input_async',
+            questions: native.questions.map(binding => ({ question_id: binding.question.id, title: nativeQuestionTitle(binding),
+              ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }) })),
+            instructions: nativeInstruction,
+          } }),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
           next: {
@@ -379,7 +390,9 @@ function recordRegisteredQuestion(
               'Never say where the answer must arrive; it returns by whatever route the harness supports.',
             on_answer:
               'Acknowledge it, then resume the committed work without asking the user to confirm again.',
-            answered_outside_notifai: `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`,
+            answered_outside_notifai: native === undefined
+              ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
+              : nativeInstruction,
           },
         },
         null,
@@ -429,9 +442,13 @@ function recordRegisteredQuestion(
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
   )
-  deps.io.out(
-    `If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`,
-  )
+  if (native !== undefined) {
+    deps.io.out(nativeInstruction)
+    deps.io.out(JSON.stringify({ native_questions: native.questions.map(binding => ({ title: nativeQuestionTitle(binding),
+      question_id: binding.question.id, ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
+      ...(binding.question.choices === undefined ? {} : { choice_ids: binding.question.choices.map(choice => choice.id) }),
+    })) }))
+  } else deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
   return EXIT.ok
 }
 

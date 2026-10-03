@@ -263,13 +263,18 @@ meter differs per harness:
   Direct inbox wake is unavailable, but it is not needed while this exact Stop
   continuation owns the answer.
 - **Codex:** a detached observer starts after submission and waits in the
-  background for the complete answer window; Stop provides recovery. When an answer arrives, Notifai
-  invokes `codex queue` for the exact Agent Session in the same Codex home.
-  Only a wake-up is queued. Pending notes and answers remain in Notifai until
+  background for the complete answer window; Stop provides recovery. While a
+  trusted tool hook can hand input into a working turn, Notifai uses that hook.
+  Idle sessions, or sessions whose live input path cannot be established, use
+  a content-free wake for the exact Agent Session in the same Codex home.
+  Notifai does not cold-start or resume Codex to obtain a control connection.
+  Pending notes and answers remain in Notifai until
   a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
   A late wake-up cannot repeat an acknowledged answer: it contains no answer
   text. Queue success proves wake storage, not input presentation. Inputs are
   claimed immediately before presentation; uncertain writes are never replayed.
+  Verified queue control can remove a stale wake owned by Notifai; unavailable
+  control leaves the harmless wake in place and preserves human prompts.
   Keep the original question and request identities when investigating a delay.
 - **Grok:** the Stop hook stays held through the complete answer window and
   returns the answer as a decision block to the same Agent Session. Its native
