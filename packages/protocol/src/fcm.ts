@@ -135,6 +135,7 @@ export function buildFcmDataEnvelope(
       ? {
           agent_acknowledgement_available: true,
           agent_acknowledgement_created_at: agentAcknowledgementSync.createdAt.toISOString(),
+          ...(agentAcknowledgementSync.replyId ? { agent_acknowledgement_reply_id: agentAcknowledgementSync.replyId } : {}),
         }
       : {}),
     ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),

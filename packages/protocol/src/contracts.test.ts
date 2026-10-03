@@ -802,11 +802,16 @@ describe('validateDraft', () => {
       null,
       null,
       null,
-      { createdAt: new Date('2026-08-13T12:01:00.000Z') },
+      { createdAt: new Date('2026-08-13T12:01:00.000Z'), replyId: 'rpl_native_answer' },
     )
     const notifai = envelope.payload['notifai'] as Record<string, unknown>
     expect(notifai['agent_acknowledgement_available']).toBe(true)
     expect(notifai['agent_acknowledgement_created_at']).toBe('2026-08-13T12:01:00.000Z')
+    expect(notifai['agent_acknowledgement_reply_id']).toBe('rpl_native_answer')
+    const fcm = buildFcmDataEnvelope(sync, { requestId: 'req_sync', deliveryId: 'del_sync' },
+      null, null, null, null, null,
+      { createdAt: new Date('2026-08-13T12:01:00.000Z'), replyId: 'rpl_native_answer' })
+    expect(JSON.parse(fcm.data.notifai!)).toMatchObject({ agent_acknowledgement_reply_id: 'rpl_native_answer' })
     expect(JSON.stringify(envelope.payload)).not.toContain('I will deploy')
     expect(notifai).not.toHaveProperty('agent_acknowledgement_text')
   })
@@ -1319,7 +1324,7 @@ describe('validateDraft', () => {
       null,
       null,
       null,
-      { createdAt: new Date(0) },
+      { createdAt: new Date(0), replyId: 'rpl_00000000000000000000000000' },
     )
     const rendered = new TextEncoder().encode(JSON.stringify(envelope.payload)).length
     expect(estimateApnsPayloadBytes(maximum)).toBe(rendered)
