@@ -241,6 +241,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--project-id <id>', 'Project identifier slug (default: derived from the directory name)')
     .option('--json', 'machine-readable final readiness; never prompts')
+    .option('--approval <route>', 'computer approval route: qr (default), notification, or browser')
+    .option('--approval-email <email>', 'Account email for the selected notification approval route')
     .option('--skills', 'install/update the agent skill from its pinned public release')
     .option('--no-skills', 'suppress the optional agent-skill status line')
     .option(
@@ -251,6 +253,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--no-hooks', 'skip the hooks without being asked')
     .action(
       async (opts: {
+        approval?: string
+        approvalEmail?: string
         projectId?: string
         json?: boolean
         skills?: boolean
@@ -344,11 +348,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('login')
     .helpGroup(GROUP.advanced)
     .summary('Sign in and pair this machine')
-    .description('Pair this machine with your Notifai account via browser approval')
+    .description('Connect this computer by QR, approval notification, or browser approval')
     .option('--name <name>', 'machine name shown in the dashboard (default: hostname)')
     .option('--base-url <url>', 'pairing override for the service origin (also NOTIFAI_BASE_URL)')
+    .option('--approval <route>', 'computer approval route: qr (default), notification, or browser')
+    .option('--approval-email <email>', 'Account email for the selected notification approval route')
     .option('--no-open', 'do not open the approval page in a browser')
-    .action(async (opts: { name?: string; baseUrl?: string; open?: boolean }) => {
+    .action(async (opts: { name?: string; baseUrl?: string; open?: boolean; approval?: string; approvalEmail?: string }) => {
       exit(await runners.login(deps, opts))
     })
 

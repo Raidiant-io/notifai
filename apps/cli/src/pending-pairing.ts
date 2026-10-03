@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { pairingQrPath } from './pairing-qr.js'
 import { stateDir } from './config.js'
 
 /**
@@ -25,6 +26,7 @@ export interface PendingPairing {
   approve_url: string
   base_url: string
   machine_name: string
+  approval_email?: string
   /** The machine credential the approval will activate. */
   secret: string
   poll_verifier: string
@@ -48,6 +50,7 @@ function isPendingPairing(value: unknown): value is PendingPairing {
     typeof record['approve_url'] === 'string' &&
     typeof record['base_url'] === 'string' &&
     typeof record['machine_name'] === 'string' &&
+    (record['approval_email'] === undefined || typeof record['approval_email'] === 'string') &&
     typeof record['secret'] === 'string' &&
     typeof record['poll_verifier'] === 'string' &&
     typeof record['expires_at'] === 'string' &&
@@ -95,9 +98,7 @@ export function writePendingPairing(env: NodeJS.ProcessEnv, pairing: PendingPair
 }
 
 export function clearPendingPairing(env: NodeJS.ProcessEnv): void {
-  try {
-    unlinkSync(pendingPairingPath(env))
-  } catch {
-    // Already gone, which is the state this asks for.
+  for (const file of [pendingPairingPath(env), pairingQrPath(env)]) {
+    try { unlinkSync(file) } catch { /* Already absent. */ }
   }
 }

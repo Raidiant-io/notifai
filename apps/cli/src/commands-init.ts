@@ -67,6 +67,8 @@ export function projectSlugFrom(name: string): string {
 export interface InitFlags {
   /** Emit final readiness on stdout, progress on stderr, and never prompt. */
   json?: boolean
+  approval?: string
+  approvalEmail?: string
   projectId?: string
   /**
    * Install the agent guidance skill. Tri-state on purpose:
@@ -906,10 +908,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         attempted.add(state.id)
         workingDeps.io.out(
           workingDeps.io.interactive === true
-            ? 'Opening your browser to approve this machine — Ctrl-C to stop.'
-            : 'Starting machine approval in your browser.',
+            ? 'Connect this computer — Ctrl-C to stop.'
+            : 'Starting computer approval.',
         )
-        const loginResult = await loginCommand(workingDeps, {}, (blocker) => {
+        const loginResult = await loginCommand(workingDeps, { ...(resolved.approval ? { approval: resolved.approval } : {}), ...(resolved.approvalEmail ? { approvalEmail: resolved.approvalEmail } : {}) }, (blocker) => {
           loginBlocker = blocker
           // Both renderers must report what actually stopped approval: the
           // access errand when the Account has none, or the approval still

@@ -16,6 +16,7 @@ export const CLIENT_CAPABILITIES = [
   'agent_acknowledgement',
   'session_attendance',
   'session_notes',
+  'machine_approval',
   'answer_edits',
 ] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]

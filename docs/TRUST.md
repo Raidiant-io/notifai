@@ -103,6 +103,22 @@ The CLI validates the URL it receives. Navigation and redirects after the
 User's browser has opened that approved origin are governed by the browser and
 the site, not by the CLI.
 
+## QR and signed-in Companion App approval
+
+The pairing QR encodes the same trusted HTTPS approval URL, including its
+browser-local confirmation fragment. The local PNG is owner-readable and is
+removed when pairing resolves or the User logs out. It is approval proof: never
+include it in any Notification Request field or media, or copy it to analytics or logs.
+
+Opening a QR or an Account-bound approval invitation only opens review. The
+User compares the Account, computer and terminal code before explicit approval.
+The app uses its existing Auth Session; an invitation reference has no authority
+without the intended Account. Selecting email targeting binds QR and browser
+approval to that Account too. Retargeting invalidates earlier invitations.
+An anonymous computer cannot discover a nearby app or send an ordinary
+Notification Request before approval. Notification targeting is a separate
+proof-gated authentication operation with non-enumerating responses.
+
 ## Authenticated API and signed upload URLs
 
 Once paired, every authenticated API request uses the service origin stored

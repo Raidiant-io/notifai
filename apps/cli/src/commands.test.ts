@@ -5176,21 +5176,14 @@ describe('interactive command UX', () => {
     }
 
     expect(await loginCommand(deps, { name: 'workstation', open: false })).toBe(EXIT.ok)
-    expect(io.intros).toEqual(['Notifai sign in'])
-    expect(io.notes).toEqual([
-      {
-        title: 'Approve this machine',
-        message: expect.stringMatching(
-          /^Code: ABCD-EFGH\nhttps:\/\/app\.notifai\.sh\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
-        ),
-      },
-    ])
+    expect(io.intros).toEqual([])
+    expect(io.notes[0]?.title).toBe('Scan to approve in Notifai')
+    expect(io.outLines).toContain('Pairing code: ABCD-EFGH')
     expect(io.spinnerEvents).toEqual([
       'start:Waiting for approval… code ABCD-EFGH · 10s left',
       'message:Waiting for approval… code ABCD-EFGH · 10s left',
       'stop:Machine "workstation" approved',
     ])
-    expect(io.outLines).toEqual([])
     expect(savedMachine).toBe('mac_new')
   })
 
@@ -5216,13 +5209,10 @@ describe('interactive command UX', () => {
     }
 
     expect(await loginCommand(deps, { open: false })).toBe(EXIT.ok)
-    expect(io.outLines.slice(0, 3)).toEqual([
-      'Pairing code: ABCD-EFGH',
-      expect.stringMatching(
-        /^Approve this machine at: https:\/\/app\.notifai\.sh\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
-      ),
+    expect(io.outLines).toEqual([
       expect.stringMatching(/^Machine ".+" approved\. Credential stored in test credential store\.$/),
     ])
+
   })
 
   it('hands an unattended approval back after one poll and resumes the same pairing next run', async () => {
@@ -5267,14 +5257,14 @@ describe('interactive command UX', () => {
 
     expect(await loginCommand(deps, { name: 'workstation' })).toBe(EXIT.auth)
     expect(begins).toBe(1)
-    expect(io.openedUrls).toHaveLength(1)
+    expect(io.openedUrls).toHaveLength(0)
     expect(io.outLines.at(-1)).toBe('Waiting for approval. Run `notifai init` again once it is approved.')
     expect(readPendingPairing(deps.env, 0)).toMatchObject({ pairing_id: 'pair_test', code: 'ABCD-EFGH', machine_name: 'workstation' })
 
     // Still pending: same pairing, same code, and the browser is not opened again.
     expect(await loginCommand(deps, { name: 'workstation' })).toBe(EXIT.auth)
     expect(begins).toBe(1)
-    expect(io.openedUrls).toHaveLength(1)
+    expect(io.openedUrls).toHaveLength(0)
     expect(io.outLines.filter((line) => line === 'Pairing code: ABCD-EFGH')).toHaveLength(2)
 
     approved = true
@@ -6787,7 +6777,7 @@ describe('init', () => {
     expect(await initCommand(deps, {})).toBe(EXIT.failed)
     expect(asked.some((q) => q.includes('Sign in'))).toBe(false)
     const out = io.outLines.join('\n')
-    expect(out).toContain('Opening your browser to approve this machine — Ctrl-C to stop.')
+    expect(out).toContain('Connect this computer — Ctrl-C to stop.')
     expect(out).toContain('Next: This machine')
     expect(out).toContain('notifai init')
     expect(out).not.toContain('notifai login')
@@ -6829,14 +6819,13 @@ describe('init', () => {
     expect(await initCommand(deps, { json, hooks: false, skills: false })).toBe(EXIT.failed)
     expect(begins).toBe(1)
     expect(credential?.machineId).toBe('mac_test')
-    expect(io.openedUrls).toHaveLength(1)
-    expect(io.openedUrls[0]).toMatch(/^https:\/\/app\.notifai\.sh\/pair\/pair_test#confirmation_secret=/)
+    expect(io.openedUrls).toHaveLength(0)
     if (json) {
       expect(io.outLines).toHaveLength(1)
       const result = JSON.parse(io.outLines[0]!)
       expect(result.states.find((state: { id: string }) => state.id === 'credential').status).toBe('ready')
       expect(result.states.find((state: { id: string }) => state.id === 'devices').status).toBe('gap')
-      expect(io.errLines.join('\n')).toContain('Approve this machine at:')
+      expect(io.errLines.join('\n')).toContain('Machine "FurankuMac.local" approved.')
     } else {
       expect(io.outLines.join('\n')).toContain('Next: Your devices')
     }
@@ -6912,7 +6901,7 @@ describe('init', () => {
       remedy: { by: 'user-here', command: 'notifai init' },
     })
     expect(waiting.remedy.summary).toContain('123456')
-    expect(io.errLines.join('\n')).toContain('Starting machine approval in your browser.')
+    expect(io.errLines.join('\n')).toContain('Starting computer approval.')
 
     // The User approved; the next run resumes the same pairing and moves on
     // to the devices gap without another approval.
@@ -6925,7 +6914,7 @@ describe('init', () => {
       status: 'gap',
       technical: { companion_setup_url: 'https://app.notifai.sh/setup/companion', devices: [] },
     })
-    expect(io.openedUrls).toHaveLength(1)
+    expect(io.openedUrls).toHaveLength(0)
   })
 
   it('makes the unavailable distribution bridge explicit when no app has registered', async () => {

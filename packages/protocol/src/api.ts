@@ -178,6 +178,16 @@ export const PollPairingRequest = Type.Object(
 )
 export type PollPairingRequestT = Static<typeof PollPairingRequest>
 
+/** The initiator explicitly selects Account-email targeting; response is non-enumerating. */
+export const PairingNotificationRequest = Type.Object(
+  {
+    poll_verifier: Type.String({ minLength: 32, maxLength: 128 }),
+    email: Type.String({ format: 'email', maxLength: 254 }),
+  },
+  { additionalProperties: false },
+)
+export type PairingNotificationRequestT = Static<typeof PairingNotificationRequest>
+
 /**
  * Proof carried by every authenticated dashboard pairing operation. The
  * short code is human-checkable; the high-entropy secret is transported only

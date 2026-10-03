@@ -292,10 +292,20 @@ Never tell the user to run a command you could have run yourself.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-`notifai init --json` starts browser approval without prompting and returns;
-its `credential` state carries `technical.pairing.approve_url` and `.code`.
-Relay both as T2 in <https://app.notifai.sh/setup.md>; once the User says it
-is approved, run it again to resume.
+`notifai init --json` starts QR-first computer approval without prompting and
+returns. Its `credential` gap carries `technical.pairing.qr_path`, `.approve_url`
+and `.code`. Display the protected local QR in the harness and use T2 in
+<https://app.notifai.sh/setup.md>. Compare the code in the signed-in Companion App;
+opening review never approves automatically. Never include the QR or its approval
+link in any Notification Request field or media: they carry one-time approval proof.
+
+Browser approval is selectable with `notifai init --approval browser --json`.
+The notification alternative uses `--approval notification --approval-email <email>`;
+ask for the Account email only if the User selects it, never infer it from other
+services or files. An invitation requested is not evidence it reached an app.
+All routes resume the same pairing. Once the User says it is approved, run init
+again to continue. If the harness cannot display a local image, present the
+browser alternative truthfully rather than claiming a QR was shown.
 Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.
 Lifecycle wiring has no scope: one install per harness for this machine;
