@@ -296,8 +296,8 @@ and retry the exact send. Projectless requests never enable a Project.
 returns. Its `credential` gap carries `technical.pairing.qr_path`, `.approve_url`
 and `.code`. Display the protected local QR in the harness and use T2 in
 <https://app.notifai.sh/setup.md>. Compare the code in the signed-in Companion App;
-opening review never approves automatically. Never attach the QR or its approval
-link to a Notification Request: they carry one-time approval proof.
+opening review never approves automatically. Never include the QR or its approval
+link in any Notification Request field or media: they carry one-time approval proof.
 
 Browser approval is selectable with `notifai init --approval browser --json`.
 The notification alternative uses `--approval notification --approval-email <email>`;

@@ -205,7 +205,7 @@ approval given after the first run ended. `notifai init --json` never prompts:
 progress goes to stderr, while stdout contains one final readiness object
 whose `credential` state carries the local `qr_path`, code, and browser
 alternative. The QR and approval link carry sensitive one-time proof: show them
-locally, never upload them as Notification Request media. At a human terminal,
+locally, never include them in Notification Request fields or media. At a human terminal,
 choosing iPhone or Android opens its setup steps and starts a bounded wait;
 Ctrl-C stops the wait, and expiry offers more time.
 

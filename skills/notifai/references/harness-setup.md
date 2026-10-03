@@ -18,8 +18,8 @@ Run `notifai init --json` yourself. An unapproved Machine starts one approval,
 defaults to QR without asking for email, polls once, and returns. Progress is
 on stderr and final readiness on stdout. The `credential` state's
 `technical.pairing` holds the protected local `qr_path`, `approve_url`, and
-matching `code`. Display the QR locally in the harness; never attach the QR
-or proof-bearing link to a Notification Request. Use T2 from
+matching `code`. Display the QR locally in the harness; never include the QR
+or proof-bearing link in any Notification Request field or media. Use T2 from
 <https://app.notifai.sh/setup.md>: the User reviews their Account, computer, and
 matching code in their signed-in Companion App before approving. A valid Auth
 Session needs no additional email code merely to approve a Machine.

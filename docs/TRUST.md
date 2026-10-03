@@ -108,7 +108,7 @@ the site, not by the CLI.
 The pairing QR encodes the same trusted HTTPS approval URL, including its
 browser-local confirmation fragment. The local PNG is owner-readable and is
 removed when pairing resolves or the User logs out. It is approval proof: never
-send it as ordinary Notification Request media or copy it to analytics or logs.
+include it in any Notification Request field or media, or copy it to analytics or logs.
 
 Opening a QR or an Account-bound approval invitation only opens review. The
 User compares the Account, computer and terminal code before explicit approval.
