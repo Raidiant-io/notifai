@@ -18,7 +18,8 @@ import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import type { Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type SequencerDeps } from './session-delivery.js'
-import { connectCodexQueue, NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { CodexControlNotSent } from './codex-native-control.js'
+import { connectCodexQueue, type QueueControl } from './codex-queue-control.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { admitInputWake, detachInputWakes, electInputWake, observeInputWake, readInputWakes, reconcileInputWakes, recoverUncertainInputWake } from './session-input-wakes.js'
 import { readAttendantLease, nativeTurnContinues } from './session-attendant-state.js'
@@ -216,7 +217,7 @@ export async function wakeCodexSessionInputs(input: {
       ...control, add: async (token, text) => {
         // Recovery may have awaited a native lookup. Refresh in-process lease
         // authority at the actual byte boundary, outside every state lock.
-        if (!input.mayWrite() || !input.mayWake()) throw new NativeQueueNotSent('Wake authorization changed before send')
+        if (!input.mayWrite() || !input.mayWake()) throw new CodexControlNotSent('Wake authorization changed before send')
         return control.add(token, text)
       },
     } })

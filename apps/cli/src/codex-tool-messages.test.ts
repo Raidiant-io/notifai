@@ -1,5 +1,6 @@
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
-import { NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { CodexControlNotSent } from './codex-native-control.js'
+import { type QueueControl } from './codex-queue-control.js'
 import { readInputWakes } from './session-input-wakes.js'
 import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
@@ -701,7 +702,7 @@ it('does not bypass detached uncertainty through the generic fallback', async ()
   const h = ownedWakeHarness(); h.stage([note('sm_a')])
   await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
   h.stage([note('sm_a'), note('sm_b')])
-  await h.schedule({ ...h.control, add: async () => { throw new NativeQueueNotSent('not sent') } })
+  await h.schedule({ ...h.control, add: async () => { throw new CodexControlNotSent('not sent') } })
   expect(h.wakes().some(a => a.phase === 'unknown' && a.detached)).toBe(true)
   expect(await h.schedule(null)).toBe(true)
 })

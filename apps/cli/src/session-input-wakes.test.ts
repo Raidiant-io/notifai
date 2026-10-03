@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { CodexControlNotSent } from './codex-native-control.js'
+import { type QueueControl } from './codex-queue-control.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, updateSessionState } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { admitInputWake, detachInputWakes, electInputWake, observeInputWake, readInputWakes, reconcileInputWakes, recoverUncertainInputWake } from './session-input-wakes.js'
@@ -153,7 +154,7 @@ it('reads current pending input when an old drain runs after a newer election', 
 
 it('allows fresh election after a positively unsent write, but not an uncertain one', async () => {
   const f = fixture(); const a = f.elect()!
-  await f.admit(a.token, { ...f.control, add: async () => { throw new NativeQueueNotSent('closed before send') } })
+  await f.admit(a.token, { ...f.control, add: async () => { throw new CodexControlNotSent('closed before send') } })
   expect(f.state()[0]!.phase).toBe('cancelled')
   const b = f.elect()!
   expect(b).not.toBeNull()
