@@ -23,11 +23,16 @@
     "commander": "^14.0.0",
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",
+    "qrcode": "1.5.4",
     "smol-toml": "^1.4.0",
     "ws": "8.18.3"
   },
   "devDependencies": {
+    "@types/pngjs": "6.0.5",
+    "@types/qrcode": "1.5.6",
     "@types/ws": "8.18.1",
+    "jsqr": "1.4.0",
+    "pngjs": "7.0.0",
     "typescript": "^5.8.0",
     "vitest": "4.1.11"
   },

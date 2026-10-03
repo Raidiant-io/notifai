@@ -25,7 +25,7 @@ import {
  * Server Features a Companion App must see before advertising the capability
  * of the same name at registration. Clients ignore names they do not know.
  */
-export const SERVER_FEATURES = ['session_notes', 'answer_edits'] as const
+export const SERVER_FEATURES = ['session_notes', 'answer_edits', 'machine_approval'] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 
 /** `GET /api/v1/features` (user auth). A 404 means a server with none of them. */
