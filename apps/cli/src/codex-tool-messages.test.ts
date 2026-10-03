@@ -1,4 +1,4 @@
-import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs } from './session-inputs.js'
+import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs } from './session-inputs.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
 import { buildProgram } from './program.js'
@@ -20,7 +20,7 @@ import { acquireClaimFile } from './hook-question-lock.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { enableProject, projectBinding } from './project-enablement.js'
-import { attendantClaimPath, currentCodexTurn, recordTurnEnd, recordTurnStart, readTurnActivity, turnActivityPath, writeAttendantStatus } from './session-attendant-state.js'
+import { attendantClaimPath, attendantStatusPath, currentCodexTurn, recordTurnEnd, recordTurnStart, readTurnActivity, turnActivityPath, writeAttendantStatus } from './session-attendant-state.js'
 import { acquireDeliveryLock, readDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment } from './integration-health.js'
@@ -89,7 +89,6 @@ function setup() {
 describe('Codex tool-boundary Session Messages', () => {
   it('keeps a blocked Stop turn writable until actual native completion', async () => {
     const h = setup()
-    Object.assign(h.env, { NOTIFAI_CODEX_INPUT_POC: '1' })
     const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'owned.jsonl')
     mkdirSync(path.dirname(transcript), { recursive: true })
     writeFileSync(transcript, [
@@ -222,6 +221,37 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.output[1]).toContain('sm_second')
   })
 
+
+  it('drains more than twenty mixed inputs in order and never wakes for acknowledgement debt', async () => {
+    const h = setup()
+    const reply = { reply_id: 'rpl_many', seq: 1, delivery_id: 'del_many', device_id: 'dev_test', device_name: 'Test',
+      text: 'Continue', answers: [{ question_id: 'q_many', choice_ids: [], text: 'Continue' }],
+      source: null, created_at: new Date().toISOString() }
+    updateSessionState(SESSION, h.env, state => ({ ...state,
+      waiting_answers: [{ pending: { question: 'Continue?', question_id: 'q_many', request_id: 'req_many', collapse_key: 'many', device_ids: ['dev_test'] },
+        reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true }],
+      acknowledgement_due: [{ request_id: 'req_many', recorded_at: Date.now(), text_required: true }],
+    }))
+    const ids = Array.from({ length: 24 }, (_, i) => 'sm_batch_' + i)
+    h.stage(ids.map(note))
+    await h.hook()
+    expect(h.claims).toEqual(['req_many', ...ids.slice(0, 19)])
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
+    recordTurnEnd(SESSION, h.env, 'turn-1')
+    // Remaining suffix remains eligible at completion, then the wake's prompt
+    // boundary consumes it through the same delivery sequencer.
+    await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
+      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'wake',
+    }), 'codex')
+    expect(h.claims).toEqual(['req_many', ...ids])
+    expect(h.output).toHaveLength(2)
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
+    expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
+    expect(readSessionState(SESSION, h.env).message_acknowledgement_due).toHaveLength(24)
+    await h.hook('wake')
+    expect(h.output).toHaveLength(2)
+  })
+
   it('reports queued input instead of an empty inbox when an earlier answer blocks a claim', async () => {
     const h = setup()
     h.env['CODEX_THREAD_ID'] = SESSION
@@ -286,6 +316,41 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.output).toHaveLength(acknowledged ? 0 : 1)
     expect(h.claims).toEqual([])
     expect(readSessionState(SESSION, h.env).waiting_answers ?? []).toEqual([])
+  })
+
+
+  it.each(['live', 'missing', 'dead', 'superseded', 'producer'] as const)('delegates answer wakes only to its live resident: %s', async (mode) => {
+    const h = setup()
+    if (mode === 'missing') rmSync(attendantClaimPath(SESSION, h.env))
+    if (mode === 'dead') {
+      const file = attendantClaimPath(SESSION, h.env)
+      const claim = JSON.parse(readFileSync(file, 'utf8'))
+      writeFileSync(file, JSON.stringify({ ...claim, pid: 2_147_483_647 }))
+    }
+    if (mode === 'superseded') {
+      const file = attendantStatusPath(SESSION, h.env)
+      const status = JSON.parse(readFileSync(file, 'utf8'))
+      writeFileSync(file, JSON.stringify({ ...status, incarnation: 'previous-incarnation' }))
+    }
+    const reply = { reply_id: 'rpl_wait', seq: 1, delivery_id: 'del_wait', device_id: 'dev_test', device_name: 'Test',
+      text: 'Continue', answers: [{ question_id: 'q_wait', choice_ids: [], text: 'Continue' }],
+      source: null, created_at: new Date().toISOString() }
+    const accepted: AcceptedAnswerDelivery = { recorded_at: Date.now(), remaining: 0, answers: [{
+      pending: { question: 'Continue?', question_id: 'q_wait', request_id: 'req_wait', collapse_key: 'wait', device_ids: ['dev_test'] },
+      reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true,
+    }] }
+    updateSessionState(SESSION, h.env, state => ({ ...state, accepted,
+      acknowledgement_due: [{ request_id: 'req_wait', recorded_at: accepted.recorded_at, text_required: true }] }))
+    const queued: string[] = []
+    const route = sessionInputRoute(SESSION, h.env, { kind: 'session-queue', deliver: async event => {
+      expect(event.commitDelivery()).toBe(true)
+      queued.push(event.context)
+      return { acknowledgement: 'delivered' }
+    } }, undefined, mode === 'producer' ? 'producer' : 'attendant')
+    await route.defer!(accepted)
+    expect(queued).toEqual(mode === 'live' ? [] : [sessionInputWake()])
+    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
+    expect(h.claims).toEqual([])
   })
 
   it.each(['session-queue', 'inbox-socket'] as const)('drains notes and answers together; an old %s wake cannot repeat an acknowledged answer', async (kind) => {

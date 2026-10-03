@@ -6,9 +6,6 @@ import { reconcileNativeTurn } from './session-attendant-state.js'
 
 export type CodexInputActivity = 'working' | 'idle' | 'aborted' | 'unknown'
 
-/** Private experiment switch; removed when the combined native proof passes. */
-export const codexInputLifecycleEnabled = (env: NodeJS.ProcessEnv): boolean => env['NOTIFAI_CODEX_INPUT_POC'] === '1'
-
 /** Never infers idle from missing callbacks or a Stop hook. */
 export function refreshCodexInputActivity(
   sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string, transcriptPath?: string,
@@ -31,4 +28,32 @@ export function refreshCodexInputActivity(
   } catch { return 'unknown' }
   if (!owns()) return 'unknown'
   return native.latest.ended ? native.latest.outcome === 'aborted' ? 'aborted' : 'idle' : 'working'
+}
+
+/** One observer owns the grace interval across probes and final wake checks.
+ * Only a continuous read failure permits the bounded queue fallback. */
+export function codexInputObserver(
+  sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string, monotonic: () => number,
+  transcriptPath?: string,
+): { observe: () => CodexInputActivity; mayWake: () => boolean } {
+  let unknownSince: number | undefined
+  const observe = (): CodexInputActivity => {
+    const activity = refreshCodexInputActivity(sessionId, env, expectedKey, transcriptPath)
+    if (activity === 'unknown') unknownSince ??= monotonic()
+    else unknownSince = undefined
+    return activity
+  }
+  return {
+    observe,
+    mayWake: () => {
+      if (readSessionIncarnation(sessionId, env)?.key !== expectedKey || sessionHasEnded(sessionId, env)) return false
+      const activity = observe()
+      const owner = readSessionIncarnation(sessionId, env)
+      if (owner?.key !== expectedKey || sessionHasEnded(sessionId, env) ||
+          owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive') return false
+      // Aborting fences its turn; it does not cancel pending User input.
+      return activity === 'idle' || activity === 'aborted' ||
+        (activity === 'unknown' && monotonic() - unknownSince! >= 6_000)
+    },
+  }
 }

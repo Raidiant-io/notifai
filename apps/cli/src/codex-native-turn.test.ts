@@ -7,7 +7,7 @@ import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
 import { currentProcessIdentity } from './process-identity.js'
-import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -128,4 +128,36 @@ it('fences the exact old writer without releasing its live process claim to a co
   releaseClaimFile(claim, token)
   expect(readClaimFile(claim)).not.toBeNull()
   expect(acquireClaimFile(claim, { incarnation: 'inc_example' })).toBeNull()
+})
+
+it('grants fallback only for a continuous read gap, resetting even on an empty-inbox probe', () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'busy')
+  f.event('task_started', 'busy')
+  let now = 0
+  const observer = codexInputObserver('root', f.env, f.key, () => now, f.file)
+  expect(observer.observe()).toBe('working')
+  const gap = () => appendFileSync(f.file, '{"type":"event_msg"')
+  const recover = () => appendFileSync(f.file, ',"payload":{"type":"unrelated"}}\n')
+  gap()
+  expect(observer.mayWake()).toBe(false)
+  now = 5_999
+  expect(observer.mayWake()).toBe(false)
+  recover()
+  // A foreground hook drained the input. The ordinary presence probe is the
+  // only caller now, and must still reset the scheduling grace interval.
+  expect(observer.observe()).toBe('working')
+  now = 10_000
+  gap()
+  expect(observer.mayWake()).toBe(false)
+  now = 15_999
+  expect(observer.mayWake()).toBe(false)
+  now = 16_000
+  expect(observer.mayWake()).toBe(true)
+  recover()
+  expect(observer.mayWake()).toBe(false)
+  f.event('task_complete', 'busy')
+  expect(observer.mayWake()).toBe(true)
+  f.event('task_started', 'new-prompt')
+  expect(observer.mayWake()).toBe(false)
 })

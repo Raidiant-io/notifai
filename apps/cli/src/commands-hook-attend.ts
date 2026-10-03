@@ -58,7 +58,6 @@ import {
 import {
   attendantClaimPath,
   attendantStatusPath,
-  readTurnActivity,
   observedCodexTurnActivity,
   readAttendantLease,
   recordTurnEnd,
@@ -79,7 +78,7 @@ import { readOpenclawGeneration } from './openclaw-generation.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
-import { codexInputLifecycleEnabled, refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
@@ -174,11 +173,11 @@ export async function attendHook(
   }
   const observeNative = (key: string, initial = false): void => {
     if (!ownsNative(key)) return
-    if (codexInputLifecycleEnabled(deps.env) && envelope.hook_event_name === 'Stop') {
+    if (envelope.hook_event_name === 'Stop') {
       refreshCodexInputActivity(sessionId, deps.env, key, envelope.transcript_path)
       return
     }
-    if (envelope.hook_event_name === 'Stop' || envelope.hook_event_name === 'Interrupt') {
+    if (envelope.hook_event_name === 'Interrupt') {
       recordCodexTurnEnd(envelope, sessionId, deps.env)
       return
     }
@@ -309,6 +308,9 @@ export async function attendHook(
   })
 
   const served = record
+  const codexActivity = harness === 'codex'
+    ? codexInputObserver(sessionId, deps.env, served.key, clock.monotonic, input.recovery?.transcriptPath ?? envelope.transcript_path)
+    : null
   const probeAdapters = seams.probeAdapters ?? systemClaudeProbeAdapters(deps.env)
   // SessionEnd names the incarnation it ended; an end of any other one,
   // earlier or later, is not this attendant's.
@@ -319,14 +321,11 @@ export async function attendHook(
           harness: harnessProcess,
           endedByHook,
           activity: () => {
-            if (codexInputLifecycleEnabled(deps.env)) {
-              // Presence remains live through a read gap. The binary service
-              // activity is explicitly last-observed; scheduling reads afresh.
-              const activity = refreshCodexInputActivity(sessionId, deps.env, served.key, input.recovery?.transcriptPath ?? envelope.transcript_path)
-              if (activity === 'unknown') logger.debug('attendant.state', { activity: 'cached', reason: 'native-activity-unreadable' })
-              return observedCodexTurnActivity(sessionId, deps.env, served.key)
-            }
-            return readTurnActivity(sessionId, deps.env, served.key)
+            // Presence remains live through a read gap. The binary service
+            // activity is last-observed; scheduling reads afresh.
+            const activity = codexActivity!.observe()
+            if (activity === 'unknown') logger.debug('attendant.state', { activity: 'cached', reason: 'native-activity-unreadable' })
+            return observedCodexTurnActivity(sessionId, deps.env, served.key)
           },
           adapters: probeAdapters,
         })
@@ -350,9 +349,7 @@ export async function attendHook(
       : null
     return client
   }
-  const codexWakeNeeded = harness === 'codex' && codexInputLifecycleEnabled(deps.env)
-    ? codexWakeEligibility(deps, sessionId, served.key, clock.monotonic)
-    : null
+  const codexWakeNeeded = codexActivity?.mayWake ?? null
   const messages = sessionMessageWriter({
     deps,
     harness: harness!,
@@ -555,25 +552,6 @@ function codexMessageWriter(input: {
       return result.status === 'written'
     }, logger)
     return 'done'
-  }
-}
-
-/** Optional native control is irrelevant here: trusted hooks and completion
- * evidence decide whether the resident can omit a busy wake. A transient read
- * gap gets three ordinary probe intervals before the supported queue fallback. */
-function codexWakeEligibility(deps: CommandDeps, sessionId: string, expectedKey: string, monotonic: () => number): () => boolean {
-  let unknownSince: number | undefined
-  return () => {
-    if (readSessionIncarnation(sessionId, deps.env)?.key !== expectedKey) return false
-    const activity = refreshCodexInputActivity(sessionId, deps.env, expectedKey)
-    if (activity === 'unknown') {
-      unknownSince ??= monotonic()
-      return monotonic() - unknownSince >= 6_000
-    }
-    unknownSince = undefined
-    // Aborting fences writes into that turn; it does not cancel User input.
-    // The caller wakes only for eligible, never already-presented, input.
-    return activity === 'idle' || activity === 'aborted'
   }
 }
 

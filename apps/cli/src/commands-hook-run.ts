@@ -921,7 +921,7 @@ function stopWakeRoute(
       cwd,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
-    }), log(deps))
+    }), log(deps), 'attendant')
   }
   return undefined
 }

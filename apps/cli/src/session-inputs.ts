@@ -17,7 +17,6 @@ import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import type { Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type SequencerDeps } from './session-delivery.js'
-import { codexInputLifecycleEnabled } from './codex-input-lifecycle.js'
 import { readAttendantLease } from './session-attendant-state.js'
 
 export function sessionInputWake(): string {
@@ -85,12 +84,16 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
 }
 
 /** The existing route wakes the exact owner, but no longer owns answer text. */
-export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger): EscalationDeliveryRoute {
+export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer'): EscalationDeliveryRoute {
   return { ...route, defer: async (accepted) => {
     stageSessionAnswers(sessionId, env, accepted)
     // A live resident owns scheduling; its completion probe also covers the
     // case where no more tool callbacks occur. Preserve return when absent.
-    if (route.kind === 'session-queue' && codexInputLifecycleEnabled(env) && readAttendantLease(sessionId, env) !== null) return
+    if (wakeOwner === 'attendant') {
+      const owner = readSessionIncarnation(sessionId, env)
+      const lease = readAttendantLease(sessionId, env)
+      if (owner !== null && lease?.incarnation === owner.incarnation) return
+    }
     await wakeSessionInputs(sessionId, env, async (text) => {
       const result = await route.deliver({
         context: text, answers: 0, remaining: 0, request_ids: [], journal_recorded_at: accepted.recorded_at,
