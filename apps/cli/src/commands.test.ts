@@ -3177,9 +3177,9 @@ describe('credential origin pinning', () => {
       poll_verifier_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
       confirmation_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
     })
-    expect(io.outLines[1]).toMatch(
-      /^Approve this machine at: https:\/\/selfhost\.example\/pair\/ABCD-EFGH#confirmation_secret=[A-Za-z0-9_-]{43}$/,
-    )
+    // The first poll already approved this pairing. No further approval
+    // instructions are needed; the saved credential proves the selected origin.
+    expect(io.outLines.some(line => line.startsWith('Pairing code:'))).toBe(false)
   })
 
   it('stops login when the approving account has no product access', async () => {
