@@ -105,7 +105,9 @@ import {
 import { opencodePluginSource } from './opencode-plugin.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
-import { readSessionState, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { recordTurnStart } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
   nativeSkills as realNativeSkills,
@@ -8541,6 +8543,86 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
+  it.each(['supported', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on current service support: %s', async mode => {
+    const cwd = scratchDir('notifai-native-ask-output-')
+    const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
+    const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
+    const io = new CapturedIo()
+    const compatibility = vi.fn(async () => {
+      if (mode === 'unavailable') throw new NetworkError('timed out')
+      if (mode === 'changed-turn') recordTurnStart(sessionId, env, owner.key, 'turn-2')
+      if (mode === 'lost-machine') deps.store.load = () => null
+      if (mode === 'changed-machine' || mode === 'changed-service' || mode === 'machine-lost-in-lock') {
+        const credential = deps.store.load()!
+        let loads = 0
+        deps.store.load = () => mode === 'machine-lost-in-lock'
+          ? (++loads === 1 ? credential : null)
+          : { ...credential, ...(mode === 'changed-machine' ? { machineId: 'other' } : { baseUrl: 'https://other.example.test' }) }
+      }
+      if (mode === 'ended' || mode === 'ended-unavailable' || mode === 'replaced-owner') {
+        markSessionEnded(sessionId, env, Date.now())
+        if (mode === 'ended-unavailable') throw new NetworkError('timed out')
+        if (mode === 'replaced-owner') {
+          const successor = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+          expect(successor.key).not.toBe(owner.key)
+        }
+      }
+      return { server_capabilities: mode === 'missing' ? [] : mode === 'malformed' ? null : ['harness_answers'] }
+    })
+    const spawn = vi.fn()
+    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn }
+    mkdirSync(path.join(cwd, '.notifai'))
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    const owner = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    const file = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, [
+      { type: 'session_meta', payload: { id: sessionId, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+    ].map(item => JSON.stringify(item) + '\n').join(''))
+    recordTurnStart(sessionId, env, owner.key, 'turn-1')
+    writeCurrentCodexSessionState(cwd, env, sessionId, {
+      last_prompt_at: 42,
+      codex_native_turn: { key: owner.key, turn_id: 'turn-1', transcript_path: file },
+      codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
+    })
+    io.outLines = []
+    const machineChanged = ['lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock'].includes(mode)
+    const ownerChanged = ['ended', 'ended-unavailable', 'replaced-owner'].includes(mode)
+    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
+    const output = JSON.parse(io.outLines.join('\n'))
+    expect(compatibility).toHaveBeenCalledTimes(1)
+    if (machineChanged || ownerChanged) {
+      expect(output.code).toBe(machineChanged ? 'auth_required' : 'session_changed')
+      expect(spawn).not.toHaveBeenCalled()
+      expect(readSessionState(sessionId, env).pending).toBeUndefined()
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      return
+    }
+    if (mode !== 'supported') {
+      expect(output.native_question).toBeUndefined()
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
+      return
+    }
+    expect(output.native_question).toMatchObject({ tool: 'request_user_input_async',
+      questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
+    })
+    expect(output.native_question.instructions).toContain(`notifai acknowledge ${output.question_id}`)
+    expect(output.native_question.instructions).toContain('first dependent command')
+    expect(readSessionState(sessionId, env).codex_question_bindings?.[0]?.question_id).toBe(output.question_id)
+    io.outLines = []
+    expect(askCommand(deps, 'Combine?', { choice: ['One', 'Two'], multi: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
+    writeSessionState(sessionId, env, { ...readSessionState(sessionId, env), codex_tool_hook: undefined })
+    io.outLines = []
+    expect(askCommand(deps, 'Ordinary?', { json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
+    expect(compatibility).toHaveBeenCalledTimes(1)
+  })
+
   it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {
     const root = scratchDir('notifai-active-codex-matching-')
     const repo = path.join(root, 'repo')
@@ -9225,6 +9307,37 @@ describe('asking before the hooks have ever run', () => {
     })
   })
 
+  it.each(['another-machine', 'unpaired'] as const)('refuses to relabel question ownership when media upload races %s', async transition => {
+    const cwd = scratchDir('notifai-ask-media-owner-')
+    const media = path.join(cwd, 'image.png')
+    writeFileSync(media, 'image')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-media-owner' }
+    let entered!: () => void
+    let release!: () => void
+    const uploadEntered = new Promise<void>(resolve => { entered = resolve })
+    const heldUpload = new Promise<void>(resolve => { release = resolve })
+    const client = {
+      createMediaUpload: async () => ({ media_id: 'med_owned', upload_url: 'https://upload.invalid/owned', upload_headers: {}, expires_at: new Date(Date.now() + 60_000).toISOString() }),
+      uploadMedia: async () => { entered(); await heldUpload },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+    let credential = deps.store.load()
+    deps.store.load = () => credential
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeCurrentCodexSessionState(cwd, env, env.CODEX_THREAD_ID, { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, env.CODEX_THREAD_ID, 42, 'codex')
+    const command = askCommand(deps, 'Use this image?', { image: [media], json: true })
+    await uploadEntered
+    expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+    credential = transition === 'unpaired' ? null : { ...credential!, machineId: 'machine_b' }
+    release()
+    expect(await command).toBe(EXIT.auth)
+    expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ registered: false, message: expect.stringContaining('Approved Machine changed') })
+  })
+
   // A harness exports its markers into everything it starts, so a nested
   // harness sees its parent's markers alongside its own. Neither order between
   // two markers can be right, and both nestings are ordinary: an orchestrator
@@ -9782,6 +9895,9 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
     expect(readSessionState('claude-current', env).pending?.[0]?.question).toBe('Ship it?')
+    expect(readSessionState('claude-current', env).pending?.[0]?.service_identity).toEqual({
+      base_url: deps.store.load()!.baseUrl, machine_id: deps.store.load()!.machineId,
+    })
 
     const readiness = await assessReadiness(deps)
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')

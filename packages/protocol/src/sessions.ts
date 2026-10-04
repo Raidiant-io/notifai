@@ -452,9 +452,14 @@ export type CreateAnswerEditRequestT = Static<typeof CreateAnswerEditRequest>
  * a `deliver` close fenced them. Post-delivery edits carry their Session
  * Message state.
  */
-export type AnswerVersionStatus = 'superseded' | 'current' | 'delivered' | SessionMessageState
+export type AnswerVersionStatus = 'superseded' | 'current' | 'delivered' | 'presented' | SessionMessageState
 
 export interface AnswerVersionView {
+  origin: 'companion' | 'harness'
+  /** An explicit agent report does not attest which native UI control was used. */
+  provenance: 'agent-reported' | null
+  /** The exact version explicitly corrected, or null for an independent answer. */
+  base_version: string | null
   /** `reply_id` for a reply, `message_id` for a post-delivery edit; `base_version` names it. */
   version_id: string
   /** `edit` when written through answer-edits, before or after delivery. */

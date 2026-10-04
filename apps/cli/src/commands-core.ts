@@ -189,7 +189,9 @@ export function diagnoseIgnoredOriginOverride(
   )
 }
 
-export function authedClient(deps: CommandDeps, config: CliConfig): { client: ApiClient; baseUrl: string } | null {
+export function authedClient(deps: CommandDeps, config: CliConfig): {
+  client: ApiClient; baseUrl: string; service: { base_url: string; machine_id: string }
+} | null {
   const credential = deps.store.load()
   if (!credential) {
     // The commonest reason a command does nothing, and one that leaves no other
@@ -204,6 +206,7 @@ export function authedClient(deps: CommandDeps, config: CliConfig): { client: Ap
   return {
     client: makeClient(deps, baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`),
     baseUrl,
+    service: { base_url: baseUrl, machine_id: credential.machineId },
   }
 }
 

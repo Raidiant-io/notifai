@@ -188,21 +188,23 @@ notifai status <question_id> --json
 
 States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 
-**Registering is not the end of the turn.** Ask in plain conversational text,
-say what each answer will make you do, and continue independent work.
-Submission does not wait for turn end; answer-dependent work waits for the reply.
-A harness form can remain pending after a reply; neither path retires the other.
+**Registering is not the end of the turn.** Say what each answer will make you do
+and continue independent work. Submission starts immediately; dependent work
+waits for the reply.
+A harness form can remain pending after a reply; never promise linked closure.
+When `ask` returns `native_question`, read [native questions](references/native-questions.md)
+before emitting its form or acting on its answer.
 
-**Never say where the answer must arrive** ("tell me here"). The harness owns routing.
+**Never say where the answer must arrive** ("tell me here").
 
 Use `--multi` for combined answers, `--body-file` for Body, `--image` for
 evidence, or `--form <path|->` for up to 10 questions with one `summary`.
 
-Register independent questions separately. Retire an obsolete registration or
-one answered in the conversation with
+Register independent questions separately. Retire obsolete questions or unlinked
+ones answered in the conversation with
 `notifai close <question_id>` or `notifai close --pending`.
 
-Keep every ID after a timeout or unavailable route. Inspect the original with
+After a timeout or unavailable route, keep IDs and inspect
 `notifai status <question_id|request_id> --json` and `notifai replies
 <request_id> --json`; never create a duplicate.
 
@@ -246,19 +248,18 @@ to read pending notes and answers together. An empty result means continue.
 The wake-up contains no answer and needs no acknowledgement; never recover an
 old answer from it. Hooks may have delivered the input already.
 
-The latest reply is the user's current word: later choices correct earlier
-ones; typed parts are read together in order. A relayed answer uses the chosen
-label; `notifai replies <request_id> --json` has stable choice ids.
+Within one submission, the latest reply corrects earlier choices; read typed
+parts in order. Preserve distinct submissions and clarify conflicts before
+acting. Relays use choice labels; `notifai replies <request_id> --json` has IDs.
 
-Questions normally remain answerable for a day. Without a relayed answer,
-inspect the original `question_id`; if lost, list outstanding questions:
+Questions default to a day. Inspect `question_id` for a missing answer, or list:
 
 ```bash
 notifai replies --pending --json
 ```
 
 **Acknowledge before you resume.** The user needs to know their reply was read.
-Notifai tells you the exact command; run it once per answered request or
+Notifai tells you the exact command; run it once per presented submission or
 [note or edit](references/notes-and-edits.md) (`sm_…`) that arrived through
 Notifai, before the work it unblocks:
 
@@ -269,8 +270,8 @@ notifai acknowledge <request_id> --text "Rolling out to staging now; I'll report
 Keep it under 200 characters and name only the concrete work their reply
 causes: it is a receipt, not a report.
 
-If written replies are off, run the printed command without `--text`.
-Acknowledgement is required.
+For app answers, notes and edits, omit `--text` when written replies are off.
+Acknowledgement remains required.
 
 Then resume the committed work without asking them to confirm again; it is
 work you are resuming, not approval you received.
@@ -292,23 +293,12 @@ Never tell the user to run a command you could have run yourself.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-`notifai init --json` starts QR-first computer approval without prompting and
-returns. Its `credential` gap carries `technical.pairing.qr_path`, `.qr_text_path`,
-`.approve_url` and `.code`. Present the QR before asking the User to scan or report
-a result. In a terminal or text-only harness, read `.qr_text_path` and display its
-library-generated QR verbatim in a fenced text block beside the code. In a harness
-that displays local images, show `.qr_path`. Use T2 in
-<https://app.notifai.sh/setup.md>. Compare the code in the signed-in Companion App;
-opening review never approves automatically. Never include the QR or its approval
-link in any Notification Request field or media: they carry one-time approval proof.
+For a QR-first credential gap, read [computer approval and browser fallback](references/harness-setup.md#signing-this-machine-in)
+before proceeding. Present the local image or library-generated text QR with
+its matching code before asking for a scan or result; a path alone is insufficient.
+Only the User approves. Keep the QR and proof-bearing link local; never infer
+an Account email. Resume the same pairing after approval.
 
-Browser approval is selectable with `notifai init --approval browser --json`.
-The notification alternative uses `--approval notification --approval-email <email>`;
-ask for the Account email only if the User selects it, never infer it from other
-services or files. An invitation requested is not evidence it reached an app.
-All routes resume the same pairing. Once the User says it is approved, run init
-again to continue. If neither QR representation can be displayed, present the
-browser alternative truthfully rather than claiming a QR was shown.
 Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.
 Lifecycle wiring has no scope: one install per harness for this machine;

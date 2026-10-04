@@ -716,7 +716,7 @@ export function estimateApnsPayloadBytes(
     draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,
     // Done-tier syncs may announce acknowledgement availability. The timestamp
     // is fixed width and text is deliberately absent from push envelopes.
-    draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0) } : null,
+    draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0), replyId: 'rpl_00000000000000000000000000' } : null,
   )
   return new TextEncoder().encode(JSON.stringify(envelope.payload)).length
 }
@@ -731,7 +731,7 @@ export function estimateFcmPayloadBytes(draft: NotificationDraftT): number {
     draft.reply !== undefined ? new Date(0) : null,
     null,
     draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,
-    draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0) } : null,
+    draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0), replyId: 'rpl_00000000000000000000000000' } : null,
   )
   return new TextEncoder().encode(JSON.stringify(envelope.data)).length
 }

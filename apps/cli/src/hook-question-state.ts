@@ -18,6 +18,7 @@ import type {
   QuestionTerminalState,
   SessionState,
 } from './hook-types.js'
+import type { ServiceIdentity } from './credentials.js'
 import { inferInvocationContext } from './invocation-context.js'
 export interface QuestionStateView {
   question_id: string
@@ -273,6 +274,7 @@ export function admitQueuedQuestion<T>(
   intent: PendingSubmissionIntent,
   now: number,
   submit: () => Promise<T>,
+  serviceIdentity?: ServiceIdentity,
 ): Promise<T> | null {
   const file = sessionStatePath(sessionId, env)
   return withFileLock(`${file}.lock`, () => {
@@ -282,6 +284,10 @@ export function admitQueuedQuestion<T>(
     if (index < 0) return null
     const pending = [...pendingList(current)]
     const candidate = pending[index]!
+    for (const identity of [candidate.service_identity, intent.service_identity]) {
+      if (identity !== undefined && (identity.machine_id !== serviceIdentity?.machine_id ||
+          identity.base_url !== serviceIdentity?.base_url)) return null
+    }
     if (candidate.submission?.request_id !== intent.request_id) return null
     pending[index] = {
       ...candidate,
@@ -292,21 +298,29 @@ export function admitQueuedQuestion<T>(
   })
 }
 
-export function clearFrozenSubmission(
+/** Replace only the rejected frozen identity, atomically with the native
+ * obligation check. Preparing a replacement never erases the original first.
+ */
+export function replaceFrozenSubmission(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   entry: PendingQuestion,
-): void {
+  rejected: PendingSubmissionIntent,
+  replacement: PendingSubmissionIntent,
+): boolean {
+  let replaced = false
   updateSessionState(sessionId, env, (current) => {
+    if (sessionHasEnded(sessionId, env) || current.native_answer_operations?.some(op => op.question_id === entry.question_id)) return current
     const list = pendingList(current)
-    const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-    if (index < 0) return current
+    const index = queuedQuestionIndex(current, entry)
+    if (index < 0 || list[index]?.submission?.request_id !== rejected.request_id ||
+        list[index]?.submission?.idempotency_key !== rejected.idempotency_key) return current
     const next = [...list]
-    const copy = { ...next[index]! }
-    delete copy.submission
-    next[index] = copy
+    next[index] = { ...next[index]!, submission: replacement }
+    replaced = true
     return { ...current, pending: next }
   })
+  return replaced
 }
 
 /** The question set this pending record pushes, however it was registered. */

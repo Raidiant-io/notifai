@@ -4,6 +4,8 @@
  * presentation. A late wake therefore cannot resurrect an acknowledged answer.
  */
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import { markCodexOrdinaryPresentation } from './codex-question-bindings.js'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AttendanceMessage } from '@raidiant/notifai-protocol'
@@ -12,12 +14,13 @@ import { sanitizeSessionId, stateDir } from './config.js'
 import { answersContext, clearAcknowledgementObligation, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
 import { retiringQuestion } from './hook-question-retirement.js'
 import { readSessionIncarnation, readSessionState, recordSessionNotified, sessionHasEnded, updateSessionState } from './hook-session-state.js'
-import type { AcceptedAnswerDelivery, EscalationDeliveryRoute, SessionState } from './hook-types.js'
+import type { AcceptedAnswerDelivery, AnsweredPending, EscalationDeliveryRoute, SessionState } from './hook-types.js'
 import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import type { Logger } from './logging.js'
-import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type SequencerDeps } from './session-delivery.js'
-import { connectCodexQueue, NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type NativeAnswerPresentation, type SequencerDeps } from './session-delivery.js'
+import { CodexControlNotSent } from './codex-native-control.js'
+import { connectCodexQueue, type QueueControl } from './codex-queue-control.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { admitInputWake, detachInputWakes, electInputWake, observeInputWake, readInputWakes, reconcileInputWakes, recoverUncertainInputWake } from './session-input-wakes.js'
 import { readAttendantLease, nativeTurnContinues } from './session-attendant-state.js'
@@ -215,7 +218,7 @@ export async function wakeCodexSessionInputs(input: {
       ...control, add: async (token, text) => {
         // Recovery may have awaited a native lookup. Refresh in-process lease
         // authority at the actual byte boundary, outside every state lock.
-        if (!input.mayWrite() || !input.mayWake()) throw new NativeQueueNotSent('Wake authorization changed before send')
+        if (!input.mayWrite() || !input.mayWake()) throw new CodexControlNotSent('Wake authorization changed before send')
         return control.add(token, text)
       },
     } })
@@ -244,15 +247,40 @@ export async function reconcileSessionInputWakes(sessionId: string, env: NodeJS.
   try { await reconcileInputWakes(scope, control) } finally { control.close() }
 }
 
-/** One stdout document, at most 20 inputs, with ownership checked at the byte. */
+export interface PreparedInputAnswer {
+  presentation: NativeAnswerPresentation
+  /** Refresh exact binding evidence inside the final consumption transaction. */
+  validate(state: SessionState): { state: SessionState; valid: boolean }
+  write(mayWrite: () => boolean): Promise<void>
+  close(): void
+}
+
+export interface NativeInputAnswers {
+  eligible(answer: AnsweredPending, state: SessionState): boolean
+  /** No answer bytes. Null chooses ordinary presentation of the same prefix. */
+  prepare(answer: AnsweredPending, state: SessionState, deadline: number): Promise<PreparedInputAnswer | null>
+}
+
+function samePendingAnswer(state: SessionState, answer: AnsweredPending): boolean {
+  return state.acknowledgement_due?.some(entry => entry.request_id === answer.pending.request_id) === true &&
+    state.waiting_answers?.some(entry => isDeepStrictEqual(entry, answer)) === true
+}
+
+/** One ordered prefix, at most 20 inputs, with ownership checked at the byte. */
 async function drainSessionInputsOnce(input: {
   sequencer: SequencerDeps
   lease: DeliveryLease | null
   mayWrite(): boolean
   write(text: string): void
+  nativeAnswers?: NativeInputAnswers
 }): Promise<boolean> {
   const { sequencer: deps, lease } = input
-  const { answers, messages } = pendingSessionInputs(deps.sessionId, deps.env, lease)
+  const initial = readSessionState(deps.sessionId, deps.env)
+  const batch = pendingSessionInputs(deps.sessionId, deps.env, lease, initial)
+  const nativeAt = input.nativeAnswers === undefined ? -1 : batch.answers.findIndex(answer =>
+    answer.delivery_claim === true && input.nativeAnswers!.eligible(answer, initial))
+  const answers = nativeAt < 0 ? batch.answers : batch.answers.slice(0, nativeAt === 0 ? 1 : nativeAt)
+  const messages = nativeAt < 0 ? batch.messages : []
   if (answers.length + messages.length === 0 || !input.mayWrite()) return false
   // An unfenced answer has no server claim to reject a stale local copy.
   // Reconcile it before presentation; inability to check must defer it.
@@ -285,9 +313,13 @@ async function drainSessionInputsOnce(input: {
   // A concurrent consumer may have drained an unclaimed answer while this
   // reader waited for the delivery lock. Re-read while holding that lock.
   const current = readSessionState(deps.sessionId, deps.env)
+  if (answers.some(answer => current.waiting_answers?.some(entry =>
+    entry.pending.request_id === answer.pending.request_id && !isDeepStrictEqual(entry, answer)))) {
+    await handOff.finish('not-written')
+    return false
+  }
   const readyAnswers = answers.filter((answer) =>
-    current.waiting_answers?.some((entry) => entry.pending.request_id === answer.pending.request_id) &&
-    current.acknowledgement_due?.some((entry) => entry.request_id === answer.pending.request_id) &&
+    samePendingAnswer(current, answer) &&
     (answer.delivery_claim !== true || ids.has(answer.pending.request_id!)))
   const readyMessages = messages.filter((message) => ids.has(message.message_id))
   if (readyAnswers.length + readyMessages.length === 0 || !input.mayWrite() || !handOff.writable()) {
@@ -300,6 +332,8 @@ async function drainSessionInputsOnce(input: {
   ].join('\n\n')
   let began = false
   let outputAttempted = false
+  let consumedState = false
+  let prepared: PreparedInputAnswer | null = null
   const restoreUnwritten = (): void => {
     updateSessionState(deps.sessionId, deps.env, (latest) => ({
       ...latest, waiting_answers: [
@@ -315,21 +349,39 @@ async function drainSessionInputsOnce(input: {
     }
   }
   try {
-    if (!handOff.begin(() => !sessionHasEnded(deps.sessionId, deps.env))) {
+    if (nativeAt === 0 && readyAnswers.length === 1 && input.nativeAnswers !== undefined) {
+      prepared = await input.nativeAnswers.prepare(readyAnswers[0]!, current, deps.monotonic() + handOff.remainingMs())
+    }
+    if (!handOff.begin(() => !sessionHasEnded(deps.sessionId, deps.env),
+      prepared === null ? {} : { presentation: prepared.presentation })) {
       await handOff.finish('not-written')
       return false
     }
     began = true
-    // Persist consumption before stdout; an ambiguous output is never replayed.
+    // Persist the selected revision and consumption before bytes. A changed
+    // revision remains pending for a fresh handoff, never this prepared write.
     const consumed = new Set(readyAnswers.map((answer) => answer.pending.request_id))
     updateSessionState(deps.sessionId, deps.env, (latest) => {
+      if (prepared !== null) {
+        const checked = prepared.validate(latest)
+        latest = checked.state
+        if (!checked.valid) return latest
+      }
+      if (!input.mayWrite() || !handOff.writable() || !readyAnswers.every(answer => samePendingAnswer(latest, answer))) return latest
+      if (prepared === null) latest = markCodexOrdinaryPresentation(latest, new Set(readyAnswers.flatMap(answer =>
+        answer.pending.question_id === undefined ? [] : [answer.pending.question_id])))
       const retiring = [...(latest.retiring ?? [])]
       for (const answer of readyAnswers) {
         const entry = retiringQuestion(answer.pending, 'answered')
         if (entry !== null && !retiring.some((item) => item.request_id === entry.request_id)) retiring.push(entry)
       }
+      consumedState = true
       return { ...latest, waiting_answers: (latest.waiting_answers ?? []).filter((answer) => !consumed.has(answer.pending.request_id)), retiring }
     })
+    if (!consumedState) {
+      await handOff.finish('aborted')
+      return false
+    }
     for (const message of readyMessages) recordMessageAcknowledgementDue(deps.sessionId, deps.env, {
       message_id: message.message_id, recorded_at: deps.wall(), text_required: message.agent_acknowledgement_text_required,
     })
@@ -339,22 +391,27 @@ async function drainSessionInputsOnce(input: {
       return false
     }
     outputAttempted = true
-    input.write(text)
+    if (prepared === null) input.write(text)
+    else await prepared.write(() => input.mayWrite() && handOff.writable())
     if (readyAnswers.length > 0) updateSessionState(deps.sessionId, deps.env, (latest) => ({
       ...latest, continuation: { answered_at: deps.wall(), count: (latest.continuation?.count ?? 0) + 1 },
     }))
     await handOff.finish('written')
     deps.log?.info('delivery.handoff', {
-      route: 'input-drain', stage: 'presented', answers: readyAnswers.length, messages: readyMessages.length,
+      route: prepared === null ? 'input-drain' : 'native-answer', stage: 'presented', answers: readyAnswers.length, messages: readyMessages.length,
       request_ids: readyAnswers.map((answer) => answer.pending.request_id), message_ids: readyMessages.map((message) => message.message_id),
       oldest_message_age_ms: Math.max(0, ...readyMessages.map((message) => deps.wall() - Date.parse(message.created_at))),
     })
     return true
   } catch (error) {
-    if (began && !outputAttempted) restoreUnwritten()
+    // Only the native transport can positively prove that no bytes left. Do
+    // not echo now: a new handoff must reacquire claims and recheck revisions.
+    if (prepared !== null && error instanceof CodexControlNotSent) outputAttempted = false
+    if (consumedState && !outputAttempted) restoreUnwritten()
     await handOff.finish(outputAttempted ? 'failed' : began ? 'aborted' : 'not-written')
+    if (prepared !== null && error instanceof CodexControlNotSent) return false
     throw error
-  }
+  } finally { prepared?.close() }
 }
 
 

@@ -182,6 +182,29 @@ describe('a server that never answers', () => {
     expect(response).toMatchObject({ close_disposition: 'deliver', delivered_reply_seq: 2 })
   })
 
+  it('reports native answers separately from their exact scoped acknowledgement', async () => {
+    const seen: { method?: string; url?: string; body: unknown }[] = []
+    const baseUrl = await serving((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => { raw += String(chunk) })
+      request.on('end', () => {
+        seen.push({ method: request.method, url: request.url, body: JSON.parse(raw) as unknown })
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify(request.method === 'POST'
+          ? { status: 'recorded', reply_seq: 7, complete: true, other_submissions: [], answer_version: {} }
+          : { status: 'recorded', agent_acknowledgement: { text: 'I will use this answer.', created_at: '2026-10-03T12:00:00Z' } }))
+      })
+    })
+    const client = createClient(baseUrl, 'Bearer test')
+    const body = { session_id: 'local-session', submission_id: 'opaque_operation', answers: [{ question_id: 'q1', text: 'A typed answer' }] }
+    const report = await client.recordHarnessAnswer('req/encoded', body)
+    await client.putAgentAcknowledgement('req/encoded', { session_id: 'local-session', reply_seq: report.reply_seq, text: 'I will use this answer.' })
+    expect(seen).toEqual([
+      { method: 'POST', url: '/api/v1/notifications/req%2Fencoded/harness-answers', body },
+      { method: 'PUT', url: '/api/v1/notifications/req%2Fencoded/agent-acknowledgement', body: { session_id: 'local-session', reply_seq: 7, text: 'I will use this answer.' } },
+    ])
+  })
+
   it('puts and fetches Agent Acknowledgements on the encoded request path', async () => {
     const seen: { method?: string; url?: string; body?: unknown }[] = []
     const baseUrl = await serving((request, response) => {

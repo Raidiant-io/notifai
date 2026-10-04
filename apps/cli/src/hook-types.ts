@@ -1,4 +1,7 @@
 import type { InputWakeAttempt } from './session-input-wakes.js'
+import type { NativeAnswerOperation } from './native-answer-operation.js'
+import type { CodexQuestionRegistration } from './codex-question-bindings.js'
+import type { ServiceIdentity } from './credentials.js'
 /** Value-free contracts shared across hook state and lifecycle modules. */
 import type {
   LifecycleEndState,
@@ -60,7 +63,7 @@ export interface HookEnvelope {
   prompt?: string
   /** Codex's exact turn id on prompt, tool, Stop and Interrupt callbacks. */
   turn_id?: string
-  /** Native Codex transcript; only typed lifecycle records are consumed. */
+  /** Native Codex transcript; only typed lifecycle/question records are consumed. */
   transcript_path?: string
   /** Codex child hooks carry the root session_id but name the child here. */
   agent_id?: string
@@ -68,6 +71,12 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Exact native associations and sticky ordinary-presentation decisions. */
+  codex_question_bindings?: CodexQuestionRegistration[]
+  /** Never reuse a marker while any registration or operation is retained. */
+  codex_question_marker_counter?: number
+  /** Frozen native-report commands and their independent report/ack receipts. */
+  native_answer_operations?: NativeAnswerOperation[]
   /** Content-free native lifecycle proof, scoped to the current owner. */
   codex_native_turn?: { key: string; turn_id: string; transcript_path: string; observed_at?: number }
   /** Exact incarnation observed executing the currently trusted Codex tool hook. */
@@ -257,6 +266,7 @@ export interface OrphanRetirement extends RetiringQuestion {
 
 /** A fully prepared question submission whose ownership deadline is fixed. */
 export interface PendingSubmissionIntent {
+  service_identity?: ServiceIdentity
   request_id: string
   idempotency_key: string
   collapse_key: string
@@ -272,6 +282,8 @@ export interface PendingSubmissionIntent {
 }
 
 export interface PendingQuestion {
+  /** Credential metadata frozen at registration; never contains the secret. */
+  service_identity?: ServiceIdentity
   /** Stable local identity across racing state writers and submit recovery. */
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */
@@ -422,6 +434,8 @@ export interface EscalationWaiterOptions {
 
 export interface HookContext {
   client: ApiClient
+  /** Metadata for this already-authenticated client; never the credential secret. */
+  service_identity?: ServiceIdentity
   config: CliConfig
   env: NodeJS.ProcessEnv
   now: () => number

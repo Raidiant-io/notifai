@@ -14,13 +14,15 @@ vi.mock('node:child_process', async importOriginal => {
   })
   return { ...original, execFile }
 })
-import { connectCodexQueue, NativeQueueNotSent } from './codex-queue-control.js'
+import { connectCodexControl, CodexControlNotSent } from './codex-native-control.js'
+import { connectCodexQueue } from './codex-queue-control.js'
+import { connectCodexAnswerControl } from './codex-answer-control.js'
 
 // Unix control sockets are optional; Windows uses the CLI fallback.
 const unixIt = it.skipIf(process.platform === 'win32')
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); discovery.mockReset() })
-async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; failList?: boolean; loseReceipt?: boolean } = {}) {
+async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; failList?: boolean; loseReceipt?: boolean; turn?: string; unsupportedTurns?: boolean; wrongSteerReceipt?: boolean } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'nfq-'))
   const home = path.join(root, 'home'); mkdirSync(home)
   const socket = path.join(root, 'q.sock'); const alias = path.join(root, 'alias.sock')
@@ -35,6 +37,14 @@ async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; fai
     switch (request.method) {
       case 'initialize': client.send('null'); reply({ codexHome: options.homeMismatch ? root : home }); break
       case 'thread/loaded/list': reply({ data: options.loaded ?? ['owned-thread'], nextCursor: null }); break
+      case 'thread/turns/list':
+        if (options.unsupportedTurns) client.send(JSON.stringify({ id: request.id, error: { code: -32601 } }))
+        else reply({ data: [{ id: options.turn ?? 'current', status: 'inProgress', itemsView: 'notLoaded' }], nextCursor: null })
+        break
+      case 'turn/steer':
+        if (options.loseReceipt) client.close()
+        else reply({ turnId: options.wrongSteerReceipt ? 'other' : request.params.expectedTurnId })
+        break
       case 'thread/queue/list':
         if (options.failList) client.send(JSON.stringify({ id: request.id, error: { code: -32601 } }))
         else reply({ data: items, nextCursor: null })
@@ -64,8 +74,44 @@ async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; fai
     rmSync(root, { recursive: true, force: true })
   })
   return { root, home, alias, socket, calls, items,
+    connectAnswer: () => connectCodexAnswerControl('owned-thread', 'current', { ...process.env, CODEX_HOME: home }, performance.now() + 2000),
+    connectThread: () => connectCodexControl('owned-thread', { ...process.env, CODEX_HOME: home }, performance.now() + 2000),
     connect: () => connectCodexQueue('owned-thread', { ...process.env, CODEX_HOME: home }, performance.now() + 2000) }
 }
+
+unixIt('reads an already-loaded thread without requiring queue capability or resuming it', async () => {
+  const f = await fixture({ failList: true })
+  const control = (await f.connectThread())!
+  expect(control).not.toBeNull()
+  expect(await control.call('thread/turns/list', { threadId: control.threadId, limit: 1, itemsView: 'notLoaded' })).toMatchObject({ data: [{ id: 'current' }] })
+  expect(f.calls.map(call => call.method)).toEqual(['initialize', 'initialized', 'thread/loaded/list', 'thread/turns/list'])
+  control.close()
+})
+
+unixIt('preflights a bounded turn and steers only the exact expected turn without queue support', async () => {
+  const f = await fixture({ failList: true }); const control = (await f.connectAnswer())!
+  expect(control).not.toBeNull()
+  await control.steer('current', 'controlled answer envelope')
+  expect(f.calls.at(-1)).toMatchObject({ method: 'turn/steer', params: {
+    threadId: 'owned-thread', expectedTurnId: 'current', input: [{ type: 'text', text: 'controlled answer envelope' }],
+  } })
+  expect(f.calls.find(call => call.method === 'thread/turns/list')?.params).toEqual({ threadId: 'owned-thread', limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' })
+  expect(f.calls.some(call => /resume|start|thread\/read|thread\/queue/.test(call.method))).toBe(false)
+  control.close()
+})
+
+unixIt.each([{ unsupportedTurns: true }, { turn: 'newer' }])('falls back before answer bytes when bounded current-turn proof is absent: %j', async options => {
+  const f = await fixture(options)
+  expect(await f.connectAnswer()).toBeNull()
+  expect(f.calls.some(call => call.method === 'turn/steer')).toBe(false)
+})
+
+unixIt.each([{ loseReceipt: true }, { wrongSteerReceipt: true }])('never classifies lost or mismatched native-answer receipts as definitely unsent: %j', async options => {
+  const f = await fixture(options); const control = (await f.connectAnswer())!
+  await expect(control.steer('current', 'controlled answer envelope')).rejects.not.toBeInstanceOf(CodexControlNotSent)
+  expect(f.calls.filter(call => call.method === 'turn/steer')).toHaveLength(1)
+  control.close()
+})
 
 unixIt('discovers a symlinked endpoint, verifies namespace/thread and removes only an exact ID', async () => {
   const f = await fixture(); const control = (await f.connect())!
@@ -91,14 +137,14 @@ unixIt.each([{ loaded: [] }, { homeMismatch: true }, { failList: true }])('refus
 unixIt('classifies an endpoint replacement before send as definitely unsent', async () => {
   const f = await fixture(); const control = (await f.connect())!
   rmSync(f.alias); symlinkSync(f.root, f.alias)
-  await expect(control.add('ours', 'wake')).rejects.toBeInstanceOf(NativeQueueNotSent)
+  await expect(control.add('ours', 'wake')).rejects.toBeInstanceOf(CodexControlNotSent)
   expect(f.items).toHaveLength(0)
   control.close()
 })
 
 unixIt('keeps acceptance uncertain when the server stored input then lost the receipt', async () => {
   const f = await fixture({ loseReceipt: true }); const control = (await f.connect())!
-  await expect(control.add('ours', 'wake')).rejects.not.toBeInstanceOf(NativeQueueNotSent)
+  await expect(control.add('ours', 'wake')).rejects.not.toBeInstanceOf(CodexControlNotSent)
   expect(f.items).toHaveLength(1)
   control.close()
 })

@@ -76,11 +76,29 @@ export type HandOffSubject = ClaimDeliveryAttemptRequestT['subject']
  */
 export type DeliveryJournalStage = 'claimed' | 'writing' | 'written' | 'failed' | 'released'
 
+/** Immutable evidence of a native presentation, never a replayable outbox. */
+export interface NativeAnswerPresentation {
+  kind: 'codex-answer'
+  request_id: string
+  question_id: string
+  replies: Array<{ reply_id: string; seq: number }>
+  questions: Array<{ question_id: string; turn_id: string; call_id: string; index: number }>
+  owner_key: string
+  incarnation: string
+  generation: number
+  service_identity: { base_url: string; machine_id: string }
+  namespace: string
+  thread_id: string
+  expected_turn_id: string
+  envelope_sha256: string
+}
+
 export interface DeliveryJournalEntry {
   attempt_id: string
   subject: HandOffSubject
   stage: DeliveryJournalStage
   writer: ProcessIdentity
+  presentation?: NativeAnswerPresentation
   /** The write is a harness subprocess the writer started; see `groups`. */
   subprocess?: true
   /** Process groups of that subprocess, recorded as soon as they exist. */
@@ -143,7 +161,7 @@ export interface HandOff {
    * leaves the choice to write unclaimed with the caller. `subprocess` marks a
    * write made by a harness subprocess; record its group with `recordGroup`.
    */
-  begin(commit?: () => boolean, options?: { subprocess?: boolean }): boolean
+  begin(commit?: () => boolean, options?: { subprocess?: boolean; presentation?: NativeAnswerPresentation }): boolean
   /**
    * Checked at the write itself (a connected socket, before its first byte):
    * true while every claim still leaves `DELIVERY_WRITE_BOUNDARY_MS`.
@@ -692,7 +710,8 @@ export async function beginHandOff(
         updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
           entries.map((entry) =>
             attemptIds.has(entry.attempt_id)
-              ? { ...entry, stage: 'writing' as const, ...(options.subprocess === true ? { subprocess: true as const } : {}) }
+              ? { ...entry, stage: 'writing' as const, ...(options.subprocess === true ? { subprocess: true as const } : {}),
+                ...(options.presentation === undefined ? {} : { presentation: structuredClone(options.presentation) }) }
               : entry,
           ),
         )
@@ -703,6 +722,7 @@ export async function beginHandOff(
               if (!attemptIds.has(entry.attempt_id)) return entry
               const reverted: DeliveryJournalEntry = { ...entry, stage: 'claimed' }
               delete reverted.subprocess
+              delete reverted.presentation
               return reverted
             }),
           )

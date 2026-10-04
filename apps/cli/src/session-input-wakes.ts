@@ -1,7 +1,8 @@
 /** Durable wake attempts. Native I/O never runs inside the session-state lock. */
 import type { NativeTurnSnapshot } from './codex-native-turn.js'
 import { randomUUID } from 'node:crypto'
-import { NativeQueueNotSent, type QueueControl } from './codex-queue-control.js'
+import { CodexControlNotSent } from './codex-native-control.js'
+import { type QueueControl } from './codex-queue-control.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { readAttendantLease } from './session-attendant-state.js'
@@ -111,7 +112,7 @@ export async function admitInputWake(input: Scope & {
       ...a, nativeId: id, phase: terminal(a) ? a.phase : 'accepted',
     }))
   } catch (error) {
-    if (error instanceof NativeQueueNotSent) {
+    if (error instanceof CodexControlNotSent) {
       mutate(input, attempts => attempts.map(a => a.token === input.token && !terminal(a) ? { ...a, phase: 'cancelled', detached: true } : a))
       return
     }

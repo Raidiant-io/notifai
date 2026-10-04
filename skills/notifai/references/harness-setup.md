@@ -25,10 +25,12 @@ Display the matching code beside it. Never include the QR
 or proof-bearing link in any Notification Request field or media. Use T2 from
 <https://app.notifai.sh/setup.md>: the User reviews their Account, computer, and
 matching code in their signed-in Companion App before approving. A valid Auth
-Session needs no additional email code merely to approve a Machine.
+Session needs no additional email code merely to approve a Machine. Only the User can approve; opening review never approves automatically.
+If the harness cannot display the local QR, present the browser alternative
+truthfully rather than claiming a QR was shown.
 
 Only when the User chooses an approval notification, ask for their Account
-email and run `notifai init --approval notification --approval-email <email>
+email; never infer it from other services or files. Run `notifai init --approval notification --approval-email <email>
 --json`. Requested delivery is not confirmed delivery. For the browser
 alternative use `--approval browser`; it opens no browser by default. Every
 route resumes the same pending approval. When the User says it is approved,
@@ -269,13 +271,18 @@ meter differs per harness:
   Direct inbox wake is unavailable, but it is not needed while this exact Stop
   continuation owns the answer.
 - **Codex:** a detached observer starts after submission and waits in the
-  background for the complete answer window; Stop provides recovery. When an answer arrives, Notifai
-  invokes `codex queue` for the exact Agent Session in the same Codex home.
-  Only a wake-up is queued. Pending notes and answers remain in Notifai until
+  background for the complete answer window; Stop provides recovery. While a
+  trusted tool hook can hand input into a working turn, Notifai uses that hook.
+  Idle sessions, or sessions whose live input path cannot be established, use
+  a content-free wake for the exact Agent Session in the same Codex home.
+  Notifai does not cold-start or resume Codex to obtain a control connection.
+  Pending notes and answers remain in Notifai until
   a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
   A late wake-up cannot repeat an acknowledged answer: it contains no answer
   text. Queue success proves wake storage, not input presentation. Inputs are
   claimed immediately before presentation; uncertain writes are never replayed.
+  Verified queue control can remove a stale wake owned by Notifai; unavailable
+  control leaves the harmless wake in place and preserves human prompts.
   Keep the original question and request identities when investigating a delay.
 - **Grok:** the Stop hook stays held through the complete answer window and
   returns the answer as a decision block to the same Agent Session. Its native
