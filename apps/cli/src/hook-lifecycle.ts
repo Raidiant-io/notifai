@@ -11,7 +11,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
 import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
-import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion } from './codex-question-bindings.js'
+import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -71,7 +71,7 @@ import {
   writeSessionStateUnlocked,
   recordSessionNotified,
 } from './hook-session-state.js'
-import { currentProcessIdentity } from './process-identity.js'
+import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import { userPromptContextOutput } from './session-activation.js'
 import {
   answersAlreadyWritten,
@@ -2492,6 +2492,20 @@ export const MAX_PENDING_QUESTIONS = 4
  */
 export const MAX_LIVE_QUESTIONS = 10
 
+export class QuestionRegistrationChanged extends Error {
+  constructor(readonly reason: 'credential' | 'owner') {
+    super(reason === 'credential'
+      ? 'The Approved Machine changed before question registration completed.'
+      : 'The Agent Session ended or changed before question registration completed.')
+  }
+}
+
+interface QuestionRegistrationGuard {
+  /** Captured before optional asynchronous discovery; a new turn is allowed. */
+  owner_key?: string
+  machineStillMatches: () => boolean
+}
+
 /**
  * A session may hold several registered questions at once: a new `ask` never
  * ends an earlier one. Each reaches the user as its own notification and is
@@ -2509,10 +2523,25 @@ export function registerQuestion(
   env: NodeJS.ProcessEnv,
   question: PendingQuestion,
   now: number = Date.now(),
+  nativeAdmission?: NativeQuestionAdmission,
+  guard?: QuestionRegistrationGuard,
 ): string {
   let full: 'unasked' | 'live' | null = null
+  let stored = false
   const questionId = question.question_id ?? `q_${randomBytes(12).toString('base64url')}`
   updateSessionState(sessionId, env, (state) => {
+    // Revalidate after acquiring the lock: discovery and lock contention can
+    // outlive the owner or its Approved Machine. Neither may adopt this ask.
+    if (guard !== undefined) {
+      if (!guard.machineStillMatches()) throw new QuestionRegistrationChanged('credential')
+      if (guard.owner_key !== undefined) {
+        const owner = readSessionIncarnation(sessionId, env)
+        if (owner?.key !== guard.owner_key || sessionHasEnded(sessionId, env) ||
+            owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive') {
+          throw new QuestionRegistrationChanged('owner')
+        }
+      }
+    }
     const pending = pendingList(state)
     const unasked = pending.filter((entry) => entry.request_id === undefined)
     if (unasked.length >= MAX_PENDING_QUESTIONS) {
@@ -2523,6 +2552,7 @@ export function registerQuestion(
       full = 'live'
       return state
     }
+    stored = true
     const registered = { asked_at: now, ...question, question_id: questionId, question: question.question.slice(0, MAX_STORED_QUESTION_CHARS) }
     return reserveCurrentCodexQuestion({
       ...state,
@@ -2530,7 +2560,7 @@ export function registerQuestion(
         ...pending,
         registered,
       ],
-    }, registered, sessionId, env)
+    }, registered, sessionId, env, nativeAdmission)
   })
   if (full === 'unasked') {
     throw new Error(
@@ -2544,6 +2574,8 @@ export function registerQuestion(
         'Retire the ones you no longer need with `notifai close <question_id>` or `notifai close --pending` before asking another.',
     )
   }
+  // updateSessionState skips its callback when SessionEnd won the lock.
+  if (!stored) throw new QuestionRegistrationChanged('owner')
   return questionId
 }
 

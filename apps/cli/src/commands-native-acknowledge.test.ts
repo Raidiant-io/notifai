@@ -37,7 +37,7 @@ function fixture(confirmed = true) {
   const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
   const questionId = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service,
     questions: [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }],
-  })
+  }, Date.now(), { owner_key: owner.key, turn_id: 'turn-1', service })
   const confirm = () => recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })
   if (confirmed) confirm()
   const binding = readSessionState(sessionId, env).codex_question_bindings![0]!
@@ -173,7 +173,7 @@ it('revokes a native registration added between close-pending discovery and actu
   const retire = retirement.retireQueuedQuestions
   vi.spyOn(retirement, 'retireQueuedQuestions').mockImplementationOnce((...args) => {
     added = registerQuestion(h.sessionId, h.env, { question: 'Later?', summary: 'Later?', service_identity: h.service,
-      questions: [{ id: 'q1', text: 'Later?' }] })
+      questions: [{ id: 'q1', text: 'Later?' }] }, Date.now(), { owner_key: h.owner.key, turn_id: 'turn-1', service: h.service })
     return retire(...args)
   })
   expect(await closeCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)

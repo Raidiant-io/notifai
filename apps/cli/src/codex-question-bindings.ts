@@ -38,19 +38,36 @@ export function nativeQuestionTitle(binding: CodexQuestionBinding): string {
   return `[nf:${binding.marker}] ${binding.question.text}`
 }
 
-/** Called by registration while holding the session lock. Capability absence
- * leaves the ordinary registration untouched and creates no native authority.
- */
-export function reserveCurrentCodexQuestion(state: SessionState, pending: PendingQuestion, sessionId: string, env: NodeJS.ProcessEnv): SessionState {
+/** Invocation-local service permission; never stored or reused for later asks. */
+export interface NativeQuestionAdmission {
+  owner_key: string
+  turn_id: string
+  service: ServiceIdentity
+}
+
+/** Read-only local eligibility. Registration repeats this under its lock. */
+export function currentCodexQuestionContext(state: SessionState, sessionId: string, env: NodeJS.ProcessEnv):
+  { owner_key: string; snapshot: NativeTurnSnapshot } | null {
   const owner = readSessionIncarnation(sessionId, env)
   const proof = state.codex_native_turn
   if (state.harness !== 'codex' || owner === null || proof?.key !== owner.key || sessionHasEnded(sessionId, env) ||
       owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive' ||
       state.codex_tool_hook?.incarnation !== owner.incarnation || state.codex_tool_hook.root_observed?.turn_id !== proof.turn_id ||
-      currentCodexTurn(sessionId, env, owner.key) !== proof.turn_id) return state
+      currentCodexTurn(sessionId, env, owner.key) !== proof.turn_id) return null
   const snapshot = readNativeQuestionSnapshot(proof.transcript_path, sessionId, env)
-  if (snapshot === null || snapshot.latest.id !== proof.turn_id) return state
-  return reserveCodexQuestion(state, pending, owner.key, snapshot)
+  if (snapshot === null || snapshot.latest.id !== proof.turn_id || snapshot.latest.ended) return null
+  return { owner_key: owner.key, snapshot }
+}
+
+/** Called by registration while holding the session lock. Capability absence
+ * leaves the ordinary registration untouched and creates no native authority.
+ */
+export function reserveCurrentCodexQuestion(state: SessionState, pending: PendingQuestion, sessionId: string, env: NodeJS.ProcessEnv,
+  admission?: NativeQuestionAdmission): SessionState {
+  if (admission === undefined || !isDeepStrictEqual(admission.service, pending.service_identity)) return state
+  const current = currentCodexQuestionContext(state, sessionId, env)
+  if (current === null || current.owner_key !== admission.owner_key || current.snapshot.latest.id !== admission.turn_id) return state
+  return reserveCodexQuestion(state, pending, current.owner_key, current.snapshot)
 }
 
 /** Caller holds the registration transaction and has proved the current owner.

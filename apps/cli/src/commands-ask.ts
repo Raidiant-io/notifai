@@ -7,7 +7,7 @@ import {
   type NotificationDraftT,
   type QuestionT,
 } from '@raidiant/notifai-protocol'
-import { EXIT, authedClient, log, type CommandDeps } from './commands-core.js'
+import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import {
@@ -20,9 +20,9 @@ import {
 import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
-import { registerQuestion } from './hook-lifecycle.js'
+import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
 import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
-import { nativeQuestionTitle } from './codex-question-bindings.js'
+import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
@@ -290,6 +290,35 @@ function recordRegisteredQuestion(
   draft: NotificationDraftT,
   service: ServiceIdentity,
   json = false,
+): number | Promise<number> {
+  const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json)
+  if (built.questions.some(question => question.multi === true)) return ordinary()
+  const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
+  if (local === null) return ordinary()
+  const credential = deps.store.load()
+  if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) return ordinary()
+  const persist = (nativeAdmission?: NativeQuestionAdmission) =>
+    persistRegisteredQuestion(deps, sessionId, built, draft, service, json, nativeAdmission, local.owner_key)
+  // Discovery is optional and bounded. Missing service support must not create
+  // a hidden binding or block ordinary question registration. Do not cache it.
+  const client = makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
+  return client.compatibility().then(
+    support => persist(
+      Array.isArray(support?.server_capabilities) && support.server_capabilities.includes('harness_answers')
+        ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service } : undefined),
+    () => persist(),
+  )
+}
+
+function persistRegisteredQuestion(
+  deps: CommandDeps,
+  sessionId: string,
+  built: BuiltQuestions,
+  draft: NotificationDraftT,
+  service: ServiceIdentity,
+  json = false,
+  nativeAdmission?: NativeQuestionAdmission,
+  ownerKey?: string,
 ): number {
   let questionId: string
   const credential = deps.store.load()
@@ -313,8 +342,19 @@ function recordRegisteredQuestion(
         ...(draft.presentation.media !== undefined ? { media: draft.presentation.media } : {}),
       },
       (deps.now ?? Date.now)(),
+      nativeAdmission,
+      { ...(ownerKey === undefined ? {} : { owner_key: ownerKey }), machineStillMatches: () => {
+        const current = deps.store.load()
+        return current !== null && current.machineId === service.machine_id && current.baseUrl === service.base_url
+      } },
     )
   } catch (err) {
+    if (err instanceof QuestionRegistrationChanged) {
+      return askFailure(deps, { json }, err.reason === 'credential' ? 'auth_required' : 'session_changed',
+        err.reason === 'credential' ? 'credential' : 'question_registration', err.message,
+        'retry the same ask from the current Agent Session and intended signed-in machine',
+        err.reason === 'credential' ? EXIT.auth : EXIT.failed)
+    }
     return askFailure(
       deps,
       { json },

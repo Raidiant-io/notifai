@@ -10,6 +10,9 @@ import type { Platform } from './notification.js'
  *   Answer Edits and reads their state. An app advertises these only after
  *   `GET /api/v1/features` lists the matching Server Feature, because a server
  *   that predates them rejects an unknown advertised capability.
+ * - `harness_answers` (CLI): records agent-reported harness submissions and
+ *   scoped acknowledgements. Server support does not prove local native UI
+ *   settlement or the provenance of a User interaction.
  */
 export const CLIENT_CAPABILITIES = [
   'answer',
@@ -18,6 +21,7 @@ export const CLIENT_CAPABILITIES = [
   'session_notes',
   'machine_approval',
   'answer_edits',
+  'harness_answers',
 ] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]
 

@@ -105,7 +105,7 @@ import {
 import { opencodePluginSource } from './opencode-plugin.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
-import { beginSessionIncarnation, lifecycleStamp, readSessionState, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
@@ -8543,12 +8543,34 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
-  it('prints an exact optional native form only when this running Codex turn can bind it', () => {
+  it.each(['supported', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on current service support: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    const compatibility = vi.fn(async () => {
+      if (mode === 'unavailable') throw new NetworkError('timed out')
+      if (mode === 'changed-turn') recordTurnStart(sessionId, env, owner.key, 'turn-2')
+      if (mode === 'lost-machine') deps.store.load = () => null
+      if (mode === 'changed-machine' || mode === 'changed-service' || mode === 'machine-lost-in-lock') {
+        const credential = deps.store.load()!
+        let loads = 0
+        deps.store.load = () => mode === 'machine-lost-in-lock'
+          ? (++loads === 1 ? credential : null)
+          : { ...credential, ...(mode === 'changed-machine' ? { machineId: 'other' } : { baseUrl: 'https://other.example.test' }) }
+      }
+      if (mode === 'ended' || mode === 'ended-unavailable' || mode === 'replaced-owner') {
+        markSessionEnded(sessionId, env, Date.now())
+        if (mode === 'ended-unavailable') throw new NetworkError('timed out')
+        if (mode === 'replaced-owner') {
+          const successor = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+          expect(successor.key).not.toBe(owner.key)
+        }
+      }
+      return { server_capabilities: mode === 'missing' ? [] : mode === 'malformed' ? null : ['harness_answers'] }
+    })
+    const spawn = vi.fn()
+    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn }
     mkdirSync(path.join(cwd, '.notifai'))
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
@@ -8567,8 +8589,24 @@ describe('asking before the hooks have ever run', () => {
       codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
     })
     io.outLines = []
-    expect(askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    const machineChanged = ['lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock'].includes(mode)
+    const ownerChanged = ['ended', 'ended-unavailable', 'replaced-owner'].includes(mode)
+    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
     const output = JSON.parse(io.outLines.join('\n'))
+    expect(compatibility).toHaveBeenCalledTimes(1)
+    if (machineChanged || ownerChanged) {
+      expect(output.code).toBe(machineChanged ? 'auth_required' : 'session_changed')
+      expect(spawn).not.toHaveBeenCalled()
+      expect(readSessionState(sessionId, env).pending).toBeUndefined()
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      return
+    }
+    if (mode !== 'supported') {
+      expect(output.native_question).toBeUndefined()
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
+      return
+    }
     expect(output.native_question).toMatchObject({ tool: 'request_user_input_async',
       questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
     })
@@ -8582,6 +8620,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     expect(askCommand(deps, 'Ordinary?', { json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
+    expect(compatibility).toHaveBeenCalledTimes(1)
   })
 
   it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {

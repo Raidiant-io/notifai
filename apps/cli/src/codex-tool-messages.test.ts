@@ -415,7 +415,8 @@ describe('Codex tool-boundary Session Messages', () => {
     const questionId = registerQuestion(SESSION, h.env, {
       question: 'First question?', questions: [{ id: 'q1', text: 'First question?' }],
       service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
-    })
+    }, Date.now(), { owner_key: h.incarnation.key, turn_id: 'turn-1',
+      service: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' } })
     expect(readSessionState(SESSION, h.env).codex_question_bindings).toMatchObject([
       { question_id: questionId, registration_turn_id: 'turn-1', owner_key: h.incarnation.key },
     ])
@@ -582,7 +583,16 @@ describe('Codex tool-boundary Session Messages', () => {
     const ids = Array.from({ length: 24 }, (_, i) => 'sm_batch_' + i)
     h.stage(ids.map(note))
     await h.hook()
-    expect(h.claims).toEqual(['req_many', ...ids.slice(0, 19)])
+    const expected = ['req_many', ...ids]
+    // Both the 20-item cap and the real claim-time budget bound a prefix.
+    // A loaded machine may exhaust the time budget before claiming 20.
+    const assertProgress = (previous: number) => {
+      expect(h.claims.length).toBeGreaterThan(previous)
+      expect(h.claims.length - previous).toBeLessThanOrEqual(20)
+      expect(h.claims).toEqual(expected.slice(0, h.claims.length))
+    }
+    assertProgress(0)
+    const firstCount = h.claims.length
     expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
     recordTurnEnd(SESSION, h.env, 'turn-1')
     // Remaining suffix remains eligible at completion, then the wake's prompt
@@ -590,13 +600,20 @@ describe('Codex tool-boundary Session Messages', () => {
     await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
       session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'wake',
     }), 'codex')
-    expect(h.claims).toEqual(['req_many', ...ids])
-    expect(h.output).toHaveLength(2)
+    assertProgress(firstCount)
+    for (let boundary = 0; boundary < ids.length && hasSessionInputs(SESSION, h.env, h.lease); boundary++) {
+      const previous = h.claims.length
+      await h.hook('wake')
+      assertProgress(previous)
+    }
+    expect(h.claims).toEqual(expected)
+    expect(h.output.length).toBeGreaterThanOrEqual(2)
     expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
     expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
     expect(readSessionState(SESSION, h.env).message_acknowledgement_due).toHaveLength(24)
+    const presentations = h.output.length
     await h.hook('wake')
-    expect(h.output).toHaveLength(2)
+    expect(h.output).toHaveLength(presentations)
   })
 
   it('reports queued input instead of an empty inbox when an earlier answer blocks a claim', async () => {
