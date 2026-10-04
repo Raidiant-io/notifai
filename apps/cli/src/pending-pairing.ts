@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { pairingQrPath } from './pairing-qr.js'
+import { pairingQrPath, pairingQrTextPath } from './pairing-qr.js'
 import { stateDir } from './config.js'
 
 /**
@@ -98,7 +98,7 @@ export function writePendingPairing(env: NodeJS.ProcessEnv, pairing: PendingPair
 }
 
 export function clearPendingPairing(env: NodeJS.ProcessEnv): void {
-  for (const file of [pendingPairingPath(env), pairingQrPath(env)]) {
+  for (const file of [pendingPairingPath(env), pairingQrPath(env), pairingQrTextPath(env)]) {
     try { unlinkSync(file) } catch { /* Already absent. */ }
   }
 }

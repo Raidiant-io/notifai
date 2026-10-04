@@ -294,8 +294,10 @@ do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
 For a QR-first credential gap, read [computer approval and browser fallback](references/harness-setup.md#signing-this-machine-in)
-before proceeding. Only the User approves. Keep the QR and proof-bearing link
-local; never infer an Account email. Resume the same pairing after approval.
+before proceeding. Present the local image or library-generated text QR with
+its matching code before asking for a scan or result; a path alone is insufficient.
+Only the User approves. Keep the QR and proof-bearing link local; never infer
+an Account email. Resume the same pairing after approval.
 
 Two independent decisions remain: Question Routing — devices or
 terminal only — and the skill: this project or every project here.

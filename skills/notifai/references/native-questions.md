@@ -1,7 +1,8 @@
 # Native questions linked to Notifai
 
 Use this flow only when `ask` returns `native_question`. Native forms are
-optional; Question Routing still works without them. Capability absence leaves
+optional; Question Routing still works without them. New linking requires both
+local eligibility and confirmed service support. Capability absence leaves
 the ordinary conversation and app-answer flow available.
 
 ## Before emitting the form
