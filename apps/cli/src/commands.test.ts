@@ -6884,7 +6884,7 @@ describe('init', () => {
       const result = JSON.parse(io.outLines[0]!)
       expect(result.states.find((state: { id: string }) => state.id === 'credential').status).toBe('ready')
       expect(result.states.find((state: { id: string }) => state.id === 'devices').status).toBe('gap')
-      expect(io.errLines.join('\n')).toContain('Machine "FurankuMac.local" approved.')
+      expect(io.errLines.join('\n')).toContain(`Machine "${os.hostname()}" approved.`)
     } else {
       expect(io.outLines.join('\n')).toContain('Next: Your devices')
     }
