@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [11.7.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.6.2...v11.7.0-beta.1) (2026-10-04)
+## [11.7.0-beta.2](https://github.com/Raidiant-io/notifai/compare/v11.6.2...v11.7.0-beta.2) (2026-10-04)
 
 ### Features
 
@@ -24,7 +24,7 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 ### Dependencies and limits
 
 * Update the WebSocket client to 8.21.0 to address published security advisories.
-* Pin protocol 8.2.0-beta.1, including native-answer capability discovery and reporting.
+* Pin protocol 8.2.0-beta.2, including native-answer capability discovery and reporting.
 * Live optional Codex native-control acceptance is limited to macOS Codex 0.160.0. Uncertain writes retain recovery state; cancellation can lose to dequeue.
 
 ## [11.6.2](https://github.com/Raidiant-io/notifai/compare/v11.6.1...v11.6.2) (2026-10-01)
