@@ -35,8 +35,8 @@ or time and do not retry automatically. Re-run the exact semantic send with
 Parent owns by default. Ordinary workers report Agent Events and do not load or send.
 Explicit textual delegation makes a worker the owner.
 
-An **Agent Event** happens in the work. A **Notification Request** deliberately
-sends an event to the User through Notifai. Worker reports stay internal.
+An **Agent Event** happens in the work. A **Notification Request** sends it to
+the User. Worker reports stay internal.
 
 Owner session lifecycle context normally includes bounded, effective guidance
 under provenance markers. When context is absent or says guidance exceeded its
@@ -176,9 +176,9 @@ notifai ask "Which environment should I roll out to?" \
 
 `--json` returns choice ids and `question_id`.
 
-`registered: true` proves local registration, not submission or Provider
-Acceptance. Submission starts immediately; registration alone never proves
-delivery. Settlement adds `request_id`, keeping
+`registered: true` proves local registration, not submission or
+Provider Acceptance. Submission starts immediately; never call a question sent or
+delivered from registration alone. Settlement adds `request_id`, keeping
 `question_id`. Inspect:
 
 ```bash
