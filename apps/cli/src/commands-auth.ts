@@ -2,7 +2,7 @@ import { type AccountAccessResponse } from '@raidiant/notifai-protocol'
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { randomBytes } from 'node:crypto'
 import os from 'node:os'
-import { renderPairingQr, terminalPairingQr, pairingQrPath } from './pairing-qr.js'
+import { renderPairingQr, terminalPairingQr, pairingQrPath, pairingQrTextPath } from './pairing-qr.js'
 import { ApiCallError, NetworkError } from './client.js'
 import { type FlagOverrides } from './config.js'
 import { checkApproveUrl } from './url-policy.js'
@@ -75,7 +75,7 @@ export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.Pro
       pairing_outcome: 'pending' satisfies PairingOutcome,
       pairing: {
         approve_url: pairing.approve_url,
-        ...(env ? { qr_path: pairingQrPath(env) } : {}),
+        ...(env ? { qr_path: pairingQrPath(env), qr_text_path: pairingQrTextPath(env) } : {}),
         alternatives: ['qr', 'notification', 'browser'],
         code: pairing.code,
         expires_at: pairing.expires_at,
@@ -214,8 +214,12 @@ export async function loginCommand(
     const file = await renderPairingQr(deps.env, pairing.approve_url)
     deps.io.out(`Pairing code: ${pairing.code}`)
     if (route === 'qr') {
-      if (interactive) await deps.io.note?.(await terminalPairingQr(pairing.approve_url), 'Scan to approve in Notifai')
-      else deps.io.out(`Scan to approve in Notifai. Local QR image: ${file}`)
+      if (interactive && deps.io.note) await deps.io.note(await terminalPairingQr(pairing.approve_url), 'Scan to approve in Notifai')
+      else {
+        deps.io.out('Scan to approve in Notifai:')
+        deps.io.out(await terminalPairingQr(pairing.approve_url, false))
+      }
+      deps.io.out(`Local QR image: ${file}`)
     }
     if (interactive && flags.approval === undefined && flags.approvalEmail === undefined && deps.io.select) {
       route = await deps.io.select('Connect this computer', [
