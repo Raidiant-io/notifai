@@ -108,6 +108,21 @@ not part of the current public support claim.
 | Hermes plugin | v0.21.5 local classic CLI: managed Project activation, Source Context, Question Routing, Session Presence, Session Notes, and Answer Edits through its live plugin writer | Same implementation; live Hermes verification pending | Unverified |
 | Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
+Codex's optional native-question synchronization and exact queued-wake cleanup
+have live evidence on macOS with Codex 0.160.0. Linux and native Windows do not
+yet have live acceptance for those capabilities; the CLI platform support row
+does not establish it. Discovery attaches only to a verified, already-loaded
+session in an existing daemon. It never starts a replacement session or requires
+`codex --remote`.
+
+If optional control is unavailable before delivery, Notifai uses the ordinary
+hook/queue route where that route is proven. If a native write may already have
+been accepted, it retains recovery state instead of sending a second copy.
+This can delay delivery until control recovers or a foreground hook runs.
+Exact wake cleanup reduces stale prompts, but cannot prevent an empty turn when
+Codex starts the wake before cancellation. Unsupported question shapes retain
+ordinary delivery and do not suppress the native form.
+
 Each `send --reply` fallback owns the complete answer window in its foreground
 process: keep it alive and set `--reply-timeout` equal to `--reply-window`.
 After a timeout, retain the request ID, inspect that original with `notifai
