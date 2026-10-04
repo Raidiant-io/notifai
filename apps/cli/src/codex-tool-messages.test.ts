@@ -21,6 +21,7 @@ import type { CommandDeps } from './commands-core.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { codexToolHookReady } from './codex-tool-messages.js'
+import { registerQuestion } from './hook-lifecycle.js'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
 import { acquireClaimFile } from './hook-question-lock.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
@@ -395,6 +396,79 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
     await h.hook('turn-2')
     expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
+  })
+
+  it('binds the first registered question after a trusted root callback without a delivery lease', async () => {
+    const h = setup()
+    rmSync(attendantStatusPath(SESSION, h.env))
+    updateSessionState(SESSION, h.env, state => ({ ...state, harness: 'codex' }))
+    const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'first-question.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n')
+    h.deps.store.load = () => { throw new Error('observation must not load service credentials') }
+    await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
+      cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: transcript }), 'codex')
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
+    const questionId = registerQuestion(SESSION, h.env, {
+      question: 'First question?', questions: [{ id: 'q1', text: 'First question?' }],
+      service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
+    })
+    expect(readSessionState(SESSION, h.env).codex_question_bindings).toMatchObject([
+      { question_id: questionId, registration_turn_id: 'turn-1', owner_key: h.incarnation.key },
+    ])
+    expect(h.claims).toEqual([])
+    expect(h.output).toEqual([])
+  })
+
+  it.each(['missing', 'foreign'] as const)('observes a trusted callback but cannot drain through a %s lease', async mode => {
+    const h = setup()
+    h.stage([note('sm_waiting')])
+    if (mode === 'missing') rmSync(attendantStatusPath(SESSION, h.env))
+    else writeAttendantStatus(SESSION, h.env, { ...h.lease, incarnation: 'foreign', phase: 'attending',
+      activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
+    h.deps.store.load = () => { throw new Error('no valid lease means no credential access') }
+    await h.hook()
+    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
+    expect(h.claims).toEqual([])
+    expect(h.output).toEqual([])
+    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
+  })
+
+  it.each(['foreign-owner', 'ended-session', 'ended-turn', 'child'] as const)('rejects %s observations without a lease', async mode => {
+    const h = setup()
+    rmSync(attendantStatusPath(SESSION, h.env))
+    if (mode === 'foreign-owner') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
+    if (mode === 'ended-session') markSessionEnded(SESSION, h.env, Date.now())
+    if (mode === 'ended-turn') recordTurnEnd(SESSION, h.env, 'turn-1')
+    await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
+      cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1',
+      ...(mode === 'child' ? { agent_id: 'child-thread' } : {}) }), 'codex')
+    expect(readSessionState(SESSION, h.env).codex_tool_hook).toBeUndefined()
+    expect(h.claims).toEqual([])
+    expect(h.output).toEqual([])
+  })
+
+  it.each(['completed', 'newer'] as const)('does not publish stale callback proof when native refresh finds a %s turn', async mode => {
+    const h = setup()
+    const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'advanced-turn.jsonl')
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, [
+      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } },
+      ...(mode === 'newer' ? [{ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } }] : []),
+    ].map(row => JSON.stringify(row)).join('\n') + '\n')
+    h.stage([note('sm_waiting')])
+    await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
+      cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: transcript }), 'codex')
+    expect(readSessionState(SESSION, h.env).codex_tool_hook).toBeUndefined()
+    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe(mode === 'newer' ? 'turn-2' : null)
+    expect(h.claims).toEqual([])
+    expect(h.output).toEqual([])
+    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
 
   it.each([
