@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.7.1-beta.1] (2026-10-04)
+
+### Bug Fixes
+
+* Retry transient Windows lock-directory deletion before contender publication, while preserving bounded access checks and fatal failures after publication.
+
+### Features
+
+* Includes linked Codex question answers, hook-delivered input, reconciled idle wakes, and QR-first computer approval from the preceding beta.
+
 ## [11.7.0](https://github.com/Raidiant-io/notifai/compare/v11.6.2...v11.7.0) (2026-10-04)
 
 
