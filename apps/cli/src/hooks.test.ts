@@ -2121,6 +2121,47 @@ describe('the waiter owning one question to the end', () => {
     expect(h.recorder.submitted[0]).toEqual(firstAttempt)
   })
 
+  it.each(['confirmed', 'confirmed-after-end', 'rejected', 'receipt-lost', 'confirmed-by-close'])('preserves an early native operation through original submission recovery: %s', async outcome => {
+    const h = harness([])
+    const factory = h.deps.clientFactory!
+    const credential = h.deps.store.load()!
+    const service_identity = { base_url: credential.baseUrl, machine_id: credential.machineId }
+    const sessionId = `early-native-${outcome}`
+    h.deps.clientFactory = () => ({ ...factory(), submit: async () => { throw new ApiCallError(401, 'unauthorized', 'Sign in again.') } }) as ApiClient
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Deploy?', service_identity }, NOW)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: sessionId }))
+    const before = readSessionState(sessionId, h.env)
+    const frozen = before.pending![0]!.submission!
+    const operation = {
+      question_id: before.pending![0]!.question_id!, operation_id: 'native-1', submission_id: 'opaque-submission',
+      service_identity, answers: [{ question_id: 'q1', text: 'Staging' }], acknowledgement_text: 'Deploying to staging.',
+    }
+    writeSessionState(sessionId, h.env, { ...before, native_answer_operations: [operation] })
+    const attempted: string[] = []
+    h.deps.clientFactory = () => {
+      const client = factory()
+      return { ...client,
+        ...(outcome === 'receipt-lost' ? { closeReplies: async () => { throw new Error('close receipt also lost') } } : {}),
+        submit: async (body: SubmitNotificationRequestT, wait: number) => {
+        attempted.push(body.request_id!)
+        if (outcome === 'rejected') throw new ApiCallError(422, 'invalid_request', 'Rejected original draft.')
+        if (outcome === 'receipt-lost' || outcome === 'confirmed-by-close') throw new Error('response lost')
+        const receipt = await client.submit(body, wait)
+        if (outcome === 'confirmed-after-end') handleSessionEnd(h.env, { session_id: sessionId })
+        return receipt
+      } } as ApiClient
+    }
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: sessionId }))
+    expect(attempted).toEqual([frozen.request_id])
+    const after = readSessionState(sessionId, h.env)
+    expect(after.native_answer_operations?.[0]).toEqual({ ...operation,
+      ...(outcome.startsWith('confirmed') ? { request_id: frozen.request_id } : {}),
+    })
+    if (outcome === 'rejected') expect(after.pending?.[0]?.submission?.request_id).toBe(frozen.request_id)
+    if (outcome === 'confirmed-after-end') expect(after.pending).toBeUndefined()
+  })
+
   it('remints a frozen draft after a terminal 422 instead of replaying it', async () => {
     const h = harness([])
     const factory = h.deps.clientFactory

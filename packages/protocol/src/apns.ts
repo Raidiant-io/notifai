@@ -49,6 +49,8 @@ export interface ReplyMetadata {
 export interface AgentAcknowledgementSync {
   /** Creation time of the persisted acknowledgement; its text never enters a push envelope. */
   createdAt: Date
+  /** Present only for a specific agent-reported native answer version. */
+  replyId?: string
 }
 
 /** Service-derived context carried by a done-tier retirement. */
@@ -270,6 +272,7 @@ function notifaiKey(
       ? {
           agent_acknowledgement_available: true,
           agent_acknowledgement_created_at: agentAcknowledgementSync.createdAt.toISOString(),
+          ...(agentAcknowledgementSync.replyId ? { agent_acknowledgement_reply_id: agentAcknowledgementSync.replyId } : {}),
         }
       : {}),
     ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),

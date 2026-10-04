@@ -15,6 +15,7 @@ import {
 import type { ApiClient } from './client.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-access.js'
+import { acknowledgeNativeAnswer, type NativeAcknowledgeFlags } from './commands-native-acknowledge.js'
 
 /**
  * Record the one Agent Acknowledgement associated with a replied-to request
@@ -29,8 +30,13 @@ import { openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-acces
 export async function acknowledgeCommand(
   deps: CommandDeps,
   id: string,
-  flags: { text?: string; json?: boolean },
+  flags: NativeAcknowledgeFlags,
 ): Promise<number> {
+  if (id.startsWith('q_')) return acknowledgeNativeAnswer(deps, id, flags)
+  if (flags.operationId !== undefined || flags.nativeAnswers !== undefined) {
+    deps.io.err('--operation-id and --native-answers require the exact local q_ question identity.')
+    return EXIT.usage
+  }
   const requestId = id
   const subject = id.startsWith(SESSION_MESSAGE_ID_PREFIX) ? 'message' : 'request'
   if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {

@@ -36,8 +36,11 @@ const sendDetailsReference = readFileSync(
   new URL('../../../skills/notifai/references/send-details.md', import.meta.url),
   'utf8',
 )
+const nativeQuestionsReference = readFileSync(
+  new URL('../../../skills/notifai/references/native-questions.md', import.meta.url), 'utf8',
+)
 /** The skill and the references it links: everything an agent can reach from it. */
-const reachable = [skill, harnessReference, diagnosticsReference, sendDetailsReference].join('\n')
+const reachable = [skill, harnessReference, diagnosticsReference, sendDetailsReference, nativeQuestionsReference].join('\n')
 const rootReadme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8')
 const cliReadme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
 
@@ -420,6 +423,18 @@ describe('Notifai agent skill', () => {
     expect(skill).toContain('notifai close --pending')
     expect(skill).toContain('question_id')
     expect(skill).toMatch(/answered\s+in the conversation/i)
+  })
+
+  it('routes linked native answers to durable reporting while retaining unrelated forms and app submissions', () => {
+    expect(skill).toMatch(/native_question[\s\S]*references\/native-questions\.md/)
+    expect(nativeQuestionsReference).toMatch(/first command before work depending/)
+    expect(nativeQuestionsReference).toContain('notifai acknowledge q_')
+    expect(nativeQuestionsReference).toMatch(/same operation ID, answers and acknowledgement/)
+    expect(nativeQuestionsReference).toMatch(/only after the command confirms it saved/)
+    expect(nativeQuestionsReference).toMatch(/Preserve unrelated[\s\S]*native forms/)
+    expect(nativeQuestionsReference).toMatch(/Keep the original app answer watcher/)
+    expect(nativeQuestionsReference).toMatch(/app answer relayed[\s\S]*app acknowledgement command/)
+    expect(nativeQuestionsReference).toMatch(/conflict needs clarification/)
   })
 
   it('makes the agent the operator and the human only the human', () => {

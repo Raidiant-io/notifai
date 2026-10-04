@@ -1,4 +1,4 @@
-/** Read only typed lifecycle records from the transcript named by a native hook. */
+/** Read typed lifecycle and optional question records from an owned native transcript. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
@@ -9,6 +9,19 @@ export interface NativeTurnSnapshot {
   size: number
   latest: { id: string; offset: number; ended: boolean; outcome?: 'completed' | 'aborted' }
   positions: Map<string, number>
+  /** Only populated by explicit question observation, never by activity polling. */
+  questions?: NativeQuestionEmission[]
+}
+
+export interface NativeQuestionEmission {
+  /** Byte position of the actual tool call, used to reject pre-registration calls. */
+  offset: number
+  turn_id: string
+  call_id: string
+  index: number
+  title: string
+  options?: string[]
+  accepted: boolean
 }
 
 const HEADER_BYTES = 64 * 1024
@@ -43,13 +56,22 @@ export function readNativeTurnSnapshot(
   return observed !== null && 'latest' in observed ? observed : null
 }
 
+/** Observe actual native async-question calls plus their acceptance receipts.
+ * User messages, quoted examples and injected app-answer envelopes are never
+ * question emissions. This reads only the same owned, stable bounded tail.
+ */
+export function readNativeQuestionSnapshot(file: unknown, sessionId: string, env: NodeJS.ProcessEnv): NativeTurnSnapshot | null {
+  const observed = readNativeTranscript(file, sessionId, env, false, true)
+  return observed !== null && 'latest' in observed ? observed : null
+}
+
 /** Ownership can be proved even when a long turn exceeds the activity bound. */
 export function nativeTranscriptOwned(file: unknown, sessionId: string, env: NodeJS.ProcessEnv): boolean {
   return readNativeTranscript(file, sessionId, env, true) !== null
 }
 
 function readNativeTranscript(
-  file: unknown, sessionId: string, env: NodeJS.ProcessEnv, identityOnly: boolean,
+  file: unknown, sessionId: string, env: NodeJS.ProcessEnv, identityOnly: boolean, includeQuestions = false,
 ): NativeTurnSnapshot | Pick<NativeTurnSnapshot, 'file' | 'identity'> | null {
   if (typeof file !== 'string' || !path.isAbsolute(file)) return null
   let fd: number | undefined
@@ -80,6 +102,9 @@ function readNativeTranscript(
     if (at > 0 && offset === 0) return null
     let latest: NativeTurnSnapshot['latest'] | undefined
     const positions = new Map<string, number>()
+    const questions: NativeQuestionEmission[] = []
+    const questionCalls = new Set<string>()
+    const outputs = new Map<string, boolean>()
     while (offset < bytes.length) {
       const end = bytes.indexOf(10, offset)
       if (end < 0) return null
@@ -97,11 +122,35 @@ function readNativeTranscript(
           latest.outcome = event.type === 'turn_aborted' ? 'aborted' : 'completed'
         }
       }
+      if (includeQuestions && line.includes('"response_item"')) {
+        const record = JSON.parse(line) as { type?: string; payload?: { type?: string; name?: string; call_id?: string; arguments?: string; output?: string } }
+        const item = record.type === 'response_item' ? record.payload : undefined
+        if (latest !== undefined && item?.type === 'function_call' && item.name === 'request_user_input_async') {
+          if (latest.ended || typeof item.call_id !== 'string' || item.call_id.trim() === '' ||
+              questionCalls.has(item.call_id) || typeof item.arguments !== 'string') return null
+          questionCalls.add(item.call_id)
+          const args = JSON.parse(item.arguments) as { questions?: Array<{ title?: unknown; options?: unknown }> }
+          if (!Array.isArray(args.questions) || args.questions.length === 0) return null
+          for (const [index, question] of args.questions.entries()) {
+            if (question === null || typeof question.title !== 'string' ||
+                (question.options !== undefined && (!Array.isArray(question.options) || !question.options.every(option => typeof option === 'string')))) return null
+            questions.push({ offset: at + offset, turn_id: latest.id, call_id: item.call_id, index, title: question.title,
+              ...(question.options === undefined ? {} : { options: question.options as string[] }), accepted: false })
+          }
+        } else if (item?.type === 'function_call_output' && typeof item.call_id === 'string' &&
+            questions.some(question => question.call_id === item.call_id)) {
+          // Missing, conflicting or repeated receipts cannot prove one emission.
+          if (outputs.has(item.call_id) || typeof item.output !== 'string') return null
+          const output = JSON.parse(item.output) as { accepted?: boolean }
+          outputs.set(item.call_id, output?.accepted === true)
+        }
+      }
       offset = end + 1
     }
     const after = fstatSync(fd)
     if (latest === undefined || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) return null
-    return { file: canonical, identity: `${stat.dev}:${stat.ino}`, size: stat.size, latest, positions }
+    return { file: canonical, identity: `${stat.dev}:${stat.ino}`, size: stat.size, latest, positions,
+      ...(includeQuestions ? { questions: questions.map(question => ({ ...question, accepted: outputs.get(question.call_id) === true })) } : {}) }
   } catch {
     return null
   } finally {

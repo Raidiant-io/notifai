@@ -10,6 +10,8 @@ import type {
   SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
+import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion } from './codex-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -46,7 +48,7 @@ import {
 } from './hook-question-retirement.js'
 import {
   admitQueuedQuestion,
-  clearFrozenSubmission,
+  replaceFrozenSubmission,
   dropPendingQuestion,
   isSamePending,
   pendingQuestions,
@@ -57,15 +59,15 @@ import {
   summarizeRequestIds,
 } from './hook-question-state.js'
 import {
-  clearSessionState,
+  clearSessionStateUnlocked,
   markSessionEnded,
   pendingList,
   readSessionState,
   readSessionIncarnation,
+  readSessionEndMarker,
   sessionHasEnded,
   sessionStatePath,
   updateSessionState,
-  writeSessionState,
   writeSessionStateUnlocked,
   recordSessionNotified,
 } from './hook-session-state.js'
@@ -244,11 +246,12 @@ function submitQuestion(
           `server replay returned ${receipt.request_id}, expected reserved ${intent.request_id}`,
         )
       }
+      recordConfirmedNativeAnswerTarget(sessionId, ctx.env, { ...entry, request_id: receipt.request_id })
       // Wakes this session's dormant Session Attendant.
       recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
-    })
-    if (attempt === null) notes.push('the question was retired before submission; not uploading it')
+    }, ctx.service_identity)
+    if (attempt === null) notes.push('the question was retired or its Approved Machine changed before submission; not uploading it')
     return attempt
   } catch (err) {
     // Only synchronous local admission failed. The callback returns a promise,
@@ -514,12 +517,16 @@ function claimMarker(
 /** Close several windows concurrently without confusing failure with silence. */
 async function finalizePendings(
   ctx: HookContext,
+  sessionId: string,
   pending: PendingQuestion[],
   disposition?: CloseDisposition,
 ): Promise<FinalizedPending[]> {
   return Promise.all(
     pending.map(async (entry) => {
       const response = await finalizeReplies(ctx, entry.request_id!, disposition)
+      if (response !== null && response.request_id === entry.request_id) {
+        recordConfirmedNativeAnswerTarget(sessionId, ctx.env, entry)
+      }
       ctx.log?.info('hook.retirement', {
         request_id: entry.request_id,
         attempted: true,
@@ -734,7 +741,7 @@ async function answerPrompt(
     }
     const stdout = userPromptContextOutput(
       ctx.harness,
-      withReminder(reminder, answersContext(answers, state.accepted.remaining)),
+      withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, answers, state.accepted.remaining)),
     )
     if (stdout !== undefined) {
       notes.push('the journaled device answer was added to the user\'s new turn')
@@ -768,6 +775,7 @@ async function answerPrompt(
     )
     const finalized = await finalizePendings(
       ctx,
+      sessionId,
       answered.map((entry) => entry.pending),
     )
     lateAnswers = answered.map((entry) => {
@@ -807,7 +815,7 @@ async function answerPrompt(
     const permanentFailure = permanentReplyFailureNote(permanentFailures)
     if (permanentFailure !== null) notes.push(permanentFailure)
   }
-  const matched = pendingAnsweredByPrompt(envelope.prompt, pendingList(state))
+  const matched = pendingAnsweredByPrompt(envelope.prompt, pendingList(state)).filter(entry => mayRetireFromPrompt(state, entry))
   for (const entry of matched) {
     ctx.log?.info('hook.retirement', {
       request_id: entry.request_id,
@@ -822,7 +830,7 @@ async function answerPrompt(
   // the gap after erasing the only request/collapse/device identifiers.
   const updated = updateSessionState(sessionId, ctx.env, (current) => {
     const retiring = [...(current.retiring ?? [])]
-    const matchedNow = pendingAnsweredByPrompt(envelope.prompt, pendingList(current))
+    const matchedNow = pendingAnsweredByPrompt(envelope.prompt, pendingList(current)).filter(entry => mayRetireFromPrompt(current, entry))
     const unmatched = pendingList(current).filter(
       (entry) => !matchedNow.some((item) => isSamePending(item, entry)),
     )
@@ -883,7 +891,7 @@ async function answerPrompt(
       ctx.harness,
       withReminder(
         reminder,
-        answersContext([...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
+        prepareOrdinaryAnswersContext(ctx, sessionId, [...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
       ),
     )
     if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
@@ -915,7 +923,7 @@ async function answerPrompt(
   }
   const delivered = readSessionState(sessionId, ctx.env).delivered_answers ?? []
   const stdout = delivered.length > 0
-    ? userPromptContextOutput(ctx.harness, withReminder(reminder, answersContext(delivered, pendingList(updated).length)))
+    ? userPromptContextOutput(ctx.harness, withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, delivered, pendingList(updated).length)))
     : undefined
   return {
     notes,
@@ -925,6 +933,17 @@ async function answerPrompt(
     }),
     settlementRequired: needsQuestionSettlement(updated, ctx.harness),
   }
+}
+
+/** Legacy prompt/Stop context routes bypass the common drain. Select ordinary
+ * presentation durably before returning any answer bytes to those writers.
+ */
+function prepareOrdinaryAnswersContext(ctx: HookContext, sessionId: string, answers: AnsweredPending[], remaining: number): string {
+  if (ctx.harness === 'codex') {
+    const ids = new Set(answers.flatMap(answer => answer.pending.question_id === undefined ? [] : [answer.pending.question_id]))
+    updateSessionState(sessionId, ctx.env, state => markCodexOrdinaryPresentation(state, ids))
+  }
+  return answersContext(answers, remaining)
 }
 
 function needsQuestionSettlement(state: SessionState, harness: HookContext['harness']): boolean {
@@ -1299,12 +1318,15 @@ async function deliverAcceptedAnswers(
     const file = sessionStatePath(sessionId, ctx.env)
     return withFileLock(`${file}.lock`, () => {
       if (sessionHasEnded(sessionId, ctx.env)) return false
-      const current = readSessionState(sessionId, ctx.env)
+      let current = readSessionState(sessionId, ctx.env)
       if (current.accepted === undefined) return false
+      const acceptedBeforeCommit = current.accepted
       deliveryCommitted = true
+      if (ctx.harness === 'codex') current = markCodexOrdinaryPresentation(current,
+        new Set(answered.flatMap(answer => answer.pending.question_id === undefined ? [] : [answer.pending.question_id])))
       writeSessionStateUnlocked(file, sessionId, {
         ...current,
-        accepted: { ...current.accepted, delivery_committed_at: ctx.now() },
+        accepted: { ...acceptedBeforeCommit, delivery_committed_at: ctx.now() },
       })
       return true
     })
@@ -1642,6 +1664,7 @@ async function handleClaimedStop(
     if (answered.length > 0) {
       const finalized = await finalizePendings(
         ctx,
+        sessionId,
         answered.map((entry) => entry.pending),
         answerCloseDisposition(ctx, route),
       )
@@ -1774,6 +1797,13 @@ export async function submitSessionQuestions(
     // its own notification — one ask never stands in for another.
     const submitted: PendingQuestion[] = []
     for (const entry of pendingList(readSessionState(sessionId, ctx.env)).filter((entry) => entry.request_id === undefined)) {
+      if (entry.service_identity !== undefined && (
+        entry.service_identity.machine_id !== ctx.service_identity?.machine_id ||
+        entry.service_identity.base_url !== ctx.service_identity?.base_url
+      )) {
+        notes.push('the registered question belongs to a different Approved Machine; preserving it without uploading')
+        continue
+      }
       if (!queuedQuestionStillEligible(sessionId, ctx.env, entry)) {
         notes.push('the question was retired before submission; not uploading it')
         continue
@@ -1811,6 +1841,7 @@ export async function submitSessionQuestions(
           notes.push(prepared.error)
           continue
         }
+        if (entry.service_identity !== undefined) prepared.service_identity = entry.service_identity
         intent = prepared
         // Durable before submit. If the server commits and the response is lost,
         // the reserved request id still lets this owner poll and finalize the
@@ -1870,10 +1901,13 @@ export async function submitSessionQuestions(
             message: err.message,
           })
           if (entry.submission !== undefined) {
+            if (readSessionState(sessionId, ctx.env).native_answer_operations?.some(op => op.question_id === entry.question_id)) {
+              notes.push('the original submission was rejected; preserving its native answer operation without minting a replacement question')
+              continue
+            }
             notes.push(
               `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
             )
-            clearFrozenSubmission(sessionId, ctx.env, entry)
             const reminted = await prepareQuestionSubmission(ctx, {
               summary: entry.summary,
               ...(entry.body !== undefined ? { body: entry.body } : {}),
@@ -1885,19 +1919,17 @@ export async function submitSessionQuestions(
               ownerDeadlineAt,
             })
             if ('error' in reminted) {
-              dropPendingQuestion(sessionId, ctx.env, entry)
+              // Preserve the original intent; preparation can race an early
+              // native answer and is not proof that its obligation disappeared.
               notes.push(reminted.error)
               continue
             }
+            if (entry.service_identity !== undefined) reminted.service_identity = entry.service_identity
+            if (!replaceFrozenSubmission(sessionId, ctx.env, entry, intent, reminted)) {
+              notes.push('the original submission changed or has a native answer obligation; no replacement was admitted')
+              continue
+            }
             intent = reminted
-            updateSessionState(sessionId, ctx.env, (current) => {
-              const list = pendingList(current)
-              const index = list.findIndex((candidate) => isSamePending(candidate, entry))
-              if (index < 0) return current
-              const next = [...list]
-              next[index] = { ...next[index]!, submission: reminted }
-              return { ...current, pending: next }
-            })
             try {
               if (!canSubmitCompleteWindow(ctx, intent, replyWindowSeconds)) {
                 notes.push(
@@ -1992,9 +2024,14 @@ export async function submitSessionQuestions(
       // nobody listening.
       if (admissionConfirmed) {
         updateSessionState(sessionId, ctx.env, (current) => {
+          current = confirmNativeAnswerTarget(current, live)
           const list = pendingList(current)
           const index = list.findIndex(
-            (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined,
+            (candidate) => isSamePending(candidate, entry) && candidate.request_id === undefined &&
+              (candidate.service_identity === undefined || (
+                candidate.service_identity.machine_id === ctx.service_identity?.machine_id &&
+                candidate.service_identity.base_url === ctx.service_identity?.base_url
+              )),
           )
           if (index >= 0) {
             const next = [...list]
@@ -2073,7 +2110,7 @@ async function escalate(
     (entry) =>
       entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now() || anomalous.includes(entry),
   )
-  const finalizedStale = await finalizePendings(ctx, staleLive, answerCloseDisposition(ctx, route))
+  const finalizedStale = await finalizePendings(ctx, sessionId, staleLive, answerCloseDisposition(ctx, route))
   const staleAnswers = finalizedStale
     .map(finalizedAnswer)
     .filter((entry): entry is AnsweredPending => entry !== null)
@@ -2204,7 +2241,7 @@ async function escalate(
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
-    const finalized = await finalizePendings(ctx, expired, answerCloseDisposition(ctx, route))
+    const finalized = await finalizePendings(ctx, sessionId, expired, answerCloseDisposition(ctx, route))
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)
@@ -2258,7 +2295,7 @@ async function escalate(
   }
 
   const polledAnswered = activeWaiting.filter((entry) => waited.byRequest.has(entry.request_id!))
-  const finalizedAnswered = await finalizePendings(ctx, polledAnswered, answerCloseDisposition(ctx, route))
+  const finalizedAnswered = await finalizePendings(ctx, sessionId, polledAnswered, answerCloseDisposition(ctx, route))
   const answered: AnsweredPending[] = []
   for (const finalized of finalizedAnswered) {
     const entry = finalized.pending
@@ -2321,7 +2358,7 @@ export function handleSessionEnd(
   if (!sessionId) return { notes, log: { outcome: 'ignored', reason: 'missing-session-id' } }
   // Publish cancellation before reading or clearing anything. In-flight Stop
   // writers use the same session lock, so none can recreate state after this.
-  markSessionEnded(sessionId, env, now)
+  const ending = markSessionEnded(sessionId, env, now)
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
 
   const state = readSessionState(sessionId, env)
@@ -2375,49 +2412,62 @@ export function handleSessionEnd(
       `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
     )
   }
-  if (
-    (preserveAccepted && state.accepted !== undefined) ||
-    (state.acknowledgement_due?.length ?? 0) > 0 ||
-    (state.message_acknowledgement_due?.length ?? 0) > 0
-  ) {
-    const preserved: SessionState = { ...stateWithHistory }
-    if (!preserveAccepted) delete preserved.accepted
-    if (!preserveAccepted) delete preserved.waiting_answers
-    delete preserved.input_wake
-    delete preserved.pending
-    delete preserved.retiring
-    delete preserved.acknowledgement_blocks
-    if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
-      delete preserved.acknowledgement_due
+  return withFileLock(`${sessionStatePath(sessionId, env)}.lock`, () => {
+    const marker = readSessionEndMarker(sessionId, env)
+    if (marker?.stamp?.mono !== ending.stamp?.mono ||
+        (readSessionIncarnation(sessionId, env)?.key ?? null) !== ending.ends) {
+      return { notes, log: { outcome: 'preserved', reason: 'session-resumed-during-cleanup' } }
     }
-    if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
-      delete preserved.message_acknowledgement_due
+    // A committed receipt can arrive after the end marker. Preserve the fresh
+    // obligation state rather than restoring the earlier cleanup snapshot.
+    const state = readSessionState(sessionId, env)
+    stateWithHistory = { ...state, ...(stateWithHistory.question_history === undefined ? {} : { question_history: stateWithHistory.question_history }) }
+    if (
+      (preserveAccepted && state.accepted !== undefined) ||
+      (state.acknowledgement_due?.length ?? 0) > 0 ||
+      (state.message_acknowledgement_due?.length ?? 0) > 0 ||
+      (state.native_answer_operations?.length ?? 0) > 0 ||
+      (state.codex_question_bindings?.length ?? 0) > 0
+    ) {
+      const preserved: SessionState = { ...stateWithHistory }
+      if (!preserveAccepted) delete preserved.accepted
+      if (!preserveAccepted) delete preserved.waiting_answers
+      delete preserved.input_wake
+      delete preserved.pending
+      delete preserved.retiring
+      delete preserved.acknowledgement_blocks
+      if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
+        delete preserved.acknowledgement_due
+      }
+      if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
+        delete preserved.message_acknowledgement_due
+      }
+      writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, preserved)
+      notes.push(
+        preserveAccepted && state.accepted !== undefined
+          ? 'preserved an accepted device answer for this exact session to resume'
+          : 'preserved required Agent Acknowledgement obligations for this exact session',
+      )
+      return {
+        notes,
+        log: {
+          outcome: preserveAccepted && state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
+          queued_retirements: orphans.length,
+          accepted_answers: state.accepted?.answers.length ?? 0,
+          acknowledgement_due: state.acknowledgement_due?.length ?? 0,
+          ...(state.message_acknowledgement_due === undefined
+            ? {}
+            : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
+        },
+      }
     }
-    writeSessionState(sessionId, env, preserved)
-    notes.push(
-      preserveAccepted && state.accepted !== undefined
-        ? 'preserved an accepted device answer for this exact session to resume'
-        : 'preserved required Agent Acknowledgement obligations for this exact session',
-    )
-    return {
-      notes,
-      log: {
-        outcome: preserveAccepted && state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
-        queued_retirements: orphans.length,
-        accepted_answers: state.accepted?.answers.length ?? 0,
-        acknowledgement_due: state.acknowledgement_due?.length ?? 0,
-        ...(state.message_acknowledgement_due === undefined
-          ? {}
-          : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
-      },
+    const history = stateWithHistory.question_history
+    clearSessionStateUnlocked(sessionId, env)
+    if ((history?.length ?? 0) > 0) {
+      writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, { question_history: history! })
     }
-  }
-  const history = stateWithHistory.question_history
-  clearSessionState(sessionId, env)
-  if ((history?.length ?? 0) > 0) {
-    writeSessionState(sessionId, env, { question_history: history! })
-  }
-  return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
+    return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -2473,18 +2523,14 @@ export function registerQuestion(
       full = 'live'
       return state
     }
-    return {
+    const registered = { asked_at: now, ...question, question_id: questionId, question: question.question.slice(0, MAX_STORED_QUESTION_CHARS) }
+    return reserveCurrentCodexQuestion({
       ...state,
       pending: [
         ...pending,
-        {
-          asked_at: now,
-          ...question,
-          question_id: questionId,
-          question: question.question.slice(0, MAX_STORED_QUESTION_CHARS),
-        },
+        registered,
       ],
-    }
+    }, registered, sessionId, env)
   })
   if (full === 'unasked') {
     throw new Error(

@@ -34,6 +34,7 @@ import {
   SubmitFeedbackRequest,
   SubmitNotificationRequest,
   PutAgentAcknowledgementRequest,
+  RecordHarnessAnswerRequest,
   UpdateAccountPreferencesRequest,
   validateDraft,
   type ListRepliesResponse,
@@ -270,6 +271,23 @@ describe('submission wire contract', () => {
 })
 
 describe('Agent Acknowledgement wire contract', () => {
+  it('accepts explicit bounded harness reports without native identifiers or fabricated devices', () => {
+    const report = { session_id: 'session-one', submission_id: 'submission-one',
+      answers: [{ question_id: 'q1', text: 'Continue' }] }
+    expect(Value.Check(RecordHarnessAnswerRequest, report)).toBe(true)
+    for (const extra of [{ device_id: 'dev_fake' }, { native_question_id: 'local-only' }, { transcript: 'private' }]) {
+      expect(Value.Check(RecordHarnessAnswerRequest, { ...report, ...extra })).toBe(false)
+    }
+    for (const answers of [[], [{ question_id: 'q1', text: '' }], Array.from({ length: 11 }, () => report.answers[0])]) {
+      expect(Value.Check(RecordHarnessAnswerRequest, { ...report, answers })).toBe(false)
+    }
+    expect(Value.Check(RecordHarnessAnswerRequest, { ...report, submission_id: 'short' })).toBe(false)
+    expect(Value.Check(PutAgentAcknowledgementRequest, { session_id: 'session-one', reply_seq: 2, text: 'Continuing.' })).toBe(true)
+    for (const seq of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(Value.Check(PutAgentAcknowledgementRequest, { session_id: 'session-one', reply_seq: seq })).toBe(false)
+    }
+  })
+
   it('requires bounded non-empty text after service trimming', () => {
     expect(Value.Check(PutAgentAcknowledgementRequest, { text: 'I will deploy staging.' })).toBe(
       true,
@@ -784,11 +802,16 @@ describe('validateDraft', () => {
       null,
       null,
       null,
-      { createdAt: new Date('2026-08-13T12:01:00.000Z') },
+      { createdAt: new Date('2026-08-13T12:01:00.000Z'), replyId: 'rpl_native_answer' },
     )
     const notifai = envelope.payload['notifai'] as Record<string, unknown>
     expect(notifai['agent_acknowledgement_available']).toBe(true)
     expect(notifai['agent_acknowledgement_created_at']).toBe('2026-08-13T12:01:00.000Z')
+    expect(notifai['agent_acknowledgement_reply_id']).toBe('rpl_native_answer')
+    const fcm = buildFcmDataEnvelope(sync, { requestId: 'req_sync', deliveryId: 'del_sync' },
+      null, null, null, null, null,
+      { createdAt: new Date('2026-08-13T12:01:00.000Z'), replyId: 'rpl_native_answer' })
+    expect(JSON.parse(fcm.data.notifai!)).toMatchObject({ agent_acknowledgement_reply_id: 'rpl_native_answer' })
     expect(JSON.stringify(envelope.payload)).not.toContain('I will deploy')
     expect(notifai).not.toHaveProperty('agent_acknowledgement_text')
   })
@@ -1301,7 +1324,7 @@ describe('validateDraft', () => {
       null,
       null,
       null,
-      { createdAt: new Date(0) },
+      { createdAt: new Date(0), replyId: 'rpl_00000000000000000000000000' },
     )
     const rendered = new TextEncoder().encode(JSON.stringify(envelope.payload)).length
     expect(estimateApnsPayloadBytes(maximum)).toBe(rendered)

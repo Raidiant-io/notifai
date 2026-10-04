@@ -8,6 +8,10 @@ import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallat
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session-attendant-state.js'
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { observeCodexQuestions } from './codex-question-bindings.js'
+import { codexAnswerPresentation } from './codex-answer-presentation.js'
+import { isDeepStrictEqual } from 'node:util'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
 function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' | 'hookPlatform'>): string | null {
@@ -45,24 +49,19 @@ export async function deliverCodexToolMessage(
   if (sessionId === undefined || envelope.hook_event_name !== 'PostToolUse' ||
       typeof envelope.turn_id !== 'string' || envelope.turn_id === '') return
   const incarnation = readSessionIncarnation(sessionId, deps.env)
-  const lease = readAttendantLease(sessionId, deps.env)
   const sourcePid = Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])
   const owner = incarnation?.harness_process
-  if (incarnation === null || lease === null || owner === undefined ||
-      owner.pid !== sourcePid || lease.incarnation !== incarnation.incarnation) return
-  const mayWrite = (): boolean => {
-    const current = readAttendantLease(sessionId, deps.env)
-    return !sessionHasEnded(sessionId, deps.env) &&
-      readSessionIncarnation(sessionId, deps.env)?.incarnation === lease.incarnation &&
-      current?.incarnation === lease.incarnation && current.generation === lease.generation &&
-      currentCodexTurn(sessionId, deps.env, incarnation.key) === envelope.turn_id &&
+  if (incarnation === null || owner === undefined || owner.pid !== sourcePid) return
+  const ownsRoot = (): boolean => {
+    const current = readSessionIncarnation(sessionId, deps.env)
+    return !sessionHasEnded(sessionId, deps.env) && current?.key === incarnation.key &&
+      current.incarnation === incarnation.incarnation &&
       processIdentityLiveness(owner) === 'alive'
   }
   // Seeing a definition on disk does not prove an already-running Codex loaded
   // it. Only this exact session's real tool invocation enables busy delivery.
   const fingerprint = toolHookFingerprint(deps)
-  if (fingerprint === null || sessionHasEnded(sessionId, deps.env) ||
-      processIdentityLiveness(owner) !== 'alive') return
+  if (fingerprint === null || !ownsRoot()) return
   // Automatic continuations need not emit UserPromptSubmit. A trusted,
   // synchronous tool callback from this exact owner is also a turn observation.
   // recordTurnStart ignores previously seen/ended turns, so a late callback
@@ -70,15 +69,30 @@ export async function deliverCodexToolMessage(
   if (currentCodexTurn(sessionId, deps.env, incarnation.key) !== envelope.turn_id) {
     recordTurnStart(sessionId, deps.env, incarnation.key, envelope.turn_id)
   }
-  if (!mayWrite()) return
+  const mayObserve = (): boolean => ownsRoot() &&
+    currentCodexTurn(sessionId, deps.env, incarnation.key) === envelope.turn_id
+  if (!mayObserve()) return
   refreshCodexInputActivity(sessionId, deps.env, incarnation.key, envelope.transcript_path)
+  if (!mayObserve()) return
+  if (readSessionState(sessionId, deps.env).codex_question_bindings?.length) {
+    const snapshot = readNativeQuestionSnapshot(envelope.transcript_path, sessionId, deps.env)
+    updateSessionState(sessionId, deps.env, state => mayObserve() ? observeCodexQuestions(state, incarnation.key, snapshot) : state)
+  }
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
-  if (proof?.incarnation !== lease.incarnation || proof.fingerprint !== fingerprint ||
+  if (proof?.incarnation !== incarnation.incarnation || proof.fingerprint !== fingerprint ||
       proof.root_observed?.turn_id !== envelope.turn_id) {
-    updateSessionState(sessionId, deps.env, (state) => ({
-      ...state, codex_tool_hook: { incarnation: lease.incarnation, fingerprint,
+    updateSessionState(sessionId, deps.env, (state) => !mayObserve() ? state : ({
+      ...state, codex_tool_hook: { incarnation: incarnation.incarnation, fingerprint,
         root_observed: { turn_id: envelope.turn_id!, at: (deps.now ?? Date.now)() } },
     }))
+  }
+  // A fresh session may have no service lease until its first question exists.
+  // Callback evidence permits registration; only a current lease permits input.
+  const lease = readAttendantLease(sessionId, deps.env)
+  if (lease === null || lease.incarnation !== incarnation.incarnation) return
+  const mayWrite = (): boolean => {
+    const current = readAttendantLease(sessionId, deps.env)
+    return mayObserve() && current?.incarnation === lease.incarnation && current.generation === lease.generation
   }
   if (!hasSessionInputs(sessionId, deps.env, lease) || !mayWrite()) return
   const credential = deps.store.load()
@@ -86,12 +100,18 @@ export async function deliverCodexToolMessage(
   if (credential === null || writer === null) return
   const now = deps.now ?? Date.now
   const deadlineAt = now() + 2_000
+  const mayDeliver = () => now() < deadlineAt && mayWrite()
   const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
     timeoutMs: 750, deadlineAt, now,
   })
   await drainSessionInputs({
     lease,
-    mayWrite: () => now() < deadlineAt && mayWrite(),
+    mayWrite: mayDeliver,
+    nativeAnswers: codexAnswerPresentation({ sessionId, env: deps.env, lease, ownerKey: incarnation.key,
+      turnId: envelope.turn_id, transcriptPath: envelope.transcript_path,
+      service: { base_url: credential.baseUrl, machine_id: credential.machineId },
+      deadline: performance.now() + 2_000, mayWrite: mayDeliver,
+      serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential) }),
     sequencer: {
       sessionId, env: deps.env, client, writer, log: logger,
       monotonic: () => performance.now(), wall: now,

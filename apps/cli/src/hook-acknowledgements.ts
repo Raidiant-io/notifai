@@ -1,5 +1,6 @@
 /** Accepted-answer delivery and required Agent Acknowledgement obligations. */
 import { withFileLock } from './file-lock.js'
+import { confirmNativeAnswerTarget } from './native-answer-operation.js'
 import { gate } from './hook-gates.js'
 import {
   ACKNOWLEDGEMENT_SCOPE,
@@ -112,7 +113,7 @@ function answerContext(answered: AnsweredPending): string {
   )
 }
 
-function acknowledgementContext(answered: AnsweredPending[]): string {
+export function acknowledgementContext(answered: AnsweredPending[]): string {
   const due = answered.filter(
     (entry) => entry.pending.request_id !== undefined,
   )
@@ -202,6 +203,7 @@ export function stageAcceptedAnswers(
     recorded_at: ctx.now(),
   }
   updateSessionState(sessionId, ctx.env, (current) => {
+    current = answered.reduce((state, answer) => confirmNativeAnswerTarget(state, answer.pending), current)
     const pendingRemaining = pendingList(current).filter(
       (entry) => !answered.some(({ pending }) => isSamePending(entry, pending)),
     )

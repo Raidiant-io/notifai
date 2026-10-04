@@ -26,6 +26,8 @@ import type {
   PollPairingResponse,
   PutAgentAcknowledgementRequestT,
   PutAgentAcknowledgementResponse,
+  RecordHarnessAnswerRequestT,
+  RecordHarnessAnswerResponse,
   PutAgentSessionLabelRequestT,
   PutSessionMessageAcknowledgementRequestT,
   PutSessionMessageAcknowledgementResponse,
@@ -127,6 +129,7 @@ export interface ApiClient {
     requestId: string,
     body: PutAgentAcknowledgementRequestT,
   ): Promise<PutAgentAcknowledgementResponse>
+  recordHarnessAnswer(requestId: string, body: RecordHarnessAnswerRequestT): Promise<RecordHarnessAnswerResponse>
   putAgentSessionLabel(body: PutAgentSessionLabelRequestT): Promise<AgentSessionView>
   agentAcknowledgement(
     requestId: string,
@@ -349,6 +352,8 @@ export function createClient(
         `/api/v1/notifications/${encodeURIComponent(requestId)}/agent-acknowledgement`,
         body,
       ),
+    recordHarnessAnswer: (requestId, body) =>
+      call<RecordHarnessAnswerResponse>('POST', `/api/v1/notifications/${encodeURIComponent(requestId)}/harness-answers`, body),
     putAgentSessionLabel: (body) =>
       call<AgentSessionView>('PUT', '/api/v1/agent-sessions/label', body),
     agentAcknowledgement: (requestId, { waitSeconds }) =>

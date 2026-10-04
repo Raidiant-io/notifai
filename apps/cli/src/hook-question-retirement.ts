@@ -9,6 +9,7 @@ import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { terminateCodexQuestions } from './codex-question-bindings.js'
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import {
@@ -168,7 +169,8 @@ export function retireQueuedQuestions(
       (questionId === undefined || entry.question_id === questionId),
     )
     const remaining = pendingList(current).filter((entry) => !selected.includes(entry))
-    let next: SessionState = { ...current }
+    let next: SessionState = terminateCodexQuestions({ ...current }, new Set(selected.flatMap(entry =>
+      entry.question_id === undefined ? [] : [entry.question_id])))
     if (remaining.length > 0) next.pending = remaining
     else delete next.pending
     for (const entry of selected) {

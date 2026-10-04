@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { nativeTranscriptOwned, readNativeTurnSnapshot } from './codex-native-turn.js'
+import { nativeTranscriptOwned, readNativeQuestionSnapshot, readNativeTurnSnapshot } from './codex-native-turn.js'
 import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js'
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
@@ -22,6 +22,82 @@ function fixture(withOwner = false) {
   const snapshot = () => readNativeTurnSnapshot(file, 'root', env)!
   return { root, env, file, key, event, snapshot }
 }
+
+it('observes only accepted native calls with their exact turn/call/question tuple', () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  const append = (payload: unknown) => appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload })}\n`)
+  const questions = [{ title: '[nf:001] Deploy where?', options: ['Staging', 'Production'] }, { title: 'Deploy where?', options: ['Staging', 'Production'] }]
+  append({ type: 'message', role: 'user', content: [{ text: JSON.stringify({ name: 'request_user_input_async', questions }) }] })
+  append({ type: 'function_call', name: 'request_user_input_async', call_id: 'call_one', arguments: JSON.stringify({ questions }) })
+  expect(readNativeQuestionSnapshot(f.file, 'root', f.env)?.questions?.every(q => !q.accepted)).toBe(true)
+  append({ type: 'function_call_output', call_id: 'call_one', output: '{"accepted":true}' })
+  f.event('task_complete', 'one')
+  f.event('task_started', 'two')
+  append({ type: 'message', role: 'user', content: [{ text: '<send_user_message_question_reply>app answer</send_user_message_question_reply>' }] })
+  append({ type: 'function_call', name: 'request_user_input_async', call_id: 'call_two', arguments: JSON.stringify({ questions: [{ title: '[nf:002] Free text?' }] }) })
+  append({ type: 'function_call_output', call_id: 'call_two', output: '{"accepted":false}' })
+  expect(readNativeQuestionSnapshot(f.file, 'root', f.env)?.questions).toEqual([
+    { offset: expect.any(Number), turn_id: 'one', call_id: 'call_one', index: 0, ...questions[0], accepted: true },
+    { offset: expect.any(Number), turn_id: 'one', call_id: 'call_one', index: 1, ...questions[1], accepted: true },
+    { offset: expect.any(Number), turn_id: 'two', call_id: 'call_two', index: 0, title: '[nf:002] Free text?', accepted: false },
+  ])
+  expect(readNativeTurnSnapshot(f.file, 'root', f.env)?.questions).toBeUndefined()
+})
+
+it('rejects malformed question/acceptance evidence without breaking the activity-only reader', () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload: {
+    type: 'function_call', name: 'request_user_input_async', call_id: 'call_one', arguments: '{bad',
+  } })}\n`)
+  expect(readNativeQuestionSnapshot(f.file, 'root', f.env)).toBeNull()
+  expect(readNativeTurnSnapshot(f.file, 'root', f.env)?.latest.id).toBe('one')
+})
+
+it('keeps duplicate native emissions visible so the binder cannot silently pick one', () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  for (const call of ['first', 'second']) {
+    for (const payload of [
+      { type: 'function_call', name: 'request_user_input_async', call_id: call, arguments: JSON.stringify({ questions: [{ title: '[nf:001] Same?' }] }) },
+      { type: 'function_call_output', call_id: call, output: '{"accepted":true}' },
+    ]) appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload })}\n`)
+  }
+  expect(readNativeQuestionSnapshot(f.file, 'root', f.env)?.questions?.filter(q => q.accepted)).toHaveLength(2)
+})
+
+it('does not associate a tail-only old call with a newer fully observed turn', () => {
+  const f = fixture()
+  f.event('task_started', 'outside-tail')
+  appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', text: 'x'.repeat(9 * 1024 * 1024) } })}\n`)
+  const call = (id: string) => {
+    for (const payload of [
+      { type: 'function_call', name: 'request_user_input_async', call_id: id, arguments: JSON.stringify({ questions: [{ title: '[nf:001] Same?' }] }) },
+      { type: 'function_call_output', call_id: id, output: '{"accepted":true}' },
+    ]) appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload })}\n`)
+  }
+  call('old')
+  f.event('task_started', 'inside-tail')
+  call('new')
+  expect(readNativeQuestionSnapshot(f.file, 'root', f.env)?.questions).toEqual([
+    { offset: expect.any(Number), turn_id: 'inside-tail', call_id: 'new', index: 0, title: '[nf:001] Same?', accepted: true },
+  ])
+})
+
+it.each(['completed', 'aborted', 'empty-call-id', 'reused-call-id'])('rejects impossible native question emission: %s', scenario => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  if (scenario === 'completed') f.event('task_complete', 'one')
+  if (scenario === 'aborted') f.event('turn_aborted', 'one')
+  const payload = { type: 'function_call', name: 'request_user_input_async',
+    call_id: scenario === 'empty-call-id' ? '' : 'one',
+    arguments: JSON.stringify({ questions: [{ title: '[nf:001] Same?' }] }),
+  }
+  appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload })}\n`)
+  if (scenario === 'reused-call-id') appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload })}\n`)
+  expect(readNativeQuestionSnapshot(f.file, 'root', f.env)).toBeNull()
+})
 
 it('refreshes actual completion without a subsequent hook and distinguishes an abort', () => {
   const f = fixture(true)
