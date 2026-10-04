@@ -259,31 +259,23 @@ function liveEntries(
   }
 }
 
-function publishEmpty(file: string): EntryIdentity {
-  const handle = openSync(file, 'wx', 0o600)
-  try {
-    return entryIdentity(fstatSync(handle, { bigint: true }))
-  } finally {
-    closeSync(handle)
-  }
-}
-
 /**
  * True when a publication attempt lost its rendezvous rather than found a
  * broken one.
  *
  * A releaser removes an empty rendezvous directory the moment the last entry
  * goes, so a contender registering at that instant sees the removal from
- * whichever side it reached first. All three are the same event: `ENOENT` when
+ * whichever side it reached first: `ENOENT` when
  * the directory is already gone, `EINVAL` when APFS reports a directory that is
- * still being deleted, and a replaced identity when a third contender recreated
- * it first. None of them says anything about the lock's integrity, because a
- * contender with no published entry owns nothing yet.
+ * still being deleted, `EPERM` while Windows has it pending deletion, and a
+ * replaced identity when a third contender recreated it first. Retrying is safe
+ * only before publishing an entry. Persistent access denial still exhausts the
+ * existing deadline without admitting the transaction.
  */
 function lostTheRendezvous(err: unknown): boolean {
   if (err instanceof RendezvousReplaced) return true
   const code = (err as NodeJS.ErrnoException).code
-  return code === 'ENOENT' || code === 'EINVAL'
+  return code === 'ENOENT' || code === 'EINVAL' || code === 'EPERM'
 }
 
 function publishChoosing(
@@ -294,6 +286,7 @@ function publishChoosing(
 ): { file: string; fileIdentity: EntryIdentity; directoryIdentity: FileIdentity } {
   const file = path.join(directory, name)
   for (;;) {
+    let handle: number
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
       const registrar = assertOwnedDirectory(directory)
@@ -302,7 +295,27 @@ function publishChoosing(
       // old owner's unique path, never this contender's future one.
       liveEntries(directory, registrar, options, deadline)
       options.observe?.({ phase: 'registering', entry: name })
-      const fileIdentity = publishEmpty(file)
+      handle = openSync(file, 'wx', 0o600)
+    } catch (err) {
+      if (!lostTheRendezvous(err)) throw err
+      // No entry has been published. Recheck ownership and identity on every
+      // attempt; never turn inaccessible state into permission to enter.
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `timed out publishing file lock contender in ${directory}: ${(err as Error).message}`,
+        )
+      }
+      Atomics.wait(lockSleep, 0, 0, FILE_LOCK_POLL_MS)
+      continue
+    }
+
+    let fileIdentity: EntryIdentity | null = null
+    try {
+      try {
+        fileIdentity = entryIdentity(fstatSync(handle, { bigint: true }))
+      } finally {
+        closeSync(handle)
+      }
       // Pin the rendezvous that holds the entry, not the one scanned before it
       // existed. `open` resolves the path atomically, so the entry lands in
       // whichever directory the path named at that instant — and from then on
@@ -316,15 +329,14 @@ function publishChoosing(
       }
       return { file, fileIdentity, directoryIdentity }
     } catch (err) {
-      if (!lostTheRendezvous(err)) throw err
-      // Recreate it and register again; the deadline, not the number of losses,
-      // decides when contention becomes a failure.
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `timed out publishing file lock contender in ${directory}: ${(err as Error).message}`,
-        )
+      // Publication ended the retry window. Preserve the failure and remove
+      // only our exact entry; a replacement never belongs to this contender.
+      try {
+        if (fileIdentity !== null && sameEntryIdentity(file, fileIdentity)) unlinkSync(file)
+      } catch {
+        // An inaccessible entry cannot be safely reclaimed here.
       }
-      Atomics.wait(lockSleep, 0, 0, FILE_LOCK_POLL_MS)
+      throw err
     }
   }
 }
