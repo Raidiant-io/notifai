@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## 8.2.0-beta.1 (2026-10-04)
+
+### Features
+
+* Add native-answer reporting and provenance contracts, per-submission acknowledgements, and positive harness-answer capability discovery.
+* Add QR-first computer-approval request and response contracts.
+
 ## [8.1.5](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.4...protocol-v8.1.5) (2026-10-01)
 
 ## [8.1.4](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.3...protocol-v8.1.4) (2026-10-01)

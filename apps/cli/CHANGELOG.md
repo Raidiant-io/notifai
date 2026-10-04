@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## 11.7.0-beta.1 (2026-10-04)
+
+### Features
+
+* Synchronize explicitly linked Codex questions with app answers while preserving unrelated native forms, distinct submissions, and answer acknowledgements.
+* Approve a computer through QR-first setup, including text-only terminal QR presentation.
+
+### Bug Fixes
+
+* Deliver input through working-turn hooks and defer wakes until native turn completion; reconcile only exact owned stale queue entries.
+* Keep settled question IDs usable for explicit closure without repeating acknowledgement.
+* Avoid redundant permission changes when writing private local state.
+
+### Dependencies and limits
+
+* Pin protocol 8.2.0-beta.1, including native-answer capability discovery and reporting.
+* Live optional Codex native-control acceptance is limited to macOS Codex 0.160.0. Uncertain writes retain recovery state; cancellation can lose to dequeue.
+
 ## [11.6.2](https://github.com/Raidiant-io/notifai/compare/v11.6.1...v11.6.2) (2026-10-01)
 
 
