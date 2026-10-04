@@ -51,6 +51,8 @@ import { readDeliveryJournal } from './session-delivery.js'
 import { codexToolHookReady } from './codex-tool-messages.js'
 import { readSessionMessages, sessionInputWake } from './session-inputs.js'
 import { integrationFaultNotice } from './integration-health.js'
+import type { QueueControl } from './codex-queue-control.js'
+import { readInputWakes } from './session-input-wakes.js'
 
 const HARNESS = { pid: 4242, start: 'Fri Sep 25 11:12:08 2026' }
 
@@ -878,7 +880,7 @@ describe('notifai hook attend for Codex', () => {
     expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'ended' }])
   })
 
-  it.each(['tool-drain', 'completion', 'first-tool', 'missing-tool', 'abort'])('routes a staged Note safely: %s', async (mode) => {
+  it.each(['tool-drain', 'completion', 'first-tool', 'missing-tool', 'abort', 'owned-cancel'])('routes a staged Note safely: %s', async (mode) => {
     const { env, root } = codexEnv()
     enableProject(projectBinding(root, env, undefined))
     const home = env['CODEX_HOME']!
@@ -893,7 +895,7 @@ describe('notifai hook attend for Codex', () => {
     const transcript = path.join(home, 'sessions', 'owned.jsonl')
     mkdirSync(path.dirname(transcript), { recursive: true })
     writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: THREAD, source: 'cli' } }) + '\n')
-    const nativeEvent = (type: string) => appendFileSync(transcript, JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'busy' } }) + '\n')
+    const nativeEvent = (type: string, turnId = 'busy') => appendFileSync(transcript, JSON.stringify({ type: 'event_msg', payload: { type, turn_id: turnId } }) + '\n')
     nativeEvent('task_started')
     const output: string[] = []
     const queued: string[] = []
@@ -902,18 +904,38 @@ describe('notifai hook attend for Codex', () => {
     let claims = 0
     let exchanges = 0
     const outcomes: string[] = []
+    const claimBodies: unknown[] = []
+    const generation = mode === 'owned-cancel' ? 7 : 1
+    const nativeQueue = new Map<string, { token: string; text: string }>()
+    let nativeAdds = 0
+    const removed: string[] = []
+    const nativeControl: QueueControl = {
+      namespace: home, threadId: THREAD,
+      add: async (token, text) => {
+        const id = `native-${++nativeAdds}`
+        nativeQueue.set(id, { token, text })
+        return id
+      },
+      find: async (token, text) => {
+        const match = [...nativeQueue].find(([, entry]) => entry.token === token && entry.text === text)
+        return match === undefined ? 'absent' : { id: match[0] }
+      },
+      remove: async id => { removed.push(id); return nativeQueue.delete(id) },
+      close: () => {},
+    }
     const client = {
       compatibility: async () => ({ server_capabilities: ['session_attendance'] }),
       attend: async (_session: string, body: AttendanceRequestT): Promise<AttendanceResponse> => {
         exchanges += 1
         if (body.state !== 'running') return { status: 'withdrawn' }
         await new Promise((resolve) => setTimeout(resolve, 20))
-        return { status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c', messages:
+        return { status: 'attending', generation, lease_remaining_ms: 120_000, message_cursor: 'c', messages:
           offered && !delivered
             ? [{ message_id: 'sm_tool', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note', body: 'Use the tool hook' }] : [] }
       },
-      claimDeliveryAttempt: async () => {
+      claimDeliveryAttempt: async (_session: string, body: unknown) => {
         claims += 1
+        claimBodies.push(body)
         return { attempt_id: `att_tool_${claims}`, claim_remaining_ms: 30_000 }
       },
       reportDeliveryAttempt: async (id: string, body: { outcome: string }) => {
@@ -923,6 +945,7 @@ describe('notifai hook attend for Codex', () => {
       },
     } as unknown as ApiClient
     const deps = attendDeps(env, root, { clientFactory: () => client,
+      ...(mode === 'owned-cancel' ? { codexQueueControl: async () => nativeControl } : {}),
       codexWake: { queue: async (_id, _cwd, text) => { queued.push(text) } } })
     deps.attendant!.harnessProcess = owner
     deps.attendant!.probeAdapters!.readStart = () => owner.start
@@ -951,7 +974,7 @@ describe('notifai hook attend for Codex', () => {
         output.length = 0
       }
       offered = true
-      await until(() => readSessionMessages(THREAD, env, { incarnation: incarnation.incarnation, generation: 1 }).length === 1, 'staged Note')
+      await until(() => readSessionMessages(THREAD, env, { incarnation: incarnation.incarnation, generation }).length === 1, 'staged Note')
       expect(claims).toBe(0)
       {
         const observed = exchanges
@@ -970,6 +993,35 @@ describe('notifai hook attend for Codex', () => {
         await until(() => listAttendantReports(env)[0]?.activity === 'idle', 'actual native completion without another hook')
         const completedAt = exchanges
         await until(() => exchanges >= completedAt + 2, 'idle reconciliation')
+        if (mode === 'owned-cancel') {
+          // Fake service and native transport; real resident, local lease,
+          // hook dispatcher, foreground drain and automatic probe cleanup.
+          const wakes = () => readInputWakes({ sessionId: THREAD, env })
+          await until(() => wakes()[0]?.phase === 'accepted', 'resident-owned native wake')
+          expect(readAttendantLease(THREAD, env)).toMatchObject({ incarnation: incarnation.incarnation, generation })
+          expect(wakes()[0]).toMatchObject({ incarnation: incarnation.incarnation, generation, nativeId: 'native-1' })
+          nativeQueue.set('unrelated', { token: 'independent-control', text: 'Synthetic unrelated transport control' })
+          nativeEvent('task_started', 'foreground')
+          await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: THREAD, cwd: root,
+            hook_event_name: 'UserPromptSubmit', turn_id: 'foreground', transcript_path: transcript,
+            prompt: 'Synthetic foreground boundary for the cancellation test',
+          }), 'codex')
+          await until(() => wakes()[0]?.phase === 'cancelled', 'automatic resident cancellation after foreground drain')
+          expect(claims).toBe(1)
+          expect(claimBodies[0]).toMatchObject({ incarnation: incarnation.incarnation, generation })
+          expect(output.filter(text => text.includes('sm_tool'))).toHaveLength(1)
+          expect(outcomes).toEqual(['handed_off'])
+          expect(readDeliveryJournal(THREAD, env)[0]?.stage).toBe('written')
+          expect(wakes()[0]?.detached).toBe(true)
+          expect(removed).toEqual(['native-1'])
+          expect([...nativeQueue.keys()]).toEqual(['unrelated'])
+          nativeEvent('task_complete', 'foreground')
+          const afterDrain = exchanges
+          await until(() => exchanges >= afterDrain + 3, 'acknowledgement debt alone does not requeue')
+          expect(nativeAdds).toBe(1)
+          expect(queued).toEqual([])
+          return
+        }
         expect(queued).toEqual(mode === 'tool-drain' ? [] : [sessionInputWake()])
         if (mode !== 'tool-drain') {
           await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: THREAD, cwd: root,

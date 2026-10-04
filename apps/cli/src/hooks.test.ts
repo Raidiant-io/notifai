@@ -5588,7 +5588,7 @@ describe('conversational close racing lifecycle retry', () => {
       found: true,
       question: { state: 'withdrawn', submitted: false, request_id: null },
     })
-    expect(h.io.errLines.join('\n')).toMatch(/retired before submission/)
+    expect(h.io.errLines.join('\n')).toMatch(/retired .*before submission; not uploading it/)
   })
 
   it('still submits a queued question in another session after this session is closed', async () => {
@@ -5871,7 +5871,12 @@ describe('serialized question admission and withdrawal', () => {
     }
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
     expect(attempts).toBe(1)
-    expect(inspectQuestionState('q_remint', h.env)).toMatchObject({ question: { state: 'withdrawn', submitted: false } })
+    // This identity crossed admission before recovery. Closing it keeps the
+    // frozen remote identity and retirement debt instead of asserting it was
+    // never submitted, even when this retry receives a definite refusal.
+    expect(inspectQuestionState('q_remint', h.env)).toMatchObject({
+      question: { state: 'retired', submitted: null, frozen_request_id: expect.any(String) },
+    })
     h.deps.clientFactory = factory
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
     expect(h.recorder.submitted.filter(isQuestionSubmit)).toEqual([])

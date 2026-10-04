@@ -2632,6 +2632,63 @@ describe('command contracts', () => {
     })
   })
 
+  it.each(['answered', 'retired'] as const)('close resolves a %s question after pending cleanup and on repeated calls', async (state) => {
+    const io = new CapturedIo()
+    const closed: string[] = []
+    const client = {
+      closeReplies: async (id: string) => {
+        closed.push(id)
+        expect(id).toBe(receipt.request_id)
+        return replyResponse([reply])
+      },
+    } as unknown as ApiClient
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-history-'))
+    const deps = { ...makeDeps(io, client), cwd: root, env: isolatedEnv(root) }
+    writeSessionState('original-owner', deps.env, {
+      question_history: [{ question_id: 'q_settled', request_id: receipt.request_id, state }],
+    })
+    writeProjectSession(root, deps.env, 'unrelated-owner', Date.now(), 'codex')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await closeCommand(deps, 'q_settled', { json: true })).toBe(EXIT.ok)
+      expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
+        question_id: 'q_settled', request_id: receipt.request_id,
+        acknowledgement_command: `notifai acknowledge ${receipt.request_id} --text <text>`,
+      })
+    }
+    expect(closed).toEqual([receipt.request_id, receipt.request_id])
+    expect(readSessionState('original-owner', deps.env).question_history?.[0]?.state).toBe(state)
+  })
+
+  it('close retains an unconfirmed retirement identity when remote closure fails', async () => {
+    const io = new CapturedIo()
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-frozen-history-'))
+    const closeReplies = vi.fn(async () => { throw new ApiCallError(404, 'not_found', 'No such notification request.') })
+    const deps = { ...makeDeps(io, { closeReplies } as unknown as ApiClient), cwd: root, env: isolatedEnv(root) }
+    const history = [{ question_id: 'q_frozen_history', frozen_request_id: 'req_unconfirmed', state: 'retired' as const }]
+    writeSessionState('original-owner', deps.env, { question_history: history })
+    expect(await closeCommand(deps, 'q_frozen_history', { json: true })).toBe(EXIT.failed)
+    expect(closeReplies).toHaveBeenCalledWith('req_unconfirmed', 'retire')
+    expect(readSessionState('original-owner', deps.env).question_history).toEqual(history)
+    expect(io.outLines).toEqual([])
+    expect(io.errLines.join('\n')).toContain('not_found')
+  })
+
+  it.each(['missing', 'ambiguous', 'withdrawn'] as const)('close keeps a %s local identity off the remote API', async (scenario) => {
+    const io = new CapturedIo()
+    const closeReplies = vi.fn(async () => replyResponse([]))
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-local-identity-'))
+    const deps = { ...makeDeps(io, { closeReplies } as unknown as ApiClient), cwd: root, env: isolatedEnv(root) }
+    const question = { question_id: 'q_local_only', state: 'withdrawn' as const }
+    if (scenario !== 'missing') writeSessionState('owner-one', deps.env, { question_history: [question] })
+    if (scenario === 'ambiguous') writeSessionState('owner-two', deps.env, { question_history: [question] })
+    expect(await closeCommand(deps, question.question_id, { json: true })).toBe(
+      scenario === 'withdrawn' ? EXIT.ok : EXIT.failed,
+    )
+    expect(closeReplies).not.toHaveBeenCalled()
+    if (scenario === 'withdrawn') expect(JSON.parse(io.outLines[0]!)).toMatchObject({ state: 'withdrawn', submitted: false })
+    else expect(io.errLines.join('\n')).toMatch(scenario === 'ambiguous' ? /more than one/ : /No local registration/)
+  })
+
   it('close --pending withdraws an unpushed registration so a later Stop cannot send it', async () => {
     const io = new CapturedIo()
     const client = {

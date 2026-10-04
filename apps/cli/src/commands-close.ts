@@ -12,7 +12,7 @@ import {
 } from './commands-core.js'
 import { acknowledgementCommand, printAcknowledgementStatus } from './commands-send-support.js'
 import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
-import { dropPendingQuestion } from './hook-question-state.js'
+import { dropPendingQuestion, inspectQuestionState } from './hook-question-state.js'
 import { readSessionState, updateSessionState } from './hook-session-state.js'
 import { type PendingQuestion } from './hook-types.js'
 
@@ -49,11 +49,44 @@ export async function closeCommand(
     return closePendingQuestions(deps, flags.json === true)
   }
 
+  const questionId = requestId!.startsWith('q_') ? requestId! : undefined
+  if (questionId !== undefined) {
+    const lookup = inspectQuestionState(questionId, deps.env)
+    if (!lookup.found) {
+      deps.io.err(lookup.ambiguous
+        ? `Question ${questionId} appears in more than one local Agent Session; refusing to guess.`
+        : `No local registration state exists for ${questionId}. Use the original request id if available.`)
+      return EXIT.failed
+    }
+  }
+
   const bindingOwner = resolveCommandSession(deps, requestId!)
   if (bindingOwner !== null) revokeNativeBindings(bindingOwner.sessionId, deps.env, new Set([requestId!]))
 
   const local = await closeLocalQuestion(deps, requestId!, flags.json === true)
   if (local !== null) return local
+
+  // Answer delivery removes the pending entry but retains its stable identity.
+  // Re-read after local retirement: promotion or delivery may have raced it.
+  if (questionId !== undefined) {
+    const lookup = inspectQuestionState(questionId, deps.env)
+    if (!lookup.found) {
+      deps.io.err(`Cannot resolve question ${questionId} uniquely; use the original request id if available.`)
+      return EXIT.failed
+    }
+    const question = lookup.question
+    if (question.state === 'withdrawn' && question.submitted === false) {
+      if (flags.json) deps.io.out(JSON.stringify(question, null, 2))
+      else deps.io.out(`Question ${questionId} was already withdrawn without submission.`)
+      return EXIT.ok
+    }
+    const resolved = question.request_id ?? question.frozen_request_id
+    if (resolved === null) {
+      deps.io.err(`Question ${questionId} has no remote request identity; inspect its status before retrying.`)
+      return EXIT.failed
+    }
+    requestId = resolved
+  }
 
   const lifecycleSession = resolveCommandSession(deps, requestId!)
   const config = loadLoggedConfig(deps, {
@@ -71,6 +104,7 @@ export async function closeCommand(
         JSON.stringify(
           {
             ...response,
+            ...(questionId === undefined ? {} : { question_id: questionId }),
             agent_acknowledgement_required: response.replies.length > 0 || response.agent_acknowledgement_required,
             acknowledgement_command: acknowledgementCommand(
               response.request_id,
