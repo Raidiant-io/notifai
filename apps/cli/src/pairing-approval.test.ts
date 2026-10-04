@@ -5,9 +5,30 @@ import jsQR from 'jsqr'
 import { PNG } from 'pngjs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { loginCommand, logoutCommand, EXIT, type CommandDeps } from './commands.js'
+import type { ReadinessState } from './readiness.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { readPendingPairing } from './pending-pairing.js'
-import { pairingQrPath } from './pairing-qr.js'
+import { pairingQrPath, pairingQrTextPath } from './pairing-qr.js'
+
+function decodeTextQr(text: string): string | undefined {
+  const rows = text.split('\n')
+  const scale = 4
+  const width = Math.max(...rows.map((row) => row.length)) * scale
+  const height = rows.length * 2 * scale
+  const pixels = new Uint8ClampedArray(width * height * 4).fill(255)
+  for (const [y, row] of rows.entries()) for (const [x, glyph] of [...row].entries()) {
+    expect([' ', '█', '▀', '▄']).toContain(glyph)
+    for (let half = 0; half < 2; half += 1) {
+      const black = glyph === '█' || glyph === (half === 0 ? '▀' : '▄')
+      if (!black) continue
+      for (let dy = 0; dy < scale; dy += 1) for (let dx = 0; dx < scale; dx += 1) {
+        const offset = ((y * 2 * scale + half * scale + dy) * width + x * scale + dx) * 4
+        pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = 0
+      }
+    }
+  }
+  return jsQR(pixels, width, height)?.data
+}
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -57,6 +78,21 @@ describe('QR-first computer approval', () => {
     expect(test.lines.filter((line) => line.startsWith('Pairing code:'))).toEqual(['Pairing code: ABC-234'])
     expect(test.saved()).toBe(0)
   })
+  it('shows a decodable QR in noninteractive terminal output and exposes its protected text artifact to JSON setup', async () => {
+    const test = ceremony()
+    const gaps: ReadinessState[] = []
+    expect(await loginCommand(test.deps, {}, (gap) => gaps.push(gap))).toBe(EXIT.auth)
+    const pending = readPendingPairing(test.deps.env, 0)!
+    const file = pairingQrTextPath(test.deps.env)
+    const text = readFileSync(file, 'utf8')
+    expect(test.lines).toContain(text)
+    expect(text).not.toContain('\u001b')
+    expect(decodeTextQr(text)).toBe(pending.approve_url)
+    expect(gaps[0]?.technical?.pairing).toMatchObject({ qr_text_path: file })
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(test.opened).toEqual([])
+    expect(test.targeted).toEqual([])
+  })
   it('choosing browser approval retains the pending pairing and explicitly opens its approval page', async () => {
     const test = ceremony(); await loginCommand(test.deps, {})
     const pending = readPendingPairing(test.deps.env, 0)!
@@ -96,6 +132,7 @@ describe('QR-first computer approval', () => {
     expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
     expect(test.lines.some((line) => line.startsWith('Pairing code:'))).toBe(false)
     expect(existsSync(pairingQrPath(test.deps.env))).toBe(false)
+    expect(existsSync(pairingQrTextPath(test.deps.env))).toBe(false)
   })
   it('network failure keeps the same approval and names the real gap', async () => {
     const test = ceremony(); await loginCommand(test.deps, {})
@@ -111,5 +148,6 @@ describe('QR-first computer approval', () => {
     logoutCommand(test.deps)
     expect(readPendingPairing(test.deps.env, 0)).toBeNull()
     expect(existsSync(pairingQrPath(test.deps.env))).toBe(false)
+    expect(existsSync(pairingQrTextPath(test.deps.env))).toBe(false)
   })
 })

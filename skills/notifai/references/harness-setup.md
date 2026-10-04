@@ -17,8 +17,11 @@ diagnosing, or recovering — not before.
 Run `notifai init --json` yourself. An unapproved Machine starts one approval,
 defaults to QR without asking for email, polls once, and returns. Progress is
 on stderr and final readiness on stdout. The `credential` state's
-`technical.pairing` holds the protected local `qr_path`, `approve_url`, and
-matching `code`. Display the QR locally in the harness; never include the QR
+`technical.pairing` holds protected local `qr_path` and `qr_text_path` artifacts,
+the `approve_url`, and matching `code`. Present the QR before requesting a scan:
+show the local image where supported, or read `qr_text_path` and reproduce the
+library-generated QR verbatim in a fenced text block in a terminal/text-only harness.
+Display the matching code beside it. Never include the QR
 or proof-bearing link in any Notification Request field or media. Use T2 from
 <https://app.notifai.sh/setup.md>: the User reviews their Account, computer, and
 matching code in their signed-in Companion App before approving. A valid Auth
