@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [11.7.1-beta.1] (2026-10-04)
+## [11.7.1-beta.2] (2026-10-04)
 
 ### Bug Fixes
 
