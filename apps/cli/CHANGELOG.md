@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.7.0](https://github.com/Raidiant-io/notifai/compare/v11.6.2...v11.7.0) (2026-10-04)
+
+
+### Features
+
+* **cli:** synchronize linked Codex questions and app answers ([#243](https://github.com/Raidiant-io/notifai/issues/243)) ([182f2cc](https://github.com/Raidiant-io/notifai/commit/182f2ccd5477741750db7ee90c02680f741dc255))
+* **onboarding:** approve computers through QR-first setup ([#242](https://github.com/Raidiant-io/notifai/issues/242)) ([6e80bab](https://github.com/Raidiant-io/notifai/commit/6e80bab2d8c930ea49d123085d275a6d6f691188))
+
+
+### Bug Fixes
+
+* **cli:** avoid redundant permission changes in private state writes ([#237](https://github.com/Raidiant-io/notifai/issues/237)) ([57f53a1](https://github.com/Raidiant-io/notifai/commit/57f53a111ec52c4f4146e721ce37eb84e129663b))
+* **cli:** clear beta dependency and guidance release gates ([#246](https://github.com/Raidiant-io/notifai/issues/246)) ([19d3f62](https://github.com/Raidiant-io/notifai/commit/19d3f6204ce69cbe10b2bc12d0f823856e6aea71))
+* **cli:** defer Codex wakes until native turn completion ([#239](https://github.com/Raidiant-io/notifai/issues/239)) ([0c2add8](https://github.com/Raidiant-io/notifai/commit/0c2add8c6558518850e046d6a64fe8ff71881fe8))
+* **cli:** reconcile owned Codex input wakes ([#240](https://github.com/Raidiant-io/notifai/issues/240)) ([03cedba](https://github.com/Raidiant-io/notifai/commit/03cedbaea5fd8c8e7a7b59d66503dff99ee88ff1))
+* **cli:** resolve settled question identities during close ([#245](https://github.com/Raidiant-io/notifai/issues/245)) ([aea4337](https://github.com/Raidiant-io/notifai/commit/aea4337112e26217b61396376f5d3cbe49c9be8e))
+* **onboarding:** show pairing QR in text-only terminals ([#244](https://github.com/Raidiant-io/notifai/issues/244)) ([21439ff](https://github.com/Raidiant-io/notifai/commit/21439ffca55783c3b4c0241a30d303d22ba023ee))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.1.5 to 8.2.0
+
 ## [11.6.2](https://github.com/Raidiant-io/notifai/compare/v11.6.1...v11.6.2) (2026-10-01)
 
 

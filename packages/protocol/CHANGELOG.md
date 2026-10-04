@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.2.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.5...protocol-v8.2.0) (2026-10-04)
+
+
+### Features
+
+* **cli:** synchronize linked Codex questions and app answers ([#243](https://github.com/Raidiant-io/notifai/issues/243)) ([182f2cc](https://github.com/Raidiant-io/notifai/commit/182f2ccd5477741750db7ee90c02680f741dc255))
+* **onboarding:** approve computers through QR-first setup ([#242](https://github.com/Raidiant-io/notifai/issues/242)) ([6e80bab](https://github.com/Raidiant-io/notifai/commit/6e80bab2d8c930ea49d123085d275a6d6f691188))
+
 ## [8.1.5](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.4...protocol-v8.1.5) (2026-10-01)
 
 ## [8.1.4](https://github.com/Raidiant-io/notifai/compare/protocol-v8.1.3...protocol-v8.1.4) (2026-10-01)
