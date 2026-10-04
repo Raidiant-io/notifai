@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.7.1](https://github.com/Raidiant-io/notifai/compare/v11.7.0...v11.7.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **cli:** retry Windows lock registration before publication ([#249](https://github.com/Raidiant-io/notifai/issues/249)) ([083b989](https://github.com/Raidiant-io/notifai/commit/083b989a270cba2db9ac044e13d995ea7289cacb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.2.0 to 8.2.1
+
 ## [11.7.0](https://github.com/Raidiant-io/notifai/compare/v11.6.2...v11.7.0) (2026-10-04)
 
 
