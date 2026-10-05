@@ -24,10 +24,16 @@ import { GATE_REASONS } from './hook-gates.js'
 const skillPath = new URL('../../../skills/notifai/SKILL.md', import.meta.url)
 const skill = readFileSync(skillPath, 'utf8')
 const description = skill.match(/^description:\s*(.+)$/m)?.[1] ?? ''
-const harnessReference = readFileSync(
+const HARNESS_FILES = ['claude-code', 'codex', 'cursor', 'opencode', 'openclaw', 'hermes', 'grok'] as const
+const harnessFile = (name: (typeof HARNESS_FILES)[number]): string => readFileSync(
+  new URL(`../../../skills/notifai/references/harness-${name}.md`, import.meta.url), 'utf8',
+)
+const harnessSetupReference = readFileSync(
   new URL('../../../skills/notifai/references/harness-setup.md', import.meta.url),
   'utf8',
 )
+/** What every harness shares, then each harness's own file. */
+const harnessReference = [harnessSetupReference, ...HARNESS_FILES.map(harnessFile)].join('\n')
 const diagnosticsReference = readFileSync(
   new URL('../../../skills/notifai/references/diagnostics.md', import.meta.url),
   'utf8',
@@ -351,10 +357,8 @@ describe('Notifai agent skill', () => {
   })
 
   it('distinguishes Claude Code inbox wake from the Windows held Stop continuation', () => {
-    const answerRoute = harnessReference.slice(
-      harnessReference.indexOf('## How the answer gets back to the agent'),
-      harnessReference.indexOf('## Bounded recovery'),
-    )
+    const claude = harnessFile('claude-code')
+    const answerRoute = claude.slice(claude.indexOf('## How the answer gets back'), claude.indexOf('## Command approval'))
 
     expect(answerRoute).toMatch(/Claude Code.*POSIX.*inbox\s+socket/is)
     const windowsRoute = answerRoute.slice(answerRoute.indexOf('Claude Code on Windows'))
@@ -527,6 +531,19 @@ describe('Notifai agent skill', () => {
     ]) {
       expect(reachable, `${command} is unreachable from the skill`).toContain(command)
     }
+  })
+
+  it('gives each harness its own reference, so an agent reads only the one it is in', () => {
+    for (const name of HARNESS_FILES) {
+      expect(harnessSetupReference).toContain(`(harness-${name}.md)`)
+      expect(harnessFile(name)).toContain('## Activation')
+      expect(harnessFile(name)).toContain('(harness-setup.md)')
+    }
+    for (const lead of ['**Claude Code:**', '**Codex:**', '**OpenClaw:**', '**Hermes:**', '**Grok:**']) {
+      expect(harnessSetupReference).not.toContain(lead)
+    }
+    expect(harnessFile('claude-code')).not.toMatch(/\*\*Codex:\*\*|OpenClaw|Hermes/)
+    expect(harnessFile('claude-code')).toContain('notifai init --claude-commands --json')
   })
 
   it('moves per-harness mechanics into progressive disclosure', () => {
