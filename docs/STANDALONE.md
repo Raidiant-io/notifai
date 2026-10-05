@@ -123,3 +123,20 @@ Candidates fail closed; neither an environment override nor project configuratio
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
 and OS bootstraps, PATH setup and complete uninstall remain separate work.
+
+### Existing Windows directory permissions
+
+The launcher has an explicit existing-directory migration operation for an
+already User-owned directory whose writers satisfy the installation policy. It
+preserves the accepted ACEs, makes inherited ACEs explicit and protects the DACL.
+It refuses unsafe writers and reparse points instead of removing permissions to
+make a foreign directory appear owned. Ordinary launch checks never migrate.
+
+The migration uses one short-lived `MAXIMUM_ALLOWED` directory handle for
+`SetSecurityInfo`; Microsoft documents that this form does not propagate ACEs to
+children. It verifies the protected owner/policy and exact ACEs on the same handle.
+The native Windows fixture checks that existing child descriptors and contents
+remain unchanged, that retries converge and unsafe writers are refused. See
+[SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
+This operation still needs to be connected to explicit installation migration;
+its presence alone does not prove the legacy-to-native setup journey.

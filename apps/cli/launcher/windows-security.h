@@ -23,7 +23,7 @@ static int approved_writer(PSID sid, PSID user) {
         IsWellKnownSid(sid, WinBuiltinAdministratorsSid);
 }
 
-static int private_handle(HANDLE handle, int directory, PSID user, int created) {
+static int private_handle(HANDLE handle, int directory, PSID user, int created, int require_protected) {
     FILE_ATTRIBUTE_TAG_INFO info;
     if (GetFileType(handle) != FILE_TYPE_DISK ||
         !GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &info, sizeof(info)) ||
@@ -40,7 +40,7 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created) 
         dacl && IsValidAcl(dacl);
     SECURITY_DESCRIPTOR_CONTROL control = 0;
     DWORD revision = 0;
-    if (directory && (!GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+    if (directory && require_protected && (!GetSecurityDescriptorControl(descriptor, &control, &revision) ||
         !(control & SE_DACL_PROTECTED))) ok = 0;
     const DWORD writes = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
         FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
@@ -62,7 +62,7 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created) 
             user, NULL, NULL, NULL) == ERROR_SUCCESS;
     }
     LocalFree(descriptor);
-    return ok && (!created || private_handle(handle, directory, user, 0));
+    return ok && (!created || private_handle(handle, directory, user, 0, 1));
 }
 
 static int private_path(const wchar_t *path, int directory, int created) {
@@ -71,7 +71,7 @@ static int private_path(const wchar_t *path, int directory, int created) {
     HANDLE handle = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES | (created ? WRITE_OWNER : 0),
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), NULL);
-    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, directory, user->User.Sid, created);
+    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, directory, user->User.Sid, created, 1);
     if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     free(user);
     return ok;
@@ -95,4 +95,60 @@ static int create_private_directory(const wchar_t *path) {
     }
     LocalFree(descriptor); LocalFree(sid); free(user);
     return ok && private_path(path, 1, 0);
+}
+
+
+/* Explicit migration only. Accept the existing owner and every ACE before
+ * protecting inheritance. Never remove an unapproved principal to make an
+ * unsafe directory appear safe. MAXIMUM_ALLOWED has a documented, intentional
+ * SetSecurityInfo property: inheritable ACEs are NOT propagated to children.
+ * https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
+ * This short-lived handle is used only for this object's read/set/readback. */
+static int protect_existing_directory(const wchar_t *path) {
+    TOKEN_USER *user = installation_user();
+    if (!user) return 0;
+    HANDLE handle = CreateFileW(path, MAXIMUM_ALLOWED, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    PSECURITY_DESCRIPTOR before = NULL, after = NULL;
+    PACL original = NULL, actual = NULL, expected = NULL;
+    PSID owner = NULL;
+    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, 1, user->User.Sid, 0, 0);
+    if (ok) ok = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        &owner, NULL, &original, NULL, &before) == ERROR_SUCCESS && owner && EqualSid(owner, user->User.Sid) &&
+        original && IsValidAcl(original);
+    if (ok) {
+        SECURITY_DESCRIPTOR_CONTROL control = 0;
+        DWORD revision = 0;
+        ok = GetSecurityDescriptorControl(before, &control, &revision);
+        if (ok && (control & SE_DACL_PROTECTED)) goto finished;
+    }
+    if (ok) {
+        expected = malloc(original->AclSize);
+        ok = expected != NULL;
+    }
+    if (ok) {
+        memcpy(expected, original, original->AclSize);
+        for (DWORD i = 0; ok && i < expected->AceCount; i++) {
+            ACE_HEADER *ace = NULL;
+            ok = GetAce(expected, i, (LPVOID *)&ace);
+            if (ok) ace->AceFlags &= (BYTE)~INHERITED_ACE;
+        }
+    }
+    if (ok) ok = SetSecurityInfo(handle, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        NULL, NULL, expected, NULL) == ERROR_SUCCESS;
+    if (ok) ok = private_handle(handle, 1, user->User.Sid, 0, 1) &&
+        GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            NULL, NULL, &actual, NULL, &after) == ERROR_SUCCESS && actual && IsValidAcl(actual) &&
+        actual->AceCount == expected->AceCount;
+    for (DWORD i = 0; ok && i < expected->AceCount; i++) {
+        ACE_HEADER *wanted = NULL, *got = NULL;
+        ok = GetAce(expected, i, (LPVOID *)&wanted) && GetAce(actual, i, (LPVOID *)&got) &&
+            wanted->AceSize == got->AceSize && !memcmp(wanted, got, wanted->AceSize);
+    }
+finished:
+    LocalFree(before); LocalFree(after); free(expected);
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    free(user);
+    return ok;
 }

@@ -141,6 +141,8 @@ int wmain(int argc, wchar_t **argv) {
         return process_info(argv[2]);
     if (argc == 3 && !wcscmp(argv[1], L"--internal-private-directory"))
         return create_private_directory(argv[2]) ? 0 : failure("installation directory access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-protect-existing-directory"))
+        return protect_existing_directory(argv[2]) ? 0 : failure("existing installation directory access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-own-created-file"))
         return private_path(argv[2], 0, 1) ? 0 : failure("created installation file access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-check-private-file"))

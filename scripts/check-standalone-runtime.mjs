@@ -203,6 +203,9 @@ try {
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'shared.json'), 'utf8')),
     { count: 200, future_field: 'preserve-me' })
   if (windows) {
+    execFileSync(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', path.join(repositoryRoot, 'scripts/check-windows-installation-access.ps1'),
+        '-Launcher', launcher], { cwd: root, env, stdio: 'inherit', timeout: 60_000 })
     const permissions = path.join(root, 'permissions')
     privateDirectory(permissions)
     const icacls = path.join(process.env.SystemRoot, 'System32', 'icacls.exe')
@@ -248,5 +251,5 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
     checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
-      ...(windows ? ['installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
+      ...(windows ? ['existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }
