@@ -67,7 +67,7 @@ private material into a Notification Request.
 Routing, devices, and sounds are config. `notifai config show --json` returns
 each key as `{ value, source, summary }`; quote values, not "the defaults apply".
 
-An instruction about the work in hand tunes this Agent Session; it needs no command
+A work instruction tunes this Agent Session, needs no command,
 and never touches config or guidance.
 
 Write only durable preferences, in the user's words verbatim; your paraphrase

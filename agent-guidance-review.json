@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d9b5393ca47f363214b17576be6df84f0a3fef46a4c9fcf2ee21d2a201438c15",
+  "behavior_digest": "sha256:6e098995d418ec5cf18740102e44885aea92b038e165d5c7b7ad3feff9accd32",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Native install gives its init child the owned command directory without claiming to change the parent shell. Standalone docs explain data-only bootstrap metadata derived from verified release records and its first-install HTTPS trust limit. Notification, question and scope authority are unchanged.",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Trimmed redundant session-instruction wording without changing its authority. Built-in skill tests now require selected harnesses and owned receipts; native release preparation and raw-code notarization do not change Notification Request behavior. Runtime installation and publication remain separately gated.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

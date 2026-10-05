@@ -6915,6 +6915,7 @@ describe('Codex Stop wake route', () => {
     expect(launched).toEqual({
       envelope: { session_id: CODEX_THREAD, cwd: h.deps.cwd },
       harness: 'codex',
+      sessionLockHeld: true,
     })
     expect(h.deps.now?.()).toBe(NOW)
     expect(h.recorder.submitted).toEqual([])

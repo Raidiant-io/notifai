@@ -6791,7 +6791,7 @@ describe('init', () => {
       list: async () => ({ skills: [] }),
     }
 
-    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(
+    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, skillsHarness: 'codex', hooks: false })).toBe(
       EXIT.failed,
     )
     expect(calls.submit).toBe(1)
@@ -6799,14 +6799,14 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
-  it('explains a local Windows npm launch failure without blaming the network', async () => {
+  it('explains a bundled skill placement failure without blaming the network', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-local-launch-failed-'))
     const io = new InteractiveIo()
     const nativeSkills: NativeSkills = {
       add: async () => ({
         code: 1,
         error:
-          'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
+          'the harness skill directory is not writable; check its permissions, then rerun setup',
       }),
       remove: async () => 0,
       list: async () => ({ skills: [] }),
@@ -6815,10 +6815,11 @@ describe('init', () => {
     expect(
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
         skills: true,
+        skillsHarness: 'codex',
         hooks: false,
       }),
     ).toBe(EXIT.failed)
-    expect(io.errLines.join('\n')).toContain('missing its bundled npm tools')
+    expect(io.errLines.join('\n')).toContain('harness skill directory is not writable')
     expect(io.errLines.join('\n')).not.toContain('network')
   })
 
@@ -8354,21 +8355,10 @@ describe('readiness assessment cost', () => {
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
   })
 
-  it('treats a lock-file pin as installed without asking npx', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-'))
-    installCurrentSkill(path.join(cwd, '.agents', 'skills', 'notifai'))
-    writeFileSync(
-      path.join(cwd, 'skills-lock.json'),
-      `${JSON.stringify({
-        skills: {
-          notifai: {
-            source: 'Raidiant-io/notifai',
-            sourceType: 'github',
-            ref: RELEASE_REF,
-          },
-        },
-      })}\n`,
-    )
+  it('verifies built-in skill ownership without an external installer on PATH', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-owned-skill-'))
+    const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
+    expect(await realNativeSkills.add({ skill: 'notifai', scope: 'project', agents: ['codex'], cwd, env })).toBe(0)
     const io = new CapturedIo()
     const client = {
       health: async () => true,
@@ -8379,7 +8369,7 @@ describe('readiness assessment cost', () => {
     const readiness = await assessReadiness({
       ...makeDeps(io, client),
       cwd,
-      env: { ...isolatedEnv(cwd), PATH: '/nonexistent' },
+      env,
       nativeSkills: realNativeSkills,
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
