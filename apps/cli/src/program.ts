@@ -263,7 +263,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable final readiness; never prompts')
     .option('--approval <route>', 'computer approval route: qr (default), notification, or browser')
     .option('--approval-email <email>', 'Account email for the selected notification approval route')
-    .option('--skills', 'install/update the agent skill from its pinned public release')
+    .option('--skills', 'install/update the agent skill bundled with this CLI')
+    .option('--skills-harness <harnesses>', 'comma-separated harnesses to receive the skill; required for a new unattended placement')
     .option('--no-skills', 'suppress the optional agent-skill status line')
     .option(
       '--skills-scope <scope>',
@@ -281,6 +282,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         json?: boolean
         skills?: boolean
         skillsScope?: SkillScope
+        skillsHarness?: string
         hooks?: boolean
         claudeCommands?: boolean
       }) => {

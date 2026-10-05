@@ -197,9 +197,9 @@ internally plausible while neither is installable: one can pin an unpublished
 protocol version and the other can leave the CLI pinned to the old version.
 `pnpm check:packed` installs both tarballs outside the workspace and enforces
 the exact-pair invariant that workspace linking otherwise hides. It also
-proves the packed CLI still contains and can stage the reviewed skill. It does
-not spawn the third-party skills installer; that proof is
-`pnpm check:packed-skill-smoke`, run when the adapter, pin, or bundle changes
+proves the packed CLI contains the verified bundled skill. Placement without
+external programs and preservation of user edits are verified by
+`pnpm check:packed-skill-smoke`, run when the adapter, placement logic, or bundle changes
 and always as publication evidence.
 
 The `node-workspace` plugin therefore uses `updateAllPackages: true`. A change

@@ -1,16 +1,9 @@
-import { SKILLS_INSTALLER_SPEC, staleHarnessSkillCopies, type HarnessSkillCopy, type NativeSkill, type SkillScope } from './native-skills.js'
+import { staleHarnessSkillCopies, type HarnessSkillCopy, type NativeSkill, type SkillScope } from './native-skills.js'
 import { fileURLToPath } from 'node:url'
 import { type ReadinessState } from './readiness.js'
-import { packageVersion, skillsSource } from './release.js'
+import { packageVersion } from './release.js'
 import { shippedSkillBundle, skillTreeDigest } from './skill-integrity.js'
 import type { CommandDeps } from './commands-core.js'
-
-/**
- * Where `npx skills add` fetches the optional agent skill from, derived from
- * this build's own version so the pin cannot drift from the release it names.
- * Null when the build cannot establish its version; see `./release.js`.
- */
-export const SKILLS_SOURCE: string | null = skillsSource()
 
 const SKILL_SCOPES: readonly SkillScope[] = ['project', 'global']
 
@@ -33,9 +26,9 @@ function developmentSkillMismatch(skill: NativeSkill): { checkout: string; insta
 export function installedSkillMatchesPackage(skill: NativeSkill): boolean {
   const expectedDigest = expectedSkillDigest()
   return (
-    skill.name === 'notifai' &&
+    skill.name === 'notifai' && skill.owned !== false && skill.pending !== true &&
     expectedDigest !== null &&
-    skillTreeDigest(skill.path) === expectedDigest
+    (skill.placements ?? [{ path: skill.path }]).every(item => skillTreeDigest(item.path) === expectedDigest)
   )
 }
 
@@ -112,8 +105,8 @@ function duplicateSkillState(installed: NativeSkill[], selectedScope?: SkillScop
         ? {
             by: 'user-here',
             summary:
-              'keep either the project or the machine-global skill and uninstall the other; add --global to remove the machine-global copy',
-            command: `npx -y ${SKILLS_INSTALLER_SPEC} remove notifai`,
+              'choose the scope to keep with --skills-scope project or global',
+            command: 'notifai init --skills --skills-scope project',
           }
         : {
             by: 'cli',
@@ -126,12 +119,19 @@ function duplicateSkillState(installed: NativeSkill[], selectedScope?: SkillScop
 export async function skillReadiness(
   deps: CommandDeps,
   selectedScope?: SkillScope,
+  selectedHarnesses?: readonly string[],
 ): Promise<ReadinessState> {
   const { installed, errors } = await listScopedNotifaiSkills(deps)
   if (installed.length > 1) return duplicateSkillState(installed, selectedScope)
 
   const candidate = installed[0]
   if (candidate !== undefined) {
+    if (selectedHarnesses?.some(agent => !candidate.agents?.some(known => known === agent))) return {
+      id: 'skill', title: 'Agent guidance skill', status: 'gap',
+      detail: 'The selected harnesses do not all have an owned guidance placement.',
+      remedy: { by: 'cli', summary: 'install bundled guidance for the selected harnesses',
+        command: `notifai init --skills --skills-scope ${selectedScope ?? candidate.scope} --skills-harness ${selectedHarnesses.join(',')}` },
+    }
     if (selectedScope !== undefined && candidate.scope !== selectedScope) {
       return {
         id: 'skill',
@@ -175,7 +175,7 @@ export async function skillReadiness(
     }
     const expectedDigest = expectedSkillDigest()
     const installedDigest = skillTreeDigest(candidate.path)
-    if (expectedDigest === null || installedDigest !== expectedDigest) {
+    if (expectedDigest === null || !installedSkillMatchesPackage(candidate)) {
       return {
         id: 'skill',
         title: 'Agent guidance skill',

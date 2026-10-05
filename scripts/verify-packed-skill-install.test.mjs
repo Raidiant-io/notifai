@@ -23,20 +23,19 @@ test('the deterministic packed gate does not spawn the third-party skills instal
   assert.doesNotMatch(packedInstall, /npxLaunch/u)
   assert.doesNotMatch(packedInstall, /npm exec/u)
   assert.match(packedInstall, /verify-packed-skill-install\.mjs/u)
-  assert.match(packedInstall, /stageShippedSkillBundle/u)
+  assert.match(packedInstall, /shippedSkillBundle/u)
   assert.doesNotMatch(packageJson.scripts['check:packed'], /node scripts\/verify-packed-skill-install\.mjs/u)
   assert.match(packageJson.scripts['check:packed'], /verify-packed-install\.mjs/u)
   assert.match(packageJson.scripts['check:packed'], /run-external\.test\.mjs/u)
   assert.match(packageJson.scripts['check:packed'], /verify-packed-skill-install\.test\.mjs/u)
 })
 
-test('the integration smoke is a separately named command with per-phase timeouts', () => {
+test('the integration smoke proves bundled placement without an external installer', () => {
   assert.match(packageJson.scripts['check:packed-skill-smoke'], /verify-packed-skill-install\.mjs/u)
-  assert.match(skillSmoke, /phase npm-exec-skills-installer/u)
-  assert.match(skillSmoke, /phase skill-registry-metadata/u)
-  assert.match(skillSmoke, /timeoutMs: TIMEOUTS\.npmExecSkills/u)
+  assert.match(skillSmoke, /nativeSkills\.add/u)
+  assert.match(skillSmoke, /PATH: ''/u)
+  assert.doesNotMatch(skillSmoke, /npxLaunch|SKILLS_INSTALLER_SPEC|stageShippedSkillBundle/u)
   assert.match(skillSmoke, /--if-changed/u)
-  assert.match(skillSmoke, /registry metadata for .* already succeeded/u)
 })
 
 test('adapter, pin, and bundle paths warrant the smoke; unrelated packed files do not', () => {
@@ -73,7 +72,7 @@ test('publication always runs the installer smoke against the exact packed tarba
 
 test('docs tell agents when the installer smoke is warranted', () => {
   assert.match(agents, /pnpm check:packed-skill-smoke/u)
-  assert.match(agents, /adapter, installer pin, or packaged skill bundle/u)
+  assert.match(agents, /adapter, placement logic, or packaged skill bundle/u)
   assert.match(releasing, /check:packed-skill-smoke/u)
   assert.doesNotMatch(agents.split('## Gates')[1].split('## Releasing')[0], /check:packed-skill-smoke/u)
 })

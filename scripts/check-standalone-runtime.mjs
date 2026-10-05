@@ -46,11 +46,13 @@ try {
   copyFileSync(path.resolve(values.launcher), launcher)
   execFileSync(values.bun, ['build', '--compile', '--no-compile-autoload-dotenv',
     '--no-compile-autoload-bunfig', '--no-compile-autoload-package-json', '--no-compile-autoload-tsconfig',
+    '--asset=apps/cli/dist/skill-source',
     '--define', 'NOTIFAI_COMPILED_BUILD={"runtime":"bun-1.4.2-test-only"}',
     fixture, '--outfile', runtime], { cwd: repositoryRoot, stdio: 'inherit' })
   execFileSync(values.bun, ['build', '--target=node', fixture, '--outfile', sourceBundle],
     { cwd: repositoryRoot, stdio: 'inherit' })
   run(['identity', root])
+  run(['skills', root])
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
@@ -133,6 +135,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['kernel-process-identity', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

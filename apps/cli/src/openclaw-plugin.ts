@@ -51,11 +51,16 @@ export function openclawStateDir(
 ): string {
   const override = env['OPENCLAW_STATE_DIR']
   if (override !== undefined && override !== '') return override
+  const profile = env['OPENCLAW_PROFILE']?.trim()
+  if (profile && profile !== 'default' && !/^[a-zA-Z0-9_-]+$/.test(profile)) {
+    throw new Error('OPENCLAW_PROFILE must be a simple profile name')
+  }
+  const directory = profile && profile !== 'default' ? `.openclaw-${profile}` : '.openclaw'
   const homeOverride = env['OPENCLAW_HOME']
   if (homeOverride !== undefined && homeOverride !== '') {
-    return path.join(homeOverride, '.openclaw')
+    return path.join(homeOverride, directory)
   }
-  return path.join(harnessAccountHome(env, platform), '.openclaw')
+  return path.join(harnessAccountHome(env, platform), directory)
 }
 
 export function openclawConfigPath(

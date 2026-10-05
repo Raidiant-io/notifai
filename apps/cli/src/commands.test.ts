@@ -68,7 +68,6 @@ import {
   hooksUninstallCommand,
   hookRunCommand,
   initCommand,
-  SKILLS_SOURCE,
   loginCommand,
   logoutCommand,
   logsCommand,
@@ -5962,6 +5961,7 @@ describe('init', () => {
     if (!existsSync(skillPath)) installCurrentSkill(skillPath)
     return {
       name: 'notifai',
+      agents: ['claude-code'],
       scope,
       path: skillPath,
       source: 'Raidiant-io/notifai',
@@ -6196,12 +6196,6 @@ describe('init', () => {
     expect(io.errLines).toEqual([])
   })
 
-  it('pins the skill installer to the tagged release this build actually is', () => {
-    expect(SKILLS_SOURCE).toBe(`Raidiant-io/notifai#${RELEASE_REF}`)
-    // `#` selects a Git ref; `@` would select a skill name instead.
-    expect(SKILLS_SOURCE).not.toContain('@v')
-  })
-
   it('recognizes a skill installed from the exact immutable release', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-pinned-skill-'))
     const io = new CapturedIo()
@@ -6427,6 +6421,7 @@ describe('init', () => {
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
         skills: true,
         skillsScope: 'project',
+        skillsHarness: 'claude-code',
         hooks: false,
       }),
     ).toBe(EXIT.ok)
@@ -6468,7 +6463,7 @@ describe('init', () => {
       },
     }
     const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
-    const flags = { skills: true, skillsScope: 'project' as const, hooks: false, json: true }
+    const flags = { skills: true, skillsScope: 'project' as const, skillsHarness: 'claude-code', hooks: false, json: true }
     return { cwd, io, records, old, oldContents, plan, calls, deps, flags }
   }
 
@@ -6554,6 +6549,7 @@ describe('init', () => {
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
         skills: true,
         skillsScope: 'project',
+        skillsHarness: 'claude-code',
         hooks: false,
       }),
     ).toBe(EXIT.ok)
@@ -6639,7 +6635,7 @@ describe('init', () => {
 
       const result = await initCommand(
         setupReadyDeps(io, cwd, nativeSkills, calls),
-        { skills: true, skillsScope: scope, hooks: false },
+        { skills: true, skillsScope: scope, skillsHarness: 'claude-code', hooks: false },
       )
       expect(result).toBe(EXIT.ok)
       expect(receivedScope).toBe(scope)
@@ -6648,10 +6644,11 @@ describe('init', () => {
     },
   )
 
-  it('asks the skill-scope question only, and passes that scope to the native installer', async () => {
+  it('asks for skill scope and selected harnesses before placing the bundled skill', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-scope-ask-'))
     const io = new InteractiveIo()
     io.selectAnswer = 'project'
+    io.multiselectAnswer = ['claude-code']
     const calls: { submit: number } = { submit: 0 }
     let receivedScope: SkillScope | undefined
     const nativeSkills: NativeSkills = {

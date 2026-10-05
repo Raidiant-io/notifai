@@ -1,24 +1,10 @@
 #!/usr/bin/env node
-/**
- * Integration smoke: the published `skills` installer consumes the packed
- * Notifai skill through the packed production adapter.
- *
- * This is not part of `pnpm check:packed`. That gate is deterministic packed
- * proof (pin, isolated npm install of the tarballs, skill bundle, bin). This
- * smoke is the third-party seam that twice stalled indefinitely inside
- * `npm exec skills@…` after the registry metadata endpoint had already
- * responded. Run it when the native-skills adapter, installer pin, or
- * packaged skill bundle changes, and as release evidence before treating a
- * packed CLI as publishable. Every external process has a short explicit
- * timeout and a named phase so a stall fails this smoke instead of the
- * runner budget.
- *
- * Usage:
- *   node scripts/verify-packed-skill-install.mjs
- *   node scripts/verify-packed-skill-install.mjs --cli-tarball a.tgz --protocol-tarball b.tgz
- *   node scripts/verify-packed-skill-install.mjs --if-changed
+/** Verify bundled skill placement and update integration from exact npm tarballs.
+ * Packing/installing the tarballs uses bounded package-manager subprocesses;
+ * skill setup itself runs with an empty PATH and never downloads an installer.
+ * Usage: --cli-tarball a.tgz --protocol-tarball b.tgz; optional --if-changed.
  */
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -76,54 +62,11 @@ export function changedFilesAgainstMain() {
   }
 }
 
-async function assertInstallerMetadata(spec) {
-  const separator = spec.lastIndexOf('@')
-  if (separator <= 0 || separator === spec.length - 1) {
-    throw new Error(`packed CLI installer spec ${spec} is not name@version`)
-  }
-  const name = spec.slice(0, separator)
-  const version = spec.slice(separator + 1)
-  const url = `https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`
-  const started = Date.now()
-  let response
-  try {
-    response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUTS.registryMetadata) })
-  } catch (error) {
-    const elapsedMs = Date.now() - started
-    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-      throw new Error(`phase skill-registry-metadata timed out after ${TIMEOUTS.registryMetadata}ms fetching ${url}`)
-    }
-    throw new Error(
-      `phase skill-registry-metadata failed after ${elapsedMs}ms fetching ${url} (${String(error)})`,
-    )
-  }
-  const elapsedMs = Date.now() - started
-  if (!response.ok) {
-    throw new Error(`phase skill-registry-metadata: ${url} responded ${response.status} in ${elapsedMs}ms`)
-  }
-  const body = await response.json()
-  if (body.version !== version) {
-    throw new Error(`phase skill-registry-metadata: expected ${spec}, registry returned ${body.version}`)
-  }
-  console.log(`phase skill-registry-metadata: ${url} responded ${response.status} in ${elapsedMs}ms`)
-}
-
 async function verifyPackedSkillInstaller(prepared, scratch) {
   const { installedCli, cliManifest, installDir } = prepared
   const native = await import(pathToFileURL(path.join(installedCli, 'dist', 'native-skills.js')).href)
-  const platform = await import(pathToFileURL(path.join(installedCli, 'dist', 'platform.js')).href)
-  const release = await import(pathToFileURL(path.join(installedCli, 'dist', 'release.js')).href)
-  const integrity = await import(pathToFileURL(path.join(installedCli, 'dist', 'skill-integrity.js')).href)
   const commandsSkill = await import(pathToFileURL(path.join(installedCli, 'dist', 'commands-skill.js')).href)
   const adapter = await import(pathToFileURL(path.join(installedCli, 'dist', 'hook-adapter.js')).href)
-
-  const sourceLabel = release.skillsSource()
-  if (typeof sourceLabel !== 'string') throw new Error('packed CLI could not derive its skill release identity')
-  if (typeof native.SKILLS_INSTALLER_SPEC !== 'string' || !native.SKILLS_INSTALLER_SPEC.startsWith('skills@')) {
-    throw new Error('packed CLI does not pin a skills installer spec')
-  }
-
-  await assertInstallerMetadata(native.SKILLS_INSTALLER_SPEC)
 
   const skillProject = path.join(scratch, 'skill project Ω')
   const skillHome = path.join(scratch, 'skill home')
@@ -148,85 +91,35 @@ async function verifyPackedSkillInstaller(prepared, scratch) {
     npm_config_update_notifier: 'false',
   }
 
-  const staged = integrity.stageShippedSkillBundle(skillProject, cliManifest.version)
-  if (!staged.ok) throw new Error(`packed CLI could not stage its packaged skill (${staged.error})`)
-  try {
-    const argv = native.skillsAddArgv({
-      source: staged.staged.source,
-      skill: 'notifai',
-      scope: 'project',
-      cwd: skillProject,
-      env: skillEnv,
-    })
-    const launch = platform.npxLaunch(argv, {
-      cwd: skillProject,
-      env: skillEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    console.log(
-      `phase npm-exec-skills-installer: launching ${launch.file} ${launch.args.join(' ')} ` +
-        `(registry metadata for ${native.SKILLS_INSTALLER_SPEC} already succeeded; ` +
-        `timeout ${TIMEOUTS.npmExecSkills}ms)`,
-    )
-    const result = runExternal(launch.file, launch.args, {
-      ...launch.options,
-      timeoutMs: TIMEOUTS.npmExecSkills,
-      phase: 'npm-exec-skills-installer',
-    })
-    try {
-      requireStatus(result)
-    } catch (error) {
-      throw new Error(
-        `${native.SKILLS_INSTALLER_SPEC} rejected the verified packaged local source (${String(error)})`,
-      )
-    }
-  } finally {
-    staged.staged.cleanup()
-  }
-
-  const lockFile = path.join(skillProject, 'skills-lock.json')
-  const lockText = readFileSync(lockFile, 'utf8')
-  const lock = JSON.parse(lockText)
-  const lockSource = lock?.skills?.notifai?.source
-  if (
-    typeof lockSource !== 'string' ||
-    path.isAbsolute(lockSource) ||
-    /^[A-Za-z]:[\\/]/.test(lockSource) ||
-    lockSource.startsWith('\\\\')
-  ) {
-    throw new Error(`${native.SKILLS_INSTALLER_SPEC} wrote a machine-specific skill source to its lock`)
-  }
-  for (const sensitivePath of [process.env.HOME, installDir, skillHome]) {
-    if (sensitivePath && lockText.includes(sensitivePath)) {
-      throw new Error(`${native.SKILLS_INSTALLER_SPEC} leaked a machine-specific path into its lock`)
-    }
-  }
-  const stagingParent = path.join(skillProject, '.notifai')
-  if (
-    existsSync(stagingParent) &&
-    readdirSync(stagingParent).some((entry) => entry.startsWith('skill-source-'))
-  ) {
-    throw new Error('packed CLI left its temporary skill source behind')
-  }
+  const result = await native.nativeSkills.add({ skill: 'notifai', scope: 'project',
+    agents: ['codex'], cwd: skillProject, env: { ...skillEnv, PATH: '' } })
+  if (result !== 0) throw new Error(`Bundled placement failed: ${JSON.stringify(result)}`)
+  if (existsSync(path.join(skillProject, 'skills-lock.json'))) throw new Error('Bundled placement wrote an external installer lock')
 
   const readinessDeps = { nativeSkills: native.nativeSkills, cwd: skillProject, env: skillEnv }
   const installedRoot = path.join(skillProject, '.agents', 'skills', 'notifai')
   const installedStat = lstatSync(installedRoot)
   if (!installedStat.isDirectory() || installedStat.isSymbolicLink()) {
-    throw new Error(`${native.SKILLS_INSTALLER_SPEC} did not leave the conventional installed skill as a regular copied tree`)
+    throw new Error('Bundled placement did not leave a regular copied skill tree')
   }
   const ready = await commandsSkill.skillReadiness(readinessDeps, 'project')
   if (ready.status !== 'ready') {
     throw new Error(`freshly installed packaged skill was not ready (${JSON.stringify(ready.technical)})`)
   }
   const installedSkill = path.join(installedRoot, 'SKILL.md')
-  writeFileSync(installedSkill, `${readFileSync(installedSkill, 'utf8')}\n<!-- altered -->\n`)
+  const originalSkill = readFileSync(installedSkill, 'utf8')
+  writeFileSync(installedSkill, `${originalSkill}\n<!-- altered -->\n`)
   const altered = await commandsSkill.skillReadiness(readinessDeps, 'project')
   if (altered.status !== 'gap' || altered.technical?.resolution !== 'installed-skill-content-mismatch') {
     throw new Error(`altered installed skill did not fail content readiness (${JSON.stringify(altered)})`)
   }
 
-  // Exercise the packed production command tree and real native installer.
+  const refused = await native.nativeSkills.add({ skill: 'notifai', scope: 'project', cwd: skillProject,
+    env: { ...skillEnv, PATH: '' } })
+  if (refused === 0 || !readFileSync(installedSkill, 'utf8').includes('<!-- altered -->')) throw new Error('Skill refresh did not preserve a user edit')
+  writeFileSync(installedSkill, originalSkill)
+
+  // Exercise the packed production command tree and bundled installer.
   // Adapter tests must supply an explicit fixture home: mutable HOME alone
   // cannot redirect the account's trusted shared adapter.
   const migrationEnv = { ...skillEnv,
@@ -251,7 +144,7 @@ await buildProgram(deps).parseAsync([process.execPath, 'notifai', ...process.arg
 `)
   const execute = (args, phase) => {
     const result = runExternal(process.execPath, [runner, ...args], {
-      cwd: skillProject, env: migrationEnv, timeoutMs: TIMEOUTS.npmExecSkills + 15_000, phase,
+      cwd: skillProject, env: migrationEnv, timeoutMs: TIMEOUTS.cliCommand, phase,
     })
     requireStatus(result)
     return result
@@ -295,7 +188,7 @@ await buildProgram(deps).parseAsync([process.execPath, 'notifai', ...process.arg
   }
 
   console.log(
-    `Packed skill installer smoke verified: ${native.SKILLS_INSTALLER_SPEC} consumed the packed ` +
+    `Bundled skill installer verified from packed ` +
       `${cliManifest.name}@${cliManifest.version} skill.`,
   )
 }

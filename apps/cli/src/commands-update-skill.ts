@@ -1,5 +1,5 @@
 import { EXIT, type CommandDeps } from './commands-core.js'
-import { installedSkillMatchesPackage, listScopedNotifaiSkills, SKILLS_SOURCE, staleInstalledSkillCopies } from './commands-skill.js'
+import { installedSkillMatchesPackage, listScopedNotifaiSkills, staleInstalledSkillCopies } from './commands-skill.js'
 
 /** Refresh one existing scope through the native installer, without setup. */
 export async function updateSkillCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
@@ -13,11 +13,11 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
     return fail('Skill refresh needs exactly one readable existing installation. Resolve missing or duplicate scope through setup first.')
   }
   const skill = inventory.installed[0]!
-  if (deps.nativeSkills === undefined || SKILLS_SOURCE === null) return fail('The packaged skill installer is unavailable.')
+  if (deps.nativeSkills === undefined) return fail('The packaged skill installer is unavailable.')
   const changed = !installedSkillMatchesPackage(skill) || staleInstalledSkillCopies(skill, deps.cwd, deps.env).length > 0
   if (changed) {
-    const operation = await deps.nativeSkills.add({ source: SKILLS_SOURCE, skill: 'notifai', scope: skill.scope,
-      cwd: deps.cwd, env: deps.env, diagnosticsToStderr: true }).catch((error: unknown) => ({ code: 1, error: String(error) }))
+    const operation = await deps.nativeSkills.add({ skill: 'notifai', scope: skill.scope,
+      cwd: deps.cwd, env: deps.env }).catch((error: unknown) => ({ code: 1, error: String(error) }))
     if ((typeof operation === 'number' ? operation : operation.code) !== 0) {
       return fail(typeof operation === 'number' ? 'The native skill installer failed.' : operation.error)
     }

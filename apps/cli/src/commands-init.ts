@@ -50,11 +50,13 @@ import {
   setupProofIsStale,
   writeSetupProof,
 } from './commands-setup-proof.js'
-import { installedSkillMatchesPackage, staleInstalledSkillCopies, listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
+import { installedSkillMatchesPackage, staleInstalledSkillCopies, listScopedNotifaiSkills } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { installHookAdapter } from './hook-adapter.js'
 import { installClaudeCommandRules } from './claude-command-approval.js'
+import { packageVersion } from './release.js'
+import { HARNESS_LABELS, SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
 
 // ---------------------------------------------------------------------------
 // init
@@ -75,14 +77,16 @@ export interface InitFlags {
    * Install the agent guidance skill. Tri-state on purpose:
    * true installs, false skips silently, and undefined means "offer it when a
    * human is present, do nothing when one is not" — an unattended run must
-   * never spawn npx against the network by default.
+   * never place guidance by default.
    */
   skills?: boolean
   /**
-   * Where the agent guidance skill is installed. `npx skills` owns this
+   * Where the agent guidance skill is installed. The User owns this
    * choice; lifecycle wiring has no scope of its own and never reads it.
    */
   skillsScope?: SkillScope
+  /** Comma-separated explicit harnesses; an existing selection is retained. */
+  skillsHarness?: string
   /** Same tri-state, for the harness hooks. */
   hooks?: boolean
   /** Same tri-state, for the Claude Code rules that let Notifai commands run unprompted. */
@@ -178,13 +182,12 @@ async function closeGap(
 
   if (state.id === 'skill') {
     if (deps.nativeSkills === undefined) {
-      deps.io.err('Skill installation failed — the native `npx skills` flow is unavailable.')
+      deps.io.err('Skill installation failed — the bundled skill installer is unavailable.')
       return 'failed'
     }
     // Refuse rather than guess a release identity. The production adapter uses
-    // this only as a human label; it verifies and stages npm's bundled skill at
-    // a project-relative local path before it invokes the installer.
-    if (SKILLS_SOURCE === null) {
+    // this only as a human label; it verifies the bundled skill before placement.
+    if (packageVersion() === null) {
       deps.io.err(
         'Skill installation failed — this build cannot determine its own version, so there is no release tag to install from.',
       )
@@ -227,25 +230,38 @@ async function closeGap(
     // conventional copy, so it keeps the installer in play.
     const selectedIsVerified = () => inventory.installed.some(
       (skill) => skill.scope === installScope && installedSkillMatchesPackage(skill) &&
+        (flags.skillsHarness === undefined || flags.skillsHarness.split(',').every(agent => skill.agents?.includes(agent.trim() as SourceContextHarness))) &&
         staleInstalledSkillCopies(skill, deps.cwd, deps.env).length === 0,
     )
     // Keep the existing scope until the native installer has produced a
     // content-verified replacement. A retry after partial cleanup can reuse
     // this proof and finish without invoking the installer again.
     if (!selectedIsVerified()) {
-      deps.io.out(`Starting the native npx skills setup for the notifai agent skill (${installScope} scope)...`)
+      let agents: readonly string[] | undefined = flags.skillsHarness?.split(',').map(value => value.trim())
+        ?? inventory.installed.find(skill => skill.scope === installScope)?.agents
+        ?? inventory.installed[0]?.agents
+      if (agents !== undefined) agents = [...new Set([...(inventory.installed.find(skill => skill.scope === installScope)?.agents ?? []), ...agents])]
+      if (agents === undefined && deps.io.interactive === true && deps.io.multiselect) {
+        agents = await deps.io.multiselect('Which agent harnesses should load the Notifai skill?',
+          SOURCE_CONTEXT_HARNESSES.map(value => ({ value, label: HARNESS_LABELS[value] })), []) ?? []
+      }
+      if (!agents?.length || agents.some(agent => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(agent))) {
+        deps.io.err(`Choose the harnesses for this skill with --skills-harness ${SOURCE_CONTEXT_HARNESSES.join(',')}. Updates retain this selection.`)
+        return 'failed'
+      }
+      deps.io.out(`Installing the bundled notifai agent skill (${installScope} scope)...`)
       const operation = await deps.nativeSkills.add({
-        source: SKILLS_SOURCE,
         skill: 'notifai',
         cwd: deps.cwd,
         env: deps.env,
         scope: installScope,
+        agents: agents as SourceContextHarness[],
       }).catch((error: unknown) => ({ code: 1, error: String(error) }))
       const code = typeof operation === 'number' ? operation : operation.code
       if (code !== 0) {
         deps.io.err(
           typeof operation === 'number'
-            ? `Skill installation failed. Retry with \`${retry}\` after checking the network connection.`
+            ? `Skill installation failed. Retry with \`${retry}\` after checking the selected skill directories.`
             : `Skill installation refused — ${operation.error}. Retry with \`${retry}\`.`,
         )
         return 'failed'
@@ -710,6 +726,11 @@ function isSkillScope(value: string | undefined): value is SkillScope {
  * it does anything in a Project is Project Enablement's question.
  */
 function checkSkillScopeFlags(deps: CommandDeps, flags: InitFlags): SkillScope | undefined | 'usage' {
+  if (flags.skillsHarness !== undefined && (flags.skills !== true ||
+      flags.skillsHarness.split(',').some(agent => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(agent.trim())))) {
+    deps.io.err('`--skills-harness` requires --skills and comma-separated supported harness names.')
+    return 'usage'
+  }
   if (flags.skillsScope !== undefined && !isSkillScope(flags.skillsScope)) {
     deps.io.err('Invalid skill scope. Choose `project` or `global`.')
     return 'usage'
@@ -737,7 +758,7 @@ function checkSkillScopeFlags(deps: CommandDeps, flags: InitFlags): SkillScope |
  * It used to be the first thing the product ever said, as one question
  * covering skill, hook and shared-config placement, put to someone who had met
  * none of those words. Hooks and config no longer have a scope at all, and
- * what remains belongs to `npx skills`.
+ * the skill still has its own independent scope choice.
  */
 async function scopeForSkillInstall(
   deps: CommandDeps,
@@ -817,7 +838,8 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
   }
 
-  const skillOpts = () => resolved.skillsScope === undefined ? {} : { skillScope: resolved.skillsScope }
+  const skillOpts = () => ({ ...(resolved.skillsScope === undefined ? {} : { skillScope: resolved.skillsScope }),
+    ...(resolved.skillsHarness === undefined ? {} : { skillHarnesses: resolved.skillsHarness.split(',').map(value => value.trim()) }) })
   let readiness = await assessReadiness(workingDeps, { ...skillOpts(), ...(flags.json === true ? { json: true } : {}) })
   const reassess = (refresh?: readonly ReadinessRefresh[]) =>
     assessReadiness(workingDeps, {

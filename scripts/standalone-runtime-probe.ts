@@ -1,6 +1,6 @@
 // Test-only executable. Uses the application's real storage/process adapters.
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { withFileLock } from '../apps/cli/src/file-lock.js'
@@ -9,6 +9,7 @@ import { currentProcessIdentity, processIdentityLiveness } from '../apps/cli/src
 import { WindowsDpapiStore } from '../apps/cli/src/credentials.js'
 import { Distribution } from '../apps/cli/src/release-distribution.js'
 import { sameLocalPath } from '../apps/cli/src/local-path.js'
+import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from '../apps/cli/src/skill-integrity.js'
 
 const [mode, root, ...args] = process.argv.slice(2)
 assert.ok(root)
@@ -30,6 +31,31 @@ if (mode === 'lock') {
   const inventory = distribution.verifyInventory(fixture.inventory)
   assert.equal(inventory.version, '12.0.0')
   distribution.verifyArtifact(inventory.artifacts[0]!, Buffer.from('archive-fixture'))
+} else if (mode === 'skills') {
+  const { SkillInstallation } = await import('../apps/cli/src/skill-installation.js')
+  const bundled = shippedSkillBundle()
+  assert.ok(bundled.ok)
+  const installer = new SkillInstallation({ cwd: root, env: process.env })
+  const oldSource = path.join(root, 'previous-skill'), oldSkill = path.join(oldSource, 'notifai')
+  mkdirSync(oldSkill, { recursive: true })
+  writeFileSync(path.join(oldSkill, 'SKILL.md'), 'Previous verified fixture guidance\n')
+  writeFileSync(path.join(oldSource, 'manifest.json'), JSON.stringify(createSkillManifest(oldSkill, '1.0.0')))
+  const previous = verifySkillBundle(oldSource, '1.0.0')
+  assert.ok(previous.ok)
+  assert.ok(installer.reconcile({ scope: 'project', agents: ['claude-code'], bundle: previous.bundle }).ok)
+  const interrupted = new SkillInstallation({ cwd: root, env: process.env, observe(phase) {
+    if (phase === 'old-retained') throw new Error('simulated interruption')
+  } })
+  assert.equal(interrupted.reconcile({ scope: 'project', bundle: bundled.bundle }).ok, false)
+  assert.equal(installer.inspect('project').pending, true)
+  const installed = installer.reconcile({ scope: 'project', bundle: bundled.bundle })
+  assert.ok(installed.ok, JSON.stringify(installed.conflicts))
+  assert.equal(installed.placements.length, 1)
+  const skill = installed.placements[0]!.path
+  assert.equal(readFileSync(path.join(skill, 'SKILL.md'), 'utf8'), readFileSync(path.join(bundled.bundle.skillRoot, 'SKILL.md'), 'utf8'))
+  writeFileSync(path.join(skill, 'user-note.md'), 'preserve my content')
+  assert.equal(installer.remove('project').ok, false)
+  assert.equal(readFileSync(path.join(skill, 'user-note.md'), 'utf8'), 'preserve my content')
 } else if (mode === 'credentials') {
   assert.equal(process.platform, 'win32')
   const store = new WindowsDpapiStore({ ...process.env, LOCALAPPDATA: root })

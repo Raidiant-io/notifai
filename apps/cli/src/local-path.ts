@@ -3,12 +3,21 @@ import path from 'node:path'
 
 /** Resolve an existing path through symlinks, or normalize the local spelling. */
 export function canonicalPath(file: string): string {
-  try {
-    // The JS fallback can retain Windows 8.3 aliases (RUNNER~1) while the OS
-    // reports the same executable by its long name. Compare canonical OS paths.
-    return realpathSync.native(file)
-  } catch {
-    return path.resolve(file)
+  const absolute = path.resolve(file)
+  let ancestor = absolute
+  const suffix: string[] = []
+  for (;;) {
+    try {
+      // Resolve the existing ancestor too: a not-yet-created destination must
+      // keep its identity after creation under /var aliases or Windows 8.3 paths.
+      return path.join(realpathSync.native(ancestor), ...suffix)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return absolute
+      const parent = path.dirname(ancestor)
+      if (parent === ancestor) return absolute
+      suffix.unshift(path.basename(ancestor))
+      ancestor = parent
+    }
   }
 }
 

@@ -534,6 +534,7 @@ export async function assessReadiness(
   deps: CommandDeps,
   options: {
     skillScope?: SkillScope
+    skillHarnesses?: readonly string[]
     previous?: Readiness
     refresh?: readonly ReadinessRefresh[]
     json?: boolean
@@ -564,7 +565,7 @@ export async function assessReadiness(
           reused.contract,
           reused.auth,
           ...hookStates(deps),
-          await skillReadiness(deps, options.skillScope),
+          await skillReadiness(deps, options.skillScope, options.skillHarnesses),
           reused.devices,
           reused.proof,
         ],
@@ -655,7 +656,7 @@ export async function assessReadiness(
   // device gap: init stops at the first user-elsewhere blocker, and hooks/skill
   // are reachable without a phone.
   states.push(...hookStates(deps))
-  states.push(await skillReadiness(deps, options.skillScope))
+  states.push(await skillReadiness(deps, options.skillScope, options.skillHarnesses))
 
   if (!credential || !reachable) {
     const why = !credential ? 'this machine is not paired' : 'the server is unreachable'

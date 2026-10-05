@@ -35,20 +35,3 @@ export function packageVersion(): string | null {
   }
   return null
 }
-
-/**
- * Where `npx skills add` fetches the agent skill from, as printed to users.
- *
- * The human-readable release tag naming this exact build. The installer does
- * not trust or fetch this ref: it installs the verified skill embedded in the
- * npm package through a short-lived local source. Deriving the label from the
- * version keeps release identity from drifting; it used to be maintained by
- * hand in three places.
- *
- * In the skills CLI grammar `owner/repo#ref` selects a Git ref, while
- * `owner/repo@name` selects a skill — so the `#` here is load-bearing.
- */
-export function skillsSource(): string | null {
-  const version = packageVersion()
-  return version === null ? null : `Raidiant-io/notifai#v${version}`
-}

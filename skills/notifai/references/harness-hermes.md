@@ -14,8 +14,8 @@ when the full set exceeds it, the section directs the agent to run
 `notifai guidance` before deciding whether or how to notify. Notifai reads
 exact `HERMES_SESSION_ID` for Source Context and derives git branch and
 worktree from the actual invocation cwd. Install the Notifai skill through
-`npx skills`; the Hermes plugin does not include a copy. On local classic CLI
-sessions the plugin supervises a Session Attendant for that exact session.
+the built-in Notifai skill installer; the Hermes plugin does not include a copy.
+On local classic CLI sessions the plugin supervises a Session Attendant for that exact session.
 After the first Notification Request, it reports Session Presence and hands
 Session Notes and post-consumption Answer Edits into the attached CLI;
 a Note may interrupt a working turn. The plugin checks the current session

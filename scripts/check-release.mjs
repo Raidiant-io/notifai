@@ -154,24 +154,20 @@ requireValue(!/\.version\(\s*['"]\d/.test(cliSource), 'CLI version must not be h
  * meaningful question is what the shipped code actually resolves — which is
  * also the one thing a stale build cannot fake.
  */
-const expectedSkillsSource = `Raidiant-io/notifai#v${cli.version}`
+const expectedVersion = cli.version
 try {
   const derived = execFileSync(
     'node',
-    ['-e', "import('./apps/cli/dist/release.js').then((m) => process.stdout.write(String(m.skillsSource())))"],
+    ['-e', "import('./apps/cli/dist/release.js').then((m) => process.stdout.write(String(m.packageVersion())))"],
     { cwd: root, encoding: 'utf8' },
   ).trim()
   requireValue(
-    derived === expectedSkillsSource,
-    `built CLI resolves skill source ${derived || '<empty>'}, expected ${expectedSkillsSource}`,
+    derived === expectedVersion,
+    `built CLI resolves version ${derived || '<empty>'}, expected ${expectedVersion}`,
   )
 } catch (error) {
-  failures.push(`could not resolve the built CLI skill source (${String(error)})`)
+  failures.push(`could not resolve the built CLI version (${String(error)})`)
 }
-requireValue(
-  !/SKILLS_SOURCE\s*=\s*['"]/.test(readFileSync(path.join(root, 'apps/cli/src/commands.ts'), 'utf8')),
-  'skill source must stay derived from the package version, not reintroduced as a literal',
-)
 
 try {
   const integrity = await import(

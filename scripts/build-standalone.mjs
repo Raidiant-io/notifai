@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { commandInvocation, repositoryRoot } from './cross-platform.mjs'
@@ -33,7 +33,11 @@ for (const name of ['@raidiant/notifai-protocol', '@raidiant/notifai']) {
 }
 const hash = createHash('sha256')
 for (const file of run('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard']).split('\0').filter(Boolean).sort()) {
-  hash.update(file).update('\0').update(readFileSync(path.join(repositoryRoot, file))).update('\0')
+  const absolute = path.join(repositoryRoot, file)
+  // Git checks out a tracked symlink as its target text when Windows has no
+  // symlink privilege. Hash that text on every host, not the followed file.
+  const bytes = lstatSync(absolute).isSymbolicLink() ? Buffer.from(readlinkSync(absolute)) : readFileSync(absolute)
+  hash.update(file).update('\0').update(bytes).update('\0')
 }
 const identity = {
   version: JSON.parse(readFileSync(path.join(repositoryRoot, 'apps/cli/package.json'), 'utf8')).version,

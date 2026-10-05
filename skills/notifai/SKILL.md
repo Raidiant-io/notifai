@@ -304,7 +304,7 @@ Lifecycle wiring has no scope: one install per harness for this machine;
 `notifai project enable` is the per-project switch. Never guess unattended:
 
 ```bash
-notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --json
+notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global> --skills-harness <harnesses>] --json
 ```
 
 Branch on `states`, `can_send`, and `question_routing_ready`.

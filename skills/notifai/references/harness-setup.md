@@ -62,11 +62,16 @@ notifai init --hooks --json
 ```
 
 Installing the agent guidance skill keeps its own independent placement choice,
-which belongs to `npx skills` and says nothing about where hooks land:
+which belongs to the User and says nothing about where hooks land:
 
 ```bash
-notifai init --skills --skills-scope <project|global> --json
+notifai init --skills --skills-scope <project|global> --skills-harness <comma-separated-harnesses> --json
 ```
+
+Choose only the intended harnesses; updates retain that selection. Project
+placement for OpenClaw requires a single, concrete configured agent workspace
+that matches the command directory. Use global scope when that workspace is
+ambiguous. Existing edits and unowned skills are preserved and reported.
 
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
