@@ -95,10 +95,10 @@ try {
   Assert-Bootstrap ((Get-NotifaiInstalledCommand) -ceq $installed) 'Owned command was not selected'
   Invoke-NotifaiBootstrap
   Assert-Bootstrap ($script:launches -eq 2) 'Existing installation was not resumed offline'
-  $acl = Get-Acl -LiteralPath $bin
-  $unsafeRule = [Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'), [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)
-  [void]$acl.AddAccessRule($unsafeRule)
-  Set-Acl -LiteralPath $bin -AclObject $acl
+  # Exercise a writable foreign principal without asking Set-Acl to rewrite
+  # unrelated owner/audit sections or requiring SeSecurityPrivilege.
+  & "$env:SystemRoot/System32/icacls.exe" $bin '/grant' '*S-1-1-0:(W)' | Out-Null
+  Assert-Bootstrap ($LASTEXITCODE -eq 0) 'Could not establish unsafe PATH fixture'
   Expect-Rejection { Invoke-NotifaiBootstrap }
   Assert-Bootstrap ($script:launches -eq 2) 'Unsafe owned-command path reached execution'
 
