@@ -63,7 +63,7 @@ const TOP_LEVEL_ALLOWLIST = new Set([
 ])
 
 const APPS_ALLOWLIST = new Set(['cli'])
-const PACKAGES_ALLOWLIST = new Set(['protocol'])
+const PACKAGES_ALLOWLIST = new Set(['protocol', 'installer'])
 
 /** File names or extensions that mark material the public repo must not hold. */
 const FORBIDDEN_FILE_PATTERNS = [

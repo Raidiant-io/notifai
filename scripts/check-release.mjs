@@ -212,8 +212,9 @@ for (const { manifest, directory } of packages) {
   )
 }
 requireValue(
-  readme.includes(`#v${cli.version}`) && readme.includes(`\`v${cli.version}\``),
-  `README skill pin must name the current CLI tag v${cli.version}`,
+  readme.includes('notifai init --skills --skills-scope') && readme.includes('--skills-harness') &&
+    readme.includes('skill bundled with'),
+  'README must describe the bundled skill installer with explicit scope and harness selection',
 )
 for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md', 'docs/RELEASING.md', 'docs/TRUST.md']) {
   requireValue(readFileSync(path.join(root, relative), 'utf8').trim().length > 0, `${relative} must not be empty`)

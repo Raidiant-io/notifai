@@ -90,9 +90,9 @@ fi
 case "$NF_ARCH" in x86_64|amd64) NF_ARCH=x64;; aarch64|arm64) NF_ARCH=arm64;; *) nf_fail 'This native CPU architecture is not supported';; esac
 if [ "$NF_ARCH" = x64 ]; then
   if [ "$NF_PLATFORM" = linux ]; then
-    awk '/^flags[[:space:]]*:/ {for(i=1;i<=NF;i++) if($i=="avx2") ok=1} END {exit !ok}' /proc/cpuinfo || nf_fail 'This x64 release requires AVX2 support'
+    awk '/^flags[[:space:]]*:/ {for(i=1;i<=NF;i++) if($i=="sse4_2") ok=1} END {exit !ok}' /proc/cpuinfo || nf_fail 'This x64 release requires SSE4.2 support'
   else
-    /usr/sbin/sysctl -n machdep.cpu.leaf7_features | awk '{for(i=1;i<=NF;i++) if($i=="AVX2") ok=1} END {exit !ok}' || nf_fail 'This x64 release requires AVX2 support'
+    /usr/sbin/sysctl -n machdep.cpu.features | awk '{for(i=1;i<=NF;i++) if($i=="SSE4.2") ok=1} END {exit !ok}' || nf_fail 'This x64 release requires SSE4.2 support'
   fi
 fi
 NF_TARGET="bun-$NF_PLATFORM-$NF_ARCH"
