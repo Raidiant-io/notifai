@@ -777,8 +777,10 @@ export async function hookRunCommand(
     if (event === 'question-submission') {
       const notes: string[] = []
       const sessionId = envelope.session_id
+      // An explicit question is not lifecycle activation: like Stop, submit it
+      // whatever the directory's Project Enablement says.
       if (sessionId === undefined || harness === undefined ||
-          readSessionState(sessionId, deps.env).harness !== harness || !lifecycleEnabled()) return EXIT.ok
+          readSessionState(sessionId, deps.env).harness !== harness) return EXIT.ok
       await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)
       // Native queues can observe answers while the asking turn keeps working.
       // Held Stop and plugin routes retain their own genuine output owner.

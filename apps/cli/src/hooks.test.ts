@@ -7142,6 +7142,20 @@ describe('escalation waiter delivery seam', () => {
     expect(launch).toHaveBeenCalledTimes(observers)
   })
 
+  it('submits a registered question even when the directory Project is not enabled', async () => {
+    // `ask --project X` enables X, not the cwd's Project. Enablement gates
+    // lifecycle context, never an explicit question's submission.
+    const h = harness([])
+    disableProject(projectBinding(h.deps.cwd, h.env)!)
+    writeSessionState('elsewhere', h.env, { harness: 'codex' })
+    registerQuestion('elsewhere', h.env, { question: 'Ship it?' }, NOW)
+    const code = await hookRunCommand({ ...h.deps, spawnQuestionSettlement: vi.fn() },
+      'question-submission', stdin({ session_id: 'elsewhere', cwd: h.deps.cwd }), 'codex')
+    expect(code).toBe(EXIT.ok)
+    expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+    expect(readSessionState('elsewhere', h.env).pending?.[0]?.request_id).toBeDefined()
+  })
+
   it('submits immediately while another owner is waiting, without polling answers', async () => {
     const h = harness([])
     writeSessionState('immediate', h.env, { harness: 'codex' })
