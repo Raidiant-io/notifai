@@ -49,6 +49,8 @@ import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 import { resumeAttendantCommand } from './attendant-update.js'
+import { buildIdentity } from './distribution.js'
+import { shippedSkillBundle } from './skill-integrity.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -185,6 +187,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
    * returns. A caller branching on exit codes should not have to know which layer
    * rejected it. Help and version stay successful.
    */
+  program.command('self-check')
+    .description('Verify this executable and its bundled assets without contacting the service')
+    .option('--json', 'machine-readable build and asset verification')
+    .action((options: { json?: boolean }) => {
+      const identity = buildIdentity()
+      const skill = shippedSkillBundle(packageVersion() ?? undefined)
+      const result = { ok: identity !== null && skill.ok, build: identity,
+        skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
+          : { error: skill.error } }
+      deps.io.out(options.json ? JSON.stringify(result)
+        : result.ok ? `Executable and bundled skill verified (${identity?.version})`
+          : 'Standalone executable verification failed')
+      exit(result.ok ? 0 : 1)
+    })
+
   program.exitOverride((err) => {
     exit(err.exitCode === 0 ? 0 : 2)
   })

@@ -9,7 +9,7 @@
 import { realIo, type CommandDeps } from './commands.js'
 import { defaultCredentialStore } from './credentials.js'
 import { nativeSkills } from './native-skills.js'
-import { argvFlagNames, bootstrapLogger } from './logging.js'
+import { argvFlagNames, bootstrapLogger, nullLogger } from './logging.js'
 import { buildProgram } from './program.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 
@@ -21,7 +21,9 @@ import { spawnQuestionSettlement } from './question-settlement-process.js'
  * resolved anything. It configures itself from disk and disables itself if it
  * cannot write, so nothing below has to handle it failing.
  */
-const logger = bootstrapLogger()
+// Installers verify a staged payload before activation. That check must not
+// create logs or inspect the user's configuration as a side effect.
+const logger = process.argv[2] === 'self-check' ? nullLogger() : bootstrapLogger()
 
 const deps: CommandDeps = {
   io: realIo(),

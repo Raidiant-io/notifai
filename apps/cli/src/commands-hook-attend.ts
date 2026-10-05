@@ -78,11 +78,14 @@ import { readOpenclawGeneration } from './openclaw-generation.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { buildIdentity } from './distribution.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
 export const attendantRuntimeRevision = (() => {
+  const compiled = buildIdentity()
+  if (compiled !== null) return compiled.sourceDigest
   const file = fileURLToPath(import.meta.url), extension = path.extname(file), directory = path.dirname(file)
   const hash = createHash('sha256')
   for (const name of readdirSync(directory).filter(name => name.endsWith(extension) &&

@@ -11,6 +11,7 @@ const read = file => readFileSync(file, 'utf8').replace(/\r\n?/gu, '\n')
 const release = read('.github/workflows/release-please.yml')
 const ci = read('.github/workflows/ci.yml')
 const publish = read('.github/workflows/publish.yml')
+const standalone = read('.github/workflows/standalone-candidate.yml')
 const releaseWorkflow = parse(release)
 const ciWorkflow = parse(ci)
 const publishWorkflow = parse(publish)
@@ -19,7 +20,7 @@ const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
 const protocolPackage = JSON.parse(readFileSync('packages/protocol/package.json', 'utf8'))
 
 test('all workflows stay LF-normalized, least-privilege, and action-SHA pinned', () => {
-  for (const workflow of [release, ci, publish]) {
+  for (const workflow of [release, ci, publish, standalone]) {
     assert.doesNotMatch(workflow, /\r/)
     for (const match of workflow.matchAll(/uses: ([^\s@]+)@([^\s#]+)/gu)) {
       assert.match(match[2], /^[0-9a-f]{40}$/u, match[1])
@@ -65,7 +66,8 @@ test('release CI identities are explicit and all depend on exact candidate admis
   assert.match(ciWorkflow.jobs['platform-macos'].if, /needs\.scope\.result == 'success'/u)
   assert.match(ciWorkflow.jobs['platform-windows-x64'].if, /needs\.scope\.result == 'success'/u)
   assert.match(ciWorkflow.jobs['platform-windows-arm'].if, /needs\.scope\.result == 'success'/u)
-  assert.equal(String(ciWorkflow.jobs.gates.if), '${{ always() }}')
+  assert.match(String(ciWorkflow.jobs.gates.if), /always\(\)/u)
+  assert.match(String(ciWorkflow.jobs.gates.if), /!inputs\.standalone_only/u)
   assert.match(ciWorkflow.jobs.gates.steps[0].if, /needs\.scope\.result != 'success'/u)
   assert.match(ciWorkflow.jobs.gates.steps[0].run, /exit 1/u)
 })
@@ -97,10 +99,15 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
 
 test('public hosted workflows exist only for release preparation and publication', () => {
   assert.deepEqual(
-    ['ci.yml', 'publish.yml', 'release-please.yml'],
+    ['ci.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml'],
     readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).sort(),
   )
   assert.equal(ciWorkflow.jobs['dependency-review'], undefined)
+  const workflow = parse(standalone)
+  assert.deepEqual(Object.keys(workflow.on).sort(), ['workflow_call', 'workflow_dispatch'])
+  assert.deepEqual(workflow.permissions, {contents: 'read'})
+  assert.equal(workflow.on.workflow_dispatch.inputs.expected_sha.required, true)
+  assert.equal(workflow.on.workflow_call.inputs.expected_sha.required, true)
 })
 
 test('release-please is explicit, exact-main guarded, and uses a verified predecessor', () => {

@@ -1,0 +1,118 @@
+name: Standalone release candidate
+
+on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact source commit to build and verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standalone-candidate-${{ inputs.expected_sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: standalone (${{ matrix.target }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: bun-darwin-arm64
+            arch: arm64
+            extension: ''
+          - runner: macos-15-intel
+            target: bun-darwin-x64
+            arch: x64
+            extension: ''
+          - runner: ubuntu-24.04
+            target: bun-linux-x64
+            arch: x64
+            extension: ''
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            arch: arm64
+            extension: ''
+          - runner: windows-2025
+            target: bun-windows-x64
+            arch: x64
+            extension: .exe
+          - runner: windows-11-arm
+            target: bun-windows-arm64
+            arch: arm64
+            extension: .exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Admit only the exact release candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.2'
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.arch }}
+      - run: pnpm install --frozen-lockfile
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e "if(process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+      - name: Compile launcher and full application
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/build-launcher.mjs "$RUNNER_TEMP/standalone"
+          node scripts/build-standalone.mjs --target "$TARGET" --out "$RUNNER_TEMP/standalone/notifai-runtime$EXTENSION"
+      - name: Execute isolated artifact checks
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/check-standalone.mjs "$RUNNER_TEMP/standalone/notifai$EXTENSION" > "$RUNNER_TEMP/standalone/check.json"
+          cat "$RUNNER_TEMP/standalone/check.json"
+      - name: Verify source boundaries
+        run: |
+          pnpm check:boundary
+          pnpm check:machine-paths
+      - name: Retain candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: standalone-${{ matrix.target }}-${{ inputs.expected_sha }}
+          path: |
+            ${{ runner.temp }}/standalone/notifai*
+            ${{ runner.temp }}/standalone/check.json
+          if-no-files-found: error
+          retention-days: 14

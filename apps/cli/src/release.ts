@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildIdentity } from './distribution.js'
 
 /**
  * What this build is, according to the manifest npm actually shipped.
@@ -20,6 +21,8 @@ import { fileURLToPath } from 'node:url'
  * asserting something they do not know.
  */
 export function packageVersion(): string | null {
+  const compiled = buildIdentity()
+  if (compiled !== null) return compiled.version
   try {
     const manifest = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
     const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'))

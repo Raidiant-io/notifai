@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bundledSkillRoot } from './distribution.js'
 
 export interface SkillManifestFile {
   path: string
@@ -187,7 +188,7 @@ export function verifySkillBundle(
 /** Locate the generated bundle in a published install or a built source checkout. */
 export function shippedSkillBundle(expectedPackageVersion?: string, budget?: SkillInspectionBudget): SkillBundleResult {
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
-  const sourceRoot = path.join(
+  const sourceRoot = bundledSkillRoot() ?? path.join(
     moduleDirectory,
     path.basename(moduleDirectory) === 'dist' ? 'skill-source' : '../dist/skill-source',
   )

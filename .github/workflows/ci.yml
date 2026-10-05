@@ -7,6 +7,11 @@ on:
         description: Exact commit SHA that this run must check
         required: true
         type: string
+      standalone_only:
+        description: Run native standalone candidate checks without the npm release suite
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -69,7 +74,7 @@ jobs:
 
   gates:
     needs: scope
-    if: ${{ always() }}
+    if: ${{ always() && !inputs.standalone_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -150,7 +155,7 @@ jobs:
     name: platform (macos-latest)
     needs: scope
     if: >-
-      always() && needs.scope.result == 'success'
+      always() && needs.scope.result == 'success' && !inputs.standalone_only
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -173,7 +178,7 @@ jobs:
     name: platform (windows-2025)
     needs: scope
     if: >-
-      always() && needs.scope.result == 'success'
+      always() && needs.scope.result == 'success' && !inputs.standalone_only
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -228,7 +233,7 @@ jobs:
     name: platform (windows-11-arm)
     needs: scope
     if: >-
-      always() && needs.scope.result == 'success'
+      always() && needs.scope.result == 'success' && !inputs.standalone_only
     runs-on: windows-11-arm
     timeout-minutes: 30
     steps:
@@ -267,3 +272,10 @@ jobs:
             --testNamePattern Windows
       - name: Verify the packed CLI through native Windows shells
         run: pnpm check:packed
+
+  standalone:
+    needs: scope
+    if: ${{ needs.scope.result == 'success' && inputs.standalone_only }}
+    uses: ./.github/workflows/standalone-candidate.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
