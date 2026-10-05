@@ -107,6 +107,14 @@ jobs:
         run: |
           pnpm check:boundary
           pnpm check:machine-paths
+      - name: Verify native runtime and shared storage
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/check-standalone-runtime.mjs --launcher "$RUNNER_TEMP/standalone/notifai$EXTENSION" > "$RUNNER_TEMP/standalone/runtime-check.log"
+          cat "$RUNNER_TEMP/standalone/runtime-check.log"
       - name: Retain candidate evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -114,5 +122,6 @@ jobs:
           path: |
             ${{ runner.temp }}/standalone/notifai*
             ${{ runner.temp }}/standalone/check.json
+            ${{ runner.temp }}/standalone/runtime-check.log
           if-no-files-found: error
           retention-days: 14
