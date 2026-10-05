@@ -1,15 +1,19 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   SKILLS_INSTALLER_SPEC,
+  addToEveryHarness,
+  harnessSkillCopies,
   nativeSkills,
   runSkillsCommand,
   skillsAddArgv,
   skillsRemoveArgv,
+  staleHarnessSkillCopies,
 } from './native-skills.js'
+import { shippedSkillBundle } from './skill-integrity.js'
 
 function writeLock(file: string, ref: string, skillPath?: string): void {
   mkdirSync(path.dirname(file), { recursive: true })
@@ -204,5 +208,105 @@ describe('nativeSkills.list', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-skills-missing-'))
     const result = await nativeSkills.list('project', cwd, { PATH: '/nonexistent' })
     expect(result).toEqual({ skills: [] })
+  })
+})
+
+describe('harness-specific skill copies', () => {
+  function home(): { root: string; env: NodeJS.ProcessEnv; conventional: string; digest: string } {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-harness-copies-'))
+    const bundle = shippedSkillBundle()
+    if (!bundle.ok) throw new Error(bundle.error)
+    const conventional = path.join(root, '.agents', 'skills', 'notifai')
+    cpSync(bundle.bundle.skillRoot, conventional, { recursive: true })
+    return { root, env: { HOME: root, USERPROFILE: root }, conventional, digest: bundle.bundle.manifest.digest }
+  }
+  const skill = (conventional: string) => ({ name: 'notifai', scope: 'global' as const, path: conventional })
+
+  it('names the harness whose own older copy shadows a current conventional skill', () => {
+    const f = home()
+    const claude = path.join(f.root, '.claude', 'skills', 'notifai')
+    mkdirSync(claude, { recursive: true })
+    writeFileSync(path.join(claude, 'SKILL.md'), '# older guidance\n')
+    expect(staleHarnessSkillCopies(skill(f.conventional), f.digest, f.root, f.env)).toEqual([
+      { agent: 'claude-code', label: 'Claude Code', path: claude, detected: true },
+    ])
+  })
+
+  it('accepts a current copy and a link to the conventional directory', () => {
+    const f = home()
+    cpSync(f.conventional, path.join(f.root, '.claude', 'skills', 'notifai'), { recursive: true })
+    mkdirSync(path.join(f.root, '.grok', 'skills'), { recursive: true })
+    symlinkSync(f.conventional, path.join(f.root, '.grok', 'skills', 'notifai'), 'dir')
+    expect(staleHarnessSkillCopies(skill(f.conventional), f.digest, f.root, f.env)).toEqual([])
+  })
+
+  it('counts a detected harness with no copy only when asked what an install should cover', () => {
+    const f = home()
+    mkdirSync(path.join(f.root, '.claude'), { recursive: true })
+    expect(staleHarnessSkillCopies(skill(f.conventional), f.digest, f.root, f.env)).toEqual([])
+    expect(staleHarnessSkillCopies(skill(f.conventional), f.digest, f.root, f.env, true).map((copy) => copy.agent))
+      .toEqual(['claude-code'])
+  })
+
+  it('honours the harness home overrides the installer honours', () => {
+    const f = home()
+    const moved = path.join(f.root, 'elsewhere')
+    expect(harnessSkillCopies('global', 'notifai', f.root, { ...f.env, CLAUDE_CONFIG_DIR: moved })[0]).toMatchObject({
+      agent: 'claude-code', path: path.join(moved, 'skills', 'notifai'), detected: false,
+    })
+    expect(harnessSkillCopies('project', 'notifai', f.root, f.env).map((copy) => copy.path)).toEqual([
+      path.join(f.root, '.claude', 'skills', 'notifai'),
+      path.join(f.root, '.hermes', 'skills', 'notifai'),
+      path.join(f.root, '.grok', 'skills', 'notifai'),
+      path.join(f.root, 'skills', 'notifai'),
+    ])
+  })
+
+  it('runs a second, named install for the copies the first run left behind', async () => {
+    const f = home()
+    const claude = path.join(f.root, '.claude', 'skills', 'notifai')
+    mkdirSync(claude, { recursive: true })
+    writeFileSync(path.join(claude, 'SKILL.md'), '# older guidance\n')
+    mkdirSync(path.join(f.root, '.grok'), { recursive: true })
+    const runs: string[][] = []
+    const run = async (args: string[]) => {
+      runs.push(args)
+      return 0
+    }
+    const result = await addToEveryHarness(
+      { source: './.notifai/skill-source-test', skill: 'notifai', scope: 'global', cwd: f.root, env: f.env },
+      f.digest,
+      run as never,
+    )
+    expect(result).toBe(0)
+    expect(runs).toHaveLength(2)
+    expect(runs[0]).not.toContain('--agent')
+    expect(runs[1]!.slice(-3)).toEqual(['--agent', 'claude-code', 'grok'])
+  })
+
+  it('runs the installer once when every harness copy is already current', async () => {
+    const f = home()
+    cpSync(f.conventional, path.join(f.root, '.claude', 'skills', 'notifai'), { recursive: true })
+    const runs: string[][] = []
+    const result = await addToEveryHarness(
+      { source: './.notifai/skill-source-test', skill: 'notifai', scope: 'global', cwd: f.root, env: f.env },
+      f.digest,
+      (async (args: string[]) => { runs.push(args); return 0 }) as never,
+    )
+    expect(result).toBe(0)
+    expect(runs).toHaveLength(1)
+  })
+
+  it('does not start a second install after the first one failed', async () => {
+    const f = home()
+    mkdirSync(path.join(f.root, '.claude'), { recursive: true })
+    const runs: string[][] = []
+    const result = await addToEveryHarness(
+      { source: './.notifai/skill-source-test', skill: 'notifai', scope: 'global', cwd: f.root, env: f.env },
+      f.digest,
+      (async (args: string[]) => { runs.push(args); return 1 }) as never,
+    )
+    expect(result).toBe(1)
+    expect(runs).toHaveLength(1)
   })
 })

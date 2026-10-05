@@ -50,7 +50,7 @@ import {
   setupProofIsStale,
   writeSetupProof,
 } from './commands-setup-proof.js'
-import { installedSkillMatchesPackage, listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
+import { installedSkillMatchesPackage, staleInstalledSkillCopies, listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { installHookAdapter } from './hook-adapter.js'
@@ -210,8 +210,11 @@ async function closeGap(
       return 'failed' as const
     }
     if (scopesOverlap()) return refuseOverlap()
+    // A harness that loads its own older copy is not served by a verified
+    // conventional copy, so it keeps the installer in play.
     const selectedIsVerified = () => inventory.installed.some(
-      (skill) => skill.scope === installScope && installedSkillMatchesPackage(skill),
+      (skill) => skill.scope === installScope && installedSkillMatchesPackage(skill) &&
+        staleInstalledSkillCopies(skill, deps.cwd, deps.env).length === 0,
     )
     // Keep the existing scope until the native installer has produced a
     // content-verified replacement. A retry after partial cleanup can reuse

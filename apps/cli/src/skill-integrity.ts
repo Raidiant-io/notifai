@@ -111,6 +111,16 @@ export function createSkillManifest(skillRoot: string, packageVersion: string, b
   }
 }
 
+/** Content identity of one installed skill directory, or null when it cannot be read. */
+export function skillTreeDigest(root: string): string | null {
+  if (!existsSync(root)) return null
+  try {
+    return createSkillManifest(root, '').digest
+  } catch {
+    return null
+  }
+}
+
 function isSkillManifest(value: unknown): value is SkillManifest {
   if (value === null || typeof value !== 'object') return false
   const candidate = value as Partial<SkillManifest>
