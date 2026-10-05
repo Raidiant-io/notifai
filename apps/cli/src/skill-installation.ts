@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
 import { withFileLock } from './file-lock.js'
@@ -291,6 +291,37 @@ export class SkillInstallation {
       const result = this.inspect(input.scope)
       return { ...result, ok: !result.pending && result.conflicts.length === 0 }
     } catch (error) { return { ...this.inspect(input.scope), ok: false, conflicts: [String(error)] } }
+  }
+
+  /** Explicit uninstall visits only this state root's recorded placements.
+   * It never searches other projects or guesses a destination from a filename. */
+  removeRecorded(): { ok: boolean; conflicts: string[] } {
+    const conflicts: string[] = [], directory = path.dirname(this.statePath('global'))
+    try {
+      if (!present(directory)) return { ok: true, conflicts }
+      owned(directory)
+      if (!lstatSync(directory).isDirectory()) throw new Error('Invalid skill receipt directory')
+      for (const name of readdirSync(directory).sort()) {
+        if (!name.endsWith('.json')) continue
+        try {
+          const file = path.join(directory, name)
+          owned(file)
+          if (!lstatSync(file).isFile() || lstatSync(file).size > 64 * 1024) throw new Error(`Invalid skill receipt: ${file}`)
+          const record = JSON.parse(readFileSync(file, 'utf8')) as Partial<SkillState>
+          if (record.scope !== 'global' && record.scope !== 'project') throw new Error(`Invalid skill scope: ${file}`)
+          if (record.scope === 'project' && (typeof record.project !== 'string' || !path.isAbsolute(record.project))) {
+            throw new Error(`Invalid skill project: ${file}`)
+          }
+          const installer = record.scope === 'global' ? this : new SkillInstallation({ cwd: record.project!, env: this.env })
+          if (installer.statePath(record.scope) !== file) throw new Error(`Skill receipt identity changed: ${file}`)
+          // remove() re-reads and validates under the existing shared placement
+          // lock, then checks every content digest before removing that scope.
+          const result = installer.remove(record.scope)
+          if (!result.ok) conflicts.push(...result.conflicts)
+        } catch (error) { conflicts.push(String(error)) }
+      }
+    } catch (error) { conflicts.push(String(error)) }
+    return { ok: conflicts.length === 0, conflicts }
   }
 
   remove(scope: Scope): SkillReconciliation {

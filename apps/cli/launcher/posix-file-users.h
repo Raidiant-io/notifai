@@ -91,12 +91,14 @@ done_macos:
         long pid = strtol(entry->d_name, &end, 10);
         if (!*entry->d_name || *end || pid <= 0 || pid > INT_MAX) continue;
         int process_fd = openat(dirfd(processes), entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-        if (process_fd < 0) { if (errno == ENOENT || errno == ESRCH) continue; break; }
+        if (process_fd < 0) { if (errno == ENOENT || errno == ESRCH) continue; fprintf(stderr, "notifai: cannot open process %ld (%d)\n", pid, errno); break; }
         int status_fd = openat(process_fd, "status", O_RDONLY | O_NOFOLLOW);
         if (status_fd < 0) {
-            int gone = errno == ENOENT || errno == ESRCH;
+            int error = errno;
+            int gone = error == ENOENT || error == ESRCH;
             close(process_fd);
             if (gone) continue;
+            fprintf(stderr, "notifai: cannot open process %ld status (%d)\n", pid, error);
             break;
         }
         FILE *status = fdopen(status_fd, "r");
@@ -110,7 +112,7 @@ done_macos:
         }
         int failed = ferror(status);
         fclose(status);
-        if (failed || !has_uids || !state) { close(process_fd); break; }
+        if (failed || !has_uids || !state) { fprintf(stderr, "notifai: cannot read process %ld credentials (%d,%d,%d)\n", pid, failed, has_uids, state); close(process_fd); break; }
         if (state == 'Z' || effective_uid != getuid()) {
             close(process_fd); continue;
         }
@@ -123,6 +125,7 @@ done_macos:
             int gone = fstatat(process_fd, "status", &still_exists, 0) && (errno == ENOENT || errno == ESRCH);
             close(process_fd);
             if (gone || error == ESRCH) continue;
+            fprintf(stderr, "notifai: cannot inspect process %ld image (%d)\n", pid, error);
             break;
         }
         close(process_fd);
