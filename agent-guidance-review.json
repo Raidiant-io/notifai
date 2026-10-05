@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8f99222c291a188a469b9fc76d455c372d0b168c8461de2db07be37e7b37d3e4",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Updated the shipped update reference for native saved channels, explicit stable downgrade, verified local rollback, transaction recovery and distinct runtime/integration/launcher outcomes. Native update checks, doctor recommendations and throttled notices use signed channel discovery; native mutation invokes the verified new immutable executable for integration. Candidate release trust remains unconfigured and fails closed. Notification authority, User deferrals and native approval ownership are unchanged.",
+  "behavior_digest": "sha256:b4d3114f3ca54f80e3ec82a432db41339c2c851255fe464f59cb32c723c07374",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. The explicit candidate installation boundary authenticates bytes before bounded root/bin access migration, reuses a healthy existing runtime across bootstrap routes and directs version/channel changes to the documented update command. No new public install command is exposed in this slice. Existing update guidance remains accurate; notification authority and approval ownership are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

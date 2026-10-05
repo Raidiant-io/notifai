@@ -32,7 +32,7 @@ function fixture(fetcher?: typeof fetch) {
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
     return { directory, signedInventory }
   }
-  const options = { root: path.join(root, 'managed'), target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {} }, probe: () => {} }
+  const options = { root: path.join(root, 'managed'), target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {}, protectExistingDirectory() {} }, probe: () => {} }
   const channel = (sequence: number, withdrawn: string[] = [], inventory = 'unavailable-inventory', version = '2.0.0', channel = 'stable') => {
     const payload = Buffer.from(JSON.stringify({ schema: 1, channel, sequence, version,
       inventory_sha256: digest(inventory), withdrawn_versions: withdrawn }))
@@ -266,4 +266,16 @@ it('native update keeps the saved beta channel and reports incomplete integratio
   expect(requested.some(url => url.endsWith('beta.json'))).toBe(true)
   expect(requested.some(url => url.includes('registry.npmjs.org'))).toBe(false)
   expect(f.installation.inspect()).toMatchObject({ source: 'npm', channel: 'beta', active: { generation: 2 } })
+})
+
+
+it('candidate installation reuses the healthy owned runtime without silently upgrading or changing source', () => {
+  const f = fixture()
+  const first = f.installation.installCandidate({ ...f.candidate('1.0.0'), source: 'shell' })
+  expect(first).toMatchObject({ version: '1.0.0', reused: false, changed: true })
+  const newer = f.candidate('2.0.0')
+  expect(f.installation.installCandidate({ ...newer, source: 'npm' })).toMatchObject({ version: '1.0.0', reused: true, changed: false })
+  expect(f.installation.inspect()).toMatchObject({ source: 'shell', channel: 'stable', active: { generation: 1 } })
+  expect(() => f.installation.installCandidate({ ...newer, source: 'manual', version: '2.0.0' })).toThrow(/update/)
+  expect(() => f.installation.installCandidate({ ...newer, source: 'manual', channel: 'beta' })).toThrow(/update/)
 })

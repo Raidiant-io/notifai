@@ -138,5 +138,14 @@ children. It verifies the protected owner/policy and exact ACEs on the same hand
 The native Windows fixture checks that existing child descriptors and contents
 remain unchanged, that retries converge and unsafe writers are refused. See
 [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
-This operation still needs to be connected to explicit installation migration;
-its presence alone does not prove the legacy-to-native setup journey.
+Explicit candidate installation invokes this operation only for existing runtime
+root/bin directories after authenticating its candidate. It never recurses over
+User data. Native installation command, PATH and legacy wiring migration still
+need their complete setup-journey proof.
+
+
+The Installation candidate entrypoint reuses a healthy owned runtime on repeated
+or mixed bootstrap invocation, preserves its original source and saved channel,
+and rejects an exact version/channel change with an explicit update instruction.
+It authenticates the candidate before permission migration or staging. Archive CI
+exercises fresh installation and repeated reuse with the real native access policy.

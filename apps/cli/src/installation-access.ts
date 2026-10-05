@@ -9,11 +9,13 @@ export interface InstallationAccess {
   check(file: string, directory: boolean): void
   directory(file: string): void
   beforePublish(file: string): void
+  protectExistingDirectory(file: string): void
 }
 export function installationAccess(launcher = path.join(path.dirname(process.execPath), 'notifai.exe')): InstallationAccess {
   if (process.platform !== 'win32') return {
     check(file) { if ((lstatSync(file).mode & 0o022) !== 0) throw new Error('Installation path allows another user to write') },
     directory: ensurePrivateDirectory, beforePublish() {},
+    protectExistingDirectory(file) { if ((lstatSync(file).mode & 0o022) !== 0) throw new Error('Installation path allows another user to write') },
   }
   const run = (operation: string, file: string) => {
     execFileSync(launcher, [operation, file], { windowsHide: true, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -38,5 +40,6 @@ export function installationAccess(launcher = path.join(path.dirname(process.exe
     // An elevated token can assign Administrators as a new file's default
     // owner. Normalize our private temporary file BEFORE atomic publication.
     beforePublish(file) { run('--internal-own-created-file', file) },
+    protectExistingDirectory(file) { run('--internal-protect-existing-directory', file) },
   }
 }

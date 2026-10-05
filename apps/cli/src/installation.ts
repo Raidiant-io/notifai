@@ -199,6 +199,41 @@ export class Installation {
     const result = this.activate({ ...input, build })
     return { ...result, version: release.inventory.version }
   }
+  /** First-install boundary for an authenticated portable candidate. Rerunning
+   * any bootstrap reuses a healthy installation; runtime changes belong to the
+   * explicit update command. Existing directory migration is bounded to root/bin. */
+  installCandidate(input: { directory: string; signedInventory: string; source: InstallSource;
+    channel?: ReleaseChannel; version?: string }): ActivationResult & { version: string; reused: boolean } {
+    if (!['shell', 'powershell', 'npm', 'manual'].includes(input.source) ||
+        (input.channel !== undefined && !['stable', 'beta'].includes(input.channel))) throw new Error('Unknown installation source or channel')
+    const verified = this.verifyFiles(input.directory, input.signedInventory)
+    if (input.version !== undefined && input.version !== verified.inventory.version) throw new Error('Candidate does not match the requested exact version')
+    this.probe(input.directory, verified.inventory)
+    // No ownership or permission change occurs before authenticating candidate
+    // bytes. The OS adapter must preserve all existing child descriptors.
+    for (const directory of [this.root, this.file('bin')]) {
+      if (present(directory)) {
+        owned(directory, true)
+        this.access.protectExistingDirectory(directory)
+        this.owned(directory, true)
+      }
+    }
+    const before = this.inspect()
+    if (before.pending) throw new Error('Recover the pending installation transaction with notifai update --repair first')
+    if (before.active) {
+      const active = this.activeRelease(before.active.generation)
+      if ((input.version !== undefined && active.version !== input.version) ||
+          (input.channel !== undefined && before.channel !== input.channel)) {
+        throw new Error('An installation already exists; use notifai update to change its version or channel')
+      }
+      return { changed: false, active: before.active, version: active.version, reused: true,
+        launcher_update_pending: before.launcher_update_pending }
+    }
+    const channel = input.channel ?? 'stable'
+    if (channel === 'stable' && isPrerelease(verified.inventory.version)) throw new Error('Prerelease installation requires explicit beta channel')
+    const build = this.stage(input)
+    return { ...this.activate({ build, source: input.source, channel, expectedGeneration: 0 }), version: verified.inventory.version, reused: false }
+  }
   private versionDirectory(build: string): string {
     if (!buildId(build)) throw new Error('Invalid immutable build identifier')
     return this.file(path.join('versions', build))

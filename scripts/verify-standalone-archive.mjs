@@ -33,8 +33,15 @@ try {
     bytes: readFileSync(archiveFile), parent: path.join(root, 'extracted') })
   const installation = new Installation({ root: path.join(home, '.notifai'), target: nativeTarget, distribution,
     access: installationAccess(path.join(extracted, `notifai${extension}`)) })
-  const build = installation.stage({ directory: extracted, signedInventory }) // Real candidate self-check; no probe mock.
-  assert.equal(installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: metadata.build.version.includes('-') ? 'beta' : 'stable' }).active.active, build)
+  const candidate = { directory: extracted, signedInventory, channel: metadata.build.version.includes('-') ? 'beta' : 'stable' }
+  const installed = installation.installCandidate({ ...candidate, source: 'manual' }) // Real candidate self-check; no probe mock.
+  assert.equal(installed.reused, false)
+  assert.equal(installed.version, metadata.build.version)
+  const repeated = installation.installCandidate({ ...candidate, source: 'npm' })
+  assert.equal(repeated.reused, true)
+  assert.equal(repeated.changed, false)
+  assert.deepEqual(repeated.active, installed.active)
+  assert.equal(installation.inspect().source, 'manual', 'Rerunning another bootstrap must preserve installation ownership')
   const env = { HOME: home, USERPROFILE: home, TMPDIR: root, TMP: root, TEMP: root,
     PATH: windows ? `${process.env.SystemRoot}\\System32` : '/usr/bin:/bin',
     ...(windows ? { SystemRoot: process.env.SystemRoot, APPDATA: home, LOCALAPPDATA: home } : {}) }
@@ -46,5 +53,5 @@ try {
     (entry.isDirectory() ? size(path.join(directory, entry.name)) : statSync(path.join(directory, entry.name)).size), 0)
   process.stdout.write(`${JSON.stringify({ ok: true, target: nativeTarget, build: metadata.build, archive_sha256: metadata.artifact.sha256,
     archive_bytes: metadata.artifact.bytes, installed_bytes: size(path.join(home, '.notifai')),
-    checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'installed-identity-without-runtime-path'] })}\n`)
+    checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path'] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

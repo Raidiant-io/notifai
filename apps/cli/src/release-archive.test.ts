@@ -51,7 +51,7 @@ async function fixture(zip: boolean, fault?: 'extra' | 'missing' | 'tampered' | 
 it.each([false, true])('authenticates and retains every release material (zip=%s)', async zip => {
   const input = await fixture(zip), directory = await extractReleaseArchive(input)
   expect(readFileSync(path.join(directory, 'licenses/NOTICE.txt'), 'utf8')).toBe('Keep this notice')
-  const install = new Installation({ root: path.join(input.root, 'managed'), target: input.target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {} }, probe() {} })
+  const install = new Installation({ root: path.join(input.root, 'managed'), target: input.target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {}, protectExistingDirectory() {} }, probe() {} })
   const build = install.stage({ directory, signedInventory: input.signedInventory })
   expect(readFileSync(path.join(input.root, 'managed/versions', build, 'licenses/NOTICE.txt'), 'utf8')).toBe('Keep this notice')
   expect(readdirSync(input.parent)).toHaveLength(1)
