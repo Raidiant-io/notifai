@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Runs the delivered executable outside a checkout, with no package/runtime PATH.
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -42,7 +43,9 @@ try {
   assert.deepEqual(check(), receipt, 'cwd configuration must not alter the executable')
   assert.deepEqual(check({ BUN_OPTIONS: '--preload ./preload.js' }), receipt)
   assert.deepEqual(check({ BUN_BE_BUN: '1' }), receipt)
-  process.stdout.write(`${JSON.stringify({ ok: true, build: receipt.build, checks: [
+  const sha256 = file => createHash('sha256').update(readFileSync(file)).digest('hex')
+  process.stdout.write(`${JSON.stringify({ ok: true, build: receipt.build, launcher_sha256: sha256(executable),
+    runtime_sha256: sha256(path.join(path.dirname(executable), process.platform === 'win32' ? 'notifai-runtime.exe' : 'notifai-runtime')), checks: [
     'isolated-no-runtime-path', 'embedded-skill-integrity', 'process-identity', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
   ] })}\n`)
 } finally {

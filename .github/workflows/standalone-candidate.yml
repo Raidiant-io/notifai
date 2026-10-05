@@ -115,12 +115,20 @@ jobs:
           set -euo pipefail
           node scripts/check-standalone-runtime.mjs --launcher "$RUNNER_TEMP/standalone/notifai$EXTENSION" > "$RUNNER_TEMP/standalone/runtime-check.log"
           cat "$RUNNER_TEMP/standalone/runtime-check.log"
+      - name: Package the checked candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/package-standalone.test.mjs
+          node scripts/prepare-standalone-materials.mjs --candidate --output "$RUNNER_TEMP/standalone-materials"
+          node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/standalone" --materials "$RUNNER_TEMP/standalone-materials" --output "$RUNNER_TEMP/standalone/archive"
       - name: Retain candidate evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: standalone-${{ matrix.target }}-${{ inputs.expected_sha }}
           path: |
             ${{ runner.temp }}/standalone/notifai*
+            ${{ runner.temp }}/standalone/archive/
             ${{ runner.temp }}/standalone/check.json
             ${{ runner.temp }}/standalone/runtime-check.log
           if-no-files-found: error

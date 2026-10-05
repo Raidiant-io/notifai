@@ -73,3 +73,20 @@ exercises this ordering and continued execution with isolated fixture owners,
 and executes a generated native hook command with a restricted PATH. These
 checks do not establish real harness activation, provider delivery, complete
 installer/update commands, legacy migration, or safe generation collection.
+
+## Checked archive packaging
+
+After the CLI build, `package-standalone.mjs` creates a tar.gz or Windows ZIP and
+an unsigned `artifact.json` inventory from the checked executables. It requires
+matching clean build/execution receipts and hashes the supplied distribution
+materials. It rejects byte changes after checks, unsafe material paths and an
+existing output directory. The runtime archive reader verifies these archive
+formats in focused tests.
+
+Candidate CI includes the project license and the exact pinned Bun license
+index, with a visible candidate-materials marker. This is incomplete publication
+material: Bun's index is not every dependency's license text. Final publication
+also requires matching third-party notices and an established source/relink path
+for JavaScriptCore, OS signing where required, a signed complete release inventory,
+and validation of the final distributed bytes. Packaging success does not satisfy
+those gates. The candidate workflow never publishes or advances discovery.
