@@ -27,7 +27,7 @@ alone does not demonstrate that target's native behavior.
 The builder regenerates the protocol output and exact CLI skill bundle before
 compilation. It embeds release identity and the skill, disables configuration
 autoload, and writes a build receipt beside the executable. `self-check --json`
-verifies build identity and skill integrity without service access or persistent
+verifies build identity, process identity and skill integrity without service access or persistent
 account/logging writes. It does not verify an OS signature or prove installation,
 credentials, notification delivery, resident ownership, or update behavior.
 
@@ -52,5 +52,7 @@ pull-request, or timer starts this workflow. All actions are pinned by commit.
 
 This mode skips the npm `gates` job, so its successful result cannot satisfy the
 existing npm publication evidence gate. It neither publishes assets nor advances
-an update channel. OS signing, signed inventory, complete lifecycle validation,
-and authorized promotion are still required for native distribution.
+an update channel. Signed release inventory, complete lifecycle validation,
+and authorized promotion are still required for native distribution. Windows
+Authenticode is deferred; Windows artifacts are unsigned. macOS publication
+requires Developer ID signing and notarization of the final bytes.

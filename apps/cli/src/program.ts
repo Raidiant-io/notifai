@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { Command } from 'commander'
+import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import {
   acknowledgeCommand,
   receiveCommand,
@@ -193,7 +194,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action((options: { json?: boolean }) => {
       const identity = buildIdentity()
       const skill = shippedSkillBundle(packageVersion() ?? undefined)
-      const result = { ok: identity !== null && skill.ok, build: identity,
+      const processIdentity = currentProcessIdentity()
+      const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
+      const result = { ok: identity !== null && skill.ok && processVerified, build: identity, processVerified,
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)

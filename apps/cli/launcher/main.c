@@ -13,6 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <wchar.h>
+#include <errno.h>
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -25,7 +26,37 @@ static BOOL WINAPI console_control(DWORD event) {
     return event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT;
 }
 
-int wmain(void) {
+/* OS process identity is read from one open handle: a recycled PID cannot mix
+ * a creation time from one process with the executable of another. */
+static int process_info(const wchar_t *argument) {
+    wchar_t *end;
+    errno = 0;
+    unsigned long pid = wcstoul(argument, &end, 10);
+    if (errno || !pid || *end || argument == end) return 2;
+    HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!handle) return 1;
+    FILETIME created, exited, kernel, user;
+    wchar_t executable[32768];
+    DWORD length = 32768;
+    BOOL ok = GetProcessTimes(handle, &created, &exited, &kernel, &user) &&
+        QueryFullProcessImageNameW(handle, 0, executable, &length);
+    CloseHandle(handle);
+    if (!ok) return 1;
+    wchar_t *name = wcsrchr(executable, L'\\');
+    name = name ? name + 1 : executable;
+    char utf8[32768 * 3];
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1,
+                            utf8, sizeof(utf8), NULL, NULL)) return 1;
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = created.dwLowDateTime;
+    ticks.HighPart = created.dwHighDateTime;
+    printf("windows-filetime:%llu\n%s\n", ticks.QuadPart, utf8);
+    return 0;
+}
+
+int wmain(int argc, wchar_t **argv) {
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-process-info"))
+        return process_info(argv[2]);
     wchar_t executable[32768];
     DWORD length = GetModuleFileNameW(NULL, executable, 32768);
     if (!length || length >= 32768) return failure("cannot locate the launcher");

@@ -28,6 +28,7 @@ function check(overrides = {}) {
   assert.equal(result.status, 0, result.stderr)
   const receipt = JSON.parse(result.stdout)
   assert.equal(receipt.ok, true)
+  assert.equal(receipt.processVerified, true, 'native process identity must prove the running process')
   assert.ok(receipt.build.version)
   assert.ok(receipt.skill.files > 0)
   return receipt
@@ -42,7 +43,7 @@ try {
   assert.deepEqual(check({ BUN_OPTIONS: '--preload ./preload.js' }), receipt)
   assert.deepEqual(check({ BUN_BE_BUN: '1' }), receipt)
   process.stdout.write(`${JSON.stringify({ ok: true, build: receipt.build, checks: [
-    'isolated-no-runtime-path', 'embedded-skill-integrity', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
+    'isolated-no-runtime-path', 'embedded-skill-integrity', 'process-identity', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
   ] })}\n`)
 } finally {
   rmSync(root, { recursive: true, force: true })

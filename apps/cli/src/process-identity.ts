@@ -1,9 +1,11 @@
 /** A process named by PID *and* start time, so a reused PID is never mistaken for it. */
 import { execFileSync } from 'node:child_process'
+import path from 'node:path'
+import { buildIdentity } from './distribution.js'
 
 export interface ProcessIdentity {
   pid: number
-  /** Normalised UTC `ps -o lstart` text, the same clock Claude Code's descriptor uses. */
+  /** UTC ps text on POSIX; kernel FILETIME on Windows. Never a PID alone. */
   start: string
 }
 
@@ -17,6 +19,7 @@ export interface ProcessIdentity {
  */
 export function processStartTime(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
+  if (process.platform === 'win32') return windowsProcessInfo(pid)?.start ?? null
   try {
     const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -35,6 +38,7 @@ export function processStartTime(pid: number): string | null {
 /** The executable name of a process (`ps -o comm`, without its directory), or null. */
 export function processExecutableName(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
+  if (process.platform === 'win32') return windowsProcessInfo(pid)?.name ?? null
   try {
     const output = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -43,6 +47,29 @@ export function processExecutableName(pid: number): string | null {
       timeout: 2_000,
     }).trim()
     return output === '' ? null : output.slice(output.lastIndexOf('/') + 1)
+  } catch {
+    return null
+  }
+}
+
+function windowsProcessInfo(pid: number): { start: string; name: string } | null {
+  try {
+    // The compiled app uses its sibling native launcher, with no shell startup
+    // on the hook path. Source/development execution uses the same OS clock.
+    const native = buildIdentity() !== null
+    const root = process.env['SystemRoot'] || process.env['SYSTEMROOT'] || 'C:\\Windows'
+    const script = `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid}; `
+      + `[Console]::OutputEncoding=[Text.Encoding]::UTF8; `
+      + `[Console]::WriteLine('windows-filetime:'+$p.StartTime.ToUniversalTime().ToFileTimeUtc()); `
+      + `[Console]::WriteLine([IO.Path]::GetFileName($p.Path))`
+    const output = execFileSync(native ? path.join(path.dirname(process.execPath), 'notifai.exe')
+      : path.win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    native ? ['--internal-process-info', String(pid)]
+      : ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2_000 })
+    const [start, name] = output.trim().split(/\r?\n/)
+    if (!start || !/^windows-filetime:\d+$/.test(start) || !name) return null
+    return { start, name: name.replace(/\.exe$/i, '') }
   } catch {
     return null
   }
