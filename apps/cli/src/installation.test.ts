@@ -290,7 +290,12 @@ it('native installation activates authenticated local bytes and reports setup se
     io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
   const flags = { directory: candidate.directory, inventory, source: 'manual', json: true, path: false }
   const seams = { installation: f.installation, pendingWork: () => null,
-    init: (executable: string) => { launches.push(executable); return { ok: false, code: 'approval_required' } } }
+    init: (executable: string, env: NodeJS.ProcessEnv) => {
+      launches.push(executable)
+      expect(env['PATH']).toBe(path.join(f.options.root, 'bin'))
+      expect(deps.env['PATH']).toBeUndefined()
+      return { ok: false, code: 'approval_required' }
+    } }
   expect(await nativeInstallCommand(deps, flags, seams)).toBe(1)
   const active = f.installation.activeRelease()
   expect(launches).toEqual([active.launcher])

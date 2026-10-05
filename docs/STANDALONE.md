@@ -208,3 +208,20 @@ and [environment change notification](https://learn.microsoft.com/en-us/windows/
 Native CI compiles and runs the storage fixture against a disposable registry
 key; it never changes the runner's actual User PATH. That fixture proves raw
 storage behavior, not receipt of the broadcast by every application.
+
+### Bootstrap metadata views
+
+`generate-bootstrap-metadata.mjs` derives data-only tab-separated views from
+verified signed records: immutable release `bootstrap.tsv`, and the selected
+channel's `<channel>.bootstrap.tsv`. A release view carries the signed inventory
+digest and each archive/executable identity. A channel view carries its sequence,
+version, inventory digest and withdrawals. Generation refuses invalid signatures,
+channel/inventory mismatch and a withdrawn recommended version.
+
+These views let OS bootstraps inspect fixed fields without an installed JSON
+runtime. They are not a second release authority or independent authenticity:
+first execution uses the documented HTTPS trust boundary, with macOS publisher
+checks additionally required. Publication must upload the immutable view with its
+release and advance the channel view in the same metadata-ref commit as the
+signed channel record. Installed update verification continues to use signed JSON.
+The OS bootstraps and promotion wiring are still under implementation.

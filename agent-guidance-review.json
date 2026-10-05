@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6f5ee3783d48da30ed1220da37a76f9520ee92b57ce03d0456aa1118022cc84c",
+  "behavior_digest": "sha256:d9b5393ca47f363214b17576be6df84f0a3fef46a4c9fcf2ee21d2a201438c15",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Standalone documentation now describes Windows User PATH ownership, preservation, interrupted setup, process environment limits and the explicit external-writer race. The native installer invokes this adapter only during explicit PATH configuration; hooks and notification authority remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Native install gives its init child the owned command directory without claiming to change the parent shell. Standalone docs explain data-only bootstrap metadata derived from verified release records and its first-install HTTPS trust limit. Notification, question and scope authority are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

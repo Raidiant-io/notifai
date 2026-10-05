@@ -118,7 +118,7 @@ export interface NativeInstallFlags {
 interface NativeInstallSeams {
   installation?: Installation
   pendingWork?: () => string | null
-  init?: (executable: string) => Record<string, unknown>
+  init?: (executable: string, env: NodeJS.ProcessEnv) => Record<string, unknown>
 }
 
 function installedSetup(deps: CommandDeps, executable: string, json: boolean): Record<string, unknown> {
@@ -188,8 +188,15 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
       emit({ ok: true, code: 'installed', ...installed, setup_skipped: true }, `Notifai ${active.version} is installed. Continue with ${command} init.`)
       return EXIT.ok
     }
+    // Persistent PATH changes cannot update this bootstrap's parent shell.
+    // Give only the setup child the owned command directory; preserve the parent.
+    const env = { ...deps.env }
+    const priorPath = platform === 'win32' ? env['Path'] ?? env['PATH'] ?? '' : env['PATH'] ?? ''
+    const childPath = `${path.dirname(command)}${priorPath ? `${platform === 'win32' ? ';' : ':'}${priorPath}` : ''}`
+    env['PATH'] = childPath
+    if (platform === 'win32') for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') env[key] = childPath
     let setup: Record<string, unknown>
-    try { setup = seams.init ? seams.init(active.launcher) : installedSetup(deps, active.launcher, flags.json === true) }
+    try { setup = seams.init ? seams.init(active.launcher, env) : installedSetup({ ...deps, env }, active.launcher, flags.json === true) }
     catch { setup = { ok: false, code: 'setup_interrupted' } }
     const complete = setup['ok'] === true
     emit({ ok: complete, code: complete ? 'ready' : 'setup_pending', ...installed, setup_complete: complete, setup },
