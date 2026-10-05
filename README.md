@@ -234,7 +234,10 @@ Ctrl-C stops the wait, and expiry offers more time.
 copy and digest manifest shipped inside the installed npm package, stages that
 verified copy at a short-lived project-relative path, and delegates placement
 to the pinned native `npx skills` flow using the chosen scope. The staging copy
-is removed afterward; readiness hashes the conventional installed directory.
+is removed afterward; readiness hashes the conventional installed directory
+and every harness-specific copy beside it. Claude Code, Hermes, Grok and
+OpenClaw load their own copy, so installation refreshes those copies too,
+whichever harness started it.
 The `notifai` CLI binary is always a global install (`npm install -g
 @raidiant/notifai`); the skill scope does not change it. The human-readable release
 identity is `v<!--x-release-please-start-notifai-->11.7.1<!--x-release-please-end-->`,

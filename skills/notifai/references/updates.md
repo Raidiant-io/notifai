@@ -39,7 +39,8 @@ hook execution during installation.
 Run the locally generated `update_command`. The updater verifies the selected
 installation and stable adapter, then invokes the new executable for its
 handoff with `update --resume`. It refreshes an existing installer-managed skill
-in its original scope and repairs diagnosed Notifai-owned definitions. With a
+in its original scope, including each harness's own copy, and repairs diagnosed
+Notifai-owned definitions. With a
 selected Codex home, it also repairs existing source-home definitions before
 the selected copy; other accounts are untouched. Foreign hooks, settings,
 Guidance Topics, native approval and pending work remain User-owned.

@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { accountHome, npxLaunch } from './platform.js'
 import { packageVersion } from './release.js'
-import { stageShippedSkillBundle } from './skill-integrity.js'
+import { shippedSkillBundle, skillTreeDigest, stageShippedSkillBundle } from './skill-integrity.js'
 
 /**
  * Exact reviewed version of the external `skills` installer.
@@ -34,6 +34,8 @@ export interface SkillsListResult {
 
 export interface SkillsAddOptions {
   diagnosticsToStderr?: boolean
+  /** Installer agent names to target exactly, instead of the installer's own choice. */
+  agents?: readonly string[]
   source: string
   skill: string
   scope?: SkillScope
@@ -102,6 +104,83 @@ export function conventionalSkillPath(
 ): string {
   if (scope === 'project') return path.join(cwd, '.agents', 'skills', name)
   return path.join(accountHome(env), '.agents', 'skills', name)
+}
+
+/** One harness-specific place the pinned installer puts a skill. */
+export interface HarnessSkillCopy {
+  /** The pinned installer's name for this harness. */
+  agent: string
+  label: string
+  path: string
+  /** Whether the installer would count this harness as installed here. */
+  detected: boolean
+}
+
+/**
+ * The skill directories that harnesses read instead of the conventional
+ * `.agents/skills` path, as the pinned installer places them.
+ *
+ * Codex, Cursor and OpenCode share the conventional path. These harnesses have
+ * their own directory, and a copy there is the one they load. The installer
+ * narrows an unattended install to the agent it runs inside, so a refresh
+ * started from one harness leaves every other harness's copy as it was.
+ */
+export function harnessSkillCopies(
+  scope: SkillScope,
+  name: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): HarnessSkillCopy[] {
+  const home = accountHome(env)
+  const configured = (key: string, fallback: string): string => {
+    const value = env[key]?.trim()
+    return value !== undefined && value !== '' ? value : path.join(home, fallback)
+  }
+  const openclawHome =
+    ['.openclaw', '.clawdbot', '.moltbot'].map((entry) => path.join(home, entry)).find((entry) => existsSync(entry)) ??
+    path.join(home, '.openclaw')
+  const harnesses = [
+    { agent: 'claude-code', label: 'Claude Code', home: configured('CLAUDE_CONFIG_DIR', '.claude'), project: path.join('.claude', 'skills') },
+    { agent: 'hermes-agent', label: 'Hermes', home: configured('HERMES_HOME', '.hermes'), project: path.join('.hermes', 'skills') },
+    { agent: 'grok', label: 'Grok', home: configured('GROK_HOME', '.grok'), project: path.join('.grok', 'skills') },
+    { agent: 'openclaw', label: 'OpenClaw', home: openclawHome, project: 'skills' },
+  ]
+  return harnesses.map((harness) => ({
+    agent: harness.agent,
+    label: harness.label,
+    path: scope === 'global' ? path.join(harness.home, 'skills', name) : path.join(cwd, harness.project, name),
+    detected: existsSync(harness.home),
+  }))
+}
+
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Harness-specific copies whose content is not the expected skill.
+ *
+ * An existing copy is always checked. With `includeMissing`, a detected
+ * harness with no copy counts too: that is what an installer run outside any
+ * agent would have created. A link to the conventional directory is that
+ * directory, not a second copy.
+ */
+export function staleHarnessSkillCopies(
+  skill: Pick<NativeSkill, 'name' | 'scope' | 'path'>,
+  expectedDigest: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  includeMissing = false,
+): HarnessSkillCopy[] {
+  return harnessSkillCopies(skill.scope, skill.name, cwd, env).filter((copy) => {
+    if (!existsSync(copy.path)) return includeMissing && copy.detected
+    if (sameDirectory(copy.path, skill.path)) return false
+    return skillTreeDigest(copy.path) !== expectedDigest
+  })
 }
 
 function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): NativeSkill[] {
@@ -187,6 +266,8 @@ export function skillsAddArgv(options: SkillsAddOptions): string[] {
   // remaining installer prompts non-interactive after the scope is chosen;
   // `--copy` keeps the installed directory independent of temporary staging.
   if (options.scope !== undefined) args.push('--copy', '--yes')
+  // Last, because the installer reads agent names until the next flag.
+  if (options.agents !== undefined && options.agents.length > 0) args.push('--agent', ...options.agents)
   return args
 }
 
@@ -196,6 +277,36 @@ export function skillsRemoveArgv(options: SkillsRemoveOptions): string[] {
   if (options.scope === 'global') args.push('--global')
   args.push('--yes')
   return args
+}
+
+/**
+ * Install once the way the installer chooses, then once more for exactly the
+ * harness copies that run left stale or absent. The second run names its
+ * agents, so which harness started the install no longer decides which
+ * harnesses receive the skill.
+ */
+export async function addToEveryHarness(
+  options: SkillsAddOptions,
+  expectedDigest: string | null,
+  run: typeof runSkillsCommand = runSkillsCommand,
+): Promise<SkillsOperationResult> {
+  const launch = {
+    cwd: options.cwd,
+    env: options.env,
+    ...(options.diagnosticsToStderr === undefined ? {} : { diagnosticsToStderr: options.diagnosticsToStderr }),
+  }
+  const first = await run(skillsAddArgv(options), launch)
+  if (first !== 0 || options.scope === undefined || expectedDigest === null) return first
+  const conventional = conventionalSkillPath(options.scope, options.skill, options.cwd, options.env)
+  const behind = staleHarnessSkillCopies(
+    { name: options.skill, scope: options.scope, path: conventional },
+    expectedDigest,
+    options.cwd,
+    options.env,
+    true,
+  )
+  if (behind.length === 0) return first
+  return run(skillsAddArgv({ ...options, agents: behind.map((copy) => copy.agent) }), launch)
 }
 
 /** The only process/filesystem adapter Notifai needs for the external installer. */
@@ -208,11 +319,11 @@ export const nativeSkills: NativeSkills = {
     const staged = stageShippedSkillBundle(options.cwd, version)
     if (!staged.ok) return { code: 1, error: staged.error }
     try {
-      return await runSkillsCommand(skillsAddArgv({ ...options, source: staged.staged.source }), {
-        cwd: options.cwd,
-        env: options.env,
-        ...(options.diagnosticsToStderr === undefined ? {} : { diagnosticsToStderr: options.diagnosticsToStderr }),
-      })
+      const bundle = shippedSkillBundle(version)
+      return await addToEveryHarness(
+        { ...options, source: staged.staged.source },
+        bundle.ok ? bundle.bundle.manifest.digest : null,
+      )
     } finally {
       staged.staged.cleanup()
     }

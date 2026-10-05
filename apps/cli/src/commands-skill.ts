@@ -1,9 +1,8 @@
-import { SKILLS_INSTALLER_SPEC, type NativeSkill, type SkillScope } from './native-skills.js'
-import { existsSync } from 'node:fs'
+import { SKILLS_INSTALLER_SPEC, staleHarnessSkillCopies, type HarnessSkillCopy, type NativeSkill, type SkillScope } from './native-skills.js'
 import { fileURLToPath } from 'node:url'
 import { type ReadinessState } from './readiness.js'
 import { packageVersion, skillsSource } from './release.js'
-import { createSkillManifest, shippedSkillBundle } from './skill-integrity.js'
+import { shippedSkillBundle, skillTreeDigest } from './skill-integrity.js'
 import type { CommandDeps } from './commands-core.js'
 
 /**
@@ -14,15 +13,6 @@ import type { CommandDeps } from './commands-core.js'
 export const SKILLS_SOURCE: string | null = skillsSource()
 
 const SKILL_SCOPES: readonly SkillScope[] = ['project', 'global']
-
-function skillTreeDigest(root: string): string | null {
-  if (!existsSync(root)) return null
-  try {
-    return createSkillManifest(root, '').digest
-  } catch {
-    return null
-  }
-}
 
 function expectedSkillDigest(): string | null {
   const version = packageVersion()
@@ -47,6 +37,16 @@ export function installedSkillMatchesPackage(skill: NativeSkill): boolean {
     expectedDigest !== null &&
     skillTreeDigest(skill.path) === expectedDigest
   )
+}
+
+/** Harness-specific copies in this skill's scope that a harness would load in place of it. */
+export function staleInstalledSkillCopies(
+  skill: NativeSkill,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): HarnessSkillCopy[] {
+  const expectedDigest = expectedSkillDigest()
+  return expectedDigest === null ? [] : staleHarnessSkillCopies(skill, expectedDigest, cwd, env)
 }
 
 function skillPin(skill: NativeSkill): string {
@@ -193,6 +193,30 @@ export async function skillReadiness(
         remedy: {
           by: 'cli',
           summary: 'reinstall the content-verified skill shipped with this CLI',
+          command: `notifai init --skills --skills-scope ${candidate.scope}`,
+        },
+      }
+    }
+    const stale = staleInstalledSkillCopies(candidate, deps.cwd, deps.env)
+    if (stale.length > 0) {
+      return {
+        id: 'skill',
+        title: 'Agent guidance skill',
+        status: 'gap',
+        detail:
+          `${stale.map((copy) => copy.label).join(', ')} ${stale.length === 1 ? 'loads its' : 'load their'} own copy of the skill, ` +
+          'and that copy does not match the content shipped inside this CLI package.',
+        technical: {
+          resolution: 'stale-harness-skill-copy',
+          scope: candidate.scope,
+          ref: candidate.ref,
+          path: candidate.path,
+          expected_digest: expectedDigest,
+          stale_copies: stale.map((copy) => ({ agent: copy.agent, path: copy.path })),
+        },
+        remedy: {
+          by: 'cli',
+          summary: 'refresh every harness copy with the content-verified skill shipped with this CLI',
           command: `notifai init --skills --skills-scope ${candidate.scope}`,
         },
       }

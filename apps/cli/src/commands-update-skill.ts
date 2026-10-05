@@ -1,5 +1,5 @@
 import { EXIT, type CommandDeps } from './commands-core.js'
-import { installedSkillMatchesPackage, listScopedNotifaiSkills, SKILLS_SOURCE } from './commands-skill.js'
+import { installedSkillMatchesPackage, listScopedNotifaiSkills, SKILLS_SOURCE, staleInstalledSkillCopies } from './commands-skill.js'
 
 /** Refresh one existing scope through the native installer, without setup. */
 export async function updateSkillCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
@@ -14,7 +14,7 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
   }
   const skill = inventory.installed[0]!
   if (deps.nativeSkills === undefined || SKILLS_SOURCE === null) return fail('The packaged skill installer is unavailable.')
-  const changed = !installedSkillMatchesPackage(skill)
+  const changed = !installedSkillMatchesPackage(skill) || staleInstalledSkillCopies(skill, deps.cwd, deps.env).length > 0
   if (changed) {
     const operation = await deps.nativeSkills.add({ source: SKILLS_SOURCE, skill: 'notifai', scope: skill.scope,
       cwd: deps.cwd, env: deps.env, diagnosticsToStderr: true }).catch((error: unknown) => ({ code: 1, error: String(error) }))
@@ -25,6 +25,10 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
   const after = await listScopedNotifaiSkills(deps)
   if (after.errors.length > 0 || after.installed.length !== 1 || after.installed[0]?.scope !== skill.scope ||
       !installedSkillMatchesPackage(after.installed[0]!)) return fail('The refreshed skill could not be verified in its original scope.')
+  const behind = staleInstalledSkillCopies(after.installed[0]!, deps.cwd, deps.env)
+  if (behind.length > 0) {
+    return fail(`The refreshed skill is current, but ${behind.map((copy) => copy.label).join(', ')} still ${behind.length === 1 ? 'loads' : 'load'} an older copy (${behind.map((copy) => copy.path).join(', ')}).`)
+  }
   const report = { ok: true, changed, scope: skill.scope, path: after.installed[0]!.path,
     next_step: 'Read the refreshed SKILL.md and references/updates.md, then run notifai guidance in this Agent Session.' }
   deps.io.out(flags.json === true || deps.io.interactive !== true ? JSON.stringify(report, null, 2) : report.next_step)

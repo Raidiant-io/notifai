@@ -53,3 +53,29 @@ it('does not choose a scope when no existing skill is known', async () => {
   expect(await updateSkillCommand(f.deps, { json: true })).toBe(1)
   expect(f.add).not.toHaveBeenCalled()
 })
+
+it('refreshes a harness copy that shadows an already current skill', async () => {
+  const f = fixture()
+  const bundle = shippedSkillBundle()
+  if (!bundle.ok) throw new Error(bundle.error)
+  const installed = (await f.deps.nativeSkills!.list('global', f.deps.cwd, f.deps.env)).skills[0]!
+  cpSync(bundle.bundle.skillRoot, installed.path, { recursive: true })
+  const claude = path.join(f.deps.cwd, '.claude', 'skills', 'notifai')
+  cpSync(bundle.bundle.skillRoot, claude, { recursive: true })
+  writeFileSync(path.join(claude, 'SKILL.md'), 'older guidance')
+  f.add.mockImplementation(async () => { cpSync(bundle.bundle.skillRoot, claude, { recursive: true }); return 0 })
+  expect(await updateSkillCommand(f.deps, { json: true })).toBe(0)
+  expect(f.add).toHaveBeenCalledTimes(1)
+  expect(JSON.parse(f.out[0]!)).toMatchObject({ ok: true, changed: true })
+})
+
+it('does not report a refresh while a harness still loads an older copy', async () => {
+  const f = fixture()
+  const bundle = shippedSkillBundle()
+  if (!bundle.ok) throw new Error(bundle.error)
+  const claude = path.join(f.deps.cwd, '.claude', 'skills', 'notifai')
+  cpSync(bundle.bundle.skillRoot, claude, { recursive: true })
+  writeFileSync(path.join(claude, 'SKILL.md'), 'older guidance')
+  expect(await updateSkillCommand(f.deps, { json: true })).toBe(1)
+  expect(JSON.parse(f.out[0]!)).toMatchObject({ ok: false, error: expect.stringContaining('Claude Code') })
+})
