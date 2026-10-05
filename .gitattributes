@@ -1,3 +1,6 @@
 # The packaged first-party skill is verified byte for byte. Keep its reviewed
 # source stable even when a contributor has core.autocrlf enabled.
 skills/notifai/** text eol=lf
+# Native targets must compile the same source bytes on every host. Binary files
+# remain binary; text checkout is independent of a runner's core.autocrlf.
+* text=auto eol=lf

@@ -7,6 +7,7 @@ import { withFileLock } from '../apps/cli/src/file-lock.js'
 import { atomicWriteFileSync } from '../apps/cli/src/atomic-file.js'
 import { currentProcessIdentity, processIdentityLiveness } from '../apps/cli/src/process-identity.js'
 import { WindowsDpapiStore } from '../apps/cli/src/credentials.js'
+import { Distribution } from '../apps/cli/src/release-distribution.js'
 
 const [mode, root, ...args] = process.argv.slice(2)
 assert.ok(root)
@@ -22,6 +23,12 @@ if (mode === 'lock') {
   assert.ok(identity)
   assert.equal(processIdentityLiveness(identity), 'alive')
   assert.equal(processIdentityLiveness({ ...identity, start: 'a-different-process' }), 'gone')
+} else if (mode === 'distribution') {
+  const fixture = JSON.parse(readFileSync(path.join(root, 'signed-fixture.json'), 'utf8'))
+  const distribution = new Distribution({ fixture: fixture.publicKey })
+  const inventory = distribution.verifyInventory(fixture.inventory)
+  assert.equal(inventory.version, '12.0.0')
+  distribution.verifyArtifact(inventory.artifacts[0]!, Buffer.from('archive-fixture'))
 } else if (mode === 'credentials') {
   assert.equal(process.platform, 'win32')
   const store = new WindowsDpapiStore({ ...process.env, LOCALAPPDATA: root })
@@ -38,6 +45,8 @@ if (mode === 'lock') {
   process.stdout.write(JSON.stringify({ args, input: readFileSync(0, 'utf8') }))
   process.stderr.write('probe-stderr')
   process.exitCode = 23
+} else if (mode === 'location') {
+  process.stdout.write(process.execPath)
 } else if (mode === 'tree') {
   const child = spawn(process.execPath, ['heartbeat', root], { stdio: 'ignore' })
   child.on('error', (error) => { throw error })

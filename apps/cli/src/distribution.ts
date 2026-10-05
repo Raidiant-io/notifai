@@ -1,5 +1,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+export { Distribution, RELEASE_TARGETS } from './release-distribution.js'
+export type { ReleaseArtifact, ReleaseInventory, ReleaseTarget, ReleaseChannel, ResolvedRelease, SeenChannel } from './release-distribution.js'
 
 export interface BuildIdentity {
   version: string

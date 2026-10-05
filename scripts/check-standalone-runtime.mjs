@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
@@ -50,6 +51,21 @@ try {
   execFileSync(values.bun, ['build', '--target=node', fixture, '--outfile', sourceBundle],
     { cwd: repositoryRoot, stdio: 'inherit' })
   run(['identity', root])
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
+    store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
+      filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
+      sha256: createHash('sha256').update('archive-fixture').digest('hex'),
+      runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64) }] }))
+  const signed = { key_id: 'fixture', payload: payload.toString('base64'),
+    signature: sign(null, Buffer.concat([Buffer.from('notifai-release-v1\ninventory\n'), payload]), privateKey).toString('base64') }
+  const fixtureData = { publicKey: publicKey.export({ format: 'pem', type: 'spki' }).toString(), inventory: JSON.stringify(signed) }
+  writeFileSync(path.join(root, 'signed-fixture.json'), JSON.stringify(fixtureData))
+  run(['distribution', root])
+  signed.payload = Buffer.from(payload.toString().replace('12.0.0', '99.0.0')).toString('base64')
+  writeFileSync(path.join(root, 'signed-fixture.json'), JSON.stringify({ ...fixtureData, inventory: JSON.stringify(signed) }))
+  assert.notEqual(spawnSync(launcher, ['distribution', root], { cwd: root, env }).status, 0,
+    'tampered signed metadata must fail under the native runtime')
   const args = ['', 'two words', 'quote"inside', 'trailing\\', '日本語 café', '--flag=value']
   const io = spawnSync(launcher, ['io', root, ...args], { cwd: root, env,
     input: 'stdin with Unicode: λ\n', encoding: 'utf8', timeout: 20_000 })
@@ -57,6 +73,27 @@ try {
   assert.equal(io.status, 23)
   assert.equal(io.stderr, 'probe-stderr')
   assert.deepEqual(JSON.parse(io.stdout), { args, input: 'stdin with Unicode: λ\n' })
+  const managed = path.join(root, 'managed')
+  mkdirSync(path.join(managed, 'bin'), { recursive: true })
+  const stable = path.join(managed, 'bin', `notifai${extension}`)
+  copyFileSync(launcher, stable)
+  const builds = ['a'.repeat(64), 'b'.repeat(64)]
+  const payloads = builds.map(build => {
+    const directory = path.join(managed, 'versions', build)
+    mkdirSync(directory, { recursive: true })
+    copyFileSync(launcher, path.join(directory, `notifai${extension}`))
+    const payload = path.join(directory, `notifai-runtime${extension}`)
+    copyFileSync(runtime, payload)
+    return payload
+  })
+  for (let i = 0; i < builds.length; i++) {
+    const state = JSON.stringify({ schema: 1, active: builds[i], previous: builds[i - 1] ?? null, generation: i + 1 })
+    writeFileSync(path.join(managed, 'active.tmp'), `${state}\n`)
+    renameSync(path.join(managed, 'active.tmp'), path.join(managed, 'active.json'))
+    assert.equal(realpathSync(execFileSync(stable, ['location', root], { cwd: root, env, encoding: 'utf8' })), realpathSync(payloads[i]))
+  }
+  writeFileSync(path.join(managed, 'active.json'), '{"schema":1,"active":"../escape"}\n')
+  assert.equal(spawnSync(stable, ['location', root], { cwd: root, env }).status, 1, 'invalid active path must fail closed')
   writeFileSync(path.join(root, 'shared.json'), JSON.stringify({ count: 0, future_field: 'preserve-me' }))
   // Both runtimes contend for the SAME lock and unknown-field-bearing document.
   const results = await Promise.allSettled([worker(launcher, ['lock', root]), worker(process.execPath, [sourceBundle, 'lock', root]),
@@ -82,6 +119,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['kernel-process-identity', 'argv-stdin-stderr-exit', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['kernel-process-identity', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['dpapi-roundtrip-and-clear', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }
