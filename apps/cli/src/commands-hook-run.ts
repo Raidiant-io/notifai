@@ -333,8 +333,10 @@ export async function hookRunCommand(
       return false
     }
   }
+  // Generation fencing alone decides ownership. Project Enablement gates only
+  // activation of a generation, so disabling never strands owed answers.
   const currentOpenclawOwner = (): string | null => {
-    if (harness !== 'openclaw' || envelope.session_id === undefined || !lifecycleEnabled()) return null
+    if (harness !== 'openclaw' || envelope.session_id === undefined) return null
     const current = readOpenclawGeneration(envelope.session_id, deps.env)
     const incarnation = readSessionIncarnation(envelope.session_id, deps.env)
     return current !== null && current.activated && !current.ended &&

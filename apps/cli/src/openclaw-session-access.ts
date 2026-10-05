@@ -35,15 +35,17 @@ export function activeOpenclawGeneration(
   return marker
 }
 
-/** A pointer may reveal User text only to the active generation that owns it. */
+/**
+ * A pointer may reveal User text only to the active generation that owns it.
+ * Disabling the Project later does not revoke an answer the generation is owed.
+ */
 export function openclawOwnsReply(
   sessionKey: string,
   requestId: string,
   env: NodeJS.ProcessEnv,
-  cwd?: string,
 ): boolean {
   return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
-    const generation = activeOpenclawGeneration(sessionKey, env, cwd)
+    const generation = activeOpenclawGeneration(sessionKey, env)
     if (generation === null) return false
     const state = readSessionState(sessionKey, env)
     return (state.pending ?? []).some((entry) => entry.request_id === requestId) ||
@@ -60,10 +62,9 @@ export function openclawOwnsMessage(
   sessionKey: string,
   messageId: string,
   env: NodeJS.ProcessEnv,
-  cwd?: string,
 ): boolean {
   return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
-    const generation = activeOpenclawGeneration(sessionKey, env, cwd)
+    const generation = activeOpenclawGeneration(sessionKey, env)
     if (generation === null) return false
     return (readSessionState(sessionKey, env).message_acknowledgement_due ?? [])
       .some((entry) => entry.message_id === messageId && entry.openclaw_generation === generation)

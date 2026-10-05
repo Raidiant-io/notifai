@@ -42,8 +42,8 @@ export async function acknowledgeCommand(
   if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
     const sessionKey = deps.env['NOTIFAI_ACTIVE_SESSION_ID'] ?? ''
     const owned = subject === 'request'
-      ? openclawOwnsReply(sessionKey, requestId, deps.env, deps.cwd)
-      : openclawOwnsMessage(sessionKey, id, deps.env, deps.cwd)
+      ? openclawOwnsReply(sessionKey, requestId, deps.env)
+      : openclawOwnsMessage(sessionKey, id, deps.env)
     if (!owned) {
       deps.io.err('This acknowledgement does not belong to the current OpenClaw session generation.')
       return EXIT.usage

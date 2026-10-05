@@ -1,10 +1,9 @@
 /** Gateway service inventory: only identity and timing, never question text. */
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { stateDir, loadConfig } from './config.js'
+import { stateDir } from './config.js'
 import { readSessionState, sessionHasEnded, sessionStatePath, readSessionIncarnation } from './hook-session-state.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
 
 export interface OpenclawPendingSession {
   session_key: string
@@ -34,8 +33,6 @@ export function listPendingOpenclawSessions(env: NodeJS.ProcessEnv): OpenclawPen
       const generation = readOpenclawGeneration(sessionKey, env)
       if (generation === null || generation.ended || !generation.activated ||
           readSessionIncarnation(sessionKey, env)?.openclaw_generation !== generation.id) continue
-      const config = loadConfig({ cwd, env, sessionId: sessionKey })
-      if (!projectEnabled(projectBinding(cwd, env, config.project.value))) continue
       sessions.push({ session_key: sessionKey, cwd, generation: generation.id,
         ...(generation.sessionId === undefined ? {} : { session_id: generation.sessionId }) })
     } catch {
