@@ -8,10 +8,10 @@ import { Distribution, releaseSigningMessage } from './release-distribution.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function fixture() {
+function fixture(fetcher?: typeof fetch) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-installation-')); roots.push(root)
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
-  const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() })
+  const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
   const target = 'bun-linux-x64' as const
   const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex')
   const candidate = (version: string) => {
@@ -27,7 +27,13 @@ function fixture() {
     return { directory, signedInventory }
   }
   const options = { root: path.join(root, 'managed'), target, distribution, probe: () => {} }
-  return { root, options, candidate, installation: new Installation(options) }
+  const channel = (sequence: number, withdrawn: string[] = [], inventory = 'unavailable-inventory', version = '2.0.0') => {
+    const payload = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', sequence, version,
+      inventory_sha256: digest(inventory), withdrawn_versions: withdrawn }))
+    return JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
+      signature: sign(null, releaseSigningMessage('channel', payload), privateKey).toString('base64') })
+  }
+  return { root, options, candidate, channel, installation: new Installation(options) }
 }
 
 it('activates immutable generations, rejects stale decisions, and rolls back without losing files', () => {
@@ -92,4 +98,49 @@ it.each(['prepared', 'launcher', 'metadata', 'activated'] as const)('repairs a p
   expect(f.installation.recover().active).toEqual(before)
   expect(JSON.parse(readFileSync(metadata, 'utf8')).launcherUpdatePending).toBe(false)
   expect(f.installation.rollback(2).active.active).toBe(first)
+})
+
+it('commits a verified same-build channel change while retaining the previous release channel', () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const next = f.installation.stage(f.candidate('2.0.0'))
+  f.installation.activate({ build: next, expectedGeneration: 1, source: 'manual', channel: 'stable' })
+  const switched = f.installation.activate({ build: next, expectedGeneration: 2, source: 'manual', channel: 'beta' })
+  expect(f.installation.inspect().channel).toBe('beta')
+  expect(switched.active.previous).toBe(first)
+  expect(switched.active.generation).toBe(3)
+  f.installation.rollback(3)
+  expect(f.installation.inspect().channel).toBe('stable')
+})
+
+
+it('keeps the accepted channel sequence after a failed inventory fetch and refuses a withdrawn rollback', async () => {
+  let channel = ''
+  const f = fixture(async input => String(input).endsWith('/stable.json') ? new Response(channel) : new Response(null, { status: 503 }))
+  const first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const second = f.installation.stage(f.candidate('2.0.0'))
+  f.installation.activate({ build: second, expectedGeneration: 1, source: 'manual', channel: 'stable' })
+  channel = f.channel(4, ['1.0.0'])
+  await expect(f.installation.resolveRelease('stable')).rejects.toThrow(/503/)
+  channel = f.channel(3)
+  await expect(f.installation.resolveRelease('stable')).rejects.toThrow(/sequence/)
+  expect(() => f.installation.rollback(2)).toThrow(/withdrawn/)
+  expect(f.installation.inspect().active?.active).toBe(second)
+})
+
+
+it('requires explicit stable return and admits only the signed stable target for downgrade', async () => {
+  let channel = '', inventory = ''
+  const f = fixture(async input => new Response(String(input).endsWith('/stable.json') ? channel : inventory))
+  const beta = f.installation.stage(f.candidate('2.0.0-beta.1'))
+  f.installation.activate({ build: beta, expectedGeneration: 0, source: 'manual', channel: 'beta' })
+  const candidate = f.candidate('1.0.0'), stable = f.installation.stage(candidate)
+  inventory = candidate.signedInventory; channel = f.channel(2, [], inventory, '1.0.0')
+  await f.installation.resolveRelease('stable')
+  expect(() => f.installation.activate({ build: stable, expectedGeneration: 1, source: 'manual', channel: 'stable' })).toThrow(/rollback/)
+  expect(f.installation.activate({ build: stable, expectedGeneration: 1, source: 'manual', channel: 'stable', allowStableDowngrade: true }).active.active).toBe(stable)
+  expect(f.installation.inspect().channel).toBe('stable')
+  f.installation.rollback(2)
+  expect(f.installation.inspect().channel).toBe('beta')
 })

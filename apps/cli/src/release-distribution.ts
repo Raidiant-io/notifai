@@ -25,7 +25,7 @@ export interface ReleaseInventory {
   artifacts: ReleaseArtifact[]
 }
 export interface SeenChannel { sequence: number; digest: string }
-interface ChannelRecord {
+export interface ChannelRecord {
   schema: 1
   channel: ReleaseChannel
   sequence: number
@@ -39,6 +39,7 @@ export interface ResolvedRelease {
   inventory: ReleaseInventory
   /** Retained with the immutable version for verification during rollback. */
   signedInventory: string
+  signedChannel: string
   artifact: ReleaseArtifact
 }
 
@@ -132,7 +133,7 @@ export class Distribution {
     return Object.freeze(value) as unknown as ReleaseInventory
   }
 
-  private verifyChannel(bytes: string, channel: ReleaseChannel, seen?: SeenChannel): ChannelRecord {
+  verifyChannel(bytes: string, channel: ReleaseChannel, seen?: SeenChannel): ChannelRecord {
     const value = this.verifyRecord('channel', bytes)
     if (value['channel'] !== channel || !positive(value['sequence']) || !version(value['version']) ||
       !digest(value['inventory_sha256']) || !Array.isArray(value['withdrawn_versions']) ||
@@ -144,15 +145,17 @@ export class Distribution {
       (value['sequence'] === seen.sequence && sha256(bytes) !== seen.digest))) {
       throw new Error('Release channel sequence replay or substitution refused')
     }
-    return value as unknown as ChannelRecord
+    Object.freeze(value['withdrawn_versions'])
+    return Object.freeze(value) as unknown as ChannelRecord
   }
 
   async resolveRelease(options: { channel: ReleaseChannel; target: ReleaseTarget;
-    version?: string; seen?: SeenChannel }): Promise<ResolvedRelease> {
+    version?: string; seen?: SeenChannel; acceptChannel?: (bytes: string) => void }): Promise<ResolvedRelease> {
     if (!['stable', 'beta'].includes(options.channel)) throw new Error('Unknown release channel')
     if (!RELEASE_TARGETS.includes(options.target)) throw new Error('Unsupported release target')
     const bytes = (await this.download(`https://raw.githubusercontent.com/${REPOSITORY}/release-metadata/${options.channel}.json`, MAX_METADATA)).toString('utf8')
     const channel = this.verifyChannel(bytes, options.channel, options.seen)
+    options.acceptChannel?.(bytes)
     const selected = options.version ?? channel.version
     if (!version(selected)) throw new Error('Invalid exact release version')
     if (options.channel === 'stable' && isPrerelease(selected)) throw new Error('Prerelease cannot enter the stable channel')
@@ -166,7 +169,7 @@ export class Distribution {
     const artifact = inventory.artifacts.find(item => item.target === options.target)
     if (!artifact) throw new Error('Release does not contain the requested target')
     return Object.freeze({ channel: options.channel,
-      seen: Object.freeze({ sequence: channel.sequence, digest: sha256(bytes) }), inventory, signedInventory, artifact })
+      seen: Object.freeze({ sequence: channel.sequence, digest: sha256(bytes) }), inventory, signedInventory, signedChannel: bytes, artifact })
   }
 
   verifyArtifact(artifact: ReleaseArtifact, bytes: Uint8Array): void {

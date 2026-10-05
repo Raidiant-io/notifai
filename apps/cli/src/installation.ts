@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
 import { withFileLock } from './file-lock.js'
-import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget } from './release-distribution.js'
+import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease } from './release-distribution.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 
 type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
@@ -20,9 +20,9 @@ interface InstallRecord {
   launcherBuild: string
   launcherUpdatePending: boolean
 }
-interface Transaction { schema: 1; kind: 'activation' | 'launcher'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
+interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
-export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null }
+export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
 type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated'
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
@@ -111,7 +111,43 @@ export class Installation {
   }
   inspect(): InstallationStatus {
     const installation = this.readInstall(), active = this.readActive()
-    return { active, pending: present(this.file('transaction.json')), source: installation?.source ?? null, channel: installation?.channel ?? null }
+    return { active, pending: present(this.file('transaction.json')), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
+  }
+  private channelRecord(channel: ReleaseChannel): { signed: string; record: ChannelRecord } | null {
+    this.checkRoot()
+    const directory = this.file('channels')
+    if (!present(directory)) return null
+    owned(directory, true)
+    const file = path.join(directory, `${channel}.json`)
+    if (!present(file)) return null
+    owned(file, false)
+    if (lstatSync(file).size > 256 * 1024) throw new Error('Cached channel exceeds its size limit')
+    const signed = readFileSync(file, 'utf8')
+    return { signed, record: this.options.distribution.verifyChannel(signed, channel) }
+  }
+  private assertNotWithdrawn(version: string): void {
+    for (const channel of ['stable', 'beta'] as const) {
+      if (this.channelRecord(channel)?.record.withdrawn_versions.includes(version)) throw new Error('This release has been withdrawn; use a verified replacement')
+    }
+  }
+  /** Persist a verified discovery sequence before fetching its inventory. A
+   * failed download cannot make a later lower sequence acceptable again. */
+  async resolveRelease(channel: ReleaseChannel, version?: string): Promise<ResolvedRelease> {
+    if (!['stable', 'beta'].includes(channel)) throw new Error('Unknown release channel')
+    const cached = this.channelRecord(channel)
+    return this.options.distribution.resolveRelease({ channel, target: this.options.target,
+      ...(version === undefined ? {} : { version }),
+      ...(cached ? { seen: { sequence: cached.record.sequence, digest: hash(cached.signed) } } : {}),
+      acceptChannel: signed => {
+        this.prepareRoot()
+        withFileLock(this.file('installation.lock'), () => {
+          const latest = this.channelRecord(channel)
+          this.options.distribution.verifyChannel(signed, channel, latest ? { sequence: latest.record.sequence, digest: hash(latest.signed) } : undefined)
+          ensurePrivateDirectory(this.file('channels'))
+          atomicWriteFileSync(this.file(`channels/${channel}.json`), signed, { requireCurrentUserOwner: true })
+        }, { waitMs: 5_000, strictRelease: true })
+      },
+    })
   }
   private versionDirectory(build: string): string {
     if (!buildId(build)) throw new Error('Invalid immutable build identifier')
@@ -198,10 +234,11 @@ export class Installation {
   }
   private transaction(value: unknown): Transaction {
     const item = value as Partial<Transaction> | null
-    if (!item || item.schema !== 1 || !['activation', 'launcher'].includes(item.kind ?? '')) throw new Error('Invalid installation transaction')
+    if (!item || item.schema !== 1 || !['activation', 'launcher', 'channel'].includes(item.kind ?? '')) throw new Error('Invalid installation transaction')
     const from = item.from === null ? null : activeRecord(item.from), to = activeRecord(item.to)
     const previous = item.previous === null ? null : this.installRecord(item.previous), next = this.installRecord(item.next)
     const validGeneration = item.kind === 'launcher' ? from !== null && sameGeneration(from, to) :
+      item.kind === 'channel' ? from !== null && to.active === from.active && to.previous === from.previous && to.generation === from.generation + 1 :
       to.generation === (from?.generation ?? 0) + 1 && to.previous === (from?.active ?? null)
     if (!validGeneration || (from === null) !== (previous === null) ||
         (previous && previous.id !== next.id)) throw new Error('Installation transaction identity mismatch')
@@ -247,7 +284,7 @@ export class Installation {
     }, { waitMs: 5_000, strictRelease: true })
     return this.inspect()
   }
-  activate(input: { build: string; expectedGeneration: number; source: InstallSource; channel: ReleaseChannel }): ActivationResult {
+  activate(input: { build: string; expectedGeneration: number; source: InstallSource; channel: ReleaseChannel; allowStableDowngrade?: boolean }): ActivationResult {
     if (!['stable', 'beta'].includes(input.channel) || !['shell', 'powershell', 'npm', 'manual'].includes(input.source)) {
       throw new Error('Unknown installation source or channel')
     }
@@ -261,9 +298,24 @@ export class Installation {
       if ((from?.generation ?? 0) !== input.expectedGeneration) throw new Error('Installation changed; inspect before retrying')
       if ((from === null) !== (previous === null)) throw new Error('Installation metadata is incomplete; repair it first')
       this.checkStable(previous)
-      if (from?.active === input.build) return { changed: false, active: from, launcher_update_pending: previous!.launcherUpdatePending }
-      if (from && compareReleasePrecedence(candidate.inventory.version, this.verifyVersion(from.active).inventory.version) !== 'after') {
-        throw new Error('Use explicit rollback for a previous release; release identities cannot be replaced')
+      this.assertNotWithdrawn(candidate.inventory.version)
+      if (from?.active === input.build) {
+        if (previous!.channel === input.channel) return { changed: false, active: from, launcher_update_pending: previous!.launcherUpdatePending }
+        const to = { ...from, generation: from.generation + 1 }
+        const transaction: Transaction = { schema: 1, kind: 'channel', from, to, previous,
+          next: { ...previous!, channel: input.channel } }
+        this.save('transaction.json', transaction)
+        this.options.observe?.('prepared')
+        this.finish(transaction)
+        return { changed: true, active: to, launcher_update_pending: transaction.next.launcherUpdatePending }
+      }
+      const order = from ? compareReleasePrecedence(candidate.inventory.version, this.verifyVersion(from.active).inventory.version) : 'after'
+      if (order !== 'after') {
+        const stable = this.channelRecord('stable')?.record
+        if (!(order === 'before' && input.allowStableDowngrade === true && input.channel === 'stable' && previous?.channel === 'beta' &&
+              stable?.version === candidate.inventory.version && stable.inventory_sha256 === hash(readFileSync(path.join(candidate.directory, 'inventory.json'))))) {
+          throw new Error('Use explicit rollback or an authorized return to the signed stable target; release identities cannot be replaced')
+        }
       }
       return this.commit(from, previous, input.build, input.source, input.channel)
     }, { waitMs: 5_000, strictRelease: true })
@@ -305,6 +357,7 @@ export class Installation {
       const from = this.readActive(), previous = this.readInstall()
       if (!sameGeneration(from, snapshot) || from?.generation !== expectedGeneration || !previous) throw new Error('Installation changed; inspect before rollback')
       this.checkStable(previous)
+      this.assertNotWithdrawn(candidate.inventory.version)
       if (!previous.previousChannel) throw new Error('Previous release channel is unavailable')
       return this.commit(from, previous, snapshot.previous!, previous.source, previous.previousChannel)
     }, { waitMs: 5_000, strictRelease: true })
