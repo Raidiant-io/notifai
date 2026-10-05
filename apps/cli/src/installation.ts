@@ -263,6 +263,10 @@ export class Installation {
     const installed = this.readInstall()
     if (installed && installed.id !== transaction.next.id) throw new Error('Installation owner changed during recovery')
     const next = this.verifyVersion(transaction.to.active)
+    // Discovery can advance while an interrupted transaction is waiting. An
+    // already committed generation stays usable; recovery never silently rolls
+    // it back. A not-yet-committed withdrawn candidate cannot become active.
+    if (!sameGeneration(current, transaction.to)) this.assertNotWithdrawn(next.inventory.version)
     this.checkStable(transaction.previous, transaction.next)
     this.access.directory(this.file('bin'))
     const stable = this.file(path.join('bin', `notifai${this.extension}`))
@@ -294,6 +298,40 @@ export class Installation {
     withFileLock(this.file('installation.lock'), () => {
       const value = this.readJson('transaction.json')
       if (value !== null) this.finish(this.transaction(value))
+    }, { waitMs: 5_000, strictRelease: true })
+    return this.inspect()
+  }
+  /** Explicitly abandon only a transaction that has not committed its active
+   * pointer. Keep all immutable payloads and user data; no implicit downgrade.
+   * A locked Windows launcher leaves the journal available for a quiet retry. */
+  abandonPending(expectedGeneration: number): InstallationStatus {
+    this.prepareRoot()
+    withFileLock(this.file('installation.lock'), () => {
+      const current = this.readActive()
+      if ((current?.generation ?? 0) !== expectedGeneration) throw new Error('Installation changed; inspect before abandoning recovery')
+      const value = this.readJson('transaction.json')
+      if (value === null) return
+      const transaction = this.transaction(value)
+      if (!sameGeneration(current, transaction.from) || sameGeneration(current, transaction.to)) {
+        throw new Error('This activation is committed; recover it before an explicit rollback')
+      }
+      const installed = this.readInstall()
+      if ((installed && installed.id !== transaction.next.id) || (!installed && transaction.previous)) {
+        throw new Error('Installation owner changed during recovery')
+      }
+      this.checkStable(transaction.previous, transaction.next)
+      const stable = this.file(path.join('bin', `notifai${this.extension}`))
+      if (transaction.previous) {
+        const prior = this.verifyVersion(transaction.previous.launcherBuild)
+        if (!present(stable) || hash(readFileSync(stable)) !== prior.artifact.launcher_sha256) {
+          this.write(stable, readFileSync(path.join(prior.directory, `notifai${this.extension}`)), true)
+        }
+        this.save('install.json', transaction.previous)
+      } else {
+        if (present(stable)) rmSync(stable)
+        if (installed) rmSync(this.file('install.json'))
+      }
+      rmSync(this.file('transaction.json'))
     }, { waitMs: 5_000, strictRelease: true })
     return this.inspect()
   }

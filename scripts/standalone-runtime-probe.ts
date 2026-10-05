@@ -85,6 +85,9 @@ if (mode === 'hook') {
   if (operation === 'first') {
     assert.equal(installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' }).active.active, first)
   } else if (operation === 'update') {
+    const prepared = new Installation({ ...options, observe(phase) { if (phase === 'prepared') throw new Error('interrupted') } })
+    assert.throws(() => prepared.activate({ build: second, expectedGeneration: 1, source: 'manual', channel: 'stable' }), /interrupted/)
+    assert.equal(installation.abandonPending(1).active?.active, first)
     const result = installation.activate({ build: second, expectedGeneration: 1, source: 'manual', channel: 'stable' })
     assert.equal(result.active.active, second)
     assert.equal(result.launcher_update_pending, process.platform === 'win32')
@@ -94,6 +97,9 @@ if (mode === 'hook') {
     assert.deepEqual(installation.inspect().active, before)
     assert.equal(installation.rollback(2).active.active, first)
     const interrupted = new Installation({ ...options, observe(phase) { if (phase === 'metadata') throw new Error('interrupted') } })
+    assert.throws(() => interrupted.activate({ build: second, expectedGeneration: 3, source: 'manual', channel: 'stable' }), /interrupted/)
+    assert.equal(installation.abandonPending(3).active?.active, first)
+    assert.equal(installation.inspect().pending, false)
     assert.throws(() => interrupted.activate({ build: second, expectedGeneration: 3, source: 'manual', channel: 'stable' }), /interrupted/)
     assert.equal(installation.recover().active?.active, second)
     assert.equal(installation.inspect().pending, false)

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c123dd2e8bb6cb6061af1d40bd1fcc67383a97019df14f04df47c8f3ca9d56b2",
+  "behavior_digest": "sha256:b07ed1b75092278f69673d2fbd551caf73cb47958fb70e0274578fb2fa1e82b5",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Managed native harness definitions now use the stable executable directly, including Windows plugins, and readiness resolves its active immutable payload. No installer route is advertised: native lifecycle command wiring and release publication remain unfinished. Existing Notification Request ownership, session authority, guidance authority and native approval requirements are unchanged.",
+  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Internal recovery now rechecks cached withdrawal before committing an interrupted activation. Explicit abandonment restores prior owned metadata/launcher only before active-pointer commit and retains immutable files and user data. No new user-facing command is exposed; agent notification, session, trust and setup instructions remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

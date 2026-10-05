@@ -145,3 +145,43 @@ it('requires explicit stable return and admits only the signed stable target for
   f.installation.rollback(2)
   expect(f.installation.inspect().channel).toBe('beta')
 })
+
+it.each(['prepared', 'launcher', 'metadata'] as const)('does not recover a newly withdrawn candidate after %s and can abandon it safely', async phase => {
+  let channel = ''
+  const f = fixture(async input => String(input).endsWith('/stable.json') ? new Response(channel) : new Response(null, { status: 503 }))
+  const first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'shell', channel: 'stable' })
+  const next = f.installation.stage(f.candidate('2.0.0'))
+  const interrupted = new Installation({ ...f.options, observe(point) { if (point === phase) throw new Error('interrupted') } })
+  expect(() => interrupted.activate({ build: next, expectedGeneration: 1, source: 'shell', channel: 'stable' })).toThrow('interrupted')
+  channel = f.channel(4, ['2.0.0'])
+  await expect(f.installation.resolveRelease('stable')).rejects.toThrow(/withdrawn/)
+  expect(() => f.installation.recover()).toThrow(/withdrawn/)
+  expect(f.installation.inspect().active?.active).toBe(first)
+  expect(() => f.installation.abandonPending(0)).toThrow(/changed/)
+  expect(f.installation.abandonPending(1)).toMatchObject({ pending: false, channel: 'stable', active: { active: first, generation: 1 } })
+  expect(existsSync(path.join(f.options.root, 'versions', next))).toBe(true)
+})
+
+it('finishes already-activated recovery without silently downgrading and refuses to abandon committed activation', async () => {
+  let channel = ''
+  const f = fixture(async input => String(input).endsWith('/stable.json') ? new Response(channel) : new Response(null, { status: 503 }))
+  const first = f.installation.stage(f.candidate('1.0.0'))
+  const interrupted = new Installation({ ...f.options, observe(point) { if (point === 'activated') throw new Error('interrupted') } })
+  expect(() => interrupted.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' })).toThrow('interrupted')
+  channel = f.channel(4, ['1.0.0'])
+  await expect(f.installation.resolveRelease('stable')).rejects.toThrow(/503/)
+  expect(() => f.installation.abandonPending(1)).toThrow(/committed/)
+  expect(f.installation.recover()).toMatchObject({ pending: false, active: { active: first } })
+})
+
+it('abandons a partially prepared first install while preserving data and staged content', () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  const interrupted = new Installation({ ...f.options, observe(point) { if (point === 'metadata') throw new Error('interrupted') } })
+  expect(() => interrupted.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' })).toThrow('interrupted')
+  writeFileSync(path.join(f.options.root, 'user-data'), 'keep')
+  expect(f.installation.abandonPending(0)).toMatchObject({ pending: false, active: null, source: null })
+  expect(readFileSync(path.join(f.options.root, 'user-data'), 'utf8')).toBe('keep')
+  expect(existsSync(path.join(f.options.root, 'versions', first))).toBe(true)
+  expect(f.installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' }).active.active).toBe(first)
+})
