@@ -34,6 +34,8 @@ import {
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { hermesPluginCurrent, hermesPluginDir, isOurHermesPlugin } from './hermes-plugin.js'
 import {
+  CLAUDE_PICKER_MATCHER,
+  installsClaudePickerHooks,
   attendDocumentEvents,
   HOOK_EVENT_COMMAND_RE,
   HOOK_EVENT_PATTERN,
@@ -281,6 +283,20 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   const hooks: HookConfig = Object.create(null)
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
+    if (row.notifai === 'permission-request' || (row.notifai === 'post-tool-use' && options.harness === 'claude-code')) {
+      if (!installsClaudePickerHooks(options.harness, options.platform)) continue
+      // The waiting handler owns the picker for the complete answer window,
+      // exactly as a held Stop does; the settling handler only records.
+      hooks[row.document] = [{
+        matcher: CLAUDE_PICKER_MATCHER,
+        hooks: [{
+          type: 'command',
+          command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+          timeout: row.notifai === 'permission-request' ? QUESTION_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
+        }],
+      }]
+      continue
+    }
     if (row.notifai === 'post-tool-use' &&
         (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform))) continue
     if (row.notifai === 'stop') {

@@ -321,13 +321,24 @@ async function drainSessionInputsOnce(input: {
   mayWrite(): boolean
   write(text: string): void
   nativeAnswers?: NativeInputAnswers
+  /**
+   * Present exactly one native-eligible answer or nothing. For a writer whose
+   * only output is the native form's own result, so an ordinary prefix must
+   * never be written through it. That answer is taken wherever it stands:
+   * answers to independent questions carry no order between them.
+   */
+  nativeOnly?: boolean
 }): Promise<boolean> {
   const { sequencer: deps, lease } = input
   const initial = readSessionState(deps.sessionId, deps.env)
   const batch = pendingSessionInputs(deps.sessionId, deps.env, lease, initial)
-  const nativeAt = input.nativeAnswers === undefined ? -1 : batch.answers.findIndex(answer =>
+  const eligibleAt = input.nativeAnswers === undefined ? -1 : batch.answers.findIndex(answer =>
     answer.delivery_claim === true && input.nativeAnswers!.eligible(answer, initial))
-  const answers = nativeAt < 0 ? batch.answers : batch.answers.slice(0, nativeAt === 0 ? 1 : nativeAt)
+  if (input.nativeOnly === true && eligibleAt < 0) return false
+  const nativeAt = input.nativeOnly === true ? 0 : eligibleAt
+  const answers = input.nativeOnly === true
+    ? [batch.answers[eligibleAt]!]
+    : nativeAt < 0 ? batch.answers : batch.answers.slice(0, nativeAt === 0 ? 1 : nativeAt)
   const messages = nativeAt < 0 ? batch.messages : []
   if (answers.length + messages.length === 0 || !input.mayWrite()) return false
   // An unfenced answer has no server claim to reject a stale local copy.
@@ -399,6 +410,10 @@ async function drainSessionInputsOnce(input: {
   try {
     if (nativeAt === 0 && readyAnswers.length === 1 && input.nativeAnswers !== undefined) {
       prepared = await input.nativeAnswers.prepare(readyAnswers[0]!, current, deps.monotonic() + handOff.remainingMs())
+    }
+    if (input.nativeOnly === true && prepared === null) {
+      await handOff.finish('not-written')
+      return false
     }
     if (!handOff.begin(() => !sessionHasEnded(deps.sessionId, deps.env),
       prepared === null ? {} : { presentation: prepared.presentation })) {

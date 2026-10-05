@@ -14,6 +14,7 @@ import { rememberQuestionState } from './hook-question-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { nativeQuestionTitle } from './codex-question-bindings.js'
+import { CLAUDE_PICKER_TURN, observeClaudePicker } from './claude-question-bindings.js'
 import { recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import * as retirement from './hook-question-retirement.js'
 
@@ -199,4 +200,44 @@ it('rejects new identity-only operations and native options on ordinary request 
   expect(await acknowledgeCommand(h.deps, h.questionId, { operationId: 'unknown', json: true })).toBe(EXIT.failed)
   expect(await acknowledgeCommand(h.deps, 'req_original', h.flags)).toBe(EXIT.usage)
   expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
+})
+
+it('records a terminal answer to a Claude Code picker through the same report and acknowledgement', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-claude-')); roots.push(root)
+  const sessionId = '33333333-3333-4333-8333-333333333333'
+  const env: NodeJS.ProcessEnv = { HOME: root, XDG_CONFIG_HOME: root, XDG_STATE_HOME: root, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: sessionId }
+  const owner = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+  writeSessionState(sessionId, env, { harness: 'claude-code' })
+  const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
+  const questions = [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }]
+  const questionId = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service, questions },
+    Date.now(), { owner_key: owner.key, turn_id: CLAUDE_PICKER_TURN, service })
+  recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })
+  const text = 'Deploying to staging.'
+  const client = {
+    recordHarnessAnswer: vi.fn(async () => ({ status: 'recorded', reply_seq: 1, complete: true, other_submissions: [],
+      answer_version: { version_id: 'rpl_native', origin: 'harness', provenance: 'agent-reported', source: 'reply', base_version: null,
+        status: 'presented', not_delivered_reason: null, text: 'Staging', answers: [{ question_id: 'q1', choice_ids: ['staging'], text: null }],
+        device_id: null, created_at: '2026-10-05T12:00:00Z', agent_acknowledgement: null } }) as RecordHarnessAnswerResponse),
+    putAgentAcknowledgement: vi.fn(async () => ({ status: 'recorded' as const, agent_acknowledgement: { text, created_at: '2026-10-05T12:00:01Z' } })),
+  }
+  const outputs: string[] = []
+  const deps: CommandDeps = { env, cwd: root, now: () => 1, sleep: async () => {},
+    io: { out: line => outputs.push(line), err: () => {}, confirm: async () => false, openUrl: () => {} },
+    store: { load: () => ({ baseUrl: service.base_url, machineId: service.machine_id, secret: 'isolated-test', machineName: 'test' }),
+      describe: () => 'isolated', save: () => {}, clear: () => {} } as unknown as CommandDeps['store'],
+    clientFactory: () => client as unknown as ApiClient, spawnQuestionSettlement: vi.fn(),
+  }
+  const flags = { operationId: 'native-1', nativeAnswers: JSON.stringify([{ question_id: 'q1', choice_ids: ['staging'] }]), text, json: true }
+
+  // Before Claude Code has shown the picker nothing proves the User saw it.
+  expect(await acknowledgeCommand(deps, questionId, flags)).toBe(EXIT.failed)
+  expect(client.recordHarnessAnswer).not.toHaveBeenCalled()
+
+  updateSessionState(sessionId, env, state => observeClaudePicker(state, questionId, 'toolu_1'))
+  outputs.length = 0
+  expect(await acknowledgeCommand(deps, questionId, flags)).toBe(EXIT.ok)
+  expect(client.recordHarnessAnswer).toHaveBeenCalledTimes(1)
+  expect(client.putAgentAcknowledgement).toHaveBeenCalledTimes(1)
+  expect(JSON.parse(outputs.join('\n'))).toMatchObject({ ok: true, question_id: questionId, request_id: 'req_original' })
 })

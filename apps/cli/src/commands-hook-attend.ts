@@ -79,6 +79,7 @@ import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { claudePickerHolds } from './claude-question-hooks.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
@@ -397,7 +398,9 @@ export async function attendHook(
       ...(harness === 'claude-code' && messages !== null ? {
         localInputPending: () => {
           const state = readSessionState(sessionId, deps.env)
-          return (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
+          // A picker handler that holds the only pending answer returns it itself.
+          return !claudePickerHolds(state) &&
+            (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
             hasSessionInputs(sessionId, deps.env, null)
         },
       } : {}),
@@ -521,6 +524,9 @@ function sessionMessageWriter(input: {
     if (generation === null || !attendant.mayWrite()) return 'retry-soon'
     stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
     if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
+    // While the picker is on screen nothing else can be shown, and its handler
+    // returns the answer as the picker's own result. A note still gets a wake.
+    if (batch.length === 0 && claudePickerHolds(readSessionState(sessionId, deps.env))) return 'done'
     await wakeSessionInputs(sessionId, deps.env, async (text) => {
       const result = await deliverIntoClaudeSession({
         sessionId, sourcePid: harnessPid,
