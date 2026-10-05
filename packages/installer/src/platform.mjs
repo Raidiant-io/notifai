@@ -8,12 +8,17 @@ import { fileURLToPath } from 'node:url'
 
 function powershell(operation, data = {}) {
   const script = fileURLToPath(new URL('./data/install.ps1', import.meta.url)).replaceAll("'", "''")
-  const code = `$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); . '${script}'; $inputData=[Console]::In.ReadToEnd() | ConvertFrom-Json; ${operation}`
+  // Only local pathname data crosses this boundary. Encoding it separately
+  // avoids PowerShell quoting and a redirected-stdin EOF dependency on ARM.
+  const payload = Buffer.from(JSON.stringify(data), 'utf8').toString('base64')
+  const code = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); . '${script}'; $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json; ${operation}`
   const systemRoot = process.env.SystemRoot
   assert.ok(systemRoot && path.win32.isAbsolute(systemRoot), 'The OS PowerShell location is unavailable')
   const executable = path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
-  return execFileSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(code, 'utf16le').toString('base64')],
-    { input: JSON.stringify(data), encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
+  const encoded = Buffer.from(code, 'utf16le').toString('base64')
+  assert.ok(encoded.length + executable.length + 256 < 32_767, 'Installer pathname exceeds the Windows command-line limit')
+  return execFileSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+    { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
 }
 
 export function ownedPosixCommand(home, uid = process.getuid()) {

@@ -12,18 +12,19 @@ import { nativeSkills } from './native-skills.js'
 import { argvFlagNames, bootstrapLogger, nullLogger } from './logging.js'
 import { buildProgram } from './program.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
+import { buildIdentity } from './distribution.js'
 
 /**
  * The local record for this invocation.
  *
- * Built before the command tree so that the very first thing recorded is the
- * command starting — including for a command that goes on to fail before it has
- * resolved anything. It configures itself from disk and disables itself if it
- * cannot write, so nothing below has to handle it failing.
+ * Source execution starts logging here. Compiled execution first admits the
+ * command to its managed installation; portable diagnostics and rejected
+ * commands never read logging configuration or write local logs.
  */
 // Installers verify a staged payload before activation. That check must not
 // create logs or inspect the user's configuration as a side effect.
-const logger = ['self-check', 'install'].includes(process.argv[2] ?? '') ? nullLogger() : bootstrapLogger()
+const compiled = buildIdentity() !== null
+const logger = compiled || ['self-check', 'install'].includes(process.argv[2] ?? '') ? nullLogger() : bootstrapLogger()
 
 const deps: CommandDeps = {
   io: realIo(),
@@ -37,11 +38,13 @@ const deps: CommandDeps = {
 
 const startedAt = Date.now()
 process.on('exit', (code) => {
-  logger.info('cli.end', {
+  deps.logger?.info('cli.end', {
     exit: code,
     duration_ms: Date.now() - startedAt,
     flags: argvFlagNames(process.argv.slice(2)),
   })
 })
 
-await buildProgram(deps).parseAsync(process.argv)
+await buildProgram(deps, { beforeAction(admission) {
+  if (compiled && (admission === 'managed' || admission === 'retained-owner')) deps.logger = bootstrapLogger()
+} }).parseAsync(process.argv)

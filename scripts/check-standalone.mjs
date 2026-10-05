@@ -37,6 +37,20 @@ function check(overrides = {}) {
 try {
   const receipt = check()
   assert.deepEqual(readdirSync(home), [], 'self-check must not create account or logging state')
+  const refused = spawnSync(executable, ['config', 'set', 'log_level', 'off', '--yes'], {
+    cwd, env, encoding: 'utf8', timeout: 20_000,
+  })
+  assert.equal(refused.error, undefined)
+  assert.equal(refused.status, 1, 'A portable executable must refuse shared-state mutations before installation')
+  assert.match(refused.stderr, /Install Notifai/)
+  assert.deepEqual(readdirSync(home), [], 'Refused portable commands must not write configuration or logs')
+  for (const args of [['--help'], ['--version'], ['install', '--help'], ['doctor', '--json']]) {
+    const diagnostic = spawnSync(executable, args, { cwd, env, encoding: 'utf8', timeout: 20_000 })
+    assert.equal(diagnostic.error, undefined)
+    assert.equal(diagnostic.status, args[0] === 'doctor' ? 1 : 0, diagnostic.stderr)
+    if (args[0] === 'doctor') assert.equal(JSON.parse(diagnostic.stdout).read_only, true)
+    assert.deepEqual(readdirSync(home), [], 'Portable diagnostics must not write local state')
+  }
   writeFileSync(path.join(cwd, 'preload.js'), 'throw new Error("UNTRUSTED_PRELOAD_EXECUTED")\n')
   writeFileSync(path.join(cwd, '.env'), 'BUN_OPTIONS=--preload ./preload.js\n')
   writeFileSync(path.join(cwd, 'bunfig.toml'), 'preload = ["./preload.js"]\n')
@@ -46,7 +60,8 @@ try {
   const sha256 = file => createHash('sha256').update(readFileSync(file)).digest('hex')
   process.stdout.write(`${JSON.stringify({ ok: true, build: receipt.build, launcher_sha256: sha256(executable),
     runtime_sha256: sha256(path.join(path.dirname(executable), process.platform === 'win32' ? 'notifai-runtime.exe' : 'notifai-runtime')), checks: [
-    'isolated-no-runtime-path', 'embedded-skill-integrity', 'process-identity', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
+    'isolated-no-runtime-path', 'embedded-skill-integrity', 'process-identity', 'portable-command-admission',
+    'portable-read-only-diagnostics', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
   ] })}\n`)
 } finally {
   rmSync(root, { recursive: true, force: true })

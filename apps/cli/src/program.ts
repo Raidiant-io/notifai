@@ -49,6 +49,7 @@ import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.
 import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { admitNativeCommand, portableNativeReport, type NativeAdmission } from './native-command-admission.js'
 import { resumeAttendantCommand } from './attendant-update.js'
 import { buildIdentity } from './distribution.js'
 import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
@@ -142,12 +143,14 @@ export interface BuildProgramOptions {
   /** Test seam; production ends the process with the command's exit code. */
   exit?: (code: number) => void
   runners?: Partial<ProgramRunners>
+  /** Logging starts only after a compiled command is admitted. */
+  beforeAction?: (admission: NativeAdmission) => void
 }
 
 export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {}): Command {
   const exit = options.exit ?? ((code: number) => process.exit(code))
   const runners: ProgramRunners = { ...defaultRunners, ...options.runners }
-  const logger = deps.logger
+  let admission: NativeAdmission = 'development'
 
   const program = new Command('notifai')
     .description('Send native device notifications from agents and local programs')
@@ -170,6 +173,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // `notifai help send` for everyone who reaches for it before `--help`.
     .helpCommand(true)
     .hook('preAction', (_program, actionCommand) => {
+      try { admission = admitNativeCommand(actionCommand, deps.env) }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (actionCommand.opts()['json'] === true) deps.io.out(JSON.stringify({ ok: false, code: 'native_command_not_admitted', message }))
+        else deps.io.err(message)
+        exit(1)
+        return
+      }
+      options.beforeAction?.(admission)
+      const logger = deps.logger
       logger?.bind({ cmd: commandPath(actionCommand) })
       // SessionEnd uses the hook policy shared with commands.ts: local cleanup
       // precedes every diagnostic that can wait on the shared log lock.
@@ -317,6 +330,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('Audit config, credential, server, contract, device, hook, and saved receipt proof; exits nonzero when any line is FAIL (no live send)')
     .option('--json', 'machine-readable output')
     .action(async (opts: { json?: boolean }) => {
+      if (admission === 'diagnostic') {
+        const report = portableNativeReport(deps.env)
+        deps.io.out(opts.json ? JSON.stringify(report) : String(report['message']))
+        exit(1)
+        return
+      }
       exit(await runners.doctor(deps, opts))
     })
 
