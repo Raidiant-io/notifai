@@ -54,6 +54,7 @@ import { installedSkillMatchesPackage, staleInstalledSkillCopies, listScopedNoti
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { installHookAdapter } from './hook-adapter.js'
+import { installClaudeCommandRules } from './claude-command-approval.js'
 
 // ---------------------------------------------------------------------------
 // init
@@ -84,6 +85,8 @@ export interface InitFlags {
   skillsScope?: SkillScope
   /** Same tri-state, for the harness hooks. */
   hooks?: boolean
+  /** Same tri-state, for the Claude Code rules that let Notifai commands run unprompted. */
+  claudeCommands?: boolean
 }
 
 /** Long enough for a first controlled Companion install; keep-waiting extends another budget. */
@@ -142,6 +145,16 @@ async function closeGap(
       if (hooksInstallCommand(deps, { harness, narrate: false }) !== EXIT.ok) ok = false
     }
     return ok ? 'closed' : 'failed'
+  }
+
+  if (state.id === 'claude-commands') {
+    try {
+      installClaudeCommandRules(deps.env)
+      return 'closed'
+    } catch (err) {
+      deps.io.err(`Could not update the Claude Code settings: ${err instanceof Error ? err.message : String(err)}`)
+      return 'failed'
+    }
   }
 
   if (state.id === 'hooks-adapter') {
@@ -649,7 +662,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
 
 /** Closing a local gap cannot have changed the service, the keychain, or devices. */
 function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined {
-  return id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings'
+  return id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings' || id === 'claude-commands'
     ? ['local']
     : undefined
 }
@@ -664,8 +677,8 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   // Every other hook sub-state is a report line about routing, not an errand
   // with a yes/no question of its own; offering the hooks question for one of
   // them would ask about something the answer does not change.
-  if (state.id !== 'hooks' && state.id !== 'skill') return Promise.resolve(false)
-  const explicit = state.id === 'hooks' ? flags.hooks : flags.skills
+  if (state.id !== 'hooks' && state.id !== 'skill' && state.id !== 'claude-commands') return Promise.resolve(false)
+  const explicit = state.id === 'hooks' ? flags.hooks : state.id === 'skill' ? flags.skills : flags.claudeCommands
   if (explicit !== undefined) return Promise.resolve(explicit)
   // An agent is never asked, and never assumed into a change it did not
   // request: silence means no, and the summary says what was skipped.
@@ -673,7 +686,9 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   const question =
     state.id === 'hooks'
       ? 'Install harness hooks, so questions reach your devices when you are away?'
-      : 'Install/update the agent guidance skill through the native npx skills flow?'
+      : state.id === 'claude-commands'
+        ? "Let Claude Code run Notifai's send, ask, receive and acknowledge commands without asking first? Otherwise a question waits for a terminal approval while you are away."
+        : 'Install/update the agent guidance skill through the native npx skills flow?'
   return deps.io.confirm(question, true)
 }
 

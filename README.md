@@ -265,6 +265,15 @@ question answers to that exact session. Other Hermes surfaces require a
 blocking `send --reply` question. Other harnesses have their own documented
 answer path, or require a blocking `send --reply` question.
 
+Claude Code asks before each Bash command it has no permission rule for, unless
+the session skips permission prompts. `notifai init --claude-commands` adds
+allow rules to `~/.claude/settings.json` for the `send`, `ask`, `receive`,
+`acknowledge`, `status`, `replies`, `close`, `guidance` and `session rename`
+commands, so a question can leave while nobody is at the terminal. It is
+offered once Claude Code is wired and written only on a yes; setup,
+configuration and sign-out commands keep their prompt, and
+`notifai hooks uninstall` removes the rules with the wiring.
+
 **SessionStart** (`session-start`) gives the main owner the small model-visible
 activation context that makes it evaluate Notifai proactively. **SubagentStart**
 (`subagent-start`) gives ordinary Claude and Codex workers a reporting-only
