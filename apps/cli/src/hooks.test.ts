@@ -1,4 +1,4 @@
-import { sessionInputWake } from './session-inputs.js'
+import { inputWakeToken, sessionInputWake } from './session-inputs.js'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { CAPABILITIES_V1 } from '@raidiant/notifai-protocol'
 import {
@@ -6089,10 +6089,44 @@ describe('Claude Code Stop wake route', () => {
       message: { role: string; content: string }
     }
     expect(message).toMatchObject({ type: 'user', message: { role: 'user' } })
-    expect(message.message.content).toBe(sessionInputWake())
+    expect(inputWakeToken(message.message.content)).toBe(readSessionState('claude-route', h.env).input_wake?.token)
     expect(message.message.content).not.toContain('BETA')
     expect(wake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
     expect(readSessionState('claude-route', h.env).waiting_answers?.[0]?.reply.text).toBe('BETA')
+  })
+
+  it('recognises its own tokenised wake as a wake when Claude starts a turn with it', async () => {
+    const h = harness([reply({ text: 'BETA' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
+    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    registerQuestion('claude-route', h.env, { question: 'Which rollout option?', questions: built.questions })
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+    await hookRunCommand(deps, 'stop', stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }), 'claude-code')
+    const prompt = (JSON.parse(wake.sent[0]!) as { message: { content: string } }).message.content
+    expect(readSessionState('claude-route', h.env).input_wake).toMatchObject({ queued: true })
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route', hook_event_name: 'UserPromptSubmit', prompt }),
+      'claude-code',
+    )
+
+    expect(readSessionState('claude-route', h.env).input_wake).toBeUndefined()
+    // A wake is not the User returning to the terminal.
+    expect(readSessionState('claude-route', h.env).last_prompt_at).toBe(AWAY)
+
+    await hookRunCommand(
+      deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route', hook_event_name: 'UserPromptSubmit', prompt: `${prompt} Also deploy.` }),
+      'claude-code',
+    )
+    expect(readSessionState('claude-route', h.env).last_prompt_at).not.toBe(AWAY)
   })
 
   it('keeps the detached owner through the default one-day answer window', async () => {

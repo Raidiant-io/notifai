@@ -146,7 +146,13 @@ export interface SessionState {
   /** Captured answers waiting for the same foreground drain as Session Messages. */
   waiting_answers?: AnsweredPending[]
   /** A content-free native wake is outstanding for this incarnation. */
-  input_wake?: { incarnation: string; token: string; queued: boolean; writer: ProcessIdentity }
+  input_wake?: {
+    incarnation: string; token: string; queued: boolean; writer: ProcessIdentity
+    /** Wall-clock milliseconds when the harness accepted the wake. */
+    queued_at?: number
+    /** This wake already replaced one the harness accepted but never presented. */
+    replacement?: boolean
+  }
   /** Exact Codex wake ownership, including detached reconciliation records. */
   input_wake_attempts?: InputWakeAttempt[]
   input_wake_recovery?: { incarnation: string; inputIds: string[] }

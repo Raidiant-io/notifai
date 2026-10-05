@@ -30,20 +30,52 @@ export function sessionInputWake(token?: string): string {
   return `Notifai — user input may be waiting for this session. Run \`notifai receive\` before continuing. If no input remains, continue your work. This wake-up contains no note, answer, or approval.`
 }
 
+/** How long an accepted wake may sit unpresented in an idle session before it counts as lost. */
+export const LOST_WAKE_MS = 60_000
+
+export interface WakeOptions {
+  /**
+   * Give this wake its own text. Claude Code drops a peer message identical
+   * to a recent one, so a repeated fixed wake can be accepted and never shown.
+   */
+  unique?: boolean
+  /**
+   * Whether the session is positioned to have presented an accepted wake by
+   * now. Asked only about a wake accepted at least `LOST_WAKE_MS` ago; one
+   * replacement is sent, never a series.
+   */
+  replaceLost?: () => boolean
+  /** Wall clock, milliseconds. */
+  now?: () => number
+}
+
+/** An accepted wake that has waited long enough to be replaced once. */
+export function inputWakeOverdue(state: SessionState, now: number): boolean {
+  const wake = state.input_wake
+  return wake !== undefined && wake.queued && wake.replacement !== true &&
+    wake.queued_at !== undefined && now - wake.queued_at >= LOST_WAKE_MS
+}
+
 /** Atomically coalesce native wakes until one actually reaches its consumer. */
 export async function wakeSessionInputs(
   sessionId: string, env: NodeJS.ProcessEnv, send: (text: string) => Promise<boolean>, log?: Logger,
+  options: WakeOptions = {},
 ): Promise<void> {
   const incarnation = readSessionIncarnation(sessionId, env)?.incarnation ?? `session:${sessionId}`
   const writer = currentProcessIdentity()
   if (writer === null || sessionHasEnded(sessionId, env)) return
+  const now = options.now ?? Date.now
   const token = randomUUID()
   let elected = false
+  let replacement = false
   updateSessionState(sessionId, env, (state) => {
-    if (state.input_wake?.incarnation === incarnation &&
-        (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
+    if (state.input_wake?.incarnation === incarnation) {
+      const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
+      if (!lost && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
+      replacement = lost
+    }
     elected = true
-    return { ...state, input_wake: { incarnation, token, queued: false, writer } }
+    return { ...state, input_wake: { incarnation, token, queued: false, writer, ...(replacement ? { replacement } : {}) } }
   })
   if (!elected) {
     log?.debug('delivery.handoff', { route: 'input-wake', stage: 'coalesced', session: sessionId })
@@ -51,10 +83,11 @@ export async function wakeSessionInputs(
   }
   let sent = false
   try {
-    sent = await send(sessionInputWake())
-    log?.info('delivery.handoff', { route: 'input-wake', stage: sent ? 'queued' : 'deferred', session: sessionId })
+    sent = await send(options.unique === true ? sessionInputWake(token) : sessionInputWake())
+    log?.info('delivery.handoff', { route: 'input-wake', stage: sent ? 'queued' : 'deferred', session: sessionId,
+      ...(replacement ? { replacement } : {}) })
     if (sent) updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
-      ? { ...state, input_wake: { ...state.input_wake, queued: true } } : state)
+      ? { ...state, input_wake: { ...state.input_wake, queued: true, queued_at: now() } } : state)
   } finally {
     if (!sent) updateSessionState(sessionId, env, (state) => {
       if (state.input_wake?.token !== token) return state
@@ -65,12 +98,27 @@ export async function wakeSessionInputs(
   }
 }
 
+/** The token of a wake that carries one, when the prompt is exactly that wake. */
+export function inputWakeToken(prompt: string | undefined): string | null {
+  if (prompt === undefined) return null
+  const matched = /^Notifai wake ([0-9a-f-]{36})\. /.exec(prompt)
+  return matched !== null && prompt === sessionInputWake(matched[1]) ? matched[1]! : null
+}
+
 export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined): void {
   if (prompt !== undefined) {
     const matched = /^Notifai wake ([0-9a-f-]{36})\. /.exec(prompt)
     if (matched !== null) {
       const owned = readInputWakes({ sessionId, env }).find(a => a.token === matched[1] && a.text === prompt)
       if (owned !== undefined) observeInputWake({ sessionId, env }, owned.token)
+      // A coalesced wake is settled only by its own token: an older wake
+      // arriving late must not clear the one still outstanding.
+      else if (inputWakeToken(prompt) !== null) updateSessionState(sessionId, env, (state) => {
+        if (state.input_wake?.token !== matched[1]) return state
+        const next = { ...state }
+        delete next.input_wake
+        return next
+      })
       return
     }
   }
@@ -99,7 +147,7 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
 }
 
 /** The existing route wakes the exact owner, but no longer owns answer text. */
-export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer'): EscalationDeliveryRoute {
+export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer', wake: WakeOptions = {}): EscalationDeliveryRoute {
   return { ...route, defer: async (accepted) => {
     stageSessionAnswers(sessionId, env, accepted)
     // A live resident owns scheduling; its completion probe also covers the
@@ -115,7 +163,7 @@ export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, rou
         commitDelivery: () => !sessionHasEnded(sessionId, env),
       })
       return result.acknowledgement === 'delivered'
-    }, log)
+    }, log, wake)
   } }
 }
 
