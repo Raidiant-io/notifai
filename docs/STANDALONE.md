@@ -98,3 +98,28 @@ This verification signs one inventory with an ephemeral CI-only key; it does not
 create production release trust. The receipt records exact archive identity and
 compressed/installed size. It establishes the fresh installation engine and
 artifact identity, not the complete installer/setup journey or live Question Routing.
+
+
+## Native update commands
+
+Compiled builds route `update` through the owned Installation. Ordinary update
+keeps the saved channel, explicit beta-to-stable downgrade requires
+`--channel stable --allow-downgrade`, and `--rollback` selects only the retained
+verified previous build. `--repair` recovers a journal and retries launcher
+replacement; `--abandon` refuses committed activation and preserves payloads.
+PATH collisions stop mutation. Installed owners retain immutable executables.
+
+After activation, the updater invokes the verified new immutable launcher for
+`update --resume`. Runtime activation, launcher replacement, file integration
+and attendant migration are separate reported results; partial work provides a
+recovery command and never counts as complete. Signed channel discovery also
+backs native update checks, doctor recommendations and throttled agent notices.
+No native update uses npm dist-tags or an npm global prefix.
+
+Production release trust is deliberately unconfigured in candidate source.
+`release-trust.ts` must contain the approved Ed25519 public key before native
+publication, with the private key held only by the protected release environment.
+Candidates fail closed; neither an environment override nor project configuration
+can install a trust root. Focused tests use ephemeral signed inventories through
+an explicit test seam. This does not establish live update or harness migration,
+and OS bootstraps, PATH setup and complete uninstall remain separate work.

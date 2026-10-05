@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:fda3c2f70a6a71c6b619debdd0f1fa14aebef078cf8e18c7913c1630a338ac16",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. The Installation download-to-activation operation delegates signed discovery, archive verification and existing transactional activation. It does not introduce user-facing commands or change notification authority, setup teaching or agent update guidance.",
+  "behavior_digest": "sha256:8f99222c291a188a469b9fc76d455c372d0b168c8461de2db07be37e7b37d3e4",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Updated the shipped update reference for native saved channels, explicit stable downgrade, verified local rollback, transaction recovery and distinct runtime/integration/launcher outcomes. Native update checks, doctor recommendations and throttled notices use signed channel discovery; native mutation invokes the verified new immutable executable for integration. Candidate release trust remains unconfigured and fails closed. Notification authority, User deferrals and native approval ownership are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

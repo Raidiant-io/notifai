@@ -7,6 +7,9 @@ import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import { Installation } from './installation.js'
+import { nativeUpdateCommand } from './commands-native-installation.js'
+import type { CommandDeps } from './commands-core.js'
+import { discoverCliUpdate } from './cli-release.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
 
 const roots: string[] = []
@@ -30,8 +33,8 @@ function fixture(fetcher?: typeof fetch) {
     return { directory, signedInventory }
   }
   const options = { root: path.join(root, 'managed'), target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {} }, probe: () => {} }
-  const channel = (sequence: number, withdrawn: string[] = [], inventory = 'unavailable-inventory', version = '2.0.0') => {
-    const payload = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', sequence, version,
+  const channel = (sequence: number, withdrawn: string[] = [], inventory = 'unavailable-inventory', version = '2.0.0', channel = 'stable') => {
+    const payload = Buffer.from(JSON.stringify({ schema: 1, channel, sequence, version,
       inventory_sha256: digest(inventory), withdrawn_versions: withdrawn }))
     return JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
       signature: sign(null, releaseSigningMessage('channel', payload), privateKey).toString('base64') })
@@ -211,4 +214,56 @@ it('downloads a signed release through archive admission into one reusable immut
   expect(await f.installation.installRelease({ channel: 'stable', source: 'npm', expectedGeneration: 1 })).toMatchObject({ changed: false, active: first.active })
   expect(f.installation.inspect().source).toBe('shell')
   expect(downloads).toBe(1)
+})
+
+
+it('native rollback runs integration through the restored immutable executable and preserves runtime history', async () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'shell', channel: 'stable' })
+  const second = f.installation.stage(f.candidate('2.0.0'))
+  f.installation.activate({ build: second, expectedGeneration: 1, source: 'shell', channel: 'stable' })
+  const out: string[] = [], launches: string[] = []
+  const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  const result = await nativeUpdateCommand(deps, { rollback: true, json: true }, {
+    installation: f.installation,
+    pendingWork: () => null,
+    resume: executable => { launches.push(executable); return { ok: true, files_complete: true, migration_complete: true, pending_actions: [] } },
+  })
+  expect(result).toBe(0)
+  expect(launches).toEqual([path.join(f.options.root, 'versions', first, 'notifai')])
+  expect(JSON.parse(out[0]!)).toMatchObject({ ok: true, version: '1.0.0', channel: 'stable', integration_complete: true })
+  expect(f.installation.inspect().active).toMatchObject({ active: first, previous: second, generation: 3 })
+  expect(existsSync(path.join(f.options.root, 'versions', second, 'notifai-runtime'))).toBe(true)
+})
+
+
+it('native update keeps the saved beta channel and reports incomplete integration after activation', async () => {
+  const requested: string[] = []
+  let record = '', inventory = ''
+  const f = fixture((async (url: string) => {
+    requested.push(url)
+    return new Response(url.endsWith('inventory.json') ? inventory : record)
+  }) as typeof fetch)
+  const first = f.installation.stage(f.candidate('1.0.0-beta.1'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'npm', channel: 'beta' })
+  const candidate = f.candidate('1.0.0-beta.2')
+  f.installation.stage(candidate)
+  inventory = candidate.signedInventory
+  record = f.channel(1, [], inventory, '1.0.0-beta.2', 'beta')
+  const discovery = await discoverCliUpdate({ env: {}, installation: f.installation })
+  expect(discovery).toMatchObject({ channel: 'beta', target: '1.0.0-beta.2', newer: '1.0.0-beta.2', available: true, error: null })
+  expect(f.installation.inspect().active?.generation).toBe(1)
+  const out: string[] = []
+  const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  expect(await nativeUpdateCommand(deps, { json: true }, { installation: f.installation, pendingWork: () => null,
+    resume: () => { throw new Error('interrupted integration') } })).toBe(1)
+  expect(JSON.parse(out[0]!)).toMatchObject({ ok: false, version: '1.0.0-beta.2', channel: 'beta',
+    integration_complete: false, recovery_command: 'notifai update --resume --json' })
+  expect(requested.some(url => url.endsWith('beta.json'))).toBe(true)
+  expect(requested.some(url => url.includes('registry.npmjs.org'))).toBe(false)
+  expect(f.installation.inspect()).toMatchObject({ source: 'npm', channel: 'beta', active: { generation: 2 } })
 })

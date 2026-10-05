@@ -125,6 +125,18 @@ export class Installation {
     const installation = this.readInstall(), active = this.readActive()
     return { active, pending: present(this.file('transaction.json')), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
   }
+  /** Authenticated active identity for explicit lifecycle commands. Ordinary
+   * hooks use the lightweight launcher checks and do not hash the payload. */
+  activeRelease(expectedGeneration?: number): { version: string; launcher: string; build: string; generation: number } {
+    const active = this.readActive(), installation = this.readInstall()
+    if (!active || !installation) throw new Error('No managed installation is active')
+    if (present(this.file('transaction.json'))) throw new Error('Recover the pending installation transaction first')
+    if (expectedGeneration !== undefined && active.generation !== expectedGeneration) throw new Error('Installation changed; inspect before continuing')
+    this.checkStable(installation)
+    const candidate = this.verifyVersion(active.active)
+    return { version: candidate.inventory.version, launcher: path.join(candidate.directory, `notifai${this.extension}`),
+      build: active.active, generation: active.generation }
+  }
   private channelRecord(channel: ReleaseChannel): { signed: string; record: ChannelRecord } | null {
     this.checkRoot()
     const directory = this.file('channels')

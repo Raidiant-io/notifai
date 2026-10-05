@@ -2,7 +2,7 @@ import { assessReadiness } from './commands-doctor.js'
 import { EXIT, updateCliCommand, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { inspectCliInstallations } from './cli-bin.js'
-import { newerPublishedCli, publishedCliDistTags } from './cli-release.js'
+import { discoverCliUpdate } from './cli-release.js'
 import { packageVersion } from './release.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 import { isSemVer } from './version.js'
@@ -25,10 +25,8 @@ export async function cliUpdateCheckCommand(
   }
   const version = packageVersion()
   const installation = inspectCliInstallations(deps.env, deps.hookPlatform ?? process.platform)
-  const tags = await publishedCliDistTags(deps.fetchImpl)
-  const current = installation.effective?.version ?? version
-  const newer = tags === null || current === null ? null : newerPublishedCli(current, tags)
-  const available = tags === null || current === null ? null : newer !== null
+  const discovery = await discoverCliUpdate({ env: deps.env, fetchImpl: deps.fetchImpl, current: installation.effective?.version ?? version })
+  const { tags, newer, available } = discovery
   const readiness = await assessReadiness(deps, { json: true })
   const active = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const owner = active.contested.length === 0 ? active.active : null
@@ -53,9 +51,12 @@ export async function cliUpdateCheckCommand(
     latest_version: tags?.latest ?? null,
     beta_version: tags?.beta ?? null,
     update_available: available,
+    channel: discovery.channel,
+    channel_target_version: discovery.target,
+    discovery_error: discovery.error,
     available_version: newer,
     update_command: updateCliCommand(deps),
-    release_notes_url: releaseNotesUrl(newer ?? tags?.latest ?? null),
+    release_notes_url: releaseNotesUrl(discovery.target),
     changelog: installedChangelog(version, flags.from),
     local_integration: localIntegrationAssessment(deps).faults,
     tool_boundary_notes: owner?.harness === 'codex' && owner.sessionId !== undefined
@@ -93,7 +94,7 @@ export async function cliUpdateCheckCommand(
   }
   if (flags.json === true || deps.io.interactive !== true) deps.io.out(JSON.stringify(report, null, 2))
   else {
-    deps.io.out(available === true ? 'A newer Notifai is available.' : tags === null ? 'Could not check npm for updates.' : 'No newer Notifai is available.')
+    deps.io.out(available === true ? 'A newer Notifai is available.' : available === null ? 'Could not check for updates.' : 'No newer Notifai is available.')
     if (report.release_notes_url !== null) deps.io.out(`Release notes: ${report.release_notes_url}`)
     deps.io.out(report.session.policy)
     for (const step of report.next_steps) deps.io.out(step)
