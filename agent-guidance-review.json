@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:13fc537f1445ea2e67d6789fee215f4032f734b357deba5818ce195eda8e51a3",
+  "behavior_digest": "sha256:be6837a3a0853bcf7f9e262d877ea52b60081c402a41a85914196c3d88585a4c",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the README addition naming the unpublished optional bootstrap and linking its native update policy. Lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms are unchanged from the prior reviewed source; no candidate installer is represented as already available.",
+  "reason": "Reviewed compiled command admission before logging, portable read-only doctor output, and exact retained-owner entrypoints. Existing setup guidance already requires installation before ordinary use; rejected commands provide installation or active-command recovery. The shipped skill, lifecycle routing, harness setup choices and domain terms need no instruction change.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

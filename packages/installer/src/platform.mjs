@@ -11,14 +11,20 @@ function powershell(operation, data = {}) {
   // Only local pathname data crosses this boundary. Encoding it separately
   // avoids PowerShell quoting and a redirected-stdin EOF dependency on ARM.
   const payload = Buffer.from(JSON.stringify(data), 'utf8').toString('base64')
-  const code = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); . '${script}'; $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json; ${operation}`
+  const phase = name => `[Console]::Error.WriteLine('notifai-bootstrap:${name}');`
+  const code = `${phase('started')} $ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ${phase('encoding-ready')} . '${script}'; ${phase('helper-ready')} $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json; ${phase('operation-started')} ${operation}; ${phase('complete')}`
   const systemRoot = process.env.SystemRoot
   assert.ok(systemRoot && path.win32.isAbsolute(systemRoot), 'The OS PowerShell location is unavailable')
   const executable = path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
   const encoded = Buffer.from(code, 'utf16le').toString('base64')
   assert.ok(encoded.length + executable.length + 256 < 32_767, 'Installer pathname exceeds the Windows command-line limit')
-  return execFileSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-    { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
+  try {
+    return execFileSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+      { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
+  } catch (error) {
+    const last = [...String(error.stderr ?? '').matchAll(/notifai-bootstrap:([a-z-]+)/g)].at(-1)?.[1] ?? 'process-start'
+    throw new Error(`Windows installation helper failed after ${last} (${error.code ?? error.status ?? 'unknown'}).`, { cause: error })
+  }
 }
 
 export function ownedPosixCommand(home, uid = process.getuid()) {
