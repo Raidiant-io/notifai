@@ -4,7 +4,9 @@ import path from 'node:path'
 /** Resolve an existing path through symlinks, or normalize the local spelling. */
 export function canonicalPath(file: string): string {
   try {
-    return realpathSync(file)
+    // The JS fallback can retain Windows 8.3 aliases (RUNNER~1) while the OS
+    // reports the same executable by its long name. Compare canonical OS paths.
+    return realpathSync.native(file)
   } catch {
     return path.resolve(file)
   }

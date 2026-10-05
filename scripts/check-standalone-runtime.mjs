@@ -90,7 +90,7 @@ try {
     const state = JSON.stringify({ schema: 1, active: builds[i], previous: builds[i - 1] ?? null, generation: i + 1 })
     writeFileSync(path.join(managed, 'active.tmp'), `${state}\n`)
     renameSync(path.join(managed, 'active.tmp'), path.join(managed, 'active.json'))
-    assert.equal(realpathSync(execFileSync(stable, ['location', root], { cwd: root, env, encoding: 'utf8' })), realpathSync(payloads[i]))
+    assert.equal(realpathSync.native(execFileSync(stable, ['location', root, payloads[i]], { cwd: root, env, encoding: 'utf8' })), realpathSync.native(payloads[i]))
   }
   writeFileSync(path.join(managed, 'active.json'), '{"schema":1,"active":"../escape"}\n')
   assert.equal(spawnSync(stable, ['location', root], { cwd: root, env }).status, 1, 'invalid active path must fail closed')
@@ -105,6 +105,20 @@ try {
     const credentialRoot = path.join(root, 'credentials')
     mkdirSync(credentialRoot)
     run(['credentials', credentialRoot])
+    const detachedRoot = path.join(root, 'detached')
+    mkdirSync(detachedRoot)
+    // The intermediate runtime exits, closing its foreground launcher job.
+    // Its deliberate owner must remain independently alive until we stop it.
+    const detachedPid = Number(execFileSync(launcher, ['detach', detachedRoot],
+      { cwd: root, env, encoding: 'utf8', timeout: 20_000 }).trim())
+    assert.ok(Number.isSafeInteger(detachedPid) && detachedPid > 0)
+    try {
+      for (let i = 0; i < 100 && !existsSync(path.join(detachedRoot, 'heartbeat')); i++) await sleep(50)
+      assert.ok(existsSync(path.join(detachedRoot, 'heartbeat')), 'deliberately detached owner must survive foreground exit')
+      const before = readFileSync(path.join(detachedRoot, 'heartbeat'), 'utf8')
+      await sleep(250)
+      assert.notEqual(readFileSync(path.join(detachedRoot, 'heartbeat'), 'utf8'), before)
+    } finally { process.kill(detachedPid) }
     // Killing only the stable entry must terminate its entire foreground tree.
     const parent = spawn(launcher, ['tree', root], { cwd: root, env, stdio: 'ignore' })
     try {
@@ -120,5 +134,5 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
     checks: ['kernel-process-identity', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
-      ...(windows ? ['dpapi-roundtrip-and-clear', 'foreground-tree-termination'] : [])] })}\n`)
+      ...(windows ? ['dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

@@ -167,11 +167,38 @@ int wmain(int argc, wchar_t **argv) {
         if (*tail == L'"') quoted = !quoted;
         tail++;
     }
+    int detached = argc >= 2 && !wcscmp(argv[1], L"--internal-detach");
+    if (detached) {
+        while (*tail == L' ' || *tail == L'\t') tail++;
+        quoted = 0;
+        while (*tail && (quoted || (*tail != L' ' && *tail != L'\t'))) {
+            if (*tail == L'"') quoted = !quoted;
+            tail++;
+        }
+    }
     size_t command_length = wcslen(executable) + wcslen(tail) + 3;
     if (command_length > 32767) return failure("command line is too long");
     wchar_t *command = calloc(command_length, sizeof(wchar_t));
     if (!command) return failure("cannot allocate command line");
     swprintf(command, command_length, L"\"%ls\"%ls", executable, tail);
+
+    if (detached) {
+        /* Only deliberate resident owners request this path. Windows enforces
+         * every enclosing job's breakaway policy; failure never falls back to
+         * an attached child that would silently die with its foreground. */
+        STARTUPINFOW startup = {0};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process = {0};
+        BOOL created = CreateProcessW(executable, command, NULL, NULL, FALSE,
+            CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            NULL, NULL, &startup, &process);
+        free(command);
+        if (!created) return failure("cannot launch detached owner under parent process policy");
+        printf("%lu\n", process.dwProcessId);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return 0;
+    }
 
     HANDLE job = CreateJobObjectW(NULL, NULL);
     if (!job) { free(command); return failure("cannot create foreground job"); }
