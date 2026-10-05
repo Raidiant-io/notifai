@@ -12,6 +12,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import { sameLocalPath } from './local-path.js'
+import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { isWindowsAbsolute } from './platform.js'
 
 const ADAPTER_MARKER = '# notifai managed hook adapter'
@@ -33,7 +34,8 @@ export interface HookAdapterNpxTarget {
   spec: string
 }
 
-export type HookAdapterTarget = HookAdapterFileTarget | HookAdapterNpxTarget
+export interface HookAdapterNativeTarget { kind: 'native'; execPath: string }
+export type HookAdapterTarget = HookAdapterFileTarget | HookAdapterNpxTarget | HookAdapterNativeTarget
 
 export function isNpxAdapterTarget(target: HookAdapterTarget): target is HookAdapterNpxTarget {
   return target.kind === 'npx'
@@ -52,7 +54,9 @@ export function hookAdapterTargetsArtifact(
 ): boolean {
   if (target === null || isNpxAdapterTarget(target)) return false
   try {
-    return realpathSync(target.scriptPath) === realpathSync(artifactPath)
+    const artifact = target.kind === 'native'
+      ? nativeInstallationIdentity(path.dirname(path.dirname(path.dirname(target.execPath))), target.execPath.endsWith('.exe')).runtime : target.scriptPath
+    return sameLocalPath(realpathSync(artifact), realpathSync(artifactPath))
   } catch {
     return false
   }
@@ -74,7 +78,8 @@ export function hookHostPlatform(
  * it; CLI, Node, package-manager, checkout, and preference paths stay behind
  * it and may change without changing hook identity.
  */
-export function hookAdapterPath(homeDir: string = os.userInfo().homedir): string {
+export function hookAdapterPath(homeDir: string = os.userInfo().homedir, platform: NodeJS.Platform | HookHostPlatform = process.platform): string {
+  if (existsSync(path.join(homeDir, '.notifai', 'install.json'))) return path.join(homeDir, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
   return path.join(homeDir, '.notifai', 'bin', 'hook-adapter')
 }
 
@@ -126,9 +131,17 @@ export function installHookAdapter(
   env: NodeJS.ProcessEnv = process.env,
 ): { path: string; changed: boolean } {
   const host = hookHostPlatform(platform)
-  assertUsableTarget(target, host)
   const resolvedHome = resolveHookAdapterHome(homeDir, env, platform)
-  const file = hookAdapterPath(resolvedHome)
+  if (target.kind === 'native') {
+    const native = nativeInstallationIdentity(resolvedHome, host === 'win32')
+    if (!sameLocalPath(target.execPath, native.command, host === 'win32' ? 'win32' : 'linux')) throw new Error('Native hooks require the owned stable command')
+    const stat = lstatSync(native.command)
+    if (!stat.isFile() || stat.isSymbolicLink() || (host === 'posix' && (stat.mode & 0o111) === 0)) throw new Error('Native command is unavailable')
+    return { path: native.command, changed: false }
+  }
+  assertUsableTarget(target, host)
+  const file = path.join(resolvedHome, '.notifai', 'bin', 'hook-adapter')
+  if (existsSync(path.join(resolvedHome, '.notifai', 'install.json'))) throw new Error('Use the managed native command to install hooks')
   ensureManagedDirectories(resolvedHome, host)
   const source = hookAdapterSource(target, host)
   return withTargetFileLock(file, () => {
@@ -147,7 +160,7 @@ export function installHookAdapter(
   })
 }
 
-function assertUsableTarget(target: HookAdapterTarget, host: HookHostPlatform): void {
+function assertUsableTarget(target: Exclude<HookAdapterTarget, HookAdapterNativeTarget>, host: HookHostPlatform): void {
   let exec
   try {
     exec = statSync(target.execPath)
@@ -187,7 +200,15 @@ export function inspectHookAdapter(
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): HookAdapterInspection {
   const host = hookHostPlatform(platform)
-  const file = hookAdapterPath(homeDir)
+  const file = hookAdapterPath(homeDir, platform)
+  if (existsSync(path.join(homeDir ?? os.userInfo().homedir, '.notifai', 'install.json'))) {
+    try {
+      const native = nativeInstallationIdentity(homeDir ?? os.userInfo().homedir, host === 'win32')
+      const stat = lstatSync(native.command)
+      if (!stat.isFile() || stat.isSymbolicLink() || (host === 'posix' && (stat.mode & 0o111) === 0)) throw new Error('Native command is unavailable')
+      return { path: native.command, target: { kind: 'native', execPath: native.command }, problems: [] }
+    } catch (error) { return { path: file, target: null, problems: [String(error)] } }
+  }
   if (!existsSync(file)) {
     return { path: file, target: null, problems: [`${file} is missing; rerun \`notifai hooks install\``] }
   }
@@ -262,7 +283,7 @@ export function inspectHookAdapter(
 
 /** Generate the managed adapter source for one host. Exported so tests can pin bytes. */
 export function hookAdapterSource(
-  target: HookAdapterTarget,
+  target: Exclude<HookAdapterTarget, HookAdapterNativeTarget>,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
   return hookHostPlatform(platform) === 'win32'
@@ -285,7 +306,7 @@ export function hookAdapterSource(
  * Notifai build a trusted hook definition runs stays a property of the
  * installation, not of whatever environment the harness happens to hand us.
  */
-function posixHookAdapterSource(target: HookAdapterTarget): string {
+function posixHookAdapterSource(target: Exclude<HookAdapterTarget, HookAdapterNativeTarget>): string {
   if (isNpxAdapterTarget(target)) {
     return `#!/bin/sh
 ${ADAPTER_MARKER}
@@ -341,7 +362,7 @@ exit 127
 `
 }
 
-function win32HookAdapterSource(target: HookAdapterTarget): string {
+function win32HookAdapterSource(target: Exclude<HookAdapterTarget, HookAdapterNativeTarget>): string {
   const header = isNpxAdapterTarget(target)
     ? `${WIN32_ADAPTER_MARKER}
 // adapter-version: ${ADAPTER_VERSION}
@@ -407,7 +428,7 @@ function meta(contents: string, key: string): string | undefined {
   return new RegExp(`^(?:#|//) ${key}: (.+)$`, 'm').exec(contents)?.[1]
 }
 
-function parseTarget(contents: string): HookAdapterTarget | null {
+function parseTarget(contents: string): Exclude<HookAdapterTarget, HookAdapterNativeTarget> | null {
   const kind = meta(contents, 'target-kind')
   const exec = meta(contents, 'target-exec-json')
   if (exec === undefined) return null

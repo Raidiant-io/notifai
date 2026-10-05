@@ -1,3 +1,4 @@
+import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
@@ -665,6 +666,9 @@ export function attendantGates(
 
 function installedCliVersion(target: HookAdapterTarget | null): string | null {
   if (target === null) return null
+  if (target.kind === 'native') {
+    try { return nativeInstallationIdentity(path.dirname(path.dirname(path.dirname(target.execPath)))).version } catch { return null }
+  }
   if (isNpxAdapterTarget(target)) {
     // Installers pin npx targets to an exact version: `@raidiant/notifai@1.2.3`.
     const prefix = `${CLI_PACKAGE_NAME}@`

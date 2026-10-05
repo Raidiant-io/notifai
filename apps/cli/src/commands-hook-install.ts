@@ -1,3 +1,5 @@
+import { buildIdentity } from './distribution.js'
+import { hookAdapterPath, resolveHookAdapterHome } from './hook-adapter.js'
 /** Hook installation and uninstallation across supported harnesses. */
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
 import path from 'node:path'
@@ -86,12 +88,13 @@ export function runningViaNpx(env: NodeJS.ProcessEnv, scriptPath: string): boole
 function fileHookInstallTarget(
   target: HookAdapterTarget | undefined,
 ): { execPath: string; scriptPath: string } | undefined {
-  if (target === undefined || isNpxAdapterTarget(target)) return undefined
+  if (target === undefined || target.kind === 'native' || isNpxAdapterTarget(target)) return undefined
   return target
 }
 
 function resolveHookAdapterTarget(deps: CommandDeps, flags: HooksInstallFlags): HookAdapterTarget {
-  if (deps.hookInstallTarget !== undefined && isNpxAdapterTarget(deps.hookInstallTarget)) {
+  if (buildIdentity() !== null) return { kind: 'native', execPath: hookAdapterPath(resolveHookAdapterHome(deps.hookAdapterHome, deps.env, deps.hookPlatform), deps.hookPlatform) }
+  if (deps.hookInstallTarget !== undefined && (deps.hookInstallTarget.kind === 'native' || isNpxAdapterTarget(deps.hookInstallTarget))) {
     return deps.hookInstallTarget
   }
   const fileTarget = fileHookInstallTarget(deps.hookInstallTarget)
@@ -172,7 +175,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       const target = resolveHookAdapterTarget(deps, flags)
       const adapter = installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)
       const file = installHermesPlugin(adapter.path, deps.env,
-        (deps.hookPlatform ?? process.platform) === 'win32' ? target.execPath : undefined)
+        (deps.hookPlatform ?? process.platform) === 'win32' && target.kind !== 'native' ? target.execPath : undefined)
       deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Start a fresh local classic CLI Agent Session; its live attendant can route questions after activation.`)
       return EXIT.ok
     } catch (err) {
@@ -184,7 +187,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   const scriptPath =
     flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
   const hookPlatform = deps.hookPlatform ?? process.platform
-  const nodePath = adapterTarget.execPath
+  const nodePath = adapterTarget.kind === 'native' ? undefined : adapterTarget.execPath
   const codexPaths = harness === 'codex' ? codexMachineLayerPaths(deps.env, hookPlatform) : null
   let adapterPath: string
   try {
@@ -220,7 +223,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         adapterPath,
         timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
         platform: hookPlatform,
-        nodePath,
+        ...(nodePath === undefined ? {} : { nodePath }),
         ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
       }),
     )
@@ -234,7 +237,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         adapterPath,
         timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
         platform: hookPlatform,
-        nodePath,
+        ...(nodePath === undefined ? {} : { nodePath }),
         ...(flags.narrate === undefined ? {} : { narrate: flags.narrate }),
       }),
     )
@@ -244,7 +247,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       deps,
       harness,
       scriptPath,
-      installGrokHooks(deps, settingsTarget, { adapterPath, platform: hookPlatform, nodePath }, flags.narrate),
+      installGrokHooks(deps, settingsTarget, { adapterPath, platform: hookPlatform, ...(nodePath === undefined ? {} : { nodePath }) }, flags.narrate),
     )
   }
 
@@ -258,7 +261,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
             adapterPath,
             harness: 'cursor',
             platform: hookPlatform,
-            nodePath,
+            ...(nodePath === undefined ? {} : { nodePath }),
           }),
           scriptPath,
         )
@@ -285,7 +288,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         adapterPath,
         harness,
         platform: hookPlatform,
-        nodePath,
+        ...(nodePath === undefined ? {} : { nodePath }),
       }),
       scriptPath,
       { preserveIdentities: harness === 'codex' },
@@ -474,7 +477,7 @@ function installOpencodePlugin(
 function installGrokHooks(
   deps: CommandDeps,
   file: string,
-  options: { adapterPath: string; platform: NodeJS.Platform; nodePath: string },
+  options: { adapterPath: string; platform: NodeJS.Platform; nodePath?: string },
   narrate: boolean | undefined,
 ): number {
   const before = installationBytes([file])
@@ -490,7 +493,7 @@ function installGrokHooks(
         adapterPath: options.adapterPath,
         harness: 'grok',
         platform: options.platform,
-        nodePath: options.nodePath,
+        ...(options.nodePath === undefined ? {} : { nodePath: options.nodePath }),
       }) }, null, 2)}\n`, {
         mode: 0o600,
         preserveMode: false,

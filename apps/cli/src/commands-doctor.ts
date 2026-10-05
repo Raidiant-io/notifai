@@ -1,3 +1,4 @@
+import { buildIdentity } from './distribution.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
   PLATFORMS,
@@ -1435,8 +1436,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const runningTarget = deps.hookInstallTarget
   const runningArtifact =
     runningTarget !== undefined && !isNpxAdapterTarget(runningTarget)
-      ? runningTarget.scriptPath
-      : process.argv[1]
+      ? (runningTarget.kind === 'native' ? process.execPath : runningTarget.scriptPath)
+      : buildIdentity() !== null ? process.execPath : process.argv[1]
   const cliInstallations = inspectCliInstallations(
     deps.env,
     deps.hookPlatform ?? process.platform,

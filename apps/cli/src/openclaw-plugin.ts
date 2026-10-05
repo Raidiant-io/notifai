@@ -886,10 +886,11 @@ export function openclawPluginPackage(): string {
 export function openclawPluginSource(options: OpenclawPluginOptions): string {
   const { adapterPath, timeoutSeconds } = options
   const win32 = hookHostPlatform(options.platform) === 'win32'
-  const nodeConstant = win32
-    ? `const NODE = ${JSON.stringify(options.nodePath ?? process.execPath)}\n`
+  const scripted = win32 && options.nodePath !== undefined
+  const nodeConstant = scripted
+    ? `const NODE = ${JSON.stringify(options.nodePath)}\n`
     : ''
-  const spawnArguments = win32
+  const spawnArguments = scripted
     ? 'NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "openclaw"]'
     : 'ADAPTER, ["hook", event, "--owner", "notifai", "--harness", "openclaw"]'
   const windowsHide = win32 ? '\n        windowsHide: true,' : ''
@@ -902,8 +903,8 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import path from "node:path"
 
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
-const HOOK_COMMAND = ${JSON.stringify(win32 ? options.nodePath ?? process.execPath : adapterPath)}
-const HOOK_PREFIX = ${JSON.stringify(win32 ? [adapterPath] : [])}
+const HOOK_COMMAND = ${JSON.stringify(scripted ? options.nodePath : adapterPath)}
+const HOOK_PREFIX = ${JSON.stringify(scripted ? [adapterPath] : [])}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCLAW_ADAPTER_VERSION}
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}

@@ -14,7 +14,26 @@ import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from '../a
 
 const [mode, root, ...args] = process.argv.slice(2)
 assert.ok(root)
-if (mode === 'lock') {
+if (mode === 'hook') {
+  assert.equal(root, 'stop')
+  assert.deepEqual(args, ['--owner', 'notifai', '--harness', 'codex'])
+  process.stdout.write('native hook command executed')
+} else if (mode === 'native-hooks') {
+  const { inspectHookAdapter, installHookAdapter, hookAdapterTargetsArtifact } = await import('../apps/cli/src/hook-adapter.js')
+  const { hookCommand } = await import('../apps/cli/src/install-hooks.js')
+  const { inspectCliInstallations } = await import('../apps/cli/src/cli-bin.js')
+  const adapter = inspectHookAdapter(root)
+  assert.deepEqual(adapter.problems, [])
+  assert.equal(adapter.target?.kind, 'native')
+  assert.equal(installHookAdapter(adapter.target!, root).changed, false)
+  assert.ok(hookAdapterTargetsArtifact(adapter.target, process.execPath))
+  const installed = inspectCliInstallations({ ...process.env, PATH: path.dirname(adapter.path) }, process.platform)
+  assert.ok(sameLocalPath(installed.effective!.artifact_path!, process.execPath))
+  const command = hookCommand(adapter.path, 'stop', 'codex')
+  const result = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 20_000, windowsHide: true })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout, 'native hook command executed')
+} else if (mode === 'lock') {
   const file = path.join(root, 'shared.json')
   for (let i = 0; i < 50; i++) withFileLock(`${file}.lock`, () => {
     const state = JSON.parse(readFileSync(file, 'utf8'))

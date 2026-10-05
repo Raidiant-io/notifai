@@ -1,3 +1,6 @@
+import { buildIdentity } from './distribution.js'
+import { nativeInstallationIdentity } from './native-installation-identity.js'
+import { accountHome } from './platform.js'
 import {
   accessSync,
   constants,
@@ -14,7 +17,7 @@ import { cliUpdateChannel, cliUpdateRecoveryCommand } from './cli-contract.js'
 import { canonicalPath, pathDirectories, sameLocalPath } from './local-path.js'
 
 const POSIX_NAMES = ['notifai']
-const WINDOWS_NAMES = ['notifai.cmd', 'notifai.exe', 'notifai']
+const WINDOWS_NAMES = ['notifai.exe', 'notifai.cmd', 'notifai']
 
 export interface CliBinReadinessOptions {
   runningArtifactPath?: string
@@ -158,14 +161,17 @@ export function inspectCliInstallations(
   platform: NodeJS.Platform = process.platform,
   options: CliBinReadinessOptions = {},
 ): CliInstallationInspection {
-  const runningArtifact = canonicalPath(options.runningArtifactPath ?? process.argv[1] ?? 'notifai')
+  const runningArtifact = canonicalPath(options.runningArtifactPath ?? (buildIdentity() !== null ? process.execPath : process.argv[1]) ?? 'notifai')
+  let native: ReturnType<typeof nativeInstallationIdentity> | null = null
+  try { native = nativeInstallationIdentity(accountHome(env, platform), platform === 'win32') } catch { /* Report unverified entries without inventing native identity. */ }
   const entries = pathNotifaiEntries(withoutNpxLauncherPath(env, platform, runningArtifact), platform).map((command): CliPathEntry => {
-    const artifact = artifactForCommand(command, platform)
+    const managed = native !== null && sameLocalPath(command, native.command, platform) && !lstatSync(command).isSymbolicLink()
+    const artifact = managed ? native!.runtime : artifactForCommand(command, platform)
     return {
       command_path: command,
       executable: isExecutablePath(command, platform),
       artifact_path: artifact,
-      version: artifactVersion(artifact),
+      version: managed ? native!.version : artifactVersion(artifact),
       install_prefix: installPrefix(artifact, command, platform),
     }
   })
@@ -186,7 +192,7 @@ export function cliBinReadiness(
 ): ReadinessState {
   const inspection = inspectCliInstallations(env, platform, options)
   const { current, effective, entries } = inspection
-  const updateCommand = cliUpdateRecoveryCommand(cliUpdateChannel(current.version))
+  const updateCommand = buildIdentity() === null ? cliUpdateRecoveryCommand(cliUpdateChannel(current.version)) : 'notifai doctor --json'
   if (effective === null && entries.length > 0) {
     return {
       id: 'cli-bin',
@@ -226,7 +232,7 @@ export function cliBinReadiness(
 
   const effectiveIsCurrent =
     effective.artifact_path === current.artifact_path ||
-    (effective.version !== null && current.version !== null && effective.version === current.version)
+    (buildIdentity() === null && effective.version !== null && current.version !== null && effective.version === current.version)
   if (!effectiveIsCurrent) {
     return {
       id: 'cli-bin',

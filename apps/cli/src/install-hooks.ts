@@ -95,16 +95,15 @@ export type HookConfig = Record<string, HookGroup[]>
 
 export interface HookCommandOptions {
   platform?: NodeJS.Platform | HookHostPlatform
-  /** Registered Node used to interpret the Windows adapter. Ignored on POSIX. */
+  /** Source/development script interpreter on Windows; native commands omit it. */
   nodePath?: string
 }
 
 /**
  * The command each hook runs. Harness definitions know only the stable
  * user-level adapter. Mutable Node, package-manager, version, and checkout
- * paths live behind that seam and never enter a trusted hook identity —
- * except on Windows, where CreateProcess cannot run the adapter without an
- * explicit Node executable, so the registered interpreter is named first.
+ * paths live behind that seam and never enter a trusted native hook identity.
+ * Source/development Windows adapters explicitly name their interpreter.
  */
 export function hookCommand(
   adapterPath: string,
@@ -125,8 +124,8 @@ export function hookCommandPrefix(
 ): string {
   const host = hookHostPlatform(options.platform)
   if (host === 'win32') {
-    const nodePath = options.nodePath ?? process.execPath
-    return `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(adapterPath)} `
+    return options.nodePath === undefined ? `${quoteWindowsArg(adapterPath)} `
+      : `${quoteWindowsArg(options.nodePath)} ${quoteWindowsArg(adapterPath)} `
   }
   return `${quote(adapterPath)} `
 }
@@ -188,7 +187,7 @@ export interface BuildOptions {
   /** The installed adapter stamps its exact harness into project pointers. */
   harness?: HookInstallableHarness
   platform?: NodeJS.Platform | HookHostPlatform
-  /** Registered Node named first in Windows hook commands. */
+  /** Source/development Windows interpreter; omitted for native commands. */
   nodePath?: string
 }
 
@@ -1753,7 +1752,8 @@ function collectInstallations(
   platform: NodeJS.Platform | HookHostPlatform,
   env: NodeJS.ProcessEnv,
 ): Installation[] {
-  const nodePath = inspectHookAdapter(adapterHome, platform).target?.execPath
+  const adapter = inspectHookAdapter(adapterHome, platform).target
+  const nodePath = adapter?.kind === 'native' ? undefined : adapter?.execPath
   const commandOptions: HookCommandOptions = {
     platform,
     ...(nodePath === undefined ? {} : { nodePath }),
@@ -1791,7 +1791,7 @@ function collectInstallations(
         ...(!target.current
           ? [`obsolete ${label} event wiring; rerun \`notifai hooks install --harness ${harness}\``]
           : []),
-        ...(target.adapter !== hookAdapterPath(adapterHome)
+        ...(target.adapter !== hookAdapterPath(adapterHome, platform)
           ? [
               `${label} still names a mutable CLI or runtime path; rerun \`notifai hooks install --harness ${harness}\``,
             ]
@@ -1856,7 +1856,7 @@ function harnessMarkerProblems(
       `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
     )
   }
-  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome), options)}hook `
+  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome, options.platform), options)}hook `
   if (!handlers.every((handler) => handler.command.startsWith(expected))) {
     problems.push(
       'installed commands still name a mutable CLI or runtime path; rerun `notifai hooks install` to migrate to the stable adapter',

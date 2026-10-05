@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { hookAdapterPath } from './hook-adapter.js'
+import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import { accountHome } from './platform.js'
 
 export const HERMES_PLUGIN_ID = 'notifai'
@@ -296,6 +296,7 @@ export function uninstallHermesPlugin(env: NodeJS.ProcessEnv = process.env): boo
 
 export function hermesPluginCurrent(adapterHome: string | undefined, env: NodeJS.ProcessEnv): boolean {
   const dir = hermesPluginDir(env)
+  const target = inspectHookAdapter(adapterHome).target
   return isOurHermesPlugin(dir) && readFileSync(path.join(dir, '__init__.py'), 'utf8') ===
-    hermesPluginSource(hookAdapterPath(adapterHome), process.platform === 'win32' ? process.execPath : undefined)
+    hermesPluginSource(hookAdapterPath(adapterHome), process.platform === 'win32' && target?.kind !== 'native' ? target?.execPath : undefined)
 }

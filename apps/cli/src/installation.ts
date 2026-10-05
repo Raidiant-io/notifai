@@ -39,13 +39,13 @@ function owned(file: string, directory: boolean): void {
   if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile()) ||
       (typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw new Error(`Unowned installation path: ${file}`)
 }
-function activeRecord(value: unknown): ActiveGeneration {
+export function activeRecord(value: unknown): ActiveGeneration {
   const item = value as Partial<ActiveGeneration> | null
   if (!item || item.schema !== 1 || !buildId(item.active) || !(item.previous === null || buildId(item.previous)) ||
       !Number.isSafeInteger(item.generation) || item.generation! < 1) throw new Error('Invalid active generation')
   return { schema: 1, active: item.active, previous: item.previous, generation: item.generation! }
 }
-function activeBytes(value: ActiveGeneration): string {
+export function activeBytes(value: ActiveGeneration): string {
   // This canonical grammar is shared with the deliberately small C launcher.
   return `${JSON.stringify({ schema: 1, active: value.active, previous: value.previous, generation: value.generation })}\n`
 }

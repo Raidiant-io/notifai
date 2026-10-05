@@ -10,7 +10,8 @@ import { codexHookIdentityHash, codexTrustKey, findInstallations } from './insta
 import { integrationFaultNotice, localIntegrationAssessment } from './integration-health.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
-import { shippedSkillBundle } from './skill-integrity.js'
+import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from './skill-integrity.js'
+import { SkillInstallation } from './skill-installation.js'
 import { readSessionState, writeSessionState } from './hook-session-state.js'
 
 const roots: string[] = []
@@ -60,11 +61,16 @@ it('resumes stale guidance and missing handlers in the existing scope, preservin
   const f = fixture()
   const bundle = shippedSkillBundle()
   if (!bundle.ok) throw new Error(bundle.error)
-  const skill = path.join(f.home, '.agents', 'skills', 'notifai')
-  cpSync(bundle.bundle.skillRoot, skill, { recursive: true })
-  writeFileSync(path.join(skill, 'SKILL.md'), 'old packaged guidance')
-  writeFileSync(path.join(f.root, 'state', 'skills', '.skill-lock.json'), JSON.stringify({ skills: { notifai: { ref: 'old' } } }))
-  const add = vi.fn(async () => { cpSync(bundle.bundle.skillRoot, skill, { recursive: true }); return 0 })
+  const oldBundle = path.join(f.root, 'old-bundle'), oldSkill = path.join(oldBundle, 'notifai')
+  cpSync(bundle.bundle.skillRoot, oldSkill, { recursive: true })
+  writeFileSync(path.join(oldSkill, 'SKILL.md'), 'old packaged guidance')
+  writeFileSync(path.join(oldBundle, 'manifest.json'), JSON.stringify(createSkillManifest(oldSkill, '1.0.0')))
+  const verified = verifySkillBundle(oldBundle, '1.0.0')
+  if (!verified.ok) throw new Error(verified.error)
+  expect(new SkillInstallation({ cwd: f.deps.cwd, env: f.deps.env }).reconcile({
+    scope: 'global', agents: ['codex'], bundle: verified.bundle,
+  }).ok).toBe(true)
+  const add = vi.fn(nativeSkills.add)
   f.deps.nativeSkills = { ...nativeSkills, add }
   removeToolHook(f.installation.file)
   const doc = JSON.parse(readFileSync(f.installation.file, 'utf8'))
@@ -72,7 +78,8 @@ it('resumes stale guidance and missing handlers in the existing scope, preservin
   writeFileSync(f.installation.file, JSON.stringify(doc))
   const trustBefore = readFileSync(f.trust, 'utf8')
   expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toEqual(expect.arrayContaining(['hooks-drift', 'skill-drift']))
-  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  const result = await updateResumeCommand(f.deps, { json: true })
+  expect(result, JSON.stringify(JSON.parse(f.out.at(-1)!).pending_actions)).toBe(0)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: false,
     pending_actions: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
   expect(add).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global', skill: 'notifai' }))

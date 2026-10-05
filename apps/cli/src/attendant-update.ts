@@ -1,6 +1,6 @@
 /** Explicit recovery of already-owned resident writers after an installation. */
 import { buildIdentity } from './distribution.js'
-import { launchSelf } from './launch-self.js'
+import { currentRuntimeBuild, launchSelf, validRuntimeBuildReference, type RuntimeBuildReference } from './launch-self.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -49,8 +49,17 @@ export interface AttendantActivation {
   native_activity: boolean
 }
 
+/** A prior owner with the same protocol revision is not the newly installed build. */
+export function attendantClaimMatches(claim: Record<string, unknown> | null, version: string | null,
+  reference: RuntimeBuildReference | null): boolean {
+  if (claim?.['runtime_revision'] !== attendantRuntimeRevision || claim['runtime_version'] !== version || version === null) return false
+  const owner = claim['runtime_build']
+  return reference === null || (validRuntimeBuildReference(owner) && owner.installation_id === reference.installation_id && owner.build === reference.build)
+}
+
 /** Called only by the authorized updater, after effective installation checks. */
 export async function activateInstalledAttendants(deps: CommandDeps, artifact: string): Promise<AttendantActivation[]> {
+  const reference = currentRuntimeBuild(deps.env)
   const reports = listAttendantReports(deps.env).filter(report => report.alive && readSessionState(report.session_id, deps.env).harness === 'codex')
   // Each current owner is independent. Bound subprocess fanout and wall time.
   return Promise.all(reports.map(async (report, index): Promise<AttendantActivation> => {
@@ -64,7 +73,7 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
     if (owned === null || !attendantGates(deps, owned.cwd, sessionId, 'codex', packageVersion()).ok) return result('pending')
     const claimFile = attendantClaimPath(sessionId, deps.env)
     const holder = readClaimFile(claimFile)
-    if (holder?.['runtime_revision'] === attendantRuntimeRevision && holder['runtime_version'] === packageVersion()) return result('current')
+    if (attendantClaimMatches(holder, packageVersion(), reference)) return result('current')
     const transcript = readSessionState(sessionId, deps.env).codex_native_turn?.transcript_path ?? findNativeTranscript(sessionId, deps.env)
     if (transcript === null || !nativeTranscriptOwned(transcript, sessionId, deps.env)) return result('pending')
     let failed = false
@@ -85,7 +94,7 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
       const claim = readClaimFile(claimFile)
       let active: { pid?: number; phase?: string } = {}
       try { active = JSON.parse(readFileSync(attendantStatusPath(sessionId, deps.env), 'utf8')) } catch { /* not started */ }
-      if (claim?.['runtime_revision'] === attendantRuntimeRevision && active.pid === claim['pid'] &&
+      if (attendantClaimMatches(claim, packageVersion(), reference) && active.pid === claim?.['pid'] &&
           ['dormant', 'attending'].includes(active.phase ?? '')) return result('activated')
       if (recoveryOwner(deps, sessionId, current.key) === null) break
       await new Promise(resolve => setTimeout(resolve, 100))

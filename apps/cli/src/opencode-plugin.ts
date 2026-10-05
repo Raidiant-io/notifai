@@ -102,13 +102,14 @@ export interface OpencodePluginOptions {
  */
 export function opencodePluginSource(options: OpencodePluginOptions): string {
   const { adapterPath, timeoutSeconds } = options
-  // Windows cannot execute the adapter script directly, so it goes through the
-  // registered Node executable and the console window is suppressed.
+  // Native Windows commands execute directly. Source/development adapters
+  // explicitly supply their interpreter. Both suppress console windows.
   const win32 = hookHostPlatform(options.platform) === 'win32'
-  const nodeConstant = win32
-    ? `const NODE = ${JSON.stringify(options.nodePath ?? process.execPath)}\n`
+  const scripted = win32 && options.nodePath !== undefined
+  const nodeConstant = scripted
+    ? `const NODE = ${JSON.stringify(options.nodePath)}\n`
     : ''
-  const spawnArguments = win32
+  const spawnArguments = scripted
     ? 'NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "opencode"]'
     : 'ADAPTER, ["hook", event, "--owner", "notifai", "--harness", "opencode"]'
   const windowsHide = win32 ? '\n        windowsHide: true,' : ''

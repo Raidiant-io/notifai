@@ -1,3 +1,4 @@
+import { buildIdentity } from './distribution.js'
 import {
   CAPABILITIES_V1,
   validateDraft,
@@ -53,7 +54,7 @@ import {
 import { installedSkillMatchesPackage, staleInstalledSkillCopies, listScopedNotifaiSkills } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
-import { installHookAdapter } from './hook-adapter.js'
+import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import { installClaudeCommandRules } from './claude-command-approval.js'
 import { packageVersion } from './release.js'
 import { HARNESS_LABELS, SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
@@ -167,6 +168,10 @@ async function closeGap(
       deps.hookPlatform ?? process.platform,
     ).effective
     if (effective === null || effective.artifact_path === null) return 'failed'
+    if (buildIdentity() !== null) {
+      const adapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
+      return adapter.problems.length === 0 && hookAdapterTargetsArtifact(adapter.target, effective.artifact_path) ? 'closed' : 'failed'
+    }
     try {
       installHookAdapter(
         { execPath: process.execPath, scriptPath: effective.artifact_path },

@@ -1,3 +1,4 @@
+import { buildIdentity } from './distribution.js'
 /** Local integration diagnostics. No service, registry, installer or repair. */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -54,7 +55,7 @@ export interface IntegrationFault {
 
 export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInstallableHarness, budget?: SkillInspectionBudget) {
   const target = deps.hookInstallTarget
-  const artifact = target !== undefined && !isNpxAdapterTarget(target) ? target.scriptPath : process.argv[1]
+  const artifact = target !== undefined && !isNpxAdapterTarget(target) ? (target.kind === 'native' ? process.execPath : target.scriptPath) : buildIdentity() !== null ? process.execPath : process.argv[1]
   const cli = inspectCliInstallations(deps.env, deps.hookPlatform, {
     ...(artifact === undefined ? {} : { runningArtifactPath: artifact }),
     currentVersion: deps.runningVersion === undefined ? packageVersion() : deps.runningVersion,

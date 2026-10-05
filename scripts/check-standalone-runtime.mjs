@@ -112,6 +112,7 @@ try {
   run(['installation', root, 'first'])
   const ownerRoot = path.join(root, 'retained-owner')
   mkdirSync(ownerRoot)
+  execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['native-hooks', root], { cwd: root, env, stdio: 'inherit' })
   const owner = JSON.parse(execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['owner-launch', ownerRoot],
     { cwd: root, env, encoding: 'utf8', timeout: 30_000 }))
   const busyRoot = path.join(root, 'busy-launcher')
@@ -246,6 +247,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

@@ -56,3 +56,20 @@ an update channel. Signed release inventory, complete lifecycle validation,
 and authorized promotion are still required for native distribution. Windows
 Authenticode is deferred; Windows artifacts are unsigned. macOS publication
 requires Developer ID signing and notarization of the final bytes.
+
+## Managed hook and resident boundaries
+
+Native harness definitions name the stable `bin/notifai[.exe]` directly. Windows
+plugins omit a Notifai Node interpreter; a JavaScript-based harness may still
+need its own runtime. Readiness resolves the active immutable payload through
+local installation metadata, without executing PATH candidates or treating equal
+version strings as native build identity. Those local facts do not replace
+signed distribution admission or the launcher's OS access checks.
+
+Detached native owners launch the current immutable build. Before child creation,
+the existing session record retains that build; claims also carry the runtime
+reference. Updating the active pointer leaves the old owner running. Native CI
+exercises this ordering and continued execution with isolated fixture owners,
+and executes a generated native hook command with a restricted PATH. These
+checks do not establish real harness activation, provider delivery, complete
+installer/update commands, legacy migration, or safe generation collection.

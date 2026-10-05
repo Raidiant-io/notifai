@@ -34,7 +34,7 @@ export interface CliUpdateFlags {
 
 function runningArtifact(deps: CommandDeps): string | undefined {
   const target = deps.hookInstallTarget
-  if (target !== undefined && !isNpxAdapterTarget(target)) return target.scriptPath
+  if (target !== undefined && !isNpxAdapterTarget(target)) return (target.kind === 'native' ? target.execPath : target.scriptPath)
   return process.argv[1]
 }
 
