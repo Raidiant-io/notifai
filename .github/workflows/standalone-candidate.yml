@@ -86,6 +86,17 @@ jobs:
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: node -e "if(process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+      - name: Verify shell bootstrap without installed Node on its PATH
+        if: runner.os != 'Windows'
+        run: node --test scripts/install-shell.test.mjs
+      - name: Verify Windows PowerShell bootstrap
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/check-windows-bootstrap.ps1
+      - name: Verify modern PowerShell bootstrap
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-bootstrap.ps1
       - name: Compile launcher and full application
         shell: bash
         env:

@@ -463,3 +463,9 @@ produce a major release. When practical, let related breaking changes
 accumulate in the Release PR and cut them together. Batching changes reduces
 avoidable major-version churn without weakening SemVer or misclassifying a
 break.
+
+## Native distribution candidate
+
+The in-progress native artifact and OS bootstrap lane is documented in
+[Standalone CLI distribution](STANDALONE.md). It is not yet a published channel
+and does not authorize native or npm publication.

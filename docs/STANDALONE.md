@@ -122,7 +122,7 @@ publication, with the private key held only by the protected release environment
 Candidates fail closed; neither an environment override nor project configuration
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
-and OS bootstraps and complete uninstall remain separate work.
+and complete uninstall remains separate work.
 
 ### Existing Windows directory permissions
 
@@ -184,8 +184,7 @@ readiness and retains a local recovery command after partial setup. Runtime
 activation is never undone because approval or setup is pending. Custom zsh
 profile roots need explicit manual PATH setup.
 
-Production trust remains unconfigured, and the OS bootstraps are still under
-implementation. This command is candidate source,
+Production trust remains unconfigured. This command is candidate source,
 not an advertised replacement for the published installation route.
 
 ### Windows User PATH
@@ -224,4 +223,42 @@ first execution uses the documented HTTPS trust boundary, with macOS publisher
 checks additionally required. Publication must upload the immutable view with its
 release and advance the channel view in the same metadata-ref commit as the
 signed channel record. Installed update verification continues to use signed JSON.
-The OS bootstraps and promotion wiring are still under implementation.
+Promotion wiring remains under implementation.
+
+## OS bootstraps
+
+`scripts/install.sh` and `scripts/install.ps1` install the same per-user native
+Installation and continue with `notifai init`. Neither needs Node, npm, Bun or
+Git installed. Windows uses an unsigned executable; Authenticode is deferred.
+The shell route requires the OS account lookup, HTTPS, SHA-256 and archive tools;
+Linux currently requires glibc and x64 requires AVX2. macOS first installation
+fails closed until the reviewed Developer ID team is configured, and requires
+signature and execution assessment of both executables.
+
+A repeat invocation checks the fixed command beneath the OS account home, its
+ownership and access permissions, then asks it to resume installation/setup.
+It does not query a new release or change the saved source/channel. An explicit
+incompatible version or channel is refused with instructions to use `update`.
+A relocated home, symbolic link/reparse point or other writable principal must
+not select an executable. Native Installation remains the authority for signed
+inventory verification, active runtime health and transaction recovery.
+
+First installation on Windows/Linux trusts the HTTPS release channel. The
+bootstrap checks bounded metadata, archive paths/types, download sizes and
+hashes before execution. These hashes detect changed bytes; they are not a
+separate trust root for first execution. Installed updates use embedded Ed25519
+release keys. The npm bootstrap has its own pre-execution signature requirement.
+
+### Bootstrap verification
+
+The standalone candidate workflow runs shell bootstrap fixtures on macOS/Linux,
+and PowerShell fixtures on both Windows architectures with Windows PowerShell
+5.1 and modern PowerShell. These use local transport fixtures, including altered
+archives, unsafe paths and existing-installation reuse. They do not constitute
+published-channel, notarization, or end-to-end account setup evidence.
+
+The separate native runtime and packaged-archive checks execute real compiled
+launchers/runtimes, install signed test inventories and exercise update,
+rollback, ownership and process lifetime boundaries. The isolated Windows
+environment keeps standard `PATHEXT` so PowerShell waits for `.exe` commands as
+native processes while Node/Bun remain absent from its executable search path.
