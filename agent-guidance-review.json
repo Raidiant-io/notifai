@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b4d3114f3ca54f80e3ec82a432db41339c2c851255fe464f59cb32c723c07374",
+  "behavior_digest": "sha256:905244b45fccc054eb8461c40515ba8eb26b7e548324605e8d60b8663c14c883",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. The explicit candidate installation boundary authenticates bytes before bounded root/bin access migration, reuses a healthy existing runtime across bootstrap routes and directs version/channel changes to the documented update command. No new public install command is exposed in this slice. Existing update guidance remains accurate; notification authority and approval ownership are unchanged.",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Explicit POSIX PATH ownership is currently an Installation engine operation with no new public command. It preserves User edits and records interrupted writes; ordinary hooks and notification authority are unchanged. Existing public setup guidance still describes the published distribution.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

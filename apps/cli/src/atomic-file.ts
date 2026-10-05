@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -13,6 +14,9 @@ import {
 import path from 'node:path'
 
 export interface AtomicWriteOptions {
+  /** Optional optimistic guard for edits derived from existing User content.
+   * null requires absence; a digest must still match before publication. */
+  expectedContentsSha256?: string | null
   /** Establish platform ownership on the private temporary file before publication. */
   prepareTemporary?: (file: string) => void
   /** Mode for a newly created file. Existing regular files keep their mode. */
@@ -54,6 +58,7 @@ export function atomicWriteFileSync(
     options.preserveMode ?? true,
     options.requireCurrentUserOwner ?? false,
   )
+  assertExpectedContents(file, options.expectedContentsSha256)
   const temp = path.join(
     directory,
     `.${path.basename(file)}.notifai-${process.pid}-${randomBytes(6).toString('hex')}.tmp`,
@@ -71,6 +76,7 @@ export function atomicWriteFileSync(
     if ((lstatSync(temp).mode & 0o7777) !== target.mode) chmodSync(temp, target.mode)
     assertSameDirectory(directory, parent)
     assertUnchangedTarget(file, target)
+    assertExpectedContents(file, options.expectedContentsSha256)
     renameSync(temp, file)
     syncDirectory(directory)
   } catch (err) {
@@ -203,5 +209,22 @@ function assertCurrentUserOwns(file: string, owner: number): void {
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
   if (uid !== undefined && owner !== uid) {
     throw new Error(`${file} is owned by uid ${owner}, not the current user; refusing to replace it.`)
+  }
+}
+
+
+function assertExpectedContents(file: string, expected: string | null | undefined): void {
+  if (expected === undefined) return
+  if (expected !== null && !/^[a-f0-9]{64}$/.test(expected)) throw new Error('Invalid expected file digest')
+  try {
+    const stat = lstatSync(file)
+    if (expected === null || !stat.isFile() || stat.isSymbolicLink() ||
+        createHash('sha256').update(readFileSync(file)).digest('hex') !== expected) {
+      throw new Error(`${file} changed since it was read; refusing to replace User content.`)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && expected === null) return
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${file} changed since it was read; refusing to recreate it.`)
+    throw error
   }
 }

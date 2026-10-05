@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import type * as FsModule from 'node:fs'
 import os from 'node:os'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { atomicWriteFileSync } from './atomic-file.js'
@@ -100,4 +101,19 @@ it('preserves the prior file when platform ownership cannot be established befor
   })).toThrow('ownership unavailable')
   expect(readFileSync(binding.markerPath, 'utf8')).toBe('prior')
   expect(readdirSync(directory)).toEqual(['marker.json'])
+})
+
+
+it('preserves concurrent User edits when an owned profile edit no longer matches its read snapshot', () => {
+  const { directory } = fixture(0o700)
+  const file = path.join(directory, 'profile')
+  writeFileSync(file, 'original profile')
+  const expectedContentsSha256 = createHash('sha256').update('original profile').digest('hex')
+  expect(() => atomicWriteFileSync(file, 'installer replacement', { expectedContentsSha256,
+    prepareTemporary() { writeFileSync(file, 'concurrent User edit') },
+  })).toThrow(/changed/)
+  expect(readFileSync(file, 'utf8')).toBe('concurrent User edit')
+  expect(readdirSync(directory)).toEqual(['profile'])
+  expect(() => atomicWriteFileSync(file, 'installer replacement', { expectedContentsSha256 })).toThrow(/changed/)
+  expect(readFileSync(file, 'utf8')).toBe('concurrent User edit')
 })

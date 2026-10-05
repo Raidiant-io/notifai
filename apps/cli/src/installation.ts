@@ -7,6 +7,7 @@ import { installationAccess, type InstallationAccess } from './installation-acce
 import { withFileLock } from './file-lock.js'
 import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease } from './release-distribution.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
+import { ShellPathInstallation } from './installation-path.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -233,6 +234,17 @@ export class Installation {
     if (channel === 'stable' && isPrerelease(verified.inventory.version)) throw new Error('Prerelease installation requires explicit beta channel')
     const build = this.stage(input)
     return { ...this.activate({ build, source: input.source, channel, expectedGeneration: 0 }), version: verified.inventory.version, reused: false }
+  }
+  /** Explicit POSIX profile setup/removal. No hook or ordinary command edits
+   * shell startup files, and uninstallation preserves User-edited blocks. */
+  shellPath(operation: 'configure' | 'remove', shell: string) {
+    if (this.options.target.startsWith('bun-windows-')) throw new Error('Windows requires User PATH registry setup')
+    this.activeRelease()
+    return withFileLock(this.file('installation.lock'), () => {
+      const pathSetup = new ShellPathInstallation({ home: path.dirname(this.root), bin: this.file('bin'), shell,
+        read: () => this.readJson('shell-path.json'), save: receipt => this.save('shell-path.json', receipt) })
+      return operation === 'configure' ? pathSetup.configure() : pathSetup.remove()
+    }, { waitMs: 5_000, strictRelease: true })
   }
   private versionDirectory(build: string): string {
     if (!buildId(build)) throw new Error('Invalid immutable build identifier')

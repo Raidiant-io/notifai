@@ -149,3 +149,17 @@ or mixed bootstrap invocation, preserves its original source and saved channel,
 and rejects an exact version/channel change with an explicit update instruction.
 It authenticates the candidate before permission migration or staging. Archive CI
 exercises fresh installation and repeated reuse with the real native access policy.
+
+## Owned POSIX PATH entries
+
+The installation engine can configure the selected shell's interactive and
+login profiles (zsh, bash, sh/dash). It preserves existing Bash login selection,
+quotes the runtime directory, and avoids duplicate PATH entries. A private
+ownership receipt precedes each profile edit so interrupted setup can resume.
+Removal deletes only the exact owned block; User edits and unowned markers are
+preserved and reported as conflicts. Atomic writes also check the original
+content digest, including same-file concurrent edits.
+
+This engine operation is explicit, never run by hooks. It does not change the
+current parent shell, guess every installed shell, or configure Windows User
+PATH. Public installer orchestration still needs its complete journey proof.
