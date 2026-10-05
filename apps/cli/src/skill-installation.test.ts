@@ -98,6 +98,8 @@ describe('bundled skill ownership', () => {
     writeFileSync(config, JSON.stringify({ agents: { entries: { main: { workspace: f.cwd } } } }))
     expect(f.installer.reconcile({ scope: 'project', agents: ['openclaw'], bundle }).ok).toBe(true)
     expect(readFileSync(path.join(f.cwd, 'skills', 'notifai', 'SKILL.md'), 'utf8')).toContain('Guidance 1.0.0')
+    writeFileSync(config, JSON.stringify({ agents: { ownership: 'explicit', defaults: { workspace: f.cwd }, entries: { main: {} } } }))
+    expect(f.installer.reconcile({ scope: 'project', agents: ['openclaw'], bundle }).ok).toBe(true)
   })
   it('keeps global OpenClaw guidance in the explicitly selected profile', () => {
     const f = fixture(), bundle = f.bundle('1.0.0')

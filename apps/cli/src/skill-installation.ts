@@ -113,13 +113,7 @@ export class SkillInstallation {
       }
       const entry = object(entries[0]?.[1])
       if ('$include' in entry) throw new Error('Resolve the OpenClaw agent workspace before project skill placement')
-      let selected = entry['workspace'] ?? defaults['workspace']
-      if (entry['workspace'] === undefined && entries[0] && agents['ownership'] === 'explicit') {
-        const id = entries[0][0]
-        if (!/^[a-z][a-z0-9_-]*$/.test(id)) throw new Error('Resolve the OpenClaw agent identifier before project skill placement')
-        selected = typeof defaults['workspace'] === 'string' ? path.join(defaults['workspace'], id)
-          : path.join(openclawStateDir(this.env), `workspace-${id}`)
-      }
+      const selected = entry['workspace'] ?? defaults['workspace']
       if (selected !== undefined) {
         if (typeof selected !== 'string') throw new Error('OpenClaw workspace must be a concrete directory')
         workspace = selected
