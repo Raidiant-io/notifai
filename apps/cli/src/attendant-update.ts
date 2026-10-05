@@ -1,4 +1,7 @@
 /** Explicit recovery of already-owned resident writers after an installation. */
+import { buildIdentity } from './distribution.js'
+import { launchSelf } from './launch-self.js'
+import { retainSessionRuntime } from './runtime-build-retention.js'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { EXIT, log, type CommandDeps } from './commands-core.js'
@@ -64,15 +67,19 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
     if (holder?.['runtime_revision'] === attendantRuntimeRevision && holder['runtime_version'] === packageVersion()) return result('current')
     const transcript = readSessionState(sessionId, deps.env).codex_native_turn?.transcript_path ?? findNativeTranscript(sessionId, deps.env)
     if (transcript === null || !nativeTranscriptOwned(transcript, sessionId, deps.env)) return result('pending')
-    let child
-    try {
-      child = spawn(process.execPath, [artifact, 'attendant-resume', sessionId, current.key], {
-        cwd: owned.cwd, env: deps.env, detached: true, stdio: 'ignore', windowsHide: true,
-      })
-    } catch { return result('pending') }
     let failed = false
-    child.on('error', () => { failed = true })
-    child.unref()
+    try {
+      if (buildIdentity() !== null) {
+        launchSelf(['attendant-resume', sessionId, current.key], { cwd: owned.cwd, env: deps.env,
+          retain: reference => retainSessionRuntime(sessionId, deps.env, reference) })
+      } else {
+        const child = spawn(process.execPath, [artifact, 'attendant-resume', sessionId, current.key], {
+          cwd: owned.cwd, env: deps.env, detached: true, stdio: 'ignore', windowsHide: true,
+        })
+        child.on('error', () => { failed = true })
+        child.unref()
+      }
+    } catch { return result('pending') }
     const until = performance.now() + 8_000
     while (!failed && performance.now() < until) {
       const claim = readClaimFile(claimFile)

@@ -56,7 +56,7 @@ try {
   execFileSync(values.bun, ['build', '--compile', '--no-compile-autoload-dotenv',
     '--no-compile-autoload-bunfig', '--no-compile-autoload-package-json', '--no-compile-autoload-tsconfig',
     '--asset=apps/cli/dist/skill-source',
-    '--define', 'NOTIFAI_COMPILED_BUILD={"runtime":"bun-1.4.2-test-only"}',
+    '--define', `NOTIFAI_COMPILED_BUILD=${JSON.stringify({ runtime: 'bun-1.4.2-test-only', sourceDirty: false, target: `bun-${windows ? 'windows' : process.platform}-${process.arch}` })}`,
     fixture, '--outfile', runtime], { cwd: repositoryRoot, stdio: 'inherit' })
   execFileSync(values.bun, ['build', '--target=node', fixture, '--outfile', sourceBundle],
     { cwd: repositoryRoot, stdio: 'inherit' })
@@ -110,9 +110,13 @@ try {
   writeFileSync(path.join(root, 'installation-fixture.json'), JSON.stringify({ target, directories, inventories,
     publicKey: publicKey.export({ format: 'pem', type: 'spki' }).toString() }))
   run(['installation', root, 'first'])
+  const ownerRoot = path.join(root, 'retained-owner')
+  mkdirSync(ownerRoot)
+  const owner = JSON.parse(execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['owner-launch', ownerRoot],
+    { cwd: root, env, encoding: 'utf8', timeout: 30_000 }))
   const busyRoot = path.join(root, 'busy-launcher')
   mkdirSync(busyRoot)
-  const busy = windows ? spawn(path.join(root, 'installation', 'bin', 'notifai.exe'), ['heartbeat', busyRoot],
+  const busy = windows ? spawn(path.join(root, '.notifai', 'bin', 'notifai.exe'), ['heartbeat', busyRoot],
     { cwd: root, env, stdio: 'ignore' }) : null
   try {
     if (busy) {
@@ -120,7 +124,16 @@ try {
       assert.ok(existsSync(path.join(busyRoot, 'heartbeat')), 'managed launcher must be running during replacement')
     }
     run(['installation', root, 'update'])
+    for (let i = 0; i < 100 && !existsSync(path.join(ownerRoot, 'heartbeat')); i++) await sleep(50)
+    assert.ok(existsSync(path.join(ownerRoot, 'heartbeat')), 'the detached owner must outlive the launching command')
+    const ownerState = JSON.parse(readFileSync(path.join(ownerRoot, 'owner.json'), 'utf8'))
+    assert.equal(realpathSync.native(ownerState.executable), realpathSync.native(path.join(root, '.notifai', 'versions', owner.reference.build, `notifai-runtime${extension}`)))
+    assert.notEqual(JSON.parse(readFileSync(path.join(root, '.notifai', 'active.json'), 'utf8')).active, owner.reference.build)
+    const before = readFileSync(path.join(ownerRoot, 'heartbeat'), 'utf8')
+    await sleep(250)
+    assert.notEqual(readFileSync(path.join(ownerRoot, 'heartbeat'), 'utf8'), before, 'old owner keeps running after activation')
   } finally {
+    try { process.kill(owner.pid) } catch (error) { if (error.code !== 'ESRCH') throw error }
     if (busy) {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('owned busy launcher did not exit')), 10_000)
@@ -233,6 +246,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

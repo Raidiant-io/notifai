@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:446856355cdcb18b9735844ede9a5f9f0192e0235a592f405baae1b6c505bcc7",
+  "behavior_digest": "sha256:1fb85f3c231b8c78dd1ffb436ccb93a92aa7dcc24ef95415ccf2b02511da1324",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Installation remains internal and does not expose new setup commands. Native Windows access checks now validate the token user, DACL writers and reparse points; temporary-file ownership is established before publication. Managed launchers follow only the active pointer. These changes do not alter Notification Request ownership, native approvals, guidance authority, or the current setup instructions.",
+  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Native detached question and attendant work now records the immutable build in existing session and claim state before launch. Source execution remains for development and the native installer is still internal. These changes preserve Notification Request ownership, session authority, native approvals and current setup instructions; no new agent action is required.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

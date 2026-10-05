@@ -8,6 +8,8 @@ import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionIn
  * never delays: the harness does not wait for an async handler), and on
  * UserPromptSubmit and Stop to re-arm a session whose attendant died.
  */
+import { currentRuntimeBuild } from './launch-self.js'
+import { retainSessionRuntime } from './runtime-build-retention.js'
 import { existsSync, readFileSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -282,6 +284,9 @@ export async function attendHook(
   )
   if (record === null || (input.recovery !== undefined && !ownsNative(record.key))) return end('ignored', { reason: 'recovery-owner-changed' })
   if (harness === 'codex' && starting) observeNative(record.key, true)
+
+  const runtimeBuild = currentRuntimeBuild(deps.env)
+  retainSessionRuntime(sessionId, deps.env, runtimeBuild)
 
   // One live attendant per session. A holder serving an older incarnation of
   // this session (an in-process resume moments after a clear) steps aside

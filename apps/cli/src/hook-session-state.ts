@@ -430,6 +430,7 @@ export function clearSessionStateUnlocked(sessionId: string, env: NodeJS.Process
       ...(current.codex_question_bindings === undefined ? {} : { codex_question_bindings: current.codex_question_bindings }),
       ...(current.codex_question_marker_counter === undefined ? {} : { codex_question_marker_counter: current.codex_question_marker_counter }),
       ...(current.question_history === undefined ? {} : { question_history: current.question_history }),
+      ...(current.runtime_builds === undefined ? {} : { runtime_builds: current.runtime_builds }),
     })
   } else rmSync(file, { force: true })
   // The session override lives in a sibling file; leaving it behind meant a

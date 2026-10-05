@@ -39,10 +39,21 @@ if (mode === 'lock') {
     signedInventory: fixture.inventory, target: fixture.target, bytes: readFileSync(path.join(root, 'archive-fixture.bin')),
     parent: path.join(root, 'extracted') })
   assert.equal(readFileSync(path.join(directory, 'licenses', 'NOTICE.txt'), 'utf8'), 'Fixture notice')
+} else if (mode === 'owner-launch') {
+  const { currentRuntimeBuild, launchSelf } = await import('../apps/cli/src/launch-self.js')
+  const { retainSessionRuntime } = await import('../apps/cli/src/runtime-build-retention.js')
+  const { writeSessionState, readSessionState } = await import('../apps/cli/src/hook-session-state.js')
+  const session = 'native-owner-fixture', reference = currentRuntimeBuild()
+  assert.ok(reference)
+  writeSessionState(session, process.env, { harness: 'claude-code' })
+  const child = launchSelf(['owner-heartbeat', root], { cwd: root, env: process.env,
+    retain: value => retainSessionRuntime(session, process.env, value) })
+  assert.deepEqual(readSessionState(session, process.env).runtime_builds, [reference])
+  process.stdout.write(JSON.stringify({ ...child, reference }))
 } else if (mode === 'installation') {
   const fixture = JSON.parse(readFileSync(path.join(root, 'installation-fixture.json'), 'utf8'))
   const extension = process.platform === 'win32' ? '.exe' : ''
-  const options = { root: path.join(root, 'installation'), target: fixture.target,
+  const options = { root: path.join(root, '.notifai'), target: fixture.target,
     distribution: new Distribution({ fixture: fixture.publicKey }),
     probe(directory: string) {
       const result = spawnSync(path.join(directory, `notifai${extension}`), ['identity', root], { encoding: 'utf8', timeout: 20_000 })
@@ -123,6 +134,15 @@ if (mode === 'lock') {
   child.on('error', (error) => { throw error })
   writeFileSync(path.join(root, 'processes.json'), JSON.stringify({ parent: process.pid, child: child.pid }))
   setInterval(() => {}, 100)
-} else if (mode === 'heartbeat') {
+} else if (mode === 'heartbeat' || mode === 'owner-heartbeat') {
+  if (mode === 'owner-heartbeat') {
+    const { currentRuntimeBuild } = await import('../apps/cli/src/launch-self.js')
+    const { readSessionState } = await import('../apps/cli/src/hook-session-state.js')
+    const reference = currentRuntimeBuild()
+    assert.ok(reference)
+    assert.ok(readSessionState('native-owner-fixture', process.env).runtime_builds?.some(item =>
+      item.installation_id === reference.installation_id && item.build === reference.build), 'build reference must exist before the child starts')
+  }
+  writeFileSync(path.join(root, 'owner.json'), JSON.stringify({ pid: process.pid, executable: process.execPath }))
   setInterval(() => writeFileSync(path.join(root, 'heartbeat'), String(Date.now())), 50)
 } else throw new Error(`Unknown probe mode: ${mode}`)
