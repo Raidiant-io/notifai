@@ -163,3 +163,26 @@ content digest, including same-file concurrent edits.
 This engine operation is explicit, never run by hooks. It does not change the
 current parent shell, guess every installed shell, or configure Windows User
 PATH. Public installer orchestration still needs its complete journey proof.
+
+## Local native installer command
+
+A trusted compiled release exposes `install`, defaulting to the executable's
+directory and its sibling signed `inventory.json`. `--directory` and
+`--inventory` support previously obtained local files without a runtime download.
+`--version <exact>` checks the application version; `--channel` explicitly
+selects a channel. `--source shell|powershell|npm|manual` records the bootstrap
+route without changing runtime update ownership. Repeated installation reuses
+the healthy managed runtime and preserves its original route and channel.
+
+The command refuses known PATH collisions and current-session pending work,
+authenticates candidate bytes, configures the selected shell, then invokes
+`init` through the verified installed immutable launcher. `--no-path` explicitly
+keeps absolute-command use; `--no-init` installs without choosing account, skill
+scope or harness setup. JSON distinguishes runtime installation from setup
+readiness and retains a local recovery command after partial setup. Runtime
+activation is never undone because approval or setup is pending. Custom zsh
+profile roots need explicit manual PATH setup.
+
+Production trust remains unconfigured, and Windows persistent PATH plus the
+OS bootstraps are still under implementation. This command is candidate source,
+not an advertised replacement for the published installation route.

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:905244b45fccc054eb8461c40515ba8eb26b7e548324605e8d60b8663c14c883",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Explicit POSIX PATH ownership is currently an Installation engine operation with no new public command. It preserves User edits and records interrupted writes; ordinary hooks and notification authority are unchanged. Existing public setup guidance still describes the published distribution.",
+  "behavior_digest": "sha256:b799a67ca34253ea8717cc2c59031637b47c621b81d1c18841399539108707c8",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Candidate install help and standalone documentation now cover authenticated local installation, explicit route/channel/version, persistent PATH skips and separate runtime/setup outcomes. Init continues to own approval, skill scope and harness setup; ordinary notification guidance retains the currently published route. No automatic account approval or Project Enablement was added.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

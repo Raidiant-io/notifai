@@ -382,3 +382,15 @@ it('awaits native rollback and rejects ambiguous lifecycle operations', async ()
     expect(update).not.toHaveBeenCalled()
   }
 })
+
+
+it('parses native offline installation and explicit setup skips without treating the version as CLI help', async () => {
+  let flags: unknown
+  const result = await parse(['install', '--directory', '/candidate', '--inventory', '/signed.json', '--source', 'npm',
+    '--version', '1.0.0', '--channel', 'stable', '--no-init', '--no-path', '--json'], {
+    install: async (_deps, input) => { flags = input; return 0 },
+  })
+  expect(result.exitCode).toBe(0)
+  expect(flags).toMatchObject({ directory: '/candidate', inventory: '/signed.json', source: 'npm', version: '1.0.0',
+    channel: 'stable', init: false, path: false, json: true })
+})

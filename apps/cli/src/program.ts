@@ -51,6 +51,7 @@ import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 import { resumeAttendantCommand } from './attendant-update.js'
 import { buildIdentity } from './distribution.js'
+import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 
 /**
@@ -89,6 +90,7 @@ function commandPath(command: Command): string {
  */
 const defaultRunners = {
   init: initCommand,
+  install: nativeInstallCommand,
   doctor: doctorCommand,
   update: cliUpdateCommand,
   updateCheck: cliUpdateCheckCommand,
@@ -150,6 +152,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   const program = new Command('notifai')
     .description('Send native device notifications from agents and local programs')
     .version(version())
+    // Install owns --version <application>; global --version belongs before subcommands.
+    .enablePositionalOptions()
     .configureHelp(helpConfiguration)
     // Lazy on purpose. `addHelpText` also takes a string, but that builds the
     // footer on every invocation — including the hook that runs in front of
@@ -289,6 +293,22 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         exit(await runners.init(deps, opts))
       },
     )
+
+  program
+    .command('install')
+    .helpGroup(GROUP.start)
+    .summary('Install an authenticated native release for this User')
+    .description('Install or reuse the managed native runtime, configure PATH, then continue setup')
+    .option('--json', 'machine-readable installation and setup report; never prompts')
+    .option('--directory <directory>', 'directory containing the verified release files (default: this executable directory)')
+    .option('--inventory <file>', 'signed release inventory (default: inventory.json beside the release)')
+    .option('--source <source>', 'bootstrap route: shell, powershell, npm or manual', 'manual')
+    .option('--channel <channel>', 'stable or beta; reruns keep the existing channel unless explicitly requested')
+    .option('--version <version>', 'require this exact application version')
+    .option('--shell <shell>', 'selected POSIX shell for PATH setup (default: SHELL)')
+    .option('--no-path', 'skip persistent PATH setup; use the reported absolute command')
+    .option('--no-init', 'install the runtime without starting account or harness setup')
+    .action(async (opts: NativeInstallFlags) => { exit(await runners.install(deps, opts)) })
 
   program
     .command('doctor')

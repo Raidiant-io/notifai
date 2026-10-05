@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { lstatSync, readFileSync } from 'node:fs'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
-import type { Installation } from './installation.js'
+import type { Installation, InstallSource } from './installation.js'
 import { managedInstallation } from './native-installation.js'
 import { updateWorkPending } from './commands-update-resume.js'
 import { pathNotifaiEntries } from './cli-bin.js'
@@ -98,6 +99,105 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     emit({ ok: false, operation: 'update', message, recovery_command: 'notifai doctor --json' }, message)
+    return EXIT.failed
+  }
+}
+
+
+export interface NativeInstallFlags {
+  json?: boolean
+  directory?: string
+  inventory?: string
+  source?: string
+  channel?: string
+  version?: string
+  init?: boolean
+  path?: boolean
+  shell?: string
+}
+interface NativeInstallSeams {
+  installation?: Installation
+  pendingWork?: () => string | null
+  init?: (executable: string) => Record<string, unknown>
+}
+
+function installedSetup(deps: CommandDeps, executable: string, json: boolean): Record<string, unknown> {
+  const structured = json || !deps.io.interactive
+  const result = spawnSync(executable, ['init', ...(structured ? ['--json'] : [])], {
+    cwd: deps.cwd, env: deps.env, windowsHide: true,
+    ...(structured ? { encoding: 'utf8' as const, maxBuffer: 1024 * 1024, timeout: 120_000,
+      stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] } : { stdio: 'inherit' as const }),
+  })
+  if (result.error) return { ok: false, code: 'setup_interrupted' }
+  if (!structured) return { ok: result.status === 0 }
+  try {
+    const report: unknown = JSON.parse(String(result.stdout))
+    if (report && typeof report === 'object' && !Array.isArray(report)) {
+      return { ...report, ok: result.status === 0 && (report as Record<string, unknown>)['ready'] === true }
+    }
+  } catch { /* No valid setup report means incomplete setup, not failed runtime activation. */ }
+  return { ok: false, code: 'setup_report_unavailable' }
+}
+
+/** Offline-capable native installation from already obtained release files.
+ * Trust comes only from the compiled keys, never from a bootstrap argument. */
+export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInstallFlags, seams: NativeInstallSeams = {}): Promise<number> {
+  const emit = (report: Record<string, unknown>, message: string) => {
+    if (flags.json || !deps.io.interactive) deps.io.out(JSON.stringify(report, null, 2))
+    else deps.io.out(message)
+  }
+  let installed: Record<string, unknown> = { runtime_installed: false, setup_complete: false }
+  try {
+    const source = flags.source ?? 'manual'
+    if (!['shell', 'powershell', 'npm', 'manual'].includes(source)) throw new Error('--source must be shell, powershell, npm or manual')
+    if (flags.channel !== undefined && flags.channel !== 'stable' && flags.channel !== 'beta') throw new Error('--channel must be stable or beta')
+    const installation = seams.installation ?? managedInstallation(deps)
+    const platform = deps.hookPlatform ?? process.platform
+    if (!seams.installation) {
+      const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
+      const stable = path.join(home, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
+      if (pathNotifaiEntries(deps.env, platform).some(entry => !sameLocalPath(canonicalPath(entry), canonicalPath(stable), platform))) {
+        throw new Error('Another Notifai installation is on PATH; resolve the collision with notifai doctor --json before installing')
+      }
+    }
+    const waiting = seams.pendingWork ? seams.pendingWork() : updateWorkPending(deps)
+    if (waiting) throw new Error(waiting)
+    // Default to this portable release, never to the invocation directory.
+    const directory = path.resolve(flags.directory ?? path.dirname(process.execPath))
+    const inventoryFile = path.resolve(flags.inventory ?? path.join(directory, 'inventory.json'))
+    const stat = lstatSync(inventoryFile)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) throw new Error('Release inventory must be a bounded regular file')
+    const result = installation.installCandidate({ directory, signedInventory: readFileSync(inventoryFile, 'utf8'),
+      source: source as InstallSource, ...(flags.channel === undefined ? {} : { channel: flags.channel }),
+      ...(flags.version === undefined ? {} : { version: flags.version }) })
+    const active = installation.activeRelease(result.active.generation)
+    const command = path.join(path.dirname(path.dirname(path.dirname(active.launcher))), 'bin', path.basename(active.launcher))
+    installed = { runtime_installed: true, setup_complete: false, ...result, channel: installation.inspect().channel,
+      effective_command: command, recovery: { executable: command, args: ['init', '--json'] } }
+    if (result.launcher_update_pending) throw new Error('The runtime is installed; finish launcher repair before setup')
+    let pathResult: Record<string, unknown> = { ok: true, skipped: true }
+    if (flags.path !== false) {
+      if (platform !== 'win32' && deps.env['ZDOTDIR'] && path.basename(flags.shell ?? deps.env['SHELL'] ?? '') === 'zsh') {
+        throw new Error('Custom ZDOTDIR needs manual PATH setup; rerun with --no-path after adding the installed command directory')
+      }
+      pathResult = { ...installation.shellPath('configure', flags.shell ?? deps.env['SHELL'] ?? '') }
+    }
+    installed = { ...installed, path: pathResult }
+    if (pathResult['ok'] !== true) throw new Error('The runtime is installed; PATH setup has conflicts. Preserve those files and configure PATH before rerunning setup')
+    if (flags.init === false) {
+      emit({ ok: true, code: 'installed', ...installed, setup_skipped: true }, `Notifai ${active.version} is installed. Continue with ${command} init.`)
+      return EXIT.ok
+    }
+    let setup: Record<string, unknown>
+    try { setup = seams.init ? seams.init(active.launcher) : installedSetup(deps, active.launcher, flags.json === true) }
+    catch { setup = { ok: false, code: 'setup_interrupted' } }
+    const complete = setup['ok'] === true
+    emit({ ok: complete, code: complete ? 'ready' : 'setup_pending', ...installed, setup_complete: complete, setup },
+      complete ? `Notifai ${active.version} is installed and setup is complete.` : `Notifai ${active.version} is installed. Continue setup with ${command} init.`)
+    return complete ? EXIT.ok : EXIT.failed
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    emit({ ok: false, code: installed['runtime_installed'] ? 'installation_incomplete' : 'installation_failed', ...installed, message }, message)
     return EXIT.failed
   }
 }

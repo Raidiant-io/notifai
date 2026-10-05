@@ -7,7 +7,7 @@ import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import { Installation } from './installation.js'
-import { nativeUpdateCommand } from './commands-native-installation.js'
+import { nativeInstallCommand, nativeUpdateCommand } from './commands-native-installation.js'
 import type { CommandDeps } from './commands-core.js'
 import { discoverCliUpdate } from './cli-release.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
@@ -278,4 +278,43 @@ it('candidate installation reuses the healthy owned runtime without silently upg
   expect(f.installation.inspect()).toMatchObject({ source: 'shell', channel: 'stable', active: { generation: 1 } })
   expect(() => f.installation.installCandidate({ ...newer, source: 'manual', version: '2.0.0' })).toThrow(/update/)
   expect(() => f.installation.installCandidate({ ...newer, source: 'manual', channel: 'beta' })).toThrow(/update/)
+})
+
+
+it('native installation activates authenticated local bytes and reports setup separately through the installed launcher', async () => {
+  const f = fixture(), candidate = f.candidate('1.0.0')
+  const inventory = path.join(candidate.directory, 'inventory.json'); writeFileSync(inventory, candidate.signedInventory)
+  const out: string[] = [], launches: string[] = []
+  const deps: CommandDeps = { env: {}, cwd: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  const flags = { directory: candidate.directory, inventory, source: 'manual', json: true, path: false }
+  const seams = { installation: f.installation, pendingWork: () => null,
+    init: (executable: string) => { launches.push(executable); return { ok: false, code: 'approval_required' } } }
+  expect(await nativeInstallCommand(deps, flags, seams)).toBe(1)
+  const active = f.installation.activeRelease()
+  expect(launches).toEqual([active.launcher])
+  expect(JSON.parse(out[0]!)).toMatchObject({ ok: false, runtime_installed: true, setup_complete: false, setup: { code: 'approval_required' } })
+  out.length = 0; launches.length = 0
+  expect(await nativeInstallCommand(deps, { ...flags, source: 'npm', init: false }, seams)).toBe(0)
+  expect(launches).toEqual([])
+  expect(JSON.parse(out[0]!)).toMatchObject({ ok: true, reused: true, setup_complete: false, setup_skipped: true })
+  expect(f.installation.inspect()).toMatchObject({ source: 'manual', active: { generation: 1 } })
+})
+
+it('native installer refuses pending work before installation and preserves an activated runtime when setup fails', async () => {
+  const f = fixture(), candidate = f.candidate('1.0.0')
+  const inventory = path.join(candidate.directory, 'inventory.json'); writeFileSync(inventory, candidate.signedInventory)
+  const out: string[] = []
+  const deps: CommandDeps = { env: {}, cwd: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  const flags = { directory: candidate.directory, inventory, path: false, json: true }
+  expect(await nativeInstallCommand(deps, flags, { installation: f.installation, pendingWork: () => 'A question is pending' })).toBe(1)
+  expect(f.installation.inspect().active).toBeNull()
+  out.length = 0
+  expect(await nativeInstallCommand(deps, flags, { installation: f.installation, pendingWork: () => null,
+    init: () => { throw new Error('interrupted setup') } })).toBe(1)
+  expect(JSON.parse(out[0]!)).toMatchObject({ runtime_installed: true, setup_complete: false })
+  expect(f.installation.activeRelease().version).toBe('1.0.0')
 })

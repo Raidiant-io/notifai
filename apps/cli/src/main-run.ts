@@ -23,7 +23,7 @@ import { spawnQuestionSettlement } from './question-settlement-process.js'
  */
 // Installers verify a staged payload before activation. That check must not
 // create logs or inspect the user's configuration as a side effect.
-const logger = process.argv[2] === 'self-check' ? nullLogger() : bootstrapLogger()
+const logger = ['self-check', 'install'].includes(process.argv[2] ?? '') ? nullLogger() : bootstrapLogger()
 
 const deps: CommandDeps = {
   io: realIo(),
