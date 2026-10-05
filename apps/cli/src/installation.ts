@@ -8,7 +8,7 @@ import { withFileLock } from './file-lock.js'
 import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease } from './release-distribution.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 
-type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
+export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
 interface InstallRecord {
   schema: 1
@@ -53,8 +53,8 @@ function sameGeneration(left: ActiveGeneration | null, right: ActiveGeneration |
   return left === null || right === null ? left === right : activeBytes(left) === activeBytes(right)
 }
 
-/** Local installation authority. Network and archive extraction are outside this
- * module. No activation removes a version, changes account data, or rewires a
+/** Local installation authority. Distribution and archive parsing delegate to
+ * their own modules. No activation removes a version, changes account data, or rewires a
  * harness. Old resident owners can keep their immutable executable. */
 export class Installation {
   private readonly access: InstallationAccess
@@ -160,6 +160,32 @@ export class Installation {
         }, { waitMs: 5_000, strictRelease: true })
       },
     })
+  }
+  /** Complete authenticated download-to-activation operation. Reuses an
+   * already verified immutable build; never downloads on an ordinary hook. */
+  async installRelease(input: { channel: ReleaseChannel; source: InstallSource; expectedGeneration: number;
+    version?: string; allowStableDowngrade?: boolean }): Promise<ActivationResult & { version: string }> {
+    const before = this.inspect()
+    if (before.pending) throw new Error('Recover the pending installation transaction first')
+    if ((before.active?.generation ?? 0) !== input.expectedGeneration) throw new Error('Installation changed; inspect before retrying')
+    const release = await this.resolveRelease(input.channel, input.version)
+    const build = this.identity(release.inventory, release.artifact)
+    if (!present(this.versionDirectory(build))) {
+      const bytes = await this.options.distribution.downloadArtifact(release)
+      const downloads = this.file('downloads')
+      if (present(downloads)) this.owned(downloads, true)
+      this.access.directory(downloads)
+      const temporary = path.join(downloads, randomUUID())
+      this.access.directory(temporary)
+      try {
+        const { extractReleaseArchive } = await import('./release-archive.js')
+        const directory = await extractReleaseArchive({ distribution: this.options.distribution,
+          signedInventory: release.signedInventory, target: this.options.target, bytes, parent: temporary })
+        if (this.stage({ directory, signedInventory: release.signedInventory }) !== build) throw new Error('Staged release identity changed')
+      } finally { rmSync(temporary, { recursive: true, force: true }) }
+    }
+    const result = this.activate({ ...input, build })
+    return { ...result, version: release.inventory.version }
   }
   private versionDirectory(build: string): string {
     if (!buildId(build)) throw new Error('Invalid immutable build identifier')

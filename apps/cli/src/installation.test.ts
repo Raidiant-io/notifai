@@ -1,5 +1,7 @@
+import { gzipSync } from 'node:zlib'
+import { pack } from 'tar-stream'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -14,15 +16,15 @@ function fixture(fetcher?: typeof fetch) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
   const target = 'bun-linux-x64' as const
-  const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex')
-  const candidate = (version: string) => {
+  const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
+  const candidate = (version: string, archive?: Buffer) => {
     const directory = path.join(root, version); mkdirSync(directory)
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
     writeFileSync(path.join(directory, 'notifai-runtime'), runtime)
     writeFileSync(path.join(directory, 'notifai'), launcher)
     const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: 'a'.repeat(40),
       store_schema: 1, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-linux-x64.tar.gz`,
-        bytes: 100, sha256: digest(version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
+        bytes: archive?.length ?? 100, sha256: digest(archive ?? version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
     const signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
     return { directory, signedInventory }
@@ -184,4 +186,29 @@ it('abandons a partially prepared first install while preserving data and staged
   expect(readFileSync(path.join(f.options.root, 'user-data'), 'utf8')).toBe('keep')
   expect(existsSync(path.join(f.options.root, 'versions', first))).toBe(true)
   expect(f.installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' }).active.active).toBe(first)
+})
+
+
+it('downloads a signed release through archive admission into one reusable immutable activation', async () => {
+  const writer = pack(), chunks: Buffer[] = []
+  const consumed = (async () => { for await (const chunk of writer) chunks.push(chunk) })()
+  writer.entry({ name: 'notifai' }, 'launcher v1')
+  writer.entry({ name: 'notifai-runtime' }, 'runtime 1.0.0')
+  writer.finalize(); await consumed
+  const archive = gzipSync(Buffer.concat(chunks))
+  let channel = '', inventory = '', downloads = 0
+  const f = fixture(async input => {
+    if (String(input).endsWith('/stable.json')) return new Response(channel)
+    if (String(input).endsWith('/inventory.json')) return new Response(inventory)
+    downloads++
+    return new Response(archive)
+  })
+  inventory = f.candidate('1.0.0', archive).signedInventory
+  channel = f.channel(1, [], inventory, '1.0.0')
+  const first = await f.installation.installRelease({ channel: 'stable', source: 'shell', expectedGeneration: 0 })
+  expect(first).toMatchObject({ changed: true, version: '1.0.0', active: { generation: 1 } })
+  expect(readdirSync(path.join(f.options.root, 'downloads'))).toEqual([])
+  expect(await f.installation.installRelease({ channel: 'stable', source: 'npm', expectedGeneration: 1 })).toMatchObject({ changed: false, active: first.active })
+  expect(f.installation.inspect().source).toBe('shell')
+  expect(downloads).toBe(1)
 })

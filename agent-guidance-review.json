@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:66ea62b7b42fc30fd2f843e25525f75278e5c5346e35e32b7b49c637ab9efab1",
+  "behavior_digest": "sha256:fda3c2f70a6a71c6b619debdd0f1fa14aebef078cf8e18c7913c1630a338ac16",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. The OS installation-access adapter can receive an explicit verified launcher from CI tooling to test packaged artifacts with the real policy. Production still selects its own sibling launcher; no environment override or new user-facing command is introduced. Archive verification does not change agent behavior, trust, notification ownership or setup teaching.",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. The Installation download-to-activation operation delegates signed discovery, archive verification and existing transactional activation. It does not introduce user-facing commands or change notification authority, setup teaching or agent update guidance.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
