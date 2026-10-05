@@ -3,7 +3,13 @@ $ErrorActionPreference = 'Stop'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('notifai-acl-proof-' + [Guid]::NewGuid().ToString('N'))
 function Run-Launcher([string[]]$Arguments) {
   $saved = $ErrorActionPreference
-  try { $ErrorActionPreference = 'Continue'; & $Launcher @Arguments 2>$null; return $LASTEXITCODE }
+  try {
+    $ErrorActionPreference = 'Continue'
+    $diagnostic = & $Launcher @Arguments 2>&1
+    $code = $LASTEXITCODE
+    if ($code -ne 0) { Write-Host ("Launcher exit {0}: {1}" -f $code, ($diagnostic -join [Environment]::NewLine)) }
+    return $code
+  }
   finally { $ErrorActionPreference = $saved }
 }
 function Require($condition, [string]$message) { if (-not $condition) { throw $message } }

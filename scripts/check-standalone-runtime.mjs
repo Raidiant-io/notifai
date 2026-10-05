@@ -24,7 +24,9 @@ const sourceBundle = path.join(root, 'probe.mjs')
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 const env = { HOME: root, USERPROFILE: root, TEMP: root, TMP: root, TMPDIR: root,
   PATH: windows ? `${process.env.SystemRoot}\\System32` : '/usr/bin:/bin',
-  ...(windows ? { SystemRoot: process.env.SystemRoot, LOCALAPPDATA: root, APPDATA: root } : {}),
+  // PowerShell needs PATHEXT to invoke .exe as a native command and wait for
+  // its exit; omitting it can send even an absolute .exe through file association.
+  ...(windows ? { SystemRoot: process.env.SystemRoot, PATHEXT: '.COM;.EXE;.BAT;.CMD', LOCALAPPDATA: root, APPDATA: root } : {}),
 }
 function run(args, overrides = {}) {
   const result = spawnSync(launcher, args, { cwd: root, env, encoding: 'utf8', timeout: 90_000, ...overrides })
