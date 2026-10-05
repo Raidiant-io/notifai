@@ -54,7 +54,7 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created) 
             user, NULL, NULL, NULL) == ERROR_SUCCESS;
     }
     LocalFree(descriptor);
-    return ok;
+    return ok && (!created || private_handle(handle, directory, user, 0));
 }
 
 static int private_path(const wchar_t *path, int directory, int created) {
