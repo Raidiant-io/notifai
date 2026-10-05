@@ -159,8 +159,26 @@ state roots and closes native launch admission with a recoverable journal.
 It leaves questions, wiring and runtime files intact. The C launcher, direct
 payload command admission and detached-owner path honor that barrier, and
 Session Attendants withdraw through their existing lifecycle gate. This is
-preparation infrastructure; process-absence proof, owned removal and the public
-uninstall command are not yet complete.
+preparation infrastructure; owned removal and the public uninstall command are
+not yet complete. Inspection includes orphan delivery/input sidecars and the
+machine retirement queue in every discovered state root. Reported handoffs and
+valid native acknowledgement receipts are history; unfinished work retains the
+installation. No question is cancelled by inspection.
+
+The native launcher also offers an internal, read-only executable-use probe for
+explicit uninstall. Windows uses Restart Manager without shutdown or restart.
+Linux compares executable device/inode through pinned `/proc` directory handles.
+macOS uses a `sysctl` credential snapshot and the SDK's private `libproc` interface,
+with process start-time revalidation around executable-path inspection. POSIX
+scans cover this installation account's effective UID; other accounts and root
+execution are outside the per-account installation boundary. Linux requires the
+normal host process view; hidden or container-limited process views are not a
+cross-host absence guarantee. macOS's private interface has no permanent API
+stability guarantee. Unsupported, inaccessible or changed process evidence
+retains the installation. An unrelated running executable whose pathname was
+removed can therefore prevent macOS cleanup until that process exits. These
+bounded snapshots require closed launch admission and still need integration
+with owned teardown before they may authorize uninstall deletion.
 
 ### Existing Windows directory permissions
 

@@ -315,6 +315,8 @@ static int owned_path(const char *file, int directory) {
         (directory ? S_ISDIR(info.st_mode) : S_ISREG(info.st_mode));
 }
 
+#include "posix-file-users.h"
+
 static int managed_runtime(char *executable) {
     char root[PATH_MAX];
     strcpy(root, executable);
@@ -366,6 +368,8 @@ static int uninstall_pending(const char *executable) {
 }
 
 int main(int argc, char **argv) {
+    if (argc >= 3 && !strcmp(argv[1], "--internal-file-users"))
+        return file_users(argc - 2, argv + 2);
     if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }
     char executable[PATH_MAX];
 #ifdef __APPLE__

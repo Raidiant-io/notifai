@@ -13,6 +13,7 @@ import { discoverCliUpdate } from './cli-release.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
 import { RuntimeRetention } from './runtime-retention.js'
 import { sessionStatePath, writeSessionState } from './hook-session-state.js'
+import { sanitizeSessionId } from './config.js'
 import { canonicalPath } from './local-path.js'
 import { processStartTime } from './process-identity.js'
 
@@ -117,6 +118,55 @@ it('finds pending work across indexed state roots before any uninstall mutation'
   writeFileSync(file, '{broken')
   expect(retention.inspectOwners(current).status).toBe('uncertain')
   expect(f.installation.activeRelease().build).toBe(build)
+})
+
+it('retains unfinished native answers and input wakes before uninstall preparation', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'queued-owner'
+  writeSessionState(session, env, {})
+  const file = sessionStatePath(session, env), sessions = path.dirname(file)
+  const initial = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...initial, native_answer_operations: [{ acknowledgement: null }] }))
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('uncertain')
+  writeFileSync(file, JSON.stringify({ ...initial, input_wake: { queued: true } }))
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  for (const phase of ['prepared', 'sending', 'accepted', 'unknown']) {
+    writeFileSync(file, JSON.stringify({ ...initial, input_wake_attempts: [{ phase }] }))
+    expect(f.installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  }
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  writeFileSync(file, JSON.stringify({ ...initial, input_wake_attempts: [{ phase: 'consumed' }, { phase: 'cancelled' }] }))
+  const begun = f.installation.beginUninstall(1, sessions)
+  expect(begun.status).toBe('preparing')
+  if (begun.status === 'preparing') f.installation.cancelUninstall(begun.token)
+})
+
+it('finds orphan delivery and retirement work outside the main session records', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const sessions = path.join(f.root, 'state', 'sessions')
+  ensurePrivateDirectory(sessions)
+  const journal = path.join(sessions, `${sanitizeSessionId('orphan')}.deliveries`)
+  const entry = { attempt_id: 'attempt', subject: { type: 'session_message', message_id: 'sm_note' },
+    stage: 'written', writer: { pid: 1, start: 'old' }, claimed_at: 1 }
+  writeFileSync(journal, JSON.stringify({ session_id: 'orphan', entries: [entry] }))
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  writeFileSync(journal, JSON.stringify({ session_id: 'orphan', entries: [{ ...entry, reported: null }] }))
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('uncertain')
+  writeFileSync(journal, JSON.stringify({ session_id: 'orphan', entries: [{ ...entry, reported: 'handed_off', reported_at: 2 }] }))
+  const inputs = path.join(sessions, `${sanitizeSessionId('orphan')}.inputs.json`)
+  writeFileSync(inputs, JSON.stringify({ session_id: 'orphan', incarnation: 'old', generation: 1,
+    messages: [{ message_id: 'sm_pending', kind: 'note', body: 'pending note', created_at: '2026-10-06T00:00:00Z', agent_acknowledgement_text_required: true }] }))
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  rmSync(inputs)
+  const retire = path.join(path.dirname(sessions), 'retire-queue.json')
+  writeFileSync(retire, JSON.stringify([{ request_id: 'req_old' }]))
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  writeFileSync(retire, '[]')
+  const begun = f.installation.beginUninstall(1, sessions)
+  expect(begun.status).toBe('preparing')
+  if (begun.status === 'preparing') f.installation.cancelUninstall(begun.token)
 })
 
 it('closes launch admission only after work drains and fences concurrent installation mutations', () => {

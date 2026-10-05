@@ -52,13 +52,18 @@ export class RuntimeRetention {
       this.access.check(directory, true)
     }
   }
-  private read(file: string, limit = 256 * 1024): Record<string, unknown> | null {
+  private readValue(file: string, limit = 256 * 1024): unknown {
     this.parents(file)
-    if (!present(file)) return null
+    if (!present(file)) return undefined
     const stat = lstatSync(file)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > limit ||
         (typeof process.getuid === 'function' && (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain runtime retention record')
-    const value: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    this.access.check(file, false)
+    return JSON.parse(readFileSync(file, 'utf8')) as unknown
+  }
+  private read(file: string, limit = 256 * 1024): Record<string, unknown> | null {
+    const value = this.readValue(file, limit)
+    if (value === undefined) return null
     if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid runtime retention record')
     return value as Record<string, unknown>
   }
@@ -105,6 +110,55 @@ export class RuntimeRetention {
       catch (error) { if (!recorded()) throw error } // Two owners may publish the same boot concurrently.
     }
   }
+  /** Sidecars have independent persistence; a missing main state file cannot
+   * erase an unreported handoff or a cached input. Caller holds state lock. */
+  private pendingSidecars(file: string, hasState: boolean): boolean {
+    const stem = file.slice(0, -5), journalFile = `${stem}.deliveries`
+    const reportedMessages = new Set<string>()
+    let pending = false
+    withFileLock(`${journalFile}.lock`, () => {
+      const journal = this.read(journalFile, 16 * 1024 * 1024)
+      if (journal === null) return
+      if (typeof journal['session_id'] !== 'string' ||
+          sanitizeSessionId(journal['session_id']) !== path.basename(stem) || !Array.isArray(journal['entries'])) {
+        throw new Error('Uncertain delivery journal')
+      }
+      for (const entry of journal['entries']) {
+        if (!entry || typeof entry.attempt_id !== 'string' ||
+            !['claimed', 'writing', 'written', 'failed', 'released'].includes(entry.stage) ||
+            !entry.writer || !Number.isSafeInteger(entry.writer.pid) || entry.writer.pid <= 0 ||
+            typeof entry.writer.start !== 'string' || !entry.subject ||
+            !(entry.subject.type === 'answer' && typeof entry.subject.request_id === 'string' ||
+              entry.subject.type === 'session_message' && typeof entry.subject.message_id === 'string')) {
+          throw new Error('Uncertain delivery attempt')
+        }
+        if (entry.reported === undefined) pending = true
+        else {
+          if (!['handed_off', 'unconfirmed', 'released'].includes(entry.reported) ||
+              !Number.isFinite(entry.reported_at)) throw new Error('Uncertain delivery receipt')
+          if (entry.subject.type === 'session_message') reportedMessages.add(entry.subject.message_id)
+        }
+      }
+    })
+    const inputs = this.read(`${stem}.inputs.json`, 16 * 1024 * 1024)
+    if (inputs !== null) {
+      if (typeof inputs['session_id'] !== 'string' || sanitizeSessionId(inputs['session_id']) !== path.basename(stem) ||
+          typeof inputs['incarnation'] !== 'string' || !Number.isSafeInteger(inputs['generation']) ||
+          !Array.isArray(inputs['messages'])) throw new Error('Uncertain input cache')
+      for (const message of inputs['messages']) {
+        if (!message || typeof message.message_id !== 'string' || !/^sm_[A-Za-z0-9_-]+$/.test(message.message_id) ||
+            typeof message.created_at !== 'string' || typeof message.agent_acknowledgement_text_required !== 'boolean' ||
+            !(message.kind === 'note' && typeof message.body === 'string' || message.kind === 'answer_edit' &&
+              typeof message.request_id === 'string' && typeof message.text === 'string' && Array.isArray(message.answers))) {
+          throw new Error('Uncertain cached message')
+        }
+        // Reported messages leave their separate acknowledgement debt in the
+        // main state. Without that state, do not assume the debt was settled.
+        if (!hasState || !reportedMessages.has(message.message_id)) pending = true
+      }
+    }
+    return pending
+  }
   /** Uninstall preflight across the current state root and every indexed root.
    * Include unindexed siblings: legacy work in a discovered root still counts.
    * This is a work inventory, never process-absence or deletion authority. The
@@ -133,17 +187,26 @@ export class RuntimeRetention {
       }
       let pending = false
       for (const directory of [...directories].sort()) {
+        const retireFile = path.join(path.dirname(directory), 'retire-queue.json')
+        if (present(retireFile)) withFileLock(`${retireFile}.lock`, () => {
+          const queue = this.readValue(retireFile, 16 * 1024 * 1024)
+          if (!Array.isArray(queue)) throw new Error('Uncertain retirement queue')
+          if (queue.length > 0) pending = true
+        })
         if (!present(directory)) continue
         const stat = lstatSync(directory)
         if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === 'function' &&
             (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain session directory')
-        for (const name of readdirSync(directory).sort()) {
-          // Session files use this exact basename grammar. Incarnation, claim,
-          // attendance and config siblings have their own dotted suffixes.
-          if (!/^[A-Za-z0-9_-]+\.json$/.test(name)) continue
+        this.access.check(directory, true)
+        const names = new Set(readdirSync(directory).flatMap(name => {
+          const matched = /^([A-Za-z0-9_-]+)(?:\.json|\.inputs\.json|\.deliveries)$/.exec(name)
+          return matched ? [`${matched[1]}.json`] : []
+        }))
+        for (const name of [...names].sort()) {
           const file = path.join(directory, name)
           withFileLock(`${file}.lock`, () => {
             const state = this.read(file, 16 * 1024 * 1024)
+            if (this.pendingSidecars(file, state !== null)) pending = true
             if (state === null) return
             this.access.check(file, false)
             const sessionId = state['session_id']
@@ -163,7 +226,25 @@ export class RuntimeRetention {
             if (native !== undefined && (!Array.isArray(native) || native.some(item => item === null || typeof item !== 'object'))) {
               throw new Error('Uncertain native answer state')
             }
-            if (Array.isArray(native) && native.some(item => item.acknowledgement === undefined)) pending = true
+            if (Array.isArray(native)) for (const item of native) {
+              const acknowledgement = item.acknowledgement
+              if (acknowledgement === undefined) { pending = true; continue }
+              if (!acknowledgement || typeof acknowledgement !== 'object' ||
+                  typeof acknowledgement.text !== 'string' || typeof acknowledgement.created_at !== 'string' ||
+                  !Number.isFinite(Date.parse(acknowledgement.created_at)) ||
+                  !item.report || !Number.isSafeInteger(item.report.reply_seq) || item.report.reply_seq < 1 ||
+                  typeof item.report.reply_id !== 'string' || !/^rpl_[A-Za-z0-9_-]+$/.test(item.report.reply_id) ||
+                  typeof item.request_id !== 'string' || !/^req_[A-Za-z0-9_-]+$/.test(item.request_id)) throw new Error('Uncertain native acknowledgement')
+            }
+            if (state['input_wake'] !== undefined) pending = true
+            const wakes = state['input_wake_attempts']
+            if (wakes !== undefined && !Array.isArray(wakes)) throw new Error('Uncertain input wakes')
+            if (Array.isArray(wakes)) for (const wake of wakes) {
+              if (!wake || !['prepared', 'sending', 'accepted', 'unknown', 'consumed', 'cancelled'].includes(wake.phase)) {
+                throw new Error('Uncertain input wake')
+              }
+              if (!['consumed', 'cancelled'].includes(wake.phase)) pending = true
+            }
           })
         }
       }
