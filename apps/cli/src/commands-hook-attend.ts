@@ -1,4 +1,4 @@
-import { hasSessionInputs, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
+import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -350,6 +350,10 @@ export async function attendHook(
     return client
   }
   const codexWakeNeeded = codexActivity?.mayWake ?? null
+  // An idle Claude session presents an inbox message at once, so a wake it
+  // accepted and still has not shown after this long idle is not coming.
+  let idleSince: number | null = null
+  const settledIdle = (): boolean => idleSince !== null && clock.monotonic() - idleSince >= IDLE_BEFORE_WAKE_REPLACEMENT_MS
   const messages = sessionMessageWriter({
     deps,
     harness: harness!,
@@ -360,6 +364,7 @@ export async function attendHook(
     clock,
     logger,
     mayWake: codexWakeNeeded ?? (() => true),
+    settledIdle,
     unknownAllowed: codexActivity?.unknownAllowed ?? (() => false),
   })
   let wakeCleanup: Promise<void> | null = null
@@ -390,8 +395,11 @@ export async function attendHook(
       // that can hand them in place says so.
       acceptsMessages: messages !== null,
       ...(harness === 'claude-code' && messages !== null ? {
-        localInputPending: () => !readSessionState(sessionId, deps.env).input_wake?.queued &&
-          hasSessionInputs(sessionId, deps.env, null),
+        localInputPending: () => {
+          const state = readSessionState(sessionId, deps.env)
+          return (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
+            hasSessionInputs(sessionId, deps.env, null)
+        },
       } : {}),
       ...(codexWakeNeeded === null ? {} : {
         localInputPending: () => !readSessionState(sessionId, deps.env).input_wake?.queued &&
@@ -408,7 +416,9 @@ export async function attendHook(
       clock,
       logger,
       writeStatus: (status) => writeAttendantStatus(sessionId, deps.env, status),
-      onProbe: () => {
+      onProbe: (observed) => {
+        if (observed.state === 'running' && observed.activity === 'idle') idleSince ??= clock.monotonic()
+        else idleSince = null
         if (harness === 'codex' && wakeCleanup === null) {
           wakeCleanup = reconcileSessionInputWakes(sessionId, deps.env, deps.codexQueueControl)
             .catch(() => undefined).finally(() => { wakeCleanup = null })
@@ -443,6 +453,9 @@ type SessionMessageWriter = (
   attendant: AttendantHandle,
 ) => Promise<MessageHandOffResult>
 
+/** Idle time after which an accepted but unshown Claude wake is treated as lost. */
+const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
+
 /**
  * The attendant's Session Message writer, or null when this session cannot
  * take a message in place: for Claude Code no inbox socket (`--bare`, an older
@@ -460,6 +473,8 @@ function sessionMessageWriter(input: {
   clock: AttendantClock
   logger: Logger
   mayWake: () => boolean
+  /** Whether the session has been idle long enough to have shown an accepted wake. */
+  settledIdle: () => boolean
   unknownAllowed: () => boolean
 }): SessionMessageWriter | null {
   const { deps, sessionId, harnessPid, writer, clock, logger } = input
@@ -513,7 +528,7 @@ function sessionMessageWriter(input: {
         adapters, text, begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
       })
       return result.status === 'written'
-    }, logger)
+    }, logger, { unique: true, replaceLost: input.settledIdle, now: () => clock.wall() })
     return 'done'
   }
 }

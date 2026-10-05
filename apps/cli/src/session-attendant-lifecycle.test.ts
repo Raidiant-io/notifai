@@ -49,7 +49,7 @@ import {
 } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import { codexToolHookReady } from './codex-tool-messages.js'
-import { readSessionMessages, sessionInputWake } from './session-inputs.js'
+import { inputWakeToken, readSessionMessages, sessionInputWake } from './session-inputs.js'
 import { integrationFaultNotice } from './integration-health.js'
 import type { QueueControl } from './codex-queue-control.js'
 import { readInputWakes } from './session-input-wakes.js'
@@ -525,7 +525,7 @@ describe('notifai hook attend', () => {
     expect(posted).toHaveLength(1)
     const line = JSON.parse(posted[0]!) as { type: string; message: { content: string } }
     expect(line.type).toBe('user')
-    expect(line.message.content).toBe(sessionInputWake())
+    expect(inputWakeToken(line.message.content)).toBe(readSessionState('sess-a', env).input_wake?.token)
     expect(line.message.content).not.toContain('Use the staging database')
     expect(reports).toEqual([])
     expect(readSessionState('sess-a', env).message_acknowledgement_due).toBeUndefined()

@@ -67,7 +67,7 @@ import { readAttendantEndingLease, readAttendantLease } from './session-attendan
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
 import { readDeliveryJournal } from './session-delivery.js'
-import { sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
+import { inputWakeToken, sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
 const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
@@ -808,7 +808,9 @@ export async function hookRunCommand(
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
         ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
-      outcome = envelope.session_id !== undefined && envelope.prompt === sessionInputWake()
+      // Claude wakes carry a token; Codex prompts with one keep their own path.
+      outcome = envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
+          (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
         ? { notes: [], log: { stage: 'input-wake-observed' } }
         : await handleUserPromptSubmit(ctx, envelope)
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
@@ -912,7 +914,7 @@ function stopWakeRoute(
       cwd,
       sourcePid: deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env),
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
-    }), log(deps))
+    }), log(deps), 'producer', { unique: true })
     // A detached subprocess can be reparented after ask exits. Only the
     // resident Session Attendant retains Claude's required own-child ancestry.
     // Its ordinary attendance exchange wakes staged inputs, even with no notes.
