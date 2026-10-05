@@ -21,6 +21,9 @@ jobs:
       cli_release_created: ${{ steps.release-please.outputs['apps/cli--release_created'] }}
       cli_tag: ${{ steps.release-please.outputs['apps/cli--tag_name'] }}
       cli_sha: ${{ steps.release-please.outputs['apps/cli--sha'] }}
+      installer_release_created: ${{ steps.release-please.outputs['packages/installer--release_created'] }}
+      installer_tag: ${{ steps.release-please.outputs['packages/installer--tag_name'] }}
+      installer_sha: ${{ steps.release-please.outputs['packages/installer--sha'] }}
       protocol_release_created: ${{ steps.release-please.outputs['packages/protocol--release_created'] }}
       protocol_tag: ${{ steps.release-please.outputs['packages/protocol--tag_name'] }}
       protocol_sha: ${{ steps.release-please.outputs['packages/protocol--sha'] }}
@@ -81,6 +84,9 @@ jobs:
           CLI_RELEASE_CREATED: ${{ steps.release-please.outputs['apps/cli--release_created'] }}
           CLI_TAG: ${{ steps.release-please.outputs['apps/cli--tag_name'] }}
           CLI_SHA: ${{ steps.release-please.outputs['apps/cli--sha'] }}
+          INSTALLER_RELEASE_CREATED: ${{ steps.release-please.outputs['packages/installer--release_created'] }}
+          INSTALLER_TAG: ${{ steps.release-please.outputs['packages/installer--tag_name'] }}
+          INSTALLER_SHA: ${{ steps.release-please.outputs['packages/installer--sha'] }}
           PROTOCOL_RELEASE_CREATED: ${{ steps.release-please.outputs['packages/protocol--release_created'] }}
           PROTOCOL_TAG: ${{ steps.release-please.outputs['packages/protocol--tag_name'] }}
           PROTOCOL_SHA: ${{ steps.release-please.outputs['packages/protocol--sha'] }}
@@ -174,6 +180,9 @@ jobs:
           CLI_RELEASE_CREATED: ${{ needs.release-please.outputs.cli_release_created }}
           CLI_TAG: ${{ needs.release-please.outputs.cli_tag }}
           CLI_SHA: ${{ needs.release-please.outputs.cli_sha }}
+          INSTALLER_RELEASE_CREATED: ${{ needs.release-please.outputs.installer_release_created }}
+          INSTALLER_TAG: ${{ needs.release-please.outputs.installer_tag }}
+          INSTALLER_SHA: ${{ needs.release-please.outputs.installer_sha }}
           PROTOCOL_RELEASE_CREATED: ${{ needs.release-please.outputs.protocol_release_created }}
           PROTOCOL_TAG: ${{ needs.release-please.outputs.protocol_tag }}
           PROTOCOL_SHA: ${{ needs.release-please.outputs.protocol_sha }}
@@ -191,9 +200,9 @@ jobs:
             response=$(node -e '
               process.stdout.write(JSON.stringify({
                 ref: process.argv[1],
-                inputs: {expected_sha: process.argv[2]},
+                inputs: {expected_sha: process.argv[2], ...(process.argv[3] ? {candidate_run_id: process.argv[3]} : {})},
               }))
-            ' "$ref" "$expected_sha" | gh api \
+            ' "$ref" "$expected_sha" "${4:-}" | gh api \
               --method POST \
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -204,6 +213,7 @@ jobs:
               if (typeof response.run_url !== "string") process.exit(1)
               process.stdout.write(response.run_url)
             ' "$response")
+            DISPATCH_RUN_ID=$(gh api "$run_url" --jq .id)
             returned_sha=$(gh api \
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -225,12 +235,17 @@ jobs:
 
           if [ "$RELEASES_CREATED" = "true" ]; then
             dispatch_workflow ci.yml "$GITHUB_REF_NAME" "$GITHUB_SHA"
-            node scripts/require-ci-evidence.mjs --expected-sha "$GITHUB_SHA" --wait
+            CANDIDATE_RUN_ID=$DISPATCH_RUN_ID
+            gh run watch "$CANDIDATE_RUN_ID" --exit-status --interval 15
+            node scripts/require-native-evidence.mjs --kind candidate --expected-sha "$GITHUB_SHA" --run-id "$CANDIDATE_RUN_ID"
           fi
 
           if [ "$PROTOCOL_RELEASE_CREATED" = "true" ]; then
             dispatch_workflow publish.yml "$PROTOCOL_TAG" "$PROTOCOL_SHA"
           fi
+          if [ "$INSTALLER_RELEASE_CREATED" = "true" ]; then
+            dispatch_workflow publish.yml "$INSTALLER_TAG" "$INSTALLER_SHA"
+          fi
           if [ "$CLI_RELEASE_CREATED" = "true" ]; then
-            dispatch_workflow publish.yml "$CLI_TAG" "$CLI_SHA"
+            dispatch_workflow prepare-native-release.yml "$CLI_TAG" "$CLI_SHA" "$CANDIDATE_RUN_ID"
           fi

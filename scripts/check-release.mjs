@@ -250,7 +250,8 @@ if (process.env.GITHUB_REF_TYPE === 'tag') {
   const protocol = packages[1].manifest
   const name = process.env.GITHUB_REF_NAME
   requireValue(
-    name === `v${cli.version}` || name === `protocol-v${protocol.version}`,
+    name === `v${cli.version}` || name === `protocol-v${protocol.version}` ||
+      name === `installer-v${readJson('packages/installer/package.json').version}`,
     `tag must be v${cli.version} or protocol-v${protocol.version}`,
   )
 }

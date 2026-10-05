@@ -19,8 +19,8 @@
  *
  * Usage:
  *   node scripts/verify-published.mjs                # every publishable package
- *   node scripts/verify-published.mjs @raidiant/notifai
- *   node scripts/verify-published.mjs @raidiant/notifai --expected-tarball artifact.tgz
+ *   node scripts/verify-published.mjs @raidiant/notifai-install
+ *   node scripts/verify-published.mjs @raidiant/notifai-install --expected-tarball artifact.tgz
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'

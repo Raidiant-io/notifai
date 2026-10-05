@@ -231,7 +231,7 @@ Promotion wiring remains under implementation.
 Installation and continue with `notifai init`. Neither needs Node, npm, Bun or
 Git installed. Windows uses an unsigned executable; Authenticode is deferred.
 The shell route requires the OS account lookup, HTTPS, SHA-256 and archive tools;
-Linux currently requires glibc and x64 requires AVX2. macOS first installation
+Linux currently requires glibc and x64 requires SSE4.2. macOS first installation
 fails closed until the reviewed Developer ID team is configured, and requires
 signature and execution assessment of both executables.
 
@@ -357,8 +357,10 @@ private key and key ID, reviewed runtime materials, the macOS Team ID in the
 policy and shell bootstrap, and the protected macOS certificate/notary setup.
 Environment protections and release metadata branch permissions must also be
 verified. These workflows do not provision credentials, certify material
-completeness, or authorize publication. Release-please still uses its existing
-npm route until the installation-route cutover is completed.
+completeness, or authorize publication. Release-please creates the native CLI tag and a draft release, then dispatches
+finalization using the successful full CI run ID. Native publication and channel
+promotion remain explicit operations. npm publication accepts only protocol and
+installer tags; it cannot publish the Node-based CLI package.
 
 Apple's documented raw-code check is `codesign -vvvv -R=notarized
 --check-notarization`. `spctl` execution assessment targets app bundles and can
@@ -371,3 +373,26 @@ Sources: [Apple DTS testing guide](https://developer.apple.com/forums/thread/130
 [Apple Gatekeeper guidance](https://developer.apple.com/forums/thread/706379),
 [Bun 1.4.2 signing guide](https://github.com/oven-sh/bun/blob/bun-v1.4.2/docs/guides/runtime/codesign-macos-executable.mdx),
 [Apple notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
+## Optional npm bootstrap
+
+The separate `@raidiant/notifai-install` package exposes `notifai-install` and has
+no install lifecycle scripts. Installing the package alone never installs or
+updates the runtime. Explicit invocation resolves the OS account's owned
+installation first. A fresh installation verifies Ed25519 release metadata,
+archive digests and admitted members before executing the native installer;
+macOS also requires Apple's raw-code notarization check. The native CLI owns
+PATH, initialization, runtime updates and rollback for every bootstrap route.
+
+Node 20.12 or later is required only to run this optional bootstrap. The installed
+CLI does not need Node. `npm update` updates the bootstrap package; `notifai update`
+updates the runtime. Removing the bootstrap package leaves the runtime intact.
+The bootstrap's version is independent of the runtime version, and `--version`
+selects an exact runtime version. A prerelease needs `--channel beta` explicitly.
+
+Candidate CI verifies the packed bootstrap on all six native runners and checks
+the minimum Node version on Linux x64. Publication refuses an empty embedded trust
+map and requires a resolvable signed stable default on all supported targets.
+`installer-v*` tags use the protected `npm-release` environment and package-specific
+npm trusted publishing. First configure that package's publisher; do not reuse
+an npm token or assume another package's trust configuration covers it.

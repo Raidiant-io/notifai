@@ -24,3 +24,10 @@ test('npm distribution lookup uses the public registry and fails closed', async 
   assert.equal(tags.latest, '11.3.2')
   await assert.rejects(registryDistTags('@raidiant/notifai', async () => new Response('', { status: 503 })), /HTTP 503/)
 })
+
+test('a first package beta preserves the absent stable tag', async () => {
+  assert.deepEqual(await registryDistTags('@raidiant/notifai-install', async () => new Response('', { status: 404 })), {})
+  verifyDistribution({ name: '@raidiant/notifai-install', version: '0.1.0-beta.1', before: {}, after: { beta: '0.1.0-beta.1' } })
+  assert.throws(() => verifyDistribution({ name: '@raidiant/notifai-install', version: '0.1.0-beta.1', before: {},
+    after: { beta: '0.1.0-beta.1', latest: '0.1.0-beta.1' } }), /changed npm latest/)
+})

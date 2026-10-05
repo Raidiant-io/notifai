@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict'
-import {execFileSync} from 'node:child_process'
-import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs'
-import {tmpdir} from 'node:os'
-import {join} from 'node:path'
+import {readFileSync, readdirSync} from 'node:fs'
 import test from 'node:test'
 import {parse} from 'yaml'
 import {verifyReleasePleaseOutput} from './verify-release-please-output.mjs'
@@ -16,8 +13,6 @@ const releaseWorkflow = parse(release)
 const ciWorkflow = parse(ci)
 const publishWorkflow = parse(publish)
 const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8'))
-const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
-const protocolPackage = JSON.parse(readFileSync('packages/protocol/package.json', 'utf8'))
 
 test('all workflows stay LF-normalized, least-privilege, and action-SHA pinned', () => {
   for (const workflow of readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).map(name => read(`.github/workflows/${name}`))) {
@@ -163,7 +158,9 @@ test('release refs dispatch CI and publication at one exact SHA', () => {
   assert.match(release, /dispatch_workflow ci\.yml "\$ref" "\$sha"/u)
   assert.match(release, /if \[ "\$returned_sha" != "\$expected_sha" \]/u)
   assert.match(release, /dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/u)
-  assert.match(release, /dispatch_workflow publish\.yml "\$CLI_TAG" "\$CLI_SHA"/u)
+  assert.match(release, /dispatch_workflow prepare-native-release\.yml "\$CLI_TAG" "\$CLI_SHA" "\$CANDIDATE_RUN_ID"/u)
+  assert.match(release, /dispatch_workflow publish\.yml "\$INSTALLER_TAG" "\$INSTALLER_SHA"/u)
+  assert.doesNotMatch(release, /dispatch_workflow publish\.yml "\$CLI_TAG"/u)
 })
 
 test('release candidate dispatch maps every strict-shell release output', () => {
@@ -178,6 +175,9 @@ test('release candidate dispatch maps every strict-shell release output', () => 
     ['CLI_RELEASE_CREATED', 'cli_release_created'],
     ['CLI_TAG', 'cli_tag'],
     ['CLI_SHA', 'cli_sha'],
+    ['INSTALLER_RELEASE_CREATED', 'installer_release_created'],
+    ['INSTALLER_TAG', 'installer_tag'],
+    ['INSTALLER_SHA', 'installer_sha'],
     ['PROTOCOL_RELEASE_CREATED', 'protocol_release_created'],
     ['PROTOCOL_TAG', 'protocol_tag'],
     ['PROTOCOL_SHA', 'protocol_sha'],
@@ -198,9 +198,10 @@ test('created releases dispatch and wait for exact-SHA CI before publish', () =>
   const command = job.steps[dispatchIndex].run
   assert.match(command, /if \[ "\$RELEASES_CREATED" = "true" \]; then/u)
   assert.match(command, /dispatch_workflow ci\.yml "\$GITHUB_REF_NAME" "\$GITHUB_SHA"/u)
-  assert.match(command, /require-ci-evidence\.mjs --expected-sha "\$GITHUB_SHA" --wait/u)
+  assert.match(command, /gh run watch "\$CANDIDATE_RUN_ID" --exit-status/u)
+  assert.match(command, /require-native-evidence\.mjs --kind candidate --expected-sha "\$GITHUB_SHA" --run-id "\$CANDIDATE_RUN_ID"/u)
   assert.ok(
-    command.indexOf('require-ci-evidence.mjs') < command.indexOf('dispatch_workflow publish.yml'),
+    command.indexOf('require-native-evidence.mjs') < command.indexOf('dispatch_workflow publish.yml'),
     'publication must follow exact-SHA CI evidence',
   )
 })
@@ -218,87 +219,41 @@ test('publication requires exact-SHA CI before the protected OIDC job', () => {
   assert.doesNotMatch(releaseTooling.run, /pnpm (?:build|-r test|lint|-r typecheck|check:release)/u)
 })
 
-test('publication retains immutable release, live service, and native Windows evidence', () => {
+test('npm publication excludes the native CLI and verifies exact selected bytes', () => {
   assert.doesNotMatch(publish, /\n  push:/u)
-  assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/u)
+  assert.match(publish, /refs\/tags\/installer-v\*\|refs\/tags\/protocol-v\*/u)
+  assert.doesNotMatch(publish, /refs\/tags\/v\*/u)
   assert.match(publish, /Require an immutable GitHub release/u)
-  assert.match(publish, /check-public-provider-posture\.mjs/u)
-  const service = publishWorkflow.jobs.npm.steps.find(
-    candidate => candidate.name === 'Verify deployed service accepts this candidate',
-  )
-  assert.equal(service.run, 'node scripts/check-live-server-contract.mjs')
-  assert.deepEqual(publishWorkflow.jobs['windows-cli'].strategy.matrix.os, [
-    'windows-2025',
-    'windows-11-arm',
-  ])
-  assert.match(publish, /verify-published-windows\.mjs/u)
-})
-
-test('publication prepares the protocol artifact before reading its built contract export', () => {
   const steps = publishWorkflow.jobs.npm.steps
-  const contractIndex = steps.findIndex(
-    candidate => candidate.name === 'Verify deployed service accepts this candidate',
-  )
-  const packIndex = steps.findIndex(
-    candidate => candidate.name === 'Pack once and verify the exact release artifacts',
-  )
-  const publishIndex = steps.findIndex(candidate => candidate.name === 'Publish protocol with OIDC provenance')
-
-  assert.ok(packIndex >= 0, 'artifact preparation step is missing')
-  assert.ok(contractIndex > packIndex, 'contract check must consume an already-built protocol export')
-  assert.ok(publishIndex > contractIndex, 'live compatibility must pass before the first npm mutation')
-  assert.match(steps[packIndex].run, /pnpm --filter @raidiant\/notifai-protocol pack/u)
-  assert.equal(protocolPackage.scripts.prepack, 'pnpm run build')
+  const index = name => steps.findIndex(step => step.name === name)
+  const pack = index('Pack once and verify the exact npm artifact')
+  const service = index('Verify deployed service accepts this candidate')
+  const publishIndex = index('Publish the selected npm package with OIDC provenance')
+  const verify = index('Verify published package bytes and metadata')
+  assert.ok(pack >= 0 && pack < service && service < publishIndex && publishIndex < verify)
+  assert.ok(index('Build protocol for the live service contract check') < service)
+  assert.match(steps[pack].run, /verify-packed-npm-installer\.mjs "\$tarball"/u)
+  assert.match(steps[pack].run, /check-packed-boundary\.mjs --tarball "\$tarball" --gitleaks/u)
+  assert.match(steps[publishIndex].run, /npm publish "\$NPM_TARBALL" --access public --provenance/u)
+  assert.match(steps[verify].run, /--expected-tarball "\$NPM_TARBALL"/u)
+  assert.ok(index('Require a usable signed default for the npm installer') < publishIndex)
+  const retry = steps.find(step => step.name === 'Verify an existing package before declaring a retry successful')
+  assert.equal(retry.if, "steps.plan.outputs.publish == 'false'")
+  assert.match(retry.run, /--expected-tarball "\$NPM_TARBALL"/u)
+  assert.equal(publishWorkflow.jobs['windows-cli'], undefined)
 })
 
-test('publication builds comparison files before planning a retry with an existing protocol', () => {
-  const steps = publishWorkflow.jobs.npm.steps
-  const packIndex = steps.findIndex(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
-  const planIndex = steps.findIndex(candidate => candidate.name === 'Plan idempotent package publication')
-  assert.ok(packIndex >= 0 && planIndex > packIndex,
-    'planning verifies an existing protocol against local dist, which packing must build first')
-  assert.ok(steps.findIndex(candidate => candidate.name === 'Publish protocol with OIDC provenance') > planIndex)
-})
-
-test('publication reuses the exact tarballs that passed boundary and install checks', () => {
-  const steps = publishWorkflow.jobs.npm.steps
-  const pack = steps.find(candidate => candidate.name === 'Pack once and verify the exact release artifacts')
-  const publishProtocol = steps.find(candidate => candidate.name === 'Publish protocol with OIDC provenance')
-  const verifyProtocol = steps.find(candidate => candidate.name === 'Verify published protocol bytes and metadata')
-  const publishCli = steps.find(candidate => candidate.name === 'Publish CLI with OIDC provenance')
-  const verifyCli = steps.find(candidate => candidate.name === 'Verify published CLI bytes and metadata')
-  assert.match(pack.run, /pnpm --filter @raidiant\/notifai-protocol pack/u)
-  assert.match(pack.run, /pnpm --filter @raidiant\/notifai pack/u)
-  assert.match(pack.run, /scripts\/verify-packed-install\.mjs/u)
-  assert.match(pack.run, /scripts\/verify-packed-skill-install\.mjs/u)
-  assert.doesNotMatch(pack.run, /--if-changed/u)
-  assert.match(pack.run, /--gitleaks(?:\s|$)/u)
-  assert.match(pack.run, /PROTOCOL_TARBALL=\$protocol_tarball/u)
-  assert.match(pack.run, /CLI_TARBALL=\$cli_tarball/u)
-  assert.equal(publishProtocol.run, 'npm publish "$PROTOCOL_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"')
-  assert.match(verifyProtocol.run, /--expected-tarball "\$PROTOCOL_TARBALL"/u)
-  assert.equal(publishCli.run, 'npm publish "$CLI_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"')
-  assert.match(verifyCli.run, /--expected-tarball "\$CLI_TARBALL"/u)
-  assert.match(steps.find(candidate => candidate.name === 'Record npm distribution tags before publication').run, /verify-npm-distribution\.mjs snapshot/u)
-  assert.match(steps.find(candidate => candidate.name === 'Verify CLI npm distribution').run, /verify-npm-distribution\.mjs verify/u)
-})
-
-test('the publish workflow records the exact CLI version in GitHub output', () => {
-  const step = publishWorkflow.jobs.npm.steps.find(candidate => candidate.name === 'Record the exact CLI version')
-  const directory = mkdtempSync(join(tmpdir(), 'notifai-publish-output-'))
-  const output = join(directory, 'github-output')
-  try {
-    execFileSync('bash', ['-c', step.run], {cwd: process.cwd(), env: {...process.env, GITHUB_OUTPUT: output}})
-    assert.equal(readFileSync(output, 'utf8'), `version=${cliPackage.version}\n`)
-  } finally {
-    rmSync(directory, {recursive: true, force: true})
-  }
+test('native releases begin as tag-addressable drafts and never publish from release-please', () => {
+  assert.equal(releaseConfig.packages['apps/cli'].draft, true)
+  assert.equal(releaseConfig.packages['apps/cli']['force-tag-creation'], true)
+  assert.notEqual(releaseConfig.packages['packages/protocol'].draft, true)
+  assert.doesNotMatch(release, /dispatch_workflow publish-native-release/u)
 })
 
 test('the rootless combined manifest and release outputs remain exact', () => {
   assert.equal(releaseConfig.packages['.'], undefined)
   assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)
-  assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/protocol'])
+  assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/installer', 'packages/protocol'])
   assert.deepEqual(releaseConfig.plugins, [{type: 'node-workspace', updateAllPackages: true}])
 
   const sha = 'a'.repeat(40)

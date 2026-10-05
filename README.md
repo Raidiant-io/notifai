@@ -181,6 +181,11 @@ failure.
 
 ## Development
 
+The optional standalone bootstrap source is `@raidiant/notifai-install`
+<!--x-release-please-start-installer-->0.1.0<!--x-release-please-end-->.
+It is not published yet. See [standalone distribution](docs/STANDALONE.md) for
+candidate installation routes and the native update policy.
+
 Requires Node >= 20.12 and pnpm. Release evidence runs on Node 24.
 
 ```sh

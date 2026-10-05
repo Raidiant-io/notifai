@@ -2,7 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.3.0/schemas/config.json",
   "changelog-type": "default",
   "separate-pull-requests": false,
-  "plugins": [{ "type": "node-workspace", "updateAllPackages": true }],
+  "plugins": [
+    {
+      "type": "node-workspace",
+      "updateAllPackages": true
+    }
+  ],
   "packages": {
     "apps/cli": {
       "release-type": "node",
@@ -11,7 +16,11 @@
       "include-component-in-tag": false,
       "include-v-in-tag": true,
       "changelog-path": "CHANGELOG.md",
-      "extra-files": ["/README.md"]
+      "extra-files": [
+        "/README.md"
+      ],
+      "draft": true,
+      "force-tag-creation": true
     },
     "packages/protocol": {
       "release-type": "node",
@@ -20,7 +29,18 @@
       "include-component-in-tag": true,
       "include-v-in-tag": true,
       "changelog-path": "CHANGELOG.md",
-      "extra-files": ["/README.md"]
+      "extra-files": [
+        "/README.md"
+      ]
+    },
+    "packages/installer": {
+      "release-type": "node",
+      "package-name": "@raidiant/notifai-install",
+      "component": "installer",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "0.1.0"
     }
   }
 }
