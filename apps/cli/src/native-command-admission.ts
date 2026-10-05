@@ -9,6 +9,7 @@ import { withFileLock } from './file-lock.js'
 import { RuntimeRetention } from './runtime-retention.js'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
 
 export type NativeAdmission = 'development' | 'installer' | 'diagnostic' | 'managed' | 'retained-owner'
 
@@ -53,6 +54,7 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
     if (command.name() === 'doctor') return 'diagnostic'
     throw new Error('Install Notifai before running this command. Run this executable with install, or use the installed Notifai command.')
   }
+  if (command.name() !== 'uninstall') assertNativeLaunchAllowed(env)
   if (reference.build === installed.build) return 'managed'
   if (command.name() === 'doctor') return 'diagnostic'
   if (ownsRetainedWork(command, env, reference)) return 'retained-owner'

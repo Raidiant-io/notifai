@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ebd730210f9ee38b22f18f34dd038333ef1f9061e823d59ed8b052de00c42bbe",
+  "behavior_digest": "sha256:0d21f935ea8c57f6853365528ca5e2901c4c4096eb4f51e86d44b8034cdb4096",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle owner retention, shared session pruning, command admission and explicit cleanup. CLI help and standalone documentation now explain cleanup, portable diagnostics, previous-boot admission, retained-owner behavior and unknown-boot limitations. The shipped skill's notification policy, harness setup choices and domain terms are unchanged; cleanup cannot end questions, cancel work or turn file age into ownership evidence. Owner indexes are also retained on platforms without a boot identity; resumption marks the boot without creating new ownership. Rechecked shipped guidance: these storage changes do not alter notification policy or setup choices.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, setup, readiness and domain terms. Uninstall preparation adds cross-root pending-work inspection and a C/JS launch barrier; attendants use their existing withdrawn state. No uninstall command or automatic removal is advertised. Standalone documentation identifies the remaining process-absence and owned-removal work. Notification policy, setup choices and question cancellation authority are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

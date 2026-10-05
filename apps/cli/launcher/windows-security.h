@@ -65,7 +65,9 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created, 
     return ok && (!created || private_handle(handle, directory, user, 0, 1));
 }
 
-static int private_path(const wchar_t *path, int directory, int created) {
+static int private_path(const wchar_t *input, int directory, int created) {
+    wchar_t path[32768];
+    if (!filesystem_path(input, path)) return 0;
     TOKEN_USER *user = installation_user();
     if (!user) return 0;
     HANDLE handle = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES | (created ? WRITE_OWNER : 0),
@@ -77,7 +79,9 @@ static int private_path(const wchar_t *path, int directory, int created) {
     return ok;
 }
 
-static int create_private_directory(const wchar_t *path) {
+static int create_private_directory(const wchar_t *input) {
+    wchar_t path[32768];
+    if (!filesystem_path(input, path)) return 0;
     if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return private_path(path, 1, 0);
     TOKEN_USER *user = installation_user();
     if (!user) return 0;
@@ -104,7 +108,9 @@ static int create_private_directory(const wchar_t *path) {
  * SetSecurityInfo property: inheritable ACEs are NOT propagated to children.
  * https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
  * This short-lived handle is used only for this object's read/set/readback. */
-static int protect_existing_directory(const wchar_t *path) {
+static int protect_existing_directory(const wchar_t *input) {
+    wchar_t path[32768];
+    if (!filesystem_path(input, path)) return 0;
     TOKEN_USER *user = installation_user();
     if (!user) return 0;
     HANDLE handle = CreateFileW(path, MAXIMUM_ALLOWED, FILE_SHARE_READ | FILE_SHARE_WRITE,

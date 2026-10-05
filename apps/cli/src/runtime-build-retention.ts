@@ -5,6 +5,7 @@ import path from 'node:path'
 import { accountHome } from './platform.js'
 import { RuntimeRetention } from './runtime-retention.js'
 import { buildIdentity } from './distribution.js'
+import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
 
 /** Existing session state retains every native build serving that session.
  * Replacing one reference would lose an older still-running question owner. */
@@ -20,6 +21,7 @@ export function retainSessionRuntime(sessionId: string, env: NodeJS.ProcessEnv,
     const retained = current.runtime_builds ?? []
     if (!Array.isArray(retained) || !retained.every(validRuntimeBuildReference)) throw new Error('Runtime ownership needs repair')
     if (buildIdentity() !== null) {
+      assertNativeLaunchAllowed(env)
       new RuntimeRetention(path.join(accountHome(env), '.notifai'), reference.installation_id).retain(reference.build, file)
     }
     if (retained.some(item => item.installation_id === reference.installation_id && item.build === reference.build)) return

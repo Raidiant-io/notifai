@@ -48,6 +48,7 @@ static int active_build(const char *record, char *build) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <wchar.h>
+#include "windows-path.h"
 #include "windows-security.h"
 #include "windows-user-path.h"
 
@@ -136,6 +137,28 @@ static int process_info(const wchar_t *argument) {
     return 0;
 }
 
+/* Called on the resolved immutable runtime, for stable and pinned launchers.
+ * A malformed or unreadable journal also closes admission. No JS may start a
+ * new owner while the installation authority is withdrawing existing owners. */
+static int uninstall_pending(const wchar_t *executable) {
+    wchar_t root[32768];
+    wcscpy(root, executable);
+    wchar_t *part = wcsrchr(root, L'\\');
+    if (!part) return 0;
+    *part = 0;
+    part = wcsrchr(root, L'\\');
+    if (!part || wcslen(part + 1) != 64) return 0;
+    for (int i = 1; i <= 64; i++) if (!((part[i] >= L'0' && part[i] <= L'9') ||
+        (part[i] >= L'a' && part[i] <= L'f'))) return 0;
+    *part = 0;
+    part = wcsrchr(root, L'\\');
+    if (!part || wcscmp(part + 1, L"versions")) return 0;
+    wcscpy(part + 1, L"uninstall.json");
+    if (GetFileAttributesW(root) != INVALID_FILE_ATTRIBUTES) return 1;
+    DWORD error = GetLastError();
+    return error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND;
+}
+
 int wmain(int argc, wchar_t **argv) {
     if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-read"))
         return user_path_command(0) ? 0 : failure("cannot inspect User PATH");
@@ -154,9 +177,9 @@ int wmain(int argc, wchar_t **argv) {
         return private_path(argv[2], 0, 0) ? 0 : failure("installation file access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-check-private-directory"))
         return private_path(argv[2], 1, 0) ? 0 : failure("installation directory access is unsafe");
-    wchar_t executable[32768];
-    DWORD length = GetModuleFileNameW(NULL, executable, 32768);
-    if (!length || length >= 32768) return failure("cannot locate the launcher");
+    wchar_t executable[32768], module_path[32768];
+    DWORD length = GetModuleFileNameW(NULL, module_path, 32768);
+    if (!length || length >= 32768 || !filesystem_path(module_path, executable)) return failure("cannot locate the launcher");
     wchar_t *separator = wcsrchr(executable, L'\\');
     if (!separator || (size_t)(separator - executable) + 22 >= 32768)
         return failure("invalid launcher directory");
@@ -168,6 +191,11 @@ int wmain(int argc, wchar_t **argv) {
     if ((stable_entry && !managed_runtime(executable)) ||
         (!stable_entry && GetFileAttributesW(executable) == INVALID_FILE_ATTRIBUTES))
         return failure("no valid active installation; run the installer to repair it");
+    if (uninstall_pending(executable) && !(argc >= 2 &&
+        (!wcscmp(argv[1], L"uninstall") || !wcscmp(argv[1], L"install") || !wcscmp(argv[1], L"self-check")))) {
+        fprintf(stderr, "notifai: uninstall is in progress; finish or recover it before starting more work\n");
+        return 1;
+    }
 
     LPWCH environment = GetEnvironmentStringsW();
     if (!environment) return failure("cannot inspect runtime controls");
@@ -315,6 +343,25 @@ static int managed_runtime(char *executable) {
     return owned_path(executable, 0);
 }
 
+static int uninstall_pending(const char *executable) {
+    char root[PATH_MAX];
+    strcpy(root, executable);
+    char *part = strrchr(root, '/');
+    if (!part) return 0;
+    *part = 0;
+    part = strrchr(root, '/');
+    if (!part || strlen(part + 1) != 64) return 0;
+    const char *build = part + 1;
+    if (!take_build(&build, NULL)) return 0;
+    *part = 0;
+    part = strrchr(root, '/');
+    if (!part || strcmp(part + 1, "versions")) return 0;
+    strcpy(part + 1, "uninstall.json");
+    struct stat info;
+    if (!lstat(root, &info)) return 1;
+    return errno != ENOENT;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }
     char executable[PATH_MAX];
@@ -338,6 +385,11 @@ int main(int argc, char **argv) {
     strcpy(separator + 1, "notifai-runtime");
     if ((stable_entry && !managed_runtime(executable)) || (!stable_entry && access(executable, F_OK))) {
         fprintf(stderr, "notifai: no valid active installation; run the installer to repair it\n"); return 1;
+    }
+    if (uninstall_pending(executable) && !(argc >= 2 &&
+        (!strcmp(argv[1], "uninstall") || !strcmp(argv[1], "install") || !strcmp(argv[1], "self-check")))) {
+        fprintf(stderr, "notifai: uninstall is in progress; finish or recover it before starting more work\n");
+        return 1;
     }
     for (size_t i = 0; environ[i];) {
         char *entry = environ[i];

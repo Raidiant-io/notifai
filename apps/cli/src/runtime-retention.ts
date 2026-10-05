@@ -5,6 +5,12 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
 import { withFileLock } from './file-lock.js'
 import { canonicalPath } from './local-path.js'
+import { sanitizeSessionId } from './config.js'
+
+export interface RuntimeOwnerInspection {
+  status: 'clear' | 'waiting_for_questions' | 'uncertain'
+  sessions: Array<{ file: string; sessionId: string; builds: string[] }>
+}
 
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)
 function present(file: string): boolean {
@@ -98,6 +104,71 @@ export class RuntimeRetention {
       try { this.save(resumedFile, { boot }) }
       catch (error) { if (!recorded()) throw error } // Two owners may publish the same boot concurrently.
     }
+  }
+  /** Uninstall preflight across the current state root and every indexed root.
+   * Include unindexed siblings: legacy work in a discovered root still counts.
+   * This is a work inventory, never process-absence or deletion authority. The
+   * uninstall coordinator must close launch admission and recheck before edits. */
+  inspectOwners(currentSessions: string): RuntimeOwnerInspection {
+    const sessions: RuntimeOwnerInspection['sessions'] = []
+    try {
+      if (!path.isAbsolute(currentSessions)) throw new Error('Invalid session directory')
+      const directories = new Set([canonicalPath(currentSessions)])
+      const retention = path.join(this.root, 'runtime-retention')
+      if (present(retention)) {
+        this.parents(path.join(retention, '_'))
+        for (const build of readdirSync(retention)) {
+          const owners = this.file(build, 'owners')
+          this.parents(path.join(owners, '_'))
+          if (!present(owners)) continue
+          for (const name of readdirSync(owners)) {
+            const owner = this.read(path.join(owners, name)), file = owner?.['session_file']
+            if (!this.ownedRecord(owner) || typeof file !== 'string' || !path.isAbsolute(file) ||
+                canonicalPath(file) !== file || createHash('sha256').update(file).digest('hex') + '.json' !== name) {
+              throw new Error('Uncertain owner index')
+            }
+            directories.add(path.dirname(file))
+          }
+        }
+      }
+      let pending = false
+      for (const directory of [...directories].sort()) {
+        if (!present(directory)) continue
+        const stat = lstatSync(directory)
+        if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === 'function' &&
+            (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain session directory')
+        for (const name of readdirSync(directory).sort()) {
+          // Session files use this exact basename grammar. Incarnation, claim,
+          // attendance and config siblings have their own dotted suffixes.
+          if (!/^[A-Za-z0-9_-]+\.json$/.test(name)) continue
+          const file = path.join(directory, name)
+          withFileLock(`${file}.lock`, () => {
+            const state = this.read(file, 16 * 1024 * 1024)
+            if (state === null) return
+            this.access.check(file, false)
+            const sessionId = state['session_id']
+            if (typeof sessionId !== 'string' || `${sanitizeSessionId(sessionId)}.json` !== name) throw new Error('Uncertain session identity')
+            const references = state['runtime_builds'] ?? []
+            if (!Array.isArray(references) || references.some(item => !item || !uuid(item.installation_id) ||
+                typeof item.build !== 'string' || !/^[a-f0-9]{64}$/.test(item.build))) throw new Error('Uncertain runtime references')
+            sessions.push({ file, sessionId, builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build) })
+            for (const field of ['pending', 'retiring', 'waiting_answers', 'delivered_answers', 'acknowledgement_due',
+              'message_acknowledgement_due', 'openclaw_foreground_replies']) {
+              const value = state[field]
+              if (value !== undefined && !Array.isArray(value)) throw new Error('Uncertain pending work')
+              if (Array.isArray(value) && value.length > 0) pending = true
+            }
+            if (state['accepted'] !== undefined) pending = true
+            const native = state['native_answer_operations']
+            if (native !== undefined && (!Array.isArray(native) || native.some(item => item === null || typeof item !== 'object'))) {
+              throw new Error('Uncertain native answer state')
+            }
+            if (Array.isArray(native) && native.some(item => item.acknowledgement === undefined)) pending = true
+          })
+        }
+      }
+      return { status: pending ? 'waiting_for_questions' : 'clear', sessions }
+    } catch { return { status: 'uncertain', sessions } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

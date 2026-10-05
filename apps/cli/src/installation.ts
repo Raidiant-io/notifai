@@ -9,7 +9,7 @@ import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, R
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
-import { RuntimeRetention } from './runtime-retention.js'
+import { RuntimeRetention, type RuntimeOwnerInspection } from './runtime-retention.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -25,6 +25,9 @@ interface InstallRecord {
   launcherUpdatePending: boolean
 }
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
+interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; phase: 'preparing' | 'removing' }
+type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain' } |
+  { status: 'preparing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
 export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
@@ -104,6 +107,53 @@ export class Installation {
   private save(name: string, value: unknown): void {
     this.write(this.file(name), `${JSON.stringify(value)}\n`)
   }
+  private mutate<T>(action: () => T): T {
+    return withFileLock(this.file('installation.lock'), () => {
+      if (present(this.file('uninstall.json'))) throw new Error('Finish or recover the pending uninstall before changing this installation')
+      return action()
+    }, { waitMs: 5_000, strictRelease: true })
+  }
+  private uninstallRecord(): UninstallTransaction | null {
+    const value = this.readJson('uninstall.json') as Partial<UninstallTransaction> | null
+    if (value === null) return null
+    if (value.schema !== 1 || typeof value.installation_id !== 'string' ||
+        typeof value.token !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.token) ||
+        !Number.isSafeInteger(value.generation) || value.generation! < 1 ||
+        !['preparing', 'removing'].includes(value.phase ?? '')) throw new Error('Uninstall journal needs repair')
+    return value as UninstallTransaction
+  }
+  /** No wiring or runtime edits. The journal closes C and JS launch admission,
+   * while the caller verifies withdrawal and process absence. Questions keep
+   * their existing owners; uncertainty leaves the working installation intact. */
+  beginUninstall(expectedGeneration: number, currentSessions: string): UninstallPreparation {
+    this.activeRelease(expectedGeneration)
+    return withFileLock(this.file('installation.lock'), () => {
+      const active = this.readActive(), installed = this.readInstall(), journal = this.uninstallRecord()
+      if (!active || !installed || active.generation !== expectedGeneration || present(this.file('transaction.json')) ||
+          (journal && (journal.installation_id !== installed.id || journal.generation !== active.generation || journal.phase !== 'preparing'))) {
+        throw new Error('Installation changed or uninstall needs recovery')
+      }
+      const owners = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity).inspectOwners(currentSessions)
+      if (owners.status !== 'clear') {
+        // A preparing journal has never removed wiring. Reopen admission so
+        // work that appeared during preflight can complete through its owners.
+        if (journal) rmSync(this.file('uninstall.json'))
+        return { status: owners.status }
+      }
+      const token = journal?.token ?? randomUUID()
+      if (!journal) this.save('uninstall.json', { schema: 1, installation_id: installed.id, generation: active.generation, token, phase: 'preparing' })
+      return { status: 'preparing', token, owners }
+    }, { waitMs: 5_000, strictRelease: true })
+  }
+  cancelUninstall(token: string): void {
+    this.checkRoot()
+    withFileLock(this.file('installation.lock'), () => {
+      const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive()
+      if (!journal || journal.token !== token || journal.phase !== 'preparing' || journal.installation_id !== installed?.id ||
+          journal.generation !== active?.generation) throw new Error('Uninstall changed; inspect before recovery')
+      rmSync(this.file('uninstall.json'))
+    }, { waitMs: 5_000, strictRelease: true })
+  }
   private readActive(): ActiveGeneration | null {
     const value = this.readJson('active.json')
     if (value === null) return null
@@ -168,12 +218,12 @@ export class Installation {
       ...(cached ? { seen: { sequence: cached.record.sequence, digest: hash(cached.signed) } } : {}),
       acceptChannel: signed => {
         this.prepareRoot()
-        withFileLock(this.file('installation.lock'), () => {
+        this.mutate(() => {
           const latest = this.channelRecord(channel)
           this.options.distribution.verifyChannel(signed, channel, latest ? { sequence: latest.record.sequence, digest: hash(latest.signed) } : undefined)
           this.access.directory(this.file('channels'))
           this.write(this.file(`channels/${channel}.json`), signed)
-        }, { waitMs: 5_000, strictRelease: true })
+        })
       },
     })
   }
@@ -242,7 +292,7 @@ export class Installation {
    * shell startup files or registry PATH; User-edited ownership is preserved. */
   shellPath(operation: 'configure' | 'remove', shell: string) {
     const active = this.activeRelease()
-    return withFileLock(this.file('installation.lock'), () => {
+    return this.mutate(() => {
       if (this.options.target.startsWith('bun-windows-')) {
         const pathSetup = new WindowsPathInstallation({ bin: this.file('bin'), registry: nativeUserPathRegistry(active.launcher),
           read: () => this.readJson('windows-path.json'), save: receipt => this.save('windows-path.json', receipt) })
@@ -251,7 +301,7 @@ export class Installation {
       const pathSetup = new ShellPathInstallation({ home: path.dirname(this.root), bin: this.file('bin'), shell,
         read: () => this.readJson('shell-path.json'), save: receipt => this.save('shell-path.json', receipt) })
       return operation === 'configure' ? pathSetup.configure() : pathSetup.remove()
-    }, { waitMs: 5_000, strictRelease: true })
+    })
   }
   private versionDirectory(build: string): string {
     if (!buildId(build)) throw new Error('Invalid immutable build identifier')
@@ -307,7 +357,7 @@ export class Installation {
     this.access.directory(this.file('versions'))
     const destination = this.versionDirectory(build)
     if (present(destination)) {
-      withFileLock(this.file('installation.lock'), () => { this.verifyVersion(build); this.keepStaged(build) }, { waitMs: 5_000, strictRelease: true })
+      this.mutate(() => { this.verifyVersion(build); this.keepStaged(build) })
       return build
     }
     const staged = this.file(path.join('versions', `.staged-${randomUUID()}`))
@@ -318,11 +368,11 @@ export class Installation {
       }
       this.write(path.join(staged, 'inventory.json'), input.signedInventory)
       this.verifyFiles(staged, input.signedInventory, true)
-      withFileLock(this.file('installation.lock'), () => {
+      this.mutate(() => {
         if (present(destination)) this.verifyVersion(build)
         else renameSync(staged, destination)
         this.keepStaged(build)
-      }, { waitMs: 5_000, strictRelease: true })
+      })
       return build
     } finally { if (present(staged)) rmSync(staged, { recursive: true }) }
   }
@@ -399,7 +449,7 @@ export class Installation {
    * is removed last, and each remaining file must still match that signature. */
   cleanup(expectedGeneration: number): { removed: string[]; retained: Array<{ build: string; reason: string; bytes: number }> } {
     this.prepareRoot()
-    return withFileLock(this.file('installation.lock'), () => {
+    return this.mutate(() => {
       const active = this.readActive(), installed = this.readInstall()
       if (!active || !installed || active.generation !== expectedGeneration || present(this.file('transaction.json'))) {
         throw new Error('Installation changed or needs recovery before cleanup')
@@ -467,15 +517,15 @@ export class Installation {
         if (reason !== null) retained.push({ build, reason, bytes })
       }
       return { removed, retained }
-    }, { waitMs: 5_000, strictRelease: true })
+    })
   }
   recover(): InstallationStatus {
     if (!present(this.file('transaction.json'))) return this.inspect()
     this.prepareRoot()
-    withFileLock(this.file('installation.lock'), () => {
+    this.mutate(() => {
       const value = this.readJson('transaction.json')
       if (value !== null) this.finish(this.transaction(value))
-    }, { waitMs: 5_000, strictRelease: true })
+    })
     return this.inspect()
   }
   /** Explicitly abandon only a transaction that has not committed its active
@@ -483,7 +533,7 @@ export class Installation {
    * A locked Windows launcher leaves the journal available for a quiet retry. */
   abandonPending(expectedGeneration: number): InstallationStatus {
     this.prepareRoot()
-    withFileLock(this.file('installation.lock'), () => {
+    this.mutate(() => {
       const current = this.readActive()
       if ((current?.generation ?? 0) !== expectedGeneration) throw new Error('Installation changed; inspect before abandoning recovery')
       const value = this.readJson('transaction.json')
@@ -509,7 +559,7 @@ export class Installation {
         if (installed) rmSync(this.file('install.json'))
       }
       rmSync(this.file('transaction.json'))
-    }, { waitMs: 5_000, strictRelease: true })
+    })
     return this.inspect()
   }
   activate(input: { build: string; expectedGeneration: number; source: InstallSource; channel: ReleaseChannel; allowStableDowngrade?: boolean }): ActivationResult {
@@ -520,7 +570,7 @@ export class Installation {
     this.probe(candidate.directory, candidate.inventory)
     if (input.channel === 'stable' && isPrerelease(candidate.inventory.version)) throw new Error('Prerelease cannot activate on stable')
     this.prepareRoot()
-    return withFileLock(this.file('installation.lock'), () => {
+    return this.mutate(() => {
       if (present(this.file('transaction.json'))) throw new Error('Recover the pending installation transaction first')
       const from = this.readActive(), previous = this.readInstall()
       if ((from?.generation ?? 0) !== input.expectedGeneration) throw new Error('Installation changed; inspect before retrying')
@@ -546,7 +596,7 @@ export class Installation {
         }
       }
       return this.commit(from, previous, input.build, input.source, input.channel)
-    }, { waitMs: 5_000, strictRelease: true })
+    })
   }
   private commit(from: ActiveGeneration | null, previous: InstallRecord | null, build: string, source: InstallSource, channel: ReleaseChannel): ActivationResult {
     const to: ActiveGeneration = { schema: 1, active: build, previous: from?.active ?? null, generation: (from?.generation ?? 0) + 1 }
@@ -561,7 +611,7 @@ export class Installation {
   /** Explicit quiet-point retry. The active generation and rollback slot stay put. */
   repairLauncher(expectedGeneration: number): ActivationResult {
     this.prepareRoot()
-    return withFileLock(this.file('installation.lock'), () => {
+    return this.mutate(() => {
       if (present(this.file('transaction.json'))) throw new Error('Recover the pending installation transaction first')
       const from = this.readActive(), previous = this.readInstall()
       if (!from || !previous || from.generation !== expectedGeneration) throw new Error('Installation changed; inspect before repair')
@@ -573,14 +623,14 @@ export class Installation {
       this.options.observe?.('prepared')
       this.finish(transaction)
       return { changed: !transaction.next.launcherUpdatePending, active: from, launcher_update_pending: transaction.next.launcherUpdatePending }
-    }, { waitMs: 5_000, strictRelease: true })
+    })
   }
   rollback(expectedGeneration: number): ActivationResult {
     const snapshot = this.readActive()
     if (!snapshot?.previous) throw new Error('No previous verified generation is available')
     const candidate = this.verifyVersion(snapshot.previous)
     this.probe(candidate.directory, candidate.inventory)
-    return withFileLock(this.file('installation.lock'), () => {
+    return this.mutate(() => {
       if (present(this.file('transaction.json'))) throw new Error('Recover the pending installation transaction first')
       const from = this.readActive(), previous = this.readInstall()
       if (!sameGeneration(from, snapshot) || from?.generation !== expectedGeneration || !previous) throw new Error('Installation changed; inspect before rollback')
@@ -588,6 +638,6 @@ export class Installation {
       this.assertNotWithdrawn(candidate.inventory.version)
       if (!previous.previousChannel) throw new Error('Previous release channel is unavailable')
       return this.commit(from, previous, snapshot.previous!, previous.source, previous.previousChannel)
-    }, { waitMs: 5_000, strictRelease: true })
+    })
   }
 }

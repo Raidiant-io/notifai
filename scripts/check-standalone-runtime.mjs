@@ -149,6 +149,30 @@ try {
   }
   run(['installation', root, 'repair'])
   run(['installation', root, 'cleanup'])
+  const managedRoot = path.join(root, '.notifai')
+  const activeBuild = JSON.parse(readFileSync(path.join(managedRoot, 'active.json'), 'utf8')).active
+  const barrier = path.join(managedRoot, 'uninstall.json')
+  writeFileSync(barrier, '{}', { mode: 0o600 })
+  privateFile(barrier)
+  try {
+    for (const entry of [path.join(managedRoot, 'bin', `notifai${extension}`),
+      path.join(managedRoot, 'versions', activeBuild, `notifai${extension}`),
+      path.join(managedRoot, 'versions', owner.reference.build, `notifai${extension}`)]) {
+      const blocked = spawnSync(entry, ['identity', root], { cwd: root, env, encoding: 'utf8', timeout: 20_000 })
+      assert.equal(blocked.error, undefined)
+      assert.equal(blocked.status, 1)
+      assert.match(blocked.stderr, /uninstall is in progress/)
+    }
+    // Direct payload invocation still cannot use the JS detached-owner path.
+    const blockedRoot = path.join(root, 'blocked-owner')
+    mkdirSync(blockedRoot)
+    const blocked = spawnSync(path.join(managedRoot, 'versions', activeBuild, `notifai-runtime${extension}`),
+      ['owner-launch', blockedRoot], { cwd: root, env, encoding: 'utf8', timeout: 20_000 })
+    assert.equal(blocked.error, undefined)
+    assert.notEqual(blocked.status, 0)
+    assert.match(blocked.stderr, /uninstall is in progress/)
+    assert.equal(existsSync(path.join(blockedRoot, 'owner.json')), false)
+  } finally { rmSync(barrier) }
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
       filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
@@ -254,6 +278,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

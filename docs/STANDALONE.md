@@ -154,7 +154,19 @@ can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
 and complete uninstall remains separate work.
 
+The uninstall preparation boundary inventories pending work across recorded
+state roots and closes native launch admission with a recoverable journal.
+It leaves questions, wiring and runtime files intact. The C launcher, direct
+payload command admission and detached-owner path honor that barrier, and
+Session Attendants withdraw through their existing lifecycle gate. This is
+preparation infrastructure; process-absence proof, owned removal and the public
+uninstall command are not yet complete.
+
 ### Existing Windows directory permissions
+
+Native filesystem operations use Windows extended paths, including UNC paths,
+so deeply nested runtime-owner records do not depend on the machine's long-path
+policy. The owner and access checks still apply to those paths.
 
 The launcher has an explicit existing-directory migration operation for an
 already User-owned directory whose writers satisfy the installation policy. It

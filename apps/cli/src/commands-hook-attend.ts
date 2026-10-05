@@ -11,6 +11,7 @@ import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionIn
  */
 import { currentRuntimeBuild } from './launch-self.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
+import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { existsSync, readFileSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -635,6 +636,7 @@ export function attendantGates(
   harness: HookHarness,
   runningVersion: string | null,
 ): GateResult {
+  if (nativeUninstallPending(deps.env)) return { ok: false, reason: 'uninstall-in-progress' }
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) {

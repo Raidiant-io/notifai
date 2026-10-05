@@ -86,3 +86,13 @@ it('portable doctor returns read-only installation advice without running setup 
   expect(JSON.parse(result.output.join())).toMatchObject({ status: 'native_installation_required', read_only: true })
   expect(doctor).not.toHaveBeenCalled()
 })
+
+it('refuses managed actions while uninstall has closed launch admission', async () => {
+  const f = fixture(), configSet = vi.fn(async () => 0)
+  f.running(f.active)
+  writeFileSync(path.join(f.home, '.notifai', 'uninstall.json'), '{}', { mode: 0o600 })
+  const result = await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet })
+  expect(result).toMatchObject({ code: 1, admitted: [] })
+  expect(result.errors.join()).toContain('uninstall')
+  expect(configSet).not.toHaveBeenCalled()
+})

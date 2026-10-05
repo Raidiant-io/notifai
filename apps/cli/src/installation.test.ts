@@ -13,6 +13,7 @@ import { discoverCliUpdate } from './cli-release.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
 import { RuntimeRetention } from './runtime-retention.js'
 import { sessionStatePath, writeSessionState } from './hook-session-state.js'
+import { canonicalPath } from './local-path.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -95,6 +96,46 @@ it('keeps owners in other state roots and a resumed generation after its durable
   expect(installation.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: builds[0], reason: 'resumed_this_boot' }))
   boot = '33333333-3333-4333-8333-333333333333'
   expect(installation.cleanup(3).removed).toEqual([builds[0]])
+})
+
+it('finds pending work across indexed state roots before any uninstall mutation', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id
+  const retention = new RuntimeRetention(f.options.root, id, f.options.access, () => null)
+  const env = { XDG_STATE_HOME: path.join(f.root, 'other-state') }, session = 'other-owner'
+  const file = sessionStatePath(session, env), current = path.join(f.root, 'current-state', 'sessions')
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: id, build }] })
+  retention.retain(build, file)
+  expect(retention.inspectOwners(current)).toEqual({ status: 'clear', sessions: [{ file: canonicalPath(file), sessionId: session, builds: [build] }] })
+  // An unindexed sibling can have pending work from before native migration.
+  writeSessionState('legacy-sibling', env, { acknowledgement_due: [{ request_id: 'req_pending', recorded_at: 1 }] })
+  expect(retention.inspectOwners(current).status).toBe('waiting_for_questions')
+  writeSessionState('legacy-sibling', env, {})
+  expect(retention.inspectOwners(current).status).toBe('clear')
+  writeFileSync(file, '{broken')
+  expect(retention.inspectOwners(current).status).toBe('uncertain')
+  expect(f.installation.activeRelease().build).toBe(build)
+})
+
+it('closes launch admission only after work drains and fences concurrent installation mutations', () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const next = f.installation.stage(f.candidate('2.0.0'))
+  const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'pending-owner'
+  const sessions = path.dirname(sessionStatePath(session, env))
+  writeSessionState(session, env, { acknowledgement_due: [{ request_id: 'req_pending', recorded_at: 1 }] })
+  expect(f.installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  writeSessionState(session, env, {})
+  const begun = f.installation.beginUninstall(1, sessions)
+  expect(begun.status).toBe('preparing')
+  expect(() => f.installation.activate({ build: next, expectedGeneration: 1, source: 'manual', channel: 'stable' })).toThrow(/uninstall/)
+  expect(() => f.installation.cleanup(1)).toThrow(/uninstall/)
+  expect(() => f.installation.cancelUninstall('foreign-token')).toThrow(/changed/)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  f.installation.cancelUninstall(begun.token)
+  expect(f.installation.activate({ build: next, expectedGeneration: 1, source: 'manual', channel: 'stable' }).active.active).toBe(next)
 })
 
 it('retains unknown boot identities and user-modified bytes rather than trusting age or directory names', () => {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { buildIdentity } from './distribution.js'
 import { accountHome } from './platform.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
+import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
 
 /** A durable reference names local content, never an arbitrary executable path. */
 export interface RuntimeBuildReference { installation_id: string; build: string }
@@ -41,6 +42,7 @@ export function currentRuntimeBuild(env: NodeJS.ProcessEnv = process.env): Runti
 export function launchSelf(args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv;
   retain: (reference: RuntimeBuildReference | null) => void }): { pid: number } {
   const reference = currentRuntimeBuild(options.env)
+  assertNativeLaunchAllowed(options.env)
   const env = { ...options.env }
   for (const name of Object.keys(env)) {
     if (/^(BUN_|JSC_|DYLD_)/i.test(name) || ['LD_PRELOAD', 'LD_LIBRARY_PATH'].includes(name)) delete env[name]
@@ -49,6 +51,7 @@ export function launchSelf(args: readonly string[], options: { cwd: string; env:
   const executable = reference ? path.join(accountHome(env), '.notifai', 'versions', reference.build, `notifai${extension}`) : process.execPath
   const argv = reference ? [...args] : [fileURLToPath(new URL('./main.js', import.meta.url)), ...args]
   options.retain(reference)
+  assertNativeLaunchAllowed(options.env)
   if (reference && process.platform === 'win32') {
     const output = execFileSync(executable, ['--internal-detach', ...argv], { cwd: options.cwd, env,
       encoding: 'utf8', timeout: 20_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
