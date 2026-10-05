@@ -7,6 +7,7 @@ import {
   accessStatusCommand,
   agentSessionRenameCommand,
   authStatusCommand,
+  authWaitCommand,
   capabilitiesCommand,
   closeCommand,
   cliUpdateCommand,
@@ -94,6 +95,7 @@ const defaultRunners = {
   login: loginCommand,
   logout: logoutCommand,
   authStatus: authStatusCommand,
+  authWait: authWaitCommand,
   accessStatus: accessStatusCommand,
   devices: devicesCommand,
   sounds: soundsCommand,
@@ -372,6 +374,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('Authentication helpers')
     .summary('Machine identity and account plan')
     .helpGroup(GROUP.advanced)
+  auth
+    .command('wait')
+    .description('Wait for one existing machine approval until it resolves or expires')
+    .requiredOption('--pairing <id>', 'the pairing_id returned by init --json')
+    .option('--json', 'one final machine-readable result on stdout')
+    .action(async (opts: { pairing: string; json?: boolean }) => {
+      exit(await runners.authWait(deps, opts))
+    })
   auth
     .command('status')
     .description('Show the stored machine identity')

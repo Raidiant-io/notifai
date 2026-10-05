@@ -4,7 +4,7 @@ import path from 'node:path'
 import jsQR from 'jsqr'
 import { PNG } from 'pngjs'
 import { afterEach, describe, expect, it } from 'vitest'
-import { loginCommand, logoutCommand, EXIT, type CommandDeps } from './commands.js'
+import { authWaitCommand, loginCommand, logoutCommand, EXIT, type CommandDeps } from './commands.js'
 import type { ReadinessState } from './readiness.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { readPendingPairing } from './pending-pairing.js'
@@ -35,7 +35,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function ceremony() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pairing-approval-')); roots.push(root)
   const lines: string[] = []; const errors: string[] = []; const opened: string[] = []
-  let saved = 0; let begins = 0; let status: 'pending' | 'approved' | 'expired' | 'unknown' | 'network' = 'pending'
+  let saved = 0; let begins = 0; let status: 'pending' | 'approved' | 'denied' | 'expired' | 'unknown' | 'network' = 'pending'
   const targeted: { id: string; email: string; verifier: string }[] = []
   const client = {
     beginPairing: async () => { begins += 1; return { pairing_id: `pair_${begins}`, code: begins === 1 ? 'ABC-234' : 'DEF-567',
@@ -149,5 +149,81 @@ describe('QR-first computer approval', () => {
     expect(readPendingPairing(test.deps.env, 0)).toBeNull()
     expect(existsSync(pairingQrPath(test.deps.env))).toBe(false)
     expect(existsSync(pairingQrTextPath(test.deps.env))).toBe(false)
+  })
+})
+
+describe('foreground machine approval wait', () => {
+  it('returns a structured handoff and waits without asking for a User reply or creating another invitation', async () => {
+    const test = ceremony(); const gaps: ReadinessState[] = []
+    await loginCommand(test.deps, {}, (gap) => gaps.push(gap))
+    expect(gaps[0]?.technical?.handoff).toMatchObject({
+      template_id: 'machine-approval-pending', next_action: 'display-qr-then-wait',
+      wait_argv: ['notifai', 'auth', 'wait', '--pairing', 'pair_1', '--json'],
+    })
+    let sleeps = 0
+    test.deps.sleep = async () => { sleeps += 1; test.setStatus('approved') }
+    test.lines.length = 0
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
+    expect(sleeps).toBe(1)
+    expect(test.lines).toHaveLength(1)
+    expect(JSON.parse(test.lines[0]!)).toMatchObject({ status: 'approved', next_action: 'resume-setup' })
+    expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
+    expect(test.opened).toEqual([]); expect(test.targeted).toEqual([])
+  })
+  it.each(['denied', 'expired', 'unknown'] as const)('stops on %s without replacing the invitation', async (status) => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    test.setStatus(status); test.lines.length = 0
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.auth)
+    expect(JSON.parse(test.lines[0]!)).toMatchObject({ status: status === 'unknown' ? 'expired' : status, next_action: 'stop' })
+    expect(test.begins()).toBe(1); expect(test.saved()).toBe(0)
+    expect(readPendingPairing(test.deps.env, 0)).toBeNull()
+  })
+  it('refuses a different invitation and preserves the original', async () => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_other', json: true })).toBe(EXIT.auth)
+    expect(readPendingPairing(test.deps.env, 0)?.pairing_id).toBe('pair_1')
+    expect(test.begins()).toBe(1)
+  })
+  it('never starts an invitation when nothing is pending', async () => {
+    const test = ceremony()
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.auth)
+    expect(test.begins()).toBe(0)
+  })
+  it('retries a transient network error and collects approval from the same invitation', async () => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    test.setStatus('network')
+    test.deps.sleep = async () => { test.setStatus('approved') }
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
+    expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
+  })
+  it('bounds an outage at the invitation deadline and preserves late approval recovery', async () => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    test.setStatus('network'); let now = 599_500
+    test.deps.now = () => now
+    test.deps.sleep = async (ms) => { now += ms }
+    test.lines.length = 0
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.network)
+    expect(now).toBe(600_000)
+    expect(JSON.parse(test.lines[0]!)).toMatchObject({ status: 'unavailable', next_action: 'resume-same-wait' })
+    expect(readPendingPairing(test.deps.env, now)?.pairing_id).toBe('pair_1')
+    test.setStatus('approved'); now += 60_000
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
+    expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
+  })
+  it('resumes the exact invitation after an interrupted foreground command', async () => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    test.deps.sleep = async () => { throw new Error('tool interrupted') }
+    await expect(authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).rejects.toThrow('tool interrupted')
+    expect(readPendingPairing(test.deps.env, 0)?.pairing_id).toBe('pair_1')
+    test.setStatus('approved')
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
+    expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
+  })
+  it('does not switch services or delete a pending invitation on a different service', async () => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    test.deps.env['NOTIFAI_BASE_URL'] = 'https://different.example'
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.auth)
+    expect(readPendingPairing(test.deps.env, 0)?.pairing_id).toBe('pair_1')
+    expect(test.begins()).toBe(1); expect(test.saved()).toBe(0)
   })
 })

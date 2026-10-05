@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ec4e89218ad2e0f68a9835c4ea7ce7b9ca057ff29ce0141e75dfa1f6ad365baa",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle-hook guidance, the Notifai skill and native-question reference, harness setup, CLI readiness, and domain/trust terms against the Windows lock repair. Since the preceding review, file-lock.ts is the only changed behavioral input after excluding tests and normalizing generated README versions. All shipped guidance and caller interfaces are unchanged. Registration retries transient directory access only before publishing a contender, within the existing deadline and with fresh ownership and identity checks; failures after publication remain fatal and cleanup preserves foreign entries. No agent action, setup flag, trust decision, question identity, delivery claim, or acknowledgement obligation changes, so no guidance edit is required.",
+  "behavior_digest": "sha256:60f9f799f8a789e430b95917c8df5e2a139580cff6865b7f512676fe2fa8cb0d",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and native-question reference, harness setup, CLI readiness, domain terms and trust boundaries. Machine approval now returns a structured local handoff before a foreground auth wait pinned to the presented invitation. The agent displays the QR then awaits the same tool handle, or resumes the exact pairing after interruption, without requiring a conversation reply from the User. Approved stores the credential and resumes setup; denied or expired stops without replacement. A network outage through the deadline preserves the pending invitation and reports unavailable, not an inferred decision. Other harness routing, ownership, notification content and acknowledgement obligations remain unchanged; no hook or approved Machine is required to wait for approval. Proof-bearing QR/link data stays local. These source changes do not establish live per-harness physical approval or publication evidence.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -70,6 +70,13 @@ async function parse(
 }
 
 describe('program argv parsing', () => {
+  it('pins the foreground approval wait to the presented pairing', async () => {
+    const authWait = vi.fn().mockResolvedValue(0)
+    const { exitCode } = await parse(['auth', 'wait', '--pairing', 'pair_test', '--json'], { authWait })
+    expect(exitCode).toBe(0)
+    expect(authWait).toHaveBeenCalledWith(expect.anything(), { pairing: 'pair_test', json: true })
+  })
+
   it('maps a full send command line onto sendCommand flags', async () => {
     let seen: Record<string, unknown> | undefined
     const { exitCode } = await parse(

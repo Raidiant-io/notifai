@@ -65,7 +65,10 @@ export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started'
  * same setup command — the next run resumes this very handshake rather than
  * starting a second one.
  */
-export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.ProcessEnv): ReadinessState {
+export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.ProcessEnv, route = 'qr'): ReadinessState {
+  const introduction = route === 'browser' ? 'Review this computer in the browser approval page.'
+    : route === 'notification' ? 'Review the computer approval invitation if it arrives; the local QR and browser link also work.'
+    : 'Scan the QR shown locally to review this computer in Notifai.'
   return {
     id: 'credential',
     title: 'This machine',
@@ -74,11 +77,20 @@ export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.Pro
     technical: {
       pairing_outcome: 'pending' satisfies PairingOutcome,
       pairing: {
+        pairing_id: pairing.pairing_id,
         approve_url: pairing.approve_url,
         ...(env ? { qr_path: pairingQrPath(env), qr_text_path: pairingQrTextPath(env) } : {}),
         alternatives: ['qr', 'notification', 'browser'],
         code: pairing.code,
         expires_at: pairing.expires_at,
+      },
+      handoff: {
+        template_id: 'machine-approval-pending',
+        route,
+        message: `${introduction} Check your Account and computer, compare code **${pairing.code}**, and approve before ${pairing.expires_at}. Browser alternative: ${pairing.approve_url}. I'll wait for the result.`,
+        audience: 'local-conversation',
+        next_action: 'display-qr-then-wait',
+        wait_argv: ['notifai', 'auth', 'wait', '--pairing', pairing.pairing_id, '--json'],
       },
     },
     remedy: {
@@ -129,11 +141,9 @@ export function pairingOutcomeBlocker(
  *
  * - A human at a terminal watches a spinner until the pairing resolves or
  *   expires, as before.
- * - An agent, or any run with nobody at the terminal, never waits on a
- *   person. It prints the page and the code, polls once, and returns — its
- *   caller relays the errand, and the next run picks the same pairing up
- *   where it was left. A shell tool that times out no longer strands an
- *   approval the User already gave.
+ * - Unattended setup returns the handoff after one poll, so the agent can
+ *   display the QR. The explicit auth wait then holds that exact pairing
+ *   through its answer window. Interrupted tools resume the same invitation.
  *
  * A resumed handshake is always asked about before it is replaced: the
  * service answers `approved` for an approved pairing even after its expiry,
@@ -142,7 +152,7 @@ export function pairingOutcomeBlocker(
  */
 export async function loginCommand(
   deps: CommandDeps,
-  flags: { name?: string; baseUrl?: string; open?: boolean; approval?: string; approvalEmail?: string },
+  flags: { name?: string; baseUrl?: string; open?: boolean; approval?: string; approvalEmail?: string; waitPairing?: string },
   onBlocked?: LoginBlockedSink,
 ): Promise<number> {
   if (flags.approval !== undefined && !['qr', 'notification', 'browser'].includes(flags.approval)) {
@@ -156,6 +166,7 @@ export async function loginCommand(
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, flags: { base_url: flags.baseUrl } as FlagOverrides })
   const baseUrl = config.base_url.value
   const interactive = deps.io.interactive === true
+  const waiting = flags.waitPairing !== undefined
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const client = makeClient(deps, baseUrl, null)
@@ -252,6 +263,13 @@ export async function loginCommand(
   // A handshake started against another service, or under another machine
   // name, is not this one; only an identical errand is resumed.
   let pairing = readPendingPairing(deps.env, now())
+  // A waiter may only collect the invitation the agent already presented.
+  // It cannot create, replace, or switch a pairing after that handoff.
+  if (waiting && (pairing === null || pairing.pairing_id !== flags.waitPairing || pairing.base_url !== baseUrl)) {
+    deps.io.err('The requested approval is not pending on this service. Inspect setup before starting another approval.')
+    onBlocked?.(pairingOutcomeBlocker('not_started', 'the requested approval is not pending on this service'))
+    return EXIT.auth
+  }
   if (pairing !== null && (pairing.base_url !== baseUrl || (flags.name !== undefined && flags.name !== pairing.machine_name))) {
     clearPendingPairing(deps.env)
     pairing = null
@@ -279,6 +297,7 @@ export async function loginCommand(
   const progress: { spinner?: CommandSpinner | null } = {}
   let announced = false
   const announceActive = async (): Promise<boolean> => {
+    if (waiting) return true
     if (announced) return true
     const ready = await announce(active, resumed)
     announced = true
@@ -292,6 +311,7 @@ export async function loginCommand(
     progress.spinner?.stop('Previous approval expired')
     progress.spinner = null
     clearPendingPairing(deps.env)
+    if (waiting) return false
     if (!resumed) return false
     const started = await startPairing()
     if (typeof started === 'number') return false
@@ -308,13 +328,26 @@ export async function loginCommand(
     try {
       poll = await client.pollPairing(active.pairing_id, active.poll_verifier)
     } catch (err) {
+      if (waiting && readPendingPairing(deps.env, now())?.pairing_id !== active.pairing_id) {
+        onBlocked?.(pairingOutcomeBlocker('not_started', 'the pending approval changed while waiting'))
+        return EXIT.auth
+      }
       if (err instanceof NetworkError) {
-        if (!await announceActive()) { onBlocked?.(pendingApprovalBlocker(active, deps.env)); return EXIT.auth }
+        if (waiting) {
+          if (now() >= expiresAt) {
+            deps.io.err('Approval could not be checked before the invitation deadline. Resume this same wait when the connection returns.')
+            onBlocked?.(pendingApprovalBlocker(active, deps.env, route))
+            return EXIT.network
+          }
+          await sleep(Math.min(intervalMs, Math.max(0, expiresAt - now())))
+          continue
+        }
+        if (!await announceActive()) { onBlocked?.(pendingApprovalBlocker(active, deps.env, route)); return EXIT.auth }
         if (!interactive) {
           // The handshake is intact; only this check could not be made.
           deps.io.err(err.message)
           deps.io.out(`Waiting for approval. Run \`${SETUP_COMMAND}\` again once it is approved.`)
-          onBlocked?.(pendingApprovalBlocker(active, deps.env))
+          onBlocked?.(pendingApprovalBlocker(active, deps.env, route))
           return EXIT.network
         }
         progress.spinner?.message(`Connection lost — retrying… code ${active.code}`)
@@ -323,10 +356,15 @@ export async function loginCommand(
       }
       if (err instanceof ApiCallError && err.code === 'pairing_not_found' && resumed) {
         if (await replaceStale()) continue
+        onBlocked?.(pairingOutcomeBlocker('expired', 'the approval is no longer available'))
         return EXIT.auth
       }
       progress.spinner?.error('Pairing failed')
       return reportError(deps, err)
+    }
+    if (waiting && readPendingPairing(deps.env, now())?.pairing_id !== active.pairing_id) {
+      onBlocked?.(pairingOutcomeBlocker('not_started', 'the pending approval changed while waiting'))
+      return EXIT.auth
     }
     if (poll.status === 'approved' && poll.machine_id) {
       deps.store.save({ machineId: poll.machine_id, secret: active.secret, baseUrl, machineName: active.machine_name })
@@ -378,14 +416,14 @@ export async function loginCommand(
       break
     }
     if (!await announceActive()) {
-      onBlocked?.(pendingApprovalBlocker(active, deps.env))
+      onBlocked?.(pendingApprovalBlocker(active, deps.env, route))
       return EXIT.auth
     }
     // Still pending. Nobody at this terminal means nobody to wait for: hand
     // the errand back and let the next run resume the same handshake.
-    if (!interactive) {
+    if (!interactive && !waiting) {
       deps.io.out(`Waiting for approval. Run \`${SETUP_COMMAND}\` again once it is approved.`)
-      onBlocked?.(pendingApprovalBlocker(active, deps.env))
+      onBlocked?.(pendingApprovalBlocker(active, deps.env, route))
       return EXIT.auth
     }
     if (now() >= expiresAt) break
@@ -397,6 +435,33 @@ export async function loginCommand(
   deps.io.err(`Pairing expired before it was approved. Run \`${SETUP_COMMAND}\` again.`)
   onBlocked?.(pairingOutcomeBlocker('expired', 'the approval expired before it was given'))
   return EXIT.auth
+}
+
+/** Own one already-presented approval until its service result or deadline. */
+export async function authWaitCommand(
+  deps: CommandDeps,
+  flags: { pairing: string; json?: boolean },
+): Promise<number> {
+  let blocker: ReadinessState | undefined
+  const exitCode = await loginCommand({
+    ...deps,
+    io: { ...deps.io, interactive: false, out: deps.io.err },
+  }, { waitPairing: flags.pairing, open: false }, (value) => { blocker = value })
+  const technical = blocker?.technical as { pairing_outcome?: PairingOutcome } | undefined
+  const status = exitCode === EXIT.ok ? 'approved'
+    : exitCode === EXIT.network ? 'unavailable'
+    : blocker?.id === 'auth' ? 'no_active_plan'
+    : technical?.pairing_outcome ?? 'failed'
+  const result = {
+    pairing_id: flags.pairing,
+    status,
+    exit_code: exitCode,
+    ...(blocker ? { blocker } : {}),
+    next_action: exitCode === EXIT.ok ? 'resume-setup'
+      : exitCode === EXIT.network ? 'resume-same-wait' : 'stop',
+  }
+  deps.io.out(flags.json ? JSON.stringify(result) : `Machine approval: ${status}.`)
+  return exitCode
 }
 
 export function logoutCommand(deps: CommandDeps): number {

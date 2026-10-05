@@ -8,6 +8,7 @@ export {
 export {
   accessStatusCommand,
   authStatusCommand,
+  authWaitCommand,
   loginCommand,
   logoutCommand,
 } from './commands-auth.js'
