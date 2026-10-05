@@ -56,7 +56,6 @@ import {
   CODEX_ATTEND_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
   applyPlan,
-  BLOCKING_STOP_STATUS_MESSAGE,
   detectHarness,
   detectedHarnesses,
   buildCursorHookConfig,
@@ -270,7 +269,7 @@ describe('hook config', () => {
     )
   })
 
-  it('sets a status message only on blocking Question Routing Stop handlers', () => {
+  it('sets no status message on a Stop handler: none of them holds a turn that needs explaining', () => {
     const posixClaude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
     const windowsClaude = buildHookConfig({
       adapterPath: ADAPTER,

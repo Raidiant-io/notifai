@@ -238,11 +238,8 @@ export function stopHandlerIsDetached(harness: HookInstallableHarness | undefine
  * because it has no out-of-band route. Every Question Routing owner
  * declares the same complete-window timeout, because the detached waiter must
  * outlive the answer window in every case; what changed for Codex is that a
- * short or missing timeout no longer truncates a held *turn*. Blocking hosts
- * also set `statusMessage` so the held turn is not mistaken for a hang.
+ * short or missing timeout no longer truncates a held *turn*.
  */
-export const BLOCKING_STOP_STATUS_MESSAGE = 'Notifai: waiting for your answer'
-
 function stopHandler(
   adapterPath: string,
   harness: HookInstallableHarness | undefined,
@@ -254,14 +251,6 @@ function stopHandler(
   }
   if (harness === 'grok') {
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
-  }
-  if (harness === 'codex' || harness === 'claude-code') {
-    return {
-      type: 'command',
-      command,
-      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
-      statusMessage: BLOCKING_STOP_STATUS_MESSAGE,
-    }
   }
   return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }

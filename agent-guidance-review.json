@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:fe6b62ab923c02686024f9147c185b6649e6a0506066f9f43f819e579c212e61",
+  "behavior_digest": "sha256:02fefb6a613f3ba8a305c62bee151450f946e4c34b42e72b1c9266eb101e2314",
   "outcome": "guidance-updated",
   "reason": "Reviewed lifecycle-hook guidance, the Notifai skill and its references, harness setup, CLI readiness, and domain/trust terms against Claude Code's session inbox on native Windows. Claude Code on Windows no longer holds Stop: its Stop is detached, a Session Attendant runs, and answers and notes wake the Agent Session through the session's named pipe, opened with the inbox token Claude Code exports to its hooks. The Claude Code reference and harness setup now describe one answer route for every platform, name the Windows release floor, and say an older Claude Code receives the answer at its next turn. The skill body needed no change: it never named a platform, and its held-continuation wording still describes Grok. Question picker linking stays macOS and Linux only, as the reference already says.",
   "surfaces_reviewed": [
