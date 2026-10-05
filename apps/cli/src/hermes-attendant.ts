@@ -3,6 +3,7 @@
  * Its pipe is an in-process writer bridge, not a second Hermes connection:
  * the plugin checks its attached CLI's session id again at every injection.
  */
+import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
@@ -176,6 +177,7 @@ export function hermesAnswerRoute(bridge: HermesWriterBridge, sessionId: string)
 }
 
 function hermesGates(deps: CommandDeps, cwd: string, sessionId: string): GateResult {
+  if (nativeUninstallPending(deps.env)) return { ok: false, reason: 'uninstall-in-progress' }
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) {

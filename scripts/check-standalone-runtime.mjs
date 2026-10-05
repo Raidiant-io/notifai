@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 import { gzipSync } from 'node:zlib'
@@ -64,6 +64,29 @@ try {
   execFileSync(values.bun, ['build', '--target=node', fixture, '--outfile', sourceBundle],
     { cwd: repositoryRoot, stdio: 'inherit' })
   run(['identity', root])
+  if (!windows) {
+    // Launcher aliases still exec the canonical payload, which is the POSIX
+    // candidate name used by executable-use observation.
+    for (const [name, create] of [['launcher-symlink', symlinkSync], ['launcher-hardlink', linkSync]]) {
+      const alias = path.join(root, name)
+      create(launcher, alias)
+      const aliasRoot = path.join(root, name + '-owner')
+      mkdirSync(aliasRoot)
+      const child = spawn(alias, ['heartbeat', aliasRoot], { cwd: root, env, stdio: 'ignore' })
+      try {
+        for (let i = 0; i < 100 && !existsSync(path.join(aliasRoot, 'heartbeat')); i++) await sleep(50)
+        assert.ok(existsSync(path.join(aliasRoot, 'heartbeat')), 'aliased native launcher must enter its canonical payload')
+        const users = JSON.parse(execFileSync(launcher, ['--internal-file-users', runtime], { cwd: root, env, encoding: 'utf8' }))
+        assert.ok(users.processes.some(item => item.pid === child.pid), 'native observation must find a payload launched through an alias')
+      } finally {
+        if (child.exitCode === null) await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('owned alias fixture did not exit')), 10_000)
+          child.once('exit', () => { clearTimeout(timer); resolve() })
+          child.kill()
+        })
+      }
+    }
+  }
   run(['skills', root])
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const target = `bun-${windows ? 'windows' : process.platform}-${process.arch}`
@@ -116,6 +139,8 @@ try {
   const ownerRoot = path.join(root, 'retained-owner')
   mkdirSync(ownerRoot)
   execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['native-hooks', root], { cwd: root, env, stdio: 'inherit' })
+  // OpenClaw supplies its own Node host; Notifai readiness uses native OS identity.
+  execFileSync(process.execPath, [path.join(root, 'openclaw-readiness.mjs')], { cwd: root, env, stdio: 'inherit', timeout: 30_000 })
   const owner = JSON.parse(execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['owner-launch', ownerRoot],
     { cwd: root, env, encoding: 'utf8', timeout: 30_000 }))
   const busyRoot = path.join(root, 'busy-launcher')
@@ -301,6 +326,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'openclaw-native-process-readiness', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

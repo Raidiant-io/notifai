@@ -42,8 +42,18 @@ function ownsRetainedWork(command: Command, env: NodeJS.ProcessEnv, reference: R
  * Only durable owner entrypoints may use a generation that is no longer active. */
 export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): NativeAdmission {
   if (buildIdentity() === null) return 'development'
-  if (command.name() === 'install' && command.parent?.name() === 'notifai') return 'installer'
   if (command.name() === 'self-check') return 'diagnostic'
+  // A supported mutating entry always passed through C, which execs the
+  // canonical payload name. Consume this local protocol marker so unrelated
+  // child programs cannot accidentally inherit admission. This is a launch
+  // contract, not a credential or a defence against code running as this User.
+  const launched = env['NOTIFAI_NATIVE_ENTRY'] === 'launcher-v1'
+  delete env['NOTIFAI_NATIVE_ENTRY']
+  if (!launched) {
+    if (command.name() === 'doctor') return 'diagnostic'
+    throw new Error('Run the native launcher named notifai; direct runtime payload execution cannot change this installation.')
+  }
+  if (command.name() === 'install' && command.parent?.name() === 'notifai') return 'installer'
   let reference: RuntimeBuildReference | null
   let installed: ReturnType<typeof nativeInstallationIdentity>
   try {

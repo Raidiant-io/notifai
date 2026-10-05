@@ -9,6 +9,14 @@
 #include <sys/sysctl.h>
 #endif
 
+/* Supported mutators enter through C, which resolves aliases and execs the
+ * canonical payload. Bun's pinned POSIX runtime does not rename kernel comm.
+ * Direct payload mutation is refused by JS admission. Name selects candidates;
+ * only device/inode equality proves a matching managed executable. */
+static int managed_process_name(const char *name) {
+    return !strcmp(name, "notifai") || !strcmp(name, "notifai-runtime");
+}
+
 static int matches_executable(const struct stat *info, const struct stat *files, int count) {
     for (int i = 0; i < count; i++)
         if (info->st_dev == files[i].st_dev && info->st_ino == files[i].st_ino) return 1;
@@ -47,6 +55,7 @@ static int file_users(int count, char **names) {
     for (size_t i = 0; i < size / sizeof(*processes); i++) {
         struct kinfo_proc *snapshot = &processes[i];
         if (snapshot->kp_eproc.e_ucred.cr_uid != getuid()) continue;
+        if (!managed_process_name(snapshot->kp_proc.p_comm)) continue;
         pid_t pid = snapshot->kp_proc.p_pid;
         if (pid <= 0) continue;
         struct proc_bsdinfo before, after;
@@ -103,17 +112,18 @@ done_macos:
         }
         FILE *status = fdopen(status_fd, "r");
         if (!status) { close(status_fd); close(process_fd); break; }
-        char line[4096], state = 0;
+        char line[4096], state = 0, name[64] = {0};
         unsigned int real_uid = 0, effective_uid = 0, saved_uid = 0, filesystem_uid = 0;
         int has_uids = 0;
         while (fgets(line, sizeof(line), status)) {
+            if (!strncmp(line, "Name:", 5)) (void)sscanf(line + 5, " %63s", name);
             if (!strncmp(line, "Uid:", 4)) has_uids = sscanf(line + 4, "%u%u%u%u", &real_uid, &effective_uid, &saved_uid, &filesystem_uid) == 4;
             if (!strncmp(line, "State:", 6)) (void)sscanf(line + 6, " %c", &state);
         }
         int failed = ferror(status);
         fclose(status);
-        if (failed || !has_uids || !state) { fprintf(stderr, "notifai: cannot read process %ld credentials (%d,%d,%d)\n", pid, failed, has_uids, state); close(process_fd); break; }
-        if (state == 'Z' || effective_uid != getuid()) {
+        if (failed || !has_uids || !state || !name[0]) { fprintf(stderr, "notifai: cannot read process %ld credentials (%d,%d,%d)\n", pid, failed, has_uids, state); close(process_fd); break; }
+        if (state == 'Z' || effective_uid != getuid() || !managed_process_name(name)) {
             close(process_fd); continue;
         }
         /* fstatat follows the proc exe magic link through the pinned proc FD;

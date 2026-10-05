@@ -33,6 +33,19 @@ if (mode === 'hook') {
   const result = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 20_000, windowsHide: true })
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.stdout, 'native hook command executed')
+  const { openclawPluginSource } = await import('../apps/cli/src/openclaw-plugin.js')
+  const module = path.join(root, 'openclaw-readiness.mjs')
+  writeFileSync(module, openclawPluginSource({ adapterPath: adapter.path, timeoutSeconds: 5 }) + `
+import assert from 'node:assert/strict'
+JOURNAL_DIR = path.join(${JSON.stringify(root)}, 'openclaw', 'notifai', 'continuation-journal')
+assert.equal(writeReadiness({ script: ADAPTER }), true)
+const receipt = JSON.parse(readFileSync(readinessPath(), 'utf8'))
+assert.equal(receipt.pid, process.pid)
+assert.ok(receipt.start)
+if (process.platform === 'win32') assert.match(receipt.start, /^windows-filetime:[0-9]+$/)
+clearReadiness()
+assert.equal(existsSync(readinessPath()), false)
+`)
 } else if (mode === 'lock') {
   const file = path.join(root, 'shared.json')
   for (let i = 0; i < 50; i++) withFileLock(`${file}.lock`, () => {

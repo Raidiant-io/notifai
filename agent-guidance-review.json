@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1974b5b4f019ed7d94e4ce47c28c93c32e872a5b894e9edf46a988cb3a0b7c2b",
+  "behavior_digest": "sha256:7775c7b2ecc70929a38476c2d20c4a57b87dabc9d46cde349645e0508afe3f48",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, setup, readiness and domain terms. Strict uninstall preflight now inventories orphan delivery and input sidecars, retirement queues, input wake attempts and validated native acknowledgement receipts. These internal readers never cancel questions or alter notification guidance. Internal native process observation retains on uncertainty; no public uninstall command or automatic deletion is advertised. Standalone developer documentation states the platform scope and macOS SPI limitations. Explicit skill removal can visit validated ownership receipts from multiple recorded projects and preserves edited content; it does not scan unrecorded projects or expose a public uninstall command.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, setup, readiness and domain terms. Native mutation admission now requires the supported C launcher entry; its marker is consumed before command actions. The POSIX observer filters supported canonical process names before executable identity checks. Current OpenClaw and Hermes residents honor uninstall withdrawal; OpenClaw readiness can use native Windows process identity and is restored after preparation is cancelled. These are internal preparation boundaries; no public uninstall completion or automatic deletion is advertised, and notification guidance remains unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

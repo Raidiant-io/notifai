@@ -216,6 +216,7 @@ int wmain(int argc, wchar_t **argv) {
         }
     }
     FreeEnvironmentStringsW(environment);
+    if (!SetEnvironmentVariableW(L"NOTIFAI_NATIVE_ENTRY", L"launcher-v1")) return failure("cannot establish native entry");
 
     /* argv[0] has the special Windows executable-name grammar. Retain the
      * original argument tail verbatim, including empty/quoted Unicode values. */
@@ -413,6 +414,7 @@ int main(int argc, char **argv) {
             if (result) { perror("notifai: clear runtime controls"); return 1; }
         } else i++;
     }
+    if (setenv("NOTIFAI_NATIVE_ENTRY", "launcher-v1", 1)) { perror("notifai: establish native entry"); return 1; }
     argv[0] = executable;
     execv(executable, argv);
     perror("notifai: launch runtime");

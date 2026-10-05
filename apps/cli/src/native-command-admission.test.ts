@@ -30,7 +30,7 @@ function fixture() {
   writeFileSync(path.join(root, 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai', id, target }), { mode: 0o600 })
   writeFileSync(path.join(root, 'active.json'), JSON.stringify({ schema: 1, active, previous: retired, generation: 2 }) + '\n', { mode: 0o600 })
   vi.stubGlobal('NOTIFAI_COMPILED_BUILD', { sourceDirty: false, target })
-  const env = { HOME: home, USERPROFILE: home, XDG_STATE_HOME: home }
+  const env = { HOME: home, USERPROFILE: home, XDG_STATE_HOME: home, NOTIFAI_NATIVE_ENTRY: 'launcher-v1' }
   const running = (build: string) => Object.defineProperty(process, 'execPath', {
     value: path.join(root, 'versions', build, `notifai-runtime${extension}`),
   })
@@ -60,6 +60,15 @@ it('admits active commands but refuses the same ordinary command from a retired 
   expect(result).toMatchObject({ code: 1, admitted: [] })
   expect(result.errors.join()).toContain('no longer active')
   expect(configSet).toHaveBeenCalledTimes(1)
+})
+
+it('refuses ordinary direct payload execution before any managed action', async () => {
+  const f = fixture(), configSet = vi.fn(async () => 0)
+  f.running(f.active)
+  const result = await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet }, { NOTIFAI_NATIVE_ENTRY: undefined })
+  expect(result).toMatchObject({ code: 1, admitted: [] })
+  expect(result.errors.join()).toContain('native launcher')
+  expect(configSet).not.toHaveBeenCalled()
 })
 
 it('retained question owners need the exact installation, build, harness and live session', async () => {

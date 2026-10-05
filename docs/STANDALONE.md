@@ -36,7 +36,10 @@ credentials, notification delivery, resident ownership, or update behavior.
 Always execute `notifai` with its sibling `notifai-runtime`. Bun's compiled
 payload still honors `BUN_OPTIONS` and `BUN_BE_BUN` before JavaScript starts.
 The native launcher removes Bun/JavaScriptCore environment controls before
-dispatch. Direct payload execution does not provide that boundary.
+dispatch. Direct payload execution does not provide that boundary and cannot
+run mutating commands. A per-entry launcher marker is consumed at command
+admission; it is a local launch protocol, not a credential or security boundary
+against other programs running as the User.
 
 On POSIX the launcher uses `exec`, preserving the process identity, arguments,
 streams, and exit status. On Windows it assigns the child to a Job Object at
@@ -158,7 +161,10 @@ The uninstall preparation boundary inventories pending work across recorded
 state roots and closes native launch admission with a recoverable journal.
 It leaves questions, wiring and runtime files intact. The C launcher, direct
 payload command admission and detached-owner path honor that barrier, and
-Session Attendants withdraw through their existing lifecycle gate. This is
+Session Attendants withdraw through their existing lifecycle gate. The current
+OpenClaw plugin also stops starting children and removes its readiness receipt
+while admission is closed; it does not signal children during this drain.
+Previously loaded plugins require separate proof before removal can finish. This is
 preparation infrastructure; owned removal and the public uninstall command are
 not yet complete. Inspection includes orphan delivery/input sidecars and the
 machine retirement queue in every discovered state root. Reported handoffs and
@@ -170,13 +176,18 @@ explicit uninstall. Windows uses Restart Manager without shutdown or restart.
 Linux compares executable device/inode through pinned `/proc` directory handles.
 macOS uses a `sysctl` credential snapshot and the SDK's private `libproc` interface,
 with process start-time revalidation around executable-path inspection. POSIX
-scans cover this installation account's effective UID; other accounts and root
-execution are outside the per-account installation boundary. Linux requires the
+scans cover this installation account's effective UID and the canonical
+`notifai` / `notifai-runtime` kernel names. Supported entries resolve launcher
+aliases and execute the canonical payload; the pinned Bun runtime preserves
+that name. Device/inode comparison then establishes executable identity. This
+is observation of supported native entries, not an inventory of arbitrary
+renamed payloads or processes deliberately changing their kernel name. Other
+accounts and root execution are outside the per-account installation boundary. Linux requires the
 normal host process view; hidden or container-limited process views are not a
 cross-host absence guarantee. macOS's private interface has no permanent API
 stability guarantee. Unsupported, inaccessible or changed process evidence
-retains the installation. An unrelated running executable whose pathname was
-removed can therefore prevent macOS cleanup until that process exits. These
+for a matching candidate retains the installation. Unrelated process names
+are excluded before executable inspection. These
 bounded snapshots require closed launch admission and still need integration
 with owned teardown before they may authorize uninstall deletion.
 

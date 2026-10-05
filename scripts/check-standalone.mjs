@@ -44,6 +44,14 @@ try {
   assert.equal(refused.status, 1, 'A portable executable must refuse shared-state mutations before installation')
   assert.match(refused.stderr, /Install Notifai/)
   assert.deepEqual(readdirSync(home), [], 'Refused portable commands must not write configuration or logs')
+  const payload = path.join(path.dirname(executable), process.platform === 'win32' ? 'notifai-runtime.exe' : 'notifai-runtime')
+  for (const args of [['config', 'set', 'log_level', 'off', '--yes'], ['install']]) {
+    const direct = spawnSync(payload, args, { cwd, env, encoding: 'utf8', timeout: 20_000 })
+    assert.equal(direct.error, undefined)
+    assert.equal(direct.status, 1)
+    assert.match(direct.stderr, /native launcher/)
+    assert.deepEqual(readdirSync(home), [], 'Direct payload must not write installation or account state')
+  }
   for (const args of [['--help'], ['--version'], ['install', '--help'], ['doctor', '--json']]) {
     const diagnostic = spawnSync(executable, args, { cwd, env, encoding: 'utf8', timeout: 20_000 })
     assert.equal(diagnostic.error, undefined)
@@ -61,7 +69,7 @@ try {
   process.stdout.write(`${JSON.stringify({ ok: true, build: receipt.build, launcher_sha256: sha256(executable),
     runtime_sha256: sha256(path.join(path.dirname(executable), process.platform === 'win32' ? 'notifai-runtime.exe' : 'notifai-runtime')), checks: [
     'isolated-no-runtime-path', 'embedded-skill-integrity', 'process-identity', 'portable-command-admission',
-    'portable-read-only-diagnostics', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
+    'portable-read-only-diagnostics', 'direct-payload-mutation-refused', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN',
   ] })}\n`)
 } finally {
   rmSync(root, { recursive: true, force: true })

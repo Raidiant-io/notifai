@@ -43,7 +43,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 5
+const OPENCLAW_ADAPTER_VERSION = 6
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -117,12 +117,16 @@ function readinessPath() {
 }
 
 function writeReadiness(target) {
-  const start = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+  const start = process.platform === "win32" && UNINSTALL_BARRIER !== null
+    ? execFileSync(ADAPTER, ["--internal-process-info", String(process.pid)], {
+      encoding: "utf8", timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+    }).trim().split(/\\r?\\n/)[0]
+    : execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
     encoding: "utf8", timeout: 2_000,
     env: { PATH: process.env.PATH ?? "/bin:/usr/bin", TZ: "UTC", LC_ALL: "C" },
     stdio: ["ignore", "pipe", "ignore"],
   }).trim().replace(/\\s+/g, " ")
-  if (start === "") return false
+  if (!start || (process.platform === "win32" && !/^windows-filetime:\\d+$/.test(start))) return false
   const file = readinessPath()
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temp = file + "." + randomUUID() + ".tmp"
@@ -511,7 +515,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function deliver(record) {
-    if (delivering.has(record.delivery_id) || record.phase === "transcript") return
+    if (uninstallPending() || delivering.has(record.delivery_id) || record.phase === "transcript") return
     delivering.add(record.delivery_id)
     try {
       const envelope = { session_id: record.session_key, cwd: record.cwd,
@@ -558,6 +562,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function deliverMessageOnce(record) {
+    if (uninstallPending()) return false
     try {
       if (record.boot_id !== GATEWAY_BOOT_ID) {
         settleMessageJournal(record, "unconfirmed")
@@ -690,6 +695,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function startSettlement(session, entry) {
+    if (uninstallPending()) return
     const envelope = { session_id: session.session_key, cwd: session.cwd,
       openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
     const child = spawnOwnedHook("openclaw-settlement", envelope, true)
@@ -744,6 +750,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function startSession(session) {
+    if (uninstallPending()) return
     const envelope = { session_id: session.session_key, cwd: session.cwd,
       openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
     const entry = { generation: session.generation,
@@ -754,7 +761,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function sendActivity(entry, session) {
-    if (entry.attendant.exitCode === null && entry.attendant.stdio[4].writable) {
+    if (entry && entry.attendant.exitCode === null && entry.attendant.stdio[4].writable) {
       entry.attendant.stdio[4].write(JSON.stringify({ type: "activity",
         activity: session.hasActiveRun === true ? "working" : "idle" }) + "\\n")
     }
@@ -762,6 +769,16 @@ function makeContinuationService(config, logger, api) {
 
   async function tick() {
     if (stopped || scanning) return
+    // Native children observe the same barrier and report withdrawn through
+    // their gates. Never turn uninstall into an ended signal to the harness.
+    if (uninstallPending()) {
+      ready = false
+      clearReadiness()
+      for (const [key, entry] of active) {
+        if (entry.attendant.exitCode !== null && (entry.child === null || entry.child.exitCode !== null)) active.delete(key)
+      }
+      return
+    }
     scanning = true
     try {
       if (!ready) {
@@ -771,10 +788,10 @@ function makeContinuationService(config, logger, api) {
         ready = true
       }
       const raw = await runHook("openclaw-list-pending", { cwd: process.cwd() })
-      if (raw === null) return
+      if (raw === null || uninstallPending()) return
       const pending = JSON.parse(raw)
       const sessions = await gatewaySessions(gatewayTarget)
-      if (sessions === null) return
+      if (sessions === null || uninstallPending()) return
       const seen = new Set()
       if (Array.isArray(pending)) for (const session of pending) {
         if (typeof session?.session_key !== "string" ||
@@ -845,7 +862,7 @@ function makeContinuationService(config, logger, api) {
       stopped = true
       clearReadiness()
       if (timer !== null) clearInterval(timer)
-      for (const entry of active.values()) {
+      if (!uninstallPending()) for (const entry of active.values()) {
         if (entry.child !== null) entry.child.kill("SIGTERM")
         entry.attendant.kill("SIGTERM")
       }
@@ -899,7 +916,7 @@ export function openclawPluginSource(options: OpenclawPluginOptions): string {
 // the next install; change the CLI instead, which is where the logic lives.
 import { spawn, execFile, execFileSync } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
@@ -910,7 +927,19 @@ const ADAPTER_VERSION = ${OPENCLAW_ADAPTER_VERSION}
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}
 const WORKER_ACTIVATION_CONTEXT = ${JSON.stringify(WORKER_ACTIVATION_CONTEXT)}
 
+// The managed native command has one fixed installation root. Source adapters
+// and externally owned wrappers do not acquire uninstall authority here.
+const UNINSTALL_BARRIER = path.basename(path.dirname(ADAPTER)) === "bin" &&
+  path.basename(path.dirname(path.dirname(ADAPTER))) === ".notifai"
+  ? path.join(path.dirname(path.dirname(ADAPTER)), "uninstall.json") : null
+function uninstallPending() {
+  if (UNINSTALL_BARRIER === null) return false
+  try { lstatSync(UNINSTALL_BARRIER); return true }
+  catch (error) { return error?.code !== "ENOENT" }
+}
+
 function runHook(event, envelope) {
+  if (uninstallPending()) return Promise.resolve(null)
   return new Promise((resolve) => {
     let child
     try {
