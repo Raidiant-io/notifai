@@ -269,7 +269,7 @@ native processes while Node/Bun remain absent from its executable search path.
 its exact checked archive, executable receipt, and native installation receipt.
 It rechecks source/build identity, final archive contents and reviewed material
 hashes before emitting a new exclusive release bundle. macOS additionally needs
-final-byte publisher/notarization/Gatekeeper evidence. A failed assembly removes
+final-byte publisher and raw-code notarization evidence. A failed assembly removes
 only its newly created output; an existing bundle is never replaced.
 
 The production command uses only source-embedded public keys and the protected
@@ -312,3 +312,62 @@ channel work fails. Workflow cutover and production configuration remain pending
 See GitHub's [immutable release sequence](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
 [release asset API](https://docs.github.com/en/rest/releases/assets), and
 [atomic branch commit mutation](https://docs.github.com/en/graphql/reference/commits).
+
+### Hosted finalization and publication
+
+Full `ci.yml` runs now include all six native targets. The `standalone_only`
+option remains useful for focused development, but cannot qualify a production
+candidate: publication also requires the generic `gates` job. Admission binds
+the first-party workflow path, event, source SHA, successful jobs, unexpired
+artifact IDs and digests to one run. Evidence cannot be assembled from several
+partially successful runs.
+
+`prepare-native-release.yml` takes the exact release tag/SHA and a successful
+full `candidate_run_id`. Each native runner restores its checked executable,
+verifies the original byte hashes, restores executable permissions lost by
+Actions artifact transport, and removes only the downloaded candidate packaging.
+It never recompiles the application or launcher. Reviewed materials come from
+`distribution/materials/<target>/` and must match every path, byte count and
+hash in `distribution/release-materials.json` before they are copied.
+
+The protected `native-release` environment owns finalization credentials.
+Windows receives no Authenticode signing operation. macOS signs the C launcher
+without runtime exceptions and the Bun executable with Bun 1.4.2's documented
+entitlements, using Developer ID Application, hardened runtime and timestamps.
+An isolated temporary keychain is removed after signing. The lane submits a ZIP
+of the signed executables to Apple, retains the submission/log and hashes, and
+requires Accepted status. It then verifies the raw-code notarization tickets.
+Fresh native checks, final packaging and an actual archive installation follow;
+macOS also rechecks the extracted signatures, Team ID and notarization tickets.
+Final artifacts are retained for 90 days.
+
+`publish-native-release.yml` separately takes the tag/SHA and successful
+`final_run_id`. It requires all six retained final artifacts before the protected
+publication job can start. Assembly and signing are deterministic; retries use
+the same finalization run, never a new macOS signing pass. The deployed service
+contract must accept the candidate before any release mutation. Publication
+defaults to no discovery promotion; `beta` or `stable` must be selected explicitly.
+Creating a missing channel requires the additional initialization input.
+Expired final artifacts require a new reviewed preparation; if assets already
+exist, mismatched replacements are refused. Retention expiry is not authority
+to overwrite an existing release.
+
+Production readiness still requires source-embedded Ed25519 trust, its protected
+private key and key ID, reviewed runtime materials, the macOS Team ID in the
+policy and shell bootstrap, and the protected macOS certificate/notary setup.
+Environment protections and release metadata branch permissions must also be
+verified. These workflows do not provision credentials, certify material
+completeness, or authorize publication. Release-please still uses its existing
+npm route until the installation-route cutover is completed.
+
+Apple's documented raw-code check is `codesign -vvvv -R=notarized
+--check-notarization`. `spctl` execution assessment targets app bundles and can
+reject a valid standalone CLI as not app-like. Neither a notarization receipt
+nor an ordinary CI execution proves a fresh quarantined download launches on a
+User's Mac. That separate acceptance check uses the shipped archive on a clean
+Mac and the documented Terminal invocation. Raw executables and ZIPs cannot be
+stapled; this distribution needs Apple's online ticket lookup on first use.
+Sources: [Apple DTS testing guide](https://developer.apple.com/forums/thread/130560),
+[Apple Gatekeeper guidance](https://developer.apple.com/forums/thread/706379),
+[Bun 1.4.2 signing guide](https://github.com/oven-sh/bun/blob/bun-v1.4.2/docs/guides/runtime/codesign-macos-executable.mdx),
+[Apple notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).

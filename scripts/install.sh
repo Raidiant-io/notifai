@@ -181,7 +181,7 @@ if [ "$NF_PLATFORM" = darwin ]; then
   /usr/bin/codesign --verify --strict "$NF_TEMP/release/notifai" && /usr/bin/codesign --verify --strict "$NF_TEMP/release/notifai-runtime" || nf_fail 'macOS code signature verification failed'
   for nf_executable in notifai notifai-runtime; do
     /usr/bin/codesign -dv --verbose=4 "$NF_TEMP/release/$nf_executable" 2>&1 | awk -F= -v team="$NF_MACOS_TEAM_ID" '$1=="TeamIdentifier" && $2==team {ok=1} END {exit !ok}' || nf_fail 'macOS publisher identity differs'
-    /usr/sbin/spctl --assess --type execute "$NF_TEMP/release/$nf_executable" || nf_fail 'macOS execution assessment failed'
+    /usr/bin/codesign -vvvv -R=notarized --check-notarization "$NF_TEMP/release/$nf_executable" || nf_fail 'macOS notarization ticket verification failed'
   done
 fi
 nf_run "$NF_TEMP/release/notifai" --directory "$NF_TEMP/release" --inventory "$NF_TEMP/inventory.json"

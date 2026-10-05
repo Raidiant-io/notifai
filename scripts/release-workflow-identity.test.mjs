@@ -20,7 +20,7 @@ const cliPackage = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'))
 const protocolPackage = JSON.parse(readFileSync('packages/protocol/package.json', 'utf8'))
 
 test('all workflows stay LF-normalized, least-privilege, and action-SHA pinned', () => {
-  for (const workflow of [release, ci, publish, standalone]) {
+  for (const workflow of readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).map(name => read(`.github/workflows/${name}`))) {
     assert.doesNotMatch(workflow, /\r/)
     for (const match of workflow.matchAll(/uses: ([^\s@]+)@([^\s#]+)/gu)) {
       assert.match(match[2], /^[0-9a-f]{40}$/u, match[1])
@@ -99,7 +99,7 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
 
 test('public hosted workflows exist only for release preparation and publication', () => {
   assert.deepEqual(
-    ['ci.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml'],
+    ['ci.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml'],
     readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).sort(),
   )
   assert.equal(ciWorkflow.jobs['dependency-review'], undefined)
@@ -108,6 +108,38 @@ test('public hosted workflows exist only for release preparation and publication
   assert.deepEqual(workflow.permissions, {contents: 'read'})
   assert.equal(workflow.on.workflow_dispatch.inputs.expected_sha.required, true)
   assert.equal(workflow.on.workflow_call.inputs.expected_sha.required, true)
+})
+
+test('native finalization and publication retain exact artifacts across independent retries', () => {
+  const prepare = parse(read('.github/workflows/prepare-native-release.yml'))
+  const nativePublish = parse(read('.github/workflows/publish-native-release.yml'))
+  for (const workflow of [prepare, nativePublish]) {
+    assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch'])
+    assert.deepEqual(workflow.permissions, { contents: 'read', actions: 'read' })
+    assert.equal(workflow.on.workflow_dispatch.inputs.expected_sha.required, true)
+    assert.equal(workflow.concurrency['cancel-in-progress'], false)
+    const admission = workflow.jobs.admission.steps.map(step => step.run ?? '').join('\n')
+    assert.match(admission, /test "\$GITHUB_SHA" = "\$EXPECTED_SHA"/)
+    assert.match(admission, /require-native-evidence\.mjs/)
+  }
+  assert.equal(prepare.on.workflow_dispatch.inputs.candidate_run_id.required, true)
+  assert.equal(nativePublish.on.workflow_dispatch.inputs.final_run_id.required, true)
+  assert.equal(prepare.jobs.finalize.environment, 'native-release')
+  assert.equal(nativePublish.jobs.publish.environment, 'native-release')
+  assert.deepEqual(nativePublish.jobs.publish.permissions, { actions: 'read', contents: 'write' })
+  const finalization = prepare.jobs.finalize.steps.map(step => step.run ?? '').join('\n')
+  assert.doesNotMatch(finalization, /build-standalone|build-launcher/)
+  assert.ok(finalization.indexOf('admit-native-candidate') < finalization.indexOf('sign-macos-standalone'))
+  assert.ok(finalization.indexOf('sign-macos-standalone') < finalization.indexOf('check-standalone.mjs'))
+  assert.ok(finalization.indexOf('check-standalone.mjs') < finalization.indexOf('package-standalone.mjs'))
+  const signing = prepare.jobs.finalize.steps.find(step => step.name === 'Sign and notarize the final macOS CLI bytes')
+  assert.equal(signing.if, "runner.os == 'macOS'")
+  const publishSteps = nativePublish.jobs.publish.steps.map(step => step.run ?? '').join('\n')
+  assert.doesNotMatch(publishSteps, /build-standalone|build-launcher|sign-macos-standalone/)
+  assert.ok(publishSteps.indexOf('require-native-evidence') < publishSteps.indexOf('gh run download'))
+  assert.ok(publishSteps.indexOf('assemble-native-release') < publishSteps.indexOf('publish-native-release.mjs'))
+  assert.ok(publishSteps.indexOf('check-live-server-contract') < publishSteps.indexOf('publish-native-release.mjs'))
+  assert.equal(nativePublish.on.workflow_dispatch.inputs.channel.default, 'none')
 })
 
 test('release-please is explicit, exact-main guarded, and uses a verified predecessor', () => {

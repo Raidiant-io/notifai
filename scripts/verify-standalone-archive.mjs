@@ -11,8 +11,11 @@ import { Distribution, releaseSigningMessage } from '../apps/cli/dist/release-di
 import { extractReleaseArchive } from '../apps/cli/dist/release-archive.js'
 import { Installation } from '../apps/cli/dist/installation.js'
 import { installationAccess } from '../apps/cli/dist/installation-access.js'
+import { repositoryRoot } from './cross-platform.mjs'
 
 assert.ok(process.argv[2], 'Usage: verify-standalone-archive.mjs <archive-directory>')
+const notarized = process.argv[3] === '--notarized'
+assert.ok(process.argv.length === 3 || (process.argv.length === 4 && notarized && process.platform === 'darwin'), 'Invalid archive verification mode')
 const directory = path.resolve(process.argv[2]), metadata = JSON.parse(readFileSync(path.join(directory, 'artifact.json'), 'utf8'))
 const nativeTarget = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`
 assert.equal(metadata.build.target, nativeTarget, 'Archive verification requires its native target')
@@ -31,6 +34,15 @@ const windows = process.platform === 'win32', extension = windows ? '.exe' : ''
 try {
   const extracted = await extractReleaseArchive({ distribution, signedInventory, target: nativeTarget,
     bytes: readFileSync(archiveFile), parent: path.join(root, 'extracted') })
+  if (notarized) {
+    const policy = JSON.parse(readFileSync(path.join(repositoryRoot, 'distribution/release-materials.json'), 'utf8'))
+    assert.match(policy.macos_team_id ?? '', /^[A-Z0-9]{10}$/)
+    for (const name of ['notifai', 'notifai-runtime']) {
+      const executable = path.join(extracted, name)
+      execFileSync('/usr/bin/codesign', ['--verify', '--strict', '-R', `anchor apple generic and certificate leaf[subject.OU] = "${policy.macos_team_id}"`, executable], { timeout: 30_000 })
+      execFileSync('/usr/bin/codesign', ['-vvvv', '-R=notarized', '--check-notarization', executable], { timeout: 60_000 })
+    }
+  }
   const installation = new Installation({ root: path.join(home, '.notifai'), target: nativeTarget, distribution,
     access: installationAccess(path.join(extracted, `notifai${extension}`)) })
   const candidate = { directory: extracted, signedInventory, channel: metadata.build.version.includes('-') ? 'beta' : 'stable' }
@@ -53,5 +65,6 @@ try {
     (entry.isDirectory() ? size(path.join(directory, entry.name)) : statSync(path.join(directory, entry.name)).size), 0)
   process.stdout.write(`${JSON.stringify({ ok: true, target: nativeTarget, build: metadata.build, archive_sha256: metadata.artifact.sha256,
     archive_bytes: metadata.artifact.bytes, installed_bytes: size(path.join(home, '.notifai')),
-    checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path'] })}\n`)
+    checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path',
+      ...(notarized ? ['raw-code-notarization'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

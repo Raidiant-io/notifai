@@ -57,7 +57,8 @@ export async function assembleNativeRelease({ input, output, version, sourceRevi
       const platform = json(path.join(root, 'platform-check.json'))
       assert.ok(platform.schema === 1 && platform.target === artifact.target && platform.team_id === materialsPolicy.macos_team_id &&
         platform.runtime_sha256 === artifact.runtime_sha256 && platform.launcher_sha256 === artifact.launcher_sha256 &&
-        ['codesign-strict', 'notarization-accepted', 'gatekeeper-execute'].every(value => platform.checks?.includes(value)),
+        ['codesign-strict', 'notarization-accepted', 'raw-code-notarization'].every(value => platform.checks?.includes(value)) &&
+        installed.checks.includes('raw-code-notarization'),
       'Final macOS publisher/notarization evidence is incomplete')
     }
   }

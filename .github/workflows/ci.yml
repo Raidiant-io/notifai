@@ -275,7 +275,7 @@ jobs:
 
   standalone:
     needs: scope
-    if: ${{ needs.scope.result == 'success' && inputs.standalone_only }}
+    if: ${{ needs.scope.result == 'success' }}
     uses: ./.github/workflows/standalone-candidate.yml
     with:
       expected_sha: ${{ inputs.expected_sha }}

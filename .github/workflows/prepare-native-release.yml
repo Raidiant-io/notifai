@@ -1,0 +1,145 @@
+name: Prepare native release
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact tagged source SHA with successful full and native CI
+        required: true
+        type: string
+
+      candidate_run_id:
+        description: Successful full CI run retaining all six native candidates at this SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-prepare-${{ inputs.expected_sha }}
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      candidate_run_id: ${{ steps.evidence.outputs.run_id }}
+    steps:
+      - name: Admit exact first-party release tag
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REPOSITORY" = Raidiant-io/notifai
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          [[ "$GITHUB_REF" == refs/tags/v* ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Require full CI and all six retained native candidates
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+        run: node scripts/require-native-evidence.mjs --kind candidate --expected-sha "$EXPECTED_SHA" --run-id "$CANDIDATE_RUN"
+
+  finalize:
+    name: finalize (${{ matrix.target }})
+    needs: admission
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    environment: native-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: bun-darwin-arm64
+            arch: arm64
+            extension: ''
+          - runner: macos-15-intel
+            target: bun-darwin-x64
+            arch: x64
+            extension: ''
+          - runner: ubuntu-24.04
+            target: bun-linux-x64
+            arch: x64
+            extension: ''
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            arch: arm64
+            extension: ''
+          - runner: windows-2025
+            target: bun-windows-x64
+            arch: x64
+            extension: .exe
+          - runner: windows-11-arm
+            target: bun-windows-arm64
+            arch: arm64
+            extension: .exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - run: pnpm --filter @raidiant/notifai build
+      - name: Restore the admitted candidate without rebuilding
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ needs.admission.outputs.candidate_run_id }}
+          TARGET: ${{ matrix.target }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" --name "standalone-$TARGET-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-final"
+          node scripts/admit-native-candidate.mjs --directory "$RUNNER_TEMP/native-final" --target "$TARGET" --expected-sha "$EXPECTED_SHA"
+          node scripts/prepare-reviewed-materials.mjs --target "$TARGET" --output "$RUNNER_TEMP/native-materials"
+      - name: Sign and notarize the final macOS CLI bytes
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NOTIFAI_MACOS_CERTIFICATE_BASE64: ${{ secrets.NOTIFAI_MACOS_CERTIFICATE_BASE64 }}
+          NOTIFAI_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.NOTIFAI_MACOS_CERTIFICATE_PASSWORD }}
+          NOTIFAI_MACOS_SIGNING_IDENTITY: ${{ vars.NOTIFAI_MACOS_SIGNING_IDENTITY }}
+          NOTIFAI_NOTARY_KEY_BASE64: ${{ secrets.NOTIFAI_NOTARY_KEY_BASE64 }}
+          NOTIFAI_NOTARY_KEY_ID: ${{ vars.NOTIFAI_NOTARY_KEY_ID }}
+          NOTIFAI_NOTARY_ISSUER: ${{ vars.NOTIFAI_NOTARY_ISSUER }}
+        run: node scripts/sign-macos-standalone.mjs --directory "$RUNNER_TEMP/native-final" --expected-sha "$EXPECTED_SHA"
+      - name: Verify and package final bytes on their native OS
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/check-standalone.mjs "$RUNNER_TEMP/native-final/notifai$EXTENSION" > "$RUNNER_TEMP/native-final/check.json"
+          node scripts/check-standalone-runtime.mjs --launcher "$RUNNER_TEMP/native-final/notifai$EXTENSION" > "$RUNNER_TEMP/native-final/runtime-check.log"
+          node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/native-final" --materials "$RUNNER_TEMP/native-materials" --output "$RUNNER_TEMP/native-final/archive"
+          args=()
+          if [ "$RUNNER_OS" = macOS ]; then args+=(--notarized); fi
+          node scripts/verify-standalone-archive.mjs "$RUNNER_TEMP/native-final/archive" "${args[@]}" > "$RUNNER_TEMP/native-final/archive-check.json"
+      - name: Retain exact final artifacts for explicit publication and retries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-final-${{ matrix.target }}-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/native-final/
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,127 @@
+name: Publish native release
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact tagged source SHA to publish
+        required: true
+        type: string
+      final_run_id:
+        description: Successful prepare-native-release run holding exact final artifacts
+        required: true
+        type: string
+      channel:
+        description: Explicit discovery promotion after immutable publication
+        type: choice
+        options: [none, beta, stable]
+        default: none
+      initialize_channel:
+        description: Allow first creation of the chosen channel (never reset an existing record)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-publication
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Admit explicit exact first-party release tag
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          FINAL_RUN: ${{ inputs.final_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FINAL_RUN" =~ ^[1-9][0-9]*$ ]]
+          test "$GITHUB_REPOSITORY" = Raidiant-io/notifai
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          [[ "$GITHUB_REF" == refs/tags/v* ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Verify retained final artifacts from one successful preparation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          FINAL_RUN: ${{ inputs.final_run_id }}
+        run: node scripts/require-native-evidence.mjs --kind final --expected-sha "$EXPECTED_SHA" --run-id "$FINAL_RUN"
+
+  publish:
+    needs: admission
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    environment: native-release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - run: pnpm --filter @raidiant/notifai build
+      - name: Restore exactly the admitted final artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          FINAL_RUN: ${{ inputs.final_run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/require-native-evidence.mjs --kind final --expected-sha "$EXPECTED_SHA" --run-id "$FINAL_RUN"
+          for target in bun-darwin-arm64 bun-darwin-x64 bun-linux-arm64 bun-linux-x64 bun-windows-arm64 bun-windows-x64; do
+            gh run download "$FINAL_RUN" --repo "$GITHUB_REPOSITORY" --name "native-final-$target-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-input/$target"
+          done
+      - name: Assemble and sign the exact admitted inventory
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NOTIFAI_RELEASE_SIGNING_KEY: ${{ secrets.NOTIFAI_RELEASE_SIGNING_KEY }}
+          SIGNING_KEY_ID: ${{ vars.NOTIFAI_RELEASE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./apps/cli/package.json").version')
+          test "$GITHUB_REF" = "refs/tags/v$version"
+          node scripts/assemble-native-release.mjs --input "$RUNNER_TEMP/native-input" --output "$RUNNER_TEMP/native-release" --version "$version" --expected-sha "$EXPECTED_SHA" --key-id "$SIGNING_KEY_ID"
+      - name: Verify deployed service accepts this candidate
+        run: node scripts/check-live-server-contract.mjs
+      - name: Publish immutable bytes, then optionally promote discovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CHANNEL: ${{ inputs.channel }}
+          INITIALIZE_CHANNEL: ${{ inputs.initialize_channel }}
+          NOTIFAI_RELEASE_SIGNING_KEY: ${{ secrets.NOTIFAI_RELEASE_SIGNING_KEY }}
+          SIGNING_KEY_ID: ${{ vars.NOTIFAI_RELEASE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          args=(--directory "$RUNNER_TEMP/native-release" --expected-sha "$EXPECTED_SHA" --publish)
+          if [ "$CHANNEL" != none ]; then
+            args+=(--promote --channel "$CHANNEL" --key-id "$SIGNING_KEY_ID")
+            if [ "$INITIALIZE_CHANNEL" = true ]; then args+=(--initialize-channel); fi
+          elif [ "$INITIALIZE_CHANNEL" = true ]; then
+            echo 'Channel initialization requires explicit channel promotion' >&2
+            exit 1
+          fi
+          node scripts/publish-native-release.mjs "${args[@]}"

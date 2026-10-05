@@ -33,8 +33,9 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   '.gitignore',
   // CI only. Workflow files are scanned for forbidden content like any other
   // source, so this admits the directory without admitting what it may say —
-  // and nothing here may reference private infrastructure, deployment, or
-  // signing, which is exactly what a CI directory is tempting to fill with.
+  // and nothing here may contain private infrastructure, deployment, or
+  // signing material. Public CLI signing commands refer only to protected CI
+  // secret names; actual certificates and private keys never enter source.
   '.github',
   'README.md',
   'AGENTS.md',
@@ -45,6 +46,7 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   'CONTRIBUTING.md',
   'agent-guidance-review.json',
   'docs',
+  'distribution', // Public CLI materials and runtime entitlements only.
   'scripts',
   'apps',
   'packages',

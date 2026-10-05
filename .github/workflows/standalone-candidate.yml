@@ -130,7 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs
+          node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs
           node scripts/prepare-standalone-materials.mjs --candidate --output "$RUNNER_TEMP/standalone-materials"
           node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/standalone" --materials "$RUNNER_TEMP/standalone-materials" --output "$RUNNER_TEMP/standalone/archive"
       - name: Verify the packaged bytes through fresh native installation
@@ -139,6 +139,8 @@ jobs:
           set -euo pipefail
           node scripts/verify-standalone-archive.mjs "$RUNNER_TEMP/standalone/archive" > "$RUNNER_TEMP/standalone/archive-check.json"
           cat "$RUNNER_TEMP/standalone/archive-check.json"
+          node -e 'require("node:fs").cpSync(process.env.RUNNER_TEMP + "/standalone", process.env.RUNNER_TEMP + "/finalization-admission", {recursive:true})'
+          node scripts/admit-native-candidate.mjs --directory "$RUNNER_TEMP/finalization-admission" --target "${{ matrix.target }}" --expected-sha "${{ inputs.expected_sha }}"
       - name: Retain candidate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

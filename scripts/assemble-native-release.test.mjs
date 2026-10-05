@@ -33,10 +33,10 @@ async function fixture(t) {
     policy.targets[target] = metadata.artifact.materials
     json(path.join(directory, 'archive-check.json'), { ok: true, target, build, archive_sha256: metadata.artifact.sha256,
       archive_bytes: metadata.artifact.bytes, installed_bytes: 1024,
-      checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path'] })
+      checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path', 'raw-code-notarization'] })
     if (target.startsWith('bun-darwin-')) json(path.join(directory, 'platform-check.json'), {
       schema: 1, target, team_id: policy.macos_team_id, runtime_sha256: hash(runtime), launcher_sha256: hash(launcher),
-      checks: ['codesign-strict', 'notarization-accepted', 'gatekeeper-execute'],
+      checks: ['codesign-strict', 'notarization-accepted', 'raw-code-notarization'],
     })
   }
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
