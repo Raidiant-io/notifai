@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 function powershell(operation, data = {}) {
   const script = fileURLToPath(new URL('./data/install.ps1', import.meta.url)).replaceAll("'", "''")
-  const code = `$ErrorActionPreference='Stop'; . '${script}'; $inputData=[Console]::In.ReadToEnd() | ConvertFrom-Json; ${operation}`
+  const code = `$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); . '${script}'; $inputData=[Console]::In.ReadToEnd() | ConvertFrom-Json; ${operation}`
   const systemRoot = process.env.SystemRoot
   assert.ok(systemRoot && path.win32.isAbsolute(systemRoot), 'The OS PowerShell location is unavailable')
   const executable = path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')

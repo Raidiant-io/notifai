@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6e098995d418ec5cf18740102e44885aea92b038e165d5c7b7ad3feff9accd32",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Trimmed redundant session-instruction wording without changing its authority. Built-in skill tests now require selected harnesses and owned receipts; native release preparation and raw-code notarization do not change Notification Request behavior. Runtime installation and publication remain separately gated.",
+  "behavior_digest": "sha256:13fc537f1445ea2e67d6789fee215f4032f734b357deba5818ce195eda8e51a3",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed the README addition naming the unpublished optional bootstrap and linking its native update policy. Lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms are unchanged from the prior reviewed source; no candidate installer is represented as already available.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

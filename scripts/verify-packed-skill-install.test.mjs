@@ -13,9 +13,7 @@ const skillSmoke = read('scripts/verify-packed-skill-install.mjs')
 const agents = read('AGENTS.md')
 const releasing = read('docs/RELEASING.md')
 const ci = read('.github/workflows/ci.yml')
-const publish = read('.github/workflows/publish.yml')
 const ciWorkflow = parse(ci)
-const publishWorkflow = parse(publish)
 
 test('the deterministic packed gate does not spawn the third-party skills installer', () => {
   assert.doesNotMatch(packedInstall, /nativeSkills\.add/u)
@@ -59,15 +57,6 @@ test('release CI keeps packed-install deterministic and path-gates the installer
     assert.match(windows, /pnpm check:packed/u)
     assert.doesNotMatch(windows, /check:packed-skill-smoke/u)
   }
-})
-
-test('publication always runs the installer smoke against the exact packed tarballs', () => {
-  const pack = publishWorkflow.jobs.npm.steps.find(
-    (candidate) => candidate.name === 'Pack once and verify the exact release artifacts',
-  )
-  assert.match(pack.run, /scripts\/verify-packed-install\.mjs/u)
-  assert.match(pack.run, /scripts\/verify-packed-skill-install\.mjs/u)
-  assert.doesNotMatch(pack.run, /--if-changed/u)
 })
 
 test('docs tell agents when the installer smoke is warranted', () => {

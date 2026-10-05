@@ -16,7 +16,7 @@ export function fixture() {
     const response = (data, status = 200) => new Response(status === 204 ? null : JSON.stringify(data), { status })
     if (route === '/private-vulnerability-reporting' || route === '/immutable-releases') return response({ enabled: true })
     if (route === '/rulesets') return response([{ id: 8, target: 'tag', enforcement: 'active' }])
-    if (route === '/rulesets/8') return response({ conditions: { ref_name: { include: ['refs/tags/v*', 'refs/tags/protocol-v*', 'refs/tags/android-v*'], exclude: [] } },
+    if (route === '/rulesets/8') return response({ conditions: { ref_name: { include: ['refs/tags/v*', 'refs/tags/protocol-v*', 'refs/tags/installer-v*', 'refs/tags/android-v*'], exclude: [] } },
       bypass_actors: [], rules: [{ type: 'deletion' }, { type: 'update' }] })
     if (route === '/git/ref/tags/v1.0.0') return response({ object: { type: 'commit', sha: sourceRevision } })
     if (route === '/releases/tags/v1.0.0') return response(state.release)

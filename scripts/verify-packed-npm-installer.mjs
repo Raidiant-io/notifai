@@ -9,7 +9,8 @@ import { requireStatus, runExternal } from './run-external.mjs'
 
 const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-bootstrap-'))
 const run = (command, args, phase, timeoutMs = 120_000) => {
-  const invocation = commandInvocation(command, args)
+  const invocation = ['npm', 'pnpm'].includes(command) ? commandInvocation(command, args) :
+    { file: command, args, options: { windowsHide: true } }
   return requireStatus(runExternal(invocation.file, invocation.args, { cwd: repositoryRoot, env: process.env,
     phase, timeoutMs, ...invocation.options }))
 }

@@ -435,6 +435,19 @@ For npm trusted publishing, a maintainer of the protocol and installer packages 
    Settings → Publishing access and disallow token-based publishing. Trusted
    publishing continues to work with short-lived OIDC credentials.
 
+A new npm package needs a first publication before its trusted publisher can be
+configured. For `@raidiant/notifai-install`, prepare and verify the exact tarball
+and obtain scoped publication authorization first. The maintainer then performs
+the initial public publish with interactive account authentication and 2FA;
+never ask for an OTP or token in a message. Configure its trusted publisher after
+the package exists. A stage-only package's eligibility for trust configuration
+has not been established here, so it is not the automated bootstrap path.
+`npm trust` configuration requires npm 11.15 or newer; this is separate from
+the OIDC publishing floor below. New publisher configurations can default to
+staged publishing; explicitly authorize direct `npm publish` for this workflow.
+Sources: [npm trust prerequisites](https://docs.npmjs.com/cli/v11/commands/npm-trust/#prerequisites),
+[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
 npm requires GitHub-hosted runners, Node 22.14 or newer, npm 11.5.1 or newer,
 and `id-token: write`. `publish.yml` uses Node 24, checks the npm floor before
 doing release work, and grants the OIDC permission only to the protected
