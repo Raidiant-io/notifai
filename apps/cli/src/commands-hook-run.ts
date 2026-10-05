@@ -70,6 +70,7 @@ import { readDeliveryJournal } from './session-delivery.js'
 import { inputWakeToken, sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
+import { claudePermissionRequest, claudePostToolUse, closeClaudePicker, takeOwedClaudePickerAnswer } from './claude-question-hooks.js'
 const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
@@ -251,6 +252,36 @@ export async function hookRunCommand(
       // A title is an enrichment; failing to keep one never fails the hook.
     }
   }
+  // The turn moved on, so no picker of this session is still on screen: a
+  // handler that was waiting on one stops when it next looks.
+  if (harness === 'claude-code' && (event === 'stop' || event === 'user-prompt-submit') &&
+      envelope.session_id !== undefined && envelope.agent_id === undefined) {
+    try {
+      closeClaudePicker(envelope.session_id, deps.env)
+    } catch {
+      // The waiting handler also ends with its picker or its session.
+    }
+  }
+  if (event === 'permission-request') {
+    logger.bind({ session: envelope.session_id ?? null })
+    start({ cwd })
+    // Claude Code signals this handler when the picker is dismissed.
+    let signal!: () => void
+    const signalled = new Promise<void>((resolve) => { signal = resolve })
+    const onSignal = (): void => signal()
+    for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.once(name, onSignal)
+    try {
+      const outcome = harness === 'claude-code'
+        ? await claudePermissionRequest(deps, envelope, logger, { signalled })
+        : 'not-bound'
+      logger.info('hook.end', { hook: event, outcome, decided: outcome === 'answered' })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
+    } finally {
+      for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.removeListener(name, onSignal)
+    }
+    return EXIT.ok
+  }
   if (event === 'openclaw-lifecycle') {
     logger.bind({ session: envelope.session_id ?? null })
     start({ cwd, event: envelope.hook_event_name ?? null })
@@ -371,6 +402,8 @@ export async function hookRunCommand(
         await deliverCodexToolMessage({ ...deps, io }, envelope, logger)
         if (!wrote && notice !== undefined) deps.io.out(appendIntegrationContext(undefined, notice, harness, 'PostToolUse'))
       }
+      // An explicit question, like its answer, does not depend on Project Enablement.
+      if (harness === 'claude-code') claudePostToolUse(deps, envelope, logger)
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
@@ -825,6 +858,12 @@ export async function hookRunCommand(
         ? { notes: [], log: { stage: 'input-wake-observed' } }
         : await handleUserPromptSubmit(ctx, envelope)
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
+      // A device answer returned through a picker that Claude Code never took
+      // is still owed to the agent; this prompt carries it.
+      if (harness === 'claude-code' && envelope.session_id !== undefined && envelope.agent_id === undefined) {
+        const owed = takeOwedClaudePickerAnswer(envelope.session_id, deps.env)
+        if (owed !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, owed, harness, 'UserPromptSubmit')
+      }
     } else {
       outcome = await handleStop(
         ctx,

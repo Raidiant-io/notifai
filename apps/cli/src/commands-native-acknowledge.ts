@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { EXIT, authedClient, loadLoggedConfig, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { admitBoundNativeAnswer, observeCodexQuestions } from './codex-question-bindings.js'
+import { isClaudeRegistration } from './claude-question-bindings.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { findOwningSession, readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { executeNativeAnswerOperation, prepareNativeAnswerOperation, resolveNativeAnswerOperation } from './native-answer-operation.js'
@@ -25,8 +26,9 @@ export async function acknowledgeNativeAnswer(deps: CommandDeps, questionId: str
   if (flags.operationId === undefined) return fail('A native answer requires --operation-id; use a new label for a distinct submission and the same label on retry.', EXIT.usage)
   const now = deps.now ?? Date.now
   const active = resolveActiveHarness(deps.env, deps.cwd, now())
-  if (active.contested.length > 1 || active.active?.harness !== 'codex' || !active.active.sessionId) {
-    return fail('Native reporting requires the exact, unambiguous active Codex Agent Session.', EXIT.usage)
+  const harness = active.active?.harness
+  if (active.contested.length > 1 || (harness !== 'codex' && harness !== 'claude-code') || !active.active?.sessionId) {
+    return fail('Native reporting requires the exact, unambiguous active Codex or Claude Code Agent Session.', EXIT.usage)
   }
   const sessionId = active.active.sessionId
   const localOwner = findOwningSession(questionId, deps.env)
@@ -53,6 +55,8 @@ export async function acknowledgeNativeAnswer(deps: CommandDeps, questionId: str
       ...(flags.text === undefined ? {} : { text: flags.text }),
     }, (state, actualAnswers) => admitBoundNativeAnswer(state, questionId, owner.key, owner.service, actualAnswers), state => {
       const registration = state.codex_question_bindings?.find(item => item.question_id === questionId)
+      // A Claude Code picker was verified by the hook that received it; there is no transcript to reread.
+      if (harness === 'claude-code' || (registration !== undefined && isClaudeRegistration(registration))) return state
       const snapshot = readNativeQuestionSnapshot(registration?.transcript.file, sessionId, deps.env)
       return observeCodexQuestions(state, owner.key, snapshot)
     })
@@ -67,7 +71,7 @@ export async function acknowledgeNativeAnswer(deps: CommandDeps, questionId: str
         throw new Error('The original submission has no live registration or confirmed receipt; its saved native operation remains unresolved.')
       }
       assertCurrentCredential()
-      ;(deps.spawnQuestionSettlement ?? spawnQuestionSettlement)({ envelope: { session_id: sessionId, cwd: deps.cwd }, harness: 'codex', purpose: 'submission' })
+      ;(deps.spawnQuestionSettlement ?? spawnQuestionSettlement)({ envelope: { session_id: sessionId, cwd: deps.cwd }, harness, purpose: 'submission' })
       // A bounded wait keeps offline/unavailable routing explicit. A retry
       // keeps this body, service key and original question; it never calls ask.
       const deadline = now() + 3_000

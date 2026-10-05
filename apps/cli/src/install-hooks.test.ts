@@ -130,8 +130,24 @@ describe('hook config', () => {
     expect(config['PostToolUse']?.[0]?.hooks).toEqual([
       { type: 'command', command: expect.stringContaining('hook post-tool-use'), timeout: 10 },
     ])
-    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })['PostToolUse']).toBeUndefined()
     expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'win32' })['PostToolUse']).toBeUndefined()
+  })
+
+  it('matches both Claude Code picker handlers to the question tool, on POSIX only', () => {
+    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+    expect(config['PermissionRequest']).toEqual([{
+      matcher: 'AskUserQuestion',
+      hooks: [{ type: 'command', command: expect.stringContaining('hook permission-request'), timeout: QUESTION_STOP_TIMEOUT_SECONDS }],
+    }])
+    expect(config['PostToolUse']).toEqual([{
+      matcher: 'AskUserQuestion',
+      hooks: [{ type: 'command', command: expect.stringContaining('hook post-tool-use'), timeout: 10 }],
+    }])
+    const windows = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'win32' })
+    expect(windows['PermissionRequest']).toBeUndefined()
+    expect(windows['PostToolUse']).toBeUndefined()
+    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'darwin' })['PermissionRequest']).toBeUndefined()
+    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'grok', platform: 'darwin' })['PermissionRequest']).toBeUndefined()
   })
   it('activates Notifai at the session lifecycle seam for every native hook adapter', () => {
     const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
@@ -298,6 +314,8 @@ describe('hook config', () => {
       'session-end',
     ])
     expect(requiredHookEvents('claude-code', 'darwin')).toEqual([
+      'post-tool-use',
+      'permission-request',
       'session-start',
       'subagent-start',
       'user-prompt-submit',

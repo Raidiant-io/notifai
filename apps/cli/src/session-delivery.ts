@@ -77,7 +77,22 @@ export type HandOffSubject = ClaimDeliveryAttemptRequestT['subject']
 export type DeliveryJournalStage = 'claimed' | 'writing' | 'written' | 'failed' | 'released'
 
 /** Immutable evidence of a native presentation, never a replayable outbox. */
-export interface NativeAnswerPresentation {
+export type NativeAnswerPresentation = CodexAnswerPresentation | ClaudeQuestionPresentation
+
+/** An app answer returned as the result of the Claude Code picker that asked it. */
+export interface ClaudeQuestionPresentation {
+  kind: 'claude-question'
+  request_id: string
+  question_id: string
+  replies: Array<{ reply_id: string; seq: number }>
+  owner_key: string
+  incarnation: string
+  generation: number
+  service_identity: { base_url: string; machine_id: string }
+  answers_sha256: string
+}
+
+export interface CodexAnswerPresentation {
   kind: 'codex-answer'
   request_id: string
   question_id: string

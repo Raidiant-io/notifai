@@ -63,6 +63,11 @@ export interface HookEnvelope {
   prompt?: string
   /** Claude Code's custom session title, on SessionStart and UserPromptSubmit when one is set. */
   session_title?: string
+  /** Tool events: the tool, its input, and after it ran its response. */
+  tool_name?: string
+  tool_input?: unknown
+  tool_response?: unknown
+  tool_use_id?: string
   /** Codex's exact turn id on prompt, tool, Stop and Interrupt callbacks. */
   turn_id?: string
   /** Native Codex transcript; only typed lifecycle/question records are consumed. */
@@ -149,6 +154,21 @@ export interface SessionState {
   waiting_answers?: AnsweredPending[]
   /** The title the User gave this session in the harness itself, as its hooks last reported it. */
   harness_session_title?: string
+  /** The bound Claude Code picker now on screen, and the hook process waiting on its app answer. */
+  claude_picker?: { question_id: string; opened_at: number; waiter: ProcessIdentity }
+  /**
+   * An app answer returned through a picker, until its tool result confirms
+   * Claude Code took it. If the terminal answered or the picker was dismissed
+   * at that instant, the same answer is still owed to the agent as context.
+   */
+  claude_picker_presented?: {
+    question_id: string; request_id: string; answers: Record<string, string>
+    /** The whole answer as ordinary context, for when the tool result never confirms it. */
+    context: string
+    /** What the agent still needs once the tool result did carry it: the acknowledgement it owes. */
+    receipt: string
+    at: number
+  }
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity

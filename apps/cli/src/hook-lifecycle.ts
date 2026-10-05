@@ -12,6 +12,7 @@ import type {
 import { randomBytes } from 'node:crypto'
 import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
+import { reserveClaudeQuestion } from './claude-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -2554,13 +2555,14 @@ export function registerQuestion(
     }
     stored = true
     const registered = { asked_at: now, ...question, question_id: questionId, question: question.question.slice(0, MAX_STORED_QUESTION_CHARS) }
-    return reserveCurrentCodexQuestion({
+    // Each reservation ignores an admission that is not its own harness's.
+    return reserveClaudeQuestion(reserveCurrentCodexQuestion({
       ...state,
       pending: [
         ...pending,
         registered,
       ],
-    }, registered, sessionId, env, nativeAdmission)
+    }, registered, sessionId, env, nativeAdmission), registered, nativeAdmission)
   })
   if (full === 'unasked') {
     throw new Error(
