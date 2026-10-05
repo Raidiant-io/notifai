@@ -69,6 +69,7 @@ import { listPendingOpenclawSessions } from './openclaw-pending.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import { inputWakeToken, sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
+import { recordClaudeSessionTitle } from './harness-session-title.js'
 const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
@@ -240,6 +241,16 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  // Claude Code reports the User's own session title on these two events. A
+  // subagent's callback names the child, never the session.
+  if (harness === 'claude-code' && (event === 'session-start' || event === 'user-prompt-submit') &&
+      envelope.session_id !== undefined && envelope.agent_id === undefined) {
+    try {
+      recordClaudeSessionTitle(envelope.session_id, deps.env, envelope.session_title)
+    } catch {
+      // A title is an enrichment; failing to keep one never fails the hook.
+    }
+  }
   if (event === 'openclaw-lifecycle') {
     logger.bind({ session: envelope.session_id ?? null })
     start({ cwd, event: envelope.hook_event_name ?? null })

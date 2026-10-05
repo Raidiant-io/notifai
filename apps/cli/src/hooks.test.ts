@@ -6129,6 +6129,29 @@ describe('Claude Code Stop wake route', () => {
     expect(readSessionState('claude-route', h.env).last_prompt_at).not.toBe(AWAY)
   })
 
+  it('keeps the session title Claude Code reports, and ignores a subagent callback', async () => {
+    const h = harness([])
+    const prompt = (extra: Record<string, unknown>) => hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'claude-title', cwd: '/tmp/claude-title', hook_event_name: 'UserPromptSubmit', prompt: 'continue', ...extra }),
+      'claude-code',
+    )
+    await prompt({})
+    expect(readSessionState('claude-title', h.env).harness_session_title).toBeUndefined()
+    await prompt({ session_title: 'Checkout redesign' })
+    expect(readSessionState('claude-title', h.env).harness_session_title).toBe('Checkout redesign')
+    await prompt({ session_title: 'Explore agent', agent_id: 'agent-1' })
+    expect(readSessionState('claude-title', h.env).harness_session_title).toBe('Checkout redesign')
+    await hookRunCommand(
+      h.deps,
+      'user-prompt-submit',
+      stdin({ session_id: 'codex-title', cwd: '/tmp/claude-title', hook_event_name: 'UserPromptSubmit', prompt: 'continue', session_title: 'Not Claude' }),
+      'codex',
+    )
+    expect(readSessionState('codex-title', h.env).harness_session_title).toBeUndefined()
+  })
+
   it('keeps the detached owner through the default one-day answer window', async () => {
     const h = harness([])
     const answerAt = NOW + (86_400 - 10) * 1000

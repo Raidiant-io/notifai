@@ -2,9 +2,55 @@ import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
 import type { ActiveHarnessSession } from './commands-harness-context.js'
+import { readSessionState, updateSessionState } from './hook-session-state.js'
 import { readOrcaSessionTitle, type OrcaSessionTitleLookup } from './orca-session-title.js'
 
 const SESSION_INDEX_MAX_BYTES = 64 * 1024 * 1024
+
+export type ClaudeSessionTitleLookup = (
+  env: NodeJS.ProcessEnv,
+  sessionId: string,
+) => string | undefined
+
+const SESSION_TITLE_MAX_LENGTH = 200
+
+/** One line of printable text, or undefined when nothing usable remains. */
+function usableTitle(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const title = Array.from(value)
+    .filter((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint >= 32 && codePoint !== 127
+    })
+    .join('')
+    .trim()
+    .slice(0, SESSION_TITLE_MAX_LENGTH)
+    .trim()
+  return title.length > 0 ? title : undefined
+}
+
+/**
+ * Keep the custom title Claude Code reports on its SessionStart and
+ * UserPromptSubmit hooks. It is present only when the User named the session
+ * (`--name`, `/rename`, or a hook or SDK rename); a generated or
+ * folder-derived name never appears, so this cannot turn a path into a label.
+ * An event without the field says nothing, and the last reported title stands.
+ */
+export function recordClaudeSessionTitle(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  reported: unknown,
+): void {
+  const title = usableTitle(reported)
+  if (title === undefined || !safeSessionId(sessionId)) return
+  if (readSessionState(sessionId, env).harness_session_title === title) return
+  updateSessionState(sessionId, env, (state) => ({ ...state, harness_session_title: title }))
+}
+
+export function readClaudeSessionTitle(env: NodeJS.ProcessEnv, sessionId: string): string | undefined {
+  if (!safeSessionId(sessionId)) return undefined
+  return usableTitle(readSessionState(sessionId, env).harness_session_title)
+}
 
 export type CodexSessionTitleLookup = (
   env: NodeJS.ProcessEnv,
@@ -14,6 +60,7 @@ export type CodexSessionTitleLookup = (
 interface SessionTitleAdapters {
   orca?: OrcaSessionTitleLookup
   codex?: CodexSessionTitleLookup
+  claude?: ClaudeSessionTitleLookup
 }
 
 function safeSessionId(value: string): boolean {
@@ -70,7 +117,7 @@ export function readCodexSessionTitle(
 /**
  * Resolve semantic title adapters without making any host a prerequisite.
  * Managed harness output is authoritative, Orca may enrich an exact pane, and
- * Codex Desktop/CLI can name its own exact thread with no Orca environment.
+ * Claude Code and Codex can name their own exact session with no Orca environment.
  */
 export function readHarnessSessionTitle(
   env: NodeJS.ProcessEnv,
@@ -82,6 +129,7 @@ export function readHarnessSessionTitle(
 
   const orca = (adapters.orca ?? readOrcaSessionTitle)(env)
   if (orca !== undefined) return orca
+  if (active.harness === 'claude-code') return (adapters.claude ?? readClaudeSessionTitle)(env, active.sessionId)
   if (active.harness !== 'codex') return undefined
   return (adapters.codex ?? readCodexSessionTitle)(env, active.sessionId)
 }
