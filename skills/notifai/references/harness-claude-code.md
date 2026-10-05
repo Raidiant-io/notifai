@@ -33,6 +33,32 @@ the successor turn in the same Agent Session without another User prompt.
 Direct inbox wake is unavailable, but it is not needed while this exact Stop
 continuation owns the answer.
 
+## Linked question picker
+
+When `ask` returns `native_question` with tool `AskUserQuestion`, you may ask
+that question in Claude Code's picker. Use each returned title as the
+question's text and its options as the option labels, exactly, in the turn that
+registered it, with `multiSelect` matching `multi`. Header and option
+descriptions are yours to write. A picker that changes a title, an option, or
+adds an unregistered question is not linked and behaves as any other picker.
+
+The picker takes whichever answer comes first, from the User's devices or the
+terminal, and closes. Notifai context arrives with its result:
+
+- **A device answer** is the picker's own result. Run the printed
+  `notifai acknowledge req_…` command before dependent work. Do not report it
+  as a native answer.
+- **A terminal answer** comes with a printed
+  `notifai acknowledge q_… --native-answers …` command. Run it first, so their
+  devices stop asking, then continue as [native questions](native-questions.md)
+  describes.
+
+If the User dismisses the picker or chooses to chat instead, the question is
+still registered and still answerable from their devices; a later answer
+arrives by the ordinary route. Questions the picker cannot show (free text
+only, more than four questions, fewer than two or more than four options) are
+never linked. Linking is available on macOS and Linux.
+
 ## Command approval
 
 Claude Code asks before each Bash command it has no permission rule for, unless
