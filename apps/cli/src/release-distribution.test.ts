@@ -14,7 +14,7 @@ const artifact = Buffer.from('archive-fixture')
 const inventory: ReleaseInventory = { schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
   store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
     filename: 'notifai-12.0.0-windows-x64.zip', bytes: artifact.length, sha256: digest(artifact),
-    runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64) }] }
+    runtime_sha256: 'c'.repeat(64), materials: [], launcher_sha256: 'd'.repeat(64) }] }
 function setup(options: { inventory?: ReleaseInventory; sequence?: number; channel?: 'stable' | 'beta';
   corrupt?: boolean; redirect?: boolean; withdrawn?: string[] } = {}) {
   const release = options.inventory ?? inventory

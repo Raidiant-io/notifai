@@ -20,11 +20,13 @@
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@raidiant/notifai-protocol": "8.2.1",
+    "@zip.js/zip.js": "2.23.0",
     "commander": "^14.0.0",
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",
     "qrcode": "1.5.4",
     "smol-toml": "^1.4.0",
+    "tar-stream": "3.2.2",
     "ws": "8.21.0"
   },
   "devDependencies": {

@@ -131,6 +131,14 @@ export class Installation {
       owned(file, false)
       if (lstatSync(file).size > 512 * 1024 * 1024 || hash(readFileSync(file)) !== expected) throw new Error(`Candidate integrity mismatch: ${name}`)
     }
+    for (const material of artifact.materials) {
+      const file = path.join(directory, material.path)
+      // Check each parent; an intermediate symlink is also outside the archive.
+      let parent = path.dirname(file)
+      while (parent !== directory) { owned(parent, true); parent = path.dirname(parent) }
+      owned(file, false)
+      if (lstatSync(file).size !== material.bytes || hash(readFileSync(file)) !== material.sha256) throw new Error(`Candidate material integrity mismatch: ${material.path}`)
+    }
     return { inventory, artifact }
   }
   private verifyVersion(build: string): VerifiedVersion {
@@ -154,14 +162,15 @@ export class Installation {
     this.probe(input.directory, verified.inventory)
     const build = this.identity(verified.inventory, verified.artifact)
     this.prepareRoot()
+    if (present(this.file('versions'))) owned(this.file('versions'), true)
     ensurePrivateDirectory(this.file('versions'))
     const destination = this.versionDirectory(build)
     if (present(destination)) { this.verifyVersion(build); return build }
     const staged = this.file(path.join('versions', `.staged-${randomUUID()}`))
     mkdirSync(staged, { mode: 0o700 })
     try {
-      for (const name of [`notifai-runtime${this.extension}`, `notifai${this.extension}`]) {
-        atomicWriteFileSync(path.join(staged, name), readFileSync(path.join(input.directory, name)), { mode: 0o700, requireCurrentUserOwner: true })
+      for (const name of [`notifai-runtime${this.extension}`, `notifai${this.extension}`, ...verified.artifact.materials.map(item => item.path)]) {
+        atomicWriteFileSync(path.join(staged, name), readFileSync(path.join(input.directory, name)), { mode: [`notifai${this.extension}`, `notifai-runtime${this.extension}`].includes(name) ? 0o700 : 0o600, requireCurrentUserOwner: true })
       }
       atomicWriteFileSync(path.join(staged, 'inventory.json'), input.signedInventory, { requireCurrentUserOwner: true })
       this.verifyFiles(staged, input.signedInventory)

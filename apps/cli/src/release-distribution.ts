@@ -1,10 +1,12 @@
 import { createHash, createPublicKey, verify } from 'node:crypto'
+import { releaseMaterialPath } from './release-path.js'
 import { isPrerelease, isSemVer } from './version.js'
 
 export const RELEASE_TARGETS = ['bun-darwin-arm64', 'bun-darwin-x64', 'bun-linux-arm64',
   'bun-linux-x64', 'bun-windows-arm64', 'bun-windows-x64'] as const
 export type ReleaseTarget = typeof RELEASE_TARGETS[number]
 export type ReleaseChannel = 'stable' | 'beta'
+export interface ReleaseMaterial { path: string; bytes: number; sha256: string }
 export interface ReleaseArtifact {
   target: ReleaseTarget
   filename: string
@@ -12,6 +14,7 @@ export interface ReleaseArtifact {
   sha256: string
   runtime_sha256: string
   launcher_sha256: string
+  materials: ReleaseMaterial[]
 }
 export interface ReleaseInventory {
   schema: 1
@@ -108,6 +111,20 @@ export class Distribution {
       if (item['filename'] !== `notifai-${value['version']}-${item['target'].slice(4)}.${suffix}`) {
         throw new Error('Invalid artifact filename')
       }
+      if (!Array.isArray(item['materials']) || item['materials'].length > 128) throw new Error('Invalid release materials')
+      const materialNames = new Set<string>()
+      for (const material of item['materials']) {
+        if (!record(material) || !releaseMaterialPath(material['path']) ||
+            /^(notifai(?:-runtime)?(?:\.exe)?|inventory\.json)(?:\/|$)/i.test(material['path']) ||
+            materialNames.has(material['path'].toLowerCase()) || !Number.isSafeInteger(material['bytes']) ||
+            (material['bytes'] as number) < 0 || (material['bytes'] as number) > 128 * 1024 * 1024 ||
+            !digest(material['sha256'])) throw new Error('Invalid release material')
+        const normalized = material['path'].toLowerCase()
+        if ([...materialNames].some(name => normalized.startsWith(`${name}/`) || name.startsWith(`${normalized}/`))) throw new Error('Conflicting release material paths')
+        materialNames.add(normalized)
+        Object.freeze(material)
+      }
+      Object.freeze(item['materials'])
       targets.add(item['target'])
       Object.freeze(item)
     }

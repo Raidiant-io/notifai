@@ -21,7 +21,7 @@ function fixture() {
     writeFileSync(path.join(directory, 'notifai'), launcher)
     const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: 'a'.repeat(40),
       store_schema: 1, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-linux-x64.tar.gz`,
-        bytes: 100, sha256: digest(version), runtime_sha256: digest(runtime), launcher_sha256: digest(launcher) }] }))
+        bytes: 100, sha256: digest(version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
     const signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
     return { directory, signedInventory }

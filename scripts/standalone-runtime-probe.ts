@@ -32,6 +32,13 @@ if (mode === 'lock') {
   const inventory = distribution.verifyInventory(fixture.inventory)
   assert.equal(inventory.version, '12.0.0')
   distribution.verifyArtifact(inventory.artifacts[0]!, Buffer.from('archive-fixture'))
+} else if (mode === 'archive') {
+  const { extractReleaseArchive } = await import('../apps/cli/src/release-archive.js')
+  const fixture = JSON.parse(readFileSync(path.join(root, 'archive-fixture.json'), 'utf8'))
+  const directory = await extractReleaseArchive({ distribution: new Distribution({ fixture: fixture.publicKey }),
+    signedInventory: fixture.inventory, target: fixture.target, bytes: readFileSync(path.join(root, 'archive-fixture.bin')),
+    parent: path.join(root, 'extracted') })
+  assert.equal(readFileSync(path.join(directory, 'licenses', 'NOTICE.txt'), 'utf8'), 'Fixture notice')
 } else if (mode === 'installation') {
   const fixture = JSON.parse(readFileSync(path.join(root, 'installation-fixture.json'), 'utf8'))
   const extension = process.platform === 'win32' ? '.exe' : ''
