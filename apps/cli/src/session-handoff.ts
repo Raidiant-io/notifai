@@ -15,6 +15,7 @@ import {
   CLAUDE_POST_SEND_LIVENESS_MS,
   observeClaudeSession,
   parseDescriptor,
+  type ClaudeInboxAuth,
   type ClaudeSessionDescriptor,
   type ClaudeWakeAdapters,
 } from './claude-wake.js'
@@ -80,6 +81,11 @@ export async function deliverIntoClaudeSession(options: {
   holdAfterSend?: boolean
   /** Checked at the socket itself, after it connects and before its first byte. */
   guard?: WriteGuard
+  /**
+   * The inbox credentials Claude Code exported to this process. The token
+   * opens the connection only when they name the exact socket being written.
+   */
+  auth?: ClaudeInboxAuth | null
   /** Names the posting process in refusal reasons, which logs keep verbatim. */
   writer: string
 }): Promise<SessionWriteResult> {
@@ -104,7 +110,9 @@ export async function deliverIntoClaudeSession(options: {
   }
   if (!options.begin()) return { status: 'cancelled' }
   try {
-    await adapters.sendSocket(observation.descriptor.messagingSocketPath, claudeSocketLine(options.text), options.guard)
+    const socketPath = observation.descriptor.messagingSocketPath
+    const auth = options.auth != null && options.auth.socketPath === socketPath ? claudeAuthLine(options.auth.token) : ''
+    await adapters.sendSocket(socketPath, `${auth}${claudeSocketLine(options.text)}`, options.guard)
   } catch (err) {
     if (err instanceof WriteAbortedError) return { status: 'aborted', reason: err.message }
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err), error: err }
@@ -157,6 +165,17 @@ export async function deliverIntoCodexThread(options: {
     return { status: 'failed', reason: error.message, error }
   }
   return { status: 'written', route: 'session-queue' }
+}
+
+/**
+ * The line that opens an authenticated inbox connection. Claude Code verifies
+ * a sender by process ancestry where it can; the session's own token is what
+ * it accepts where it cannot, such as a container where it runs as process 1.
+ * Sending it never replaces ancestry: a wrong token from a live child is still
+ * delivered, and a live process that is not a child is held even with it.
+ */
+export function claudeAuthLine(token: string): string {
+  return `${JSON.stringify({ type: 'auth', token })}\n`
 }
 
 export function claudeSocketLine(text: string): string {

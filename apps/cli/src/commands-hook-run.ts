@@ -913,6 +913,7 @@ function stopWakeRoute(
       sessionId,
       cwd,
       sourcePid: deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env),
+      env: deps.env,
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
     }), log(deps), 'producer', { unique: true })
     // A detached subprocess can be reparented after ask exits. Only the

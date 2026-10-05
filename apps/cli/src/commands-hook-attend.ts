@@ -67,7 +67,7 @@ import {
   writeAttendantStatus,
 } from './session-attendant-state.js'
 import { CLI_PACKAGE_NAME } from './cli-contract.js'
-import { inspectClaudeInbox, systemClaudeWakeAdapters, type ClaudeWakeAdapters } from './claude-wake.js'
+import { claudeInboxAuth, inspectClaudeInbox, systemClaudeWakeAdapters, type ClaudeWakeAdapters } from './claude-wake.js'
 import { currentProcessIdentity } from './process-identity.js'
 import type { DeliveryLease, SequencerDeps } from './session-delivery.js'
 import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
@@ -525,7 +525,8 @@ function sessionMessageWriter(input: {
       const result = await deliverIntoClaudeSession({
         sessionId, sourcePid: harnessPid,
         sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
-        adapters, text, begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
+        adapters, text, auth: claudeInboxAuth(deps.env, sessionId),
+        begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
       })
       return result.status === 'written'
     }, logger, { unique: true, replaceLost: input.settledIdle, now: () => clock.wall() })
