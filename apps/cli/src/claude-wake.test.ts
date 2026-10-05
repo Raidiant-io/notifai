@@ -18,6 +18,8 @@ import { WRITE_ABORTED_REASON, WriteAbortedError } from './wake-support.js'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 const STARTED_AT = 1_800_000_000_000
+/** These cases describe the POSIX socket; the Windows pipe has its own below. */
+const POSIX = 'darwin' as const
 
 function descriptor(overrides: Partial<ClaudeSessionDescriptor> = {}): ClaudeSessionDescriptor {
   return {
@@ -190,7 +192,7 @@ describe('Claude inbox release floor', () => {
 describe('Claude wake delivery', () => {
   it('posts one newline-terminated JSON message and stays alive for provenance', async () => {
     const wake = adapters()
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
@@ -216,7 +218,7 @@ describe('Claude wake delivery', () => {
   it('holds rather than sending when exact Stop-hook ownership cannot be proven', async () => {
     const wake = adapters()
 
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 99999,
@@ -245,7 +247,7 @@ describe('Claude wake delivery', () => {
       descriptor: live,
     })
 
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: live.cwd,
       sourcePid: 12345,
@@ -259,7 +261,7 @@ describe('Claude wake delivery', () => {
 
   it('cold-resumes only after two first-party probes both prove no owner', async () => {
     const wake = adapters({ agentsSequence: [[], []] })
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
@@ -280,7 +282,7 @@ describe('Claude wake delivery', () => {
   it('holds rather than cold-resuming without exact Stop-hook parent ownership', async () => {
     const wake = adapters({ agentsSequence: [[], []] })
 
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 99999,
@@ -304,7 +306,7 @@ describe('Claude wake delivery', () => {
     }
     const wake = adapters({ agentsSequence: [[], [liveAgent]] })
 
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
@@ -324,7 +326,7 @@ describe('Claude wake delivery', () => {
     const wake = adapters({
       descriptor: descriptor({ peerProtocol: CLAUDE_PEER_PROTOCOL + 1 }),
     })
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
@@ -347,7 +349,7 @@ describe('Claude wake delivery', () => {
     })
 
     await expect(
-      claudeWakeRoute({
+      claudeWakeRoute({ platform: POSIX,
         sessionId: SESSION_ID,
         cwd: '/tmp/notifai-claude-wake',
         sourcePid: 12345,
@@ -366,7 +368,7 @@ describe('claimed writes at the boundary', () => {
     }
     const commits: Array<string | undefined> = []
     const groups: number[] = []
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
@@ -390,7 +392,7 @@ describe('claimed writes at the boundary', () => {
       expect(guard?.writable()).toBe(false)
       throw new WriteAbortedError('the claim lapsed before the first byte')
     }
-    const outcome = await claudeWakeRoute({
+    const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
       cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
@@ -402,7 +404,10 @@ describe('claimed writes at the boundary', () => {
 
   it('sends no byte over a real inbox socket once the guard says the claim lapsed', async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'nf-sock-'))
-    const socketPath = path.join(directory, 'inbox.sock')
+    // The same writer serves both transports: a socket file, or on Windows a named pipe.
+    const socketPath = process.platform === 'win32'
+      ? `\\\\.\\pipe\\LOCAL\\nf-sock-${path.basename(directory)}`
+      : path.join(directory, 'inbox.sock')
     const received: string[] = []
     const server = createServer((socket) => {
       socket.on('data', (chunk) => received.push(chunk.toString()))
@@ -441,7 +446,7 @@ describe('Claude inbox token', () => {
 
   it('opens the connection with the session token Claude Code exported for this exact socket', async () => {
     const fake = adapters()
-    const route = claudeWakeRoute({
+    const route = claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake,
       env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/12345.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'token-a', CLAUDE_CODE_SESSION_ID: SESSION_ID },
     })
@@ -454,7 +459,7 @@ describe('Claude inbox token', () => {
 
   it('never offers a token to a socket it was not issued with', async () => {
     const fake = adapters()
-    const route = claudeWakeRoute({
+    const route = claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake,
       env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/99999.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'token-b' },
     })
@@ -497,7 +502,7 @@ describe('Claude inbox token', () => {
 
   it('writes the user line alone when Claude Code exported no token', async () => {
     const fake = adapters()
-    const route = claudeWakeRoute({ sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, env: {} })
+    const route = claudeWakeRoute({ platform: POSIX, sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, env: {} })
     await route.deliver(event() as never)
     expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
     expect(fake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
