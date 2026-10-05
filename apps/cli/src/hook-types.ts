@@ -61,6 +61,8 @@ export interface HookEnvelope {
   status?: string
   /** The prompt the user just submitted, when the harness includes it. */
   prompt?: string
+  /** Claude Code's custom session title, on SessionStart and UserPromptSubmit when one is set. */
+  session_title?: string
   /** Codex's exact turn id on prompt, tool, Stop and Interrupt callbacks. */
   turn_id?: string
   /** Native Codex transcript; only typed lifecycle/question records are consumed. */
@@ -145,6 +147,8 @@ export interface SessionState {
   accepted?: AcceptedAnswerDelivery
   /** Captured answers waiting for the same foreground drain as Session Messages. */
   waiting_answers?: AnsweredPending[]
+  /** The title the User gave this session in the harness itself, as its hooks last reported it. */
+  harness_session_title?: string
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity
