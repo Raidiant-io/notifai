@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import { packageStandalone } from './package-standalone.mjs'
+import { nativeReleaseBundle } from './publish-native-assets.mjs'
 import { assembleNativeRelease } from './assemble-native-release.mjs'
 import { Distribution, RELEASE_TARGETS } from '../apps/cli/dist/release-distribution.js'
 
@@ -46,13 +47,20 @@ test('assembly binds final archives, materials and native receipts into one sign
   const f = await fixture(t)
   const result = await assembleNativeRelease(f)
   const inventoryBytes = readFileSync(path.join(f.output, 'inventory.json'), 'utf8')
-  const inventory = new Distribution(f.trustedKeys).verifyInventory(inventoryBytes)
+  const distribution = new Distribution(f.trustedKeys)
+  const inventory = distribution.verifyInventory(inventoryBytes)
+  const admitted = nativeReleaseBundle(f.output, distribution, f.sourceRevision)
+  assert.equal(admitted.assets.size, 8)
+  assert.throws(() => nativeReleaseBundle(f.output, distribution, 'f'.repeat(40)), /source differs/)
   assert.equal(result.inventory_sha256, hash(inventoryBytes))
   assert.equal(inventory.artifacts.length, 6)
   for (const artifact of inventory.artifacts) assert.equal(hash(readFileSync(path.join(f.output, artifact.filename))), artifact.sha256)
   assert.match(readFileSync(path.join(f.output, 'bootstrap.tsv'), 'utf8'), /^notifai-bootstrap-v1\t1\.0\.0\t/)
   await assert.rejects(assembleNativeRelease(f), /EEXIST/)
   assert.equal(readFileSync(path.join(f.output, 'inventory.json'), 'utf8'), inventoryBytes)
+  const changed = inventory.artifacts[0].filename
+  writeFileSync(path.join(f.output, changed), 'changed after admission')
+  assert.throws(() => admitted.assets.get(changed).read(), /integrity mismatch/)
 })
 test('assembly refuses incomplete platform evidence and changed final bytes; failed staging leaves no publishable bundle', async t => {
   const f = await fixture(t)

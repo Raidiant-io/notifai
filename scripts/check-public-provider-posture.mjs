@@ -25,7 +25,7 @@ async function readJson(fetchImpl, endpoint, token) {
   return await response.json()
 }
 
-async function resolveTagCommit(fetchImpl, tag, token) {
+export async function resolveTagCommit(fetchImpl, tag, token) {
   const ref = await readJson(fetchImpl, `/git/ref/tags/${encodeURIComponent(tag)}`, token)
   let type = ref?.object?.type
   let sha = ref?.object?.sha

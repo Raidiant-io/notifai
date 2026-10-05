@@ -6,12 +6,16 @@ import { Distribution, RELEASE_TARGETS, releaseSigningMessage } from '../apps/cl
 import { compareReleasePrecedence } from '../apps/cli/dist/version.js'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
-function signer({ keyId, privateKey, trustedKeys }) {
+export function validateReleaseSigner({ keyId, privateKey, trustedKeys }) {
   assert.ok(typeof keyId === 'string' && Object.hasOwn(trustedKeys, keyId), 'Signing key is not an embedded trusted key')
   assert.equal(privateKey.asymmetricKeyType, 'ed25519', 'Signing key must be Ed25519')
   const expected = createPublicKey(trustedKeys[keyId])
   assert.deepEqual(createPublicKey(privateKey).export({ format: 'der', type: 'spki' }), expected.export({ format: 'der', type: 'spki' }),
     'Signing key differs from the embedded public key')
+}
+function signer(signing) {
+  validateReleaseSigner(signing)
+  const { keyId, privateKey } = signing
   return (kind, value) => {
     const payload = Buffer.from(JSON.stringify(value))
     return JSON.stringify({ key_id: keyId, payload: payload.toString('base64'),

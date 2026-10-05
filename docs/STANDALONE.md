@@ -285,3 +285,30 @@ new records advance the sequence, retain withdrawals and require explicit
 rollback authorization before recommending an older release. The provider writer
 must still compare-and-swap the metadata ref and verify immutable published
 assets before advancing a channel. Assembly alone performs no provider mutation.
+
+### Resumable native publication
+
+The publisher reads the exact signed bundle and confirms repository immutability,
+protected release tags, the tag's commit and the draft identity. It reuses matching
+completed assets, uploads missing assets and refuses any completed mismatch.
+Only an expected empty `starter` upload in an unpublished draft may be removed.
+All expected assets must be verified before the draft is published, and the
+published release must read back as immutable before discovery can advance.
+An interrupted upload or lost publication response resumes from provider state.
+
+Channel promotion rereads the immutable assets, then uses GitHub's
+`createCommitOnBranch` with `expectedHeadOid` to atomically commit the signed JSON
+and bootstrap TSV while preserving other metadata. A moved head is a conflict,
+never a force update. Missing channels require explicit initialization; initial
+branch creation cannot replace an existing ref. Post-write readback checks both
+files at one commit. Focused API fixtures cover interrupted responses, completed
+asset mismatch, stale heads, initial-ref races and no-write retries; no live
+publication has been performed.
+
+`publish-native-release.mjs` is the protected-workflow entrypoint and requires
+explicit `--publish` and/or `--promote` modes, an exact source/tag context, and
+source-embedded trust keys. It preserves partial publication results if later
+channel work fails. Workflow cutover and production configuration remain pending.
+See GitHub's [immutable release sequence](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
+[release asset API](https://docs.github.com/en/rest/releases/assets), and
+[atomic branch commit mutation](https://docs.github.com/en/graphql/reference/commits).

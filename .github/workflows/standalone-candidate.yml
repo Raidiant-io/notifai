@@ -130,7 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs
+          node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs
           node scripts/prepare-standalone-materials.mjs --candidate --output "$RUNNER_TEMP/standalone-materials"
           node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/standalone" --materials "$RUNNER_TEMP/standalone-materials" --output "$RUNNER_TEMP/standalone/archive"
       - name: Verify the packaged bytes through fresh native installation
