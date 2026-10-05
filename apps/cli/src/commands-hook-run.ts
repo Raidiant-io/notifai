@@ -15,7 +15,7 @@ import {
   updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
-import { claudeSessionPid } from './commands-harness-context.js'
+import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
@@ -830,8 +830,7 @@ export async function hookRunCommand(
       await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)
       // Native queues can observe answers while the asking turn keeps working.
       // Held Stop and plugin routes retain their own genuine output owner.
-      const nativeObserver = harness === 'codex' ||
-        (harness === 'claude-code' && (deps.hookPlatform ?? process.platform) !== 'win32')
+      const nativeObserver = harness === 'codex' || harness === 'claude-code'
       logger.info('hook.end', { hook: event, outcome: 'submission-checked', notes,
         ...(nativeObserver ? launchSettlement() : {}) })
       return EXIT.ok
@@ -899,7 +898,8 @@ export async function hookRunCommand(
     let inputWritten = false
     if (event === 'user-prompt-submit' && (harness === 'codex' || harness === 'claude-code') &&
         envelope.session_id !== undefined && outcome.commitStdout === undefined &&
-        readSessionIncarnation(envelope.session_id, deps.env)?.harness_process?.pid === declaredHookSourcePid(deps)) {
+        readSessionIncarnation(envelope.session_id, deps.env)?.harness_process?.pid ===
+          (harness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps))) {
       inputWritten = await receiveSessionInputs(deps, envelope.session_id, (text) => {
         deps.io.out(appendIntegrationContext(outcome.stdout, text, harness, 'UserPromptSubmit'))
       })
@@ -958,13 +958,14 @@ function stopWakeRoute(
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {
-    if ((deps.hookPlatform ?? process.platform) === 'win32') return undefined
     const route = sessionInputRoute(sessionId, deps.env, claudeWakeRoute({
       sessionId,
       cwd,
-      sourcePid: deps.claudeSourcePid ?? declaredSourcePid ?? claudeSessionPid(deps.env),
+      sourcePid: deps.claudeSourcePid ?? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) ??
+        declaredSourcePid ?? claudeSessionPid(deps.env),
       env: deps.env,
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
+      ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
     }), log(deps), 'producer', { unique: true })
     // A detached subprocess can be reparented after ask exits. Only the
     // resident Session Attendant retains Claude's required own-child ancestry.
@@ -986,8 +987,8 @@ function stopWakeRoute(
 
 /**
  * The Stop waiter claims fenced answers only where a Session Attendant can
- * hold the session's lease and the answer is written in place: Claude Code on
- * macOS and Linux. Everywhere else it closes and writes exactly as before.
+ * hold the session's lease and the answer is written in place: Claude Code.
+ * Everywhere else it closes and writes exactly as before.
  */
 function answerClaimsFor(
   deps: CommandDeps,

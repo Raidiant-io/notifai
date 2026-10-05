@@ -79,6 +79,8 @@ export function runWakeCommand(
       ...(options.env === undefined ? {} : { env: options.env }),
       ...(grouped ? { detached: true } : {}),
       stdio: ['ignore', 'pipe', 'pipe'],
+      // A background hook on Windows must not flash a console for the harness CLI.
+      windowsHide: true,
     })
     let settled = false
     const settle = (finish: () => void): void => {

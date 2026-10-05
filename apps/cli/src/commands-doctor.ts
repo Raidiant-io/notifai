@@ -1494,7 +1494,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   })
 
   const shapeProblems = installations.flatMap((installation) =>
-    stopShapeProblems(installation, deps.hookPlatform).map(
+    stopShapeProblems(installation).map(
       (problem) =>
         `${problem} — run \`notifai hooks install --harness ${installation.harness}\``,
     ),
@@ -1504,7 +1504,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     ok: shapeProblems.length === 0,
     detail:
       shapeProblems.length === 0
-        ? `every installed Stop handler declares the shape its harness and host need: Codex async everywhere, Claude Code async on POSIX and blocking on Windows with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
+        ? `every installed Stop handler declares the shape its harness and host need: Codex and Claude Code async everywhere, Grok blocking with an explicit ${QUESTION_STOP_TIMEOUT_SECONDS}s full-window budget; non-routing blocking hosts ${NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS}s`
         : shapeProblems.join('; '),
   })
 
@@ -1780,16 +1780,6 @@ function wakeRouteCheck(
   if (active === null || activeInstallations.length === 0) return null
   if (active.harness === 'claude-code') {
     const platform = deps.hookPlatform ?? process.platform
-    if (platform === 'win32') {
-      return {
-        name: 'hooks (wake route)',
-        ok: false,
-        reportOnly: true,
-        technical: { direct_wake_optional: true },
-        detail:
-          'direct inbox wake is unavailable on Windows; the held Stop still returns the answer to this same Agent Session without another User prompt',
-      }
-    }
     const readiness = inspectClaudeInbox({
       pid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
       platform,

@@ -138,6 +138,24 @@ export function sourceContextHarnessSession(
  * route could not prove own-child ownership, and every answer would degrade to
  * hold-for-next-turn with nothing reported as wrong.
  */
+/**
+ * The Claude Code process that ran this hook.
+ *
+ * The managed adapter reports its own parent. On POSIX that is Claude Code. On
+ * Windows Claude Code runs hooks through a shell, so the adapter's parent is
+ * that shell, and only the pid Claude Code names for itself is the session's.
+ */
+export function claudeHookSourcePid(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): number | undefined {
+  const named = Number(env['CLAUDE_PID'])
+  if (platform === 'win32' && Number.isInteger(named) && named > 0) return named
+  const declared = Number(env['NOTIFAI_HOOK_SOURCE_PID'])
+  if (Number.isInteger(declared) && declared > 0) return declared
+  return Number.isInteger(named) && named > 0 ? named : undefined
+}
+
 export function claudeSessionPid(env: NodeJS.ProcessEnv): number {
   const declared = Number(env['CLAUDE_PID'])
   return Number.isInteger(declared) && declared > 0 ? declared : process.ppid

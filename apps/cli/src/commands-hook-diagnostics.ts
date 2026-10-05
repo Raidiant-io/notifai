@@ -135,7 +135,7 @@ export function activeQuestionRouteProblems(
   for (const problem of inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform).problems) {
     problems.push(problem)
   }
-  for (const installation of matching) problems.push(...stopShapeProblems(installation, deps.hookPlatform))
+  for (const installation of matching) problems.push(...stopShapeProblems(installation))
   problems.push(...codexRoutingTrustProblems(matching, deps.env))
   if (active.harness === 'codex' && active.sessionId !== undefined) {
     const state = readSessionState(active.sessionId, deps.env)

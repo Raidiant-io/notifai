@@ -18,20 +18,17 @@ import {
  *     after an ordinary async hook backgrounds. A short configured timeout
  *     alone therefore cannot prove that this route will lose its waiter.
  *   - Codex detaches Stop and routes through its durable session queue.
- *   - Grok and Windows Claude Code hold Stop, so their blocking handlers need
- *     the full-window timeout and must return their decision block directly.
+ *   - Grok holds Stop, so its blocking handler needs the full-window timeout
+ *     and must return its decision block directly.
  *   - Other harnesses cannot own asynchronous Question Routing; they receive
  *     only the shorter bounded cleanup/refusal timeout.
  */
-export function stopShapeProblems(
-  installation: Installation,
-  platform: NodeJS.Platform = process.platform,
-): string[] {
+export function stopShapeProblems(installation: Installation): string[] {
   const problems: string[] = []
   for (const handler of installation.handlers.filter(
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
-    if (stopHandlerIsDetached(installation.harness, platform)) {
+    if (stopHandlerIsDetached(installation.harness)) {
       const route = installation.harness === 'codex' ? 'session-queue' : 'inbox'
       if (handler.asyncRewake === true) {
         problems.push(
@@ -45,10 +42,10 @@ export function stopShapeProblems(
       }
       continue
     }
-    if (installation.harness === 'codex' || installation.harness === 'claude-code' || installation.harness === 'grok') {
+    if (installation.harness === 'grok') {
       if (handler.async === true) {
         problems.push(
-          `${installation.file} declares an asynchronous ${installation.harness} Stop handler, but this platform needs the blocking continuation so the harness consumes the answer output`,
+          `${installation.file} declares an asynchronous ${installation.harness} Stop handler, but ${installation.harness} needs the blocking continuation so the harness consumes the answer output`,
         )
       }
       if (handler.timeout === undefined || handler.timeout < QUESTION_STOP_TIMEOUT_SECONDS) {

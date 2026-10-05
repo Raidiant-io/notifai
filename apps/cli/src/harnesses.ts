@@ -73,13 +73,6 @@ const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
     'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same session over its own inbox socket; a session that has stopped is resumed only once a liveness probe proves it stopped',
 }
 
-const CLAUDE_CODE_WINDOWS_CAPABILITY: HarnessCapability = {
-  stopContinuation: 'decision-block',
-  deliveryRoutes: ['hook-continuation', 'hold-for-next-turn'],
-  deliveryContract:
-    'the Stop hook keeps the turn held through the complete answer window, then returns the answer as a decision block that continues this same Agent Session; direct inbox wake is unavailable on Windows',
-}
-
 const CODEX_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['session-queue', 'hold-for-next-turn'],
@@ -204,9 +197,6 @@ export function questionRoutingCapability(
 ): HarnessCapability {
   if (harness === 'hermes' && platform !== 'darwin' && platform !== 'linux') {
     return HERMES_QUESTION_ROUTING_UNAVAILABLE
-  }
-  if (harness === 'claude-code' && platform === 'win32') {
-    return CLAUDE_CODE_WINDOWS_CAPABILITY
   }
   if (harness === 'openclaw' && platform !== 'darwin') {
     return OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY

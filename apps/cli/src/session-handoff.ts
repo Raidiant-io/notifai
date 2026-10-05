@@ -13,6 +13,7 @@
  */
 import {
   CLAUDE_POST_SEND_LIVENESS_MS,
+  claudeInboxRequiresToken,
   observeClaudeSession,
   parseDescriptor,
   type ClaudeInboxAuth,
@@ -88,6 +89,7 @@ export async function deliverIntoClaudeSession(options: {
   auth?: ClaudeInboxAuth | null
   /** Names the posting process in refusal reasons, which logs keep verbatim. */
   writer: string
+  platform?: NodeJS.Platform
 }): Promise<SessionWriteResult> {
   const { adapters, writer } = options
   const observation = await observeClaudeSession(options.sessionId, adapters)
@@ -108,10 +110,17 @@ export async function deliverIntoClaudeSession(options: {
       reason: `the ${writer} is not the observed exact Claude session child`,
     }
   }
+  const socketPath = observation.descriptor.messagingSocketPath
+  const auth = options.auth != null && options.auth.socketPath === socketPath ? claudeAuthLine(options.auth.token) : ''
+  if (auth === '' && claudeInboxRequiresToken(options.platform ?? process.platform)) {
+    // Claude Code would close the connection and deliver nothing.
+    return {
+      status: 'unavailable',
+      reason: `the ${writer} holds no inbox token for this session, and Claude Code on Windows accepts no other sender`,
+    }
+  }
   if (!options.begin()) return { status: 'cancelled' }
   try {
-    const socketPath = observation.descriptor.messagingSocketPath
-    const auth = options.auth != null && options.auth.socketPath === socketPath ? claudeAuthLine(options.auth.token) : ''
     await adapters.sendSocket(socketPath, `${auth}${claudeSocketLine(options.text)}`, options.guard)
   } catch (err) {
     if (err instanceof WriteAbortedError) return { status: 'aborted', reason: err.message }

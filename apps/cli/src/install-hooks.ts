@@ -221,15 +221,11 @@ export const CODEX_INTERRUPT_TIMEOUT_SECONDS = 3
  * Codex is detached on every platform because its delivery route is a write to
  * the thread's own durable inbox rather than this hook's stdout: there is no
  * continuation to keep a turn open for, and the queue has no platform
- * dependency to gate on. Claude Code still needs its turn held on Windows,
- * where no inbox socket exists.
+ * dependency to gate on. Claude Code is detached on every platform too: its
+ * session inbox is a socket on macOS and Linux and a named pipe on Windows.
  */
-export function stopHandlerIsDetached(
-  harness: HookInstallableHarness | undefined,
-  platform?: Parameters<typeof hookHostPlatform>[0],
-): boolean {
-  if (harness === 'codex') return true
-  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+export function stopHandlerIsDetached(harness: HookInstallableHarness | undefined): boolean {
+  return harness === 'codex' || harness === 'claude-code'
 }
 
 /**
@@ -238,34 +234,23 @@ export function stopHandlerIsDetached(
  * Claude Code takes the answer over its own inbox socket and Codex takes it
  * through its thread's durable inbox, so both Stop hooks are `async: true`:
  * they return immediately, the terminal is never held, and the waiter finishes
- * out of band. Only Claude on Windows still blocks and prints a continuation to
- * stdout, because no inbox socket exists there. Every Question Routing owner
+ * out of band. Only Grok still blocks and prints a continuation to stdout,
+ * because it has no out-of-band route. Every Question Routing owner
  * declares the same complete-window timeout, because the detached waiter must
  * outlive the answer window in every case; what changed for Codex is that a
- * short or missing timeout no longer truncates a held *turn*. Blocking hosts
- * also set `statusMessage` so the held turn is not mistaken for a hang.
+ * short or missing timeout no longer truncates a held *turn*.
  */
-export const BLOCKING_STOP_STATUS_MESSAGE = 'Notifai: waiting for your answer'
-
 function stopHandler(
   adapterPath: string,
   harness: HookInstallableHarness | undefined,
   options: HookCommandOptions,
 ): HookHandler {
   const command = hookCommand(adapterPath, 'stop', harness, options)
-  if (stopHandlerIsDetached(harness, options.platform)) {
+  if (stopHandlerIsDetached(harness)) {
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'grok') {
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
-  }
-  if (harness === 'codex' || harness === 'claude-code') {
-    return {
-      type: 'command',
-      command,
-      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
-      statusMessage: BLOCKING_STOP_STATUS_MESSAGE,
-    }
   }
   return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }

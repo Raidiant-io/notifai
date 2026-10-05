@@ -56,7 +56,6 @@ import {
   CODEX_ATTEND_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
   applyPlan,
-  BLOCKING_STOP_STATUS_MESSAGE,
   detectHarness,
   detectedHarnesses,
   buildCursorHookConfig,
@@ -252,7 +251,7 @@ describe('hook config', () => {
     expect(claude['SessionEnd']?.[0]?.hooks[0]?.async).toBeUndefined()
   })
 
-  it('gives Claude Code a blocking Stop continuation on Windows', () => {
+  it('gives Claude Code the same detached Stop on Windows', () => {
     const options = {
       adapterPath: 'C:\\Users\\Ada\\.notifai\\bin\\hook-adapter',
       harness: 'claude-code' as const,
@@ -261,15 +260,16 @@ describe('hook config', () => {
     }
     const claude = buildHookConfig(options)
 
-    expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
-      type: 'command',
-      command: hookCommand(options.adapterPath, 'stop', 'claude-code', options),
-      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
-      statusMessage: BLOCKING_STOP_STATUS_MESSAGE,
-    })
+    const stop = claude['Stop']?.[0]?.hooks[0]
+    expect(stop?.command).toBe(hookCommand(options.adapterPath, 'stop', 'claude-code', options))
+    expect(stop?.async).toBe(true)
+    expect(stop).not.toHaveProperty('statusMessage')
+    expect(stop?.timeout).toBe(
+      buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })['Stop']?.[0]?.hooks[0]?.timeout,
+    )
   })
 
-  it('sets a status message only on blocking Question Routing Stop handlers', () => {
+  it('sets no status message on a Stop handler: none of them holds a turn that needs explaining', () => {
     const posixClaude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
     const windowsClaude = buildHookConfig({
       adapterPath: ADAPTER,
@@ -282,8 +282,8 @@ describe('hook config', () => {
 
     expect(posixClaude['Stop']?.[0]?.hooks[0]?.statusMessage).toBeUndefined()
     expect(posixClaude['Stop']?.[0]?.hooks[0]?.async).toBe(true)
-    expect(windowsClaude['Stop']?.[0]?.hooks[0]?.statusMessage).toBe(BLOCKING_STOP_STATUS_MESSAGE)
-    expect(windowsClaude['Stop']?.[0]?.hooks[0]?.async).toBeUndefined()
+    expect(windowsClaude['Stop']?.[0]?.hooks[0]?.statusMessage).toBeUndefined()
+    expect(windowsClaude['Stop']?.[0]?.hooks[0]?.async).toBe(true)
     // Codex no longer holds its turn open: the answer goes to the thread's own
     // inbox, so there is no wait to explain and nothing to mistake for a hang.
     expect(codex['Stop']?.[0]?.hooks[0]?.statusMessage).toBeUndefined()
@@ -323,12 +323,14 @@ describe('hook config', () => {
       'session-end',
       'attend',
     ])
+    // The picker hooks stay POSIX only; the attendant runs everywhere.
     expect(requiredHookEvents('claude-code', 'win32')).toEqual([
       'session-start',
       'subagent-start',
       'user-prompt-submit',
       'stop',
       'session-end',
+      'attend',
     ])
     expect(requiredHookEvents('codex', 'darwin')).toContain('attend')
     expect(requiredHookEvents('codex', 'win32')).not.toContain('attend')
@@ -353,7 +355,7 @@ describe('hook config', () => {
     ])
   })
 
-  it('installs the Session Attendant as a second async handler for Claude Code and Codex on POSIX only', () => {
+  it('installs the Session Attendant as a second async handler for Claude Code everywhere and Codex on POSIX only', () => {
     const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
     for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
       const handlers = hooks[event]?.flatMap((group) => group.hooks) ?? []
@@ -375,14 +377,14 @@ describe('hook config', () => {
     for (const event of ['SubagentStart', 'SessionEnd']) {
       expect(hooks[event]?.flatMap((group) => group.hooks)).toHaveLength(1)
     }
-    const windows = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'win32' })
-    const codexWindows = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'win32' })
-    for (const document of [windows, codexWindows]) {
-      const commands = Object.values(document).flatMap((groups) =>
-        groups.flatMap((group) => group.hooks.map((handler) => handler.command)),
-      )
-      expect(commands.some((command) => handlerEvent(command) === 'attend')).toBe(false)
-    }
+    const attends = (document: ReturnType<typeof buildHookConfig>): string[] =>
+      Object.entries(document).flatMap(([event, groups]) =>
+        groups.flatMap((group) => group.hooks)
+          .filter((handler) => handlerEvent(handler.command) === 'attend').map(() => event))
+    const windowsOptions = { adapterPath: ADAPTER, platform: 'win32' as const, nodePath: EXEC }
+    expect(attends(buildHookConfig({ ...windowsOptions, harness: 'claude-code' })))
+      .toEqual(['SessionStart', 'UserPromptSubmit', 'Stop'])
+    expect(attends(buildHookConfig({ ...windowsOptions, harness: 'codex' }))).toEqual([])
   })
 
   it('declares the complete answer window on the Codex attendant, because Codex enforces async timeouts', () => {
