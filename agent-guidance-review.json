@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d527e11095bf0bc2a6ff5680b18267e432defb0058195123da806477f3b6b103",
+  "behavior_digest": "sha256:446856355cdcb18b9735844ede9a5f9f0192e0235a592f405baae1b6c505bcc7",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Native installation and archive modules remain internal; this increment adds verified channel caching, same-build channel changes, withdrawal-aware rollback, and explicit signed-stable return without changing the exposed command surface. No account or harness state is changed by these modules. Existing setup instructions remain accurate for the current unpublished transition.",
+  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Installation remains internal and does not expose new setup commands. Native Windows access checks now validate the token user, DACL writers and reparse points; temporary-file ownership is established before publication. Managed launchers follow only the active pointer. These changes do not alter Notification Request ownership, native approvals, guidance authority, or the current setup instructions.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

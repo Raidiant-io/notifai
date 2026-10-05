@@ -48,6 +48,7 @@ static int active_build(const char *record, char *build) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <wchar.h>
+#include "windows-security.h"
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -69,6 +70,10 @@ static int managed_runtime(wchar_t *executable) {
     separator = wcsrchr(root, L'\\');
     if (!separator || wcscmp(separator + 1, L"bin")) return 0;
     *separator = 0;
+    if (!private_path(root, 1, 0)) return 0;
+    wchar_t bin[32768];
+    swprintf(bin, 32768, L"%ls\\bin", root);
+    if (!private_path(bin, 1, 0)) return 0;
     if (wcslen(root) + 105 >= 32768) return 0;
     wchar_t file[32768];
     swprintf(file, 32768, L"%ls\\active.json", root);
@@ -83,20 +88,22 @@ static int managed_runtime(wchar_t *executable) {
         !info.nFileSizeHigh && info.nFileSizeLow < sizeof(record) &&
         ReadFile(handle, record, sizeof(record) - 1, &count, NULL) && count == info.nFileSizeLow;
     CloseHandle(handle);
-    if (!ok || !active_build(record, build)) return 0;
+    if (!ok || !private_path(file, 0, 0) || !active_build(record, build)) return 0;
     wchar_t wide_build[65];
     for (int i = 0; i < 65; i++) wide_build[i] = (wchar_t)build[i];
     swprintf(file, 32768, L"%ls\\versions", root);
+    if (!private_path(file, 1, 0)) return 0;
     DWORD attributes = GetFileAttributesW(file);
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
         (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
     swprintf(file, 32768, L"%ls\\versions\\%ls", root, wide_build);
+    if (!private_path(file, 1, 0)) return 0;
     attributes = GetFileAttributesW(file);
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
         (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
     swprintf(executable, 32768, L"%ls\\versions\\%ls\\notifai-runtime.exe", root, wide_build);
     attributes = GetFileAttributesW(executable);
-    return attributes != INVALID_FILE_ATTRIBUTES &&
+    return private_path(executable, 0, 0) && attributes != INVALID_FILE_ATTRIBUTES &&
         !(attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY));
 }
 
@@ -132,14 +139,27 @@ int wmain(int argc, wchar_t **argv) {
     if (argc == 2 && !wcscmp(argv[1], L"--internal-launcher-version")) { puts("1"); return 0; }
     if (argc == 3 && !wcscmp(argv[1], L"--internal-process-info"))
         return process_info(argv[2]);
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-private-directory"))
+        return create_private_directory(argv[2]) ? 0 : failure("installation directory access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-own-created-file"))
+        return private_path(argv[2], 0, 1) ? 0 : failure("created installation file access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-check-private-file"))
+        return private_path(argv[2], 0, 0) ? 0 : failure("installation file access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-check-private-directory"))
+        return private_path(argv[2], 1, 0) ? 0 : failure("installation directory access is unsafe");
     wchar_t executable[32768];
     DWORD length = GetModuleFileNameW(NULL, executable, 32768);
     if (!length || length >= 32768) return failure("cannot locate the launcher");
     wchar_t *separator = wcsrchr(executable, L'\\');
     if (!separator || (size_t)(separator - executable) + 22 >= 32768)
         return failure("invalid launcher directory");
+    *separator = 0;
+    wchar_t *directory = wcsrchr(executable, L'\\');
+    int stable_entry = directory && !wcscmp(directory + 1, L"bin");
+    *separator = L'\\';
     wcscpy(separator + 1, L"notifai-runtime.exe");
-    if (GetFileAttributesW(executable) == INVALID_FILE_ATTRIBUTES && !managed_runtime(executable))
+    if ((stable_entry && !managed_runtime(executable)) ||
+        (!stable_entry && GetFileAttributesW(executable) == INVALID_FILE_ATTRIBUTES))
         return failure("no valid active installation; run the installer to repair it");
 
     LPWCH environment = GetEnvironmentStringsW();
@@ -266,8 +286,10 @@ static int managed_runtime(char *executable) {
     separator = strrchr(root, '/');
     if (!separator || strcmp(separator + 1, "bin")) return 0;
     *separator = 0;
-    if (strlen(root) + 105 >= PATH_MAX) return 0;
+    if (strlen(root) + 105 >= PATH_MAX || !owned_path(root, 1)) return 0;
     char file[PATH_MAX];
+    snprintf(file, sizeof(file), "%s/bin", root);
+    if (!owned_path(file, 1)) return 0;
     snprintf(file, sizeof(file), "%s/active.json", root);
     int handle = open(file, O_RDONLY | O_NOFOLLOW);
     if (handle < 0) return 0;
@@ -302,8 +324,12 @@ int main(int argc, char **argv) {
 #endif
     char *separator = strrchr(executable, '/');
     if (!separator || (size_t)(separator - executable) + 18 >= sizeof(executable)) return 1;
+    *separator = 0;
+    char *directory = strrchr(executable, '/');
+    int stable_entry = directory && !strcmp(directory + 1, "bin");
+    *separator = '/';
     strcpy(separator + 1, "notifai-runtime");
-    if (access(executable, F_OK) && !managed_runtime(executable)) {
+    if ((stable_entry && !managed_runtime(executable)) || (!stable_entry && access(executable, F_OK))) {
         fprintf(stderr, "notifai: no valid active installation; run the installer to repair it\n"); return 1;
     }
     for (size_t i = 0; environ[i];) {

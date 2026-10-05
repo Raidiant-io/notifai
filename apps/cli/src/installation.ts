@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { lstatSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
-import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
+import { atomicWriteFileSync } from './atomic-file.js'
+import { installationAccess, type InstallationAccess } from './installation-access.js'
 import { withFileLock } from './file-lock.js'
 import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease } from './release-distribution.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
@@ -56,12 +57,14 @@ function sameGeneration(left: ActiveGeneration | null, right: ActiveGeneration |
  * module. No activation removes a version, changes account data, or rewires a
  * harness. Old resident owners can keep their immutable executable. */
 export class Installation {
+  private readonly access: InstallationAccess
   private readonly root: string
   private readonly extension: string
   private readonly probe: (directory: string, inventory: ReleaseInventory) => void
   constructor(private readonly options: { root: string; target: ReleaseTarget; distribution: Distribution;
-    probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void }) {
+    access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void }) {
     if (!path.isAbsolute(options.root)) throw new Error('Installation root must be absolute')
+    this.access = options.access ?? installationAccess()
     this.root = path.resolve(options.root)
     this.extension = options.target.startsWith('bun-windows-') ? '.exe' : ''
     this.probe = options.probe ?? ((directory, inventory) => {
@@ -74,19 +77,28 @@ export class Installation {
     })
   }
 
+  private owned(file: string, directory: boolean): void {
+    owned(file, directory)
+    this.access.check(file, directory)
+  }
+  private write(file: string, contents: string | Uint8Array, executable = false): void {
+    this.access.directory(path.dirname(file))
+    atomicWriteFileSync(file, contents, { mode: executable ? 0o700 : 0o600, preserveMode: false,
+      requireCurrentUserOwner: true, prepareTemporary: temporary => this.access.beforePublish(temporary) })
+  }
   private file(name: string): string { return path.join(this.root, name) }
-  private checkRoot(): void { if (present(this.root)) owned(this.root, true) }
-  private prepareRoot(): void { this.checkRoot(); ensurePrivateDirectory(this.root) }
+  private checkRoot(): void { if (present(this.root)) this.owned(this.root, true) }
+  private prepareRoot(): void { this.checkRoot(); this.access.directory(this.root) }
   private readJson(name: string): unknown | null {
     this.checkRoot()
     const file = this.file(name)
     if (!present(file)) return null
-    owned(file, false)
+    this.owned(file, false)
     if (lstatSync(file).size > 256 * 1024) throw new Error('Installation record exceeds its size limit')
     return JSON.parse(readFileSync(file, 'utf8'))
   }
   private save(name: string, value: unknown): void {
-    atomicWriteFileSync(this.file(name), `${JSON.stringify(value)}\n`, { requireCurrentUserOwner: true })
+    this.write(this.file(name), `${JSON.stringify(value)}\n`)
   }
   private readActive(): ActiveGeneration | null {
     const value = this.readJson('active.json')
@@ -117,10 +129,10 @@ export class Installation {
     this.checkRoot()
     const directory = this.file('channels')
     if (!present(directory)) return null
-    owned(directory, true)
+    this.owned(directory, true)
     const file = path.join(directory, `${channel}.json`)
     if (!present(file)) return null
-    owned(file, false)
+    this.owned(file, false)
     if (lstatSync(file).size > 256 * 1024) throw new Error('Cached channel exceeds its size limit')
     const signed = readFileSync(file, 'utf8')
     return { signed, record: this.options.distribution.verifyChannel(signed, channel) }
@@ -143,8 +155,8 @@ export class Installation {
         withFileLock(this.file('installation.lock'), () => {
           const latest = this.channelRecord(channel)
           this.options.distribution.verifyChannel(signed, channel, latest ? { sequence: latest.record.sequence, digest: hash(latest.signed) } : undefined)
-          ensurePrivateDirectory(this.file('channels'))
-          atomicWriteFileSync(this.file(`channels/${channel}.json`), signed, { requireCurrentUserOwner: true })
+          this.access.directory(this.file('channels'))
+          this.write(this.file(`channels/${channel}.json`), signed)
         }, { waitMs: 5_000, strictRelease: true })
       },
     })
@@ -156,36 +168,37 @@ export class Installation {
   private identity(inventory: ReleaseInventory, artifact: ReleaseArtifact): string {
     return hash(`${inventory.version}\0${artifact.target}\0${artifact.sha256}`)
   }
-  private verifyFiles(directory: string, signedInventory: string): Omit<VerifiedVersion, 'directory'> {
-    owned(directory, true)
+  private verifyFiles(directory: string, signedInventory: string, managed = false): Omit<VerifiedVersion, 'directory'> {
+    const check = (file: string, isDirectory: boolean) => managed ? this.owned(file, isDirectory) : owned(file, isDirectory)
+    check(directory, true)
     const inventory = this.options.distribution.verifyInventory(signedInventory)
     if (inventory.store_schema !== 1 || inventory.launcher_schema !== 1) throw new Error('This installer cannot establish store and launcher compatibility for the candidate')
     const artifact = inventory.artifacts.find(item => item.target === this.options.target)
     if (!artifact) throw new Error('Candidate does not contain this installation target')
     for (const [name, expected] of [[`notifai-runtime${this.extension}`, artifact.runtime_sha256], [`notifai${this.extension}`, artifact.launcher_sha256]]) {
       const file = path.join(directory, name!)
-      owned(file, false)
+      check(file, false)
       if (lstatSync(file).size > 512 * 1024 * 1024 || hash(readFileSync(file)) !== expected) throw new Error(`Candidate integrity mismatch: ${name}`)
     }
     for (const material of artifact.materials) {
       const file = path.join(directory, material.path)
       // Check each parent; an intermediate symlink is also outside the archive.
       let parent = path.dirname(file)
-      while (parent !== directory) { owned(parent, true); parent = path.dirname(parent) }
-      owned(file, false)
+      while (parent !== directory) { check(parent, true); parent = path.dirname(parent) }
+      check(file, false)
       if (lstatSync(file).size !== material.bytes || hash(readFileSync(file)) !== material.sha256) throw new Error(`Candidate material integrity mismatch: ${material.path}`)
     }
     return { inventory, artifact }
   }
   private verifyVersion(build: string): VerifiedVersion {
     this.checkRoot()
-    owned(this.file('versions'), true)
+    this.owned(this.file('versions'), true)
     const directory = this.versionDirectory(build)
-    owned(directory, true)
+    this.owned(directory, true)
     const file = path.join(directory, 'inventory.json')
-    owned(file, false)
+    this.owned(file, false)
     if (lstatSync(file).size > 256 * 1024) throw new Error('Version inventory is too large')
-    const verified = this.verifyFiles(directory, readFileSync(file, 'utf8'))
+    const verified = this.verifyFiles(directory, readFileSync(file, 'utf8'), true)
     if (this.identity(verified.inventory, verified.artifact) !== build) throw new Error('Version directory identity mismatch')
     return { directory, ...verified }
   }
@@ -198,18 +211,18 @@ export class Installation {
     this.probe(input.directory, verified.inventory)
     const build = this.identity(verified.inventory, verified.artifact)
     this.prepareRoot()
-    if (present(this.file('versions'))) owned(this.file('versions'), true)
-    ensurePrivateDirectory(this.file('versions'))
+    if (present(this.file('versions'))) this.owned(this.file('versions'), true)
+    this.access.directory(this.file('versions'))
     const destination = this.versionDirectory(build)
     if (present(destination)) { this.verifyVersion(build); return build }
     const staged = this.file(path.join('versions', `.staged-${randomUUID()}`))
-    mkdirSync(staged, { mode: 0o700 })
+    this.access.directory(staged)
     try {
       for (const name of [`notifai-runtime${this.extension}`, `notifai${this.extension}`, ...verified.artifact.materials.map(item => item.path)]) {
-        atomicWriteFileSync(path.join(staged, name), readFileSync(path.join(input.directory, name)), { mode: [`notifai${this.extension}`, `notifai-runtime${this.extension}`].includes(name) ? 0o700 : 0o600, requireCurrentUserOwner: true })
+        this.write(path.join(staged, name), readFileSync(path.join(input.directory, name)), [`notifai${this.extension}`, `notifai-runtime${this.extension}`].includes(name))
       }
-      atomicWriteFileSync(path.join(staged, 'inventory.json'), input.signedInventory, { requireCurrentUserOwner: true })
-      this.verifyFiles(staged, input.signedInventory)
+      this.write(path.join(staged, 'inventory.json'), input.signedInventory)
+      this.verifyFiles(staged, input.signedInventory, true)
       withFileLock(this.file('installation.lock'), () => {
         if (present(destination)) this.verifyVersion(build)
         else renameSync(staged, destination)
@@ -220,12 +233,12 @@ export class Installation {
 
   private checkStable(record: InstallRecord | null, alternative?: InstallRecord): void {
     const bin = this.file('bin'), file = path.join(bin, `notifai${this.extension}`)
-    if (present(bin)) owned(bin, true)
+    if (present(bin)) this.owned(bin, true)
     if (!present(file)) {
       if (record) throw new Error('Owned stable command is missing; repair the installation')
       return
     }
-    owned(file, false)
+    this.owned(file, false)
     const actual = hash(readFileSync(file))
     const records = [record, alternative].filter((entry): entry is InstallRecord => entry !== null && entry !== undefined)
     if (!records.some(entry => this.verifyVersion(entry.launcherBuild).artifact.launcher_sha256 === actual)) {
@@ -251,11 +264,11 @@ export class Installation {
     if (installed && installed.id !== transaction.next.id) throw new Error('Installation owner changed during recovery')
     const next = this.verifyVersion(transaction.to.active)
     this.checkStable(transaction.previous, transaction.next)
-    ensurePrivateDirectory(this.file('bin'))
+    this.access.directory(this.file('bin'))
     const stable = this.file(path.join('bin', `notifai${this.extension}`))
     try {
       if (!present(stable) || hash(readFileSync(stable)) !== next.artifact.launcher_sha256) {
-        atomicWriteFileSync(stable, readFileSync(path.join(next.directory, `notifai${this.extension}`)), { mode: 0o700, preserveMode: false, requireCurrentUserOwner: true })
+        this.write(stable, readFileSync(path.join(next.directory, `notifai${this.extension}`)), true)
       }
       transaction.next.launcherBuild = transaction.to.active
       transaction.next.launcherUpdatePending = false
@@ -270,7 +283,7 @@ export class Installation {
     this.options.observe?.('launcher')
     this.save('install.json', transaction.next)
     this.options.observe?.('metadata')
-    atomicWriteFileSync(this.file('active.json'), activeBytes(transaction.to), { requireCurrentUserOwner: true })
+    this.write(this.file('active.json'), activeBytes(transaction.to))
     this.options.observe?.('activated')
     if (!sameGeneration(this.readActive(), transaction.to)) throw new Error('Active generation read-back failed')
     rmSync(this.file('transaction.json'))

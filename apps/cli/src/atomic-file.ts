@@ -13,6 +13,8 @@ import {
 import path from 'node:path'
 
 export interface AtomicWriteOptions {
+  /** Establish platform ownership on the private temporary file before publication. */
+  prepareTemporary?: (file: string) => void
   /** Mode for a newly created file. Existing regular files keep their mode. */
   mode?: number
   /** False when a managed executable must keep the requested mode on repair. */
@@ -59,6 +61,7 @@ export function atomicWriteFileSync(
   let handle: number | undefined
   try {
     handle = openSync(temp, 'wx', target.mode)
+    options.prepareTemporary?.(temp)
     writeFileSync(handle, contents)
     fsyncSync(handle)
     closeSync(handle)

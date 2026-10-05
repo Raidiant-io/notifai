@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
+import { ensurePrivateDirectory } from './atomic-file.js'
 import { Installation } from './installation.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
 
@@ -26,7 +27,7 @@ function fixture(fetcher?: typeof fetch) {
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
     return { directory, signedInventory }
   }
-  const options = { root: path.join(root, 'managed'), target, distribution, probe: () => {} }
+  const options = { root: path.join(root, 'managed'), target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {} }, probe: () => {} }
   const channel = (sequence: number, withdrawn: string[] = [], inventory = 'unavailable-inventory', version = '2.0.0') => {
     const payload = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', sequence, version,
       inventory_sha256: digest(inventory), withdrawn_versions: withdrawn }))

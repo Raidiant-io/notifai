@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 import { gzipSync } from 'node:zlib'
@@ -29,6 +29,13 @@ function run(args, overrides = {}) {
   const result = spawnSync(launcher, args, { cwd: root, env, encoding: 'utf8', timeout: 90_000, ...overrides })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stderr)
+}
+function privateDirectory(directory) {
+  if (windows) execFileSync(launcher, ['--internal-private-directory', directory], { cwd: root, env })
+  else mkdirSync(directory, { recursive: true })
+}
+function privateFile(file) {
+  if (windows) execFileSync(launcher, ['--internal-own-created-file', file], { cwd: root, env })
 }
 function worker(file, args) {
   return new Promise((resolve, reject) => {
@@ -146,21 +153,29 @@ try {
   assert.equal(io.stderr, 'probe-stderr')
   assert.deepEqual(JSON.parse(io.stdout), { args, input: 'stdin with Unicode: λ\n' })
   const managed = path.join(root, 'managed')
-  mkdirSync(path.join(managed, 'bin'), { recursive: true })
+  privateDirectory(managed)
+  privateDirectory(path.join(managed, 'bin'))
+  privateDirectory(path.join(managed, 'versions'))
   const stable = path.join(managed, 'bin', `notifai${extension}`)
   copyFileSync(launcher, stable)
+  privateFile(stable)
   const builds = ['a'.repeat(64), 'b'.repeat(64)]
   const payloads = builds.map(build => {
     const directory = path.join(managed, 'versions', build)
-    mkdirSync(directory, { recursive: true })
+    privateDirectory(directory)
     copyFileSync(launcher, path.join(directory, `notifai${extension}`))
     const payload = path.join(directory, `notifai-runtime${extension}`)
     copyFileSync(runtime, payload)
+    privateFile(payload)
+    privateFile(path.join(directory, `notifai${extension}`))
     return payload
   })
+  // A stray sibling must never override the managed active pointer.
+  writeFileSync(path.join(managed, 'bin', `notifai-runtime${extension}`), 'not an executable')
   for (let i = 0; i < builds.length; i++) {
     const state = JSON.stringify({ schema: 1, active: builds[i], previous: builds[i - 1] ?? null, generation: i + 1 })
     writeFileSync(path.join(managed, 'active.tmp'), `${state}\n`)
+    privateFile(path.join(managed, 'active.tmp'))
     renameSync(path.join(managed, 'active.tmp'), path.join(managed, 'active.json'))
     assert.equal(realpathSync.native(execFileSync(stable, ['location', root, payloads[i]], { cwd: root, env, encoding: 'utf8' })), realpathSync.native(payloads[i]))
   }
@@ -174,6 +189,19 @@ try {
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'shared.json'), 'utf8')),
     { count: 200, future_field: 'preserve-me' })
   if (windows) {
+    const permissions = path.join(root, 'permissions')
+    privateDirectory(permissions)
+    const icacls = path.join(process.env.SystemRoot, 'System32', 'icacls.exe')
+    execFileSync(icacls, [permissions, '/grant', '*S-1-1-0:(OI)(CI)F'], { cwd: root, env, stdio: 'pipe' })
+    assert.notEqual(spawnSync(launcher, ['--internal-check-private-directory', permissions], { cwd: root, env }).status, 0,
+      'an additional writable principal must be refused')
+    execFileSync(icacls, [permissions, '/remove:g', '*S-1-1-0'], { cwd: root, env, stdio: 'pipe' })
+    execFileSync(launcher, ['--internal-check-private-directory', permissions], { cwd: root, env })
+    const junction = path.join(permissions, 'junction')
+    symlinkSync(root, junction, 'junction')
+    assert.notEqual(spawnSync(launcher, ['--internal-check-private-directory', junction], { cwd: root, env }).status, 0,
+      'a reparse point must be refused')
+    rmSync(junction)
     const credentialRoot = path.join(root, 'credentials')
     mkdirSync(credentialRoot)
     run(['credentials', credentialRoot])
@@ -206,5 +234,5 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
     checks: ['bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
-      ...(windows ? ['dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
+      ...(windows ? ['installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

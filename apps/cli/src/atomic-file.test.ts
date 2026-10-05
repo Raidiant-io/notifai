@@ -87,3 +87,17 @@ it.skipIf(process.platform === 'win32')('keeps the prior file when its replaceme
     process.umask(priorUmask)
   }
 })
+
+it('preserves the prior file when platform ownership cannot be established before publication', () => {
+  const { directory, binding } = fixture(0o700)
+  writeFileSync(binding.markerPath, 'prior')
+  expect(() => atomicWriteFileSync(binding.markerPath, 'replacement', {
+    prepareTemporary(temporary) {
+      expect(temporary).not.toBe(binding.markerPath)
+      expect(readFileSync(binding.markerPath, 'utf8')).toBe('prior')
+      throw new Error('ownership unavailable')
+    },
+  })).toThrow('ownership unavailable')
+  expect(readFileSync(binding.markerPath, 'utf8')).toBe('prior')
+  expect(readdirSync(directory)).toEqual(['marker.json'])
+})

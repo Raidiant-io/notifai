@@ -8,6 +8,7 @@ import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from '@zip.js/zip.js'
 import { afterEach, expect, it } from 'vitest'
 import { extractReleaseArchive } from './release-archive.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
+import { ensurePrivateDirectory } from './atomic-file.js'
 import { Installation } from './installation.js'
 
 const roots: string[] = []
@@ -50,7 +51,7 @@ async function fixture(zip: boolean, fault?: 'extra' | 'missing' | 'tampered' | 
 it.each([false, true])('authenticates and retains every release material (zip=%s)', async zip => {
   const input = await fixture(zip), directory = await extractReleaseArchive(input)
   expect(readFileSync(path.join(directory, 'licenses/NOTICE.txt'), 'utf8')).toBe('Keep this notice')
-  const install = new Installation({ root: path.join(input.root, 'managed'), target: input.target, distribution, probe() {} })
+  const install = new Installation({ root: path.join(input.root, 'managed'), target: input.target, distribution, access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {} }, probe() {} })
   const build = install.stage({ directory, signedInventory: input.signedInventory })
   expect(readFileSync(path.join(input.root, 'managed/versions', build, 'licenses/NOTICE.txt'), 'utf8')).toBe('Keep this notice')
   expect(readdirSync(input.parent)).toHaveLength(1)
