@@ -214,7 +214,9 @@ function Get-NotifaiInstalledCommand {
   $command = [IO.Path]::Combine($bin, 'notifai.exe')
   if (-not (Test-Path -LiteralPath $command)) { return $null }
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  $writes = [Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
+  # Include generic write/all if an existing raw ACE has not been mapped to
+  # file-specific rights. A read-only foreign principal is permitted.
+  $writes = [int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
   foreach ($file in @($accountHome, $managed, $bin, $command)) {
     $item = Get-Item -LiteralPath $file -Force
     $acl = Get-Acl -LiteralPath $file
