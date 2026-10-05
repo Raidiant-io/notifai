@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   CLAUDE_PEER_PROTOCOL,
   CLAUDE_POST_SEND_LIVENESS_MS,
+  claudeInboxAuth,
   claudeWakeRoute,
   inspectClaudeInbox,
   observeClaudeSession,
@@ -414,5 +415,53 @@ describe('claimed writes at the boundary', () => {
     await expect(
       system.sendSocket(missing, 'late\n', { writable: () => true, remainingMs: () => 0 }),
     ).rejects.toBeInstanceOf(Error)
+  })
+})
+
+describe('Claude inbox token', () => {
+  const event = () => ({
+    context: 'wake', answers: 0, remaining: 0, request_ids: [], journal_recorded_at: 1,
+    commitDelivery: () => true,
+  })
+  const lines = (line: string) => line.trimEnd().split('\n').map((entry) => JSON.parse(entry) as Record<string, unknown>)
+
+  it('opens the connection with the session token Claude Code exported for this exact socket', async () => {
+    const fake = adapters()
+    const route = claudeWakeRoute({
+      sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake,
+      env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/12345.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'token-a', CLAUDE_CODE_SESSION_ID: SESSION_ID },
+    })
+    await route.deliver(event() as never)
+    expect(lines(fake.sent[0]!.line)).toEqual([
+      { type: 'auth', token: 'token-a' },
+      { type: 'user', message: { role: 'user', content: 'wake' } },
+    ])
+  })
+
+  it('never offers a token to a socket it was not issued with', async () => {
+    const fake = adapters()
+    const route = claudeWakeRoute({
+      sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake,
+      env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/99999.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'token-b' },
+    })
+    await route.deliver(event() as never)
+    expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
+  })
+
+  it('reads credentials only when both were exported for this session', () => {
+    const exported = { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/s.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }
+    expect(claudeInboxAuth(exported, SESSION_ID)).toEqual({ socketPath: '/tmp/s.sock', token: 't' })
+    expect(claudeInboxAuth({ ...exported, CLAUDE_CODE_SESSION_ID: SESSION_ID }, SESSION_ID)).not.toBeNull()
+    expect(claudeInboxAuth({ ...exported, CLAUDE_CODE_SESSION_ID: 'another-session' }, SESSION_ID)).toBeNull()
+    expect(claudeInboxAuth({ CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/s.sock' }, SESSION_ID)).toBeNull()
+    expect(claudeInboxAuth({ CLAUDE_CODE_MESSAGING_TOKEN: 't' }, SESSION_ID)).toBeNull()
+  })
+
+  it('writes the user line alone when Claude Code exported no token', async () => {
+    const fake = adapters()
+    const route = claudeWakeRoute({ sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, env: {} })
+    await route.deliver(event() as never)
+    expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
+    expect(fake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
   })
 })

@@ -38,6 +38,26 @@ export interface ClaudeSessionDescriptor {
   status: string
 }
 
+/** The inbox socket and per-session token Claude Code exports to its hooks and commands. */
+export interface ClaudeInboxAuth {
+  socketPath: string
+  token: string
+}
+
+/**
+ * This process's own inbox credentials for one session, from its environment.
+ * Null unless Claude Code exported both, and never for another session: a
+ * token is only ever offered to the socket it was issued with.
+ */
+export function claudeInboxAuth(env: NodeJS.ProcessEnv, sessionId: string): ClaudeInboxAuth | null {
+  const socketPath = env['CLAUDE_CODE_MESSAGING_SOCKET'] ?? ''
+  const token = env['CLAUDE_CODE_MESSAGING_TOKEN'] ?? ''
+  const exportedSession = env['CLAUDE_CODE_SESSION_ID']
+  if (socketPath === '' || token === '') return null
+  if (exportedSession !== undefined && exportedSession !== sessionId) return null
+  return { socketPath, token }
+}
+
 export interface ClaudeAgentObservation {
   pid: number
   sessionId: string
@@ -302,9 +322,12 @@ export function claudeWakeRoute(options: {
   sessionId: string
   cwd: string
   sourcePid: number
+  /** The posting process's environment, for the inbox token Claude Code exported to it. */
+  env?: NodeJS.ProcessEnv
   adapters?: ClaudeWakeAdapters
 }): EscalationDeliveryRoute {
   const adapters = options.adapters ?? systemClaudeWakeAdapters()
+  const auth = options.env === undefined ? null : claudeInboxAuth(options.env, options.sessionId)
   const sourceDescriptor = claudeSourceDescriptor(options.sessionId, options.sourcePid, adapters)
   return {
     kind: 'inbox-socket',
@@ -315,6 +338,7 @@ export function claudeWakeRoute(options: {
         sourceDescriptor,
         adapters,
         text: event.context,
+        auth,
         begin: () => event.commitDelivery(),
         ...(event.writeGuard === undefined ? {} : { guard: event.writeGuard }),
         writer: 'Stop-hook process',
