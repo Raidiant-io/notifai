@@ -237,6 +237,33 @@ describe('Claude Code picker hooks', () => {
     expect(Object.values(h.decision().hookSpecificOutput.decision.updatedInput.answers)).toEqual(['Production'])
   })
 
+  it('keeps waiting while an accepted answer is between the pending list and the staged inputs', async () => {
+    const h = setup()
+    let slept = 0
+    const outcome = await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      sleep: async () => {
+        slept++
+        if (slept === 1) {
+          // What acceptance writes first: the question leaves `pending`, the answer sits in `accepted`.
+          const answer = h.stage([{ question_id: 'q1', choice_ids: ['staging'] }])
+          updateSessionState(SESSION, h.env, (state) => ({
+            ...state, waiting_answers: [], accepted: { answers: [answer], remaining: 0, recorded_at: Date.now() },
+          }))
+        }
+        if (slept === 3) {
+          updateSessionState(SESSION, h.env, (state) => {
+            const next = { ...state, waiting_answers: state.accepted!.answers }
+            delete next.accepted
+            return next
+          })
+        }
+      },
+    })
+    expect(outcome).toBe('answered')
+    expect(slept).toBe(3)
+    expect(Object.values(h.decision().hookSpecificOutput.decision.updatedInput.answers)).toEqual(['Staging'])
+  })
+
   it('leaves an unregistered picker alone', async () => {
     const h = setup()
     h.stage([{ question_id: 'q1', choice_ids: ['staging'] }])

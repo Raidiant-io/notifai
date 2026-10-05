@@ -251,8 +251,17 @@ export async function claudePermissionRequest(
     if (registration === undefined || registration.terminated === true || registration.ordinary_only === true) return leave('question-closed')
     const waiting = state.waiting_answers?.find((answer) => answer.pending.question_id === bound)
     if (waiting === undefined) {
-      if (!pendingList(state).some((pending) => pending.question_id === bound)) return leave('question-settled')
-      stagedSince = null
+      // An accepted answer leaves the pending list a moment before it is
+      // staged for presentation; in between it is neither, and still coming.
+      const accepted = state.accepted?.answers.some((answer) => answer.pending.question_id === bound) === true
+      if (accepted) {
+        stagedSince ??= monotonic()
+        if (monotonic() - stagedSince >= CLAUDE_PICKER_HANDOVER_MS) return leave('handover-timed-out')
+      } else if (!pendingList(state).some((pending) => pending.question_id === bound)) {
+        return leave('question-settled')
+      } else {
+        stagedSince = null
+      }
     } else {
       const credential = deps.store.load()
       const service = credential === null ? null : { base_url: credential.baseUrl, machine_id: credential.machineId }
