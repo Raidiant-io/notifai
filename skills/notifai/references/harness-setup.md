@@ -71,22 +71,6 @@ notifai init --skills --skills-scope <project|global> --json
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
 
-Claude Code asks before each Bash command it has no permission rule for, unless
-the session skips permission prompts. A question, its wake-up and its
-acknowledgement are all commands, so an away User's first question can wait at
-a terminal approval nobody sees. Readiness reports this as `claude-commands`
-once Claude Code is wired; it never blocks setup. On the User's yes:
-
-```bash
-notifai init --claude-commands --json
-```
-
-That adds allow rules to the User's Claude Code settings for `send`, `ask`,
-`receive`, `acknowledge`, `status`, `replies`, `close`, `guidance` and
-`session rename` only. Setup, configuration, guidance edits, logs and sign-out
-keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
-Never add them unasked, and never edit Claude Code's permission settings by hand.
-
 Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
@@ -141,127 +125,16 @@ shell. Do not strip markers or borrow another Agent Session's identity to make
 
 ## Activation by harness
 
-- **Claude Code:** run the installer if needed, start one fresh Agent Session,
-  send one prompt, then run `notifai doctor`. An already-running Agent Session cannot
-  receive newly installed `SessionStart` context. If SessionStart is absent,
-  reinstall the current hooks and start a fresh Agent Session; UserPromptSubmit
-  records presence and question lifecycle only and never substitutes for
-  lifecycle activation. Claude's SubagentStart gives ordinary workers the
-  reporting-only context; explicit textual delegation makes a worker load the
-  skill and guidance as the new Notification Request owner.
-- **Codex:** run `notifai hooks install --harness codex`. If `hooks-trust`
-  fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
-  The synchronous `PostToolUse` handler delivers pending answers, Session Notes and Answer Edits
-  after tools during an active turn. Install and approve that handler, then
-  start a fresh Agent Session to use the new attendant and hook definitions.
-  Pending input also queues one coalesced wake-up, whether the session is
-  working or idle. It carries no note or answer text. A trusted hook can drain
-  the input first; a late wake-up may then find nothing pending. A running tool
-  must return before its hook runs.
-  Automatic goal continuations are observed at their first trusted tool
-  callback even when the harness emits no prompt hook. Notes still need an
-  available callback; a long tool or uninterrupted reasoning cannot be cut
-  short by this route.
-  Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
-  SessionStart is absent, reinstall the current hooks and start a fresh Agent Session;
-  UserPromptSubmit does not activate it. Codex SubagentStart uses the same
-  reporting-only worker contract and explicit textual delegation rule as
-  Claude. Child callbacks cannot consume the parent's input or change its
-  activity. A fresh install writes the Machine layer's `~/.codex/hooks.json`, or
-  joins inline `[hooks]` when the User already keeps their own hooks there.
-  Notifai-owned inline handlers with no foreign inline neighbours are moved to
-  `hooks.json`; Codex will ask for `/hooks` approval because it keys trust by
-  source path. Foreign inline configuration is left in place. Later upgrades
-  keep the default SessionStart output-limit identity so they do not mint a
-  second trust identity. One install covers every project and every worktree, so there is
-  nothing to repeat in a new checkout; a Project-scoped `.codex` hook file from
-  an older Notifai is removed once the Machine copy is proven current.
-- **Cursor:** start one fresh conversation, send one prompt, and let the first
-  completed or errored turn finish. Cursor's `SessionStart` context is currently
-  lossy, so one visible synthetic follow-up activates Notifai through its native
-  Stop contract; cancellation does not trigger it, and a live question
-  continuation takes priority. Then run `notifai doctor`. The agent shell does
-  not create a separately activated context for delegated work: it remains
-  under the parent Agent Session and its explicit Notification Request ownership. It
-  does not expose the exact conversation id needed to prove which concurrent Agent Session
-  invoked `notifai ask`, so asynchronous ask fails closed. Use blocking
-  `notifai send --reply` for questions.
-- **OpenCode:** restart after installation because plugins load at startup,
-  then start one fresh Agent Session, send one prompt, and run `notifai doctor`.
-  Notifai owns its generated plugin file and will not overwrite a foreign one.
-  The plugin treats a session with `parentID` as a worker. When relationship
-  lookup fails or returns unusable data it also fails safe as a non-sending
-  worker; only a proven parent Agent Session receives owner context. Explicit textual
-  delegation promotes that worker through the same skill-and-guidance rule.
-  Each model request receives current guidance when the Project is enabled,
-  including after compaction. Disabled Projects add no context; enabling one
-  takes effect on a subsequent request in the same Agent Session.
-  OpenCode has no locally proven exactly-once continuation after `session.idle`,
-  so `notifai ask` fails closed instead of accepting an answer into a void.
-  Use a blocking `notifai send --reply` question when its answer must return to
-  the agent without another human prompt.
-- **OpenClaw:** restart the Gateway after installation because plugins load at
-  startup, then start one fresh Agent Session, send one prompt, and run
-  `notifai doctor`. Notifai owns its generated Gateway plugin and will not
-  overwrite a foreign one. Exact Agent Session identity is the OpenClaw
-  `sessionKey`; the transcript `sessionId` can stay the same across `/new` and
-  `/reset`, while idle or daily rollover can change it. Notifai gives each
-  observed generation one activation on its first prompt, using the native
-  lifecycle revision and typed events to fence same-`sessionId` resets. A session key containing
-  `:subagent:` or an ACP nested context
-  is a worker. Missing identity fails safe as a non-sending worker; only a
-  proven parent Agent Session receives owner context. Explicit textual
-  delegation promotes that worker through the same skill-and-guidance rule.
-  On macOS, the loaded Gateway service can route an asynchronous `notifai ask` answer
-  into the same Agent Session after the asking turn ends. It queues a pointer
-  through OpenClaw's followup route; run `notifai replies <id>` from that
-  session to read the answer and `notifai acknowledge <id>` before acting on it.
-  Question Routing requires the current generation marker, an enabled Project,
-  and a local Gateway whose CLI version and process identity match the plugin.
-  If this Project is disabled, run `notifai project enable` before `notifai ask`.
-  On macOS, the same Gateway service attends the current generation and queues
-  Session Notes and post-consumption Answer Edits as followup turns. It keeps
-  the message in a private local delivery journal and sends only an opaque
-  pointer in the CLI call. The matching prompt receives the full context once,
-  only within its original native generation and Gateway instance. Journal
-  text is discarded after that prompt claims it, a generation change, or a
-  Gateway restart. The agent acknowledges each `sm_` message after reading it.
-  If a Gateway crash interrupts a turn, OpenClaw may replay its pointer after
-  the staged context was consumed. The pointer instructs the agent to say the
-  context is missing and leave that message unacknowledged; the User may send
-  a new message. Do not treat `/stop` as turn-end.
-- **Hermes:** with Hermes v0.21.5, `notifai hooks install --harness hermes`
-  installs and enables Notifai's native plugin through `hermes plugins`. Start a
-  fresh local classic CLI Agent Session after installation. Its bounded system
-  prompt section checks Project Enablement and gives root or delegated worker
-  guidance. Hermes's prompt budget cannot hold every effective guidance topic;
-  when the full set exceeds it, the section directs the agent to run
-  `notifai guidance` before deciding whether or how to notify. Notifai reads
-  exact `HERMES_SESSION_ID` for Source Context and derives git branch and
-  worktree from the actual invocation cwd. Install the Notifai skill through
-  `npx skills`; the Hermes plugin does not include a copy. On local classic CLI
-  sessions the plugin supervises a Session Attendant for that exact session.
-  After the first Notification Request, it reports Session Presence and hands
-  Session Notes and post-consumption Answer Edits into the attached CLI;
-  a Note may interrupt a working turn. The plugin checks the current session
-  before each write, and the agent must acknowledge the message. An attended
-  classic CLI session can route an `ask` answer into that same live session;
-  keep Hermes running for the answer window. Submission starts immediately;
-  the plugin owns answer delivery. If the
-  process exits first, it does not cold-resume and the answer is not delivered.
-  TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
-  this proven cell.
-  Nested inherited harness markers fail closed.
-- **Grok:** `notifai hooks install --harness grok` writes only the Notifai-owned
-  Machine hook file under `~/.grok/hooks/` (or `GROK_HOME/hooks/`). Start a fresh
-  Grok Agent Session and send one prompt to observe lifecycle state. Grok
-  discards SessionStart and allowed UserPromptSubmit output, so these hooks do
-  not activate model-visible guidance; load the Notifai skill from
-  `~/.agents/skills` directly. `GROK_SESSION_ID` supplies exact Source Context
-  in an uncontested tool subprocess. Grok's Stop hook holds the complete answer
-  window, then returns a decision block to continue this same Agent Session;
-  its successor Stop confirms consumption. Grok has no Session Attendant,
-  Session Notes, or post-consumption Answer Edits.
+Activation and the answer's last meter differ per harness. Read only the file
+for the harness you are in:
+
+- [Claude Code](harness-claude-code.md)
+- [Codex](harness-codex.md)
+- [Cursor](harness-cursor.md)
+- [OpenCode](harness-opencode.md)
+- [OpenClaw](harness-openclaw.md)
+- [Hermes](harness-hermes.md)
+- [Grok](harness-grok.md)
 
 Do not infer Question Routing from managed installation. `notifai doctor`
 reports each harness's supported route separately.
@@ -269,44 +142,12 @@ reports each harness's supported route separately.
 ## How the answer gets back to the agent
 
 The session that registered a question owns the answer's return. The last
-meter differs per harness:
+meter is in that harness's file above. Cursor, OpenCode, OpenClaw and Hermes
+have no separate route beyond what their activation describes.
 
-- **Claude Code on POSIX:** a detached observer starts after submission and
-  waits out of band for the complete answer window. The resident Session
-  Attendant sends wakes with Claude's required child-process ancestry. Stop
-  can recover answer ownership without holding the turn. When the
-  answer arrives it is stored with the session's pending inputs. Its own inbox
-  socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
-  one receives it when its current turn ends. The prompt hook or the named
-  `notifai receive` command drains the current notes and answers together.
-  An Agent Session that is provably gone is cold-resumed with the wake-up
-  instead — never one whose liveness probe cannot rule it out.
-- **Claude Code on Windows:** the Stop hook stays held through the complete
-  answer window. When the answer arrives it returns `decision: block`, starting
-  the successor turn in the same Agent Session without another User prompt.
-  Direct inbox wake is unavailable, but it is not needed while this exact Stop
-  continuation owns the answer.
-- **Codex:** a detached observer starts after submission and waits in the
-  background for the complete answer window; Stop provides recovery. While a
-  trusted tool hook can hand input into a working turn, Notifai uses that hook.
-  Idle sessions, or sessions whose live input path cannot be established, use
-  a content-free wake for the exact Agent Session in the same Codex home.
-  Notifai does not cold-start or resume Codex to obtain a control connection.
-  Pending notes and answers remain in Notifai until
-  a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
-  A late wake-up cannot repeat an acknowledged answer: it contains no answer
-  text. Queue success proves wake storage, not input presentation. Inputs are
-  claimed immediately before presentation; uncertain writes are never replayed.
-  Verified queue control can remove a stale wake owned by Notifai; unavailable
-  control leaves the harmless wake in place and preserves human prompts.
-  Keep the original question and request identities when investigating a delay.
-- **Grok:** the Stop hook stays held through the complete answer window and
-  returns the answer as a decision block to the same Agent Session. Its native
-  `stopHookActive` flag on the successor Stop confirms consumption. There is no
-  out-of-band wake route or Session Attendant.
-- **Crash recovery:** the answer journal protects an accepted answer if an
-  owner process or its route fails. It is not the normal last meter for an
-  unexpired question.
+**Crash recovery:** the answer journal protects an accepted answer if an
+owner process or its route fails. It is not the normal last meter for an
+unexpired question.
 
 `ask` durably registers the question and immediately launches submission. It
 does not wait for Stop or hold the command for the answer window. Stop and
