@@ -419,7 +419,7 @@ function harness(replies: ReplyView[] = []): Harness {
 }
 
 describe('OpenClaw generation fencing at the CLI boundary', () => {
-  it('inventories an activated session across turn boundaries and drops it when disabled', async () => {
+  it('inventories an activated session across turn boundaries and keeps it when disabled', async () => {
     const h = harness()
     const sessionId = 'agent:main:inventory-probe'
     const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
@@ -440,12 +440,15 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
       expect.objectContaining({ session_key: sessionId }),
     ])
+    // Disabling stops new activation; the owed answer still needs settlement.
     disableProject(projectBinding(h.deps.cwd, h.env)!)
     await hookRunCommand(h.deps, 'openclaw-list-pending', stdin({}), 'openclaw')
-    expect(JSON.parse(h.io.outLines.at(-1)!) as unknown[]).toEqual([])
+    expect(JSON.parse(h.io.outLines.at(-1)!) as Array<{ session_key: string }>).toEqual([
+      expect.objectContaining({ session_key: sessionId }),
+    ])
   })
 
-  it('lets only the current enabled generation read its own reply pointer', async () => {
+  it('lets only the current generation read its own reply pointer, even after disabling', async () => {
     const h = harness()
     const sessionId = 'agent:main:reply-probe'
     const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
@@ -460,14 +463,18 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     })
     const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw',
       NOTIFAI_ACTIVE_SESSION_ID: sessionId, NOTIFAI_ACTIVE_OPENCLAW_GENERATION: generation }
-    expect(openclawOwnsReply(sessionId, 'req_owned', env, h.deps.cwd)).toBe(true)
-    expect(openclawOwnsReply(sessionId, 'req_other', env, h.deps.cwd)).toBe(false)
+    expect(openclawOwnsReply(sessionId, 'req_owned', env)).toBe(true)
+    expect(openclawOwnsReply(sessionId, 'req_other', env)).toBe(false)
     await hookRunCommand(h.deps, 'openclaw-generation', stdin(envelope), 'openclaw')
     expect(h.io.outLines.at(-1)).toBe(generation)
 
     const binding = projectBinding(h.deps.cwd, h.env)!
     disableProject(binding)
+    // New asks need an enabled Project; owed answers do not.
     expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
+    expect(openclawOwnsReply(sessionId, 'req_owned', env)).toBe(true)
+    await hookRunCommand(h.deps, 'openclaw-generation', stdin(envelope), 'openclaw')
+    expect(h.io.outLines.at(-1)).toBe(generation)
     enableProject(binding)
     await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
       ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
@@ -494,7 +501,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     })
     const env = { ...h.env, NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: sessionId,
       NOTIFAI_ACTIVE_OPENCLAW_GENERATION: first }
-    expect(openclawOwnsMessage(sessionId, 'sm_old', env, h.deps.cwd)).toBe(true)
+    expect(openclawOwnsMessage(sessionId, 'sm_old', env)).toBe(true)
     await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({
       ...envelope, hook_event_name: 'BeforeReset', openclaw_reason: 'reset',
     }), 'openclaw')
@@ -503,13 +510,13 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     expect(readSessionState(sessionId, h.env).message_acknowledgement_due).toEqual([
       expect.objectContaining({ message_id: 'sm_old', openclaw_generation: first }),
     ])
-    expect(openclawOwnsMessage(sessionId, 'sm_old', env, h.deps.cwd)).toBe(false)
+    expect(openclawOwnsMessage(sessionId, 'sm_old', env)).toBe(false)
     env.NOTIFAI_ACTIVE_OPENCLAW_GENERATION = second
-    expect(openclawOwnsMessage(sessionId, 'sm_old', env, h.deps.cwd)).toBe(false)
+    expect(openclawOwnsMessage(sessionId, 'sm_old', env)).toBe(false)
     recordMessageAcknowledgementDue(sessionId, h.env, {
       message_id: 'sm_new', recorded_at: NOW, text_required: true, openclaw_generation: second,
     })
-    expect(openclawOwnsMessage(sessionId, 'sm_new', env, h.deps.cwd)).toBe(true)
+    expect(openclawOwnsMessage(sessionId, 'sm_new', env)).toBe(true)
   })
 
   it('rotates on a new generation without an end and ignores a late old end', async () => {
@@ -895,7 +902,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     const requestId = h.recorder.receipts[0]!
     const nextEnv = { ...env,
       NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(envelope.session_id, h.env)?.id }
-    expect(openclawOwnsReply(envelope.session_id, requestId, nextEnv, h.deps.cwd)).toBe(false)
+    expect(openclawOwnsReply(envelope.session_id, requestId, nextEnv)).toBe(false)
     expect(await acknowledgeCommand({ ...deps, env: nextEnv }, requestId, { text: 'Wrong owner.' })).toBe(EXIT.usage)
   })
 })
@@ -7140,6 +7147,20 @@ describe('escalation waiter delivery seam', () => {
     expect(h.io.outLines).toEqual([])
     expect(polls).toBe(0)
     expect(launch).toHaveBeenCalledTimes(observers)
+  })
+
+  it('submits a registered question even when the directory Project is not enabled', async () => {
+    // `ask --project X` enables X, not the cwd's Project. Enablement gates
+    // lifecycle context, never an explicit question's submission.
+    const h = harness([])
+    disableProject(projectBinding(h.deps.cwd, h.env)!)
+    writeSessionState('elsewhere', h.env, { harness: 'codex' })
+    registerQuestion('elsewhere', h.env, { question: 'Ship it?' }, NOW)
+    const code = await hookRunCommand({ ...h.deps, spawnQuestionSettlement: vi.fn() },
+      'question-submission', stdin({ session_id: 'elsewhere', cwd: h.deps.cwd }), 'codex')
+    expect(code).toBe(EXIT.ok)
+    expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+    expect(readSessionState('elsewhere', h.env).pending?.[0]?.request_id).toBeDefined()
   })
 
   it('submits immediately while another owner is waiting, without polling answers', async () => {

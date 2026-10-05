@@ -540,8 +540,8 @@ export async function repliesCommand(
 ): Promise<number> {
   if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
     const sessionKey = deps.env['NOTIFAI_ACTIVE_SESSION_ID'] ?? ''
-    if (activeOpenclawGeneration(sessionKey, deps.env, deps.cwd) === null ||
-        (requestedId !== undefined && !openclawOwnsReply(sessionKey, requestedId, deps.env, deps.cwd))) {
+    if (activeOpenclawGeneration(sessionKey, deps.env) === null ||
+        (requestedId !== undefined && !openclawOwnsReply(sessionKey, requestedId, deps.env))) {
       deps.io.err('This reply pointer does not belong to the current OpenClaw session generation.')
       return EXIT.usage
     }
