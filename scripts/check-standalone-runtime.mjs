@@ -54,6 +54,48 @@ try {
   run(['identity', root])
   run(['skills', root])
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const target = `bun-${windows ? 'windows' : process.platform}-${process.arch}`
+  const directories = [], inventories = []
+  for (const version of ['1.0.0', '2.0.0']) {
+    const directory = path.join(root, `candidate-${version}`)
+    mkdirSync(directory)
+    directories.push(directory)
+    copyFileSync(runtime, path.join(directory, `notifai-runtime${extension}`))
+    // A PE overlay changes the signed fixture hash while retaining executable behavior.
+    const launcherBytes = windows ? Buffer.concat([readFileSync(launcher), Buffer.from(`fixture ${version}`)]) : readFileSync(launcher)
+    writeFileSync(path.join(directory, `notifai${extension}`), launcherBytes, { mode: 0o700 })
+    const digest = bytes => createHash('sha256').update(bytes).digest('hex')
+    const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: 'a'.repeat(40),
+      store_schema: 1, launcher_schema: 1, artifacts: [{ target,
+        filename: `notifai-${version}-${windows ? 'windows' : process.platform}-${process.arch}.${windows ? 'zip' : 'tar.gz'}`,
+        bytes: 100, sha256: digest(version), runtime_sha256: digest(readFileSync(runtime)), launcher_sha256: digest(launcherBytes) }] }))
+    inventories.push(JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
+      signature: sign(null, Buffer.concat([Buffer.from('notifai-release-v1\ninventory\n'), payload]), privateKey).toString('base64') }))
+  }
+  writeFileSync(path.join(root, 'installation-fixture.json'), JSON.stringify({ target, directories, inventories,
+    publicKey: publicKey.export({ format: 'pem', type: 'spki' }).toString() }))
+  run(['installation', root, 'first'])
+  const busyRoot = path.join(root, 'busy-launcher')
+  mkdirSync(busyRoot)
+  const busy = windows ? spawn(path.join(root, 'installation', 'bin', 'notifai.exe'), ['heartbeat', busyRoot],
+    { cwd: root, env, stdio: 'ignore' }) : null
+  try {
+    if (busy) {
+      for (let i = 0; i < 100 && !existsSync(path.join(busyRoot, 'heartbeat')); i++) await sleep(50)
+      assert.ok(existsSync(path.join(busyRoot, 'heartbeat')), 'managed launcher must be running during replacement')
+    }
+    run(['installation', root, 'update'])
+  } finally {
+    if (busy) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('owned busy launcher did not exit')), 10_000)
+        busy.once('exit', () => { clearTimeout(timer); resolve() })
+        busy.kill()
+      })
+      await sleep(250)
+    }
+  }
+  run(['installation', root, 'repair'])
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
       filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
@@ -135,6 +177,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

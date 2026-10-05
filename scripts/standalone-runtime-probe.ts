@@ -7,6 +7,7 @@ import { withFileLock } from '../apps/cli/src/file-lock.js'
 import { atomicWriteFileSync } from '../apps/cli/src/atomic-file.js'
 import { currentProcessIdentity, processIdentityLiveness } from '../apps/cli/src/process-identity.js'
 import { WindowsDpapiStore } from '../apps/cli/src/credentials.js'
+import { Installation } from '../apps/cli/src/installation.js'
 import { Distribution } from '../apps/cli/src/release-distribution.js'
 import { sameLocalPath } from '../apps/cli/src/local-path.js'
 import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from '../apps/cli/src/skill-integrity.js'
@@ -31,6 +32,35 @@ if (mode === 'lock') {
   const inventory = distribution.verifyInventory(fixture.inventory)
   assert.equal(inventory.version, '12.0.0')
   distribution.verifyArtifact(inventory.artifacts[0]!, Buffer.from('archive-fixture'))
+} else if (mode === 'installation') {
+  const fixture = JSON.parse(readFileSync(path.join(root, 'installation-fixture.json'), 'utf8'))
+  const extension = process.platform === 'win32' ? '.exe' : ''
+  const options = { root: path.join(root, 'installation'), target: fixture.target,
+    distribution: new Distribution({ fixture: fixture.publicKey }),
+    probe(directory: string) {
+      const result = spawnSync(path.join(directory, `notifai${extension}`), ['identity', root], { encoding: 'utf8', timeout: 20_000 })
+      assert.equal(result.status, 0, result.stderr)
+    } }
+  const installation = new Installation(options)
+  const first = installation.stage({ directory: fixture.directories[0], signedInventory: fixture.inventories[0] })
+  const second = installation.stage({ directory: fixture.directories[1], signedInventory: fixture.inventories[1] })
+  const operation = args[0]
+  if (operation === 'first') {
+    assert.equal(installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' }).active.active, first)
+  } else if (operation === 'update') {
+    const result = installation.activate({ build: second, expectedGeneration: 1, source: 'manual', channel: 'stable' })
+    assert.equal(result.active.active, second)
+    assert.equal(result.launcher_update_pending, process.platform === 'win32')
+  } else if (operation === 'repair') {
+    const before = installation.inspect().active
+    assert.equal(installation.repairLauncher(2).launcher_update_pending, false)
+    assert.deepEqual(installation.inspect().active, before)
+    assert.equal(installation.rollback(2).active.active, first)
+    const interrupted = new Installation({ ...options, observe(phase) { if (phase === 'metadata') throw new Error('interrupted') } })
+    assert.throws(() => interrupted.activate({ build: second, expectedGeneration: 3, source: 'manual', channel: 'stable' }), /interrupted/)
+    assert.equal(installation.recover().active?.active, second)
+    assert.equal(installation.inspect().pending, false)
+  } else throw new Error('Unknown installation operation')
 } else if (mode === 'skills') {
   const { SkillInstallation } = await import('../apps/cli/src/skill-installation.js')
   const bundled = shippedSkillBundle()
