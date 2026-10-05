@@ -15,6 +15,7 @@ assert.ok(values.launcher, '--launcher is required')
 assert.equal(execFileSync(values.bun, ['--version'], { encoding: 'utf8' }).trim(), '1.4.2')
 const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-runtime-'))
 const windows = process.platform === 'win32'
+if (windows) execFileSync(process.execPath, [path.join(repositoryRoot, 'scripts/check-windows-user-path.mjs')], { stdio: 'inherit', timeout: 120_000 })
 const extension = windows ? '.exe' : ''
 const launcher = path.join(root, `notifai${extension}`)
 const runtime = path.join(root, `notifai-runtime${extension}`)

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b799a67ca34253ea8717cc2c59031637b47c621b81d1c18841399539108707c8",
+  "behavior_digest": "sha256:6f5ee3783d48da30ed1220da37a76f9520ee92b57ce03d0456aa1118022cc84c",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Candidate install help and standalone documentation now cover authenticated local installation, explicit route/channel/version, persistent PATH skips and separate runtime/setup outcomes. Init continues to own approval, skill scope and harness setup; ordinary notification guidance retains the currently published route. No automatic account approval or Project Enablement was added.",
+  "reason": "Reviewed lifecycle hooks, bundled skill, harness setup, CLI readiness and domain terms. Standalone documentation now describes Windows User PATH ownership, preservation, interrupted setup, process environment limits and the explicit external-writer race. The native installer invokes this adapter only during explicit PATH configuration; hooks and notification authority remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

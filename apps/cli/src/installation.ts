@@ -8,6 +8,7 @@ import { withFileLock } from './file-lock.js'
 import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease } from './release-distribution.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 import { ShellPathInstallation } from './installation-path.js'
+import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -235,12 +236,16 @@ export class Installation {
     const build = this.stage(input)
     return { ...this.activate({ build, source: input.source, channel, expectedGeneration: 0 }), version: verified.inventory.version, reused: false }
   }
-  /** Explicit POSIX profile setup/removal. No hook or ordinary command edits
-   * shell startup files, and uninstallation preserves User-edited blocks. */
+  /** Explicit User PATH setup/removal. No hook or ordinary command edits
+   * shell startup files or registry PATH; User-edited ownership is preserved. */
   shellPath(operation: 'configure' | 'remove', shell: string) {
-    if (this.options.target.startsWith('bun-windows-')) throw new Error('Windows requires User PATH registry setup')
-    this.activeRelease()
+    const active = this.activeRelease()
     return withFileLock(this.file('installation.lock'), () => {
+      if (this.options.target.startsWith('bun-windows-')) {
+        const pathSetup = new WindowsPathInstallation({ bin: this.file('bin'), registry: nativeUserPathRegistry(active.launcher),
+          read: () => this.readJson('windows-path.json'), save: receipt => this.save('windows-path.json', receipt) })
+        return operation === 'configure' ? pathSetup.configure() : pathSetup.remove()
+      }
       const pathSetup = new ShellPathInstallation({ home: path.dirname(this.root), bin: this.file('bin'), shell,
         read: () => this.readJson('shell-path.json'), save: receipt => this.save('shell-path.json', receipt) })
       return operation === 'configure' ? pathSetup.configure() : pathSetup.remove()

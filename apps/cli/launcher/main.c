@@ -49,6 +49,7 @@ static int active_build(const char *record, char *build) {
 #include <windows.h>
 #include <wchar.h>
 #include "windows-security.h"
+#include "windows-user-path.h"
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -136,6 +137,10 @@ static int process_info(const wchar_t *argument) {
 }
 
 int wmain(int argc, wchar_t **argv) {
+    if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-read"))
+        return user_path_command(0) ? 0 : failure("cannot inspect User PATH");
+    if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-write"))
+        return user_path_command(1) ? 0 : failure("User PATH changed or could not be safely written");
     if (argc == 2 && !wcscmp(argv[1], L"--internal-launcher-version")) { puts("1"); return 0; }
     if (argc == 3 && !wcscmp(argv[1], L"--internal-process-info"))
         return process_info(argv[2]);

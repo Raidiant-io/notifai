@@ -122,7 +122,7 @@ publication, with the private key held only by the protected release environment
 Candidates fail closed; neither an environment override nor project configuration
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
-and OS bootstraps, PATH setup and complete uninstall remain separate work.
+and OS bootstraps and complete uninstall remain separate work.
 
 ### Existing Windows directory permissions
 
@@ -140,7 +140,7 @@ remain unchanged, that retries converge and unsafe writers are refused. See
 [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
 Explicit candidate installation invokes this operation only for existing runtime
 root/bin directories after authenticating its candidate. It never recurses over
-User data. Native installation command, PATH and legacy wiring migration still
+User data. Native installation, PATH and legacy wiring migration still
 need their complete setup-journey proof.
 
 
@@ -161,8 +161,9 @@ preserved and reported as conflicts. Atomic writes also check the original
 content digest, including same-file concurrent edits.
 
 This engine operation is explicit, never run by hooks. It does not change the
-current parent shell, guess every installed shell, or configure Windows User
-PATH. Public installer orchestration still needs its complete journey proof.
+current parent shell, guess every installed shell, or change Windows User
+PATH; that uses the registry adapter below. Public installer orchestration still
+needs its complete journey proof.
 
 ## Local native installer command
 
@@ -183,6 +184,27 @@ readiness and retains a local recovery command after partial setup. Runtime
 activation is never undone because approval or setup is pending. Custom zsh
 profile roots need explicit manual PATH setup.
 
-Production trust remains unconfigured, and Windows persistent PATH plus the
-OS bootstraps are still under implementation. This command is candidate source,
+Production trust remains unconfigured, and the OS bootstraps are still under
+implementation. This command is candidate source,
 not an advertised replacement for the published installation route.
+
+### Windows User PATH
+
+Explicit installation edits only `HKCU\Environment`'s `Path` value, preserving
+raw UTF-16 content and `REG_SZ` / `REG_EXPAND_SZ` type. A private receipt owns
+only the exact added directory; preexisting entries are not claimed. Interrupted
+setup resumes, User-modified owned entries are reported as conflicts, and removal
+preserves unrelated entries. The native adapter checks the expected value before
+writing and verifies readback. It sends bounded `WM_SETTINGCHANGE` notification
+and reports whether that succeeded. Existing terminals retain their process
+environment; setup uses the installed executable's absolute path.
+
+Windows does not provide a registry value lock for this read/modify/write.
+The installation lock serializes Notifai writers; expected-value checks detect
+observed concurrent edits, but cannot exclude an external editor between check
+and write. This is an optimistic update, not an operating-system compare-and-swap.
+See [registry writes](https://learn.microsoft.com/en-us/windows/win32/sysinfo/writing-and-deleting-registry-data)
+and [environment change notification](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange).
+Native CI compiles and runs the storage fixture against a disposable registry
+key; it never changes the runner's actual User PATH. That fixture proves raw
+storage behavior, not receipt of the broadcast by every application.
