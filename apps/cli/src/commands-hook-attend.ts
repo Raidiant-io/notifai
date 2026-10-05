@@ -13,7 +13,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
-import { claudeSessionPid } from './commands-harness-context.js'
+import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { loadConfig } from './config.js'
 import type { ApiClient } from './client.js'
 import { inspectHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
@@ -156,7 +156,7 @@ export async function attendHook(
   // names itself; Codex is only ever the declared parent.
   const pid = input.recovery?.harnessProcess.pid ?? (harness === 'codex' || harness === 'openclaw'
     ? declaredHookSourcePid(deps.env)
-    : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env))
+    : claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) ?? claudeSessionPid(deps.env))
   if (pid === undefined) return end('ignored', { reason: 'harness-process-unproven' })
   const nativeOwner = harness === 'codex'
     ? seams.harnessProcess ?? (() => {
@@ -533,6 +533,7 @@ function sessionMessageWriter(input: {
         sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
         adapters, text, auth: claudeInboxAuth(deps.env, sessionId),
         begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
+        ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
       })
       return result.status === 'written'
     }, logger, { unique: true, replaceLost: input.settledIdle, now: () => clock.wall() })

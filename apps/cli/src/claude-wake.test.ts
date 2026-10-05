@@ -171,6 +171,20 @@ describe('Claude inbox release floor', () => {
       reason: 'the Claude Code version 2.next.224 is not a recognised release number',
     })
   })
+  it('accepts a Windows named pipe from 2.1.234 without looking for it on disk', () => {
+    const pipe = '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef'
+    const inspect = (version: string) => inspectClaudeInbox({
+      pid: 12345,
+      platform: 'win32',
+      readDescriptor: () => descriptor({ version, messagingSocketPath: pipe }),
+      socketExists: () => { throw new Error('a named pipe is never examined as a file') },
+    })
+    expect(inspect('2.1.282')).toEqual({ state: 'ready', socketPath: pipe, version: '2.1.282' })
+    expect(inspect('2.1.233')).toEqual({
+      state: 'unavailable',
+      reason: 'Claude Code 2.1.233 is older than 2.1.234, which is where the inbox socket starts on win32',
+    })
+  })
 })
 
 describe('Claude wake delivery', () => {
@@ -446,6 +460,30 @@ describe('Claude inbox token', () => {
     })
     await route.deliver(event() as never)
     expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
+  })
+
+  it('refuses a Windows write without the token, before the delivery is committed', async () => {
+    const fake = adapters()
+    let committed = 0
+    const route = claudeWakeRoute({ sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, env: {}, platform: 'win32' })
+    const outcome = await route.deliver({ ...event(), commitDelivery: () => { committed++; return true } } as never)
+    // Claude Code on Windows closes a connection that does not open with the
+    // token; nothing is written and the answer stays for the next turn.
+    expect(fake.sent).toEqual([])
+    expect(committed).toBe(0)
+    expect(JSON.stringify(outcome.log)).toContain('holds no inbox token')
+  })
+
+  it('writes to a Windows named pipe when the token names it', async () => {
+    const pipe = '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef'
+    const fake = adapters({ descriptor: descriptor({ messagingSocketPath: pipe }) })
+    const route = claudeWakeRoute({
+      sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, platform: 'win32',
+      env: { CLAUDE_CODE_MESSAGING_SOCKET: pipe, CLAUDE_CODE_MESSAGING_TOKEN: 'token-w' },
+    })
+    await route.deliver(event() as never)
+    expect(fake.sent[0]?.socketPath).toBe(pipe)
+    expect(lines(fake.sent[0]!.line)[0]).toEqual({ type: 'auth', token: 'token-w' })
   })
 
   it('reads credentials only when both were exported for this session', () => {

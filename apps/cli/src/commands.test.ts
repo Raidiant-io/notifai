@@ -10443,50 +10443,45 @@ describe('asking before the hooks have ever run', () => {
     expect(out).not.toMatch(/FAIL\s+Direct wake route/)
   })
 
-  it('reports Windows Claude Question Routing ready through its held Stop', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-windows-claude-'))
-    const io = new CapturedIo()
-    const env = {
-      ...isolatedEnv(cwd),
-      CLAUDECODE: '1',
-      CLAUDE_CODE_SESSION_ID: 'windows-claude-current',
-    }
-    const deps = {
-      ...makeDeps(io, {} as ApiClient),
-      cwd,
-      env,
-      now: () => 42,
-      hookPlatform: 'win32' as NodeJS.Platform,
-    }
-    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
-      EXIT.ok,
-    )
-    writeSessionState('windows-claude-current', env, {
-      harness: 'claude-code',
-      last_prompt_at: 42,
-      last_stop_at: 41,
-    })
-    writeProjectSession(cwd, env, 'windows-claude-current', 42, 'claude-code')
+  it('reports a Windows Claude session reachable through its named pipe', async () => {
+    const io = new PlainInteractiveIo()
+    const pipe = '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef'
+    const { deps } = claudeWakeDeps(io, (pid) => ({
+      pid,
+      sessionId: 'sess-live',
+      cwd: 'C:\\work',
+      startedAt: 1,
+      procStart: '134255407523148123',
+      version: '2.1.282',
+      peerProtocol: 1,
+      messagingSocketPath: pipe,
+      status: 'idle',
+    }))
 
-    const readiness = await assessReadiness(deps)
-    const result = readinessJson(readiness) as {
-      question_routing_ready: boolean
-      direct_wake_ready: boolean
-    }
-    const continuation = readiness.states.find(
-      (state) => state.id === 'hooks-answer-continuation',
-    )
-    const directWake = readiness.states.find((state) => state.id === 'hooks-wake-route')
-    expect(continuation).toMatchObject({ status: 'ready' })
-    expect(continuation?.detail).toContain('held through the complete answer window')
-    expect(continuation?.detail).toContain('same Agent Session')
-    expect(directWake).toMatchObject({ status: 'optional-gap', title: 'Direct wake route' })
-    expect(directWake?.technical).toEqual({ direct_wake_optional: true })
-    expect(result.question_routing_ready).toBe(true)
-    expect(result.direct_wake_ready).toBe(false)
-    expect(directWake?.detail).toContain('held Stop still returns the answer')
-    expect(directWake?.detail).not.toContain("next turn rather than on their own")
-    expect(directWake?.remedy).toBeUndefined()
+    await doctorCommand({ ...deps, hookPlatform: 'win32' as NodeJS.Platform }, {})
+    const out = io.outLines.join('\n')
+    // A pipe is not a file to look for: the descriptor naming it is the evidence.
+    expect(out).toMatch(/ok\s+Direct wake route/)
+    expect(out).toContain(pipe)
+    expect(out).not.toContain('held Stop')
+  })
+
+  it('names the Windows inbox floor for an older Claude Code', async () => {
+    const io = new PlainInteractiveIo()
+    const { deps } = claudeWakeDeps(io, (pid) => ({
+      pid,
+      sessionId: 'sess-live',
+      cwd: 'C:\\work',
+      startedAt: 1,
+      procStart: '134255407523148123',
+      version: '2.1.230',
+      peerProtocol: 1,
+      messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef',
+      status: 'idle',
+    }))
+
+    await doctorCommand({ ...deps, hookPlatform: 'win32' as NodeJS.Platform }, {})
+    expect(io.outLines.join('\n')).toContain('older than 2.1.234')
   })
 
   it('fails closed on an inbox protocol it does not recognise', async () => {

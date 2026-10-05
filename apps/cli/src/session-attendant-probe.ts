@@ -33,9 +33,9 @@ export function attendantSupport(
     return { supported: false, reason: 'grok-has-no-exact-session-writer-or-attendant' }
   }
   if (harness === 'claude-code') {
-    // The descriptor, inbox socket, and own-child delivery are proven on macOS.
-    // Windows has none of them; Linux shares the socket design.
-    return platform === 'darwin' || platform === 'linux'
+    // The descriptor and inbox exist on macOS, Linux and native Windows; on
+    // Windows the inbox is a named pipe and the session token is the sender check.
+    return platform === 'darwin' || platform === 'linux' || platform === 'win32'
       ? { supported: true }
       : { supported: false, reason: `claude-code-${platform}-unproven` }
   }
@@ -109,12 +109,36 @@ export function claudeDescriptorDir(env: NodeJS.ProcessEnv): string {
   return path.join(configured && path.isAbsolute(configured) ? configured : path.join(os.homedir(), '.claude'), 'sessions')
 }
 
-export function systemClaudeProbeAdapters(env: NodeJS.ProcessEnv): ClaudeProbeAdapters {
+/** How long one Windows start-time read stands in for the next. */
+const WINDOWS_START_REUSE_MS = 60_000
+
+/**
+ * On Windows a hook's parent is a shell, never Claude Code, so every probe
+ * would start PowerShell to read the harness start time. The descriptor
+ * already names that start and is read on every probe, so a fresh PowerShell
+ * read is needed only now and then, to catch a killed harness whose stale
+ * descriptor and reused PID would otherwise still agree.
+ */
+function windowsStartReader(read: (pid: number) => string | null = processStartTime): (pid: number) => string | null {
+  let last: { pid: number; start: string; at: number } | null = null
+  return (pid) => {
+    const now = Date.now()
+    if (last !== null && last.pid === pid && now - last.at < WINDOWS_START_REUSE_MS && pidExists(pid)) return last.start
+    const start = read(pid)
+    last = start === null ? null : { pid, start, at: now }
+    return start
+  }
+}
+
+export function systemClaudeProbeAdapters(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): ClaudeProbeAdapters {
   const dir = claudeDescriptorDir(env)
   return {
     readDescriptor: (pid) => JSON.parse(readFileSync(path.join(dir, `${pid}.json`), 'utf8')) as unknown,
     pidExists,
-    readStart: processStartTime,
+    readStart: platform === 'win32' ? windowsStartReader() : processStartTime,
     parentPid: () => process.ppid,
   }
 }

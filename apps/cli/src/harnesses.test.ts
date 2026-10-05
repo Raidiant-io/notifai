@@ -118,15 +118,10 @@ describe('harness contract', () => {
     ])
   })
 
-  it('describes Windows Claude Code as a held Stop continuation without an inbox route', () => {
-    const capability = questionRoutingCapability('claude-code', 'win32')
-
-    expect(capability.stopContinuation).toBe('decision-block')
-    expect(capability.deliveryRoutes).toEqual(['hook-continuation', 'hold-for-next-turn'])
-    expect(capability.deliveryContract).toContain('held through the complete answer window')
-    expect(capability.deliveryContract).toContain('same Agent Session')
-    expect(capability.deliveryContract).not.toContain('inbox socket')
-    expect(capability.deliveryContract).not.toContain('returns at once')
+  it('gives Windows Claude Code the same inbox route as every other platform', () => {
+    expect(questionRoutingCapability('claude-code', 'win32')).toBe(HARNESS_CAPABILITIES['claude-code'])
+    expect(questionRoutingCapability('claude-code', 'win32'))
+      .toEqual(questionRoutingCapability('claude-code', 'darwin'))
   })
 
   it('keeps OpenClaw Question Routing on the verified macOS host', () => {

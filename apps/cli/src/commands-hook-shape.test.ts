@@ -27,11 +27,11 @@ describe('Stop continuation lifetime admission', () => {
     expect(stopShapeProblems(installation('claude-code', true, timeout), 'darwin')).toEqual([])
   })
 
-  it('requires a full-window budget for blocking claude-code on Windows', () => {
-    expect(stopShapeProblems(installation('claude-code', false, 1), 'win32')).toHaveLength(1)
+  it('needs a detached claude-code Stop on Windows, where the inbox carries the answer', () => {
+    expect(stopShapeProblems(installation('claude-code', true, 1), 'win32')).toEqual([])
     expect(
       stopShapeProblems(installation('claude-code', false, QUESTION_STOP_TIMEOUT_SECONDS), 'win32'),
-    ).toEqual([])
+    ).toEqual([expect.stringContaining('needs `async: true`')])
   })
 
   it('requires a full-window blocking Stop for Grok', () => {

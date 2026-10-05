@@ -20,8 +20,25 @@ export const CLAUDE_PEER_PROTOCOL = 1
 /** The first Claude Code release that publishes a session inbox socket. */
 export const CLAUDE_MIN_INBOX_VERSION = '2.1.224'
 
-/** The inbox socket is a Unix domain socket; no Windows implementation exists. */
-const INBOX_PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'linux'])
+/** The first release that publishes it on native Windows, as a named pipe. */
+export const CLAUDE_MIN_WINDOWS_INBOX_VERSION = '2.1.234'
+
+/** A Unix domain socket on macOS and Linux, a named pipe on native Windows. */
+const INBOX_PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'linux', 'win32'])
+
+/** The first Claude Code release whose inbox exists on this platform. */
+export function claudeMinInboxVersion(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? CLAUDE_MIN_WINDOWS_INBOX_VERSION : CLAUDE_MIN_INBOX_VERSION
+}
+
+/**
+ * Native Windows has no process evidence for an inbox sender, so Claude Code
+ * there accepts a connection only when it opens with the session's token and
+ * closes any other without delivering anything.
+ */
+export function claudeInboxRequiresToken(platform: NodeJS.Platform): boolean {
+  return platform === 'win32'
+}
 
 /** macOS verifies own-child ancestry only while the posting process is alive. */
 export const CLAUDE_POST_SEND_LIVENESS_MS = 8_000
@@ -249,7 +266,7 @@ export function inspectClaudeInbox(options: {
   if (!INBOX_PLATFORMS.has(options.platform)) {
     return {
       state: 'unavailable',
-      reason: `Claude Code publishes no inbox socket on ${options.platform}; it exists on macOS and Linux only`,
+      reason: `Claude Code publishes no inbox socket on ${options.platform}; it exists on macOS, Linux and Windows only`,
     }
   }
   let raw: unknown
@@ -274,7 +291,8 @@ export function inspectClaudeInbox(options: {
       reason: `this session speaks inbox protocol ${descriptor.peerProtocol}, and only ${CLAUDE_PEER_PROTOCOL} is known; refusing to guess at an undocumented wire format`,
     }
   }
-  const versionComparison = compareVersions(descriptor.version, CLAUDE_MIN_INBOX_VERSION)
+  const minimum = claudeMinInboxVersion(options.platform)
+  const versionComparison = compareVersions(descriptor.version, minimum)
   if (versionComparison === 'unparseable') {
     return {
       state: 'unavailable',
@@ -284,10 +302,12 @@ export function inspectClaudeInbox(options: {
   if (versionComparison === 'before') {
     return {
       state: 'unavailable',
-      reason: `Claude Code ${descriptor.version} is older than ${CLAUDE_MIN_INBOX_VERSION}, which is where the inbox socket starts`,
+      reason: `Claude Code ${descriptor.version} is older than ${minimum}, which is where the inbox socket starts on ${options.platform}`,
     }
   }
-  if (!options.socketExists(descriptor.messagingSocketPath)) {
+  // A named pipe cannot be examined without opening it, and opening it is a
+  // connection: on Windows the descriptor naming one is the evidence.
+  if (options.platform !== 'win32' && !options.socketExists(descriptor.messagingSocketPath)) {
     return {
       state: 'unavailable',
       reason: `the descriptor names ${descriptor.messagingSocketPath}, but no socket exists there`,
@@ -325,6 +345,7 @@ export function claudeWakeRoute(options: {
   /** The posting process's environment, for the inbox token Claude Code exported to it. */
   env?: NodeJS.ProcessEnv
   adapters?: ClaudeWakeAdapters
+  platform?: NodeJS.Platform
 }): EscalationDeliveryRoute {
   const adapters = options.adapters ?? systemClaudeWakeAdapters()
   const auth = options.env === undefined ? null : claudeInboxAuth(options.env, options.sessionId)
@@ -342,6 +363,7 @@ export function claudeWakeRoute(options: {
         begin: () => event.commitDelivery(),
         ...(event.writeGuard === undefined ? {} : { guard: event.writeGuard }),
         writer: 'Stop-hook process',
+        ...(options.platform === undefined ? {} : { platform: options.platform }),
       })
       switch (written.status) {
         case 'unavailable':

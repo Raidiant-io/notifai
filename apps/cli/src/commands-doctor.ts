@@ -1780,16 +1780,6 @@ function wakeRouteCheck(
   if (active === null || activeInstallations.length === 0) return null
   if (active.harness === 'claude-code') {
     const platform = deps.hookPlatform ?? process.platform
-    if (platform === 'win32') {
-      return {
-        name: 'hooks (wake route)',
-        ok: false,
-        reportOnly: true,
-        technical: { direct_wake_optional: true },
-        detail:
-          'direct inbox wake is unavailable on Windows; the held Stop still returns the answer to this same Agent Session without another User prompt',
-      }
-    }
     const readiness = inspectClaudeInbox({
       pid: deps.claudeSourcePid ?? claudeSessionPid(deps.env),
       platform,

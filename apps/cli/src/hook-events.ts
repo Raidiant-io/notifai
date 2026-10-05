@@ -135,14 +135,14 @@ export function attendDocumentEvents(harness: HookInstallableHarness | undefined
 
 /**
  * Whether this build installs the Session Attendant for a harness: Claude Code
- * and Codex, on POSIX only. Claude Code on Windows has no session descriptor
- * or inbox socket; Codex on Windows has no proven hook parent process.
+ * everywhere it publishes a session descriptor and inbox, and Codex on POSIX
+ * only. Codex on Windows has no proven hook parent process.
  */
 export function installsSessionAttendant(
   harness: HookInstallableHarness | undefined,
   platform?: NodeJS.Platform | HookHostPlatform,
 ): boolean {
-  return (harness === 'claude-code' || harness === 'codex') && hookHostPlatform(platform) === 'posix'
+  return harness === 'claude-code' || (harness === 'codex' && hookHostPlatform(platform) === 'posix')
 }
 
 /** The one tool both Claude Code picker handlers are matched to. */

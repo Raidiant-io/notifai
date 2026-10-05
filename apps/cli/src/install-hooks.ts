@@ -228,8 +228,9 @@ export function stopHandlerIsDetached(
   harness: HookInstallableHarness | undefined,
   platform?: Parameters<typeof hookHostPlatform>[0],
 ): boolean {
-  if (harness === 'codex') return true
-  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+  // Claude Code has its session inbox on every platform this build serves.
+  void platform
+  return harness === 'codex' || harness === 'claude-code'
 }
 
 /**
