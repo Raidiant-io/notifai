@@ -4,6 +4,7 @@ import { validRuntimeBuildReference, type RuntimeBuildReference } from './launch
 import path from 'node:path'
 import { accountHome } from './platform.js'
 import { RuntimeRetention } from './runtime-retention.js'
+import { buildIdentity } from './distribution.js'
 
 /** Existing session state retains every native build serving that session.
  * Replacing one reference would lose an older still-running question owner. */
@@ -18,7 +19,9 @@ export function retainSessionRuntime(sessionId: string, env: NodeJS.ProcessEnv,
     if (!current.harness) throw new Error('Resident work requires an existing Agent Session')
     const retained = current.runtime_builds ?? []
     if (!Array.isArray(retained) || !retained.every(validRuntimeBuildReference)) throw new Error('Runtime ownership needs repair')
-    new RuntimeRetention(path.join(accountHome(env), '.notifai'), reference.installation_id).retain(reference.build, file)
+    if (buildIdentity() !== null) {
+      new RuntimeRetention(path.join(accountHome(env), '.notifai'), reference.installation_id).retain(reference.build, file)
+    }
     if (retained.some(item => item.installation_id === reference.installation_id && item.build === reference.build)) return
     if (retained.length >= 1024) throw new Error('This Agent Session retains too many runtime builds')
     writeSessionStateUnlocked(file, sessionId, { ...current, runtime_builds: [...retained, reference] })

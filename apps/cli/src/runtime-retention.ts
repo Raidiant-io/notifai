@@ -81,12 +81,17 @@ export class RuntimeRetention {
   /** Caller holds the referenced session's existing state lock. Publish the
    * index and current boot BEFORE the reference can be released or handed off. */
   retain(build: string, sessionFile: string): void {
-    const boot = this.currentBoot()
-    if (boot === null) return // Unknown-boot generations cannot be reclaimed.
     const file = canonicalPath(sessionFile)
     const key = createHash('sha256').update(file).digest('hex')
     const ownerFile = this.file(build, `owners/${key}.json`), owner = this.read(ownerFile)
     if (!this.ownedRecord(owner) || owner['session_file'] !== file) this.save(ownerFile, { session_file: file })
+    this.resume(build)
+  }
+  /** Resumption does not add an owner. The durable reference and its index
+   * already exist, and the caller holds that owner's state lock. */
+  resume(build: string): void {
+    const boot = this.currentBoot()
+    if (boot === null) return // Unknown-boot generations cannot be reclaimed.
     const resumedFile = this.file(build, 'resumed.json')
     const recorded = () => { const record = this.read(resumedFile); return this.ownedRecord(record) && record['boot'] === boot }
     if (!recorded()) {

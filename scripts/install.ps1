@@ -169,6 +169,13 @@ namespace NotifaiBootstrap {
     default { throw 'This native Windows architecture is not supported' }
   }
 }
+function Get-NotifaiAccessControl([string]$File, [IO.FileAttributes]$Attributes) {
+  $info = if (($Attributes -band [IO.FileAttributes]::Directory) -ne 0) { [IO.DirectoryInfo]::new($File) } else { [IO.FileInfo]::new($File) }
+  # Keep this bootstrap lookup independent of filesystem/security cmdlet
+  # module discovery. Windows PowerShell and PowerShell use different .NET APIs.
+  if ($PSVersionTable.PSEdition -eq 'Desktop') { return $info.GetAccessControl() }
+  return [IO.FileSystemAclExtensions]::GetAccessControl($info)
+}
 function New-NotifaiPrivateDirectory([string]$Directory) {
   if ([IO.Directory]::Exists($Directory) -or [IO.File]::Exists($Directory)) { throw 'Installer temporary directory already exists' }
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -184,9 +191,9 @@ function New-NotifaiPrivateDirectory([string]$Directory) {
   $overload = [IO.Directory].GetMethods() | Where-Object { $_.Name -eq 'CreateDirectory' -and $_.GetParameters().Length -eq 2 -and $_.GetParameters()[1].ParameterType -eq [Security.AccessControl.DirectorySecurity] }
   if ($overload) { [void][IO.Directory]::CreateDirectory($Directory, $security) }
   else { [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Directory), $security) }
-  $item = Get-Item -LiteralPath $Directory -Force
-  $actual = Get-Acl -LiteralPath $Directory
-  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not $actual.AreAccessRulesProtected -or
+  $attributes = [IO.File]::GetAttributes($Directory)
+  $actual = Get-NotifaiAccessControl $Directory $attributes
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not $actual.AreAccessRulesProtected -or
       $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { throw 'Installer temporary directory is not privately owned' }
   foreach ($rule in $actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
     if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and $rule.IdentityReference.Value -notin @($user.Value, 'S-1-5-18', 'S-1-5-32-544')) { throw 'Installer temporary directory permits another account' }
@@ -212,15 +219,17 @@ function Get-NotifaiInstalledCommand {
   $managed = [IO.Path]::Combine($accountHome, '.notifai')
   $bin = [IO.Path]::Combine($managed, 'bin')
   $command = [IO.Path]::Combine($bin, 'notifai.exe')
-  if (-not (Test-Path -LiteralPath $command)) { return $null }
+  try { [void][IO.File]::GetAttributes($command) }
+  catch [IO.FileNotFoundException] { return $null }
+  catch [IO.DirectoryNotFoundException] { return $null }
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   # Include generic write/all if an existing raw ACE has not been mapped to
   # file-specific rights. A read-only foreign principal is permitted.
   $writes = [int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
   foreach ($file in @($accountHome, $managed, $bin, $command)) {
-    $item = Get-Item -LiteralPath $file -Force
-    $acl = Get-Acl -LiteralPath $file
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    $attributes = [IO.File]::GetAttributes($file)
+    $acl = Get-NotifaiAccessControl $file $attributes
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
         $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user -or
         (($file -eq $managed -or $file -eq $bin) -and -not $acl.AreAccessRulesProtected)) { throw 'Existing installation is not privately owned; inspect it before repair' }
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {

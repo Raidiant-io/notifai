@@ -29,7 +29,7 @@ function ownsRetainedWork(command: Command, env: NodeJS.ProcessEnv, reference: R
     const admitted = command.name() === 'attendant-resume'
       ? state.harness === 'codex' && readSessionIncarnation(sessionId, env)?.key === command.processedArgs[1]
       : typeof state.harness === 'string' && state.harness === command.opts()['harness']
-    if (admitted) new RuntimeRetention(path.join(accountHome(env), '.notifai'), reference.installation_id).retain(reference.build, file)
+    if (admitted) new RuntimeRetention(path.join(accountHome(env), '.notifai'), reference.installation_id).resume(reference.build)
     // The hook still performs its normal incarnation, routing, and question
     // admission checks. This permits only its already-retained executable.
     return admitted

@@ -78,7 +78,7 @@ it('cleans only authenticated retired builds from an earlier boot, preserving ac
 
 it('keeps owners in other state roots and a resumed generation after its durable reference is released', () => {
   const f = fixture()
-  let boot = '11111111-1111-4111-8111-111111111111'
+  let boot: string | null = '11111111-1111-4111-8111-111111111111'
   const installation = new Installation({ ...f.options, bootIdentity: () => boot })
   const builds = ['1.0.0', '2.0.0', '3.0.0'].map(version => installation.stage(f.candidate(version)))
   builds.forEach((build, generation) => installation.activate({ build, expectedGeneration: generation, source: 'manual', channel: 'stable' }))
@@ -86,6 +86,7 @@ it('keeps owners in other state roots and a resumed generation after its durable
   const env = { XDG_STATE_HOME: path.join(f.root, 'another-state-root') }, session = 'retained-owner'
   writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: id, build: builds[0]! }] })
   const retention = new RuntimeRetention(f.options.root, id, f.options.access, () => boot)
+  boot = null // Owner discovery is required even when boot identity is unavailable.
   retention.retain(builds[0]!, sessionStatePath(session, env))
   boot = '22222222-2222-4222-8222-222222222222'
   expect(installation.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: builds[0], reason: 'durable_owner' }))

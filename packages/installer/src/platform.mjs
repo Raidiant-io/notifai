@@ -46,7 +46,7 @@ export function nativePlatform() {
   return {
     existingCommand() {
       if (windows) {
-        const result = JSON.parse(powershell('[ordered]@{home=(Get-NotifaiAccountHome);command=(Get-NotifaiInstalledCommand)} | ConvertTo-Json -Compress'))
+        const result = JSON.parse(powershell("$accountHome=Get-NotifaiAccountHome; [Console]::Error.WriteLine('notifai-bootstrap:home-ready'); $command=Get-NotifaiInstalledCommand; [Console]::Error.WriteLine('notifai-bootstrap:command-ready'); [ordered]@{home=$accountHome;command=$command} | ConvertTo-Json -Compress"))
         home = result.home
         return result.command
       }
