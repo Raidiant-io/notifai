@@ -14,6 +14,7 @@ import { Distribution, releaseSigningMessage } from './release-distribution.js'
 import { RuntimeRetention } from './runtime-retention.js'
 import { sessionStatePath, writeSessionState } from './hook-session-state.js'
 import { canonicalPath } from './local-path.js'
+import { processStartTime } from './process-identity.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -134,7 +135,19 @@ it('closes launch admission only after work drains and fences concurrent install
   expect(() => f.installation.cleanup(1)).toThrow(/uninstall/)
   expect(() => f.installation.cancelUninstall('foreign-token')).toThrow(/changed/)
   if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
-  f.installation.cancelUninstall(begun.token)
+  const journalFile = path.join(f.options.root, 'uninstall.json')
+  const journal = JSON.parse(readFileSync(journalFile, 'utf8'))
+  const parentStart = processStartTime(process.ppid)
+  expect(parentStart).not.toBeNull()
+  writeFileSync(journalFile, JSON.stringify({ ...journal, owner: { pid: process.ppid, start: parentStart } }))
+  expect(() => f.installation.beginUninstall(1, sessions)).toThrow(/Another uninstall/)
+  // A recycled PID with a different start cannot retain a crashed claim.
+  writeFileSync(journalFile, JSON.stringify({ ...journal, owner: { pid: process.pid, start: 'previous-process-start' } }))
+  const recovered = f.installation.beginUninstall(1, sessions)
+  if (recovered.status !== 'preparing') throw new Error('Uninstall did not recover')
+  expect(recovered.token).not.toBe(begun.token)
+  expect(() => f.installation.cancelUninstall(begun.token)).toThrow(/changed/)
+  f.installation.cancelUninstall(recovered.token)
   expect(f.installation.activate({ build: next, expectedGeneration: 1, source: 'manual', channel: 'stable' }).active.active).toBe(next)
 })
 

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:0d21f935ea8c57f6853365528ca5e2901c4c4096eb4f51e86d44b8034cdb4096",
+  "behavior_digest": "sha256:05a65bf468cc29874fc63f12b2449f80b7723f7bbb1f97661c1b0e03abd911be",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, shipped skill, setup, readiness and domain terms. Uninstall preparation adds cross-root pending-work inspection and a C/JS launch barrier; attendants use their existing withdrawn state. No uninstall command or automatic removal is advertised. Standalone documentation identifies the remaining process-absence and owned-removal work. Notification policy, setup choices and question cancellation authority are unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, setup, readiness and domain terms. Uninstall preparation adds cross-root pending-work inspection and a C/JS launch barrier; attendants use their existing withdrawn state. No uninstall command or automatic removal is advertised. Standalone documentation identifies the remaining process-absence and owned-removal work. Notification policy, setup choices and question cancellation authority are unchanged. Uninstall preparation now records its process incarnation and refuses takeover while that process may run. A PID with a different start is recoverable with a fresh fencing token; no ordinary-hook lease or public uninstall command is added.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

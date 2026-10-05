@@ -122,6 +122,9 @@ try {
   mkdirSync(busyRoot)
   const busy = windows ? spawn(path.join(root, '.notifai', 'bin', 'notifai.exe'), ['heartbeat', busyRoot],
     { cwd: root, env, stdio: 'ignore' }) : null
+  const ownerRuntime = path.join(root, '.notifai', 'versions', owner.reference.build, `notifai-runtime${extension}`)
+  const fileUsers = () => JSON.parse(execFileSync(launcher, ['--internal-file-users', realpathSync.native(ownerRuntime)],
+    { cwd: root, env, encoding: 'utf8', timeout: 30_000 }))
   try {
     if (busy) {
       for (let i = 0; i < 100 && !existsSync(path.join(busyRoot, 'heartbeat')); i++) await sleep(50)
@@ -136,6 +139,13 @@ try {
     const before = readFileSync(path.join(ownerRoot, 'heartbeat'), 'utf8')
     await sleep(250)
     assert.notEqual(readFileSync(path.join(ownerRoot, 'heartbeat'), 'utf8'), before, 'old owner keeps running after activation')
+    if (windows) {
+      const start = execFileSync(launcher, ['--internal-process-info', String(owner.pid)],
+        { cwd: root, env, encoding: 'utf8', timeout: 10_000 }).split(/\r?\n/)[0]
+      const users = fileUsers()
+      assert.ok(users.processes.some(item => item.pid === owner.pid && item.start === start),
+        'Restart Manager must find the exact native owner of the registered executable')
+    }
   } finally {
     try { process.kill(owner.pid) } catch (error) { if (error.code !== 'ESRCH') throw error }
     if (busy) {
@@ -146,6 +156,12 @@ try {
       })
       await sleep(250)
     }
+  }
+  if (windows) {
+    let users = fileUsers()
+    for (let i = 0; i < 10 && users.processes.length > 0; i++) { await sleep(50); users = fileUsers() }
+    assert.equal(users.reboot_reasons, 0, 'Released fixture resources must not require a reboot')
+    assert.deepEqual(users.processes, [], 'Restart Manager must observe release after native owner exit')
   }
   run(['installation', root, 'repair'])
   run(['installation', root, 'cleanup'])
@@ -279,5 +295,5 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
     checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
-      ...(windows ? ['existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
+      ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

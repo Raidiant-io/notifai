@@ -51,6 +51,7 @@ static int active_build(const char *record, char *build) {
 #include "windows-path.h"
 #include "windows-security.h"
 #include "windows-user-path.h"
+#include "windows-file-users.h"
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -167,6 +168,8 @@ int wmain(int argc, wchar_t **argv) {
     if (argc == 2 && !wcscmp(argv[1], L"--internal-launcher-version")) { puts("1"); return 0; }
     if (argc == 3 && !wcscmp(argv[1], L"--internal-process-info"))
         return process_info(argv[2]);
+    if (argc >= 3 && !wcscmp(argv[1], L"--internal-file-users"))
+        return file_users(argc - 2, argv + 2);
     if (argc == 3 && !wcscmp(argv[1], L"--internal-private-directory"))
         return create_private_directory(argv[2]) ? 0 : failure("installation directory access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-protect-existing-directory"))

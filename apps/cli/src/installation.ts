@@ -10,6 +10,7 @@ import { compareReleasePrecedence, isPrerelease } from './version.js'
 import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
 import { RuntimeRetention, type RuntimeOwnerInspection } from './runtime-retention.js'
+import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -25,7 +26,7 @@ interface InstallRecord {
   launcherUpdatePending: boolean
 }
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
-interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; phase: 'preparing' | 'removing' }
+interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing' }
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain' } |
   { status: 'preparing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
@@ -118,6 +119,7 @@ export class Installation {
     if (value === null) return null
     if (value.schema !== 1 || typeof value.installation_id !== 'string' ||
         typeof value.token !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.token) ||
+        !value.owner || !Number.isSafeInteger(value.owner.pid) || value.owner.pid <= 0 || typeof value.owner.start !== 'string' || !value.owner.start ||
         !Number.isSafeInteger(value.generation) || value.generation! < 1 ||
         !['preparing', 'removing'].includes(value.phase ?? '')) throw new Error('Uninstall journal needs repair')
     return value as UninstallTransaction
@@ -133,6 +135,12 @@ export class Installation {
           (journal && (journal.installation_id !== installed.id || journal.generation !== active.generation || journal.phase !== 'preparing'))) {
         throw new Error('Installation changed or uninstall needs recovery')
       }
+      const owner = currentProcessIdentity()
+      if (owner === null) throw new Error('Cannot establish uninstall process identity')
+      const resuming = journal && journal.owner.pid === owner.pid && journal.owner.start === owner.start
+      if (journal && !resuming && processIdentityLiveness(journal.owner) !== 'gone') {
+        throw new Error('Another uninstall may still be running; retain this installation')
+      }
       const owners = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity).inspectOwners(currentSessions)
       if (owners.status !== 'clear') {
         // A preparing journal has never removed wiring. Reopen admission so
@@ -140,8 +148,8 @@ export class Installation {
         if (journal) rmSync(this.file('uninstall.json'))
         return { status: owners.status }
       }
-      const token = journal?.token ?? randomUUID()
-      if (!journal) this.save('uninstall.json', { schema: 1, installation_id: installed.id, generation: active.generation, token, phase: 'preparing' })
+      const token = resuming ? journal!.token : randomUUID()
+      if (!resuming) this.save('uninstall.json', { schema: 1, installation_id: installed.id, generation: active.generation, token, owner, phase: 'preparing' })
       return { status: 'preparing', token, owners }
     }, { waitMs: 5_000, strictRelease: true })
   }
@@ -149,8 +157,11 @@ export class Installation {
     this.checkRoot()
     withFileLock(this.file('installation.lock'), () => {
       const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive()
+      const owner = currentProcessIdentity()
       if (!journal || journal.token !== token || journal.phase !== 'preparing' || journal.installation_id !== installed?.id ||
-          journal.generation !== active?.generation) throw new Error('Uninstall changed; inspect before recovery')
+          journal.generation !== active?.generation || journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) {
+        throw new Error('Uninstall changed; inspect before recovery')
+      }
       rmSync(this.file('uninstall.json'))
     }, { waitMs: 5_000, strictRelease: true })
   }
