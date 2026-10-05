@@ -42,8 +42,15 @@ int wmain(int argc, wchar_t **argv) {
     DWORD number = 4;
     CHECK(RegSetValueExW(key, L"Path", 0, REG_DWORD, (const BYTE *)&number, sizeof(number)) == ERROR_SUCCESS);
     CHECK(!user_path_read(key, after));
-    CHECK(RegSetValueExW(key, L"Path", 0, REG_SZ, (const BYTE *)L"abc", 6) == ERROR_SUCCESS);
-    CHECK(!user_path_read(key, after));
+    /* Do not rely on how Windows normalizes a malformed string supplied to
+     * RegSetValueExW (its contract requires the terminator). Validate malformed
+     * raw input before it reaches that API instead. */
+    value(next, REG_SZ, L"abc");
+    next->bytes -= (DWORD)sizeof(wchar_t);
+    CHECK(!user_path_valid(next, 0));
+    value(next, REG_SZ, L"abc");
+    ((wchar_t *)next->data)[1] = 0;
+    CHECK(!user_path_valid(next, 0));
     result = 0;
     puts("User PATH native storage checks passed (isolated registry key).");
 done:
