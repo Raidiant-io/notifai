@@ -225,7 +225,7 @@ function Get-NotifaiInstalledCommand {
         (($file -eq $managed -or $file -eq $bin) -and -not $acl.AreAccessRulesProtected)) { throw 'Existing installation is not privately owned; inspect it before repair' }
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
       if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-          ($rule.FileSystemRights -band $writes) -ne 0 -and
+          ([int64]$rule.FileSystemRights -band $writes) -ne 0 -and
           $rule.IdentityReference.Value -notin @($user, 'S-1-5-18', 'S-1-5-32-544')) { throw 'Existing installation permits another writer; inspect it before repair' }
     }
   }
