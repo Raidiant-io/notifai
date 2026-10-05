@@ -103,6 +103,22 @@ if (mode === 'hook') {
     assert.throws(() => interrupted.activate({ build: second, expectedGeneration: 3, source: 'manual', channel: 'stable' }), /interrupted/)
     assert.equal(installation.recover().active?.active, second)
     assert.equal(installation.inspect().pending, false)
+  } else if (operation === 'cleanup') {
+    // Inject only boot identities. File publication, ownership checks, signed
+    // inventory verification and deletion use the real native OS adapters.
+    let boot = '11111111-1111-4111-8111-111111111111'
+    const cleanup = new Installation({ ...options, root: path.join(root, 'cleanup-managed'), bootIdentity: () => boot })
+    const builds: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const build = cleanup.stage({ directory: fixture.directories[i], signedInventory: fixture.inventories[i] })
+      builds.push(build)
+      cleanup.activate({ build, expectedGeneration: i, source: 'manual', channel: 'stable' })
+    }
+    assert.deepEqual(cleanup.cleanup(3).removed, [])
+    boot = '22222222-2222-4222-8222-222222222222'
+    assert.deepEqual(cleanup.cleanup(3).removed, [builds[0]])
+    assert.equal(cleanup.activeRelease().build, builds[2])
+    assert.equal(cleanup.rollback(3).active.active, builds[1])
   } else throw new Error('Unknown installation operation')
 } else if (mode === 'skills') {
   const { SkillInstallation } = await import('../apps/cli/src/skill-installation.js')

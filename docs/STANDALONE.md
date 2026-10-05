@@ -72,7 +72,37 @@ reference. Updating the active pointer leaves the old owner running. Native CI
 exercises this ordering and continued execution with isolated fixture owners,
 and executes a generated native hook command with a restricted PATH. These
 checks do not establish real harness activation, provider delivery, complete
-installer/update commands, legacy migration, or safe generation collection.
+installer/update commands or legacy migration.
+
+Compiled commands are admitted before configuration or logging writes. Portable
+executables support installation, self-check, help, version and a read-only
+installation diagnostic through `doctor`. Ordinary commands use the active
+managed generation. A retired generation can enter only an existing retained
+question owner or an exact Attendant recovery; ordinary invocations report the
+active command to retry.
+
+### Retired runtime cleanup
+
+`notifai update --cleanup --json` explicitly inspects retired generations. It
+preserves active, previous and stable-launcher builds, durable owners, builds
+retired or resumed in the current boot, and uncertain ownership. Owner indexes
+refer to the existing session files, including sessions using another state
+directory. Session-file age cannot release those references. No hook takes a
+per-process installation lease and cleanup does not stop a harness.
+
+Linux uses the kernel's documented boot UUID. macOS and Windows currently report
+`boot_identity_unknown` and retain old builds; file age and uptime never authorize
+deletion. The JSON report gives each retained build's reason and verified byte
+count. Long uptimes and uncertain owners can therefore retain several complete
+runtime copies. Cleanup never forces a restart.
+
+Deletion verifies the signed inventory and every remaining member. Modified or
+additional files remain untouched. The inventory is removed last so an interrupted
+deletion can be retried; an unverified or locked remainder is reported as
+`cleanup_incomplete_or_unverified`. Unit checks exercise resumed owners and
+separate state directories. The native runtime probe injects boot identities to
+exercise real OS ownership and deletion adapters; it does not simulate a real
+machine reboot or establish a boot-identity API on macOS or Windows.
 
 ## Checked archive packaging
 

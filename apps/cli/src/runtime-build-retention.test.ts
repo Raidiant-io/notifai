@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, utimesSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { withFileLock } from './file-lock.js'
-import { clearSessionState, markSessionEnded, readSessionState, sessionStatePath, writeSessionState } from './hook-session-state.js'
+import { clearSessionState, markSessionEnded, pruneAbandonedSessions, readSessionState, sessionStatePath, writeSessionState } from './hook-session-state.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
 
 const roots: string[] = []
@@ -35,5 +35,13 @@ it('does not invent a session and keeps builds pinned by retained native work', 
   expect(() => retainSessionRuntime(f.session, f.env, f.first)).toThrow(/existing/)
   writeSessionState(f.session, f.env, { harness: 'codex', runtime_builds: [f.first], native_answer_operations: [{} as never] })
   clearSessionState(f.session, f.env)
+  expect(readSessionState(f.session, f.env).runtime_builds).toEqual([f.first])
+})
+
+it('does not age-prune a dormant native owner and lose its runtime reference', () => {
+  const f = fixture()
+  writeSessionState(f.session, f.env, { harness: 'codex', runtime_builds: [f.first] })
+  utimesSync(sessionStatePath(f.session, f.env), new Date(0), new Date(0))
+  expect(pruneAbandonedSessions(f.env)).toBe(0)
   expect(readSessionState(f.session, f.env).runtime_builds).toEqual([f.first])
 })

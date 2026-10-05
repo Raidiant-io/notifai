@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:be6837a3a0853bcf7f9e262d877ea52b60081c402a41a85914196c3d88585a4c",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed compiled command admission before logging, portable read-only doctor output, and exact retained-owner entrypoints. Existing setup guidance already requires installation before ordinary use; rejected commands provide installation or active-command recovery. The shipped skill, lifecycle routing, harness setup choices and domain terms need no instruction change.",
+  "behavior_digest": "sha256:521e57013b4632b29bf51203af42da3cb56dc3f425e3ef1e9969ab9e7301d8d2",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle owner retention, shared session pruning, command admission and explicit cleanup. CLI help and standalone documentation now explain cleanup, portable diagnostics, previous-boot admission, retained-owner behavior and unknown-boot limitations. The shipped skill's notification policy, harness setup choices and domain terms are unchanged; cleanup cannot end questions, cancel work or turn file age into ownership evidence.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

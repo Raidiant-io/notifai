@@ -3,8 +3,12 @@ import { buildIdentity } from './distribution.js'
 import { currentRuntimeBuild, validRuntimeBuildReference, type RuntimeBuildReference } from './launch-self.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { accountHome } from './platform.js'
-import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded, sessionStatePath } from './hook-session-state.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { withFileLock } from './file-lock.js'
+import { RuntimeRetention } from './runtime-retention.js'
+import path from 'node:path'
+import { existsSync } from 'node:fs'
 
 export type NativeAdmission = 'development' | 'installer' | 'diagnostic' | 'managed' | 'retained-owner'
 
@@ -14,16 +18,22 @@ function ownsRetainedWork(command: Command, env: NodeJS.ProcessEnv, reference: R
   else if (command.name() === 'hook' && ['question-submission', 'question-settlement'].includes(command.processedArgs[0])) {
     try { session = JSON.parse(env[QUESTION_SETTLEMENT_INPUT_ENV] ?? '')?.session_id } catch { return false }
   } else return false
-  if (typeof session !== 'string' || session.length === 0 || sessionHasEnded(session, env)) return false
-  const state = readSessionState(session, env)
-  if (!Array.isArray(state.runtime_builds) || !state.runtime_builds.some(item => validRuntimeBuildReference(item) &&
-      item.installation_id === reference.installation_id && item.build === reference.build)) return false
-  if (command.name() === 'attendant-resume') {
-    return state.harness === 'codex' && readSessionIncarnation(session, env)?.key === command.processedArgs[1]
-  }
-  // The hook still performs its normal incarnation, routing, and question
-  // admission checks. This permits only its already-retained executable.
-  return typeof state.harness === 'string' && state.harness === command.opts()['harness']
+  if (typeof session !== 'string' || session.length === 0) return false
+  const sessionId = session, file = sessionStatePath(sessionId, env)
+  if (!existsSync(file)) return false
+  return withFileLock(`${file}.lock`, () => {
+    if (sessionHasEnded(sessionId, env)) return false
+    const state = readSessionState(sessionId, env)
+    if (!Array.isArray(state.runtime_builds) || !state.runtime_builds.some(item => validRuntimeBuildReference(item) &&
+        item.installation_id === reference.installation_id && item.build === reference.build)) return false
+    const admitted = command.name() === 'attendant-resume'
+      ? state.harness === 'codex' && readSessionIncarnation(sessionId, env)?.key === command.processedArgs[1]
+      : typeof state.harness === 'string' && state.harness === command.opts()['harness']
+    if (admitted) new RuntimeRetention(path.join(accountHome(env), '.notifai'), reference.installation_id).retain(reference.build, file)
+    // The hook still performs its normal incarnation, routing, and question
+    // admission checks. This permits only its already-retained executable.
+    return admitted
+  })
 }
 
 /** Before logging or any command action. Help/version never reach preAction.

@@ -94,7 +94,7 @@ try {
       signature: sign(null, Buffer.concat([Buffer.from('notifai-release-v1\ninventory\n'), archivePayload]), privateKey).toString('base64') }) }))
   run(['archive', root])
   const directories = [], inventories = []
-  for (const version of ['1.0.0', '2.0.0']) {
+  for (const version of ['1.0.0', '2.0.0', '3.0.0']) {
     const directory = path.join(root, `candidate-${version}`)
     mkdirSync(directory)
     directories.push(directory)
@@ -148,6 +148,7 @@ try {
     }
   }
   run(['installation', root, 'repair'])
+  run(['installation', root, 'cleanup'])
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
       filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
@@ -253,6 +254,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

@@ -16,6 +16,7 @@ export interface NativeUpdateFlags {
   rollback?: boolean
   repair?: boolean
   abandon?: boolean
+  cleanup?: boolean
 }
 interface NativeUpdateSeams {
   installation?: Installation
@@ -46,8 +47,8 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
   }
   try {
     if (flags.channel !== undefined && flags.channel !== 'stable' && flags.channel !== 'beta') throw new Error('--channel must be stable or beta')
-    if ([flags.rollback, flags.repair, flags.abandon].filter(Boolean).length > 1 ||
-        ((flags.rollback || flags.repair || flags.abandon) && (flags.channel !== undefined || flags.allowDowngrade)) ||
+    if ([flags.rollback, flags.repair, flags.abandon, flags.cleanup].filter(Boolean).length > 1 ||
+        ((flags.rollback || flags.repair || flags.abandon || flags.cleanup) && (flags.channel !== undefined || flags.allowDowngrade)) ||
         (flags.allowDowngrade && flags.channel !== 'stable')) throw new Error('Choose one operation; --allow-downgrade requires --channel stable')
     const installation = seams.installation ?? managedInstallation(deps)
     if (!seams.installation) {
@@ -59,6 +60,12 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
       }
     }
     const before = installation.inspect()
+    if (flags.cleanup) {
+      const result = installation.cleanup(before.active?.generation ?? 0)
+      emit({ ok: true, operation: 'cleanup', ...result },
+        `Removed ${result.removed.length} retired builds; retained ${result.retained.length} active, referenced or unverified builds.`)
+      return EXIT.ok
+    }
     const waiting = seams.pendingWork ? seams.pendingWork() : updateWorkPending(deps)
     if (waiting) throw new Error(waiting)
     if (flags.abandon) {

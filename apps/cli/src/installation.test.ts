@@ -11,6 +11,8 @@ import { nativeInstallCommand, nativeUpdateCommand } from './commands-native-ins
 import type { CommandDeps } from './commands-core.js'
 import { discoverCliUpdate } from './cli-release.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
+import { RuntimeRetention } from './runtime-retention.js'
+import { sessionStatePath, writeSessionState } from './hook-session-state.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -53,6 +55,65 @@ it('activates immutable generations, rejects stale decisions, and rolls back wit
   expect(f.installation.rollback(2).active.active).toBe(first)
   expect(readFileSync(path.join(f.options.root, 'unrelated.txt'), 'utf8')).toBe('preserve')
   for (const build of [first, second]) expect(existsSync(path.join(f.options.root, 'versions', build, 'notifai-runtime'))).toBe(true)
+})
+
+it('cleans only authenticated retired builds from an earlier boot, preserving active and previous generations', () => {
+  const f = fixture()
+  let boot = '11111111-1111-4111-8111-111111111111'
+  const installation = new Installation({ ...f.options, bootIdentity: () => boot })
+  const builds = ['1.0.0', '2.0.0', '3.0.0'].map(version => installation.stage(f.candidate(version)))
+  builds.forEach((build, generation) => installation.activate({ build, expectedGeneration: generation, source: 'manual', channel: 'stable' }))
+  const restage = { directory: path.join(f.root, '1.0.0'), signedInventory:
+    readFileSync(path.join(f.options.root, 'versions', builds[0]!, 'inventory.json'), 'utf8') }
+  expect(installation.cleanup(3).removed).toEqual([])
+  boot = '22222222-2222-4222-8222-222222222222'
+  expect(installation.cleanup(3).removed).toEqual([builds[0]])
+  expect(installation.activeRelease().build).toBe(builds[2])
+  // Re-staging an old release clears its old retirement evidence before the
+  // caller can activate it. Concurrent cleanup cannot reclaim that candidate.
+  expect(installation.stage(restage)).toBe(builds[0])
+  expect(installation.cleanup(3).removed).toEqual([])
+  expect(installation.rollback(3).active.active).toBe(builds[1])
+})
+
+it('keeps owners in other state roots and a resumed generation after its durable reference is released', () => {
+  const f = fixture()
+  let boot = '11111111-1111-4111-8111-111111111111'
+  const installation = new Installation({ ...f.options, bootIdentity: () => boot })
+  const builds = ['1.0.0', '2.0.0', '3.0.0'].map(version => installation.stage(f.candidate(version)))
+  builds.forEach((build, generation) => installation.activate({ build, expectedGeneration: generation, source: 'manual', channel: 'stable' }))
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id
+  const env = { XDG_STATE_HOME: path.join(f.root, 'another-state-root') }, session = 'retained-owner'
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: id, build: builds[0]! }] })
+  const retention = new RuntimeRetention(f.options.root, id, f.options.access, () => boot)
+  retention.retain(builds[0]!, sessionStatePath(session, env))
+  boot = '22222222-2222-4222-8222-222222222222'
+  expect(installation.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: builds[0], reason: 'durable_owner' }))
+  retention.retain(builds[0]!, sessionStatePath(session, env))
+  writeSessionState(session, env, {})
+  expect(installation.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: builds[0], reason: 'resumed_this_boot' }))
+  boot = '33333333-3333-4333-8333-333333333333'
+  expect(installation.cleanup(3).removed).toEqual([builds[0]])
+})
+
+it('retains unknown boot identities and user-modified bytes rather than trusting age or directory names', () => {
+  const f = fixture()
+  let boot: string | null = '11111111-1111-4111-8111-111111111111'
+  const installation = new Installation({ ...f.options, bootIdentity: () => boot })
+  const builds = ['1.0.0', '2.0.0', '3.0.0'].map(version => installation.stage(f.candidate(version)))
+  builds.forEach((build, generation) => installation.activate({ build, expectedGeneration: generation, source: 'manual', channel: 'stable' }))
+  boot = null
+  expect(installation.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: builds[0], reason: 'boot_identity_unknown' }))
+  boot = '22222222-2222-4222-8222-222222222222'
+  const extra = path.join(f.options.root, 'versions', builds[0]!, 'user-note.txt')
+  writeFileSync(extra, 'preserve user content')
+  expect(installation.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: builds[0], reason: 'cleanup_incomplete_or_unverified' }))
+  expect(readFileSync(extra, 'utf8')).toBe('preserve user content')
+  rmSync(extra)
+  // A deletion interrupted after removing one payload resumes from the signed
+  // inventory; it never accepts a remaining modified or unknown member.
+  rmSync(path.join(f.options.root, 'versions', builds[0]!, 'notifai-runtime'))
+  expect(installation.cleanup(3).removed).toEqual([builds[0]])
 })
 
 it.each(['prepared', 'launcher', 'metadata', 'activated'] as const)('recovers an activation interrupted after %s', phase => {

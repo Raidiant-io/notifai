@@ -353,10 +353,11 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--rollback', 'restore the verified previous native build and its saved channel')
     .option('--repair', 'recover an interrupted native update and retry pending launcher repair')
     .option('--abandon', 'abandon only an uncommitted native activation, preserving runtimes and data')
+    .option('--cleanup', 'remove only verified retired builds from a previous OS boot; preserve resident work')
     .option('--from <version>', 'show installed changelog entries after this version (requires --check or --resume)')
-    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string; allowDowngrade?: boolean; rollback?: boolean; repair?: boolean; abandon?: boolean }) => {
-      if ([opts.rollback, opts.repair, opts.abandon].filter(Boolean).length > 1 ||
-          ((opts.rollback || opts.repair || opts.abandon) && (opts.check || opts.resume || opts.refreshSkill || opts.channel !== undefined || opts.from !== undefined || opts.allowDowngrade)) ||
+    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string; allowDowngrade?: boolean; rollback?: boolean; repair?: boolean; abandon?: boolean; cleanup?: boolean }) => {
+      if ([opts.rollback, opts.repair, opts.abandon, opts.cleanup].filter(Boolean).length > 1 ||
+          ((opts.rollback || opts.repair || opts.abandon || opts.cleanup) && (opts.check || opts.resume || opts.refreshSkill || opts.channel !== undefined || opts.from !== undefined || opts.allowDowngrade)) ||
           (opts.allowDowngrade && (opts.channel !== 'stable' || opts.check || opts.resume || opts.refreshSkill || opts.from !== undefined))) {
         deps.io.err('Choose one update operation; --allow-downgrade requires --channel stable')
         exit(2)

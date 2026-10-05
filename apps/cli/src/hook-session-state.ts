@@ -597,6 +597,12 @@ export function pruneAbandonedSessions(
           if (existsSync(stateFile)) {
             const state = JSON.parse(readFileSync(stateFile, 'utf8')) as SessionState
             if (state.native_answer_operations?.some(op => op.acknowledgement === undefined)) return
+            // A durable native owner must never lose its build pin merely
+            // because no prompt has refreshed an mtime. SessionEnd and the
+            // owner's normal settlement path own release, not file age.
+            if (state.runtime_builds !== undefined && (!Array.isArray(state.runtime_builds) || state.runtime_builds.length > 0)) return
+            if (state.pending?.length || state.retiring?.length || state.accepted || state.waiting_answers?.length ||
+                state.acknowledgement_due?.length || state.message_acknowledgement_due?.length) return
           }
           const age = now - statSync(file).mtimeMs
           // A negative age means the clock moved, not that the file is old.

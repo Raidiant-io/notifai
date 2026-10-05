@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { lstatSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
@@ -9,6 +9,7 @@ import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, R
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
+import { RuntimeRetention } from './runtime-retention.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -64,7 +65,8 @@ export class Installation {
   private readonly extension: string
   private readonly probe: (directory: string, inventory: ReleaseInventory) => void
   constructor(private readonly options: { root: string; target: ReleaseTarget; distribution: Distribution;
-    access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void }) {
+    access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void;
+    bootIdentity?: () => string | null }) {
     if (!path.isAbsolute(options.root)) throw new Error('Installation root must be absolute')
     this.access = options.access ?? installationAccess()
     this.root = path.resolve(options.root)
@@ -304,7 +306,10 @@ export class Installation {
     if (present(this.file('versions'))) this.owned(this.file('versions'), true)
     this.access.directory(this.file('versions'))
     const destination = this.versionDirectory(build)
-    if (present(destination)) { this.verifyVersion(build); return build }
+    if (present(destination)) {
+      withFileLock(this.file('installation.lock'), () => { this.verifyVersion(build); this.keepStaged(build) }, { waitMs: 5_000, strictRelease: true })
+      return build
+    }
     const staged = this.file(path.join('versions', `.staged-${randomUUID()}`))
     this.access.directory(staged)
     try {
@@ -316,9 +321,14 @@ export class Installation {
       withFileLock(this.file('installation.lock'), () => {
         if (present(destination)) this.verifyVersion(build)
         else renameSync(staged, destination)
+        this.keepStaged(build)
       }, { waitMs: 5_000, strictRelease: true })
       return build
     } finally { if (present(staged)) rmSync(staged, { recursive: true }) }
+  }
+  private keepStaged(build: string): void {
+    const installed = this.readInstall()
+    if (installed) new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity).activate(null, build)
   }
 
   private checkStable(record: InstallRecord | null, alternative?: InstallRecord): void {
@@ -377,10 +387,87 @@ export class Installation {
     this.options.observe?.('launcher')
     this.save('install.json', transaction.next)
     this.options.observe?.('metadata')
+    new RuntimeRetention(this.root, transaction.next.id, this.access, this.options.bootIdentity)
+      .activate(transaction.from?.active ?? null, transaction.to.active)
     this.write(this.file('active.json'), activeBytes(transaction.to))
     this.options.observe?.('activated')
     if (!sameGeneration(this.readActive(), transaction.to)) throw new Error('Active generation read-back failed')
     rmSync(this.file('transaction.json'))
+  }
+  /** Explicit housekeeping. No live-generation deletion and no age heuristic.
+   * Partial Windows deletion stays visible and is safely retryable: inventory
+   * is removed last, and each remaining file must still match that signature. */
+  cleanup(expectedGeneration: number): { removed: string[]; retained: Array<{ build: string; reason: string; bytes: number }> } {
+    this.prepareRoot()
+    return withFileLock(this.file('installation.lock'), () => {
+      const active = this.readActive(), installed = this.readInstall()
+      if (!active || !installed || active.generation !== expectedGeneration || present(this.file('transaction.json'))) {
+        throw new Error('Installation changed or needs recovery before cleanup')
+      }
+      const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
+      const removed: string[] = [], retained: Array<{ build: string; reason: string; bytes: number }> = []
+      this.owned(this.file('versions'), true)
+      for (const build of readdirSync(this.file('versions'))) {
+        if (!buildId(build)) continue // Staging and unrelated entries are never cleanup authority.
+        let bytes = 0
+        const protectedBuild = [active.active, active.previous, installed.launcherBuild].includes(build)
+        let reason = protectedBuild ? 'active_previous_or_launcher' : retention.reason(build)
+        try {
+          const directory = this.versionDirectory(build)
+          this.owned(directory, true)
+          const inventoryFile = path.join(directory, 'inventory.json')
+          if (!present(inventoryFile) && readdirSync(directory).length === 0 && reason === null) {
+            rmdirSync(directory); removed.push(build); continue
+          }
+          this.owned(inventoryFile, false)
+          if (lstatSync(inventoryFile).size > 256 * 1024) throw new Error('Invalid cleanup inventory')
+          const inventoryBytes = readFileSync(inventoryFile)
+          const inventory = this.options.distribution.verifyInventory(inventoryBytes.toString('utf8'))
+          const artifact = inventory.artifacts.find(item => item.target === this.options.target)
+          if (!artifact || this.identity(inventory, artifact) !== build) throw new Error('Cleanup inventory identity mismatch')
+          const files = new Map<string, { sha256: string; bytes?: number }>([
+            [`notifai${this.extension}`, { sha256: artifact.launcher_sha256 }],
+            [`notifai-runtime${this.extension}`, { sha256: artifact.runtime_sha256 }],
+            ['inventory.json', { sha256: hash(inventoryBytes) }],
+            ...artifact.materials.map(item => [item.path, item] as const),
+          ])
+          const directories = new Set<string>([''])
+          for (const name of files.keys()) {
+            for (let parent = path.dirname(path.normalize(name)); parent !== '.'; parent = path.dirname(parent)) directories.add(parent)
+          }
+          const existingFiles: string[] = [], existingDirectories: string[] = []
+          const visit = (relative: string): void => {
+            const here = path.join(directory, relative)
+            this.owned(here, true)
+            existingDirectories.push(here)
+            for (const name of readdirSync(here)) {
+              const member = path.join(relative, name), file = path.join(directory, member)
+              if (directories.has(member)) visit(member)
+              else {
+                const expected = files.get(member.split(path.sep).join('/'))
+                if (!expected) throw new Error('Unowned file in retired generation')
+                this.owned(file, false)
+                const size = lstatSync(file).size
+                if (size > 512 * 1024 * 1024 || (expected.bytes !== undefined && size !== expected.bytes) || hash(readFileSync(file)) !== expected.sha256) {
+                  throw new Error('Modified file in retired generation')
+                }
+                bytes += size; existingFiles.push(file)
+              }
+            }
+          }
+          visit('')
+          if (reason === null) {
+            for (const file of existingFiles.filter(file => file !== inventoryFile)) rmSync(file)
+            for (const directory of existingDirectories.slice(1).reverse()) rmdirSync(directory)
+            rmSync(inventoryFile)
+            rmdirSync(directory)
+            removed.push(build)
+          }
+        } catch { reason ??= 'cleanup_incomplete_or_unverified' }
+        if (reason !== null) retained.push({ build, reason, bytes })
+      }
+      return { removed, retained }
+    }, { waitMs: 5_000, strictRelease: true })
   }
   recover(): InstallationStatus {
     if (!present(this.file('transaction.json'))) return this.inspect()
