@@ -262,3 +262,26 @@ launchers/runtimes, install signed test inventories and exercise update,
 rollback, ownership and process lifetime boundaries. The isolated Windows
 environment keeps standard `PATHEXT` so PowerShell waits for `.exe` commands as
 native processes while Node/Bun remain absent from its executable search path.
+
+## Final release assembly
+
+`assemble-native-release.mjs` requires all six target directories, each containing
+its exact checked archive, executable receipt, and native installation receipt.
+It rechecks source/build identity, final archive contents and reviewed material
+hashes before emitting a new exclusive release bundle. macOS additionally needs
+final-byte publisher/notarization/Gatekeeper evidence. A failed assembly removes
+only its newly created output; an existing bundle is never replaced.
+
+The production command uses only source-embedded public keys and the protected
+`NOTIFAI_RELEASE_SIGNING_KEY`, and reads the source-owned
+`distribution/release-materials.json` policy. That policy is not provisioned yet:
+it must bind approved runtime materials for every target and the reviewed macOS
+team. Candidate materials cannot be signed for publication. Tests use synthetic
+receipts/material policies and ephemeral keys, not production release authority.
+
+`sign-release-records.mjs` produces deterministic Ed25519 envelopes compatible
+with the installed verifier. Channel retries preserve identical signed bytes;
+new records advance the sequence, retain withdrawals and require explicit
+rollback authorization before recommending an older release. The provider writer
+must still compare-and-swap the metadata ref and verify immutable published
+assets before advancing a channel. Assembly alone performs no provider mutation.
