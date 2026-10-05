@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b07ed1b75092278f69673d2fbd551caf73cb47958fb70e0274578fb2fa1e82b5",
+  "behavior_digest": "sha256:66ea62b7b42fc30fd2f843e25525f75278e5c5346e35e32b7b49c637ab9efab1",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. Internal recovery now rechecks cached withdrawal before committing an interrupted activation. Explicit abandonment restores prior owned metadata/launcher only before active-pointer commit and retains immutable files and user data. No new user-facing command is exposed; agent notification, session, trust and setup instructions remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, bundled skill and harness setup references, CLI readiness, and domain/trust terms. The OS installation-access adapter can receive an explicit verified launcher from CI tooling to test packaged artifacts with the real policy. Production still selects its own sibling launcher; no environment override or new user-facing command is introduced. Archive verification does not change agent behavior, trust, notification ownership or setup teaching.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

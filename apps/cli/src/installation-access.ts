@@ -10,12 +10,11 @@ export interface InstallationAccess {
   directory(file: string): void
   beforePublish(file: string): void
 }
-export function installationAccess(): InstallationAccess {
+export function installationAccess(launcher = path.join(path.dirname(process.execPath), 'notifai.exe')): InstallationAccess {
   if (process.platform !== 'win32') return {
     check(file) { if ((lstatSync(file).mode & 0o022) !== 0) throw new Error('Installation path allows another user to write') },
     directory: ensurePrivateDirectory, beforePublish() {},
   }
-  const launcher = path.join(path.dirname(process.execPath), 'notifai.exe')
   const run = (operation: string, file: string) => {
     execFileSync(launcher, [operation, file], { windowsHide: true, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] })
   }

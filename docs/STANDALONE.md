@@ -90,3 +90,11 @@ also requires matching third-party notices and an established source/relink path
 for JavaScriptCore, OS signing where required, a signed complete release inventory,
 and validation of the final distributed bytes. Packaging success does not satisfy
 those gates. The candidate workflow never publishes or advances discovery.
+
+The native CI job also extracts its actual archive, stages it using the default
+candidate self-check and real OS file-access adapter, activates a fresh managed
+installation, and executes its installed command with a restricted runtime PATH.
+This verification signs one inventory with an ephemeral CI-only key; it does not
+create production release trust. The receipt records exact archive identity and
+compressed/installed size. It establishes the fresh installation engine and
+artifact identity, not the complete installer/setup journey or live Question Routing.

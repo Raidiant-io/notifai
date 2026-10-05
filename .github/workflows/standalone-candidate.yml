@@ -122,6 +122,12 @@ jobs:
           node --test scripts/package-standalone.test.mjs
           node scripts/prepare-standalone-materials.mjs --candidate --output "$RUNNER_TEMP/standalone-materials"
           node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/standalone" --materials "$RUNNER_TEMP/standalone-materials" --output "$RUNNER_TEMP/standalone/archive"
+      - name: Verify the packaged bytes through fresh native installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-standalone-archive.mjs "$RUNNER_TEMP/standalone/archive" > "$RUNNER_TEMP/standalone/archive-check.json"
+          cat "$RUNNER_TEMP/standalone/archive-check.json"
       - name: Retain candidate evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -129,6 +135,7 @@ jobs:
           path: |
             ${{ runner.temp }}/standalone/notifai*
             ${{ runner.temp }}/standalone/archive/
+            ${{ runner.temp }}/standalone/archive-check.json
             ${{ runner.temp }}/standalone/check.json
             ${{ runner.temp }}/standalone/runtime-check.log
           if-no-files-found: error
