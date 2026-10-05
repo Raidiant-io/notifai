@@ -71,6 +71,22 @@ notifai init --skills --skills-scope <project|global> --json
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
 
+Claude Code asks before each Bash command it has no permission rule for, unless
+the session skips permission prompts. A question, its wake-up and its
+acknowledgement are all commands, so an away User's first question can wait at
+a terminal approval nobody sees. Readiness reports this as `claude-commands`
+once Claude Code is wired; it never blocks setup. On the User's yes:
+
+```bash
+notifai init --claude-commands --json
+```
+
+That adds allow rules to the User's Claude Code settings for `send`, `ask`,
+`receive`, `acknowledge`, `status`, `replies`, `close`, `guidance` and
+`session rename` only. Setup, configuration, guidance edits, logs and sign-out
+keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
+Never add them unasked, and never edit Claude Code's permission settings by hand.
+
 Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
 to the current CLI while leaving definition bytes unchanged across Node/NVM,

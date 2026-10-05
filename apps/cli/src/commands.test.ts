@@ -6732,6 +6732,37 @@ describe('init', () => {
     expect(io.errLines.join('\n')).not.toMatch(/scope/i)
   })
 
+  it('grants Claude Code command approval only when asked, and reports it without blocking setup', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-'))
+    mkdirSync(path.join(cwd, '.claude'))
+    const io = new CapturedIo()
+    const nativeSkills: NativeSkills = { add: async () => 0, remove: async () => 0, list: async () => ({ skills: [] }) }
+    const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
+    const settings = path.join(deps.env.CLAUDE_CONFIG_DIR!, 'settings.json')
+    const allowed = (): unknown => (JSON.parse(readFileSync(settings, 'utf8')) as { permissions?: { allow?: unknown } }).permissions?.allow
+
+    await initCommand(deps, { hooks: true, skills: false })
+    expect(allowed()).toBeUndefined()
+    expect(io.outLines.join('\n')).toContain('All set.')
+    expect((await assessReadiness(deps)).states.find((state) => state.id === 'claude-commands')).toMatchObject({
+      status: 'optional-gap',
+      remedy: { by: 'cli', command: 'notifai init --claude-commands' },
+    })
+
+    await initCommand(deps, { hooks: true, skills: false, claudeCommands: false })
+    expect(allowed()).toBeUndefined()
+
+    await initCommand(deps, { hooks: true, skills: false, claudeCommands: true })
+    expect(allowed()).toEqual(expect.arrayContaining(['Bash(notifai ask *)', 'Bash(notifai receive)', 'Bash(notifai acknowledge *)']))
+    expect((await assessReadiness(deps)).states.find((state) => state.id === 'claude-commands')).toMatchObject({ status: 'ready' })
+    expect(findInstallations(deps.env, deps.hookAdapterHome).map((installation) => installation.harness)).toEqual(['claude-code'])
+
+    const document = JSON.parse(readFileSync(settings, 'utf8')) as Record<string, unknown>
+    writeFileSync(settings, JSON.stringify({ ...document, model: 'kept', permissions: { ...(document['permissions'] as object), deny: ['Read(.env)'] } }))
+    expect(hooksUninstallCommand(deps, { harness: 'claude-code' })).toBe(EXIT.ok)
+    expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ model: 'kept', permissions: { deny: ['Read(.env)'] } })
+  })
+
   it('lets a human keep a subset of the detected harnesses', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-hooks-pick-'))
     mkdirSync(path.join(cwd, '.claude'))

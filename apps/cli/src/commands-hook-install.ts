@@ -67,6 +67,7 @@ import { installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } fro
 import { packageVersion } from './release.js'
 import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
 import { activeNpmCli } from './npm-invocation.js'
+import { removeClaudeCommandRules } from './claude-command-approval.js'
 export interface HooksInstallFlags {
   harness?: string
   /** Init owns the final setup result and suppresses per-harness close narration. */
@@ -690,8 +691,10 @@ function stripNotifaiHandlers(
         return result
       }
       const cleaned = stripObsoleteNotifaiPluginEnablement(result.document)
-      if (result.replaced.length > 0 || cleaned.removed.length > 0) {
-        applyPlan(candidate, cleaned.document)
+      // The command rules were granted for this wiring; they leave with it.
+      const rules = removeClaudeCommandRules(cleaned.document)
+      if (result.replaced.length > 0 || cleaned.removed.length > 0 || rules.changed) {
+        applyPlan(candidate, rules.document)
       }
       return result
     }

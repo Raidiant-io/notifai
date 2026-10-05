@@ -251,6 +251,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--hooks', 'install supported harness lifecycle hooks')
     .option('--no-hooks', 'skip the hooks without being asked')
+    .option('--claude-commands', 'let Claude Code run the Notifai send, ask, receive and acknowledge commands without a permission prompt')
+    .option('--no-claude-commands', 'leave Claude Code command approval as it is without being asked')
     .action(
       async (opts: {
         approval?: string
@@ -260,6 +262,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         skills?: boolean
         skillsScope?: SkillScope
         hooks?: boolean
+        claudeCommands?: boolean
       }) => {
         exit(await runners.init(deps, opts))
       },

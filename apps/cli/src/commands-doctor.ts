@@ -106,6 +106,7 @@ import { projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
+import { claudeCommandRulesInstalled } from './claude-command-approval.js'
 
 // ---------------------------------------------------------------------------
 // doctor
@@ -1182,7 +1183,33 @@ function readinessRemedy(
           }),
     })),
     settings,
+    ...claudeCommandStates(deps, installations),
   ]
+}
+
+/**
+ * Whether Claude Code may run the commands an away User depends on without a
+ * terminal approval. Reported only once Claude Code is wired, and never a
+ * blocker: a session that skips permission prompts does not need the rules.
+ */
+function claudeCommandStates(deps: CommandDeps, installations: readonly { harness: string }[]): ReadinessState[] {
+  if (!installations.some((installation) => installation.harness === 'claude-code')) return []
+  const installed = claudeCommandRulesInstalled(deps.env)
+  return [{
+    id: 'claude-commands',
+    title: 'Claude Code command approval',
+    status: installed ? 'ready' : 'optional-gap',
+    detail: installed
+      ? 'Claude Code runs the Notifai send, ask, receive and acknowledge commands without asking first'
+      : 'not granted, so outside a mode that skips permission prompts Claude Code asks at the terminal before each Notifai command and a question cannot leave while you are away',
+    ...(installed ? {} : {
+      remedy: {
+        by: 'cli' as const,
+        summary: 'on the User\'s yes, let Claude Code run the Notifai commands an away User depends on without asking first',
+        command: 'notifai init --claude-commands',
+      },
+    }),
+  }]
 }
 
 interface HookCheck {
