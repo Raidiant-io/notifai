@@ -3,7 +3,7 @@ import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { randomBytes } from 'node:crypto'
 import os from 'node:os'
 import { renderPairingQr, terminalPairingQr, pairingQrPath, pairingQrTextPath } from './pairing-qr.js'
-import { ApiCallError, NetworkError } from './client.js'
+import { ApiCallError, NetworkError, isRetryableReplyPollError } from './client.js'
 import { type FlagOverrides } from './config.js'
 import { checkApproveUrl } from './url-policy.js'
 import {
@@ -332,7 +332,7 @@ export async function loginCommand(
         onBlocked?.(pairingOutcomeBlocker('not_started', 'the pending approval changed while waiting'))
         return EXIT.auth
       }
-      if (err instanceof NetworkError) {
+      if (err instanceof NetworkError || (waiting && isRetryableReplyPollError(err))) {
         if (waiting) {
           if (now() >= expiresAt) {
             deps.io.err('Approval could not be checked before the invitation deadline. Resume this same wait when the connection returns.')
@@ -345,7 +345,7 @@ export async function loginCommand(
         if (!await announceActive()) { onBlocked?.(pendingApprovalBlocker(active, deps.env, route)); return EXIT.auth }
         if (!interactive) {
           // The handshake is intact; only this check could not be made.
-          deps.io.err(err.message)
+          deps.io.err(err instanceof Error ? err.message : String(err))
           deps.io.out(`Waiting for approval. Run \`${SETUP_COMMAND}\` again once it is approved.`)
           onBlocked?.(pendingApprovalBlocker(active, deps.env, route))
           return EXIT.network
@@ -426,13 +426,20 @@ export async function loginCommand(
       onBlocked?.(pendingApprovalBlocker(active, deps.env, route))
       return EXIT.auth
     }
+    // A pending response can be in flight while approval succeeds just before
+    // expiry. Only the service's terminal result can discard a waited pairing.
+    if (waiting) {
+      await sleep(intervalMs)
+      continue
+    }
     if (now() >= expiresAt) break
     progress.spinner?.message(approvalWaitMessage())
     await sleep(Math.min(intervalMs, Math.max(0, expiresAt - now())))
   }
   clearPendingPairing(deps.env)
   progress.spinner?.error('Pairing expired')
-  deps.io.err(`Pairing expired before it was approved. Run \`${SETUP_COMMAND}\` again.`)
+  deps.io.err(waiting ? 'Pairing expired. Setup stopped; start another invitation only if the User requests it.'
+    : `Pairing expired before it was approved. Run \`${SETUP_COMMAND}\` again.`)
   onBlocked?.(pairingOutcomeBlocker('expired', 'the approval expired before it was given'))
   return EXIT.auth
 }

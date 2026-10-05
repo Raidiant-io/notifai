@@ -35,7 +35,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function ceremony() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-pairing-approval-')); roots.push(root)
   const lines: string[] = []; const errors: string[] = []; const opened: string[] = []
-  let saved = 0; let begins = 0; let status: 'pending' | 'approved' | 'denied' | 'expired' | 'unknown' | 'network' = 'pending'
+  let saved = 0; let begins = 0; let status: 'pending' | 'approved' | 'denied' | 'expired' | 'unknown' | 'network' | '503' | '429' | '408' = 'pending'
   const targeted: { id: string; email: string; verifier: string }[] = []
   const client = {
     beginPairing: async () => { begins += 1; return { pairing_id: `pair_${begins}`, code: begins === 1 ? 'ABC-234' : 'DEF-567',
@@ -44,6 +44,7 @@ function ceremony() {
     pollPairing: async (id: string) => {
       if (id === 'pair_1' && status === 'unknown') throw new ApiCallError(404, 'pairing_not_found', 'No such pairing')
       if (status === 'network') throw new NetworkError('Offline')
+      if (['503', '429', '408'].includes(status)) throw new ApiCallError(Number(status), 'temporary', 'Try later')
       return status === 'approved' ? { status, machine_id: 'mac_test' }
         : { status: id === 'pair_1' ? status : 'pending' }
     },
@@ -189,9 +190,9 @@ describe('foreground machine approval wait', () => {
     expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.auth)
     expect(test.begins()).toBe(0)
   })
-  it('retries a transient network error and collects approval from the same invitation', async () => {
+  it.each(['network', '503', '429', '408'] as const)('retries a transient %s error and collects the same approval', async (status) => {
     const test = ceremony(); await loginCommand(test.deps, {})
-    test.setStatus('network')
+    test.setStatus(status)
     test.deps.sleep = async () => { test.setStatus('approved') }
     expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
     expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
@@ -209,6 +210,15 @@ describe('foreground machine approval wait', () => {
     test.setStatus('approved'); now += 60_000
     expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
     expect(test.begins()).toBe(1); expect(test.saved()).toBe(1)
+  })
+  it('collects a late approval after a pending response crosses the local expiry deadline', async () => {
+    const test = ceremony(); await loginCommand(test.deps, {})
+    test.deps.now = () => 600_100
+    let waited = 0
+    test.deps.sleep = async (ms) => { waited += ms; test.setStatus('approved') }
+    expect(await authWaitCommand(test.deps, { pairing: 'pair_1', json: true })).toBe(EXIT.ok)
+    expect(waited).toBe(1000)
+    expect(test.saved()).toBe(1); expect(test.begins()).toBe(1)
   })
   it('resumes the exact invitation after an interrupted foreground command', async () => {
     const test = ceremony(); await loginCommand(test.deps, {})
