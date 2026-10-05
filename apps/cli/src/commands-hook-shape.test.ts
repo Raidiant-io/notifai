@@ -24,41 +24,29 @@ describe('Stop continuation lifetime admission', () => {
   it.each([undefined, 1])('does not reject detached Claude for timeout %s that the host does not enforce', (timeout) => {
     // Claude's ordinary async hooks are not killed by timeout once backgrounded.
     // The Notifai waiter still owns its independently bounded answer window.
-    expect(stopShapeProblems(installation('claude-code', true, timeout), 'darwin')).toEqual([])
-  })
-
-  it('needs a detached claude-code Stop on Windows, where the inbox carries the answer', () => {
-    expect(stopShapeProblems(installation('claude-code', true, 1), 'win32')).toEqual([])
-    expect(
-      stopShapeProblems(installation('claude-code', false, QUESTION_STOP_TIMEOUT_SECONDS), 'win32'),
-    ).toEqual([expect.stringContaining('needs `async: true`')])
+    expect(stopShapeProblems(installation('claude-code', true, timeout))).toEqual([])
   })
 
   it('requires a full-window blocking Stop for Grok', () => {
-    expect(stopShapeProblems(installation('grok', false, 600), 'darwin'))
+    expect(stopShapeProblems(installation('grok', false, 600)))
       .toEqual([expect.stringContaining('complete answer window')])
-    expect(stopShapeProblems(installation('grok', true, QUESTION_STOP_TIMEOUT_SECONDS), 'darwin'))
+    expect(stopShapeProblems(installation('grok', true, QUESTION_STOP_TIMEOUT_SECONDS)))
       .toEqual([expect.stringContaining('blocking continuation')])
-    expect(stopShapeProblems(installation('grok', false, QUESTION_STOP_TIMEOUT_SECONDS), 'darwin'))
+    expect(stopShapeProblems(installation('grok', false, QUESTION_STOP_TIMEOUT_SECONDS)))
       .toEqual([])
   })
 
-  it.each(['win32', 'darwin', 'linux'] as const)(
-    'needs an async codex Stop on %s, and stops demanding a full-window budget for it',
-    (platform) => {
-      // The queue route holds no turn open, so a short or absent timeout no
-      // longer truncates an answer window. That whole failure class leaves the
-      // answer path; what the handler must still be is detached.
-      expect(stopShapeProblems(installation('codex', true, 1), platform)).toEqual([])
-      expect(stopShapeProblems(installation('codex', false, QUESTION_STOP_TIMEOUT_SECONDS), platform))
+  it.each(['codex', 'claude-code'] as const)(
+    'needs an async %s Stop on every platform, and demands no full-window budget for it',
+    (harness) => {
+      // The out-of-band route holds no turn open, so a short or absent timeout
+      // does not truncate an answer window. What the handler must be is
+      // detached: a blocking one would hold the turn for the whole wait.
+      expect(stopShapeProblems(installation(harness, true, 1))).toEqual([])
+      expect(stopShapeProblems(installation(harness, false, QUESTION_STOP_TIMEOUT_SECONDS)))
         .toEqual([expect.stringContaining('needs `async: true`')])
     },
   )
-
-  it('still rejects a blocking Claude handler for the POSIX detached route', () => {
-    expect(stopShapeProblems(installation('claude-code', false, QUESTION_STOP_TIMEOUT_SECONDS), 'linux'))
-      .toEqual([expect.stringContaining('needs `async: true`')])
-  })
 
   it('rejects asyncRewake rather than treating its enforced timeout as ordinary async', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-async-rewake-'))
@@ -69,7 +57,7 @@ describe('Stop continuation lifetime admission', () => {
     const installed = findInstallations({ ...process.env, CLAUDE_CONFIG_DIR: root })
       .find((entry) => entry.harness === 'claude-code')!
     expect(installed).toBeDefined()
-    expect(stopShapeProblems(installed, 'darwin'))
+    expect(stopShapeProblems(installed))
       .toEqual([expect.stringContaining('enables `asyncRewake`')])
   })
 })

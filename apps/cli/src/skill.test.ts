@@ -356,16 +356,14 @@ describe('Notifai agent skill', () => {
     }
   })
 
-  it('distinguishes Claude Code inbox wake from the Windows held Stop continuation', () => {
+  it('teaches one Claude Code inbox wake for every platform, with no held Stop', () => {
     const claude = harnessFile('claude-code')
-    const answerRoute = claude.slice(claude.indexOf('## How the answer gets back'), claude.indexOf('## Command approval'))
+    const answerRoute = claude.slice(claude.indexOf('## How the answer gets back'), claude.indexOf('## Linked question picker'))
 
-    expect(answerRoute).toMatch(/Claude Code.*POSIX.*inbox\s+socket/is)
-    const windowsRoute = answerRoute.slice(answerRoute.indexOf('Claude Code on Windows'))
-    expect(windowsRoute).toMatch(/Stop hook stays held through the complete\s+answer window/i)
-    expect(windowsRoute).toMatch(/same Agent Session/i)
-    expect(windowsRoute).toMatch(/direct inbox wake is unavailable/i)
-    expect(answerRoute).not.toMatch(/Claude Code:\*\* the Stop hook is asynchronous/i)
+    expect(answerRoute).toMatch(/\*\*Claude Code:\*\* a detached observer.*inbox\s+socket/is)
+    expect(answerRoute).toMatch(/socket on macOS and Linux.*named pipe on Windows/is)
+    expect(answerRoute).toMatch(/older Claude Code.*next turn/is)
+    expect(answerRoute).not.toMatch(/stays held|decision: block/i)
     expect(skill).toMatch(/`direct_wake_ready`.*optional when a held continuation/is)
     expect(skill).toMatch(/`direct_wake_ready`.*`null` when no direct-wake assessment/is)
   })

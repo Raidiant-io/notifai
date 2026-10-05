@@ -987,8 +987,8 @@ function stopWakeRoute(
 
 /**
  * The Stop waiter claims fenced answers only where a Session Attendant can
- * hold the session's lease and the answer is written in place: Claude Code on
- * macOS and Linux. Everywhere else it closes and writes exactly as before.
+ * hold the session's lease and the answer is written in place: Claude Code.
+ * Everywhere else it closes and writes exactly as before.
  */
 function answerClaimsFor(
   deps: CommandDeps,
