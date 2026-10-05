@@ -25,7 +25,8 @@ static int approved_writer(PSID sid, PSID user) {
 
 static int private_handle(HANDLE handle, int directory, PSID user, int created) {
     FILE_ATTRIBUTE_TAG_INFO info;
-    if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &info, sizeof(info)) ||
+    if (GetFileType(handle) != FILE_TYPE_DISK ||
+        !GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &info, sizeof(info)) ||
         (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
         !!(info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory) return 0;
     PSECURITY_DESCRIPTOR descriptor = NULL;
@@ -37,6 +38,10 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created) 
     int ok = owner && IsValidSid(owner) &&
         (EqualSid(owner, user) || (created && IsWellKnownSid(owner, WinBuiltinAdministratorsSid))) &&
         dacl && IsValidAcl(dacl);
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    if (directory && (!GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+        !(control & SE_DACL_PROTECTED))) ok = 0;
     const DWORD writes = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
         FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
     for (DWORD i = 0; ok && i < dacl->AceCount; i++) {
@@ -47,7 +52,10 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created) 
         ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)header;
         /* Inherit-only permissions are also checked: child files must not
          * acquire an unapproved writer through this directory. */
-        if ((ace->Mask & writes) && !approved_writer((PSID)&ace->SidStart, user)) ok = 0;
+        DWORD mask = ace->Mask;
+        GENERIC_MAPPING mapping = { FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS };
+        MapGenericMask(&mask, &mapping);
+        if ((mask & writes) && !approved_writer((PSID)&ace->SidStart, user)) ok = 0;
     }
     if (ok && created && !EqualSid(owner, user)) {
         ok = SetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
