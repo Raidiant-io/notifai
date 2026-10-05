@@ -159,6 +159,7 @@ describe('foreground machine approval wait', () => {
     await loginCommand(test.deps, {}, (gap) => gaps.push(gap))
     expect(gaps[0]?.technical?.handoff).toMatchObject({
       template_id: 'machine-approval-pending', next_action: 'display-qr-then-wait',
+      qr_presentation: 'text-and-image-path',
       wait_argv: ['notifai', 'auth', 'wait', '--pairing', 'pair_1', '--json'],
     })
     let sleeps = 0

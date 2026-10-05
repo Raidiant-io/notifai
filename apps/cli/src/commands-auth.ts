@@ -68,7 +68,7 @@ export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started'
 export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.ProcessEnv, route = 'qr'): ReadinessState {
   const introduction = route === 'browser' ? 'Review this computer in the browser approval page.'
     : route === 'notification' ? 'Review the computer approval invitation if it arrives; the local QR and browser link also work.'
-    : 'Scan the QR shown locally to review this computer in Notifai.'
+    : 'Scan the QR shown locally to review this computer in Notifai. For an approval notification instead, provide your Notifai Account email.'
   return {
     id: 'credential',
     title: 'This machine',
@@ -87,6 +87,7 @@ export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.Pro
       handoff: {
         template_id: 'machine-approval-pending',
         route,
+        qr_presentation: 'text-and-image-path',
         message: `${introduction} Check your Account and computer, compare code **${pairing.code}**, and approve before ${pairing.expires_at}. Browser alternative: ${pairing.approve_url}. I'll wait for the result.`,
         audience: 'local-conversation',
         next_action: 'display-qr-then-wait',
