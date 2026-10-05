@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { processIdentityLiveness, windowsProcessStart } from './process-identity.js'
+import { currentProcessIdentity, processIdentityLiveness, processStartTime, windowsProcessStart } from './process-identity.js'
 
 describe('Windows process start', () => {
   const FILETIME = '134255407523148123'
@@ -42,5 +42,16 @@ describe('Windows process start', () => {
     alive = false
     expect(start()).toBe(FILETIME)
     expect(reads).toBe(3)
+  })
+
+  it.runIf(process.platform === 'win32')('reads this process from a real Windows host', () => {
+    const start = processStartTime(process.pid)
+    expect(start).toMatch(/^\d{17,19}$/)
+    // FILETIME counts 100 ns ticks from 1601; this process started moments ago.
+    const startedAt = Number(BigInt(start!) / 10_000n) - 11_644_473_600_000
+    expect(Math.abs(Date.now() - startedAt)).toBeLessThan(10 * 60_000)
+    expect(currentProcessIdentity()).toEqual({ pid: process.pid, start })
+    expect(processIdentityLiveness({ pid: process.pid, start: start! })).toBe('alive')
+    expect(processIdentityLiveness({ pid: process.pid, start: '1' })).toBe('gone')
   })
 })
