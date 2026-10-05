@@ -12,7 +12,9 @@ function powershell(operation, data = {}) {
   // avoids PowerShell quoting and a redirected-stdin EOF dependency on ARM.
   const payload = Buffer.from(JSON.stringify(data), 'utf8').toString('base64')
   const phase = name => `[Console]::Error.WriteLine('notifai-bootstrap:${name}');`
-  const code = `${phase('started')} $ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ${phase('encoding-ready')} . '${script}'; ${phase('helper-ready')} $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json; ${phase('operation-started')} ${operation}; ${phase('complete')}`
+  // Resolve only the required OS module. First-use command discovery otherwise
+  // walks third-party PSModulePath entries, including slow/offline locations.
+  const code = `${phase('started')} $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $PSModuleAutoLoadingPreference='None'; Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1')); ${phase('modules-ready')} [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ${phase('encoding-ready')} . '${script}'; ${phase('helper-ready')} $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json; ${phase('operation-started')} ${operation}; ${phase('complete')}`
   const systemRoot = process.env.SystemRoot
   assert.ok(systemRoot && path.win32.isAbsolute(systemRoot), 'The OS PowerShell location is unavailable')
   const executable = path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
