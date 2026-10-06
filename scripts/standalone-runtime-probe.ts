@@ -45,7 +45,21 @@ assert.ok(receipt.start)
 if (process.platform === 'win32') assert.match(receipt.start, /^windows-filetime:[0-9]+$/)
 clearReadiness()
 assert.equal(existsSync(readinessPath()), false)
+MESSAGE_JOURNAL_DIR = path.join(path.dirname(JOURNAL_DIR), 'message-journal')
+const generation = '11111111-1111-4111-8111-111111111111', messageId = 'sm_host_fixture'
+const deliveryId = createHash('sha256').update(generation + String.fromCharCode(0) + messageId).digest('hex').slice(0, 32)
+saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
+  session_key: 'agent:main:main', cwd: process.cwd(), openclaw_session_id: 'host-fixture',
+  native_revision: 'fixture', boot_id: GATEWAY_BOOT_ID, deadline_ns: '1234', attempt: 1,
+  phase: 'transcript', ...(process.argv[2] === 'settle' ? {} : { text: 'pending fixture context' }) })
 `)
+} else if (mode === 'host-state') {
+  const { RuntimeRetention } = await import('../apps/cli/src/runtime-retention.js')
+  const managed = path.join(root, '.notifai')
+  const id = JSON.parse(readFileSync(path.join(managed, 'install.json'), 'utf8')).id
+  const retention = new RuntimeRetention(managed, id)
+  assert.equal(readdirSync(path.join(managed, 'openclaw-hosts')).length, 1)
+  assert.equal(retention.inspectOwners(path.join(root, 'no-sessions')).status, args[0])
 } else if (mode === 'lock') {
   const file = path.join(root, 'shared.json')
   for (let i = 0; i < 50; i++) withFileLock(`${file}.lock`, () => {

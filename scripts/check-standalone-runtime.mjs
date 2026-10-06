@@ -141,6 +141,9 @@ try {
   execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['native-hooks', root], { cwd: root, env, stdio: 'inherit' })
   // OpenClaw supplies its own Node host; Notifai readiness uses native OS identity.
   execFileSync(process.execPath, [path.join(root, 'openclaw-readiness.mjs')], { cwd: root, env, stdio: 'inherit', timeout: 30_000 })
+  run(['host-state', root, 'waiting_for_questions'])
+  execFileSync(process.execPath, [path.join(root, 'openclaw-readiness.mjs'), 'settle'], { cwd: root, env, stdio: 'inherit', timeout: 30_000 })
+  run(['host-state', root, 'clear'])
   const owner = JSON.parse(execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['owner-launch', ownerRoot],
     { cwd: root, env, encoding: 'utf8', timeout: 30_000 }))
   const busyRoot = path.join(root, 'busy-launcher')
@@ -326,6 +329,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'openclaw-native-process-readiness', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

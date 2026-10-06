@@ -169,7 +169,13 @@ preparation infrastructure; owned removal and the public uninstall command are
 not yet complete. Inspection includes orphan delivery/input sidecars and the
 machine retirement queue in every discovered state root. Reported handoffs and
 valid native acknowledgement receipts are history; unfinished work retains the
-installation. No question is cancelled by inspection.
+installation. No question is cancelled by inspection. The current native
+OpenClaw adapter durably records actual host journal roots before publishing
+journals, including custom host state directories. Inspection validates both
+journal formats, pending pointer context, replay fences and interrupted writes;
+it never replays, redacts or settles those journals. Root discovery is not proof
+that a host has drained. Previously loaded adapters without a root record still
+require separate discovery and lifecycle proof before removal can proceed.
 
 The native launcher also offers an internal, read-only executable-use probe for
 explicit uninstall. Windows uses Restart Manager without shutdown or restart.

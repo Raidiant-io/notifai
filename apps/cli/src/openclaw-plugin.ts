@@ -112,11 +112,65 @@ let pendingMessageJournals = null
 let awaitingMessageContexts = new Map()
 const GATEWAY_BOOT_ID = randomUUID()
 
+// Persistent discovery, not a process lease. A host may use a state directory
+// that the CLI's environment cannot reconstruct. Register before publishing
+// journals; readiness deletion must never hide that directory from uninstall.
+const registeredHostRoots = new Set()
+const privateHostDirectories = new Set()
+function privateHostDirectory(directory) {
+  if (UNINSTALL_BARRIER === null || process.platform !== "win32") {
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    return
+  }
+  if (privateHostDirectories.has(directory)) return
+  mkdirSync(path.dirname(directory), { recursive: true })
+  execFileSync(ADAPTER, [existsSync(directory) ? "--internal-protect-existing-directory" : "--internal-private-directory", directory],
+    { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
+  privateHostDirectories.add(directory)
+}
+function ownHostFile(file) {
+  if (UNINSTALL_BARRIER !== null && process.platform === "win32") execFileSync(ADAPTER, ["--internal-own-created-file", file],
+    { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
+}
+function recordHostRoot(directory) {
+  if (UNINSTALL_BARRIER === null) return
+  privateHostDirectory(directory)
+  const root = realpathSync.native(directory)
+  if (registeredHostRoots.has(root)) return
+  const installation = path.dirname(UNINSTALL_BARRIER)
+  const owner = JSON.parse(readFileSync(path.join(installation, "install.json"), "utf8"))
+  if (owner?.schema !== 1 || owner.owner !== "notifai" ||
+      typeof owner.id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(owner.id)) {
+    throw new Error("Cannot register native host state without installation ownership")
+  }
+  const index = path.join(installation, "openclaw-hosts")
+  if (process.platform === "win32") execFileSync(ADAPTER, ["--internal-private-directory", index],
+    { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
+  else mkdirSync(index, { recursive: true, mode: 0o700 })
+  const info = lstatSync(index)
+  if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid &&
+      (info.uid !== process.getuid() || (info.mode & 0o022) !== 0))) throw new Error("Unsafe host index")
+  const file = path.join(index, createHash("sha256").update(root).digest("hex") + ".json")
+  const temp = file + "." + randomUUID() + ".tmp"
+  writeFileSync(temp, JSON.stringify({ schema: 1, installation_id: owner.id, root }) + "\\n",
+    { mode: 0o600, flag: "wx" })
+  const fd = openSync(temp, "r")
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+  ownHostFile(temp)
+  renameSync(temp, file)
+  try {
+    const directory = openSync(index, "r")
+    try { fsyncSync(directory) } finally { closeSync(directory) }
+  } catch { /* Directory fsync is unavailable on some hosts. */ }
+  registeredHostRoots.add(root)
+}
+
 function readinessPath() {
   return path.join(path.dirname(JOURNAL_DIR), "continuation-ready.json")
 }
 
 function writeReadiness(target) {
+  recordHostRoot(path.dirname(JOURNAL_DIR))
   const start = process.platform === "win32" && UNINSTALL_BARRIER !== null
     ? execFileSync(ADAPTER, ["--internal-process-info", String(process.pid)], {
       encoding: "utf8", timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
@@ -133,6 +187,7 @@ function writeReadiness(target) {
   writeFileSync(temp, JSON.stringify({ pid: process.pid, start, boot_id: GATEWAY_BOOT_ID,
     script: target.script, script_mtime: statSync(target.script).mtimeMs }) + "\\n",
     { mode: 0o600, flag: "wx" })
+  ownHostFile(temp)
   renameSync(temp, file)
   return true
 }
@@ -146,12 +201,14 @@ function journalPath(deliveryId) {
 }
 
 function saveJournal(record) {
-  mkdirSync(JOURNAL_DIR, { recursive: true, mode: 0o700 })
+  recordHostRoot(path.dirname(JOURNAL_DIR))
+  privateHostDirectory(JOURNAL_DIR)
   const file = journalPath(record.delivery_id)
   const temp = file + "." + randomUUID() + ".tmp"
   writeFileSync(temp, JSON.stringify(record) + "\\n", { mode: 0o600, flag: "wx" })
   const fd = openSync(temp, "r")
   try { fsyncSync(fd) } finally { closeSync(fd) }
+  ownHostFile(temp)
   renameSync(temp, file)
   try {
     const directory = openSync(JOURNAL_DIR, "r")
@@ -186,7 +243,8 @@ function messageContextMarkerPath(deliveryId) {
 }
 
 function saveMessageJournal(record) {
-  mkdirSync(MESSAGE_JOURNAL_DIR, { recursive: true, mode: 0o700 })
+  recordHostRoot(path.dirname(MESSAGE_JOURNAL_DIR))
+  privateHostDirectory(MESSAGE_JOURNAL_DIR)
   const file = messageJournalPath(record.delivery_id)
   const temp = file + "." + randomUUID() + ".tmp"
   const { text: _text, ...withoutText } = record
@@ -194,6 +252,7 @@ function saveMessageJournal(record) {
   writeFileSync(temp, JSON.stringify(stored) + "\\n", { mode: 0o600, flag: "wx" })
   const fd = openSync(temp, "r")
   try { fsyncSync(fd) } finally { closeSync(fd) }
+  ownHostFile(temp)
   renameSync(temp, file)
   if (pendingMessageJournals !== null) {
     if (stored.phase === "transcript" || stored.phase === "unconfirmed") pendingMessageJournals.delete(stored.delivery_id)
@@ -455,6 +514,7 @@ async function messageContextForPointer(api, event, ctx, sessionKey, nativeRevis
         nativeSessionRevision(api, sessionKey, sessionIdOf(event, ctx)) !== nativeRevision) return null
     ctx?.hookInvocation?.assertActive?.()
     writeFileSync(messageContextMarkerPath(deliveryId), "used\\n", { mode: 0o600, flag: "wx" })
+    ownHostFile(messageContextMarkerPath(record.delivery_id))
     saveMessageJournal(record)
     return record.text
   } catch { return null }

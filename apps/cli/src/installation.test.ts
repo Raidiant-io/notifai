@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process'
+import { openclawPluginSource } from './openclaw-plugin.js'
 import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
@@ -118,6 +120,67 @@ it('finds pending work across indexed state roots before any uninstall mutation'
   writeFileSync(file, '{broken')
   expect(retention.inspectOwners(current).status).toBe('uncertain')
   expect(f.installation.activeRelease().build).toBe(build)
+})
+
+// Native Windows C ownership is exercised by check-standalone-runtime, not this text launcher fixture.
+it.skipIf(process.platform === 'win32')('finds OpenClaw pending message context in its recorded custom host root', () => {
+  const f = fixture(), root = path.join(f.root, '.notifai')
+  const installation = new Installation({ ...f.options, root })
+  const build = installation.stage(f.candidate('1.0.0'))
+  installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const sessions = path.join(f.root, 'cli-state', 'sessions'), hostRoot = path.join(f.root, 'custom-host', 'notifai')
+  const id = JSON.parse(readFileSync(path.join(root, 'install.json'), 'utf8')).id
+  const retention = new RuntimeRetention(root, id, f.options.access)
+  const generation = '11111111-1111-4111-8111-111111111111', message = 'sm_pending'
+  const delivery = createHash('sha256').update(generation + '\0' + message).digest('hex').slice(0, 32)
+  const record = { delivery_id: delivery, message_id: message, session_key: 'agent:main:main', cwd: f.root,
+    openclaw_session_id: 'native-session', generation, native_revision: 'revision', boot_id: generation,
+    deadline_ns: '12345678', attempt: 1, phase: 'transcript', text: 'pending context' }
+  const producer = path.join(f.root, 'host.mjs')
+  writeFileSync(producer, openclawPluginSource({ adapterPath: path.join(root, 'bin', 'notifai'), timeoutSeconds: 5 }) + `
+JOURNAL_DIR = ${JSON.stringify(path.join(hostRoot, 'continuation-journal'))}
+MESSAGE_JOURNAL_DIR = ${JSON.stringify(path.join(hostRoot, 'message-journal'))}
+saveMessageJournal(${JSON.stringify(record)})
+`)
+  const result = spawnSync(process.execPath, [producer], { encoding: 'utf8', timeout: 10_000 })
+  expect(result.error).toBeUndefined()
+  expect(result.status, result.stderr).toBe(0)
+  expect(retention.inspectOwners(sessions).status).toBe('waiting_for_questions')
+  expect(installation.beginUninstall(1, sessions).status).toBe('waiting_for_questions')
+  expect(existsSync(path.join(root, 'uninstall.json'))).toBe(false)
+  const journal = path.join(hostRoot, 'message-journal', delivery + '.json')
+  const marker = path.join(hostRoot, 'message-journal', delivery + '.context-used')
+  writeFileSync(marker, 'used\n', { mode: 0o600 })
+  expect(retention.inspectOwners(sessions).status).toBe('waiting_for_questions')
+  const terminal: Partial<typeof record> = { ...record }
+  delete terminal.text
+  writeFileSync(journal, JSON.stringify(terminal), { mode: 0o600 })
+  expect(retention.inspectOwners(sessions).status).toBe('clear')
+  writeFileSync(journal, JSON.stringify({ ...terminal, phase: 'unconfirmed' }))
+  expect(retention.inspectOwners(sessions).status).toBe('clear')
+  writeFileSync(journal, JSON.stringify({ ...terminal, phase: 'submitting' }))
+  expect(retention.inspectOwners(sessions).status).toBe('waiting_for_questions')
+  writeFileSync(journal, JSON.stringify({ ...terminal, phase: 'future-phase' }))
+  expect(retention.inspectOwners(sessions).status).toBe('uncertain')
+  writeFileSync(journal, JSON.stringify(terminal))
+  const temporary = journal + '.interrupted.tmp'
+  writeFileSync(temporary, 'partial', { mode: 0o600 })
+  expect(retention.inspectOwners(sessions).status).toBe('uncertain')
+  rmSync(temporary)
+  const request = 'req_host_fixture', continuation = createHash('sha256').update(generation + '\0' + request).digest('hex').slice(0, 32)
+  const continuationDirectory = path.join(hostRoot, 'continuation-journal')
+  mkdirSync(continuationDirectory, { mode: 0o700 })
+  const continuationFile = path.join(continuationDirectory, continuation + '.json')
+  const answer = { delivery_id: continuation, generation, request_ids: [request], session_key: record.session_key,
+    cwd: f.root, openclaw_session_id: record.openclaw_session_id, attempt: 1, phase: 'committed' }
+  writeFileSync(continuationFile, JSON.stringify(answer), { mode: 0o600 })
+  expect(retention.inspectOwners(sessions).status).toBe('waiting_for_questions')
+  writeFileSync(continuationFile, JSON.stringify({ ...answer, phase: 'transcript' }))
+  expect(retention.inspectOwners(sessions).status).toBe('clear')
+  writeFileSync(journal, '{broken')
+  expect(retention.inspectOwners(sessions).status).toBe('uncertain')
+  rmSync(journal)
+  expect(retention.inspectOwners(sessions).status).toBe('uncertain')
 })
 
 it('retains unfinished native answers and input wakes before uninstall preparation', () => {

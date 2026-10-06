@@ -6,6 +6,7 @@ import { installationAccess, type InstallationAccess } from './installation-acce
 import { withFileLock } from './file-lock.js'
 import { canonicalPath } from './local-path.js'
 import { sanitizeSessionId } from './config.js'
+import { openclawHostWork } from './openclaw-host-state.js'
 
 export interface RuntimeOwnerInspection {
   status: 'clear' | 'waiting_for_questions' | 'uncertain'
@@ -185,7 +186,7 @@ export class RuntimeRetention {
           }
         }
       }
-      let pending = false
+      let pending = openclawHostWork(this.root, this.installationId, this.access)
       for (const directory of [...directories].sort()) {
         const retireFile = path.join(path.dirname(directory), 'retire-queue.json')
         if (present(retireFile)) withFileLock(`${retireFile}.lock`, () => {

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7775c7b2ecc70929a38476c2d20c4a57b87dabc9d46cde349645e0508afe3f48",
+  "behavior_digest": "sha256:aa1e8b2f86c85d2cadd472c3b17484b23f0c33bc3f2db9ba7a76ebc96b6e43e8",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, setup, readiness and domain terms. Native mutation admission now requires the supported C launcher entry; its marker is consumed before command actions. The POSIX observer filters supported canonical process names before executable identity checks. Current OpenClaw and Hermes residents honor uninstall withdrawal; OpenClaw readiness can use native Windows process identity and is restored after preparation is cancelled. These are internal preparation boundaries; no public uninstall completion or automatic deletion is advertised, and notification guidance remains unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. The current native OpenClaw adapter records its actual journal roots before publication; uninstall preparation strictly inventories pending continuation, message context, replay fences and interrupted writes without mutating or cancelling them. Native Windows host storage uses the existing launcher ownership adapter. Root inventory is not host quiescence or removal authority, and no public uninstall completion is advertised. User-facing notification guidance and domain terms remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
