@@ -175,7 +175,11 @@ journals, including custom host state directories and each writer host PID/start
 identity. Source `hook-adapter` wrappers do not register as native hosts.
 Inspection validates both
 journal formats, pending pointer context, replay fences and interrupted writes;
-it never replays, redacts or settles those journals. Root discovery is not proof
+it never replays, redacts or settles those journals. Inspection also inventories exact PID/start identities from resident claim files,
+including orphan claims without a main session record. A claim guard or malformed
+identity makes the inventory uncertain. Neither a clear work inventory nor a
+missing claim proves resident absence; launch admission and native executable
+observation must close that gap. Root discovery is not proof
 that a host has drained. Previously loaded adapters without a root record still
 require separate discovery and lifecycle proof before removal can proceed.
 

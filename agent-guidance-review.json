@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6cdfd8e27cfe20ba860bbacf5cf6f8c4e1174dd3dddbe593696b618792d31777",
+  "behavior_digest": "sha256:7472c83ca6cb3dc86155b8d9c1454daf5fa171345c54ca55dc7533354f9a5129",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Generated OpenClaw host-index and journal publication now opens writable descriptors for fsync, as required by Windows FlushFileBuffers. This fixes native host-state durability without changing journal phases, replay rules, notification guidance or public command semantics. Exact Windows native execution remains the qualification gate.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Uninstall preflight now inventories current resident claim producers across discovered state roots, including orphan claims. Guards and malformed identities retain the installation. Inventory does not observe, signal or release owners and does not authorize deletion, so agent guidance and public command semantics remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

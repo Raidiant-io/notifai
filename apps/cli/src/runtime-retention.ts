@@ -12,6 +12,7 @@ import { inspectOpenclawHosts } from './openclaw-host-state.js'
 export interface RuntimeOwnerInspection {
   status: 'clear' | 'waiting_for_questions' | 'uncertain'
   hosts: ProcessIdentity[]
+  residents: Array<{ file: string; identity: ProcessIdentity }>
   sessions: Array<{ file: string; sessionId: string; builds: string[] }>
 }
 
@@ -169,6 +170,7 @@ export class RuntimeRetention {
   inspectOwners(currentSessions: string): RuntimeOwnerInspection {
     const sessions: RuntimeOwnerInspection['sessions'] = []
     const hosts: ProcessIdentity[] = []
+    const residents: RuntimeOwnerInspection['residents'] = []
     try {
       if (!path.isAbsolute(currentSessions)) throw new Error('Invalid session directory')
       const directories = new Set([canonicalPath(currentSessions)])
@@ -204,7 +206,25 @@ export class RuntimeRetention {
         if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === 'function' &&
             (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain session directory')
         this.access.check(directory, true)
-        const names = new Set(readdirSync(directory).flatMap(name => {
+        const entries = readdirSync(directory)
+        // Claims are independent files; losing a main session JSON must not
+        // hide a resident. This is inventory only, never a stale-claim cleanup.
+        for (const name of entries.sort()) {
+          if (!/^[A-Za-z0-9_-]+(?:\.attendant|\.claim|\.delivering|\.json\.submission)(?:\.guard)?$/.test(name)) continue
+          if (name.endsWith('.guard')) throw new Error('Resident claim publication is in progress')
+          const file = path.join(directory, name)
+          if (present(file + '.guard')) throw new Error('Resident claim publication is in progress')
+          const claim = this.read(file)
+          if (claim === null) continue // The owner released it during inventory.
+          if (!Number.isSafeInteger(claim['pid']) || (claim['pid'] as number) <= 0 ||
+              typeof claim['start'] !== 'string' || !claim['start'] || claim['start'].length > 128 ||
+              typeof claim['token'] !== 'string' || !/^[A-Za-z0-9_-]{16}$/.test(claim['token'])) {
+            throw new Error('Uncertain resident process identity')
+          }
+          if (present(file + '.guard')) throw new Error('Resident claim changed during inventory')
+          residents.push({ file, identity: { pid: claim['pid'] as number, start: claim['start'] } })
+        }
+        const names = new Set(entries.flatMap(name => {
           const matched = /^([A-Za-z0-9_-]+)(?:\.json|\.inputs\.json|\.deliveries)$/.exec(name)
           return matched ? [`${matched[1]}.json`] : []
         }))
@@ -254,8 +274,8 @@ export class RuntimeRetention {
           })
         }
       }
-      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts }
-    } catch { return { status: 'uncertain', sessions, hosts } }
+      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents }
+    } catch { return { status: 'uncertain', sessions, hosts, residents } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

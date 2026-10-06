@@ -17,7 +17,8 @@ import { RuntimeRetention } from './runtime-retention.js'
 import { sessionStatePath, writeSessionState } from './hook-session-state.js'
 import { sanitizeSessionId } from './config.js'
 import { canonicalPath } from './local-path.js'
-import { processStartTime } from './process-identity.js'
+import { currentProcessIdentity, processStartTime } from './process-identity.js'
+import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -111,7 +112,7 @@ it('finds pending work across indexed state roots before any uninstall mutation'
   const file = sessionStatePath(session, env), current = path.join(f.root, 'current-state', 'sessions')
   writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: id, build }] })
   retention.retain(build, file)
-  expect(retention.inspectOwners(current)).toEqual({ status: 'clear', hosts: [], sessions: [{ file: canonicalPath(file), sessionId: session, builds: [build] }] })
+  expect(retention.inspectOwners(current)).toEqual({ status: 'clear', hosts: [], residents: [], sessions: [{ file: canonicalPath(file), sessionId: session, builds: [build] }] })
   // An unindexed sibling can have pending work from before native migration.
   writeSessionState('legacy-sibling', env, { acknowledgement_due: [{ request_id: 'req_pending', recorded_at: 1 }] })
   expect(retention.inspectOwners(current).status).toBe('waiting_for_questions')
@@ -181,6 +182,30 @@ saveMessageJournal(${JSON.stringify(record)})
   writeFileSync(journal, '{broken')
   expect(retention.inspectOwners(sessions).status).toBe('uncertain')
   rmSync(journal)
+  expect(retention.inspectOwners(sessions).status).toBe('uncertain')
+})
+
+it('inventories resident claims even when their main session record is absent', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id
+  const retention = new RuntimeRetention(f.options.root, id, f.options.access)
+  const sessions = path.join(f.root, 'state', 'sessions')
+  ensurePrivateDirectory(sessions)
+  const claim = path.join(sessions, 'orphan.attendant')
+  const token = acquireClaimFile(claim, { incarnation: 'fixture' })
+  expect(token).not.toBeNull()
+  const before = readFileSync(claim, 'utf8')
+  try {
+    expect(retention.inspectOwners(sessions)).toMatchObject({ status: 'clear',
+      residents: [{ file: canonicalPath(claim), identity: currentProcessIdentity() }] })
+    writeFileSync(claim + '.guard', '', { mode: 0o600 })
+    expect(retention.inspectOwners(sessions).status).toBe('uncertain')
+    rmSync(claim + '.guard')
+    expect(readFileSync(claim, 'utf8')).toBe(before)
+  } finally { releaseClaimFile(claim, token!) }
+  expect(retention.inspectOwners(sessions)).toMatchObject({ status: 'clear', residents: [] })
+  writeFileSync(claim, JSON.stringify({ pid: process.pid }), { mode: 0o600 })
   expect(retention.inspectOwners(sessions).status).toBe('uncertain')
 })
 
