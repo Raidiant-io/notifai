@@ -1,8 +1,9 @@
 # Notifai npm installer
 
 An optional, explicitly invoked bootstrap for the standalone Notifai CLI.
-This candidate package is not published; its release trust and publication
-workflow must be configured before it is offered to users.
+This candidate package is not published. Its embedded release trust is configured;
+publication requires a verified native stable default and package-specific npm
+trusted publishing before it is offered to users.
 
 Node is needed to run this bootstrap. The installed Notifai CLI, its hooks and
 resident work use the native installation afterward. The package has no

@@ -4,3 +4,6 @@ skills/notifai/** text eol=lf
 # Native targets must compile the same source bytes on every host. Binary files
 # remain binary; text checkout is independent of a runner's core.autocrlf.
 * text=auto eol=lf
+# Reviewed publication materials are bound by size and SHA-256. Upstream
+# notices keep their original line endings, so Git must store exact bytes.
+distribution/materials/** -text

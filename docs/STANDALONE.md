@@ -1,8 +1,10 @@
 # Standalone CLI development
 
-The native distribution is under development. These commands build and inspect
-a candidate; they do not install it or establish supported release targets.
-The existing npm installation remains the published distribution.
+These commands build and inspect a candidate; they do not install it or
+establish supported release targets. A native build becomes a release only
+through the finalization and publication gates below, for its exact tag. The
+GitHub Releases of this repository and the signed channel records say what is
+actually published; this document does not restate it.
 
 ## Build a candidate
 
@@ -23,6 +25,13 @@ checkout. `--development` permits a dirty source tree and records that fact in
 the embedded identity; such output is not release evidence. `--bun` selects an
 explicit compiler executable. `--target` selects a Bun target; cross-compilation
 alone does not demonstrate that target's native behavior.
+
+For a locally rebuilt Bun/JavaScriptCore runtime, also pass
+`--runtime-executable /absolute/path/to/rebuilt/bun --development`. This selects
+the actual executable embedded by Bun, independently of `--bun`, which selects
+the compiler. Such builds carry a `-relinked` runtime identity and cannot pass
+official publication admission. Build the runtime for the chosen target first;
+cross-compiling the application cannot build JavaScriptCore for that target.
 
 The builder regenerates the protocol output and exact CLI skill bundle before
 compilation. It embeds release identity and the skill, disables configuration
@@ -149,9 +158,8 @@ recovery command and never counts as complete. Signed channel discovery also
 backs native update checks, doctor recommendations and throttled agent notices.
 No native update uses npm dist-tags or an npm global prefix.
 
-Production release trust is deliberately unconfigured in candidate source.
-`release-trust.ts` must contain the approved Ed25519 public key before native
-publication, with the private key held only by the protected release environment.
+`release-trust.ts` embeds the `notifai-release-2026-10` Ed25519 public key;
+the private key is held only by the protected release environment.
 Candidates fail closed; neither an environment override nor project configuration
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
@@ -303,8 +311,9 @@ readiness and retains a local recovery command after partial setup. Runtime
 activation is never undone because approval or setup is pending. Custom zsh
 profile roots need explicit manual PATH setup.
 
-Production trust remains unconfigured. This command is candidate source,
-not an advertised replacement for the published installation route.
+Release trust and reviewed runtime materials are configured in source. A
+build is still only a candidate until finalization and publication pass for
+its exact tag; advertise an installation route only once its release exists.
 
 ### Windows User PATH
 
@@ -399,9 +408,10 @@ only its newly created output; an existing bundle is never replaced.
 
 The production command uses only source-embedded public keys and the protected
 `NOTIFAI_RELEASE_SIGNING_KEY`, and reads the source-owned
-`distribution/release-materials.json` policy. That policy is not provisioned yet:
-it must bind approved runtime materials for every target and the reviewed macOS
-team. Candidate materials cannot be signed for publication. Tests use synthetic
+`distribution/release-materials.json` policy. That policy binds the approved
+runtime materials for every target and the reviewed macOS team; see
+[`distribution/README.md`](../distribution/README.md) for what the review
+covers. Candidate materials cannot be signed for publication. Tests use synthetic
 receipts/material policies and ephemeral keys, not production release authority.
 
 `sign-release-records.mjs` produces deterministic Ed25519 envelopes compatible
@@ -427,13 +437,13 @@ and bootstrap TSV while preserving other metadata. A moved head is a conflict,
 never a force update. Missing channels require explicit initialization; initial
 branch creation cannot replace an existing ref. Post-write readback checks both
 files at one commit. Focused API fixtures cover interrupted responses, completed
-asset mismatch, stale heads, initial-ref races and no-write retries; no live
-publication has been performed.
+asset mismatch, stale heads, initial-ref races and no-write retries. Fixtures
+are not evidence of a live publication; each release records its own.
 
 `publish-native-release.mjs` is the protected-workflow entrypoint and requires
 explicit `--publish` and/or `--promote` modes, an exact source/tag context, and
 source-embedded trust keys. It preserves partial publication results if later
-channel work fails. Workflow cutover and production configuration remain pending.
+channel work fails.
 See GitHub's [immutable release sequence](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
 [release asset API](https://docs.github.com/en/rest/releases/assets), and
 [atomic branch commit mutation](https://docs.github.com/en/graphql/reference/commits).
@@ -448,7 +458,11 @@ artifact IDs and digests to one run. Evidence cannot be assembled from several
 partially successful runs.
 
 `prepare-native-release.yml` takes the exact release tag/SHA and a successful
-full `candidate_run_id`. Each native runner restores its checked executable,
+full `candidate_run_id`. Admission also requires the immutable runtime source
+release named by `distribution/runtime-sources.json` to be published with
+every asset matching that manifest's size and SHA-256, so binaries are never
+finalized before their corresponding source is available. Each native runner
+restores its checked executable,
 verifies the original byte hashes, restores executable permissions lost by
 Actions artifact transport, and removes only the downloaded candidate packaging.
 It never recompiles the application or launcher. Reviewed materials come from
@@ -477,9 +491,10 @@ Expired final artifacts require a new reviewed preparation; if assets already
 exist, mismatched replacements are refused. Retention expiry is not authority
 to overwrite an existing release.
 
-Production readiness still requires source-embedded Ed25519 trust, its protected
-private key and key ID, reviewed runtime materials, the macOS Team ID in the
-policy and shell bootstrap, and the protected macOS certificate/notary setup.
+The source-embedded Ed25519 trust and shell bootstrap publisher are configured.
+Production readiness also requires the matching protected private key and key
+ID, reviewed runtime materials with the macOS Team ID, and the protected macOS
+certificate/notary setup.
 Environment protections and release metadata branch permissions must also be
 verified. These workflows do not provision credentials, certify material
 completeness, or authorize publication. Release-please creates the native CLI tag and a draft release, then dispatches

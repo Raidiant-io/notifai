@@ -33,6 +33,8 @@ test('complete matching release records round-trip through the shipped verifier;
   assert.throws(() => inventory('1.0.0', { candidates: mixed }), /source/)
   const differentTree = candidates(); differentTree[1].build.sourceDigest = 'f'.repeat(64)
   assert.throws(() => inventory('1.0.0', { candidates: differentTree }), /source/)
+  const relinked = candidates(); relinked[0].build.runtime = 'bun-1.4.2-relinked'
+  assert.throws(() => inventory('1.0.0', { candidates: relinked }), /source/)
   assert.throws(() => inventory('1.0.0', { materialsPolicy: { ...policy, status: 'pending' } }), /materials/)
   const changedMaterial = candidates(); changedMaterial[0].artifact.materials[0] = { ...material, sha256: 'f'.repeat(64) }
   assert.throws(() => inventory('1.0.0', { candidates: changedMaterial }), /materials/)

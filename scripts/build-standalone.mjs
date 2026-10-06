@@ -8,6 +8,7 @@ import { commandInvocation, repositoryRoot } from './cross-platform.mjs'
 
 const { values } = parseArgs({ options: {
   bun: { type: 'string', default: 'bun' },
+  'runtime-executable': { type: 'string' },
   target: { type: 'string', default: `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}` },
   out: { type: 'string' },
   development: { type: 'boolean', default: false },
@@ -17,6 +18,9 @@ const targets = new Set(['bun-darwin-arm64', 'bun-darwin-x64',
   'bun-windows-x64', 'bun-windows-arm64', 'bun-linux-x64', 'bun-linux-arm64'])
 if (!targets.has(values.target)) throw new Error(`Unsupported target: ${values.target}`)
 if (!values.out) throw new Error('--out is required')
+if (values['runtime-executable'] && !values.development) {
+  throw new Error('A rebuilt runtime requires --development; it is not a release candidate')
+}
 const run = (command, args) => execFileSync(command, args, {
   cwd: repositoryRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
 })
@@ -45,11 +49,14 @@ const identity = {
   sourceDirty,
   sourceDigest: hash.digest('hex'),
   target: values.target,
-  runtime: `bun-${runtime}`,
+  // Relinked builds remain distinguishable even in a clean source checkout.
+  // Publication admits only the exact runtime in the reviewed materials policy.
+  runtime: `bun-${runtime}${values['runtime-executable'] ? '-relinked' : ''}`,
 }
 const output = path.resolve(values.out)
 mkdirSync(path.dirname(output), { recursive: true })
 run(values.bun, ['build', '--compile', `--target=${values.target}`,
+  ...(values['runtime-executable'] ? ['--compile-executable-path', path.resolve(values['runtime-executable'])] : []),
   '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig',
   '--no-compile-autoload-package-json', '--no-compile-autoload-tsconfig',
   '--asset=apps/cli/dist/skill-source',

@@ -1,0 +1,260 @@
+{
+  "schema": 1,
+  "status": "approved",
+  "runtime": "bun-1.4.2",
+  "macos_team_id": "J3Q8DE3U2S",
+  "targets": {
+    "bun-darwin-arm64": [
+      {
+        "path": "BUN-LICENSE.md",
+        "bytes": 5613,
+        "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+      },
+      {
+        "path": "CORRESPONDING-SOURCES.json",
+        "bytes": 2020,
+        "sha256": "fa4c344801154872d6179ee2ef49923dc9f8909ef01e53b86e8f57c625823274"
+      },
+      {
+        "path": "LICENSE.txt",
+        "bytes": 11346,
+        "sha256": "944c13ff0fe795e291fd1c49473f98d4fdf1f74638e01f882769cd4cae78b73d"
+      },
+      {
+        "path": "NOTICE-PROVENANCE.json",
+        "bytes": 450264,
+        "sha256": "534dd59fd4c15dd1382e827f0b85c19f7c698e235f9299eaa202db5400834288"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 626,
+        "sha256": "1dfbf4498dc026b2059c0b0b5eb5fa1d82ae334e58ff11e7c29733327f25c4eb"
+      },
+      {
+        "path": "REBUILDING.md",
+        "bytes": 3842,
+        "sha256": "ce605b5fdb0319339f9f83f2fe7cccbc7e5726fdf494da6e28433bef829eb0be"
+      },
+      {
+        "path": "SOURCE-NOTICES.txt",
+        "bytes": 9017771,
+        "sha256": "89976becc256540e6d2e807b47a4e05e889982c0622fc04413a7bf7e77a77e37"
+      },
+      {
+        "path": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 2491496,
+        "sha256": "116447eff77893511797ef476011dec800224f91e3342e3d6570708712b4b772"
+      }
+    ],
+    "bun-darwin-x64": [
+      {
+        "path": "BUN-LICENSE.md",
+        "bytes": 5613,
+        "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+      },
+      {
+        "path": "CORRESPONDING-SOURCES.json",
+        "bytes": 2020,
+        "sha256": "fa4c344801154872d6179ee2ef49923dc9f8909ef01e53b86e8f57c625823274"
+      },
+      {
+        "path": "LICENSE.txt",
+        "bytes": 11346,
+        "sha256": "944c13ff0fe795e291fd1c49473f98d4fdf1f74638e01f882769cd4cae78b73d"
+      },
+      {
+        "path": "NOTICE-PROVENANCE.json",
+        "bytes": 450264,
+        "sha256": "534dd59fd4c15dd1382e827f0b85c19f7c698e235f9299eaa202db5400834288"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 626,
+        "sha256": "1dfbf4498dc026b2059c0b0b5eb5fa1d82ae334e58ff11e7c29733327f25c4eb"
+      },
+      {
+        "path": "REBUILDING.md",
+        "bytes": 3842,
+        "sha256": "ce605b5fdb0319339f9f83f2fe7cccbc7e5726fdf494da6e28433bef829eb0be"
+      },
+      {
+        "path": "SOURCE-NOTICES.txt",
+        "bytes": 9017771,
+        "sha256": "89976becc256540e6d2e807b47a4e05e889982c0622fc04413a7bf7e77a77e37"
+      },
+      {
+        "path": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 2491496,
+        "sha256": "116447eff77893511797ef476011dec800224f91e3342e3d6570708712b4b772"
+      }
+    ],
+    "bun-linux-arm64": [
+      {
+        "path": "BUN-LICENSE.md",
+        "bytes": 5613,
+        "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+      },
+      {
+        "path": "CORRESPONDING-SOURCES.json",
+        "bytes": 2020,
+        "sha256": "fa4c344801154872d6179ee2ef49923dc9f8909ef01e53b86e8f57c625823274"
+      },
+      {
+        "path": "LICENSE.txt",
+        "bytes": 11346,
+        "sha256": "944c13ff0fe795e291fd1c49473f98d4fdf1f74638e01f882769cd4cae78b73d"
+      },
+      {
+        "path": "NOTICE-PROVENANCE.json",
+        "bytes": 450264,
+        "sha256": "534dd59fd4c15dd1382e827f0b85c19f7c698e235f9299eaa202db5400834288"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 626,
+        "sha256": "1dfbf4498dc026b2059c0b0b5eb5fa1d82ae334e58ff11e7c29733327f25c4eb"
+      },
+      {
+        "path": "REBUILDING.md",
+        "bytes": 3842,
+        "sha256": "ce605b5fdb0319339f9f83f2fe7cccbc7e5726fdf494da6e28433bef829eb0be"
+      },
+      {
+        "path": "SOURCE-NOTICES.txt",
+        "bytes": 9017771,
+        "sha256": "89976becc256540e6d2e807b47a4e05e889982c0622fc04413a7bf7e77a77e37"
+      },
+      {
+        "path": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 2491496,
+        "sha256": "116447eff77893511797ef476011dec800224f91e3342e3d6570708712b4b772"
+      }
+    ],
+    "bun-linux-x64": [
+      {
+        "path": "BUN-LICENSE.md",
+        "bytes": 5613,
+        "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+      },
+      {
+        "path": "CORRESPONDING-SOURCES.json",
+        "bytes": 2020,
+        "sha256": "fa4c344801154872d6179ee2ef49923dc9f8909ef01e53b86e8f57c625823274"
+      },
+      {
+        "path": "LICENSE.txt",
+        "bytes": 11346,
+        "sha256": "944c13ff0fe795e291fd1c49473f98d4fdf1f74638e01f882769cd4cae78b73d"
+      },
+      {
+        "path": "NOTICE-PROVENANCE.json",
+        "bytes": 450264,
+        "sha256": "534dd59fd4c15dd1382e827f0b85c19f7c698e235f9299eaa202db5400834288"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 626,
+        "sha256": "1dfbf4498dc026b2059c0b0b5eb5fa1d82ae334e58ff11e7c29733327f25c4eb"
+      },
+      {
+        "path": "REBUILDING.md",
+        "bytes": 3842,
+        "sha256": "ce605b5fdb0319339f9f83f2fe7cccbc7e5726fdf494da6e28433bef829eb0be"
+      },
+      {
+        "path": "SOURCE-NOTICES.txt",
+        "bytes": 9017771,
+        "sha256": "89976becc256540e6d2e807b47a4e05e889982c0622fc04413a7bf7e77a77e37"
+      },
+      {
+        "path": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 2491496,
+        "sha256": "116447eff77893511797ef476011dec800224f91e3342e3d6570708712b4b772"
+      }
+    ],
+    "bun-windows-arm64": [
+      {
+        "path": "BUN-LICENSE.md",
+        "bytes": 5613,
+        "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+      },
+      {
+        "path": "CORRESPONDING-SOURCES.json",
+        "bytes": 2020,
+        "sha256": "fa4c344801154872d6179ee2ef49923dc9f8909ef01e53b86e8f57c625823274"
+      },
+      {
+        "path": "LICENSE.txt",
+        "bytes": 11346,
+        "sha256": "944c13ff0fe795e291fd1c49473f98d4fdf1f74638e01f882769cd4cae78b73d"
+      },
+      {
+        "path": "NOTICE-PROVENANCE.json",
+        "bytes": 450264,
+        "sha256": "534dd59fd4c15dd1382e827f0b85c19f7c698e235f9299eaa202db5400834288"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 626,
+        "sha256": "1dfbf4498dc026b2059c0b0b5eb5fa1d82ae334e58ff11e7c29733327f25c4eb"
+      },
+      {
+        "path": "REBUILDING.md",
+        "bytes": 3842,
+        "sha256": "ce605b5fdb0319339f9f83f2fe7cccbc7e5726fdf494da6e28433bef829eb0be"
+      },
+      {
+        "path": "SOURCE-NOTICES.txt",
+        "bytes": 9017771,
+        "sha256": "89976becc256540e6d2e807b47a4e05e889982c0622fc04413a7bf7e77a77e37"
+      },
+      {
+        "path": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 2491496,
+        "sha256": "116447eff77893511797ef476011dec800224f91e3342e3d6570708712b4b772"
+      }
+    ],
+    "bun-windows-x64": [
+      {
+        "path": "BUN-LICENSE.md",
+        "bytes": 5613,
+        "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+      },
+      {
+        "path": "CORRESPONDING-SOURCES.json",
+        "bytes": 2020,
+        "sha256": "fa4c344801154872d6179ee2ef49923dc9f8909ef01e53b86e8f57c625823274"
+      },
+      {
+        "path": "LICENSE.txt",
+        "bytes": 11346,
+        "sha256": "944c13ff0fe795e291fd1c49473f98d4fdf1f74638e01f882769cd4cae78b73d"
+      },
+      {
+        "path": "NOTICE-PROVENANCE.json",
+        "bytes": 450264,
+        "sha256": "534dd59fd4c15dd1382e827f0b85c19f7c698e235f9299eaa202db5400834288"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 626,
+        "sha256": "1dfbf4498dc026b2059c0b0b5eb5fa1d82ae334e58ff11e7c29733327f25c4eb"
+      },
+      {
+        "path": "REBUILDING.md",
+        "bytes": 3842,
+        "sha256": "ce605b5fdb0319339f9f83f2fe7cccbc7e5726fdf494da6e28433bef829eb0be"
+      },
+      {
+        "path": "SOURCE-NOTICES.txt",
+        "bytes": 9017771,
+        "sha256": "89976becc256540e6d2e807b47a4e05e889982c0622fc04413a7bf7e77a77e37"
+      },
+      {
+        "path": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 2491496,
+        "sha256": "116447eff77893511797ef476011dec800224f91e3342e3d6570708712b4b772"
+      }
+    ]
+  }
+}
