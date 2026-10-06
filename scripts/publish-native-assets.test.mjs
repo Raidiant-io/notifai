@@ -33,3 +33,12 @@ test('completed mismatches stop before mutation; only an expected empty draft st
   await publishNativeAssets(retry.args)
   assert.equal(retry.state.calls.filter(call => call.method === 'DELETE').length, 1)
 })
+test('an ambiguous or absent release for the admitted tag stops before any mutation', async () => {
+  const twice = fixture()
+  twice.state.otherReleases.push({ ...twice.state.release, id: 3 })
+  await assert.rejects(publishNativeAssets(twice.args), /Exactly one GitHub release/)
+  const none = fixture()
+  none.state.release.tag_name = 'v2.0.0'
+  await assert.rejects(publishNativeAssets(none.args), /Exactly one GitHub release/)
+  for (const { state } of [twice, none]) assert.ok(state.calls.every(call => call.method === 'GET'))
+})

@@ -49,3 +49,19 @@ test('production packaging requires exact reviewed material bytes and refuses ca
     assert.throws(() => prepareReviewedMaterials({ sourceRoot, target, output }), /EEXIST/)
   } finally { rmSync(sourceRoot, { recursive: true, force: true }) }
 })
+
+test('macOS finalization calls codesign and the keychain the way the real tools accept', () => {
+  const read = name => readFileSync(new URL(name, import.meta.url), 'utf8')
+  // codesign reads a bare -R value as a requirement file; requirement text needs the -R= form.
+  for (const name of ['sign-macos-standalone.mjs', 'verify-standalone-archive.mjs', 'install.sh', '../packages/installer/src/platform.mjs']) {
+    assert.doesNotMatch(read(name), /'-R',|\s-R\s/, name)
+  }
+  const signing = read('sign-macos-standalone.mjs')
+  // --keychain only narrows the user's keychain list: the list holds the
+  // temporary keychain before signing and gets its previous value back.
+  const listed = signing.indexOf("'list-keychains', '-d', 'user', '-s', keychain"), signed = signing.indexOf("'--sign'")
+  assert.ok(listed > 0 && listed < signed)
+  assert.match(signing, /finally \{[\s\S]*'list-keychains', '-d', 'user', '-s', \.\.\.searchList/)
+  // A ticket lookup made right after acceptance fails, so the check waits and retries.
+  assert.match(signing, /pause\(TICKET_FIRST_CHECK_MS\)[\s\S]*notarizationTicket\(/)
+})

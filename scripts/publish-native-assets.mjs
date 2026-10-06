@@ -89,13 +89,28 @@ export async function publishNativeAssets({ bundle, sourceRevision, token, fetch
   const { inventory, assets } = bundle
   assert.equal(inventory.source_revision, sourceRevision, 'Bundle and publication source differ')
   const tag = `v${inventory.version}`, prerelease = publicationLane(inventory.version) === 'beta'
-  await checkPublicProviderPosture({ token, requireRepositoryImmutability: true }, fetchImpl)
+  // The repository-wide immutability setting and the tag ruleset's bypass list
+  // need administration access this job's token deliberately lacks; the release
+  // owner checks them beforehand. This job proves the outcome instead: the
+  // published release must read back immutable before anything advances.
+  await checkPublicProviderPosture({ token }, fetchImpl)
   assert.equal(await resolveTagCommit(fetchImpl, tag, token), sourceRevision, 'Release tag source differs')
   const api = nativeGithubClient(token, fetchImpl)
-  const readRelease = () => api(`/releases/tags/${encodeURIComponent(tag)}`)
+  // A draft has no by-tag address. Find this tag's one release in the list,
+  // then read that exact release by ID through publication.
+  const listed = []
+  for (let page = 1; page <= 20; page += 1) {
+    const batch = await api(`/releases?per_page=100&page=${page}`)
+    assert.ok(Array.isArray(batch), 'GitHub release list is unavailable')
+    listed.push(...batch.filter(entry => entry?.tag_name === tag))
+    if (batch.length < 100) break
+    assert.ok(page < 20, 'GitHub release list is too long to search safely')
+  }
+  assert.ok(listed.length === 1 && positiveId(listed[0].id), 'Exactly one GitHub release must exist for the admitted tag')
+  const releaseId = listed[0].id
+  const readRelease = () => api(`/releases/${releaseId}`)
   let release = await readRelease()
   identity(release, tag, prerelease)
-  const releaseId = release.id
   const sameRelease = () => { identity(release, tag, prerelease); assert.equal(release.id, releaseId, 'Release draft was replaced during publication') }
   const found = assetState(release, assets, !release.draft)
   if (release.draft) {
@@ -106,9 +121,16 @@ export async function publishNativeAssets({ bundle, sourceRevision, token, fetch
       const bytes = expected.read()
       assert.ok(bytes.length === expected.bytes && hash(bytes) === expected.sha256, 'Local release asset changed before upload')
       const uploaded = await api(`/releases/${release.id}/assets?name=${encodeURIComponent(name)}`, { method: 'POST', body: bytes, raw: true, upload: true })
-      assetState({ ...release, assets: [uploaded] }, new Map([[name, expected]]), true)
+      // The upload response may precede GitHub's computed digest; the full
+      // readback below requires every digest before the draft is published.
+      assert.ok(positiveId(uploaded?.id) && uploaded.name === name && uploaded.state === 'uploaded' && uploaded.size === expected.bytes &&
+        (uploaded.digest == null || uploaded.digest === `sha256:${expected.sha256}`), 'Uploaded release asset differs')
     }
-    release = await readRelease()
+    for (let attempt = 0; attempt < 8; attempt++) {
+      release = await readRelease()
+      if (release.assets?.every(asset => typeof asset.digest === 'string')) break
+      await delay(2000)
+    }
     sameRelease(); assetState(release, assets, true)
     assert.equal(await resolveTagCommit(fetchImpl, tag, token), sourceRevision, 'Release tag changed before publication')
     if (release.draft) await api(`/releases/${release.id}`, { method: 'PATCH', body: { draft: false } })
