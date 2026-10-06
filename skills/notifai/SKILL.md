@@ -242,10 +242,11 @@ resume later. Never create a duplicate. On exit 0, act on the answer.
 
 ## When the answer arrives
 
-When a wake-up names `notifai receive`, run that exact command
-to read pending notes and answers together. An empty result means continue.
-The wake-up contains no answer and needs no acknowledgement; never recover an
-old answer from it. Hooks may have delivered the input already.
+Use any Notifai input supplied with the turn first. If none was supplied and
+the wake-up names `notifai receive`, run that exact command once to read pending
+notes and answers together. An empty result means continue. The wake-up itself
+contains no answer and needs no acknowledgement; never recover an old answer
+from it. Hooks may have delivered the input already.
 
 Within one submission, the latest reply corrects earlier choices; read typed
 parts in order. Preserve distinct submissions and clarify conflicts before
