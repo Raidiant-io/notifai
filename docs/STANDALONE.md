@@ -207,7 +207,12 @@ querying the OS and retains the installation on uncertain evidence. The
 synchronous observation helper has exited before its PID is excluded; only the
 foreground uninstaller itself and its exact Windows C parent are otherwise
 exempt. Windows keeps their executing images for later external cleanup. Once
-the journal enters removal, cancellation cannot reopen launch admission. Owned
+the journal enters removal, cancellation cannot reopen launch admission. A new
+uninstaller can adopt an interrupted removal only after its previous PID/start
+owner is proven gone. After repeating the absence gate, it releases only this
+installation's durable runtime references under the existing session locks,
+preserving all other Agent Session fields and checking the inspected bytes have
+not changed. It never records SessionEnd as part of uninstall. Owned
 teardown and the public command still need to complete this lifecycle.
 
 ### Existing Windows directory permissions

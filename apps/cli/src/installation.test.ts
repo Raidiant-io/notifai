@@ -112,7 +112,7 @@ it('finds pending work across indexed state roots before any uninstall mutation'
   const file = sessionStatePath(session, env), current = path.join(f.root, 'current-state', 'sessions')
   writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: id, build }] })
   retention.retain(build, file)
-  expect(retention.inspectOwners(current)).toEqual({ status: 'clear', hosts: [], residents: [], sessions: [{ file: canonicalPath(file), sessionId: session, builds: [build] }] })
+  expect(retention.inspectOwners(current)).toMatchObject({ status: 'clear', hosts: [], residents: [], sessions: [{ file: canonicalPath(file), sessionId: session, builds: [build] }] })
   // An unindexed sibling can have pending work from before native migration.
   writeSessionState('legacy-sibling', env, { acknowledgement_due: [{ request_id: 'req_pending', recorded_at: 1 }] })
   expect(retention.inspectOwners(current).status).toBe('waiting_for_questions')
@@ -328,6 +328,45 @@ it('requires drained resident and native executable owners before entering remov
   expect(() => installation.cancelUninstall(begun.token)).toThrow(/changed/)
   expect(existsSync(path.join(f.options.root, 'versions', first, 'notifai-runtime'))).toBe(true)
   expect(readFileSync(sessionStatePath(session, env), 'utf8')).not.toContain('ended')
+})
+
+it('releases only this installation references after teardown admission without ending Agent Sessions', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id
+  const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'preserved-session'
+  const other = { installation_id: '11111111-1111-4111-8111-111111111111', build }
+  writeSessionState(session, env, { harness: 'codex', cwd: f.root, runtime_builds: [{ installation_id: id, build }, other] })
+  const file = sessionStatePath(session, env), sessions = path.dirname(file)
+  const original = JSON.parse(readFileSync(file, 'utf8'))
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(installation.releaseUninstallReferences(begun.token, sessions).status).toBe('uncertain')
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('removing')
+  expect(installation.releaseUninstallReferences(begun.token, sessions).status).toBe('released')
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ ...original, runtime_builds: [other] })
+  expect(installation.releaseUninstallReferences(begun.token, sessions).status).toBe('released')
+  expect(readdirSync(sessions)).toEqual([path.basename(file)])
+})
+
+it('recovers interrupted wiring removal without reopening native launch admission', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const sessions = path.join(f.root, 'no-sessions')
+  const begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('removing')
+  const journalFile = path.join(f.options.root, 'uninstall.json'), journal = JSON.parse(readFileSync(journalFile, 'utf8'))
+  writeFileSync(journalFile, JSON.stringify({ ...journal, owner: { pid: process.pid, start: 'previous-process-start' } }))
+  const resumed = installation.beginUninstall(1, sessions)
+  expect(resumed.status).toBe('removing')
+  if (resumed.status !== 'removing') throw new Error('Removal did not resume')
+  expect(resumed.token).not.toBe(begun.token)
+  expect(() => installation.cancelUninstall(resumed.token)).toThrow(/changed/)
+  expect(installation.releaseUninstallReferences(resumed.token, sessions).status).toBe('released')
+  expect(JSON.parse(readFileSync(journalFile, 'utf8')).phase).toBe('removing')
 })
 
 it('retains unknown boot identities and user-modified bytes rather than trusting age or directory names', () => {

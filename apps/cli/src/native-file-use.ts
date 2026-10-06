@@ -5,6 +5,7 @@ import { processStartTime } from './process-identity.js'
 export interface NativeFileUse {
   status: 'clear' | 'in_use' | 'uncertain'
   processes: Array<{ pid: number; start?: string }>
+  reason?: string
 }
 
 /** Explicit uninstall only. C checks exact executable identity. Exclude only
@@ -31,9 +32,11 @@ export function inspectNativeFileUse(launcher: string, files: readonly string[])
       const result = spawnSync(launcher, ['--internal-file-users', ...files], {
         encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
       })
-      if (result.error || result.status !== 0 || !Number.isSafeInteger(result.pid) || result.pid <= 0) throw new Error('Native process observation failed')
+      if (result.error || result.status !== 0) throw new Error(`Native process observation failed (exit ${result.status ?? 'none'})`)
+      if (!Number.isSafeInteger(result.pid) || result.pid <= 0) throw new Error('Native observer PID is unavailable')
       const record = JSON.parse(result.stdout) as { reboot_reasons?: unknown; processes?: unknown }
-      if (record.reboot_reasons !== 0 || !Array.isArray(record.processes)) throw new Error('Native process observation is incomplete')
+      if (!Array.isArray(record.processes)) throw new Error('Native process observation is incomplete')
+      if (record.reboot_reasons !== 0) throw new Error(`Native observation reports reboot reasons ${String(record.reboot_reasons)}`)
       for (const item of record.processes) {
         if (!item || !Number.isSafeInteger(item.pid) || item.pid <= 0 ||
             (process.platform === 'win32' && (typeof item.start !== 'string' || !/^windows-filetime:[0-9]+$/.test(item.start)))) {
@@ -48,5 +51,5 @@ export function inspectNativeFileUse(launcher: string, files: readonly string[])
       }
     }
     return { status: processes.length ? 'in_use' : 'clear', processes }
-  } catch { return { status: 'uncertain', processes } }
+  } catch (error) { return { status: 'uncertain', processes, reason: error instanceof Error ? error.message : 'Native observation failed' } }
 }

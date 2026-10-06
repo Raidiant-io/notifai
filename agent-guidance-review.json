@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:19aedb6146ef7543d22b35b85b71ad49abb9a2e5e77de2c39d556790d7cd3b6d",
+  "behavior_digest": "sha256:e8fb4af342d1ae1bb936349d7bf05aa179332d488dcad32c02850eef36b8be73",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Internal uninstall removal admission now rechecks pending work and exact resident/host liveness before and after native executable observation. Unknown evidence retains the installation, and the removing phase cannot reopen admission through cancellation. This adds no public command, teardown or notification behavior; documentation states the remaining lifecycle work.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Uninstall removal recovery keeps launch admission closed after adopting an exited exact owner. Runtime reference release repeats absence proof, checks session bytes under existing locks and preserves all other Agent Session fields without synthesizing SessionEnd. Native observer uncertainty now includes diagnostics. Public command and teardown remain unfinished, as documented; no notification or skill behavior changed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

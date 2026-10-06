@@ -13,7 +13,7 @@ export interface RuntimeOwnerInspection {
   status: 'clear' | 'waiting_for_questions' | 'uncertain'
   hosts: ProcessIdentity[]
   residents: Array<{ file: string; identity: ProcessIdentity }>
-  sessions: Array<{ file: string; sessionId: string; builds: string[] }>
+  sessions: Array<{ file: string; sessionId: string; builds: string[]; digest: string }>
 }
 
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)
@@ -163,6 +163,27 @@ export class RuntimeRetention {
     }
     return pending
   }
+  /** Caller holds installation.lock in the removing phase, has closed launch
+   * admission and proved host/resident/native-file absence. Release only these
+   * installation references under each existing session lock. No lifecycle or
+   * question fields are changed; an intervening writer makes the retry explicit. */
+  releaseReferences(inspection: RuntimeOwnerInspection): void {
+    if (inspection.status !== 'clear') throw new Error('Pending work cannot release runtime references')
+    for (const session of inspection.sessions) {
+      if (session.builds.length === 0) continue
+      withFileLock(`${session.file}.lock`, () => {
+        const state = this.read(session.file, 16 * 1024 * 1024)
+        if (state === null || createHash('sha256').update(readFileSync(session.file)).digest('hex') !== session.digest ||
+            this.pendingSidecars(session.file, true)) throw new Error('Session work changed before reference release')
+        const references = state['runtime_builds']
+        if (!Array.isArray(references)) throw new Error('Runtime references changed')
+        atomicWriteFileSync(session.file, JSON.stringify({ ...state,
+          runtime_builds: references.filter(reference => reference.installation_id !== this.installationId),
+        }) + '\n', { expectedContentsSha256: session.digest, requireCurrentUserOwner: true,
+          prepareTemporary: temporary => this.access.beforePublish(temporary) })
+      }, { waitMs: 5_000, strictRelease: true })
+    }
+  }
   /** Uninstall preflight across the current state root and every indexed root.
    * Include unindexed siblings: legacy work in a discovered root still counts.
    * This is a work inventory, never process-absence or deletion authority. The
@@ -240,7 +261,7 @@ export class RuntimeRetention {
             const references = state['runtime_builds'] ?? []
             if (!Array.isArray(references) || references.some(item => !item || !uuid(item.installation_id) ||
                 typeof item.build !== 'string' || !/^[a-f0-9]{64}$/.test(item.build))) throw new Error('Uncertain runtime references')
-            sessions.push({ file, sessionId, builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build) })
+            sessions.push({ file, sessionId, digest: createHash('sha256').update(readFileSync(file)).digest('hex'), builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build) })
             for (const field of ['pending', 'retiring', 'waiting_answers', 'delivered_answers', 'acknowledgement_due',
               'message_acknowledgement_due', 'openclaw_foreground_replies']) {
               const value = state[field]

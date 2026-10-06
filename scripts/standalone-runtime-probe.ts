@@ -61,9 +61,14 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     files.push(path.join(installed, 'versions', build, `notifai${extension}`), path.join(installed, 'versions', build, `notifai-runtime${extension}`))
   }
   const result = inspectNativeFileUse(path.join(path.dirname(process.execPath), `notifai${extension}`), files)
+  if (result.status === 'uncertain') {
+    const raw = spawnSync(path.join(path.dirname(process.execPath), `notifai${extension}`), ['--internal-file-users', ...files],
+      { encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+    process.stderr.write(JSON.stringify({ observation: result, native: { pid: raw.pid, status: raw.status, stdout: raw.stdout, stderr: raw.stderr, error: raw.error?.message } }) + '\n')
+  }
   if (args[0] === 'clear') assert.deepEqual(result, { status: 'clear', processes: [] })
   else {
-    assert.equal(result.status, 'in_use')
+    assert.equal(result.status, 'in_use', JSON.stringify(result))
     assert.ok(result.processes.some(item => item.pid === Number(args[0])))
     assert.ok(result.processes.every(item => item.pid !== process.pid && item.pid !== process.ppid))
   }
@@ -104,6 +109,8 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     parent: path.join(root, 'extracted') })
   assert.equal(readFileSync(path.join(directory, 'licenses', 'NOTICE.txt'), 'utf8'), 'Fixture notice')
 } else if (mode === 'owner-launch') {
+  const { assertNativeLaunchAllowed } = await import('../apps/cli/src/native-uninstall-barrier.js')
+  assertNativeLaunchAllowed(process.env)
   const { currentRuntimeBuild, launchSelf } = await import('../apps/cli/src/launch-self.js')
   const { retainSessionRuntime } = await import('../apps/cli/src/runtime-build-retention.js')
   const { writeSessionState, readSessionState } = await import('../apps/cli/src/hook-session-state.js')
@@ -154,6 +161,11 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     assert.equal(begun.status, 'preparing')
     if (begun.status !== 'preparing') throw new Error('Native uninstall did not prepare')
     assert.equal(installation.enterUninstallRemoval(begun.token, sessions).status, 'removing')
+    const { readSessionState, sessionStatePath, sessionHasEnded } = await import('../apps/cli/src/hook-session-state.js')
+    assert.ok(readSessionState('native-owner-fixture', process.env).runtime_builds?.length)
+    assert.equal(installation.releaseUninstallReferences(begun.token, sessions).status, 'released')
+    assert.deepEqual(JSON.parse(readFileSync(sessionStatePath('native-owner-fixture', process.env), 'utf8')).runtime_builds, [])
+    assert.equal(sessionHasEnded('native-owner-fixture', process.env), false)
     assert.throws(() => installation.cancelUninstall(begun.token), /changed/)
   } else if (operation === 'cleanup') {
     // Inject only boot identities. File publication, ownership checks, signed

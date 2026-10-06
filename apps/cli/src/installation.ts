@@ -29,7 +29,7 @@ interface InstallRecord {
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
 interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing' }
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain' } |
-  { status: 'preparing'; token: string; owners: RuntimeOwnerInspection }
+  { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
 export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
@@ -133,7 +133,7 @@ export class Installation {
     return withFileLock(this.file('installation.lock'), () => {
       const active = this.readActive(), installed = this.readInstall(), journal = this.uninstallRecord()
       if (!active || !installed || active.generation !== expectedGeneration || present(this.file('transaction.json')) ||
-          (journal && (journal.installation_id !== installed.id || journal.generation !== active.generation || journal.phase !== 'preparing'))) {
+          (journal && (journal.installation_id !== installed.id || journal.generation !== active.generation))) {
         throw new Error('Installation changed or uninstall needs recovery')
       }
       const owner = currentProcessIdentity()
@@ -146,12 +146,12 @@ export class Installation {
       if (owners.status !== 'clear') {
         // A preparing journal has never removed wiring. Reopen admission so
         // work that appeared during preflight can complete through its owners.
-        if (journal) rmSync(this.file('uninstall.json'))
+        if (journal?.phase === 'preparing') rmSync(this.file('uninstall.json'))
         return { status: owners.status }
       }
       const token = resuming ? journal!.token : randomUUID()
-      if (!resuming) this.save('uninstall.json', { schema: 1, installation_id: installed.id, generation: active.generation, token, owner, phase: 'preparing' })
-      return { status: 'preparing', token, owners }
+      if (!resuming) this.save('uninstall.json', { schema: 1, installation_id: installed.id, generation: active.generation, token, owner, phase: journal?.phase ?? 'preparing' })
+      return { status: journal?.phase ?? 'preparing', token, owners }
     }, { waitMs: 5_000, strictRelease: true })
   }
   cancelUninstall(token: string): void {
@@ -173,7 +173,7 @@ export class Installation {
       return withFileLock(this.file('installation.lock'), () => {
         const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive()
         const owner = currentProcessIdentity()
-        if (!journal || journal.token !== token || journal.phase !== 'preparing' || journal.installation_id !== installed?.id ||
+        if (!journal || journal.token !== token || !['preparing', 'removing'].includes(journal.phase) || journal.installation_id !== installed?.id ||
             journal.generation !== active?.generation || journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start ||
             present(this.file('transaction.json'))) return { status: 'uncertain' }
         const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
@@ -198,11 +198,29 @@ export class Installation {
         // native observer ran. Admission is still closed throughout both reads.
         const after = retention.inspectOwners(currentSessions)
         if (after.status !== 'clear') return { status: after.status }
-        if ([...after.hosts, ...after.residents.map(item => item.identity)].some(identity => processIdentityLiveness(identity) !== 'gone')) {
-          return { status: 'residents_running' }
+        for (const identity of [...after.hosts, ...after.residents.map(item => item.identity)]) {
+          const liveness = processIdentityLiveness(identity)
+          if (liveness !== 'gone') return { status: liveness === 'alive' ? 'residents_running' : 'uncertain' }
         }
         this.save('uninstall.json', { ...journal, phase: 'removing' })
         return { status: 'removing' }
+      }, { waitMs: 5_000, strictRelease: true })
+    } catch { return { status: 'uncertain' } }
+  }
+  releaseUninstallReferences(token: string, currentSessions: string): { status: 'released' | 'waiting_for_questions' | 'residents_running' | 'uncertain' } {
+    try {
+      if (this.uninstallRecord()?.phase !== 'removing') return { status: 'uncertain' }
+      const admitted = this.enterUninstallRemoval(token, currentSessions)
+      if (admitted.status !== 'removing') return { status: admitted.status }
+      return withFileLock(this.file('installation.lock'), () => {
+        const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive(), owner = currentProcessIdentity()
+        if (!journal || journal.phase !== 'removing' || journal.token !== token || journal.installation_id !== installed?.id ||
+            journal.generation !== active?.generation || journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) return { status: 'uncertain' }
+        const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
+        const owners = retention.inspectOwners(currentSessions)
+        if (owners.status !== 'clear') return { status: owners.status }
+        retention.releaseReferences(owners)
+        return { status: 'released' }
       }, { waitMs: 5_000, strictRelease: true })
     } catch { return { status: 'uncertain' } }
   }
