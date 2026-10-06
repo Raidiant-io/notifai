@@ -121,7 +121,7 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     retain: value => retainSessionRuntime(session, process.env, value) })
   assert.deepEqual(readSessionState(session, process.env).runtime_builds, [reference])
   process.stdout.write(JSON.stringify({ ...child, reference }))
-} else if (mode === 'installation') {
+} else if (mode === 'installation' || mode === 'uninstall') {
   const fixture = JSON.parse(readFileSync(path.join(root, 'installation-fixture.json'), 'utf8'))
   const extension = process.platform === 'win32' ? '.exe' : ''
   const options = { root: path.join(root, '.notifai'), target: fixture.target,
@@ -131,9 +131,9 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
       assert.equal(result.status, 0, result.stderr)
     } }
   const installation = new Installation(options)
-  const first = installation.stage({ directory: fixture.directories[0], signedInventory: fixture.inventories[0] })
-  const second = installation.stage({ directory: fixture.directories[1], signedInventory: fixture.inventories[1] })
-  const operation = args[0]
+  const operation = mode === 'uninstall' ? 'uninstall' : args[0]
+  const first = operation === 'uninstall' ? '' : installation.stage({ directory: fixture.directories[0], signedInventory: fixture.inventories[0] })
+  const second = operation === 'uninstall' ? '' : installation.stage({ directory: fixture.directories[1], signedInventory: fixture.inventories[1] })
   if (operation === 'first') {
     assert.equal(installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' }).active.active, first)
   } else if (operation === 'update') {
@@ -167,6 +167,9 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     assert.deepEqual(JSON.parse(readFileSync(sessionStatePath('native-owner-fixture', process.env), 'utf8')).runtime_builds, [])
     assert.equal(sessionHasEnded('native-owner-fixture', process.env), false)
     assert.throws(() => installation.cancelUninstall(begun.token), /changed/)
+    const result = installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] }))
+    assert.equal(result.status, process.platform === 'win32' ? 'incomplete' : 'removed', JSON.stringify(result))
+    if (process.platform !== 'win32') assert.equal(installation.inspect().active, null)
   } else if (operation === 'cleanup') {
     // Inject only boot identities. File publication, ownership checks, signed
     // inventory verification and deletion use the real native OS adapters.

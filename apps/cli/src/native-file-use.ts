@@ -36,7 +36,14 @@ export function inspectNativeFileUse(launcher: string, files: readonly string[])
       if (!Number.isSafeInteger(result.pid) || result.pid <= 0) throw new Error('Native observer PID is unavailable')
       const record = JSON.parse(result.stdout) as { reboot_reasons?: unknown; processes?: unknown }
       if (!Array.isArray(record.processes)) throw new Error('Native process observation is incomplete')
-      if (record.reboot_reasons !== 0) throw new Error(`Native observation reports reboot reasons ${String(record.reboot_reasons)}`)
+      // Restart Manager marks a query that includes its own executable with
+      // RmRebootReasonDetectedSelf (0x10). The synchronous observer has already
+      // exited, so only that flag with its actual PID present can be discharged.
+      // Permission, session, critical-process and unknown flags remain uncertain.
+      if (record.reboot_reasons !== 0 && !(process.platform === 'win32' && record.reboot_reasons === 0x10 &&
+          record.processes.some(item => item?.pid === result.pid))) {
+        throw new Error(`Native observation reports reboot reasons ${String(record.reboot_reasons)}`)
+      }
       for (const item of record.processes) {
         if (!item || !Number.isSafeInteger(item.pid) || item.pid <= 0 ||
             (process.platform === 'win32' && (typeof item.start !== 'string' || !/^windows-filetime:[0-9]+$/.test(item.start)))) {

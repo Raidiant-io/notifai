@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e8fb4af342d1ae1bb936349d7bf05aa179332d488dcad32c02850eef36b8be73",
+  "behavior_digest": "sha256:4320e59c3568269d48adabc1ba481a0f6d5269501f8245daa9d2da63e8f38a86",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Uninstall removal recovery keeps launch admission closed after adopting an exited exact owner. Runtime reference release repeats absence proof, checks session bytes under existing locks and preserves all other Agent Session fields without synthesizing SessionEnd. Native observer uncertainty now includes diagnostics. Public command and teardown remain unfinished, as documented; no notification or skill behavior changed.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Internal uninstall completion invokes owned wiring removal, removes receipt-owned PATH contributions and releases drained references, then persists a bounded hashed removal plan. POSIX supports finite deletion/retry without User-data or SessionEnd changes; Windows retains files pending external cleanup. Native Windows observation discharges only its exact exited helper detected-self flag. Public uninstall and migration remain unfinished and are documented without advertising availability.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

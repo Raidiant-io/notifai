@@ -369,6 +369,75 @@ it('recovers interrupted wiring removal without reopening native launch admissio
   expect(JSON.parse(readFileSync(journalFile, 'utf8')).phase).toBe('removing')
 })
 
+it('removes only finite authenticated installation files and preserves User data', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  writeFileSync(path.join(f.options.root, 'user-data.json'), '{"keep":true}')
+  writeFileSync(path.join(f.options.root, 'bin', 'other-tool'), 'keep this tool')
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const sessions = path.join(f.root, 'no-sessions')
+  const begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  let wiringRemoved = false
+  const result = installation.completeUninstall(begun.token, sessions, () => { wiringRemoved = true; return { ok: true, conflicts: [] } })
+  expect(result.status).toBe('removed')
+  expect(wiringRemoved).toBe(true)
+  expect(installation.inspect().active).toBeNull()
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  expect(existsSync(path.join(f.options.root, 'versions', build))).toBe(false)
+  expect(existsSync(path.join(f.options.root, 'bin', 'notifai'))).toBe(false)
+  expect(readFileSync(path.join(f.options.root, 'bin', 'other-tool'), 'utf8')).toBe('keep this tool')
+  expect(readFileSync(path.join(f.options.root, 'user-data.json'), 'utf8')).toBe('{"keep":true}')
+  expect(installation.installCandidate({ ...f.candidate('2.0.0'), source: 'shell' }).changed).toBe(true)
+})
+
+it.each(['uninstall-planned', 'uninstall-file-removed', 'active-pointer-removed'])('resumes a finite uninstall after %s interruption', (interruption) => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const options = { ...f.options, fileUse: () => ({ status: 'clear' as const, processes: [] }) }
+  let interrupted = false
+  const installation = new Installation({ ...options, observe(phase) {
+    if (!interrupted && (phase === interruption || interruption === 'active-pointer-removed' && phase === 'uninstall-file-removed' &&
+        !existsSync(path.join(f.options.root, 'active.json')))) { interrupted = true; throw new Error('interrupted removal') }
+  } })
+  const sessions = path.join(f.root, 'no-sessions'), begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('incomplete')
+  expect(interrupted).toBe(true)
+  const journalFile = path.join(f.options.root, 'uninstall.json'), journal = JSON.parse(readFileSync(journalFile, 'utf8'))
+  expect(journal.plan.files.length).toBeGreaterThan(0)
+  writeFileSync(journalFile, JSON.stringify({ ...journal, owner: { pid: process.pid, start: 'previous-process-start' } }))
+  const retry = new Installation(options), resumed = retry.beginUninstall(1, sessions)
+  if (resumed.status !== 'removing') throw new Error('Partial removal did not resume')
+  expect(retry.completeUninstall(resumed.token, sessions, () => { throw new Error('Verified wiring must not be removed again') }).status).toBe('removed')
+  expect(existsSync(path.join(f.options.root, 'versions', build))).toBe(false)
+  expect(existsSync(journalFile)).toBe(false)
+  expect(retry.installCandidate({ ...f.candidate('2.0.0'), source: 'manual' }).changed).toBe(true)
+})
+
+it('preserves changed bytes and refuses a removal plan outside installation ownership', () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const options = { ...f.options, fileUse: () => ({ status: 'clear' as const, processes: [] }) }
+  const interrupted = new Installation({ ...options, observe(phase) { if (phase === 'uninstall-planned') throw new Error('interrupted') } })
+  const sessions = path.join(f.root, 'no-sessions'), begun = interrupted.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(interrupted.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('incomplete')
+  const runtime = path.join(f.options.root, 'versions', build, 'notifai-runtime')
+  writeFileSync(runtime, 'preserve changed executable')
+  const retry = new Installation(options)
+  expect(retry.completeUninstall(begun.token, sessions, () => { throw new Error('Do not repeat wiring') }).status).toBe('incomplete')
+  expect(readFileSync(runtime, 'utf8')).toBe('preserve changed executable')
+  expect(existsSync(path.join(f.options.root, 'active.json'))).toBe(true)
+  const outside = path.join(f.root, 'outside.txt'), journalFile = path.join(f.options.root, 'uninstall.json')
+  writeFileSync(outside, 'preserve unrelated data')
+  const journal = JSON.parse(readFileSync(journalFile, 'utf8'))
+  journal.plan.files[0].name = '../outside.txt'
+  writeFileSync(journalFile, JSON.stringify(journal))
+  expect(() => retry.beginUninstall(1, sessions)).toThrow(/removal plan/)
+  expect(readFileSync(outside, 'utf8')).toBe('preserve unrelated data')
+})
+
 it('retains unknown boot identities and user-modified bytes rather than trusting age or directory names', () => {
   const f = fixture()
   let boot: string | null = '11111111-1111-4111-8111-111111111111'

@@ -165,8 +165,8 @@ Session Attendants withdraw through their existing lifecycle gate. The current
 OpenClaw plugin also stops starting children and removes its readiness receipt
 while admission is closed; it does not signal children during this drain.
 Previously loaded plugins require separate proof before removal can finish. This is
-preparation infrastructure; owned removal and the public uninstall command are
-not yet complete. Inspection includes orphan delivery/input sidecars and the
+internal lifecycle infrastructure; the public uninstall command and Windows
+external cleanup are not yet complete. Inspection includes orphan delivery/input sidecars and the
 machine retirement queue in every discovered state root. Reported handoffs and
 valid native acknowledgement receipts are history; unfinished work retains the
 installation. No question is cancelled by inspection. The current native
@@ -204,7 +204,9 @@ bounded snapshots require closed launch admission. The removal-phase gate
 rechecks pending work and recorded host/resident identities on both sides of
 native file-use observation. It authenticates every installed runtime before
 querying the OS and retains the installation on uncertain evidence. The
-synchronous observation helper has exited before its PID is excluded; only the
+synchronous observation helper has exited before its PID is excluded; Windows
+accepts only the Restart Manager detected-self flag (0x10) with that exact
+helper PID present, while other restart flags remain uncertain; only the
 foreground uninstaller itself and its exact Windows C parent are otherwise
 exempt. Windows keeps their executing images for later external cleanup. Once
 the journal enters removal, cancellation cannot reopen launch admission. A new
@@ -213,7 +215,15 @@ owner is proven gone. After repeating the absence gate, it releases only this
 installation's durable runtime references under the existing session locks,
 preserving all other Agent Session fields and checking the inspected bytes have
 not changed. It never records SessionEnd as part of uninstall. Owned
-teardown and the public command still need to complete this lifecycle.
+teardown is supplied through the existing hook/skill integration boundary.
+The internal completion operation removes owned PATH contributions and persists a
+finite, hashed file plan before deleting any runtime files. POSIX deletes only
+those verified files and empty directories, preserves unrelated entries and User
+data, and can adopt an interrupted plan even after the active pointer is gone.
+Modified files or a plan naming anything outside installation ownership retain
+the installation. Windows returns the exact retained paths for cleanup after
+exit; its external cleanup command is still pending. The public command and
+legacy npm migration remain unfinished.
 
 ### Existing Windows directory permissions
 

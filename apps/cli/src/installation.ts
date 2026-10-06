@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from 'node:fs'
 import path from 'node:path'
+import { captureRemovalPlan, executableMember, removalPlan, removePlannedFiles, verifyRemovalPlan, type RemovalPlan } from './installation-removal.js'
 import { inspectNativeFileUse, type NativeFileUse } from './native-file-use.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
@@ -27,13 +28,13 @@ interface InstallRecord {
   launcherUpdatePending: boolean
 }
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
-interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing' }
+interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan }
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain' } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
 export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
-type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated'
+type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated' | 'uninstall-planned' | 'uninstall-file-removed'
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
 const buildId = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 function present(file: string): boolean {
@@ -123,26 +124,37 @@ export class Installation {
         !value.owner || !Number.isSafeInteger(value.owner.pid) || value.owner.pid <= 0 || typeof value.owner.start !== 'string' || !value.owner.start ||
         !Number.isSafeInteger(value.generation) || value.generation! < 1 ||
         !['preparing', 'removing'].includes(value.phase ?? '')) throw new Error('Uninstall journal needs repair')
+    if (value.plan !== undefined) {
+      if (value.phase !== 'removing') throw new Error('Invalid removal phase')
+      removalPlan(value.plan)
+    }
     return value as UninstallTransaction
   }
   /** No wiring or runtime edits. The journal closes C and JS launch admission,
    * while the caller verifies withdrawal and process absence. Questions keep
    * their existing owners; uncertainty leaves the working installation intact. */
   beginUninstall(expectedGeneration: number, currentSessions: string): UninstallPreparation {
-    this.activeRelease(expectedGeneration)
+    if (!this.uninstallRecord()?.plan) this.activeRelease(expectedGeneration)
     return withFileLock(this.file('installation.lock'), () => {
       const active = this.readActive(), installed = this.readInstall(), journal = this.uninstallRecord()
-      if (!active || !installed || active.generation !== expectedGeneration || present(this.file('transaction.json')) ||
+      if (present(this.file('transaction.json'))) throw new Error('Installation changed or uninstall needs recovery')
+      if (journal?.plan) {
+        if ((installed && installed.id !== journal.installation_id) || (active && active.generation !== journal.generation) ||
+            (expectedGeneration !== 0 && expectedGeneration !== journal.generation)) throw new Error('Installation changed during removal')
+        verifyRemovalPlan(this.root, journal.plan, (file, directory) => this.owned(file, directory))
+      } else if (!active || !installed || active.generation !== expectedGeneration ||
           (journal && (journal.installation_id !== installed.id || journal.generation !== active.generation))) {
         throw new Error('Installation changed or uninstall needs recovery')
       }
+      const installationId = installed?.id ?? journal!.installation_id
+      const generation = active?.generation ?? journal!.generation
       const owner = currentProcessIdentity()
       if (owner === null) throw new Error('Cannot establish uninstall process identity')
       const resuming = journal && journal.owner.pid === owner.pid && journal.owner.start === owner.start
       if (journal && !resuming && processIdentityLiveness(journal.owner) !== 'gone') {
         throw new Error('Another uninstall may still be running; retain this installation')
       }
-      const owners = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity).inspectOwners(currentSessions)
+      const owners = new RuntimeRetention(this.root, installationId, this.access, this.options.bootIdentity).inspectOwners(currentSessions)
       if (owners.status !== 'clear') {
         // A preparing journal has never removed wiring. Reopen admission so
         // work that appeared during preflight can complete through its owners.
@@ -150,7 +162,7 @@ export class Installation {
         return { status: owners.status }
       }
       const token = resuming ? journal!.token : randomUUID()
-      if (!resuming) this.save('uninstall.json', { schema: 1, installation_id: installed.id, generation: active.generation, token, owner, phase: journal?.phase ?? 'preparing' })
+      if (!resuming) this.save('uninstall.json', { ...journal, schema: 1, installation_id: installationId, generation, token, owner, phase: journal?.phase ?? 'preparing' })
       return { status: journal?.phase ?? 'preparing', token, owners }
     }, { waitMs: 5_000, strictRelease: true })
   }
@@ -223,6 +235,98 @@ export class Installation {
         return { status: 'released' }
       }, { waitMs: 5_000, strictRelease: true })
     } catch { return { status: 'uncertain' } }
+  }
+  private uninstallFiles(installed: InstallRecord): string[] {
+    const names = ['install.json', 'active.json', `bin/notifai${this.extension}`]
+    for (const build of readdirSync(this.file('versions'))) {
+      const version = this.verifyVersion(build)
+      const members = [`notifai${this.extension}`, `notifai-runtime${this.extension}`, 'inventory.json', ...version.artifact.materials.map(item => item.path)]
+      const files = new Set(members), directories = new Set<string>([''])
+      for (const file of members) for (let parent = path.posix.dirname(file); parent !== '.'; parent = path.posix.dirname(parent)) directories.add(parent)
+      const visit = (relative: string): void => {
+        const directory = path.join(version.directory, relative)
+        this.owned(directory, true)
+        for (const name of readdirSync(directory)) {
+          const member = relative ? `${relative}/${name}` : name
+          if (directories.has(member)) visit(member)
+          else if (!files.has(member)) throw new Error('Unrecognized file in immutable generation; preserve it before uninstall')
+        }
+      }
+      visit('')
+      names.push(...members.map(member => `versions/${build}/${member}`))
+    }
+    // These records own only installation metadata. Host journals and session
+    // files referenced by them remain User state outside this removal plan.
+    for (const directory of ['runtime-retention', 'openclaw-hosts']) {
+      if (!present(this.file(directory))) continue
+      const visit = (relative: string): void => {
+        this.owned(this.file(relative), true)
+        for (const name of readdirSync(this.file(relative))) {
+          const member = `${relative}/${name}`, file = this.file(member)
+          if (lstatSync(file).isDirectory()) visit(member)
+          else {
+            const value = this.readJson(member) as { schema?: unknown; installation_id?: unknown } | null
+            if (value?.schema !== 1 || value.installation_id !== installed.id) throw new Error('Unverified installation retention record')
+            names.push(member)
+          }
+        }
+      }
+      visit(directory)
+    }
+    for (const channel of ['stable', 'beta'] as const) if (this.channelRecord(channel)) names.push(`channels/${channel}.json`)
+    for (const name of ['shell-path.json', 'windows-path.json']) if (present(this.file(name))) names.push(name)
+    return names
+  }
+  /** Wiring removal is supplied by the command's existing ownership-aware
+   * harness/skill integration. Runtime deletion owns only a persisted finite
+   * plan; credentials, configuration and Agent Session history stay intact. */
+  completeUninstall(token: string, currentSessions: string, removeWiring: () => { ok: boolean; conflicts: string[] }):
+    { status: 'removed' | 'incomplete' | 'waiting_for_questions' | 'residents_running' | 'uncertain'; retained?: string[]; conflicts?: string[] } {
+    try {
+      if (!this.uninstallRecord()?.plan) {
+        const admitted = this.enterUninstallRemoval(token, currentSessions)
+        if (admitted.status !== 'removing') return { status: admitted.status }
+        const wiring = removeWiring()
+        if (!wiring.ok) return { status: 'incomplete', conflicts: wiring.conflicts }
+        const released = this.releaseUninstallReferences(token, currentSessions)
+        if (released.status !== 'released') return { status: released.status }
+      }
+      return withFileLock(this.file('installation.lock'), () => {
+        const journal = this.uninstallRecord(), owner = currentProcessIdentity()
+        if (!journal || journal.phase !== 'removing' || journal.token !== token ||
+            journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) return { status: 'uncertain' }
+        if (!journal.plan) {
+          const installed = this.readInstall(), active = this.readActive()
+          if (!installed || !active || installed.id !== journal.installation_id || active.generation !== journal.generation) return { status: 'uncertain' }
+          const launcher = this.activeRelease().launcher
+          const pathSetup = this.options.target.startsWith('bun-windows-')
+            ? new WindowsPathInstallation({ bin: this.file('bin'), registry: nativeUserPathRegistry(launcher),
+              read: () => this.readJson('windows-path.json'), save: receipt => this.save('windows-path.json', receipt) })
+            : new ShellPathInstallation({ home: path.dirname(this.root), bin: this.file('bin'), shell: '',
+              read: () => this.readJson('shell-path.json'), save: receipt => this.save('shell-path.json', receipt) })
+          const pathRemoved = pathSetup.remove()
+          if (!pathRemoved.ok) return { status: 'incomplete', conflicts: pathRemoved.conflicts }
+          journal.plan = captureRemovalPlan(this.root, this.uninstallFiles(installed), (file, directory) => this.owned(file, directory))
+          this.save('uninstall.json', journal)
+          this.options.observe?.('uninstall-planned')
+        }
+        const plan = journal.plan
+        verifyRemovalPlan(this.root, plan, (file, directory) => this.owned(file, directory))
+        const executables = plan.files.filter(item => executableMember(item.name) && present(this.file(item.name))).map(item => this.file(item.name))
+        const launcher = executables.find(file => path.basename(file) === `notifai${this.extension}`)
+        if (executables.length) {
+          if (!launcher) return { status: 'incomplete', retained: executables }
+          const observed = (this.options.fileUse ?? inspectNativeFileUse)(launcher, executables)
+          if (observed.status !== 'clear') return { status: observed.status === 'in_use' ? 'residents_running' : 'uncertain' }
+        }
+        // Windows cannot unlink this command's executing images. A separately
+        // invoked cleanup command must apply the same finite plan after exit.
+        if (this.options.target.startsWith('bun-windows-')) return { status: 'incomplete', retained: plan.files.filter(item => present(this.file(item.name))).map(item => this.file(item.name)) }
+        removePlannedFiles(this.root, plan, (file, directory) => this.owned(file, directory), () => this.options.observe?.('uninstall-file-removed'))
+        rmSync(this.file('uninstall.json'))
+        return { status: 'removed' }
+      }, { waitMs: 5_000, strictRelease: true })
+    } catch (error) { return { status: 'incomplete', conflicts: [error instanceof Error ? error.message : 'Uninstall needs recovery'] } }
   }
   private readActive(): ActiveGeneration | null {
     const value = this.readJson('active.json')

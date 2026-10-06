@@ -228,8 +228,9 @@ try {
     assert.match(blocked.stderr, /uninstall is in progress/)
     assert.equal(existsSync(path.join(blockedRoot, 'owner.json')), false)
   } finally { rmSync(barrier) }
-  run(['installation', root, 'uninstall'])
-  rmSync(barrier) // Owned fixture teardown; production cannot cancel the removing phase.
+  execFileSync(path.join(managedRoot, 'bin', `notifai${extension}`), ['uninstall', root],
+    { cwd: root, env, stdio: 'inherit', timeout: 90_000 })
+  if (windows) rmSync(barrier) // Owned fixture teardown; Windows runtime removal is still deferred.
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
       filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
@@ -335,6 +336,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', ...(windows ? ['windows-runtime-removal-deferred'] : ['finite-runtime-removal']), 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }
