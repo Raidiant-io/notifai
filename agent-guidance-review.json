@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7c868bd09ebd695d5ebd53383c91cd1d8264bc1bf899f22eb456d1a306c6e3f0",
+  "behavior_digest": "sha256:47cd136a355feeef025ea724e9b29e39c543b4bb301ef6744553b4ddadca95ea",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the configured release public key. The key changes native distribution authentication only; it grants no Account, Project, hook or harness approval and is not supplied by repository configuration. Published npm installation guidance remains accurate until the native release is actually available. Standalone and optional-bootstrap documents distinguish configured trust from pending materials, finalization and publication. The development-only rebuilt-runtime option selects explicit compiler input and has a distinct runtime identity rejected by official release signing; it does not change shipped harness behavior.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the Claude Code Session Attendant handoff. A prompt or turn-end hook from the session's own Claude Code process now hands its resident attendant to the installed runtime; subagent events, other processes, hooks older than the session start and ended sessions hand nothing over. Guidance already states that existing Claude Code hooks use the updated adapter on their next invocation and that a CLI-only update needs no fresh Agent Session; the handoff makes the resident writer match that statement. It changes no hook output, question, answer, acknowledgement, approval or wake wording, and pending work remains in session state.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

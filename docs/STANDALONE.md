@@ -80,7 +80,11 @@ signed distribution admission or the launcher's OS access checks.
 
 Detached native owners launch the current immutable build. Before child creation,
 the existing session record retains that build; claims also carry the runtime
-reference. Updating the active pointer leaves the old owner running. Native CI
+reference. Updating the active pointer leaves the old owner running. A Claude
+Code or Codex session open across an update hands its Session Attendant to the
+installed runtime at the session's own next prompt or turn end; pending work
+stays in session state, and the previous owner exits without ending the
+session. A subagent's event never triggers that handoff. Native CI
 exercises this ordering and continued execution with isolated fixture owners,
 and executes a generated native hook command with a restricted PATH. These
 checks do not establish real harness activation, provider delivery, complete
