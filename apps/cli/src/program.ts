@@ -53,6 +53,7 @@ import { admitNativeCommand, portableNativeReport, type NativeAdmission } from '
 import { resumeAttendantCommand } from './attendant-update.js'
 import { buildIdentity } from './distribution.js'
 import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
+import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 
 /**
@@ -92,6 +93,7 @@ function commandPath(command: Command): string {
 const defaultRunners = {
   init: initCommand,
   install: nativeInstallCommand,
+  uninstall: nativeUninstallCommand,
   doctor: doctorCommand,
   update: cliUpdateCommand,
   updateCheck: cliUpdateCheckCommand,
@@ -322,6 +324,17 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--no-path', 'skip persistent PATH setup; use the reported absolute command')
     .option('--no-init', 'install the runtime without starting account or harness setup')
     .action(async (opts: NativeInstallFlags) => { exit(await runners.install(deps, opts)) })
+
+  program
+    .command('uninstall')
+    .helpGroup(GROUP.start)
+    .summary('Remove the native CLI and its owned integration; preserve your data')
+    .option('--json', 'machine-readable uninstall report; never prompts')
+    .option('--cancel', 'cancel a pending uninstall before removal starts')
+    .option('--finish', 'finish Windows removal from the verified temporary copy')
+    .option('--installation-id <id>', 'installation identity supplied by the cleanup command')
+    .option('--installation-root <directory>', 'installation root supplied by the cleanup command')
+    .action(async (opts: NativeUninstallFlags) => { exit(await runners.uninstall(deps, opts)) })
 
   program
     .command('doctor')

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:4320e59c3568269d48adabc1ba481a0f6d5269501f8245daa9d2da63e8f38a86",
+  "behavior_digest": "sha256:3c748472ad9b0913d0547406b0f6f282b927d4e5a088e90a3fa4e18293051bcb",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Internal uninstall completion invokes owned wiring removal, removes receipt-owned PATH contributions and releases drained references, then persists a bounded hashed removal plan. POSIX supports finite deletion/retry without User-data or SessionEnd changes; Windows retains files pending external cleanup. Native Windows observation discharges only its exact exited helper detected-self flag. Public uninstall and migration remain unfinished and are documented without advertising availability.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Explicit native uninstall reports pending work, wiring conflicts and recoverable state without cancelling questions or ending Agent Sessions. Windows uses a verified temporary runtime and an explicit PowerShell cleanup command; no execution-policy change or implicit publication. Existing session state receives read-only owner/writer checks while managed directories retain protected ACL requirements. Standalone documentation describes the command and pending native qualification; notification guidance is unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

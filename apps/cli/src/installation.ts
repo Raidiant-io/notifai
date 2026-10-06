@@ -4,6 +4,8 @@ import { lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } f
 import path from 'node:path'
 import { captureRemovalPlan, executableMember, removalPlan, removePlannedFiles, verifyRemovalPlan, type RemovalPlan } from './installation-removal.js'
 import { inspectNativeFileUse, type NativeFileUse } from './native-file-use.js'
+import { canonicalPath, sameLocalPath } from './local-path.js'
+import { windowsUninstallCommand } from './windows-uninstall.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
 import { withFileLock } from './file-lock.js'
@@ -28,8 +30,8 @@ interface InstallRecord {
   launcherUpdatePending: boolean
 }
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
-interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan }
-type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain' } |
+interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan; cleanup_build?: string }
+type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain'; reason?: string } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
 export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
@@ -119,7 +121,7 @@ export class Installation {
   private uninstallRecord(): UninstallTransaction | null {
     const value = this.readJson('uninstall.json') as Partial<UninstallTransaction> | null
     if (value === null) return null
-    if (value.schema !== 1 || typeof value.installation_id !== 'string' ||
+    if (value.schema !== 1 || typeof value.installation_id !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.installation_id) ||
         typeof value.token !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.token) ||
         !value.owner || !Number.isSafeInteger(value.owner.pid) || value.owner.pid <= 0 || typeof value.owner.start !== 'string' || !value.owner.start ||
         !Number.isSafeInteger(value.generation) || value.generation! < 1 ||
@@ -127,6 +129,7 @@ export class Installation {
     if (value.plan !== undefined) {
       if (value.phase !== 'removing') throw new Error('Invalid removal phase')
       removalPlan(value.plan)
+      if (value.cleanup_build !== undefined && (!buildId(value.cleanup_build) || !value.plan.files.some(item => item.name === `versions/${value.cleanup_build}/notifai-runtime.exe`))) throw new Error('Invalid cleanup build')
     }
     return value as UninstallTransaction
   }
@@ -159,7 +162,7 @@ export class Installation {
         // A preparing journal has never removed wiring. Reopen admission so
         // work that appeared during preflight can complete through its owners.
         if (journal?.phase === 'preparing') rmSync(this.file('uninstall.json'))
-        return { status: owners.status }
+        return { status: owners.status, ...(owners.reason ? { reason: owners.reason } : {}) }
       }
       const token = resuming ? journal!.token : randomUUID()
       if (!resuming) this.save('uninstall.json', { ...journal, schema: 1, installation_id: installationId, generation, token, owner, phase: journal?.phase ?? 'preparing' })
@@ -277,11 +280,77 @@ export class Installation {
     for (const name of ['shell-path.json', 'windows-path.json']) if (present(this.file(name))) names.push(name)
     return names
   }
+  uninstallState(): { installationId: string; generation: number; phase: 'preparing' | 'removing'; planned: boolean } | null {
+    const journal = this.uninstallRecord()
+    return journal ? { installationId: journal.installation_id, generation: journal.generation, phase: journal.phase, planned: journal.plan !== undefined } : null
+  }
+  private cleanupFiles(journal: UninstallTransaction): { launcher: string; runtime: string; launcherHash: string; runtimeHash: string; directory: string } {
+    if (!journal.plan || !journal.cleanup_build) throw new Error('No verified Windows cleanup plan')
+    const directory = this.file(`uninstall-tools/${journal.installation_id}`)
+    const member = (name: string): string => {
+      const item = journal.plan!.files.find(item => item.name === `versions/${journal.cleanup_build}/${name}`)
+      if (!item) throw new Error('Cleanup executable is not in the removal plan')
+      return item.sha256
+    }
+    return { directory, launcher: path.join(directory, 'notifai.exe'), runtime: path.join(directory, 'notifai-runtime.exe'),
+      launcherHash: member('notifai.exe'), runtimeHash: member('notifai-runtime.exe') }
+  }
+  private verifyCleanupCopy(journal: UninstallTransaction): ReturnType<Installation['cleanupFiles']> {
+    const copy = this.cleanupFiles(journal)
+    this.owned(this.file('uninstall-tools'), true)
+    this.owned(copy.directory, true)
+    for (const [file, expected] of [[copy.launcher, copy.launcherHash], [copy.runtime, copy.runtimeHash]]) {
+      this.owned(file!, false)
+      if (hash(readFileSync(file!)) !== expected) throw new Error('Windows cleanup copy changed')
+    }
+    return copy
+  }
+  /** Only the copied, verified payload may finish after Windows releases the
+   * originals. A command-line flag alone cannot authorize deleting them. */
+  finishUninstall(installationId: string, currentSessions: string): ReturnType<Installation['completeUninstall']> {
+    const journal = this.uninstallRecord()
+    if (!this.options.target.startsWith('bun-windows-') || !journal || journal.installation_id !== installationId) throw new Error('No matching Windows uninstall')
+    const copy = this.verifyCleanupCopy(journal)
+    if (!sameLocalPath(canonicalPath(process.execPath), canonicalPath(copy.runtime), process.platform)) throw new Error('Run the verified temporary uninstall command after the original command exits')
+    const begun = this.beginUninstall(journal.generation, currentSessions)
+    if (begun.status !== 'removing') return { status: begun.status === 'preparing' ? 'uncertain' : begun.status }
+    return this.completeUninstall(begun.token, currentSessions, () => { throw new Error('Uninstall wiring was not completed') })
+  }
+  private prepareWindowsCleanup(journal: UninstallTransaction): string {
+    if (!journal.cleanup_build) {
+      const active = this.readActive()
+      if (!active) throw new Error('Active cleanup build is unavailable')
+      journal.cleanup_build = active.active
+      this.save('uninstall.json', journal)
+    }
+    const copy = this.cleanupFiles(journal)
+    this.access.directory(copy.directory)
+    for (const [file, expected] of [[copy.launcher, copy.launcherHash], [copy.runtime, copy.runtimeHash]]) {
+      if (!present(file!)) {
+        const original = this.file(`versions/${journal.cleanup_build}/${path.basename(file!)}`)
+        this.owned(original, false)
+        const bytes = readFileSync(original)
+        if (hash(bytes) !== expected) throw new Error('Cleanup source changed')
+        this.write(file!, bytes, true)
+      }
+    }
+    this.verifyCleanupCopy(journal)
+    const receipt = JSON.stringify({ schema: 1, root: this.root, id: journal.installation_id,
+      launcherHash: copy.launcherHash, runtimeHash: copy.runtimeHash, files: journal.plan!.files.map(item => item.name) }) + '\n'
+    const receiptFile = path.join(copy.directory, 'cleanup.json')
+    if (present(receiptFile)) {
+      this.owned(receiptFile, false)
+      if (readFileSync(receiptFile, 'utf8') !== receipt) throw new Error('Cleanup receipt changed')
+    } else this.write(receiptFile, receipt)
+    const lock = path.join(copy.directory, 'cleanup.lock')
+    if (!present(lock)) this.write(lock, '')
+    return windowsUninstallCommand(this.root, journal.installation_id, hash(receipt))
+  }
   /** Wiring removal is supplied by the command's existing ownership-aware
    * harness/skill integration. Runtime deletion owns only a persisted finite
    * plan; credentials, configuration and Agent Session history stay intact. */
   completeUninstall(token: string, currentSessions: string, removeWiring: () => { ok: boolean; conflicts: string[] }):
-    { status: 'removed' | 'incomplete' | 'waiting_for_questions' | 'residents_running' | 'uncertain'; retained?: string[]; conflicts?: string[] } {
+    { status: 'removed' | 'incomplete' | 'waiting_for_questions' | 'residents_running' | 'uncertain'; retained?: string[]; conflicts?: string[]; recovery_command?: string } {
     try {
       if (!this.uninstallRecord()?.plan) {
         const admitted = this.enterUninstallRemoval(token, currentSessions)
@@ -313,7 +382,10 @@ export class Installation {
         const plan = journal.plan
         verifyRemovalPlan(this.root, plan, (file, directory) => this.owned(file, directory))
         const executables = plan.files.filter(item => executableMember(item.name) && present(this.file(item.name))).map(item => this.file(item.name))
-        const launcher = executables.find(file => path.basename(file) === `notifai${this.extension}`)
+        const externalCopy = this.options.target.startsWith('bun-windows-') && journal.cleanup_build &&
+          sameLocalPath(canonicalPath(process.execPath), canonicalPath(this.cleanupFiles(journal).runtime), process.platform)
+          ? this.verifyCleanupCopy(journal) : null
+        const launcher = externalCopy?.launcher ?? executables.find(file => path.basename(file) === `notifai${this.extension}`)
         if (executables.length) {
           if (!launcher) return { status: 'incomplete', retained: executables }
           const observed = (this.options.fileUse ?? inspectNativeFileUse)(launcher, executables)
@@ -321,7 +393,7 @@ export class Installation {
         }
         // Windows cannot unlink this command's executing images. A separately
         // invoked cleanup command must apply the same finite plan after exit.
-        if (this.options.target.startsWith('bun-windows-')) return { status: 'incomplete', retained: plan.files.filter(item => present(this.file(item.name))).map(item => this.file(item.name)) }
+        if (this.options.target.startsWith('bun-windows-') && !externalCopy) return { status: 'incomplete', recovery_command: this.prepareWindowsCleanup(journal), retained: plan.files.filter(item => present(this.file(item.name))).map(item => this.file(item.name)) }
         removePlannedFiles(this.root, plan, (file, directory) => this.owned(file, directory), () => this.options.observe?.('uninstall-file-removed'))
         rmSync(this.file('uninstall.json'))
         return { status: 'removed' }

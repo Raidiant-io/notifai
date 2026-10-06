@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 import { gzipSync } from 'node:zlib'
@@ -228,9 +228,21 @@ try {
     assert.match(blocked.stderr, /uninstall is in progress/)
     assert.equal(existsSync(path.join(blockedRoot, 'owner.json')), false)
   } finally { rmSync(barrier) }
-  execFileSync(path.join(managedRoot, 'bin', `notifai${extension}`), ['uninstall', root],
-    { cwd: root, env, stdio: 'inherit', timeout: 90_000 })
-  if (windows) rmSync(barrier) // Owned fixture teardown; Windows runtime removal is still deferred.
+  const uninstall = execFileSync(path.join(managedRoot, 'bin', `notifai${extension}`), ['uninstall', root],
+    { cwd: root, env, encoding: 'utf8', timeout: 90_000 })
+  if (windows) {
+    const recovery = JSON.parse(uninstall).recovery_command
+    assert.ok(recovery)
+    // Run the generated inline command under stock Windows PowerShell. It must
+    // wait for the copied C launcher/Bun process, then remove its exact copies.
+    const result = spawnSync(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-Command', recovery], { cwd: root, env, encoding: 'utf8', timeout: 120_000 })
+    assert.equal(result.error, undefined)
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.equal(existsSync(barrier), false)
+    assert.equal(existsSync(path.join(managedRoot, 'active.json')), false)
+    assert.deepEqual(readdirSync(path.join(managedRoot, 'uninstall-tools')), [])
+  }
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
       filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
@@ -336,6 +348,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', ...(windows ? ['windows-runtime-removal-deferred'] : ['finite-runtime-removal']), 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', 'finite-runtime-removal', ...(windows ? ['windows-temporary-finalizer'] : []), 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

@@ -65,7 +65,7 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created, 
     return ok && (!created || private_handle(handle, directory, user, 0, 1));
 }
 
-static int private_path(const wchar_t *input, int directory, int created) {
+static int checked_path(const wchar_t *input, int directory, int created, int require_protected) {
     wchar_t path[32768];
     if (!filesystem_path(input, path)) return 0;
     TOKEN_USER *user = installation_user();
@@ -73,10 +73,21 @@ static int private_path(const wchar_t *input, int directory, int created) {
     HANDLE handle = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES | (created ? WRITE_OWNER : 0),
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), NULL);
-    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, directory, user->User.Sid, created, 1);
+    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, directory, user->User.Sid, created, require_protected);
     if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     free(user);
     return ok;
+}
+
+static int private_path(const wchar_t *input, int directory, int created) {
+    return checked_path(input, directory, created, 1);
+}
+
+/* Existing shared session state need not use installation-style protected
+ * inheritance. It must still have the exact User owner and no foreign writer.
+ * Read-only inspection never changes that state's ACL. */
+static int owned_state_path(const wchar_t *input, int directory) {
+    return checked_path(input, directory, 0, 0);
 }
 
 static int create_private_directory(const wchar_t *input) {

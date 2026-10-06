@@ -9,6 +9,7 @@ import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import { Installation } from './installation.js'
+import { nativeUninstallCommand } from './commands-native-uninstall.js'
 import { nativeInstallCommand, nativeUpdateCommand } from './commands-native-installation.js'
 import type { CommandDeps } from './commands-core.js'
 import { discoverCliUpdate } from './cli-release.js'
@@ -22,19 +23,19 @@ import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function fixture(fetcher?: typeof fetch) {
+function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-x64' = 'bun-linux-x64') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-installation-')); roots.push(root)
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
-  const target = 'bun-linux-x64' as const
+  const extension = target.startsWith('bun-windows-') ? '.exe' : ''
   const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
   const candidate = (version: string, archive?: Buffer) => {
     const directory = path.join(root, version); mkdirSync(directory)
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
-    writeFileSync(path.join(directory, 'notifai-runtime'), runtime)
-    writeFileSync(path.join(directory, 'notifai'), launcher)
+    writeFileSync(path.join(directory, `notifai-runtime${extension}`), runtime)
+    writeFileSync(path.join(directory, `notifai${extension}`), launcher)
     const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: 'a'.repeat(40),
-      store_schema: 1, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-linux-x64.tar.gz`,
+      store_schema: 1, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-${target === 'bun-windows-x64' ? 'windows-x64.zip' : 'linux-x64.tar.gz'}`,
         bytes: archive?.length ?? 100, sha256: digest(archive ?? version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
     const signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
@@ -438,6 +439,23 @@ it('preserves changed bytes and refuses a removal plan outside installation owne
   expect(readFileSync(outside, 'utf8')).toBe('preserve unrelated data')
 })
 
+it('prepares a verified temporary Windows finalizer while retaining executing installation files', () => {
+  const f = fixture(undefined, 'bun-windows-x64'), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'powershell', channel: 'stable' })
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const sessions = path.join(f.root, 'no-sessions'), begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  const result = installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] }))
+  expect(result.status).toBe('incomplete')
+  expect(result.recovery_command).toBeTruthy()
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id
+  const temporary = path.join(f.options.root, 'uninstall-tools', id)
+  expect(readFileSync(path.join(temporary, 'notifai.exe'), 'utf8')).toBe('launcher v1')
+  expect(readFileSync(path.join(temporary, 'notifai-runtime.exe'), 'utf8')).toBe('runtime 1.0.0')
+  expect(readFileSync(path.join(f.options.root, 'versions', build, 'notifai-runtime.exe'), 'utf8')).toBe('runtime 1.0.0')
+  expect(installation.completeUninstall(begun.token, sessions, () => { throw new Error('Do not repeat wiring') }).recovery_command).toBe(result.recovery_command)
+})
+
 it('retains unknown boot identities and user-modified bytes rather than trusting age or directory names', () => {
   const f = fixture()
   let boot: string | null = '11111111-1111-4111-8111-111111111111'
@@ -725,4 +743,39 @@ it('native installer refuses pending work before installation and preserves an a
     init: () => { throw new Error('interrupted setup') } })).toBe(1)
   expect(JSON.parse(out[0]!)).toMatchObject({ runtime_installed: true, setup_complete: false })
   expect(f.installation.activeRelease().version).toBe('1.0.0')
+})
+
+it('uninstalls through the public command and reports wiring conflicts without removing runtime files', async () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const out: string[] = []
+  const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  const seams = { installation, sessions: path.join(f.root, 'no-sessions') }
+  expect(await nativeUninstallCommand(deps, { json: true }, { ...seams, removeWiring: () => ({ ok: false, conflicts: ['modified skill'] }) })).toBe(1)
+  expect(JSON.parse(out.pop()!)).toMatchObject({ ok: false, status: 'incomplete', conflicts: ['modified skill'] })
+  expect(existsSync(path.join(f.options.root, 'versions', build, 'notifai-runtime'))).toBe(true)
+  expect(await nativeUninstallCommand(deps, { json: true }, { ...seams, removeWiring: () => ({ ok: true, conflicts: [] }) })).toBe(0)
+  expect(JSON.parse(out.pop()!)).toMatchObject({ ok: true, status: 'removed' })
+  expect(existsSync(path.join(f.options.root, 'active.json'))).toBe(false)
+})
+
+it('refuses finishing from an original executable and preserves modified temporary cleanup bytes', () => {
+  const f = fixture(undefined, 'bun-windows-x64'), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'powershell', channel: 'stable' })
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const sessions = path.join(f.root, 'no-sessions'), begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).recovery_command).toBeTruthy()
+  const id = installation.uninstallState()!.installationId
+  expect(() => installation.finishUninstall(id, sessions)).toThrow(/temporary uninstall command/)
+  const copy = path.join(f.options.root, 'uninstall-tools', id, 'notifai-runtime.exe')
+  writeFileSync(copy, 'preserve modified copy')
+  const result = installation.completeUninstall(begun.token, sessions, () => { throw new Error('Do not repeat wiring') })
+  expect(result.status).toBe('incomplete')
+  expect(result.recovery_command).toBeUndefined()
+  expect(readFileSync(copy, 'utf8')).toBe('preserve modified copy')
+  expect(existsSync(path.join(f.options.root, 'active.json'))).toBe(true)
 })

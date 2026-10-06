@@ -176,6 +176,10 @@ int wmain(int argc, wchar_t **argv) {
         return protect_existing_directory(argv[2]) ? 0 : failure("existing installation directory access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-own-created-file"))
         return private_path(argv[2], 0, 1) ? 0 : failure("created installation file access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-check-state-directory"))
+        return owned_state_path(argv[2], 1) ? 0 : failure("session directory access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-check-state-file"))
+        return owned_state_path(argv[2], 0) ? 0 : failure("session file access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-check-private-file"))
         return private_path(argv[2], 0, 0) ? 0 : failure("installation file access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-check-private-directory"))

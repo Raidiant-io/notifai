@@ -155,7 +155,7 @@ publication, with the private key held only by the protected release environment
 Candidates fail closed; neither an environment override nor project configuration
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
-and complete uninstall remains separate work.
+or publication readiness. Legacy npm migration remains separate work.
 
 The uninstall preparation boundary inventories pending work across recorded
 state roots and closes native launch admission with a recoverable journal.
@@ -164,9 +164,9 @@ payload command admission and detached-owner path honor that barrier, and
 Session Attendants withdraw through their existing lifecycle gate. The current
 OpenClaw plugin also stops starting children and removes its readiness receipt
 while admission is closed; it does not signal children during this drain.
-Previously loaded plugins require separate proof before removal can finish. This is
-internal lifecycle infrastructure; the public uninstall command and Windows
-external cleanup are not yet complete. Inspection includes orphan delivery/input sidecars and the
+Previously loaded plugins require separate proof before removal can finish.
+`notifai uninstall --json` coordinates this lifecycle; `--cancel` can reopen
+admission only before removal starts. Inspection includes orphan delivery/input sidecars and the
 machine retirement queue in every discovered state root. Reported handoffs and
 valid native acknowledgement receipts are history; unfinished work retains the
 installation. No question is cancelled by inspection. The current native
@@ -216,14 +216,25 @@ installation's durable runtime references under the existing session locks,
 preserving all other Agent Session fields and checking the inspected bytes have
 not changed. It never records SessionEnd as part of uninstall. Owned
 teardown is supplied through the existing hook/skill integration boundary.
-The internal completion operation removes owned PATH contributions and persists a
+The completion operation removes owned PATH contributions and persists a
 finite, hashed file plan before deleting any runtime files. POSIX deletes only
 those verified files and empty directories, preserves unrelated entries and User
 data, and can adopt an interrupted plan even after the active pointer is gone.
 Modified files or a plan naming anything outside installation ownership retain
-the installation. Windows returns the exact retained paths for cleanup after
-exit; its external cleanup command is still pending. The public command and
-legacy npm migration remain unfinished.
+the installation. Windows stages an authenticated temporary launcher/runtime pair
+and returns an inline PowerShell recovery command. Run it after the original
+command exits. The copied runtime adopts the same finite plan and checks native
+process absence before removing originals; PowerShell waits for that runtime to
+exit before removing its verified temporary files. No scheduled task or execution
+policy change is used. An interrupted cleanup retains its receipt and copies for
+retry. This path is under native qualification; it is not publication evidence.
+
+Session-state inspection on Windows accepts inherited ACLs only when the
+current User owns the object and all write permissions belong to the User,
+SYSTEM or Administrators. It never rewrites those ACLs. Managed installation
+directories continue to require protected inheritance. Modified or unreadable
+harness wiring and skill placements prevent runtime removal. Legacy npm
+migration remains unfinished.
 
 ### Existing Windows directory permissions
 

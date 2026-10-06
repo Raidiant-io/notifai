@@ -54,6 +54,7 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
     throw new Error('Run the native launcher named notifai; direct runtime payload execution cannot change this installation.')
   }
   if (command.name() === 'install' && command.parent?.name() === 'notifai') return 'installer'
+  if (command.name() === 'uninstall' && command.parent?.name() === 'notifai' && command.opts()['finish'] === true) return 'installer'
   let reference: RuntimeBuildReference | null
   let installed: ReturnType<typeof nativeInstallationIdentity>
   try {

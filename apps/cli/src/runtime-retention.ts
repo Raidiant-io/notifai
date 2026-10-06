@@ -11,6 +11,7 @@ import { inspectOpenclawHosts } from './openclaw-host-state.js'
 
 export interface RuntimeOwnerInspection {
   status: 'clear' | 'waiting_for_questions' | 'uncertain'
+  reason?: string
   hosts: ProcessIdentity[]
   residents: Array<{ file: string; identity: ProcessIdentity }>
   sessions: Array<{ file: string; sessionId: string; builds: string[]; digest: string }>
@@ -56,13 +57,18 @@ export class RuntimeRetention {
       this.access.check(directory, true)
     }
   }
+  private checkState(file: string, directory: boolean): void {
+    const relative = path.relative(this.root, file)
+    if ((relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) && this.access.checkState) this.access.checkState(file, directory)
+    else this.access.check(file, directory)
+  }
   private readValue(file: string, limit = 256 * 1024): unknown {
     this.parents(file)
     if (!present(file)) return undefined
     const stat = lstatSync(file)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > limit ||
         (typeof process.getuid === 'function' && (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain runtime retention record')
-    this.access.check(file, false)
+    this.checkState(file, false)
     return JSON.parse(readFileSync(file, 'utf8')) as unknown
   }
   private read(file: string, limit = 256 * 1024): Record<string, unknown> | null {
@@ -226,7 +232,7 @@ export class RuntimeRetention {
         const stat = lstatSync(directory)
         if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === 'function' &&
             (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain session directory')
-        this.access.check(directory, true)
+        this.checkState(directory, true)
         const entries = readdirSync(directory)
         // Claims are independent files; losing a main session JSON must not
         // hide a resident. This is inventory only, never a stale-claim cleanup.
@@ -255,7 +261,7 @@ export class RuntimeRetention {
             const state = this.read(file, 16 * 1024 * 1024)
             if (this.pendingSidecars(file, state !== null)) pending = true
             if (state === null) return
-            this.access.check(file, false)
+            this.checkState(file, false)
             const sessionId = state['session_id']
             if (typeof sessionId !== 'string' || `${sanitizeSessionId(sessionId)}.json` !== name) throw new Error('Uncertain session identity')
             const references = state['runtime_builds'] ?? []
@@ -296,7 +302,7 @@ export class RuntimeRetention {
         }
       }
       return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents }
-    } catch { return { status: 'uncertain', sessions, hosts, residents } }
+    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

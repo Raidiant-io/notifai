@@ -12,7 +12,9 @@ import { Distribution } from '../apps/cli/src/release-distribution.js'
 import { sameLocalPath } from '../apps/cli/src/local-path.js'
 import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from '../apps/cli/src/skill-integrity.js'
 
-const [mode, root, ...args] = process.argv.slice(2)
+const [mode, rawRoot, ...args] = process.argv.slice(2)
+const finishing = mode === 'uninstall' && rawRoot === '--finish'
+const root = finishing ? path.dirname(args[args.indexOf('--installation-root') + 1]!) : rawRoot
 assert.ok(root)
 if (mode === 'hook') {
   assert.equal(root, 'stop')
@@ -157,8 +159,14 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     assert.equal(installation.inspect().pending, false)
   } else if (operation === 'uninstall') {
     const sessions = path.join(root, 'no-sessions')
+    if (finishing) {
+      const result = installation.finishUninstall(args[args.indexOf('--installation-id') + 1]!, sessions)
+      assert.equal(result.status, 'removed', JSON.stringify(result))
+      process.stdout.write(JSON.stringify(result))
+      process.exit(0)
+    }
     const begun = installation.beginUninstall(installation.inspect().active!.generation, sessions)
-    assert.equal(begun.status, 'preparing')
+    assert.equal(begun.status, 'preparing', JSON.stringify(begun))
     if (begun.status !== 'preparing') throw new Error('Native uninstall did not prepare')
     assert.equal(installation.enterUninstallRemoval(begun.token, sessions).status, 'removing')
     const { readSessionState, sessionStatePath, sessionHasEnded } = await import('../apps/cli/src/hook-session-state.js')
@@ -170,6 +178,7 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     const result = installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] }))
     assert.equal(result.status, process.platform === 'win32' ? 'incomplete' : 'removed', JSON.stringify(result))
     if (process.platform !== 'win32') assert.equal(installation.inspect().active, null)
+    else { assert.ok(result.recovery_command); process.stdout.write(JSON.stringify(result)) }
   } else if (operation === 'cleanup') {
     // Inject only boot identities. File publication, ownership checks, signed
     // inventory verification and deletion use the real native OS adapters.

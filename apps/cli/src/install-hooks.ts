@@ -1708,9 +1708,10 @@ export function findInstallations(
   env: NodeJS.ProcessEnv = process.env,
   adapterHome?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
+  problems?: string[],
 ): Installation[] {
   return HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
-    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env),
+    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env, problems),
   )
 }
 
@@ -1751,6 +1752,7 @@ function collectInstallations(
   adapterHome: string | undefined,
   platform: NodeJS.Platform | HookHostPlatform,
   env: NodeJS.ProcessEnv,
+  inspectionProblems?: string[],
 ): Installation[] {
   const adapter = inspectHookAdapter(adapterHome, platform).target
   const nodePath = adapter?.kind === 'native' ? undefined : adapter?.execPath
@@ -1781,6 +1783,7 @@ function collectInstallations(
       try {
         source = readOwnedRegularFile(file)
       } catch {
+        inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
         continue
       }
       const target =
@@ -1820,6 +1823,7 @@ function collectInstallations(
       try {
         document = readCursorSettings(file)
       } catch {
+        inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
         continue
       }
       const handlers = locateCursorHandlers(document)
@@ -1833,6 +1837,7 @@ function collectInstallations(
     try {
       document = loadSettings(file)
     } catch {
+      inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
       continue
     }
     const handlers = locateHandlers(document)

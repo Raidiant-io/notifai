@@ -34,6 +34,9 @@ try {
   $nestedBefore = Descriptor $nested
   $fileBefore = Descriptor $file
   Require ((Run-Launcher @('--internal-check-private-directory', $directory)) -ne 0) 'Unprotected directory must fail ordinary checks'
+  $stateBefore = Descriptor $directory
+  Require ((Run-Launcher @('--internal-check-state-directory', $directory)) -eq 0) 'Owned state with inherited safe writers must pass'
+  Require ($stateBefore -ceq (Descriptor $directory)) 'State inspection changed security'
   Require ((Run-Launcher @('--internal-protect-existing-directory', $directory)) -eq 0) 'Existing safe directory must migrate'
   Require ((Run-Launcher @('--internal-check-private-directory', $directory)) -eq 0) 'Migrated directory must pass ordinary checks'
   $afterRoot = Get-Acl -LiteralPath $directory
@@ -49,6 +52,7 @@ try {
   Require ($LASTEXITCODE -eq 0) 'Could not create unsafe fixture'
   $unsafeBefore = Descriptor $directory
   Require ((Run-Launcher @('--internal-protect-existing-directory', $directory)) -ne 0) 'Unsafe writers must be refused'
+  Require ((Run-Launcher @('--internal-check-state-directory', $directory)) -ne 0) 'State inspection must reject unsafe writers'
   Require ($unsafeBefore -ceq (Descriptor $directory)) 'Refused migration modified security'
   @{ ok=$true; checks=@('protect-existing-directory','preserve-child-security','reject-unsafe-writers','idempotent-protection') } | ConvertTo-Json -Compress
 } finally {

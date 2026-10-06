@@ -7,6 +7,7 @@ import { ensurePrivateDirectory } from './atomic-file.js'
  * directly, without starting PowerShell or another process on the hook path. */
 export interface InstallationAccess {
   check(file: string, directory: boolean): void
+  checkState?(file: string, directory: boolean): void
   directory(file: string): void
   beforePublish(file: string): void
   protectExistingDirectory(file: string): void
@@ -22,6 +23,7 @@ export function installationAccess(launcher = path.join(path.dirname(process.exe
   }
   return {
     check(file, directory) { run(directory ? '--internal-check-private-directory' : '--internal-check-private-file', file) },
+    checkState(file, directory) { run(directory ? '--internal-check-state-directory' : '--internal-check-state-file', file) },
     directory(file) {
       const missing: string[] = []
       let current = file
