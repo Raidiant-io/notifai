@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:47cd136a355feeef025ea724e9b29e39c543b4bb301ef6744553b4ddadca95ea",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the Claude Code Session Attendant handoff. A prompt or turn-end hook from the session's own Claude Code process now hands its resident attendant to the installed runtime; subagent events, other processes, hooks older than the session start and ended sessions hand nothing over. Guidance already states that existing Claude Code hooks use the updated adapter on their next invocation and that a CLI-only update needs no fresh Agent Session; the handoff makes the resident writer match that statement. It changes no hook output, question, answer, acknowledgement, approval or wake wording, and pending work remains in session state.",
+  "behavior_digest": "sha256:e9cd465c88d0c54e1af4fad6d8e482cf9157c329d25f4e4fd3f46b4dca6ee020",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and its references, harness setup, readiness, README and domain terms. The skill had grown past the reading budget its own test enforces, so two sentences that restated an adjacent rule were removed: that hooks may already have delivered wake input, which the paragraph's first sentence now states as the rule, and that a longer reply window cannot resume a timed-out command, which the exit-code paragraph directly below states. No instruction, command, exit code, acknowledgement rule or question rule changed; every remaining statement keeps its meaning.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

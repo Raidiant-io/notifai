@@ -231,8 +231,7 @@ notifai send --reply \
 ```
 
 The clocks differ: `--reply-timeout` blocks for 900s by default; `--reply-window`
-accepts answers for a day by default (`reply_window_seconds`). A longer window
-cannot resume a timed-out command. For
+accepts answers for a day by default (`reply_window_seconds`). For
 an unsupported-harness fallback, the foreground owner stays alive through the
 complete answer window and `--reply-timeout` equals `--reply-window`.
 
@@ -246,7 +245,7 @@ Use any Notifai input supplied with the turn first. If none was supplied and
 the wake-up names `notifai receive`, run that exact command once to read pending
 notes and answers together. An empty result means continue. The wake-up itself
 contains no answer and needs no acknowledgement; never recover an old answer
-from it. Hooks may have delivered the input already.
+from it.
 
 Within one submission, the latest reply corrects earlier choices; read typed
 parts in order. Preserve distinct submissions and clarify conflicts before
