@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { lstatSync, readFileSync } from 'node:fs'
+import { legacyNpmMigration } from './legacy-npm-migration.js'
 import { stateDir } from './config.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
@@ -113,6 +114,7 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
 
 
 export interface NativeInstallFlags {
+  migrateNpm?: boolean
   json?: boolean
   directory?: string
   inventory?: string
@@ -161,12 +163,17 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     if (flags.channel !== undefined && flags.channel !== 'stable' && flags.channel !== 'beta') throw new Error('--channel must be stable or beta')
     const installation = seams.installation ?? managedInstallation(deps)
     const platform = deps.hookPlatform ?? process.platform
-    if (!seams.installation) {
-      const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
-      const stable = path.join(home, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
-      if (pathNotifaiEntries(deps.env, platform).some(entry => !sameLocalPath(canonicalPath(entry), canonicalPath(stable), platform))) {
-        throw new Error('Another Notifai installation is on PATH; resolve the collision with notifai doctor --json before installing')
-      }
+    const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
+    const stable = path.join(home, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
+    const legacy = legacyNpmMigration(deps.env, platform, stable)
+    if (legacy.collisions.length && (!flags.migrateNpm || legacy.migration === null)) {
+      emit({ ok: false, code: 'installation_collision', ...installed, collisions: legacy.collisions,
+        ...(legacy.migration ? { migration: legacy.migration,
+          message: 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving that package; cleanup remains an explicit package-manager action.' }
+          : { message: 'Another Notifai installation is on PATH. Resolve this collision before installing; no package or shim was changed.' }) },
+      legacy.migration ? 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving the old package.'
+        : 'Resolve the existing Notifai installation before installing.')
+      return EXIT.failed
     }
     const waiting = seams.pendingWork ? seams.pendingWork() : updateWorkPending(deps)
     if (waiting) throw new Error(waiting)
@@ -188,6 +195,7 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     const command = path.join(path.dirname(path.dirname(path.dirname(active.launcher))), 'bin', path.basename(active.launcher))
     installed = { runtime_installed: true, setup_complete: false, ...result, channel: installation.inspect().channel,
       effective_command: command, recovery: { executable: command, args: ['init', '--json'] } }
+    if (legacy.migration) installed = { ...installed, migration: legacy.migration }
     if (result.launcher_update_pending) throw new Error('The runtime is installed; finish launcher repair before setup')
     let pathResult: Record<string, unknown> = { ok: true, skipped: true }
     if (flags.path !== false) {
@@ -198,6 +206,15 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     }
     installed = { ...installed, path: pathResult }
     if (pathResult['ok'] !== true) throw new Error('The runtime is installed; PATH setup has conflicts. Preserve those files and configure PATH before rerunning setup')
+    if (legacy.migration) {
+      // Keep all old executable/package bytes. The new runtime can be verified
+      // independently, but setup/update readiness remains incomplete while the
+      // previous command is still exposed through PATH.
+      emit({ ok: false, code: 'migration_pending_legacy_owners', ...installed, setup_skipped: true,
+        next_step: 'After all legacy work settles and its programs stop, remove the reported npm package through its exact prefix. Then rerun this native installer to finish setup.' },
+      `The native CLI is staged at ${command}. The npm package is preserved. Finish legacy work, stop its programs, remove @raidiant/notifai from the reported prefix through npm, then rerun this installer.`)
+      return EXIT.failed
+    }
     if (flags.init === false) {
       emit({ ok: true, code: 'installed', ...installed, setup_skipped: true }, `Notifai ${active.version} is installed. Continue with ${command} init.`)
       return EXIT.ok

@@ -11,6 +11,7 @@ export async function installStandalone(options, { distribution: createDistribut
   if (options.channel) args.push('--channel', options.channel)
   if (options['no-init']) args.push('--no-init')
   if (options['no-path']) args.push('--no-path')
+  if (options['migrate-npm']) args.push('--migrate-npm')
   const existing = platform.existingCommand()
   if (existing !== null) return platform.execute(existing, args)
   const distribution = createDistribution()

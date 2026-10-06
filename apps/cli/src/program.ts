@@ -317,6 +317,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable installation and setup report; never prompts')
     .option('--directory <directory>', 'directory containing the verified release files (default: this executable directory)')
     .option('--inventory <file>', 'signed release inventory (default: inventory.json beside the release)')
+    .option('--migrate-npm', 'stage native files while preserving one identified legacy npm installation; report its required cleanup')
     .option('--source <source>', 'bootstrap route: shell, powershell, npm or manual', 'manual')
     .option('--channel <channel>', 'stable or beta; reruns keep the existing channel unless explicitly requested')
     .option('--version <version>', 'require this exact application version')

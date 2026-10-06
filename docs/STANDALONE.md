@@ -155,7 +155,7 @@ publication, with the private key held only by the protected release environment
 Candidates fail closed; neither an environment override nor project configuration
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
-or publication readiness. Legacy npm migration remains separate work.
+or publication readiness. Legacy npm cleanup requires an explicit package-manager action.
 
 The uninstall preparation boundary inventories pending work across recorded
 state roots and closes native launch admission with a recoverable journal.
@@ -237,8 +237,7 @@ harness wiring and skill placements prevent runtime removal. Receipt-owned skill
 are removed from all discovered state roots. Re-running the portable installer
 authenticates its candidate first, then can cancel untouched preparation or
 resume a persisted removal plan. Incomplete wiring teardown still needs the
-uninstall command; Windows still returns its explicit cleanup command. Legacy npm
-migration remains unfinished.
+uninstall command; Windows still returns its explicit cleanup command.
 
 ### Existing Windows directory permissions
 
@@ -516,3 +515,28 @@ map and requires a resolvable signed stable default on all supported targets.
 `installer-v*` tags use the protected `npm-release` environment and package-specific
 npm trusted publishing. First configure that package's publisher; do not reuse
 an npm token or assume another package's trust configuration covers it.
+
+## Moving from the npm CLI
+
+The legacy `@raidiant/notifai` runtime package is separate from the optional
+`@raidiant/notifai-install` bootstrap. An installer normally refuses another
+`notifai` command on PATH. For one identified npm-global package, explicitly use
+`--migrate-npm` (`-MigrateNpm` in PowerShell) to stage and authenticate the native
+runtime while retaining the exact old package and shims. Multiple prefixes,
+unknown shims and unrecognized package manifests require manual resolution.
+
+This step reports `migration_pending_legacy_owners`, the exact prefix and npm
+arguments, and exits nonzero. It does not run setup or claim the migration is
+complete. Finish outstanding questions, answers and acknowledgements; stop the
+harnesses and other programs using the old CLI; then use that prefix's npm to
+remove the legacy runtime package. Rerun the native installer to finish setup.
+Older packages cannot prove all their resident owners are gone, so Notifai never
+automatically removes them. An absent claim or an idle-looking process is not
+that proof. This one-time package-manager action may require Node/npm; the new
+runtime and its future updates do not.
+
+Existing unreceipted or modified skills are preserved and reported with their
+exact paths. Move those entries to a User-chosen backup before choosing new
+bundled placements; the installer never guesses that an unrecorded directory is
+safe to overwrite. Removing an npm package does not authorize erasing skills,
+configuration, credentials or session history.

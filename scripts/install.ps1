@@ -8,7 +8,8 @@ param(
   [ValidateSet('stable', 'beta')][string]$Channel,
   [switch]$Json,
   [switch]$NoInit,
-  [switch]$NoPath
+  [switch]$NoPath,
+  [switch]$MigrateNpm
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -248,6 +249,7 @@ function Get-NotifaiInstallArguments {
   if ($Json) { $nativeArgs += '--json' }
   if ($NoInit) { $nativeArgs += '--no-init' }
   if ($NoPath) { $nativeArgs += '--no-path' }
+  if ($MigrateNpm) { $nativeArgs += '--migrate-npm' }
   return $nativeArgs
 }
 function Invoke-NotifaiBootstrap {

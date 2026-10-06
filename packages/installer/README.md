@@ -19,3 +19,9 @@ Before first execution, the bootstrap verifies the signed release records,
 archive digest and extracted files with source-embedded release keys. Windows
 staging uses a private NTFS directory. macOS also verifies raw-code notarization.
 No release URL, key or native executable is selected from project configuration.
+
+For a legacy npm runtime, `--migrate-npm` stages native files while preserving
+that package. The CLI reports the exact owning prefix and exits incomplete;
+finish legacy work and stop its programs before using npm to remove the old
+runtime. Rerun this installer afterward. It never removes old package files
+while their resident owners may still need them.

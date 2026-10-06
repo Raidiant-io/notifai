@@ -54,8 +54,8 @@ async function fixture(t, extra = false, target = 'bun-linux-x64') {
 
 for (const target of ['bun-linux-x64', 'bun-windows-arm64']) test(`signed ${target} installation delegates exact flags and cleans temporary bytes`, async t => {
   const f = await fixture(t, false, target)
-  assert.equal(await installStandalone({ json: true, version: '1.2.3', channel: 'stable', 'no-init': true, 'no-path': true }, f), 7)
-  assert.deepEqual(f.executions[0].args, ['install', '--source', 'npm', '--json', '--version', '1.2.3', '--channel', 'stable', '--no-init', '--no-path'])
+  assert.equal(await installStandalone({ json: true, version: '1.2.3', channel: 'stable', 'no-init': true, 'no-path': true, 'migrate-npm': true }, f), 7)
+  assert.deepEqual(f.executions[0].args, ['install', '--source', 'npm', '--json', '--version', '1.2.3', '--channel', 'stable', '--no-init', '--no-path', '--migrate-npm'])
   assert.equal(f.calls.length, 3)
   assert.equal(existsSync(f.temporary), false)
 })

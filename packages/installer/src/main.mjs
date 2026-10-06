@@ -9,9 +9,9 @@ import { nativePlatform } from './platform.mjs'
 
 try {
   const { values } = parseArgs({ options: { help: { type: 'boolean' }, json: { type: 'boolean' },
-    version: { type: 'string' }, channel: { type: 'string' }, 'no-init': { type: 'boolean' }, 'no-path': { type: 'boolean' } } })
+    version: { type: 'string' }, channel: { type: 'string' }, 'no-init': { type: 'boolean' }, 'no-path': { type: 'boolean' }, 'migrate-npm': { type: 'boolean' } } })
   if (values.help) {
-    console.log('Usage: notifai-install [--version <runtime-version>] [--channel stable|beta] [--json] [--no-init] [--no-path]\nInstalls the standalone Notifai CLI. Later runtime updates use notifai update. No install lifecycle script runs automatically.')
+    console.log('Usage: notifai-install [--version <runtime-version>] [--channel stable|beta] [--json] [--no-init] [--no-path] [--migrate-npm]\nInstalls the standalone Notifai CLI. Later runtime updates use notifai update. No install lifecycle script runs automatically.')
   } else {
     assert.ok(!values.version || isSemVer(values.version), '--version requires an exact runtime SemVer')
     assert.ok(!values.channel || ['stable', 'beta'].includes(values.channel), '--channel must be stable or beta')

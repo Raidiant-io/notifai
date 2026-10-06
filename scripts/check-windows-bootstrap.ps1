@@ -72,10 +72,10 @@ try {
     $script:launches++
     Assert-Bootstrap ((Get-NotifaiHash $Launcher) -ceq $launcherHash) 'Executed launcher did not match admitted bytes'
     Assert-Bootstrap ($NativeArgs[0] -ceq 'install' -and $NativeArgs[2] -ceq 'powershell') 'Wrong native command'
-    Assert-Bootstrap ($NativeArgs -ccontains '--no-init' -and $NativeArgs -ccontains '--no-path' -and $NativeArgs -ccontains '--json') 'Installer flags were lost'
+    Assert-Bootstrap ($NativeArgs -ccontains '--no-init' -and $NativeArgs -ccontains '--no-path' -and $NativeArgs -ccontains '--migrate-npm' -and $NativeArgs -ccontains '--json') 'Installer flags were lost'
     $script:NotifaiBootstrapExitCode = 0
   }
-  $Json = $true; $NoInit = $true; $NoPath = $true
+  $Json = $true; $NoInit = $true; $NoPath = $true; $MigrateNpm = $true
   Invoke-NotifaiBootstrap
   Assert-Bootstrap ($script:launches -eq 1 -and $script:NotifaiBootstrapExitCode -eq 0) 'Bootstrap did not launch exactly once'
   [IO.File]::AppendAllText($archive, 'tampered')

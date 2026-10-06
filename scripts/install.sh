@@ -2,7 +2,7 @@
 # First execution trusts HTTPS; installed updates use the embedded release key.
 # No Node, npm, Bun, Git or JSON interpreter is required by this bootstrap.
 set -eu
-NF_JSON=0 NF_VERSION='' NF_CHANNEL='' NF_NO_INIT=0 NF_NO_PATH=0
+NF_JSON=0 NF_VERSION='' NF_CHANNEL='' NF_NO_INIT=0 NF_NO_PATH=0 NF_MIGRATE_NPM=0
 nf_fail() {
   if [ "$NF_JSON" = 1 ]; then printf '{"ok":false,"code":"bootstrap_failed","message":"%s"}\n' "$1"
   else printf 'Notifai installation failed: %s\n' "$1" >&2; fi
@@ -18,9 +18,10 @@ while [ "$#" -gt 0 ]; do
     --json) NF_JSON=1; shift;;
     --no-init) NF_NO_INIT=1; shift;;
     --no-path) NF_NO_PATH=1; shift;;
+    --migrate-npm) NF_MIGRATE_NPM=1; shift;;
     --version) [ "$#" -ge 2 ] && [ -z "$NF_VERSION" ] || nf_fail 'Supply one exact application version'; NF_VERSION=$2; shift 2;;
     --channel) [ "$#" -ge 2 ] && [ -z "$NF_CHANNEL" ] || nf_fail 'Supply one release channel'; NF_CHANNEL=$2; shift 2;;
-    --help) printf '%s\n' 'Install Notifai: --json --version <exact> --channel <stable|beta> --no-init --no-path'; exit 0;;
+    --help) printf '%s\n' 'Install Notifai: --json --version <exact> --channel <stable|beta> --no-init --no-path --migrate-npm'; exit 0;;
     *) nf_fail 'Unknown installer option';;
   esac
 done
@@ -34,6 +35,7 @@ nf_run() {
   [ "$NF_JSON" = 0 ] || set -- "$@" --json
   [ "$NF_NO_INIT" = 0 ] || set -- "$@" --no-init
   [ "$NF_NO_PATH" = 0 ] || set -- "$@" --no-path
+  [ "$NF_MIGRATE_NPM" = 0 ] || set -- "$@" --migrate-npm
   set +e
   "$nf_executable" "$@"
   exit "$?"

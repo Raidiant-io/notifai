@@ -3,7 +3,7 @@ import { openclawPluginSource } from './openclaw-plugin.js'
 import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -815,4 +815,32 @@ it('repeated portable installation cancels untouched preparation or finishes a v
   expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(true)
   expect(installation.recoverUninstallForInstall(candidate, sessions).status).toBe('removed')
   expect(installation.installCandidate({ ...candidate, source: 'manual' }).reused).toBe(false)
+})
+
+it('stages an explicitly requested npm migration without deleting the legacy package or claiming setup complete', async () => {
+  const f = fixture(), candidate = f.candidate('1.0.0'), prefix = path.join(f.root, 'npm-prefix')
+  const packageRoot = path.join(prefix, 'lib', 'node_modules', '@raidiant', 'notifai')
+  const artifact = path.join(packageRoot, 'dist', 'main.js'), bin = path.join(prefix, 'bin')
+  mkdirSync(path.dirname(artifact), { recursive: true }); mkdirSync(bin)
+  writeFileSync(artifact, 'preserve the legacy executable')
+  writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@raidiant/notifai', version: '0.9.0', bin: { notifai: 'dist/main.js' } }))
+  symlinkSync(artifact, path.join(bin, 'notifai'))
+  const inventory = path.join(candidate.directory, 'inventory.json'); writeFileSync(inventory, candidate.signedInventory)
+  const out: string[] = []
+  const deps: CommandDeps = { env: { HOME: f.root, PATH: bin }, cwd: f.root, hookAdapterHome: f.root, hookPlatform: 'linux',
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  const flags = { json: true, directory: candidate.directory, inventory, path: false, init: false }
+  const seams = { installation: f.installation, pendingWork: () => null }
+  expect(await nativeInstallCommand(deps, flags, seams)).toBe(1)
+  expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'installation_collision', runtime_installed: false })
+  expect(f.installation.inspect().active).toBeNull()
+  expect(await nativeInstallCommand(deps, { ...flags, migrateNpm: true }, seams)).toBe(1)
+  expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'migration_pending_legacy_owners', runtime_installed: true, setup_complete: false,
+    migration: { prefix: canonicalPath(prefix), cleanup: { args: ['uninstall', '--global', '--prefix', canonicalPath(prefix), '@raidiant/notifai'] } } })
+  expect(readFileSync(artifact, 'utf8')).toBe('preserve the legacy executable')
+  // Model the User completing the separately reported package-manager action.
+  rmSync(path.join(bin, 'notifai')); rmSync(packageRoot, { recursive: true })
+  expect(await nativeInstallCommand(deps, flags, seams)).toBe(0)
+  expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'installed', reused: true, setup_skipped: true })
 })

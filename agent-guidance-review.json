@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c6569f313311734cac36468d0ee7c9737507d68f0c13d35d7f3f0a948a99bc70",
+  "behavior_digest": "sha256:ff02ac2c1d2a7508490d02881cb63fdbd6a5105f465fdf354df6f058a55abb3d",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Uninstall refuses unreadable or modified integration before removing runtime files, visits receipt-owned skills across indexed state roots, and removes all owned Grok machine documents and stale owned OpenClaw config. Repeated portable installation authenticates its candidate before cancelling untouched preparation or resuming an existing finite removal plan. Windows recovery remains explicit and no questions or Agent Sessions are cancelled. Standalone docs describe these limits; notification guidance is unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Explicit --migrate-npm stages the verified native runtime only for one identified legacy global package, preserves all old package/shim files, skips setup and returns incomplete with exact-prefix package-manager instructions. It never infers legacy owner absence or removes unreceipted skill content. OS and optional npm bootstraps forward the same flag; docs explain the explicit cleanup and rerun. Notification guidance and pending-work semantics remain unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

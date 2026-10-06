@@ -56,7 +56,7 @@ printf '200\\n\\n'
     const members = [['notifai', launcher], ['notifai-runtime', runtime], ['licenses/NOTICE.txt', 'fixture notice']]
     await setArchive(members)
     const marker = path.join(root, 'called')
-    const run = () => spawnSync('/bin/sh', [path.join(repositoryRoot, 'scripts/install.sh'), '--json', '--version', '1.0.0', '--no-init', '--no-path'], {
+    const run = () => spawnSync('/bin/sh', [path.join(repositoryRoot, 'scripts/install.sh'), '--json', '--version', '1.0.0', '--no-init', '--no-path', '--migrate-npm'], {
       cwd: root, env: { PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temporary, BOOTSTRAP_FIXTURES: fixtures, BOOTSTRAP_MARKER: marker, BOOTSTRAP_HOME: root, HOME: root },
       encoding: 'utf8', timeout: 20_000,
     })
@@ -64,7 +64,7 @@ printf '200\\n\\n'
     assert.equal(first.status, 7, first.stderr || first.stdout)
     const args = readFileSync(marker, 'utf8').trim().split('\n')
     assert.deepEqual(args.slice(0, 3), ['install', '--source', 'shell'])
-    assert.deepEqual(args.slice(-5), ['--version', '1.0.0', '--json', '--no-init', '--no-path'])
+    assert.deepEqual(args.slice(-6), ['--version', '1.0.0', '--json', '--no-init', '--no-path', '--migrate-npm'])
     rmSync(marker)
     writeFileSync(path.join(fixtures, 'archive.tar.gz'), 'tampered')
     const badHash = run()
@@ -86,7 +86,7 @@ printf '200\\n\\n'
     const reused = run()
     assert.equal(reused.status, 7, reused.stderr || reused.stdout)
     assert.deepEqual(readFileSync(marker, 'utf8').trim().split('\n'),
-      ['install', '--source', 'shell', '--version', '1.0.0', '--json', '--no-init', '--no-path'])
+      ['install', '--source', 'shell', '--version', '1.0.0', '--json', '--no-init', '--no-path', '--migrate-npm'])
     rmSync(marker)
     chmodSync(installedBin, 0o777)
     const unsafeExisting = run()
