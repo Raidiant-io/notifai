@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a4f13d2cf9deab5767f44a7c153c7c52161ae870fee03d07e71b75a7e5475f9c",
+  "behavior_digest": "sha256:7447396f82d8799bc71156ceff57499bc500d6ee4dc1e03e9f11e75c115bb55d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed merged Claude Code Windows session inbox and native standalone lifecycle guidance. Windows inbox tokens, descriptor FILETIME identity and the platform release floor from main remain authoritative. Standalone identity reads use the native helper and normalize its tagged FILETIME against the bare harness descriptor; source development retains its PowerShell reader. Explicit npm migration preserves old owners and remains incomplete through package-manager cleanup. Hook/skill/setup docs retain these distinctions without claiming live native harness or publication proof.",
+  "reason": "Reviewed merged Claude Code Windows session inbox and native standalone lifecycle guidance. Windows inbox tokens, descriptor FILETIME identity and the platform release floor from main remain authoritative. Standalone identity reads use the native helper and normalize its tagged FILETIME against the bare harness descriptor; source development retains its PowerShell reader. Explicit npm migration preserves old owners and remains incomplete through package-manager cleanup. Hook/skill/setup docs retain these distinctions without claiming live native harness or publication proof. Windows cleanup retains its recovery tools when checking installation-file absence raises an access or I/O error; only explicit not-found errors mean absence.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
