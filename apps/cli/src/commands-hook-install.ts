@@ -734,24 +734,25 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
       }
     }
     if (harness === 'grok') {
-      const outcome = withTargetFileLock(file, () => {
-        if (!existsSync(file)) return 'absent' as const
-        assertOwnedRegularFile(file)
-        if (!isOurGrokHookFile(readFileSync(file, 'utf8'))) return 'foreign' as const
-        rmSync(file, { force: true })
-        return 'removed' as const
-      })
-      if (outcome === 'removed') deps.io.out(`Removed the Notifai Grok hooks at ${file}`)
-      else if (outcome === 'foreign') deps.io.out(`Left ${file} alone: Notifai did not write it.`)
-      else deps.io.out(`Nothing to remove: ${file} does not exist.`)
+      for (const candidate of machineHookFiles(harness, deps.env, deps.hookPlatform)) {
+        const outcome = withTargetFileLock(candidate, () => {
+          if (!existsSync(candidate)) return 'absent' as const
+          assertOwnedRegularFile(candidate)
+          if (!isOurGrokHookFile(readFileSync(candidate, 'utf8'))) return 'foreign' as const
+          rmSync(candidate, { force: true })
+          return 'removed' as const
+        })
+        if (outcome === 'removed') deps.io.out(`Removed the Notifai Grok hooks at ${candidate}`)
+        else if (outcome === 'foreign') deps.io.out(`Left ${candidate} alone: Notifai did not write it.`)
+      }
     } else if (harness === 'opencode' || harness === 'openclaw') {
       const outcome = removeNotifaiPluginFile(harness, file)
-      if (outcome === 'removed') {
-        if (harness === 'openclaw') {
+      if (harness === 'openclaw' && outcome !== 'foreign') {
           editOpenclawConfig(deps, (source, configFile) =>
             removeOpenclawNotifaiConfigText(source, configFile, path.dirname(file)),
           )
-        }
+      }
+      if (outcome === 'removed') {
         deps.io.out(`Removed the Notifai ${HARNESS_LABELS[harness]} plugin at ${file}`)
       } else if (outcome === 'foreign') {
         deps.io.out(`Left ${file} alone: Notifai did not write it.`)

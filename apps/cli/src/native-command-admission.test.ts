@@ -105,3 +105,13 @@ it('refuses managed actions while uninstall has closed launch admission', async 
   expect(result.errors.join()).toContain('uninstall')
   expect(configSet).not.toHaveBeenCalled()
 })
+
+it('routes the explicit Windows finalizer to its ownership validator only through the native launcher', async () => {
+  const f = fixture(), uninstall = vi.fn(async () => 0)
+  Object.defineProperty(process, 'execPath', { value: path.join(f.home, 'temporary', 'notifai-runtime.exe') })
+  const args = ['uninstall', '--finish', '--installation-id', f.id, '--installation-root', path.join(f.home, '.notifai'), '--json']
+  expect(await f.invoke(args, { uninstall })).toMatchObject({ code: 0, admitted: ['installer'] })
+  expect(uninstall.mock.calls.length).toBe(1)
+  expect(await f.invoke(args, { uninstall }, { NOTIFAI_NATIVE_ENTRY: undefined })).toMatchObject({ code: 1, admitted: [] })
+  expect(uninstall.mock.calls.length).toBe(1)
+})

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { withFileLock } from '../apps/cli/src/file-lock.js'
 import { atomicWriteFileSync } from '../apps/cli/src/atomic-file.js'
-import { currentProcessIdentity, processIdentityLiveness } from '../apps/cli/src/process-identity.js'
+import { currentProcessIdentity, processIdentityLiveness, processExecutableName } from '../apps/cli/src/process-identity.js'
 import { WindowsDpapiStore } from '../apps/cli/src/credentials.js'
 import { Installation } from '../apps/cli/src/installation.js'
 import { Distribution } from '../apps/cli/src/release-distribution.js'
@@ -62,11 +62,16 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
   for (const build of readdirSync(path.join(installed, 'versions'))) {
     files.push(path.join(installed, 'versions', build, `notifai${extension}`), path.join(installed, 'versions', build, `notifai-runtime${extension}`))
   }
-  const result = inspectNativeFileUse(path.join(path.dirname(process.execPath), `notifai${extension}`), files)
-  if (result.status === 'uncertain') {
+  let result = inspectNativeFileUse(path.join(path.dirname(process.execPath), `notifai${extension}`), files)
+  const deadline = Date.now() + 15_000
+  while (args[0] === 'clear' && result.status === 'in_use' && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    result = inspectNativeFileUse(path.join(path.dirname(process.execPath), `notifai${extension}`), files)
+  }
+  if (result.status === 'uncertain' || (args[0] === 'clear' && result.status !== 'clear')) {
     const raw = spawnSync(path.join(path.dirname(process.execPath), `notifai${extension}`), ['--internal-file-users', ...files],
       { encoding: 'utf8', windowsHide: true, timeout: 30_000 })
-    process.stderr.write(JSON.stringify({ observation: result, native: { pid: raw.pid, status: raw.status, stdout: raw.stdout, stderr: raw.stderr, error: raw.error?.message } }) + '\n')
+    process.stderr.write(JSON.stringify({ observation: result, running: { pid: process.pid, parent: process.ppid }, names: result.processes.map(item => ({ ...item, name: processExecutableName(item.pid) })), native: { pid: raw.pid, status: raw.status, stdout: raw.stdout, stderr: raw.stderr, error: raw.error?.message } }) + '\n')
   }
   if (args[0] === 'clear') assert.deepEqual(result, { status: 'clear', processes: [] })
   else {

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3c748472ad9b0913d0547406b0f6f282b927d4e5a088e90a3fa4e18293051bcb",
+  "behavior_digest": "sha256:c6569f313311734cac36468d0ee7c9737507d68f0c13d35d7f3f0a948a99bc70",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Explicit native uninstall reports pending work, wiring conflicts and recoverable state without cancelling questions or ending Agent Sessions. Windows uses a verified temporary runtime and an explicit PowerShell cleanup command; no execution-policy change or implicit publication. Existing session state receives read-only owner/writer checks while managed directories retain protected ACL requirements. Standalone documentation describes the command and pending native qualification; notification guidance is unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Uninstall refuses unreadable or modified integration before removing runtime files, visits receipt-owned skills across indexed state roots, and removes all owned Grok machine documents and stale owned OpenClaw config. Repeated portable installation authenticates its candidate before cancelling untouched preparation or resuming an existing finite removal plan. Windows recovery remains explicit and no questions or Agent Sessions are cancelled. Standalone docs describe these limits; notification guidance is unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

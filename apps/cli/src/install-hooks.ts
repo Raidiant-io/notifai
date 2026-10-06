@@ -1727,6 +1727,7 @@ export function findLegacyProjectInstallations(
   env: NodeJS.ProcessEnv = process.env,
   adapterHome?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
+  problems?: string[],
 ): Installation[] {
   const machine = new Set(
     HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
@@ -1742,6 +1743,7 @@ export function findLegacyProjectInstallations(
       adapterHome,
       platform,
       env,
+      problems,
     ),
   )
 }
@@ -1762,9 +1764,20 @@ function collectInstallations(
   }
   const found: Installation[] = []
   for (const file of files) {
-    if (!existsSync(file)) continue
+    if (inspectionProblems) {
+      try {
+        const stat = lstatSync(file)
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Not a regular file')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') inspectionProblems.push(`Cannot inspect harness wiring: ${file}`)
+        continue
+      }
+    } else if (!existsSync(file)) continue
     if (harness === 'hermes') {
-      if (!isOurHermesPlugin(path.dirname(file))) continue
+      if (!isOurHermesPlugin(path.dirname(file))) {
+        inspectionProblems?.push(`Unrecognized Notifai plugin contents: ${file}`)
+        continue
+      }
       found.push({
         harness,
         file,
@@ -1788,7 +1801,10 @@ function collectInstallations(
       }
       const target =
         harness === 'openclaw' ? openclawPluginTarget(source) : opencodePluginTarget(source)
-      if (target === null) continue
+      if (target === null) {
+        inspectionProblems?.push(`Unrecognized Notifai plugin contents: ${file}`)
+        continue
+      }
       const label = harness === 'openclaw' ? 'OpenClaw' : 'OpenCode'
       const problems = [
         ...(!target.current

@@ -477,6 +477,7 @@ export class Installation {
    * already verified immutable build; never downloads on an ordinary hook. */
   async installRelease(input: { channel: ReleaseChannel; source: InstallSource; expectedGeneration: number;
     version?: string; allowStableDowngrade?: boolean }): Promise<ActivationResult & { version: string }> {
+    if (this.uninstallRecord()) throw new Error('Recover the pending uninstall before installing')
     const before = this.inspect()
     if (before.pending) throw new Error('Recover the pending installation transaction first')
     if ((before.active?.generation ?? 0) !== input.expectedGeneration) throw new Error('Installation changed; inspect before retrying')
@@ -499,6 +500,24 @@ export class Installation {
     const result = this.activate({ ...input, build })
     return { ...result, version: release.inventory.version }
   }
+  /** A repeated installer may cancel untouched preparation or finish an
+   * already-authorized finite plan. Authenticate the portable candidate first;
+   * never infer ownership from an incomplete directory or remove wiring here. */
+  recoverUninstallForInstall(candidate: { directory: string; signedInventory: string }, currentSessions: string):
+    { status: 'unchanged' | 'cancelled' } | ReturnType<Installation['completeUninstall']> {
+    const journal = this.uninstallRecord()
+    if (!journal) return { status: 'unchanged' }
+    const verified = this.verifyFiles(candidate.directory, candidate.signedInventory)
+    this.probe(candidate.directory, verified.inventory)
+    if (journal.phase === 'removing' && !journal.plan) throw new Error('Finish owned wiring removal with notifai uninstall --json before reinstalling')
+    const begun = this.beginUninstall(journal.generation, currentSessions)
+    if (begun.status !== 'preparing' && begun.status !== 'removing') return { status: begun.status }
+    if (begun.status === 'preparing') {
+      this.cancelUninstall(begun.token)
+      return { status: 'cancelled' }
+    }
+    return this.completeUninstall(begun.token, currentSessions, () => { throw new Error('Owned wiring removal is not complete') })
+  }
   /** First-install boundary for an authenticated portable candidate. Rerunning
    * any bootstrap reuses a healthy installation; runtime changes belong to the
    * explicit update command. Existing directory migration is bounded to root/bin. */
@@ -518,6 +537,7 @@ export class Installation {
         this.owned(directory, true)
       }
     }
+    if (this.uninstallRecord()) throw new Error('Recover the pending uninstall before installing')
     const before = this.inspect()
     if (before.pending) throw new Error('Recover the pending installation transaction with notifai update --repair first')
     if (before.active) {

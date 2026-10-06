@@ -10,7 +10,7 @@ import { SkillInstallation } from './skill-installation.js'
 
 export interface NativeUninstallFlags { json?: boolean; cancel?: boolean; finish?: boolean; installationId?: string; installationRoot?: string }
 interface Seams { installation?: Installation; removeWiring?: () => { ok: boolean; conflicts: string[] }; sessions?: string }
-function removeOwnedWiring(deps: CommandDeps): { ok: boolean; conflicts: string[] } {
+function removeOwnedWiring(deps: CommandDeps, stateRoots: string[]): { ok: boolean; conflicts: string[] } {
   const conflicts: string[] = []
   const quiet = { ...deps, io: { ...deps.io, confirm: deps.io.confirm.bind(deps.io), openUrl: deps.io.openUrl.bind(deps.io),
     out() {}, err(message: string) { conflicts.push(message) } } }
@@ -18,9 +18,13 @@ function removeOwnedWiring(deps: CommandDeps): { ok: boolean; conflicts: string[
     if (hooksUninstallCommand(quiet, { harness }) !== EXIT.ok && conflicts.length === 0) conflicts.push(`Could not remove ${harness} wiring`)
   }
   const remaining = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform, conflicts)
-  remaining.push(...findLegacyProjectInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform))
+  remaining.push(...findLegacyProjectInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform, conflicts))
   conflicts.push(...remaining.map(item => `Notifai wiring remains in ${item.file}`))
-  if (conflicts.length === 0) conflicts.push(...new SkillInstallation({ cwd: deps.cwd, env: deps.env }).removeRecorded().conflicts)
+  if (conflicts.length === 0) {
+    for (const root of new Set([stateDir(deps.env), ...stateRoots])) {
+      conflicts.push(...new SkillInstallation({ cwd: deps.cwd, env: { ...deps.env, XDG_STATE_HOME: path.dirname(root) } }).removeRecorded().conflicts)
+    }
+  }
   return { ok: conflicts.length === 0, conflicts }
 }
 
@@ -45,7 +49,9 @@ export async function nativeUninstallCommand(deps: CommandDeps, flags: NativeUni
       return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result }, 'Windows installation cleanup finished.')
     }
     const problems: string[] = []
-    const wiring = seams.removeWiring ? [] : findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform, problems)
+    const wiring = seams.removeWiring || flags.cancel ? [] : findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform, problems)
+    if (problems.length) return emit({ ok: false, status: 'uncertain', conflicts: problems }, problems.join('\n'))
+    if (!seams.removeWiring && !flags.cancel) findLegacyProjectInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform, problems)
     if (problems.length) return emit({ ok: false, status: 'uncertain', conflicts: problems }, problems.join('\n'))
     const before = installation.uninstallState()
     const begun = installation.beginUninstall(before?.generation ?? installation.inspect().active?.generation ?? 0, sessions)
@@ -73,7 +79,7 @@ export async function nativeUninstallCommand(deps: CommandDeps, flags: NativeUni
     if (!before?.planned && gate.status !== 'removing') return emit({ ok: false, ...gate,
       recovery_command: 'notifai uninstall --json', cancel_command: 'notifai uninstall --cancel --json' },
     'Notifai is waiting for its running commands to exit. Retry uninstall when they finish, or cancel it.')
-    const result = installation.completeUninstall(begun.token, sessions, seams.removeWiring ?? (() => removeOwnedWiring(deps)))
+    const result = installation.completeUninstall(begun.token, sessions, seams.removeWiring ?? (() => removeOwnedWiring(deps, begun.owners.stateRoots)))
     return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result }, result.status === 'removed'
       ? 'Notifai was uninstalled. Your configuration and session history were preserved.'
       : result.recovery_command ? 'Run this PowerShell command after this command exits to finish removing Notifai.'

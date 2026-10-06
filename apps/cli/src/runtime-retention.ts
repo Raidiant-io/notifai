@@ -12,6 +12,7 @@ import { inspectOpenclawHosts } from './openclaw-host-state.js'
 export interface RuntimeOwnerInspection {
   status: 'clear' | 'waiting_for_questions' | 'uncertain'
   reason?: string
+  stateRoots: string[]
   hosts: ProcessIdentity[]
   residents: Array<{ file: string; identity: ProcessIdentity }>
   sessions: Array<{ file: string; sessionId: string; builds: string[]; digest: string }>
@@ -197,6 +198,7 @@ export class RuntimeRetention {
   inspectOwners(currentSessions: string): RuntimeOwnerInspection {
     const sessions: RuntimeOwnerInspection['sessions'] = []
     const hosts: ProcessIdentity[] = []
+    const stateRoots: string[] = []
     const residents: RuntimeOwnerInspection['residents'] = []
     try {
       if (!path.isAbsolute(currentSessions)) throw new Error('Invalid session directory')
@@ -218,6 +220,7 @@ export class RuntimeRetention {
           }
         }
       }
+      stateRoots.push(...[...directories].filter(directory => path.basename(directory) === 'sessions' && path.basename(path.dirname(directory)) === 'notifai').map(directory => path.dirname(directory)))
       const hostState = inspectOpenclawHosts(this.root, this.installationId, this.access)
       hosts.push(...hostState.hosts)
       let pending = hostState.pending
@@ -301,8 +304,8 @@ export class RuntimeRetention {
           })
         }
       }
-      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents }
-    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
+      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents, stateRoots }
+    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, stateRoots, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

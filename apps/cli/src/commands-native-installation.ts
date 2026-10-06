@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { lstatSync, readFileSync } from 'node:fs'
+import { stateDir } from './config.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
 import type { Installation, InstallSource } from './installation.js'
@@ -174,7 +175,13 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     const inventoryFile = path.resolve(flags.inventory ?? path.join(directory, 'inventory.json'))
     const stat = lstatSync(inventoryFile)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) throw new Error('Release inventory must be a bounded regular file')
-    const result = installation.installCandidate({ directory, signedInventory: readFileSync(inventoryFile, 'utf8'),
+    const signedInventory = readFileSync(inventoryFile, 'utf8')
+    const recovery = installation.recoverUninstallForInstall({ directory, signedInventory }, path.join(stateDir(deps.env), 'sessions'))
+    if (!['unchanged', 'cancelled', 'removed'].includes(recovery.status)) {
+      emit({ ok: false, code: 'uninstall_pending', ...installed, ...recovery }, 'Finish the pending uninstall, then rerun this installer.')
+      return EXIT.failed
+    }
+    const result = installation.installCandidate({ directory, signedInventory,
       source: source as InstallSource, ...(flags.channel === undefined ? {} : { channel: flags.channel }),
       ...(flags.version === undefined ? {} : { version: flags.version }) })
     const active = installation.activeRelease(result.active.generation)

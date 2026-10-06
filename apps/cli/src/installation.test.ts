@@ -779,3 +779,40 @@ it('refuses finishing from an original executable and preserves modified tempora
   expect(readFileSync(copy, 'utf8')).toBe('preserve modified copy')
   expect(existsSync(path.join(f.options.root, 'active.json'))).toBe(true)
 })
+
+it('keeps runtime and launch admission unchanged when harness wiring cannot be inspected', async () => {
+  const f = fixture(), build = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const claude = path.join(f.root, '.claude'); mkdirSync(claude)
+  writeFileSync(path.join(claude, 'settings.json'), '{ malformed')
+  const out: string[] = []
+  const deps: CommandDeps = { env: { HOME: f.root, CLAUDE_CONFIG_DIR: claude }, cwd: f.root, hookAdapterHome: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  expect(await nativeUninstallCommand(deps, { json: true }, { installation: f.installation, sessions: path.join(f.root, 'no-sessions') })).toBe(1)
+  expect(JSON.parse(out.pop()!)).toMatchObject({ status: 'uncertain', conflicts: expect.arrayContaining([expect.stringContaining('Cannot inspect harness wiring')]) })
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  expect(existsSync(path.join(f.options.root, 'active.json'))).toBe(true)
+})
+
+it('repeated portable installation cancels untouched preparation or finishes a verified interrupted removal', () => {
+  const f = fixture(), candidate = f.candidate('1.0.0'), build = f.installation.stage(candidate)
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const options = { ...f.options, fileUse: () => ({ status: 'clear' as const, processes: [] }) }
+  const installation = new Installation(options), sessions = path.join(f.root, 'no-sessions')
+  installation.beginUninstall(1, sessions)
+  expect(() => installation.installCandidate({ ...candidate, source: 'manual' })).toThrow(/pending uninstall/)
+  expect(installation.recoverUninstallForInstall(candidate, sessions).status).toBe('cancelled')
+  expect(installation.installCandidate({ ...candidate, source: 'manual' }).reused).toBe(true)
+  const interrupted = new Installation({ ...options, observe(phase) {
+    if (phase === 'uninstall-file-removed') throw new Error('interrupted')
+  } })
+  const begun = interrupted.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(interrupted.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('incomplete')
+  const invalid = { ...candidate, signedInventory: candidate.signedInventory.replace('fixture', 'untrusted') }
+  expect(() => installation.recoverUninstallForInstall(invalid, sessions)).toThrow()
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(true)
+  expect(installation.recoverUninstallForInstall(candidate, sessions).status).toBe('removed')
+  expect(installation.installCandidate({ ...candidate, source: 'manual' }).reused).toBe(false)
+})
