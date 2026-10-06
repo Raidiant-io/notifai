@@ -172,7 +172,8 @@ function recordHostRoot(directory) {
   const temp = file + "." + randomUUID() + ".tmp"
   writeFileSync(temp, JSON.stringify({ schema: 1, installation_id: owner.id, root, pid: process.pid, start }) + "\\n",
     { mode: 0o600, flag: "wx" })
-  const fd = openSync(temp, "r")
+  // Windows FlushFileBuffers requires a writable handle.
+  const fd = openSync(temp, "r+")
   try { fsyncSync(fd) } finally { closeSync(fd) }
   ownHostFile(temp)
   renameSync(temp, file)
@@ -215,7 +216,7 @@ function saveJournal(record) {
   const file = journalPath(record.delivery_id)
   const temp = file + "." + randomUUID() + ".tmp"
   writeFileSync(temp, JSON.stringify(record) + "\\n", { mode: 0o600, flag: "wx" })
-  const fd = openSync(temp, "r")
+  const fd = openSync(temp, "r+")
   try { fsyncSync(fd) } finally { closeSync(fd) }
   ownHostFile(temp)
   renameSync(temp, file)
@@ -259,7 +260,7 @@ function saveMessageJournal(record) {
   const { text: _text, ...withoutText } = record
   const stored = existsSync(messageContextMarkerPath(record.delivery_id)) ? withoutText : record
   writeFileSync(temp, JSON.stringify(stored) + "\\n", { mode: 0o600, flag: "wx" })
-  const fd = openSync(temp, "r")
+  const fd = openSync(temp, "r+")
   try { fsyncSync(fd) } finally { closeSync(fd) }
   ownHostFile(temp)
   renameSync(temp, file)

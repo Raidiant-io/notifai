@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:bf0ff72ee4eecc1f587850738af02766a9dccf64cbc47895968c66a5079952d6",
+  "behavior_digest": "sha256:6cdfd8e27cfe20ba860bbacf5cf6f8c4e1174dd3dddbe593696b618792d31777",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Durable OpenClaw host-root discovery now retains each writer PID and process start identity so empty work inventory cannot imply host absence. Registration is limited to the native stable executable and leaves source hook-adapter execution outside the native ownership protocol. Native pending-work probes exercise generated host records and observe exited writer identities. No host is stopped, no removal completion is advertised, and User notification guidance remains unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Generated OpenClaw host-index and journal publication now opens writable descriptors for fsync, as required by Windows FlushFileBuffers. This fixes native host-state durability without changing journal phases, replay rules, notification guidance or public command semantics. Exact Windows native execution remains the qualification gate.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
