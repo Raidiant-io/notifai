@@ -97,6 +97,13 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     assert.equal(state.future_field, 'preserve-me')
     atomicWriteFileSync(file, JSON.stringify({ ...state, count: state.count + 1 }))
   }, { waitMs: 15_000 })
+} else if (mode === 'account-home') {
+  const { resolveHookAdapterHome } = await import('../apps/cli/src/hook-adapter.js')
+  // The parent deliberately supplies a different HOME/USERPROFILE. OS identity
+  // must not come from Bun's environment-derived os.userInfo().homedir.
+  assert.throws(() => resolveHookAdapterHome(), /does not match this account's OS home/)
+  assert.equal(resolveHookAdapterHome(root), root)
+  assert.ok(sameLocalPath(resolveHookAdapterHome(undefined, {}), args[0]!))
 } else if (mode === 'identity') {
   const identity = currentProcessIdentity()
   assert.ok(identity)

@@ -47,6 +47,8 @@ static int active_build(const char *record, char *build) {
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <userenv.h>
+#pragma comment(lib, "userenv.lib")
 #include <wchar.h>
 #include "windows-path.h"
 #include "windows-security.h"
@@ -56,6 +58,20 @@ static int active_build(const char *record, char *build) {
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
     return 1;
+}
+
+static int account_home(void) {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return 1;
+    wchar_t home[32768];
+    DWORD length = 32768;
+    BOOL ok = GetUserProfileDirectoryW(token, home, &length);
+    CloseHandle(token);
+    if (!ok) return 1;
+    char utf8[32768 * 3];
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, home, -1,
+                            utf8, sizeof(utf8), NULL, NULL)) return 1;
+    return puts(utf8) < 0 ? 1 : 0;
 }
 
 /* Both processes share the console. Let the child consume Ctrl-C/Break; keeping
@@ -161,6 +177,7 @@ static int uninstall_pending(const wchar_t *executable) {
 }
 
 int wmain(int argc, wchar_t **argv) {
+    if (argc == 2 && !wcscmp(argv[1], L"--internal-account-home")) return account_home();
     if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-read"))
         return user_path_command(0) ? 0 : failure("cannot inspect User PATH");
     if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-write"))
@@ -309,10 +326,19 @@ int wmain(int argc, wchar_t **argv) {
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <pwd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
 extern char **environ;
+
+static int account_home(void) {
+    struct passwd record, *found = NULL;
+    char buffer[65536];
+    if (getpwuid_r(getuid(), &record, buffer, sizeof(buffer), &found) ||
+        !found || !record.pw_dir || record.pw_dir[0] != '/') return 1;
+    return puts(record.pw_dir) < 0 ? 1 : 0;
+}
 
 static int owned_path(const char *file, int directory) {
     struct stat info;
@@ -373,6 +399,7 @@ static int uninstall_pending(const char *executable) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--internal-account-home")) return account_home();
     if (argc >= 3 && !strcmp(argv[1], "--internal-file-users"))
         return file_users(argc - 2, argv + 2);
     if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }

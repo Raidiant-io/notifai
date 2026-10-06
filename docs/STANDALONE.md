@@ -362,6 +362,12 @@ A relocated home, symbolic link/reparse point or other writable principal must
 not select an executable. Native Installation remains the authority for signed
 inventory verification, active runtime health and transaction recovery.
 
+The native launcher resolves that home from the POSIX account record or the
+Windows process token's profile, independently of `HOME` and `USERPROFILE`.
+The shared-hook guard must not use Bun's environment-derived `os.userInfo()`
+home. A different environment home is rejected for installation and shared
+wiring; full-CLI isolated installation proof needs a disposable OS account.
+
 First installation on Windows/Linux trusts the HTTPS release channel. The
 bootstrap checks bounded metadata, archive paths/types, download sizes and
 hashes before execution. These hashes detect changed bytes; they are not a

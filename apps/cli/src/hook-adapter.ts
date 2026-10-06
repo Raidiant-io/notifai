@@ -7,8 +7,8 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
+import { osAccountHome } from './os-account-home.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
 import { sameLocalPath } from './local-path.js'
@@ -78,7 +78,7 @@ export function hookHostPlatform(
  * it; CLI, Node, package-manager, checkout, and preference paths stay behind
  * it and may change without changing hook identity.
  */
-export function hookAdapterPath(homeDir: string = os.userInfo().homedir, platform: NodeJS.Platform | HookHostPlatform = process.platform): string {
+export function hookAdapterPath(homeDir: string = osAccountHome(), platform: NodeJS.Platform | HookHostPlatform = process.platform): string {
   if (existsSync(path.join(homeDir, '.notifai', 'install.json'))) return path.join(homeDir, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
   return path.join(homeDir, '.notifai', 'bin', 'hook-adapter')
 }
@@ -113,7 +113,7 @@ export function resolveHookAdapterHome(
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string {
   if (explicitHome !== undefined && explicitHome !== '') return explicitHome
-  const osHome = os.userInfo().homedir
+  const osHome = osAccountHome()
   const comparisonPlatform = platform === 'win32' ? 'win32' : 'linux'
   if (envRequestedHomes(env, platform).some((home) => !sameLocalPath(home, osHome, comparisonPlatform))) {
     throw new Error(
@@ -201,9 +201,9 @@ export function inspectHookAdapter(
 ): HookAdapterInspection {
   const host = hookHostPlatform(platform)
   const file = hookAdapterPath(homeDir, platform)
-  if (existsSync(path.join(homeDir ?? os.userInfo().homedir, '.notifai', 'install.json'))) {
+  if (existsSync(path.join(homeDir ?? osAccountHome(), '.notifai', 'install.json'))) {
     try {
-      const native = nativeInstallationIdentity(homeDir ?? os.userInfo().homedir, host === 'win32')
+      const native = nativeInstallationIdentity(homeDir ?? osAccountHome(), host === 'win32')
       const stat = lstatSync(native.command)
       if (!stat.isFile() || stat.isSymbolicLink() || (host === 'posix' && (stat.mode & 0o111) === 0)) throw new Error('Native command is unavailable')
       return { path: native.command, target: { kind: 'native', execPath: native.command }, problems: [] }
