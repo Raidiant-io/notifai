@@ -120,6 +120,17 @@ test('native finalization and publication retain exact artifacts across independ
   assert.equal(prepare.on.workflow_dispatch.inputs.candidate_run_id.required, true)
   assert.equal(nativePublish.on.workflow_dispatch.inputs.final_run_id.required, true)
   assert.equal(prepare.jobs.finalize.environment, 'native-release')
+  // Finalization reuses the admitted executables, but the runtime verification
+  // compiles its isolated Bun and Windows registry fixtures on the fresh runner.
+  const toolSteps = prepare.jobs.finalize.steps
+  const bun = toolSteps.findIndex(step => step.uses?.startsWith('oven-sh/setup-bun@'))
+  const compiler = toolSteps.findIndex(step => step.uses?.startsWith('ilammy/msvc-dev-cmd@'))
+  const runtimeCheck = toolSteps.findIndex(step => step.run?.includes('check-standalone-runtime.mjs'))
+  assert.ok(bun >= 0 && bun < runtimeCheck, 'Native finalization must provision its pinned fixture runtime')
+  assert.equal(toolSteps[bun].with['bun-version'], '1.4.2')
+  assert.ok(compiler >= 0 && compiler < runtimeCheck, 'Windows finalization must provision the registry fixture compiler')
+  assert.equal(toolSteps[compiler].if, "runner.os == 'Windows'")
+  assert.equal(toolSteps[compiler].with.arch, '${{ matrix.arch }}')
   assert.equal(nativePublish.jobs.publish.environment, 'native-release')
   assert.deepEqual(nativePublish.jobs.publish.permissions, { actions: 'read', contents: 'write' })
   const finalization = prepare.jobs.finalize.steps.map(step => step.run ?? '').join('\n')
