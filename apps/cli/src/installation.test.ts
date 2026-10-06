@@ -290,6 +290,46 @@ it('closes launch admission only after work drains and fences concurrent install
   expect(f.installation.activate({ build: next, expectedGeneration: 1, source: 'manual', channel: 'stable' }).active.active).toBe(next)
 })
 
+it('requires drained resident and native executable owners before entering removal', () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'uninstall-owner'
+  writeSessionState(session, env, {})
+  const sessions = path.dirname(sessionStatePath(session, env)), claimFile = path.join(sessions, 'orphan.attendant')
+  const identity = currentProcessIdentity()!
+  const claim = acquireClaimFile(claimFile, identity)
+  expect(claim).not.toBeNull()
+  let observation: { status: 'clear' | 'in_use' | 'uncertain'; processes: Array<{ pid: number }> } = { status: 'clear', processes: [] }
+  let observed = 0, lateWork = false
+  const installation = new Installation({ ...f.options, fileUse: (_launcher, files) => {
+    observed++
+    if (lateWork) writeSessionState(session, env, { acknowledgement_due: [{ request_id: 'req_late', recorded_at: 1 }] })
+    expect(files).toContain(path.join(f.options.root, 'bin', 'notifai'))
+    expect(files).toContain(path.join(f.options.root, 'versions', first, 'notifai-runtime'))
+    return observation
+  } })
+  const begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('residents_running')
+  expect(observed).toBe(0)
+  releaseClaimFile(claimFile, claim!)
+  observation = { status: 'uncertain', processes: [] }
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('uncertain')
+  observation = { status: 'in_use', processes: [{ pid: process.pid }] }
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('residents_running')
+  observation = { status: 'clear', processes: [] }
+  // An owner can commit its final work while native observation runs.
+  lateWork = true
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('waiting_for_questions')
+  lateWork = false
+  writeSessionState(session, env, {})
+  expect(installation.enterUninstallRemoval('wrong-token', sessions).status).toBe('uncertain')
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('removing')
+  expect(() => installation.cancelUninstall(begun.token)).toThrow(/changed/)
+  expect(existsSync(path.join(f.options.root, 'versions', first, 'notifai-runtime'))).toBe(true)
+  expect(readFileSync(sessionStatePath(session, env), 'utf8')).not.toContain('ended')
+})
+
 it('retains unknown boot identities and user-modified bytes rather than trusting age or directory names', () => {
   const f = fixture()
   let boot: string | null = '11111111-1111-4111-8111-111111111111'

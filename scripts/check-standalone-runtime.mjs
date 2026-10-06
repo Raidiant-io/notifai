@@ -171,6 +171,8 @@ try {
     const ownerState = JSON.parse(readFileSync(path.join(ownerRoot, 'owner.json'), 'utf8'))
     assert.equal(realpathSync.native(ownerState.executable), realpathSync.native(path.join(root, '.notifai', 'versions', owner.reference.build, `notifai-runtime${extension}`)))
     assert.notEqual(JSON.parse(readFileSync(path.join(root, '.notifai', 'active.json'), 'utf8')).active, owner.reference.build)
+    execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['file-use', root, String(owner.pid)],
+      { cwd: root, env, stdio: 'inherit', timeout: 90_000 })
     const before = readFileSync(path.join(ownerRoot, 'heartbeat'), 'utf8')
     await sleep(250)
     assert.notEqual(readFileSync(path.join(ownerRoot, 'heartbeat'), 'utf8'), before, 'old owner keeps running after activation')
@@ -198,6 +200,8 @@ try {
     assert.equal(users.reboot_reasons, 0, 'Released fixture resources must not require a reboot')
     assert.deepEqual(users.processes, [], 'Native observation must observe release after native owner exit')
   }
+  execFileSync(path.join(root, '.notifai', 'bin', `notifai${extension}`), ['file-use', root, 'clear'],
+    { cwd: root, env, stdio: 'inherit', timeout: 90_000 })
   run(['installation', root, 'repair'])
   run(['installation', root, 'cleanup'])
   const managedRoot = path.join(root, '.notifai')
@@ -224,6 +228,8 @@ try {
     assert.match(blocked.stderr, /uninstall is in progress/)
     assert.equal(existsSync(path.join(blockedRoot, 'owner.json')), false)
   } finally { rmSync(barrier) }
+  run(['installation', root, 'uninstall'])
+  rmSync(barrier) // Owned fixture teardown; production cannot cancel the removing phase.
   const payload = Buffer.from(JSON.stringify({ schema: 1, version: '12.0.0', source_revision: 'a'.repeat(40),
     store_schema: 1, launcher_schema: 1, artifacts: [{ target: 'bun-windows-x64',
       filename: 'notifai-12.0.0-windows-x64.zip', bytes: 15,
@@ -329,6 +335,6 @@ try {
     } finally { parent.kill() }
   }
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
-    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
+    checks: ['native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
 } finally { rmSync(root, { recursive: true, force: true }) }

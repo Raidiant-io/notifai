@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from 'node:fs'
 import path from 'node:path'
+import { inspectNativeFileUse, type NativeFileUse } from './native-file-use.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
 import { withFileLock } from './file-lock.js'
@@ -70,7 +71,7 @@ export class Installation {
   private readonly probe: (directory: string, inventory: ReleaseInventory) => void
   constructor(private readonly options: { root: string; target: ReleaseTarget; distribution: Distribution;
     access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void;
-    bootIdentity?: () => string | null }) {
+    bootIdentity?: () => string | null; fileUse?: (launcher: string, files: readonly string[]) => NativeFileUse }) {
     if (!path.isAbsolute(options.root)) throw new Error('Installation root must be absolute')
     this.access = options.access ?? installationAccess()
     this.root = path.resolve(options.root)
@@ -164,6 +165,46 @@ export class Installation {
       }
       rmSync(this.file('uninstall.json'))
     }, { waitMs: 5_000, strictRelease: true })
+  }
+  /** The last gate before owned wiring edits. The durable phase transition
+   * prevents cancellation from reopening admission after a partial removal. */
+  enterUninstallRemoval(token: string, currentSessions: string): { status: 'removing' | 'waiting_for_questions' | 'residents_running' | 'uncertain' } {
+    try {
+      return withFileLock(this.file('installation.lock'), () => {
+        const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive()
+        const owner = currentProcessIdentity()
+        if (!journal || journal.token !== token || journal.phase !== 'preparing' || journal.installation_id !== installed?.id ||
+            journal.generation !== active?.generation || journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start ||
+            present(this.file('transaction.json'))) return { status: 'uncertain' }
+        const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
+        const owners = retention.inspectOwners(currentSessions)
+        if (owners.status !== 'clear') return { status: owners.status }
+        for (const identity of [...owners.hosts, ...owners.residents.map(item => item.identity)]) {
+          const liveness = processIdentityLiveness(identity)
+          if (liveness !== 'gone') return { status: liveness === 'alive' ? 'residents_running' : 'uncertain' }
+        }
+        this.checkStable(installed)
+        this.owned(this.file('versions'), true)
+        const files = [this.file(path.join('bin', `notifai${this.extension}`))]
+        for (const build of readdirSync(this.file('versions'))) {
+          // Unfinished staging or unfamiliar entries need explicit recovery.
+          const version = this.verifyVersion(build)
+          files.push(path.join(version.directory, `notifai${this.extension}`), path.join(version.directory, `notifai-runtime${this.extension}`))
+        }
+        const version = this.verifyVersion(active.active)
+        const observed = (this.options.fileUse ?? inspectNativeFileUse)(path.join(version.directory, `notifai${this.extension}`), files)
+        if (observed.status !== 'clear') return { status: observed.status === 'in_use' ? 'residents_running' : 'uncertain' }
+        // Close the scan window for state written by an owner exiting while the
+        // native observer ran. Admission is still closed throughout both reads.
+        const after = retention.inspectOwners(currentSessions)
+        if (after.status !== 'clear') return { status: after.status }
+        if ([...after.hosts, ...after.residents.map(item => item.identity)].some(identity => processIdentityLiveness(identity) !== 'gone')) {
+          return { status: 'residents_running' }
+        }
+        this.save('uninstall.json', { ...journal, phase: 'removing' })
+        return { status: 'removing' }
+      }, { waitMs: 5_000, strictRelease: true })
+    } catch { return { status: 'uncertain' } }
   }
   private readActive(): ActiveGeneration | null {
     const value = this.readJson('active.json')

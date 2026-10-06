@@ -53,6 +53,21 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
   native_revision: 'fixture', boot_id: GATEWAY_BOOT_ID, deadline_ns: '1234', attempt: 1,
   phase: 'transcript', ...(process.argv[2] === 'settle' ? {} : { text: 'pending fixture context' }) })
 `)
+} else if (mode === 'file-use') {
+  const { inspectNativeFileUse } = await import('../apps/cli/src/native-file-use.js')
+  const installed = path.join(root, '.notifai'), extension = process.platform === 'win32' ? '.exe' : ''
+  const files = [path.join(installed, 'bin', `notifai${extension}`)]
+  for (const build of readdirSync(path.join(installed, 'versions'))) {
+    files.push(path.join(installed, 'versions', build, `notifai${extension}`), path.join(installed, 'versions', build, `notifai-runtime${extension}`))
+  }
+  const result = inspectNativeFileUse(path.join(path.dirname(process.execPath), `notifai${extension}`), files)
+  if (args[0] === 'clear') assert.deepEqual(result, { status: 'clear', processes: [] })
+  else {
+    assert.equal(result.status, 'in_use')
+    assert.ok(result.processes.some(item => item.pid === Number(args[0])))
+    assert.ok(result.processes.every(item => item.pid !== process.pid && item.pid !== process.ppid))
+  }
+  assert.equal(inspectNativeFileUse(path.join(path.dirname(process.execPath), `notifai${extension}`), [path.join(installed, 'absent')]).status, 'uncertain')
 } else if (mode === 'host-state') {
   const { RuntimeRetention } = await import('../apps/cli/src/runtime-retention.js')
   const managed = path.join(root, '.notifai')
@@ -133,6 +148,13 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     assert.throws(() => interrupted.activate({ build: second, expectedGeneration: 3, source: 'manual', channel: 'stable' }), /interrupted/)
     assert.equal(installation.recover().active?.active, second)
     assert.equal(installation.inspect().pending, false)
+  } else if (operation === 'uninstall') {
+    const sessions = path.join(root, 'no-sessions')
+    const begun = installation.beginUninstall(installation.inspect().active!.generation, sessions)
+    assert.equal(begun.status, 'preparing')
+    if (begun.status !== 'preparing') throw new Error('Native uninstall did not prepare')
+    assert.equal(installation.enterUninstallRemoval(begun.token, sessions).status, 'removing')
+    assert.throws(() => installation.cancelUninstall(begun.token), /changed/)
   } else if (operation === 'cleanup') {
     // Inject only boot identities. File publication, ownership checks, signed
     // inventory verification and deletion use the real native OS adapters.

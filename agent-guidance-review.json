@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7472c83ca6cb3dc86155b8d9c1454daf5fa171345c54ca55dc7533354f9a5129",
+  "behavior_digest": "sha256:19aedb6146ef7543d22b35b85b71ad49abb9a2e5e77de2c39d556790d7cd3b6d",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Uninstall preflight now inventories current resident claim producers across discovered state roots, including orphan claims. Guards and malformed identities retain the installation. Inventory does not observe, signal or release owners and does not authorize deletion, so agent guidance and public command semantics remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Internal uninstall removal admission now rechecks pending work and exact resident/host liveness before and after native executable observation. Unknown evidence retains the installation, and the removing phase cannot reopen admission through cancellation. This adds no public command, teardown or notification behavior; documentation states the remaining lifecycle work.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

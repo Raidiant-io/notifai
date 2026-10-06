@@ -200,8 +200,15 @@ cross-host absence guarantee. macOS's private interface has no permanent API
 stability guarantee. Unsupported, inaccessible or changed process evidence
 for a matching candidate retains the installation. Unrelated process names
 are excluded before executable inspection. These
-bounded snapshots require closed launch admission and still need integration
-with owned teardown before they may authorize uninstall deletion.
+bounded snapshots require closed launch admission. The removal-phase gate
+rechecks pending work and recorded host/resident identities on both sides of
+native file-use observation. It authenticates every installed runtime before
+querying the OS and retains the installation on uncertain evidence. The
+synchronous observation helper has exited before its PID is excluded; only the
+foreground uninstaller itself and its exact Windows C parent are otherwise
+exempt. Windows keeps their executing images for later external cleanup. Once
+the journal enters removal, cancellation cannot reopen launch admission. Owned
+teardown and the public command still need to complete this lifecycle.
 
 ### Existing Windows directory permissions
 
