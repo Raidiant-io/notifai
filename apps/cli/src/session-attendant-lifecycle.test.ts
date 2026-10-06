@@ -8,7 +8,7 @@ import { attendHook, attendantGates } from './commands-hook-attend.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CommandDeps, CommandIo } from './commands.js'
 import { sanitizeSessionId, stateDir } from './config.js'
-import { acquireClaimFile, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import { acquireClaimFile, claimQuestionPush, readClaimFile, releaseQuestionPush } from './hook-question-lock.js'
 import {
   beginSessionIncarnation,
   endsIncarnation,
@@ -28,7 +28,7 @@ import {
 import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig, codexTrustKey, codexHookIdentityHash, findInstallations } from './install-hooks.js'
 import { nullLogger } from './logging.js'
-import { currentProcessIdentity, processExecutableName } from './process-identity.js'
+import { currentProcessIdentity, processExecutableName, processStartTime } from './process-identity.js'
 import { disableProject, enableProject, projectBinding } from './project-enablement.js'
 import type { AttendantResult } from './session-attendant.js'
 import {
@@ -578,6 +578,54 @@ describe('notifai hook attend', () => {
     expect(service.calls.every((call) => call.state === 'running')).toBe(true)
     // It never releases a claim that is no longer its own.
     expect(JSON.parse(readFileSync(claim, 'utf8'))).toMatchObject({ token: 'someone-else' })
+  })
+
+  it('hands a Claude Code session over to the installed runtime at its next root hook, keeping its pending work', async () => {
+    const { env, root } = isolatedEnv()
+    const service = fakeAttendance()
+    const previous = { ...attendDeps(env, root, { clientFactory: () => service.client }), runningVersion: '1.0.0' }
+    recordSessionNotified('sess-a', env, Date.now())
+    const running = hookRunCommand(previous, 'attend', stdin({ session_id: 'sess-a', cwd: root,
+      hook_event_name: 'SessionStart', source: 'startup' }), 'claude-code')
+    await until(() => service.calls.length >= 2, 'previous runtime attending')
+    const claim = attendantClaimPath('sess-a', env)
+    const incarnation = readSessionIncarnation('sess-a', env)!.incarnation
+    // The previous writer is another live process; this one stands in for it.
+    writeFileSync(claim, JSON.stringify({ ...readClaimFile(claim), pid: process.ppid, start: processStartTime(process.ppid) }))
+    updateSessionState('sess-a', env, state => ({ ...state,
+      pending: [{ question: 'Existing question', request_id: 'req_pending' }],
+      message_acknowledgement_due: [{ message_id: 'sm_pending', recorded_at: Date.now(), text_required: true }],
+    }))
+    const installed = { ...attendDeps(env, root, { clientFactory: () => service.client }), runningVersion: '2.0.0' }
+    const rearm = { session_id: 'sess-a', cwd: root, hook_event_name: 'UserPromptSubmit' }
+
+    // A subagent's hook is not the session's own event and hands nothing over.
+    await hookRunCommand(installed, 'attend', stdin({ ...rearm, agent_id: 'agent-1', agent_type: 'general-purpose' }), 'claude-code')
+    expect(readClaimFile(claim)).toMatchObject({ runtime_version: '1.0.0' })
+    expect(readClaimFile(claim)?.['handoff']).toBeUndefined()
+    expect(previous.exits).toHaveLength(0)
+
+    // The session's own prompt fences the previous writer. Its process is
+    // still alive here, so the successor waits out its bound and leaves.
+    await hookRunCommand(installed, 'attend', stdin(rearm), 'claude-code')
+    await running
+    expect(previous.exits).toEqual([{ reason: 'claim-lost', reported: null }])
+    expect(readClaimFile(claim)).toMatchObject({ handoff: true, incarnation, runtime_version: '1.0.0' })
+    expect(installed.exits).toHaveLength(0)
+
+    // Once the previous process is gone, the next hook attends on the installed runtime.
+    writeFileSync(claim, JSON.stringify({ ...readClaimFile(claim), pid: 2 ** 22 + 1, start: 'Thu Jan 1 00:00:00 1970' }))
+    const successor = hookRunCommand(installed, 'attend', stdin(rearm), 'claude-code')
+    try {
+      await until(() => readClaimFile(claim)?.['runtime_version'] === '2.0.0', 'installed runtime attending')
+      expect(readClaimFile(claim)).toMatchObject({ incarnation, pid: process.pid })
+      expect(readSessionIncarnation('sess-a', env)?.incarnation).toBe(incarnation)
+      expect(readSessionState('sess-a', env).pending?.[0]?.request_id).toBe('req_pending')
+      expect(readSessionState('sess-a', env).message_acknowledgement_due?.[0]?.message_id).toBe('sm_pending')
+    } finally {
+      markSessionEnded('sess-a', env, Date.now() + 1)
+      await successor
+    }
   })
 
   it('does not attend for a harness without an exact-session probe', async () => {

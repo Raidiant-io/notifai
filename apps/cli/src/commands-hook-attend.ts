@@ -201,6 +201,17 @@ export async function attendHook(
       }
     } catch { /* A busy observation lock must not cost this session its attendant. */ }
   }
+  // Claude Code runs a root hook from the session's own process. A subagent's
+  // event, another process, or a hook that predates this incarnation is not
+  // the session speaking, so none of them may replace its resident writer.
+  const ownsClaudeSession = (key: string): boolean => {
+    if (harness !== 'claude-code' || envelope.agent_id !== undefined || envelope.agent_type !== undefined) return false
+    const current = readSessionIncarnation(sessionId, deps.env)
+    const start = seams.harnessProcess?.start ?? processStartTime(pid)
+    return current?.key === key && start !== null &&
+      current.harness_process?.pid === (seams.harnessProcess?.pid ?? pid) && current.harness_process.start === start &&
+      !happenedBefore(input.invokedAt, current.start) && !sessionHasEnded(sessionId, deps.env)
+  }
   if (harness === 'codex') {
     const current = readSessionIncarnation(sessionId, deps.env)
     if (input.recovery !== undefined && (current === null || !ownsNative(current.key))) {
@@ -223,7 +234,9 @@ export async function attendHook(
     ) {
       // An authenticated native event can hand the resident writer over to
       // installed code. The old owner exits through claim-lost, not SessionEnd.
-      const upgrade = harness === 'codex' && ownsNative(current.key) &&
+      // Without this a session open across an update keeps its old writer,
+      // and that writer's behavior, until the harness itself restarts.
+      const upgrade = (harness === 'codex' ? ownsNative(current.key) : ownsClaudeSession(current.key)) &&
         runningVersion !== null && (holder['runtime_version'] !== runningVersion ||
           holder['runtime_revision'] !== attendantRuntimeRevision) && holder['pid'] !== process.pid &&
         (seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness, runningVersion)))().ok &&
