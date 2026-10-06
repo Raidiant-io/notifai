@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.8.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0-beta.1) (2026-10-06)
+
+### Features
+
+* Install and update Notifai as a standalone native CLI on macOS, Linux and Windows. The runtime needs no Node, npm, Bun or Git, verifies signed release inventories, and follows a signed `beta` update channel.
+* Link registered questions to the Claude Code question picker.
+* Use the Claude Code session inbox on native Windows.
+* Name a Claude Code Agent Session from the session's own title.
+* Offer Claude Code approval for the commands an away User needs.
+
+### Bug Fixes
+
+* Give each Claude Code wake its own token. Claude Code drops a message identical to the previous one, so a repeated wake to an idle session never arrived.
+* Hand an open Claude Code session over to the installed runtime at its next prompt or turn end, so a session open across an update no longer keeps the previous wake behavior.
+* Open Claude Code inbox writes with the session token.
+* Refresh and verify the skill copy each harness loads.
+* Keep explicit questions and owed answers independent of Project Enablement.
+
+### Dependencies and limits
+
+* Protocol stays at 8.2.1.
+* Native archives embed Bun 1.4.2. Its corresponding source is the `runtime-sources-bun-1.4.2` release, and every archive carries the notices and rebuilding instructions.
+* macOS executables are Developer ID signed and notarized. Windows executables are unsigned in this beta.
+* This beta is distributed as native archives through the shell and PowerShell bootstraps or a manual download. It is not published to npm, and the optional npm bootstrap is not yet available.
+* An existing npm installation moves to the native runtime only through the explicit migration step; it is never replaced automatically.
+
 ## [11.7.1](https://github.com/Raidiant-io/notifai/compare/v11.7.0...v11.7.1) (2026-10-04)
 
 
