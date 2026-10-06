@@ -55,3 +55,10 @@ describe('Windows process start', () => {
     expect(processIdentityLiveness({ pid: process.pid, start: '1' })).toBe('gone')
   })
 })
+
+it('compares tagged native FILETIME with the bare Claude Code descriptor clock', () => {
+  expect(processIdentityLiveness({ pid: 9004, start: '134255407523148123' },
+    () => 'windows-filetime:134255407523148123', () => true)).toBe('alive')
+  expect(processIdentityLiveness({ pid: 9004, start: 'windows-filetime:134255407523148123' },
+    () => '134255407523148124', () => true)).toBe('gone')
+})

@@ -1,4 +1,6 @@
 import { packageVersion } from './release.js'
+import { buildIdentity } from './distribution.js'
+import type { Installation } from './installation.js'
 import { cliDistTagsUrl, cliUpdateChannel, type CliUpdateChannel } from './cli-contract.js'
 import { compareReleasePrecedence, isPrerelease, isSemVer } from './version.js'
 
@@ -96,4 +98,38 @@ export function thisCliVersion(): string | null {
 
 export function resetPublishedCliDistTagsForTest(): void {
   cached = null
+}
+
+
+/** Availability follows the installed runtime's distribution owner. Native
+ * discovery authenticates metadata and persists its anti-replay sequence; it
+ * never downloads executables or changes wiring. */
+export async function discoverCliUpdate(options: {
+  env: NodeJS.ProcessEnv; fetchImpl?: typeof fetch | undefined; current?: string | null; useCache?: boolean;
+  /** Isolated test seam; production uses the fixed account-owned installation. */
+  installation?: Installation
+}): Promise<{ channel: 'stable' | 'beta' | null; target: string | null; newer: string | null;
+  available: boolean | null; tags: CliDistTags | null; error: string | null }> {
+  if (buildIdentity() === null && !options.installation) {
+    const tags = await publishedCliDistTags(options.fetchImpl, { useCache: options.useCache !== false })
+    const current = options.current === undefined ? thisCliVersion() : options.current
+    const channel = cliUpdateChannel(current)
+    const newer = newerPublishedCli(current, tags)
+    return { channel, tags, target: tags ? cliReleaseTarget(tags, channel).version : null,
+      newer, available: tags && current ? newer !== null : null, error: tags ? null : 'Release discovery is unavailable' }
+  }
+  let channel: 'stable' | 'beta' | null = null
+  try {
+    const installation = options.installation ?? (await import('./native-installation.js')).managedInstallation(options)
+    const before = installation.inspect()
+    channel = before.channel
+    if (!channel) throw new Error('Installed release channel is unavailable')
+    const active = installation.activeRelease(before.active?.generation)
+    const release = await installation.resolveRelease(channel)
+    const newer = compareReleasePrecedence(release.inventory.version, active.version) === 'after' ? release.inventory.version : null
+    return { channel, tags: null, target: release.inventory.version, newer, available: newer !== null, error: null }
+  } catch (error) {
+    return { channel, tags: null, target: null, newer: null, available: null,
+      error: error instanceof Error ? error.message : String(error) }
+  }
 }

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildIdentity } from './distribution.js'
 
 /**
  * What this build is, according to the manifest npm actually shipped.
@@ -20,6 +21,8 @@ import { fileURLToPath } from 'node:url'
  * asserting something they do not know.
  */
 export function packageVersion(): string | null {
+  const compiled = buildIdentity()
+  if (compiled !== null) return compiled.version
   try {
     const manifest = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
     const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'))
@@ -31,21 +34,4 @@ export function packageVersion(): string | null {
     // Fall through: an unreadable manifest must not stop the CLI running.
   }
   return null
-}
-
-/**
- * Where `npx skills add` fetches the agent skill from, as printed to users.
- *
- * The human-readable release tag naming this exact build. The installer does
- * not trust or fetch this ref: it installs the verified skill embedded in the
- * npm package through a short-lived local source. Deriving the label from the
- * version keeps release identity from drifting; it used to be maintained by
- * hand in three places.
- *
- * In the skills CLI grammar `owner/repo#ref` selects a Git ref, while
- * `owner/repo@name` selects a skill — so the `#` here is load-bearing.
- */
-export function skillsSource(): string | null {
-  const version = packageVersion()
-  return version === null ? null : `Raidiant-io/notifai#v${version}`
 }

@@ -80,15 +80,12 @@ the maintainer's immediate beta/public path, and the evidence for promotion.
 Authorization must cover the release scope and channel. A version, once
 published, cannot be taken back. Git pushes of ordinary commits are fine.
 
-The skill's human-readable release source (`SKILLS_SOURCE`) is derived at
-runtime from the package version in `apps/cli/src/release.ts`. Installation
-does not trust that tag: the npm package carries the complete reviewed skill
-and its digest manifest; the CLI verifies and stages that package-bound copy at
-a short-lived project-relative path for the pinned external installer. It then
-deletes the staging copy and hashes the conventional installed directory for
-readiness. Do not reintroduce a literal source, omit the packaged bundle, or
-trust mutable lock-file source/ref metadata; `check:release` fails on bundle
-drift.
+The CLI carries the complete reviewed skill and its digest manifest. Its
+built-in installer verifies that bundle and owns only the explicitly selected
+Notifai placements. Preserve user edits and unrelated files; neither a mutable
+source/ref label nor an external installer lock grants deletion authority.
+Refreshes keep the recorded scope and harnesses. No external skill manager is
+part of the runtime installation path.
 
 ## Publishing must verify what actually shipped
 
@@ -101,22 +98,17 @@ shipping source or test files.
 
 Before publishing, `pnpm check:packed` installs the packed tarballs in an
 isolated directory outside the workspace, registry-shaped, and runs the
-installed bin. It also proves the tarball still contains and can stage the
-reviewed skill. Workspace linking always resolves the protocol sitting next to
-the CLI, so it is the only pre-publish gate that can catch the packed manifest
-pinning any other protocol version — a defect every workspace-bound gate
-passes and every clean user install crashes on. It does not spawn the
-third-party skills installer: `npm exec` can stall after the registry metadata
-endpoint is already reachable, and that hang previously consumed a full runner
-timeout.
+installed bin. It also proves the tarball contains the verified bundled skill.
+Workspace linking always resolves the adjacent protocol; the isolated packed
+gate verifies the exact dependency pin users receive.
 
-When the native skills adapter, installer pin, or packaged skill bundle
+When the native skills adapter, placement logic, or packaged skill bundle
 changes, or when collecting release evidence, run
-`pnpm check:packed-skill-smoke`. That separately named integration smoke proves
-the published skills installer can consume the packed Notifai skill. Every
-external process has a short timeout and a named phase so an installer stall
-fails this smoke instead of the runner. Release CI runs it only with
-`--if-changed`; publication always runs it against the exact packed tarballs.
+`pnpm check:packed-skill-smoke`. This separate integration smoke proves
+placement from the packed production adapter with an empty PATH, preserves
+user edits, and checks owned update integration. Package preparation uses
+bounded subprocesses; skill placement runs no external installer. Release CI
+runs it with `--if-changed`; publication checks the exact packed tarballs.
 
 After publishing, run `pnpm check:published`. It downloads the tarball npm is
 serving and compares it against the local checkout: the compiled files byte

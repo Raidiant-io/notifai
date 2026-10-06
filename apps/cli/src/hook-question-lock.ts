@@ -1,4 +1,5 @@
 /** Cross-process ownership for exactly-once question escalation. */
+import { currentRuntimeBuild } from './launch-self.js'
 import { randomBytes } from 'node:crypto'
 import {
   closeSync,
@@ -92,12 +93,14 @@ export function acquireClaimFile(
   const guard = `${file}.guard`
   const token = randomBytes(12).toString('base64url')
   const self = currentProcessIdentity()
+  const runtimeBuild = currentRuntimeBuild()
   const body = `${JSON.stringify({
     pid: process.pid,
     ...(self === null ? {} : { start: self.start }),
     at: now,
     token,
     ...fields,
+    ...(runtimeBuild === null ? {} : { runtime_build: runtimeBuild }),
   })}\n`
   mkdirSync(path.dirname(file), { recursive: true })
   if (!acquireClaimGuard(guard)) return null

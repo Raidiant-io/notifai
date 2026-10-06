@@ -25,7 +25,7 @@ async function readJson(fetchImpl, endpoint, token) {
   return await response.json()
 }
 
-async function resolveTagCommit(fetchImpl, tag, token) {
+export async function resolveTagCommit(fetchImpl, tag, token) {
   const ref = await readJson(fetchImpl, `/git/ref/tags/${encodeURIComponent(tag)}`, token)
   let type = ref?.object?.type
   let sha = ref?.object?.sha
@@ -61,7 +61,8 @@ export async function checkPublicProviderPosture(
   if (releaseTag !== undefined) {
     const version = releaseTag.startsWith('protocol-v')
       ? releaseTag.slice('protocol-v'.length)
-      : releaseTag.startsWith('v') ? releaseTag.slice(1) : ''
+      : releaseTag.startsWith('installer-v') ? releaseTag.slice('installer-v'.length)
+        : releaseTag.startsWith('v') ? releaseTag.slice(1) : ''
     const lane = publicationLane(version)
     if (typeof expectedSha !== 'string' || !FULL_SHA.test(expectedSha)) {
       throw new Error('expectedSha must be one full lowercase commit SHA')
@@ -102,6 +103,7 @@ export async function checkPublicProviderPosture(
         Array.isArray(includes) &&
         includes.includes('refs/tags/v*') &&
         includes.includes('refs/tags/protocol-v*') &&
+        includes.includes('refs/tags/installer-v*') &&
         includes.includes('refs/tags/android-v*') &&
         Array.isArray(excludes) &&
         excludes.length === 0 &&

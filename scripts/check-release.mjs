@@ -154,24 +154,20 @@ requireValue(!/\.version\(\s*['"]\d/.test(cliSource), 'CLI version must not be h
  * meaningful question is what the shipped code actually resolves — which is
  * also the one thing a stale build cannot fake.
  */
-const expectedSkillsSource = `Raidiant-io/notifai#v${cli.version}`
+const expectedVersion = cli.version
 try {
   const derived = execFileSync(
     'node',
-    ['-e', "import('./apps/cli/dist/release.js').then((m) => process.stdout.write(String(m.skillsSource())))"],
+    ['-e', "import('./apps/cli/dist/release.js').then((m) => process.stdout.write(String(m.packageVersion())))"],
     { cwd: root, encoding: 'utf8' },
   ).trim()
   requireValue(
-    derived === expectedSkillsSource,
-    `built CLI resolves skill source ${derived || '<empty>'}, expected ${expectedSkillsSource}`,
+    derived === expectedVersion,
+    `built CLI resolves version ${derived || '<empty>'}, expected ${expectedVersion}`,
   )
 } catch (error) {
-  failures.push(`could not resolve the built CLI skill source (${String(error)})`)
+  failures.push(`could not resolve the built CLI version (${String(error)})`)
 }
-requireValue(
-  !/SKILLS_SOURCE\s*=\s*['"]/.test(readFileSync(path.join(root, 'apps/cli/src/commands.ts'), 'utf8')),
-  'skill source must stay derived from the package version, not reintroduced as a literal',
-)
 
 try {
   const integrity = await import(
@@ -216,8 +212,9 @@ for (const { manifest, directory } of packages) {
   )
 }
 requireValue(
-  readme.includes(`#v${cli.version}`) && readme.includes(`\`v${cli.version}\``),
-  `README skill pin must name the current CLI tag v${cli.version}`,
+  readme.includes('notifai init --skills --skills-scope') && readme.includes('--skills-harness') &&
+    readme.includes('skill bundled with'),
+  'README must describe the bundled skill installer with explicit scope and harness selection',
 )
 for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md', 'docs/RELEASING.md', 'docs/TRUST.md']) {
   requireValue(readFileSync(path.join(root, relative), 'utf8').trim().length > 0, `${relative} must not be empty`)
@@ -253,7 +250,8 @@ if (process.env.GITHUB_REF_TYPE === 'tag') {
   const protocol = packages[1].manifest
   const name = process.env.GITHUB_REF_NAME
   requireValue(
-    name === `v${cli.version}` || name === `protocol-v${protocol.version}`,
+    name === `v${cli.version}` || name === `protocol-v${protocol.version}` ||
+      name === `installer-v${readJson('packages/installer/package.json').version}`,
     `tag must be v${cli.version} or protocol-v${protocol.version}`,
   )
 }

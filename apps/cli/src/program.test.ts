@@ -369,3 +369,28 @@ it('resumes integration without reinstalling or changing channel', async () => {
   expect((await parse(['update', '--resume', '--channel', 'stable'], { update, updateResume })).exitCode).toBe(2)
   expect(updateResume).toHaveBeenCalledTimes(1)
 })
+
+
+it('awaits native rollback and rejects ambiguous lifecycle operations', async () => {
+  const update = vi.fn(async () => 1)
+  const result = await parse(['update', '--rollback', '--json'], { update })
+  expect(result.exitCode).toBe(1)
+  expect(update).toHaveBeenCalledWith(expect.anything(), { rollback: true, json: true })
+  for (const args of [['--rollback', '--channel', 'stable'], ['--repair', '--check'], ['--abandon', '--resume'], ['--allow-downgrade']]) {
+    update.mockClear()
+    expect((await parse(['update', ...args], { update })).exitCode).toBe(2)
+    expect(update).not.toHaveBeenCalled()
+  }
+})
+
+
+it('parses native offline installation and explicit setup skips without treating the version as CLI help', async () => {
+  let flags: unknown
+  const result = await parse(['install', '--directory', '/candidate', '--inventory', '/signed.json', '--source', 'npm',
+    '--version', '1.0.0', '--channel', 'stable', '--no-init', '--no-path', '--json'], {
+    install: async (_deps, input) => { flags = input; return 0 },
+  })
+  expect(result.exitCode).toBe(0)
+  expect(flags).toMatchObject({ directory: '/candidate', inventory: '/signed.json', source: 'npm', version: '1.0.0',
+    channel: 'stable', init: false, path: false, json: true })
+})

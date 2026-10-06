@@ -14,7 +14,14 @@ everything in this repository is fully known.**
 - `packages/protocol` — client-visible request/response types and schemas
   for `/api/v1`, stable status vocabulary, capability documents and draft
   validation, and the small hashing helper shared with clients.
+- `packages/installer` — optional npm bootstrap; the release verifier and
+  extractor are generated from canonical CLI modules. No resident runtime or
+  automatic npm installation hook belongs in this package.
 - Public docs, fixtures, and the boundary tooling itself.
+- `distribution` — reviewed public CLI redistribution materials, release
+  material hashes, and the standalone Bun runtime entitlement profile.
+  CLI signing workflows may reference protected CI secret names. They must
+  never contain a certificate, private key, provisioning profile or credential.
 
 `packages/protocol/src/apns.ts` and `packages/protocol/src/fcm.ts` model the
 application-visible notification envelopes so offline validation can estimate
@@ -38,8 +45,11 @@ size pre-flight) is an open decision tracked privately.
   script, doc, test fixture, or commit message. Publishing auth lives in
   the maintainer's user-level credential store or CI OIDC/secrets, never
   in-tree (see `AGENTS.md`).
-- Apple project configuration: `.xcconfig`, entitlements, team or bundle
-  identifiers, App Store metadata.
+- Companion App Apple project configuration: `.xcconfig`, entitlements, team
+  or bundle identifiers, App Store metadata. The public CLI's standalone Bun
+  entitlement profile is client build source, not Companion App configuration.
+  A public CLI publisher identity must be explicitly reviewed before it is
+  committed; it must not be copied from private project configuration.
 - Private product records: internal decision logs, incident evidence,
   roadmaps, user/device identifiers, cost data.
 - Imports of private packages (`@raidiant/notifai-server`, `@raidiant/notifai-contracts`,
@@ -51,7 +61,8 @@ size pre-flight) is an open decision tracked privately.
 `pnpm check:boundary` (also intended as a CI gate) fails the tree on:
 
 1. Top-level entries outside the allowlist.
-2. Workspace packages other than `apps/cli` and `packages/protocol`.
+2. Workspace packages other than `apps/cli`, `packages/protocol` and
+   `packages/installer`.
 3. File names matching private-material patterns (key/profile/config
    extensions, platform manifests, dotenv files).
 4. Source imports of private packages, testcontainers, or any relative

@@ -6,7 +6,7 @@ import { repositoryRoot } from './cross-platform.mjs'
 import { publicationLane, requireBetaAheadOfLatest } from './publication-lane.mjs'
 
 const PACKAGES = new Map([
-  ['@raidiant/notifai', 'apps/cli/package.json'],
+  ['@raidiant/notifai-install', 'packages/installer/package.json'],
   ['@raidiant/notifai-protocol', 'packages/protocol/package.json'],
 ])
 
@@ -15,6 +15,7 @@ export async function registryDistTags(name, fetchImpl = fetch) {
     redirect: 'error',
     signal: AbortSignal.timeout(10_000),
   })
+  if (response.status === 404) return {}
   if (!response.ok) throw new Error(`npm distribution lookup failed for ${name} (HTTP ${response.status})`)
   const tags = (await response.json())['dist-tags']
   if (tags === null || typeof tags !== 'object' || Array.isArray(tags)) {
@@ -31,7 +32,7 @@ export async function registryDistTags(name, fetchImpl = fetch) {
 export function verifyDistribution({ name, version, before, after }) {
   const lane = publicationLane(version)
   if (lane === 'beta') {
-    requireBetaAheadOfLatest(version, before.latest)
+    if (before.latest !== undefined) requireBetaAheadOfLatest(version, before.latest)
     if (before.latest !== after.latest) {
       throw new Error(`${name}@${version} changed npm latest while publishing beta`)
     }
@@ -45,19 +46,13 @@ export function verifyDistribution({ name, version, before, after }) {
 
 async function main() {
   const [command, file, name] = process.argv.slice(2)
-  if (!['snapshot', 'verify'].includes(command) || !file || (command === 'verify' && !PACKAGES.has(name))) {
-    throw new Error('usage: verify-npm-distribution.mjs snapshot|verify <snapshot-file> [package-name]')
+  if (!['snapshot', 'verify'].includes(command) || !file || !PACKAGES.has(name)) {
+    throw new Error('usage: verify-npm-distribution.mjs snapshot|verify <snapshot-file> <package-name>')
   }
   if (command === 'snapshot') {
-    const entries = await Promise.all([...PACKAGES.keys()].map(async (packageName) => [
-      packageName,
-      await registryDistTags(packageName),
-    ]))
-    const snapshot = Object.fromEntries(entries)
-    for (const [packageName, manifestPath] of PACKAGES) {
-      const { version } = JSON.parse(readFileSync(path.join(repositoryRoot, manifestPath), 'utf8'))
-      requireBetaAheadOfLatest(version, snapshot[packageName].latest)
-    }
+    const snapshot = { [name]: await registryDistTags(name) }
+    const { version } = JSON.parse(readFileSync(path.join(repositoryRoot, PACKAGES.get(name)), 'utf8'))
+    if (snapshot[name].latest !== undefined) requireBetaAheadOfLatest(version, snapshot[name].latest)
     writeFileSync(file, JSON.stringify(snapshot))
     return
   }

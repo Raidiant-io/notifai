@@ -78,7 +78,7 @@ test('the packed-install script never spawns the third-party skills installer', 
   assert.doesNotMatch(source, /skillsAddArgv/u)
   assert.doesNotMatch(source, /npxLaunch/u)
   assert.match(source, /phase: 'packed-npm-install'/u)
-  assert.match(source, /stageShippedSkillBundle/u)
+  assert.match(source, /shippedSkillBundle/u)
 })
 
 test('the packed gate rejects a release that omitted its changelog before installation', () => {

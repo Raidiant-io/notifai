@@ -181,6 +181,11 @@ failure.
 
 ## Development
 
+The optional standalone bootstrap source is `@raidiant/notifai-install`
+<!--x-release-please-start-installer-->0.1.0<!--x-release-please-end-->.
+It is not published yet. See [standalone distribution](docs/STANDALONE.md) for
+candidate installation routes and the native update policy.
+
 Requires Node >= 20.12 and pnpm. Release evidence runs on Node 24.
 
 ```sh
@@ -230,24 +235,23 @@ locally, never include them in Notification Request fields or media. At a human 
 choosing iPhone or Android opens its setup steps and starts a bounded wait;
 Ctrl-C stops the wait, and expiry offers more time.
 
-`notifai init --skills` verifies the complete first-party skill against the
-copy and digest manifest shipped inside the installed npm package, stages that
-verified copy at a short-lived project-relative path, and delegates placement
-to the pinned native `npx skills` flow using the chosen scope. The staging copy
-is removed afterward; readiness hashes the conventional installed directory
-and every harness-specific copy beside it. Claude Code, Hermes, Grok and
-OpenClaw load their own copy, so installation refreshes those copies too,
-whichever harness started it.
-The `notifai` CLI binary is always a global install (`npm install -g
-@raidiant/notifai`); the skill scope does not change it. The human-readable release
-identity is `v<!--x-release-please-start-notifai-->11.7.1<!--x-release-please-end-->`,
-written as `Raidiant-io/notifai#v<!--x-release-please-start-notifai-->11.7.1<!--x-release-please-end-->`
-in installer source grammar.
-The tag is human-readable release identity, never the install-time trust
-object. A different, extra, or missing packaged file is refused before
-installation, and changed installed content fails readiness regardless of the
-mutable source/ref metadata in the installer's lock file.
-For unattended use, pass `--skills-scope project` or `--skills-scope global`.
+`notifai init --skills` installs the complete first-party skill bundled with
+this CLI. It verifies the file list and content digest, copies only that skill
+to the selected harnesses, and records which copies it owns. Refreshes retain
+the selection. Modified files and unowned copies are preserved and reported;
+installation does not run npm, npx, Git, or a separate skill manager.
+
+For unattended setup, choose both scope and harnesses, for example:
+
+```sh
+notifai init --skills --skills-scope global --skills-harness claude-code,codex --json
+```
+
+The scope applies to guidance placement, independently of lifecycle wiring.
+Subsequent `notifai update --refresh-skill` refreshes the existing selection. Directory
+presence and content verification do not override a harness’s trust, profile,
+or skill-discovery settings. Existing external-installer locks are migration
+evidence and are never authority to overwrite user-edited guidance.
 
 ## The installed hooks
 

@@ -105,6 +105,11 @@ if (process.argv[1]?.endsWith('verify-release-please-output.mjs')) {
             tag: process.env.CLI_TAG,
             sha: process.env.CLI_SHA,
           },
+          'packages/installer': {
+            created: process.env.INSTALLER_RELEASE_CREATED,
+            tag: process.env.INSTALLER_TAG,
+            sha: process.env.INSTALLER_SHA,
+          },
           'packages/protocol': {
             created: process.env.PROTOCOL_RELEASE_CREATED,
             tag: process.env.PROTOCOL_TAG,

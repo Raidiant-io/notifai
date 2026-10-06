@@ -1,8 +1,9 @@
+import { attendantRuntimeRevision } from './commands-hook-attend.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { recoveryOwner, resumeAttendantCommand } from './attendant-update.js'
+import { attendantClaimMatches, recoveryOwner, resumeAttendantCommand } from './attendant-update.js'
 import { findNativeTranscript } from './codex-native-turn.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, updateSessionState } from './hook-session-state.js'
 import * as identity from './process-identity.js'
@@ -55,4 +56,15 @@ it('discovers one native transcript, refuses ambiguous files and validates root 
   writeFileSync(second, '')
   expect(findNativeTranscript(SESSION, f.env)).toBeNull()
   expect(findNativeTranscript('../foreign', f.env)).toBeNull()
+})
+
+
+it('does not report a prior runtime owner as activated merely because its protocol matches', () => {
+  const reference = { installation_id: '12345678-1234-1234-1234-123456789012', build: 'a'.repeat(64) }
+  const claim = { runtime_revision: attendantRuntimeRevision, runtime_version: '2.0.0', runtime_build: reference }
+  expect(attendantClaimMatches(claim, '2.0.0', reference)).toBe(true)
+  expect(attendantClaimMatches({ ...claim, runtime_version: '1.0.0' }, '2.0.0', reference)).toBe(false)
+  expect(attendantClaimMatches({ ...claim, runtime_build: { ...reference, build: 'b'.repeat(64) } }, '2.0.0', reference)).toBe(false)
+  expect(attendantClaimMatches({ ...claim, runtime_build: undefined }, '2.0.0', reference)).toBe(false)
+  expect(attendantClaimMatches(claim, '2.0.0', null)).toBe(true)
 })

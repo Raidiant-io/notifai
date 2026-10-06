@@ -1,0 +1,42 @@
+{
+  "name": "@raidiant/notifai-install",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Explicit installer for the standalone Notifai CLI",
+  "bin": {
+    "notifai-install": "dist/main.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build-npm-installer.mjs",
+    "prepack": "pnpm run build",
+    "test": "pnpm run build && node --test test/bootstrap.test.mjs",
+    "check:syntax": "node --check src/main.mjs && node --check src/bootstrap.mjs && node --check src/platform.mjs"
+  },
+  "dependencies": {
+    "@zip.js/zip.js": "2.23.0",
+    "tar-stream": "3.2.2"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "license": "Apache-2.0",
+  "author": "Rafael Vidaurre",
+  "homepage": "https://github.com/Raidiant-io/notifai#readme",
+  "bugs": {
+    "url": "https://github.com/Raidiant-io/notifai/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Raidiant-io/notifai.git",
+    "directory": "packages/installer"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

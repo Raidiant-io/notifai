@@ -1,3 +1,4 @@
+import { buildIdentity } from './distribution.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
   PLATFORMS,
@@ -87,10 +88,8 @@ import {
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
 import {
-  newerPublishedCli,
-  publishedCliDistTags,
+  discoverCliUpdate,
   shouldConsultCliRegistry,
-  thisCliVersion,
 } from './cli-release.js'
 import {
   SETUP_PROOF_STALE_MS,
@@ -534,6 +533,7 @@ export async function assessReadiness(
   deps: CommandDeps,
   options: {
     skillScope?: SkillScope
+    skillHarnesses?: readonly string[]
     previous?: Readiness
     refresh?: readonly ReadinessRefresh[]
     json?: boolean
@@ -564,7 +564,7 @@ export async function assessReadiness(
           reused.contract,
           reused.auth,
           ...hookStates(deps),
-          await skillReadiness(deps, options.skillScope),
+          await skillReadiness(deps, options.skillScope, options.skillHarnesses),
           reused.devices,
           reused.proof,
         ],
@@ -655,7 +655,7 @@ export async function assessReadiness(
   // device gap: init stops at the first user-elsewhere blocker, and hooks/skill
   // are reachable without a phone.
   states.push(...hookStates(deps))
-  states.push(await skillReadiness(deps, options.skillScope))
+  states.push(await skillReadiness(deps, options.skillScope, options.skillHarnesses))
 
   if (!credential || !reachable) {
     const why = !credential ? 'this machine is not paired' : 'the server is unreachable'
@@ -735,8 +735,7 @@ async function applyRegistryRecommendation(
   ) {
     return
   }
-  const tags = await publishedCliDistTags(deps.fetchImpl)
-  const newer = newerPublishedCli(thisCliVersion(), tags)
+  const { newer } = await discoverCliUpdate({ env: deps.env, fetchImpl: deps.fetchImpl })
   if (newer === null) return
   const contract = states.find((state) => state.id === 'contract')
   if (contract === undefined || contract.status === 'gap' || contract.status === 'optional-gap') return
@@ -1434,8 +1433,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const runningTarget = deps.hookInstallTarget
   const runningArtifact =
     runningTarget !== undefined && !isNpxAdapterTarget(runningTarget)
-      ? runningTarget.scriptPath
-      : process.argv[1]
+      ? (runningTarget.kind === 'native' ? process.execPath : runningTarget.scriptPath)
+      : buildIdentity() !== null ? process.execPath : process.argv[1]
   const cliInstallations = inspectCliInstallations(
     deps.env,
     deps.hookPlatform ?? process.platform,

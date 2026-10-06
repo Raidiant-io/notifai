@@ -78,7 +78,8 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       const adapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
       if (adapter.problems.length > 0 || adapter.target === null || isNpxAdapterTarget(adapter.target) ||
           !hookAdapterTargetsArtifact(adapter.target, effective.artifact_path!) ||
-          !sameLocalPath(adapter.target.execPath, process.execPath, deps.hookPlatform ?? process.platform)) {
+          (adapter.target.kind !== 'native' && !sameLocalPath(adapter.target.execPath, process.execPath, deps.hookPlatform ?? process.platform))) {
+        if (adapter.target?.kind === 'native') throw new Error('Repair the native installation before resuming integration')
         if (installHookAdapter({ execPath: process.execPath, scriptPath: effective.artifact_path! }, deps.hookAdapterHome,
           deps.hookPlatform, deps.env).changed) changed.push('hook-adapter')
       }

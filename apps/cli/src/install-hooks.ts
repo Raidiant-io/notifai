@@ -97,16 +97,15 @@ export type HookConfig = Record<string, HookGroup[]>
 
 export interface HookCommandOptions {
   platform?: NodeJS.Platform | HookHostPlatform
-  /** Registered Node used to interpret the Windows adapter. Ignored on POSIX. */
+  /** Source/development script interpreter on Windows; native commands omit it. */
   nodePath?: string
 }
 
 /**
  * The command each hook runs. Harness definitions know only the stable
  * user-level adapter. Mutable Node, package-manager, version, and checkout
- * paths live behind that seam and never enter a trusted hook identity —
- * except on Windows, where CreateProcess cannot run the adapter without an
- * explicit Node executable, so the registered interpreter is named first.
+ * paths live behind that seam and never enter a trusted native hook identity.
+ * Source/development Windows adapters explicitly name their interpreter.
  */
 export function hookCommand(
   adapterPath: string,
@@ -127,8 +126,8 @@ export function hookCommandPrefix(
 ): string {
   const host = hookHostPlatform(options.platform)
   if (host === 'win32') {
-    const nodePath = options.nodePath ?? process.execPath
-    return `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(adapterPath)} `
+    return options.nodePath === undefined ? `${quoteWindowsArg(adapterPath)} `
+      : `${quoteWindowsArg(options.nodePath)} ${quoteWindowsArg(adapterPath)} `
   }
   return `${quote(adapterPath)} `
 }
@@ -190,7 +189,7 @@ export interface BuildOptions {
   /** The installed adapter stamps its exact harness into project pointers. */
   harness?: HookInstallableHarness
   platform?: NodeJS.Platform | HookHostPlatform
-  /** Registered Node named first in Windows hook commands. */
+  /** Source/development Windows interpreter; omitted for native commands. */
   nodePath?: string
 }
 
@@ -1710,9 +1709,10 @@ export function findInstallations(
   env: NodeJS.ProcessEnv = process.env,
   adapterHome?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
+  problems?: string[],
 ): Installation[] {
   return HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
-    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env),
+    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env, problems),
   )
 }
 
@@ -1728,6 +1728,7 @@ export function findLegacyProjectInstallations(
   env: NodeJS.ProcessEnv = process.env,
   adapterHome?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
+  problems?: string[],
 ): Installation[] {
   const machine = new Set(
     HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
@@ -1743,6 +1744,7 @@ export function findLegacyProjectInstallations(
       adapterHome,
       platform,
       env,
+      problems,
     ),
   )
 }
@@ -1753,17 +1755,30 @@ function collectInstallations(
   adapterHome: string | undefined,
   platform: NodeJS.Platform | HookHostPlatform,
   env: NodeJS.ProcessEnv,
+  inspectionProblems?: string[],
 ): Installation[] {
-  const nodePath = inspectHookAdapter(adapterHome, platform).target?.execPath
+  const adapter = inspectHookAdapter(adapterHome, platform).target
+  const nodePath = adapter?.kind === 'native' ? undefined : adapter?.execPath
   const commandOptions: HookCommandOptions = {
     platform,
     ...(nodePath === undefined ? {} : { nodePath }),
   }
   const found: Installation[] = []
   for (const file of files) {
-    if (!existsSync(file)) continue
+    if (inspectionProblems) {
+      try {
+        const stat = lstatSync(file)
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Not a regular file')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') inspectionProblems.push(`Cannot inspect harness wiring: ${file}`)
+        continue
+      }
+    } else if (!existsSync(file)) continue
     if (harness === 'hermes') {
-      if (!isOurHermesPlugin(path.dirname(file))) continue
+      if (!isOurHermesPlugin(path.dirname(file))) {
+        inspectionProblems?.push(`Unrecognized Notifai plugin contents: ${file}`)
+        continue
+      }
       found.push({
         harness,
         file,
@@ -1782,17 +1797,21 @@ function collectInstallations(
       try {
         source = readOwnedRegularFile(file)
       } catch {
+        inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
         continue
       }
       const target =
         harness === 'openclaw' ? openclawPluginTarget(source) : opencodePluginTarget(source)
-      if (target === null) continue
+      if (target === null) {
+        inspectionProblems?.push(`Unrecognized Notifai plugin contents: ${file}`)
+        continue
+      }
       const label = harness === 'openclaw' ? 'OpenClaw' : 'OpenCode'
       const problems = [
         ...(!target.current
           ? [`obsolete ${label} event wiring; rerun \`notifai hooks install --harness ${harness}\``]
           : []),
-        ...(target.adapter !== hookAdapterPath(adapterHome)
+        ...(target.adapter !== hookAdapterPath(adapterHome, platform)
           ? [
               `${label} still names a mutable CLI or runtime path; rerun \`notifai hooks install --harness ${harness}\``,
             ]
@@ -1821,6 +1840,7 @@ function collectInstallations(
       try {
         document = readCursorSettings(file)
       } catch {
+        inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
         continue
       }
       const handlers = locateCursorHandlers(document)
@@ -1834,6 +1854,7 @@ function collectInstallations(
     try {
       document = loadSettings(file)
     } catch {
+      inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
       continue
     }
     const handlers = locateHandlers(document)
@@ -1857,7 +1878,7 @@ function harnessMarkerProblems(
       `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
     )
   }
-  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome), options)}hook `
+  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome, options.platform), options)}hook `
   if (!handlers.every((handler) => handler.command.startsWith(expected))) {
     problems.push(
       'installed commands still name a mutable CLI or runtime path; rerun `notifai hooks install` to migrate to the stable adapter',

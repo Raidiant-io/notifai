@@ -41,8 +41,12 @@ const HOME_PATH_PATTERNS = [
   /[A-Za-z]:\\Users\\([^\\\s"'`/]+)\\/g,
 ]
 
+// Git Bash may put GNU tar first, which parses C: as a remote hostname.
+// Windows ships bsdtar with native drive-path handling.
+const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32/tar.exe') : 'tar'
+
 function tarOutput(args, tarball) {
-  return execFileSync('tar', [...args, tarball], {
+  return execFileSync(tar, [...args, tarball], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
@@ -193,7 +197,7 @@ export function scanPackedTarballs({ tarballs, scanSecrets = false }) {
 
       const destination = path.join(scratch, String(index))
       mkdirSync(destination, { recursive: true })
-      execFileSync('tar', ['-xzf', tarball, '-C', destination])
+      execFileSync(tar, ['-xzf', tarball, '-C', destination])
       const packageRoot = path.join(destination, 'package')
       for (const absolute of treeFiles(packageRoot)) {
         files += 1

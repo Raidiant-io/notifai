@@ -15,6 +15,7 @@ import { repositoryRoot } from './cross-platform.mjs'
  */
 const root = repositoryRoot
 const versions = {
+  installer: JSON.parse(readFileSync(path.join(root, 'packages/installer/package.json'), 'utf8')).version,
   notifai: JSON.parse(readFileSync(path.join(root, 'apps/cli/package.json'), 'utf8')).version,
   protocol: JSON.parse(readFileSync(path.join(root, 'packages/protocol/package.json'), 'utf8'))
     .version,

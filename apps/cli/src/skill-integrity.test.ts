@@ -1,12 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   createSkillManifest,
-  portableLocalInstallerSource,
   shippedSkillBundle,
-  stageShippedSkillBundle,
   verifySkillBundle,
   type SkillManifest,
 } from './skill-integrity.js'
@@ -64,31 +62,5 @@ describe('packaged skill integrity', () => {
       ok: true,
       bundle: { manifest: { package_version: version.version, skill: 'notifai' } },
     })
-  })
-  it('stages a verified machine-neutral local source and removes it afterward', () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-skill-project-'))
-    const version = JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as { version: string }
-    const result = stageShippedSkillBundle(cwd, version.version)
-    if (!result.ok) throw new Error(result.error)
-    expect(path.isAbsolute(result.staged.source)).toBe(false)
-    expect(result.staged.source).toMatch(/^\.\/\.notifai\/skill-source-/)
-    expect(result.staged.source).not.toContain(os.homedir())
-    const stagedRoot = path.resolve(cwd, result.staged.source)
-    expect(verifySkillBundle(stagedRoot, version.version)).toMatchObject({ ok: true })
-
-    result.staged.cleanup()
-    expect(existsSync(stagedRoot)).toBe(false)
-  })
-
-  it('uses the explicit portable local grammar for a Windows project path', () => {
-    expect(
-      portableLocalInstallerSource(
-        String.raw`C:\Users\person\project`,
-        String.raw`C:\Users\person\project\.notifai\skill-source-123`,
-        'win32',
-      ),
-    ).toBe('./.notifai/skill-source-123')
   })
 })

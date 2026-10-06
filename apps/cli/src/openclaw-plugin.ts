@@ -43,7 +43,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 5
+const OPENCLAW_ADAPTER_VERSION = 6
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -51,11 +51,16 @@ export function openclawStateDir(
 ): string {
   const override = env['OPENCLAW_STATE_DIR']
   if (override !== undefined && override !== '') return override
+  const profile = env['OPENCLAW_PROFILE']?.trim()
+  if (profile && profile !== 'default' && !/^[a-zA-Z0-9_-]+$/.test(profile)) {
+    throw new Error('OPENCLAW_PROFILE must be a simple profile name')
+  }
+  const directory = profile && profile !== 'default' ? `.openclaw-${profile}` : '.openclaw'
   const homeOverride = env['OPENCLAW_HOME']
   if (homeOverride !== undefined && homeOverride !== '') {
-    return path.join(homeOverride, '.openclaw')
+    return path.join(homeOverride, directory)
   }
-  return path.join(harnessAccountHome(env, platform), '.openclaw')
+  return path.join(harnessAccountHome(env, platform), directory)
 }
 
 export function openclawConfigPath(
@@ -107,23 +112,92 @@ let pendingMessageJournals = null
 let awaitingMessageContexts = new Map()
 const GATEWAY_BOOT_ID = randomUUID()
 
+// Persistent discovery, not a process lease. A host may use a state directory
+// that the CLI's environment cannot reconstruct. Register before publishing
+// journals; readiness deletion must never hide that directory from uninstall.
+const registeredHostRoots = new Set()
+const privateHostDirectories = new Set()
+function privateHostDirectory(directory) {
+  if (UNINSTALL_BARRIER === null || process.platform !== "win32") {
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    return
+  }
+  if (privateHostDirectories.has(directory)) return
+  mkdirSync(path.dirname(directory), { recursive: true })
+  execFileSync(ADAPTER, [existsSync(directory) ? "--internal-protect-existing-directory" : "--internal-private-directory", directory],
+    { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
+  privateHostDirectories.add(directory)
+}
+function ownHostFile(file) {
+  if (UNINSTALL_BARRIER !== null && process.platform === "win32") execFileSync(ADAPTER, ["--internal-own-created-file", file],
+    { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
+}
+let registeredHostStart = null
+function hostProcessStart() {
+  if (registeredHostStart !== null) return registeredHostStart
+  const start = process.platform === "win32" && UNINSTALL_BARRIER !== null
+    ? execFileSync(ADAPTER, ["--internal-process-info", String(process.pid)], {
+      encoding: "utf8", timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+    }).trim().split(/\\r?\\n/)[0]
+    : execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+    encoding: "utf8", timeout: 2_000,
+    env: { PATH: process.env.PATH ?? "/bin:/usr/bin", TZ: "UTC", LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim().replace(/\\s+/g, " ")
+  if (!start || (process.platform === "win32" && !/^windows-filetime:\\d+$/.test(start))) throw new Error("Host process identity unavailable")
+  registeredHostStart = start
+  return start
+}
+function recordHostRoot(directory) {
+  if (UNINSTALL_BARRIER === null) return
+  privateHostDirectory(directory)
+  const root = realpathSync.native(directory)
+  if (registeredHostRoots.has(root)) return
+  const installation = path.dirname(UNINSTALL_BARRIER)
+  const owner = JSON.parse(readFileSync(path.join(installation, "install.json"), "utf8"))
+  if (owner?.schema !== 1 || owner.owner !== "notifai" ||
+      typeof owner.id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(owner.id)) {
+    throw new Error("Cannot register native host state without installation ownership")
+  }
+  const index = path.join(installation, "openclaw-hosts")
+  if (process.platform === "win32") execFileSync(ADAPTER, ["--internal-private-directory", index],
+    { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
+  else mkdirSync(index, { recursive: true, mode: 0o700 })
+  const info = lstatSync(index)
+  if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid &&
+      (info.uid !== process.getuid() || (info.mode & 0o022) !== 0))) throw new Error("Unsafe host index")
+  const start = hostProcessStart()
+  const key = root + String.fromCharCode(0) + process.pid + String.fromCharCode(0) + start
+  const file = path.join(index, createHash("sha256").update(key).digest("hex") + ".json")
+  const temp = file + "." + randomUUID() + ".tmp"
+  writeFileSync(temp, JSON.stringify({ schema: 1, installation_id: owner.id, root, pid: process.pid, start }) + "\\n",
+    { mode: 0o600, flag: "wx" })
+  // Windows FlushFileBuffers requires a writable handle.
+  const fd = openSync(temp, "r+")
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+  ownHostFile(temp)
+  renameSync(temp, file)
+  try {
+    const directory = openSync(index, "r")
+    try { fsyncSync(directory) } finally { closeSync(directory) }
+  } catch { /* Directory fsync is unavailable on some hosts. */ }
+  registeredHostRoots.add(root)
+}
+
 function readinessPath() {
   return path.join(path.dirname(JOURNAL_DIR), "continuation-ready.json")
 }
 
 function writeReadiness(target) {
-  const start = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
-    encoding: "utf8", timeout: 2_000,
-    env: { PATH: process.env.PATH ?? "/bin:/usr/bin", TZ: "UTC", LC_ALL: "C" },
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim().replace(/\\s+/g, " ")
-  if (start === "") return false
+  recordHostRoot(path.dirname(JOURNAL_DIR))
+  const start = hostProcessStart()
   const file = readinessPath()
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temp = file + "." + randomUUID() + ".tmp"
   writeFileSync(temp, JSON.stringify({ pid: process.pid, start, boot_id: GATEWAY_BOOT_ID,
     script: target.script, script_mtime: statSync(target.script).mtimeMs }) + "\\n",
     { mode: 0o600, flag: "wx" })
+  ownHostFile(temp)
   renameSync(temp, file)
   return true
 }
@@ -137,12 +211,14 @@ function journalPath(deliveryId) {
 }
 
 function saveJournal(record) {
-  mkdirSync(JOURNAL_DIR, { recursive: true, mode: 0o700 })
+  recordHostRoot(path.dirname(JOURNAL_DIR))
+  privateHostDirectory(JOURNAL_DIR)
   const file = journalPath(record.delivery_id)
   const temp = file + "." + randomUUID() + ".tmp"
   writeFileSync(temp, JSON.stringify(record) + "\\n", { mode: 0o600, flag: "wx" })
-  const fd = openSync(temp, "r")
+  const fd = openSync(temp, "r+")
   try { fsyncSync(fd) } finally { closeSync(fd) }
+  ownHostFile(temp)
   renameSync(temp, file)
   try {
     const directory = openSync(JOURNAL_DIR, "r")
@@ -177,14 +253,16 @@ function messageContextMarkerPath(deliveryId) {
 }
 
 function saveMessageJournal(record) {
-  mkdirSync(MESSAGE_JOURNAL_DIR, { recursive: true, mode: 0o700 })
+  recordHostRoot(path.dirname(MESSAGE_JOURNAL_DIR))
+  privateHostDirectory(MESSAGE_JOURNAL_DIR)
   const file = messageJournalPath(record.delivery_id)
   const temp = file + "." + randomUUID() + ".tmp"
   const { text: _text, ...withoutText } = record
   const stored = existsSync(messageContextMarkerPath(record.delivery_id)) ? withoutText : record
   writeFileSync(temp, JSON.stringify(stored) + "\\n", { mode: 0o600, flag: "wx" })
-  const fd = openSync(temp, "r")
+  const fd = openSync(temp, "r+")
   try { fsyncSync(fd) } finally { closeSync(fd) }
+  ownHostFile(temp)
   renameSync(temp, file)
   if (pendingMessageJournals !== null) {
     if (stored.phase === "transcript" || stored.phase === "unconfirmed") pendingMessageJournals.delete(stored.delivery_id)
@@ -446,6 +524,7 @@ async function messageContextForPointer(api, event, ctx, sessionKey, nativeRevis
         nativeSessionRevision(api, sessionKey, sessionIdOf(event, ctx)) !== nativeRevision) return null
     ctx?.hookInvocation?.assertActive?.()
     writeFileSync(messageContextMarkerPath(deliveryId), "used\\n", { mode: 0o600, flag: "wx" })
+    ownHostFile(messageContextMarkerPath(record.delivery_id))
     saveMessageJournal(record)
     return record.text
   } catch { return null }
@@ -506,7 +585,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function deliver(record) {
-    if (delivering.has(record.delivery_id) || record.phase === "transcript") return
+    if (uninstallPending() || delivering.has(record.delivery_id) || record.phase === "transcript") return
     delivering.add(record.delivery_id)
     try {
       const envelope = { session_id: record.session_key, cwd: record.cwd,
@@ -553,6 +632,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function deliverMessageOnce(record) {
+    if (uninstallPending()) return false
     try {
       if (record.boot_id !== GATEWAY_BOOT_ID) {
         settleMessageJournal(record, "unconfirmed")
@@ -685,6 +765,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function startSettlement(session, entry) {
+    if (uninstallPending()) return
     const envelope = { session_id: session.session_key, cwd: session.cwd,
       openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
     const child = spawnOwnedHook("openclaw-settlement", envelope, true)
@@ -739,6 +820,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function startSession(session) {
+    if (uninstallPending()) return
     const envelope = { session_id: session.session_key, cwd: session.cwd,
       openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
     const entry = { generation: session.generation,
@@ -749,7 +831,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function sendActivity(entry, session) {
-    if (entry.attendant.exitCode === null && entry.attendant.stdio[4].writable) {
+    if (entry && entry.attendant.exitCode === null && entry.attendant.stdio[4].writable) {
       entry.attendant.stdio[4].write(JSON.stringify({ type: "activity",
         activity: session.hasActiveRun === true ? "working" : "idle" }) + "\\n")
     }
@@ -757,6 +839,16 @@ function makeContinuationService(config, logger, api) {
 
   async function tick() {
     if (stopped || scanning) return
+    // Native children observe the same barrier and report withdrawn through
+    // their gates. Never turn uninstall into an ended signal to the harness.
+    if (uninstallPending()) {
+      ready = false
+      clearReadiness()
+      for (const [key, entry] of active) {
+        if (entry.attendant.exitCode !== null && (entry.child === null || entry.child.exitCode !== null)) active.delete(key)
+      }
+      return
+    }
     scanning = true
     try {
       if (!ready) {
@@ -766,10 +858,10 @@ function makeContinuationService(config, logger, api) {
         ready = true
       }
       const raw = await runHook("openclaw-list-pending", { cwd: process.cwd() })
-      if (raw === null) return
+      if (raw === null || uninstallPending()) return
       const pending = JSON.parse(raw)
       const sessions = await gatewaySessions(gatewayTarget)
-      if (sessions === null) return
+      if (sessions === null || uninstallPending()) return
       const seen = new Set()
       if (Array.isArray(pending)) for (const session of pending) {
         if (typeof session?.session_key !== "string" ||
@@ -840,7 +932,7 @@ function makeContinuationService(config, logger, api) {
       stopped = true
       clearReadiness()
       if (timer !== null) clearInterval(timer)
-      for (const entry of active.values()) {
+      if (!uninstallPending()) for (const entry of active.values()) {
         if (entry.child !== null) entry.child.kill("SIGTERM")
         entry.attendant.kill("SIGTERM")
       }
@@ -881,10 +973,11 @@ export function openclawPluginPackage(): string {
 export function openclawPluginSource(options: OpenclawPluginOptions): string {
   const { adapterPath, timeoutSeconds } = options
   const win32 = hookHostPlatform(options.platform) === 'win32'
-  const nodeConstant = win32
-    ? `const NODE = ${JSON.stringify(options.nodePath ?? process.execPath)}\n`
+  const scripted = win32 && options.nodePath !== undefined
+  const nodeConstant = scripted
+    ? `const NODE = ${JSON.stringify(options.nodePath)}\n`
     : ''
-  const spawnArguments = win32
+  const spawnArguments = scripted
     ? 'NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "openclaw"]'
     : 'ADAPTER, ["hook", event, "--owner", "notifai", "--harness", "openclaw"]'
   const windowsHide = win32 ? '\n        windowsHide: true,' : ''
@@ -893,18 +986,31 @@ export function openclawPluginSource(options: OpenclawPluginOptions): string {
 // the next install; change the CLI instead, which is where the logic lives.
 import { spawn, execFile, execFileSync } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 ${nodeConstant}const ADAPTER = ${JSON.stringify(adapterPath)}
-const HOOK_COMMAND = ${JSON.stringify(win32 ? options.nodePath ?? process.execPath : adapterPath)}
-const HOOK_PREFIX = ${JSON.stringify(win32 ? [adapterPath] : [])}
+const HOOK_COMMAND = ${JSON.stringify(scripted ? options.nodePath : adapterPath)}
+const HOOK_PREFIX = ${JSON.stringify(scripted ? [adapterPath] : [])}
 const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCLAW_ADAPTER_VERSION}
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}
 const WORKER_ACTIVATION_CONTEXT = ${JSON.stringify(WORKER_ACTIVATION_CONTEXT)}
 
+// The managed native command has one fixed installation root. Source adapters
+// and externally owned wrappers do not acquire uninstall authority here.
+const UNINSTALL_BARRIER = path.basename(ADAPTER) === (process.platform === "win32" ? "notifai.exe" : "notifai") &&
+  path.basename(path.dirname(ADAPTER)) === "bin" &&
+  path.basename(path.dirname(path.dirname(ADAPTER))) === ".notifai"
+  ? path.join(path.dirname(path.dirname(ADAPTER)), "uninstall.json") : null
+function uninstallPending() {
+  if (UNINSTALL_BARRIER === null) return false
+  try { lstatSync(UNINSTALL_BARRIER); return true }
+  catch (error) { return error?.code !== "ENOENT" }
+}
+
 function runHook(event, envelope) {
+  if (uninstallPending()) return Promise.resolve(null)
   return new Promise((resolve) => {
     let child
     try {

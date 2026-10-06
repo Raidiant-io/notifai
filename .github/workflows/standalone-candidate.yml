@@ -1,0 +1,176 @@
+name: Standalone release candidate
+
+on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact source commit to build and verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standalone-candidate-${{ inputs.expected_sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: standalone (${{ matrix.target }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: bun-darwin-arm64
+            arch: arm64
+            extension: ''
+          - runner: macos-15-intel
+            target: bun-darwin-x64
+            arch: x64
+            extension: ''
+          - runner: ubuntu-24.04
+            target: bun-linux-x64
+            arch: x64
+            extension: ''
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            arch: arm64
+            extension: ''
+          - runner: windows-2025
+            target: bun-windows-x64
+            arch: x64
+            extension: .exe
+          - runner: windows-11-arm
+            target: bun-windows-arm64
+            arch: arm64
+            extension: .exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Admit only the exact release candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.2'
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.arch }}
+      - run: pnpm install --frozen-lockfile
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e "if(process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+      - name: Verify optional npm bootstrap signatures and OS boundaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          pnpm --filter @raidiant/notifai-install test
+          node scripts/check-npm-bootstrap-platform.mjs "$TARGET"
+          node scripts/verify-packed-npm-installer.mjs
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.target == 'bun-linux-x64'
+        with:
+          node-version: '20.12.0'
+      - name: Verify npm bootstrap on its minimum Node version
+        if: matrix.target == 'bun-linux-x64'
+        run: pnpm --filter @raidiant/notifai-install test
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.target == 'bun-linux-x64'
+        with:
+          node-version: '24'
+      - name: Verify shell bootstrap without installed Node on its PATH
+        if: runner.os != 'Windows'
+        run: node --test scripts/install-shell.test.mjs
+      - name: Verify Windows PowerShell bootstrap
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/check-windows-bootstrap.ps1
+      - name: Verify modern PowerShell bootstrap
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-bootstrap.ps1
+      - name: Compile launcher and full application
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/build-launcher.mjs "$RUNNER_TEMP/standalone"
+          node scripts/build-standalone.mjs --target "$TARGET" --out "$RUNNER_TEMP/standalone/notifai-runtime$EXTENSION"
+      - name: Execute isolated artifact checks
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/check-standalone.mjs "$RUNNER_TEMP/standalone/notifai$EXTENSION" > "$RUNNER_TEMP/standalone/check.json"
+          cat "$RUNNER_TEMP/standalone/check.json"
+      - name: Verify source boundaries
+        run: |
+          pnpm check:boundary
+          pnpm check:machine-paths
+      - name: Verify native runtime and shared storage
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/check-standalone-runtime.mjs --launcher "$RUNNER_TEMP/standalone/notifai$EXTENSION" > "$RUNNER_TEMP/standalone/runtime-check.log"
+          cat "$RUNNER_TEMP/standalone/runtime-check.log"
+      - name: Package the checked candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs
+          node scripts/prepare-standalone-materials.mjs --candidate --output "$RUNNER_TEMP/standalone-materials"
+          node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/standalone" --materials "$RUNNER_TEMP/standalone-materials" --output "$RUNNER_TEMP/standalone/archive"
+      - name: Verify the packaged bytes through fresh native installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-standalone-archive.mjs "$RUNNER_TEMP/standalone/archive" > "$RUNNER_TEMP/standalone/archive-check.json"
+          cat "$RUNNER_TEMP/standalone/archive-check.json"
+          node -e 'require("node:fs").cpSync(process.env.RUNNER_TEMP + "/standalone", process.env.RUNNER_TEMP + "/finalization-admission", {recursive:true})'
+          node scripts/admit-native-candidate.mjs --directory "$RUNNER_TEMP/finalization-admission" --target "${{ matrix.target }}" --expected-sha "${{ inputs.expected_sha }}"
+      - name: Retain candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: standalone-${{ matrix.target }}-${{ inputs.expected_sha }}
+          path: |
+            ${{ runner.temp }}/standalone/notifai*
+            ${{ runner.temp }}/standalone/archive/
+            ${{ runner.temp }}/standalone/archive-check.json
+            ${{ runner.temp }}/standalone/check.json
+            ${{ runner.temp }}/standalone/runtime-check.log
+          if-no-files-found: error
+          retention-days: 14

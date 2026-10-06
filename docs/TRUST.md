@@ -19,18 +19,19 @@ one for itself.
 The optional `notifai` agent skill is content-bound to the CLI package that
 installs it. Every CLI tarball carries the complete reviewed skill plus a
 manifest covering the exact relative file list, each file's SHA-256, and one
-canonical tree digest. Before starting the external
-`skills` installer, the CLI:
+canonical tree digest. Before placement, the CLI:
 
-1. verifies its packaged skill against that manifest;
-2. copies the verified bundle to a short-lived path relative to the target
-   project, so no account or machine-specific absolute path reaches the
-   installer lock;
-3. gives that local copy to the exactly pinned native installer; and
-4. removes the staging copy after the installer exits.
+1. verifies its bundled skill against that manifest;
+2. stages only those files beside the selected destination;
+3. records the replacement and content ownership before activating it; and
+4. retains enough verified content to recover an interrupted replacement.
 
-Readiness ignores mutable source/ref metadata and hashes the installer's
-conventional installed directory against the packaged digest. A lock-file
+Only owned, unchanged copies may be refreshed or removed. Unknown files,
+user edits, symlinks, and unrelated skills are preserved. A prior general
+skill-installer lock is migration evidence, not deletion authority.
+
+Readiness ignores mutable source/ref metadata and hashes every recorded
+placement against the bundled digest. A lock-file
 entry alone is not sufficient. An extra or missing file, changed bytes, a
 malformed package manifest, or an installer record without verified content
 fails closed. This establishes content binding to the installed npm package;

@@ -1,3 +1,4 @@
+import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
@@ -8,6 +9,9 @@ import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionIn
  * never delays: the harness does not wait for an async handler), and on
  * UserPromptSubmit and Stop to re-arm a session whose attendant died.
  */
+import { currentRuntimeBuild } from './launch-self.js'
+import { retainSessionRuntime } from './runtime-build-retention.js'
+import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { existsSync, readFileSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -78,12 +82,15 @@ import { readOpenclawGeneration } from './openclaw-generation.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { buildIdentity } from './distribution.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { claudePickerHolds } from './claude-question-hooks.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
 export const attendantRuntimeRevision = (() => {
+  const compiled = buildIdentity()
+  if (compiled !== null) return compiled.sourceDigest
   const file = fileURLToPath(import.meta.url), extension = path.extname(file), directory = path.dirname(file)
   const hash = createHash('sha256')
   for (const name of readdirSync(directory).filter(name => name.endsWith(extension) &&
@@ -280,6 +287,9 @@ export async function attendHook(
   )
   if (record === null || (input.recovery !== undefined && !ownsNative(record.key))) return end('ignored', { reason: 'recovery-owner-changed' })
   if (harness === 'codex' && starting) observeNative(record.key, true)
+
+  const runtimeBuild = currentRuntimeBuild(deps.env)
+  retainSessionRuntime(sessionId, deps.env, runtimeBuild)
 
   // One live attendant per session. A holder serving an older incarnation of
   // this session (an in-process resume moments after a clear) steps aside
@@ -633,6 +643,7 @@ export function attendantGates(
   harness: HookHarness,
   runningVersion: string | null,
 ): GateResult {
+  if (nativeUninstallPending(deps.env)) return { ok: false, reason: 'uninstall-in-progress' }
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) {
@@ -664,6 +675,9 @@ export function attendantGates(
 
 function installedCliVersion(target: HookAdapterTarget | null): string | null {
   if (target === null) return null
+  if (target.kind === 'native') {
+    try { return nativeInstallationIdentity(path.dirname(path.dirname(path.dirname(target.execPath)))).version } catch { return null }
+  }
   if (isNpxAdapterTarget(target)) {
     // Installers pin npx targets to an exact version: `@raidiant/notifai@1.2.3`.
     const prefix = `${CLI_PACKAGE_NAME}@`

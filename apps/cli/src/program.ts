@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { Command } from 'commander'
+import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import {
   acknowledgeCommand,
   receiveCommand,
@@ -48,7 +49,12 @@ import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.
 import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { admitNativeCommand, portableNativeReport, type NativeAdmission } from './native-command-admission.js'
 import { resumeAttendantCommand } from './attendant-update.js'
+import { buildIdentity } from './distribution.js'
+import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
+import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
+import { shippedSkillBundle } from './skill-integrity.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -86,6 +92,8 @@ function commandPath(command: Command): string {
  */
 const defaultRunners = {
   init: initCommand,
+  install: nativeInstallCommand,
+  uninstall: nativeUninstallCommand,
   doctor: doctorCommand,
   update: cliUpdateCommand,
   updateCheck: cliUpdateCheckCommand,
@@ -137,16 +145,20 @@ export interface BuildProgramOptions {
   /** Test seam; production ends the process with the command's exit code. */
   exit?: (code: number) => void
   runners?: Partial<ProgramRunners>
+  /** Logging starts only after a compiled command is admitted. */
+  beforeAction?: (admission: NativeAdmission) => void
 }
 
 export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {}): Command {
   const exit = options.exit ?? ((code: number) => process.exit(code))
   const runners: ProgramRunners = { ...defaultRunners, ...options.runners }
-  const logger = deps.logger
+  let admission: NativeAdmission = 'development'
 
   const program = new Command('notifai')
     .description('Send native device notifications from agents and local programs')
     .version(version())
+    // Install owns --version <application>; global --version belongs before subcommands.
+    .enablePositionalOptions()
     .configureHelp(helpConfiguration)
     // Lazy on purpose. `addHelpText` also takes a string, but that builds the
     // footer on every invocation — including the hook that runs in front of
@@ -163,6 +175,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // `notifai help send` for everyone who reaches for it before `--help`.
     .helpCommand(true)
     .hook('preAction', (_program, actionCommand) => {
+      try { admission = admitNativeCommand(actionCommand, deps.env) }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (actionCommand.opts()['json'] === true) deps.io.out(JSON.stringify({ ok: false, code: 'native_command_not_admitted', message }))
+        else deps.io.err(message)
+        exit(1)
+        return
+      }
+      options.beforeAction?.(admission)
+      const logger = deps.logger
       logger?.bind({ cmd: commandPath(actionCommand) })
       // SessionEnd uses the hook policy shared with commands.ts: local cleanup
       // precedes every diagnostic that can wait on the shared log lock.
@@ -185,6 +207,23 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
    * returns. A caller branching on exit codes should not have to know which layer
    * rejected it. Help and version stay successful.
    */
+  program.command('self-check')
+    .description('Verify this executable and its bundled assets without contacting the service')
+    .option('--json', 'machine-readable build and asset verification')
+    .action((options: { json?: boolean }) => {
+      const identity = buildIdentity()
+      const skill = shippedSkillBundle(packageVersion() ?? undefined)
+      const processIdentity = currentProcessIdentity()
+      const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
+      const result = { ok: identity !== null && skill.ok && processVerified, build: identity, processVerified,
+        skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
+          : { error: skill.error } }
+      deps.io.out(options.json ? JSON.stringify(result)
+        : result.ok ? `Executable and bundled skill verified (${identity?.version})`
+          : 'Standalone executable verification failed')
+      exit(result.ok ? 0 : 1)
+    })
+
   program.exitOverride((err) => {
     exit(err.exitCode === 0 ? 0 : 2)
   })
@@ -243,7 +282,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable final readiness; never prompts')
     .option('--approval <route>', 'computer approval route: qr (default), notification, or browser')
     .option('--approval-email <email>', 'Account email for the selected notification approval route')
-    .option('--skills', 'install/update the agent skill from its pinned public release')
+    .option('--skills', 'install/update the agent skill bundled with this CLI')
+    .option('--skills-harness <harnesses>', 'comma-separated harnesses to receive the skill; required for a new unattended placement')
     .option('--no-skills', 'suppress the optional agent-skill status line')
     .option(
       '--skills-scope <scope>',
@@ -261,6 +301,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         json?: boolean
         skills?: boolean
         skillsScope?: SkillScope
+        skillsHarness?: string
         hooks?: boolean
         claudeCommands?: boolean
       }) => {
@@ -269,12 +310,46 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
 
   program
+    .command('install')
+    .helpGroup(GROUP.start)
+    .summary('Install an authenticated native release for this User')
+    .description('Install or reuse the managed native runtime, configure PATH, then continue setup')
+    .option('--json', 'machine-readable installation and setup report; never prompts')
+    .option('--directory <directory>', 'directory containing the verified release files (default: this executable directory)')
+    .option('--inventory <file>', 'signed release inventory (default: inventory.json beside the release)')
+    .option('--migrate-npm', 'stage native files while preserving one identified legacy npm installation; report its required cleanup')
+    .option('--source <source>', 'bootstrap route: shell, powershell, npm or manual', 'manual')
+    .option('--channel <channel>', 'stable or beta; reruns keep the existing channel unless explicitly requested')
+    .option('--version <version>', 'require this exact application version')
+    .option('--shell <shell>', 'selected POSIX shell for PATH setup (default: SHELL)')
+    .option('--no-path', 'skip persistent PATH setup; use the reported absolute command')
+    .option('--no-init', 'install the runtime without starting account or harness setup')
+    .action(async (opts: NativeInstallFlags) => { exit(await runners.install(deps, opts)) })
+
+  program
+    .command('uninstall')
+    .helpGroup(GROUP.start)
+    .summary('Remove the native CLI and its owned integration; preserve your data')
+    .option('--json', 'machine-readable uninstall report; never prompts')
+    .option('--cancel', 'cancel a pending uninstall before removal starts')
+    .option('--finish', 'finish Windows removal from the verified temporary copy')
+    .option('--installation-id <id>', 'installation identity supplied by the cleanup command')
+    .option('--installation-root <directory>', 'installation root supplied by the cleanup command')
+    .action(async (opts: NativeUninstallFlags) => { exit(await runners.uninstall(deps, opts)) })
+
+  program
     .command('doctor')
     .helpGroup(GROUP.daily)
     .summary('Check every part of the setup')
     .description('Audit config, credential, server, contract, device, hook, and saved receipt proof; exits nonzero when any line is FAIL (no live send)')
     .option('--json', 'machine-readable output')
     .action(async (opts: { json?: boolean }) => {
+      if (admission === 'diagnostic') {
+        const report = portableNativeReport(deps.env)
+        deps.io.out(opts.json ? JSON.stringify(report) : String(report['message']))
+        exit(1)
+        return
+      }
       exit(await runners.doctor(deps, opts))
     })
 
@@ -287,9 +362,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--check', 'inspect release notes, guidance, and session effects without installing')
     .option('--refresh-skill', 'refresh the existing skill scope without login, hooks, or delivery setup')
     .option('--resume', 'finish integration in the existing installation without reinstalling or changing channel')
-    .option('--channel <channel>', 'choose stable or beta; explicit stable can switch from a newer beta (default: stable)')
+    .option('--channel <channel>', 'choose stable or beta (native installs otherwise keep their saved channel)')
+    .option('--allow-downgrade', 'allow an explicit native beta-to-stable downgrade to the signed stable target')
+    .option('--rollback', 'restore the verified previous native build and its saved channel')
+    .option('--repair', 'recover an interrupted native update and retry pending launcher repair')
+    .option('--abandon', 'abandon only an uncommitted native activation, preserving runtimes and data')
+    .option('--cleanup', 'remove only verified retired builds from a previous OS boot; preserve resident work')
     .option('--from <version>', 'show installed changelog entries after this version (requires --check or --resume)')
-    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string }) => {
+    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string; allowDowngrade?: boolean; rollback?: boolean; repair?: boolean; abandon?: boolean; cleanup?: boolean }) => {
+      if ([opts.rollback, opts.repair, opts.abandon, opts.cleanup].filter(Boolean).length > 1 ||
+          ((opts.rollback || opts.repair || opts.abandon || opts.cleanup) && (opts.check || opts.resume || opts.refreshSkill || opts.channel !== undefined || opts.from !== undefined || opts.allowDowngrade)) ||
+          (opts.allowDowngrade && (opts.channel !== 'stable' || opts.check || opts.resume || opts.refreshSkill || opts.from !== undefined))) {
+        deps.io.err('Choose one update operation; --allow-downgrade requires --channel stable')
+        exit(2)
+        return
+      }
       if (opts.channel !== undefined && opts.channel !== 'stable' && opts.channel !== 'beta') {
         deps.io.err('--channel must be stable or beta')
         exit(2)
@@ -310,7 +397,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         exit(2)
         return
       }
-      exit(opts.resume ? await runners.updateResume(deps, opts) : opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : runners.update(deps, opts))
+      exit(opts.resume ? await runners.updateResume(deps, opts) : opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : await runners.update(deps, opts))
     })
 
   // Owned updater subprocess; never an agent-facing lifecycle or session-creation API.

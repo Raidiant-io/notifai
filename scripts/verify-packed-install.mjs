@@ -25,9 +25,9 @@
  *      installer quietly fetched a published version of the same number
  *      instead, this run would be vouching for the wrong bytes.
  *   4. The installed CLI must still carry the reviewed skill bundle, and it
- *      must be able to stage that bundle as a portable local source. This is
+ *      must verify every file against its own manifest. This is
  *      the deterministic proof that the tarball contains and installs the
- *      intended skill. It does not spawn the third-party `skills` installer;
+ *      intended skill. Placement and recovery are checked separately;
  *      that integration smoke is `scripts/verify-packed-skill-install.mjs`.
  *   5. The installed bin must run: `notifai --version` has to report the
  *      packed version, and `notifai config show` has to exit 0. Startup
@@ -47,7 +47,7 @@
  * that is how the test fixture proves a stale pin fails.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -350,26 +350,8 @@ export async function preparePackedCli(scratch, options = {}) {
   const bundle = integrity.shippedSkillBundle(cliManifest.version)
   if (!bundle.ok) throw new Error(`installed CLI skill bundle is invalid (${bundle.error})`)
 
-  const staged = integrity.stageShippedSkillBundle(installDir, cliManifest.version)
-  if (!staged.ok) throw new Error(`installed CLI could not stage its packaged skill (${staged.error})`)
-  try {
-    if (path.isAbsolute(staged.staged.source) || staged.staged.source.includes(installDir)) {
-      throw new Error('staged packaged skill source is not machine-neutral')
-    }
-    const stagedRoot = path.resolve(installDir, staged.staged.source)
-    if (!lstatSync(path.join(stagedRoot, 'notifai')).isDirectory()) {
-      throw new Error('staged packaged skill is missing the notifai tree')
-    }
-  } finally {
-    staged.staged.cleanup()
-  }
-  if (existsSync(path.join(installDir, '.notifai')) &&
-    readdirSync(path.join(installDir, '.notifai')).some((entry) => entry.startsWith('skill-source-'))) {
-    throw new Error('packed CLI left its temporary skill source behind')
-  }
-
   console.log(
-    `Packed skill bundle verified: ${CLI_NAME}@${cliManifest.version} contains and stages the reviewed skill.`,
+    `Packed skill bundle verified: ${CLI_NAME}@${cliManifest.version} contains the verified bundled skill.`,
   )
 
   return { installDir, installedCli, cliManifest, protocolManifest, env, cliTarball, protocolTarball }

@@ -1,3 +1,4 @@
+import type { RuntimeBuildReference } from './launch-self.js'
 import type { InputWakeAttempt } from './session-input-wakes.js'
 import type { NativeAnswerOperation } from './native-answer-operation.js'
 import type { CodexQuestionRegistration } from './codex-question-bindings.js'
@@ -78,6 +79,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Immutable native builds serving live or resumable work in this session. */
+  runtime_builds?: RuntimeBuildReference[]
   /** Exact native associations and sticky ordinary-presentation decisions. */
   codex_question_bindings?: CodexQuestionRegistration[]
   /** Never reuse a marker while any registration or operation is retained. */

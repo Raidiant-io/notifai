@@ -16,4 +16,5 @@ function packageContract(directory) {
 
 export const CLI_PACKAGE = packageContract('apps/cli')
 export const PROTOCOL_PACKAGE = packageContract('packages/protocol')
-export const PUBLISHABLE_PACKAGES = Object.freeze([CLI_PACKAGE, PROTOCOL_PACKAGE])
+export const INSTALLER_PACKAGE = packageContract('packages/installer')
+export const PUBLISHABLE_PACKAGES = Object.freeze([PROTOCOL_PACKAGE, INSTALLER_PACKAGE])

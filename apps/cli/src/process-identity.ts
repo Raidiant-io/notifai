@@ -1,12 +1,11 @@
 /** A process named by PID *and* start time, so a reused PID is never mistaken for it. */
 import { execFileSync } from 'node:child_process'
+import path from 'node:path'
+import { buildIdentity } from './distribution.js'
 
 export interface ProcessIdentity {
   pid: number
-  /**
-   * Normalised UTC `ps -o lstart` text, or on Windows the start FILETIME in
-   * UTC: on each platform the same value Claude Code's descriptor carries.
-   */
+  /** UTC ps text on POSIX; kernel FILETIME on Windows. Never a PID alone. */
   start: string
 }
 
@@ -20,7 +19,7 @@ export interface ProcessIdentity {
  */
 export function processStartTime(pid: number, platform: NodeJS.Platform = process.platform): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
-  if (platform === 'win32') return windowsProcessStart(pid)
+  if (platform === 'win32') return buildIdentity() !== null ? windowsProcessInfo(pid)?.start ?? null : windowsProcessStart(pid)
   try {
     const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -39,10 +38,7 @@ export function processStartTime(pid: number, platform: NodeJS.Platform = proces
 /** The executable name of a process (`ps -o comm`, without its directory), or null. */
 export function processExecutableName(pid: number, platform: NodeJS.Platform = process.platform): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
-  if (platform === 'win32') {
-    const name = windowsProcessProperty(pid, 'ProcessName')
-    return name === null || name === '' ? null : name
-  }
+  if (platform === 'win32') return buildIdentity() !== null ? windowsProcessInfo(pid)?.name ?? null : windowsProcessProperty(pid, 'ProcessName')
   try {
     const output = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -54,6 +50,18 @@ export function processExecutableName(pid: number, platform: NodeJS.Platform = p
   } catch {
     return null
   }
+}
+
+/** Native identity reads use the sibling C launcher, never PowerShell or a
+ * cached PID start. The tagged FILETIME shares the source/harness kernel clock. */
+function windowsProcessInfo(pid: number): { start: string; name: string } | null {
+  try {
+    const output = execFileSync(path.join(path.dirname(process.execPath), 'notifai.exe'), ['--internal-process-info', String(pid)],
+      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2_000 })
+    const [start, name] = output.trim().split(/\r?\n/)
+    if (!start || !/^windows-filetime:\d+$/.test(start) || !name) return null
+    return { start, name: name.replace(/\.exe$/i, '') }
+  } catch { return null }
 }
 
 /**
@@ -68,7 +76,7 @@ export function processExecutableName(pid: number, platform: NodeJS.Platform = p
 function windowsProcessProperty(pid: number, property: string): string | null {
   try {
     return execFileSync(
-      'powershell.exe',
+      path.win32.join(process.env['SystemRoot'] || process.env['SYSTEMROOT'] || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).${property}`],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000, windowsHide: true },
     ).trim()
@@ -109,7 +117,10 @@ export function windowsProcessStart(
 }
 
 export function normalizeProcessStart(value: string): string {
-  return value.trim().replace(/\s+/g, ' ')
+  const normalized = value.trim().replace(/\s+/g, ' ')
+  // Claude Code descriptors use bare FILETIME; the native helper tags its
+  // clock. Compare the same kernel value across those two explicit producers.
+  return /^windows-filetime:\d+$/.test(normalized) ? normalized.slice('windows-filetime:'.length) : normalized
 }
 
 /** Signal 0 only asks whether the PID exists; EPERM still means it does. */

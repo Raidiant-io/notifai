@@ -348,7 +348,7 @@ export async function hookRunCommand(
         if ((current.pending?.length ?? 0) === 0 && current.accepted === undefined) return false
         const spawnSettlement = deps.spawnQuestionSettlement ?? spawnQuestionSettlement
         spawnSettlement({
-          envelope: { session_id: sessionId, cwd }, harness,
+          envelope: { session_id: sessionId, cwd }, harness, sessionLockHeld: true,
         })
         return true
       })

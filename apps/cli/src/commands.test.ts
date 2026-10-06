@@ -68,7 +68,6 @@ import {
   hooksUninstallCommand,
   hookRunCommand,
   initCommand,
-  SKILLS_SOURCE,
   loginCommand,
   logoutCommand,
   logsCommand,
@@ -5962,6 +5961,7 @@ describe('init', () => {
     if (!existsSync(skillPath)) installCurrentSkill(skillPath)
     return {
       name: 'notifai',
+      agents: ['claude-code'],
       scope,
       path: skillPath,
       source: 'Raidiant-io/notifai',
@@ -6196,12 +6196,6 @@ describe('init', () => {
     expect(io.errLines).toEqual([])
   })
 
-  it('pins the skill installer to the tagged release this build actually is', () => {
-    expect(SKILLS_SOURCE).toBe(`Raidiant-io/notifai#${RELEASE_REF}`)
-    // `#` selects a Git ref; `@` would select a skill name instead.
-    expect(SKILLS_SOURCE).not.toContain('@v')
-  })
-
   it('recognizes a skill installed from the exact immutable release', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-pinned-skill-'))
     const io = new CapturedIo()
@@ -6427,6 +6421,7 @@ describe('init', () => {
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
         skills: true,
         skillsScope: 'project',
+        skillsHarness: 'claude-code',
         hooks: false,
       }),
     ).toBe(EXIT.ok)
@@ -6468,7 +6463,7 @@ describe('init', () => {
       },
     }
     const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
-    const flags = { skills: true, skillsScope: 'project' as const, hooks: false, json: true }
+    const flags = { skills: true, skillsScope: 'project' as const, skillsHarness: 'claude-code', hooks: false, json: true }
     return { cwd, io, records, old, oldContents, plan, calls, deps, flags }
   }
 
@@ -6554,6 +6549,7 @@ describe('init', () => {
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
         skills: true,
         skillsScope: 'project',
+        skillsHarness: 'claude-code',
         hooks: false,
       }),
     ).toBe(EXIT.ok)
@@ -6639,7 +6635,7 @@ describe('init', () => {
 
       const result = await initCommand(
         setupReadyDeps(io, cwd, nativeSkills, calls),
-        { skills: true, skillsScope: scope, hooks: false },
+        { skills: true, skillsScope: scope, skillsHarness: 'claude-code', hooks: false },
       )
       expect(result).toBe(EXIT.ok)
       expect(receivedScope).toBe(scope)
@@ -6648,10 +6644,11 @@ describe('init', () => {
     },
   )
 
-  it('asks the skill-scope question only, and passes that scope to the native installer', async () => {
+  it('asks for skill scope and selected harnesses before placing the bundled skill', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-scope-ask-'))
     const io = new InteractiveIo()
     io.selectAnswer = 'project'
+    io.multiselectAnswer = ['claude-code']
     const calls: { submit: number } = { submit: 0 }
     let receivedScope: SkillScope | undefined
     const nativeSkills: NativeSkills = {
@@ -6794,7 +6791,7 @@ describe('init', () => {
       list: async () => ({ skills: [] }),
     }
 
-    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(
+    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, skillsHarness: 'codex', hooks: false })).toBe(
       EXIT.failed,
     )
     expect(calls.submit).toBe(1)
@@ -6802,14 +6799,14 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
-  it('explains a local Windows npm launch failure without blaming the network', async () => {
+  it('explains a bundled skill placement failure without blaming the network', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-local-launch-failed-'))
     const io = new InteractiveIo()
     const nativeSkills: NativeSkills = {
       add: async () => ({
         code: 1,
         error:
-          'this Windows Node.js installation is missing its bundled npm tools; repair or reinstall Node.js, then rerun setup',
+          'the harness skill directory is not writable; check its permissions, then rerun setup',
       }),
       remove: async () => 0,
       list: async () => ({ skills: [] }),
@@ -6818,10 +6815,11 @@ describe('init', () => {
     expect(
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
         skills: true,
+        skillsHarness: 'codex',
         hooks: false,
       }),
     ).toBe(EXIT.failed)
-    expect(io.errLines.join('\n')).toContain('missing its bundled npm tools')
+    expect(io.errLines.join('\n')).toContain('harness skill directory is not writable')
     expect(io.errLines.join('\n')).not.toContain('network')
   })
 
@@ -8357,21 +8355,10 @@ describe('readiness assessment cost', () => {
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
   })
 
-  it('treats a lock-file pin as installed without asking npx', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-'))
-    installCurrentSkill(path.join(cwd, '.agents', 'skills', 'notifai'))
-    writeFileSync(
-      path.join(cwd, 'skills-lock.json'),
-      `${JSON.stringify({
-        skills: {
-          notifai: {
-            source: 'Raidiant-io/notifai',
-            sourceType: 'github',
-            ref: RELEASE_REF,
-          },
-        },
-      })}\n`,
-    )
+  it('verifies built-in skill ownership without an external installer on PATH', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-owned-skill-'))
+    const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
+    expect(await realNativeSkills.add({ skill: 'notifai', scope: 'project', agents: ['codex'], cwd, env })).toBe(0)
     const io = new CapturedIo()
     const client = {
       health: async () => true,
@@ -8382,7 +8369,7 @@ describe('readiness assessment cost', () => {
     const readiness = await assessReadiness({
       ...makeDeps(io, client),
       cwd,
-      env: { ...isolatedEnv(cwd), PATH: '/nonexistent' },
+      env,
       nativeSkills: realNativeSkills,
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({

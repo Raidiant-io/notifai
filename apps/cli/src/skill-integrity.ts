@@ -1,16 +1,13 @@
 import { createHash } from 'node:crypto'
 import {
-  cpSync,
   existsSync,
-  mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
-  rmSync,
   statSync,
 } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bundledSkillRoot } from './distribution.js'
 
 export interface SkillManifestFile {
   path: string
@@ -34,25 +31,6 @@ export interface VerifiedSkillBundle {
 export type SkillBundleResult =
   | { ok: true; bundle: VerifiedSkillBundle }
   | { ok: false; error: string }
-
-export interface StagedSkillBundle {
-  /** Machine-neutral path relative to the installer project cwd. */
-  source: string
-  cleanup(): void
-}
-
-/** Local-source grammar accepted by skills@1.5.23 on every supported host. */
-export function portableLocalInstallerSource(
-  cwd: string,
-  source: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const paths = platform === 'win32' ? path.win32 : path.posix
-  const relative = paths.relative(cwd, source).split(paths.sep).join('/')
-  if (relative === '') return '.'
-  if (relative === '..' || relative.startsWith('../')) return relative
-  return `./${relative}`
-}
 
 function sha256(contents: Buffer): string {
   return createHash('sha256').update(contents).digest('hex')
@@ -187,50 +165,9 @@ export function verifySkillBundle(
 /** Locate the generated bundle in a published install or a built source checkout. */
 export function shippedSkillBundle(expectedPackageVersion?: string, budget?: SkillInspectionBudget): SkillBundleResult {
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
-  const sourceRoot = path.join(
+  const sourceRoot = bundledSkillRoot() ?? path.join(
     moduleDirectory,
     path.basename(moduleDirectory) === 'dist' ? 'skill-source' : '../dist/skill-source',
   )
   return verifySkillBundle(sourceRoot, expectedPackageVersion, budget)
-}
-
-/**
- * Copy the verified npm-bundled skill to a short-lived project-relative source
- * understood by the pinned native installer. The relative argument keeps the
- * installer lock free of account names and absolute paths; the copied install
- * remains after this staging directory is removed.
- */
-export function stageShippedSkillBundle(
-  cwd: string,
-  packageVersion: string,
-): { ok: true; staged: StagedSkillBundle } | { ok: false; error: string } {
-  const bundle = shippedSkillBundle(packageVersion)
-  if (!bundle.ok) return bundle
-  let stagingRoot: string | undefined
-  try {
-    const stagingParent = path.join(cwd, '.notifai')
-    mkdirSync(stagingParent, { recursive: true })
-    stagingRoot = mkdtempSync(path.join(stagingParent, 'skill-source-'))
-    cpSync(bundle.bundle.skillRoot, path.join(stagingRoot, 'notifai'), { recursive: true })
-    cpSync(
-      path.join(bundle.bundle.sourceRoot, 'manifest.json'),
-      path.join(stagingRoot, 'manifest.json'),
-    )
-    const stagedVerification = verifySkillBundle(stagingRoot, packageVersion)
-    if (!stagedVerification.ok) {
-      rmSync(stagingRoot, { recursive: true, force: true })
-      return stagedVerification
-    }
-    const verifiedStagingRoot = stagingRoot
-    return {
-      ok: true,
-      staged: {
-        source: portableLocalInstallerSource(cwd, verifiedStagingRoot),
-        cleanup: () => rmSync(verifiedStagingRoot, { recursive: true, force: true }),
-      },
-    }
-  } catch (error) {
-    if (stagingRoot !== undefined) rmSync(stagingRoot, { recursive: true, force: true })
-    return { ok: false, error: `could not stage the packaged notifai skill (${String(error)})` }
-  }
 }

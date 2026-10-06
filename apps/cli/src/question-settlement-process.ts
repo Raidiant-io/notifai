@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { launchSelf } from './launch-self.js'
+import { retainSessionRuntime } from './runtime-build-retention.js'
 import type { HookInstallableHarness } from './harnesses.js'
 import type { HookEnvelope } from './hook-types.js'
 
@@ -11,6 +11,8 @@ export interface QuestionSettlementLaunch {
   harness: HookInstallableHarness
   /** Submission never consumes an answer or writes discarded harness stdout. */
   purpose?: 'submission'
+  /** Internal callers already inside the session lock must not reacquire it. */
+  sessionLockHeld?: boolean
 }
 
 /**
@@ -20,30 +22,14 @@ export interface QuestionSettlementLaunch {
  * settlement separately observes the complete answer window.
  */
 export function spawnQuestionSettlement(launch: QuestionSettlementLaunch): void {
-  const child = spawn(
-    process.execPath,
-    [
-      fileURLToPath(new URL('./main.js', import.meta.url)),
-      'hook',
-      launch.purpose === 'submission' ? 'question-submission' : 'question-settlement',
-      '--owner',
-      'notifai',
-      '--harness',
-      launch.harness,
-    ],
-    {
-      cwd: launch.envelope.cwd ?? process.cwd(),
-      detached: true,
-      env: {
-        ...process.env,
-        [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify(launch.envelope),
-      },
-      stdio: 'ignore',
-      windowsHide: true,
+  launchSelf(['hook', launch.purpose === 'submission' ? 'question-submission' : 'question-settlement',
+    '--owner', 'notifai', '--harness', launch.harness], {
+    cwd: launch.envelope.cwd ?? process.cwd(),
+    env: { ...process.env, [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify(launch.envelope) },
+    retain(reference) {
+      if (reference === null) return
+      if (!launch.envelope.session_id) throw new Error('Resident work requires an Agent Session')
+      retainSessionRuntime(launch.envelope.session_id, process.env, reference, launch.sessionLockHeld)
     },
-  )
-  // Spawn failures are diagnosed by the next ordinary lifecycle hook, which
-  // still owns the durable registration. Never turn one into a prompt delay.
-  child.once('error', () => undefined)
-  child.unref()
+  })
 }

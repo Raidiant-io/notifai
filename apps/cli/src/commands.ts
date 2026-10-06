@@ -48,7 +48,6 @@ export {
   guidanceUnsetCommand,
 } from './commands-guidance.js'
 export { logsCommand, parseSince } from './commands-logs.js'
-export { SKILLS_SOURCE } from './commands-skill.js'
 export { initCommand, projectSlugFrom } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
 export { cliUpdateCheckCommand } from './commands-update-check.js'

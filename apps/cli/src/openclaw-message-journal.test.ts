@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, it } from 'vitest'
@@ -106,4 +106,46 @@ assert.equal((await messageContextForPointer(api, { prompt: messagePointer(next)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+it('does not spawn more native CLI work while uninstall admission is closed', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-drain-'))
+  try {
+    const managed = path.join(root, '.notifai'), bin = path.join(managed, 'bin')
+    mkdirSync(bin, { recursive: true })
+    const adapter = path.join(bin, process.platform === 'win32' ? 'notifai.exe' : 'notifai')
+    copyFileSync(process.execPath, adapter)
+    const marker = path.join(root, 'child-started'), preload = path.join(root, 'observe.cjs')
+    writeFileSync(preload, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`)
+    writeFileSync(path.join(managed, 'uninstall.json'), '{}')
+    const file = path.join(root, 'plugin.mjs')
+    writeFileSync(file, openclawPluginSource({ adapterPath: adapter, timeoutSeconds: 5 }) + `
+import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
+rmSync(${JSON.stringify(marker)}, { force: true })
+assert.equal(await runHook('openclaw-list-pending', { cwd: ${JSON.stringify(root)} }), null)
+assert.equal(existsSync(${JSON.stringify(marker)}), false, 'closed uninstall admission must prevent plugin subprocesses')
+`)
+    const result = spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 15_000,
+      env: { ...process.env, NODE_OPTIONS: `--require ${JSON.stringify(preload)}` } })
+    expect(result.error).toBeUndefined()
+    expect(result.status, result.stderr).toBe(0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+it('keeps source hook adapters outside native host registration', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-source-'))
+  try {
+    const file = path.join(root, 'plugin.mjs')
+    writeFileSync(file, openclawPluginSource({ adapterPath: path.join(root, '.notifai', 'bin', 'hook-adapter'), timeoutSeconds: 5 }) + `
+import assert from 'node:assert/strict'
+assert.equal(UNINSTALL_BARRIER, null)
+MESSAGE_JOURNAL_DIR = ${JSON.stringify(path.join(root, 'host-journal'))}
+saveMessageJournal({ delivery_id: 'source-fixture', phase: 'prepared' })
+assert.equal(readMessageJournal('source-fixture').phase, 'prepared')
+`)
+    const result = spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 10_000 })
+    expect(result.error).toBeUndefined()
+    expect(result.status, result.stderr).toBe(0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

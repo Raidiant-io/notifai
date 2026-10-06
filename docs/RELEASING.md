@@ -1,6 +1,7 @@
 # Releasing
 
-`@raidiant/notifai` and `@raidiant/notifai-protocol` version independently
+The standalone CLI, `@raidiant/notifai-protocol`, and the optional
+`@raidiant/notifai-install` bootstrap version independently
 under [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and
 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
 
@@ -10,7 +11,7 @@ The standard CLI flow is **publish beta, validate that beta, then obtain
 approval to promote to public**. A generic request to release or publish
 selects the beta path; it does not authorize a stable release. Surface scope
 (such as CLI-only) does not select a channel. Preparation and ordinary merges
-do not authorize npm publication.
+do not authorize distribution publication.
 
 The maintainer may explicitly authorize **beta and public immediately** for
 the same named scope. Publish and verify the beta first, then promote and
@@ -43,53 +44,46 @@ version` and `npm view @raidiant/notifai-protocol version`. This document does
 not restate it, because a copied version number is wrong from the next release
 onward.
 
-The public CLI is npm `latest`; the current beta CLI is npm `beta`. A beta
-package is never installed by `npm install @raidiant/notifai` or plain
-`notifai update`. Testers opt in with
-`npx --yes @raidiant/notifai@beta update --channel beta`; the updater reads
-both dist-tags, resolves whichever of `beta` and `latest` has the higher SemVer
-precedence (so `X.Y.Z` supersedes `X.Y.Z-beta.N`), and installs that exact
-version into the effective global prefix. A beta installation is told about a
-newer beta and about the stable release that supersedes it, and its update
-recommendation is the beta-channel command. A plain update from a beta newer
-than `latest` refuses before installing and names the beta-channel command.
-To switch that global installation back to the public release intentionally,
-run `notifai update --channel stable`; it installs the exact `latest` version
-and verifies the effective command and hook adapter before handing off.
-Previous beta versions remain individually installable by exact version even
-after the moving `beta` dist-tag advances.
+The standalone CLI uses signed `stable` and `beta` channel records and immutable
+GitHub Release archives. `notifai update` uses the Installation's selected
+channel; `--channel stable|beta` changes it explicitly. npm dist-tags belong
+only to the protocol and optional bootstrap package. Updating or removing the
+bootstrap package does not update or remove the native runtime. Previously
+published `@raidiant/notifai` npm versions remain registry history; this workflow
+cannot publish new versions of that package.
+
+Native artifacts and the bootstrap remain unpublished until the readiness and
+live acceptance gates in [STANDALONE.md](STANDALONE.md) pass. Do not advertise
+candidate installation commands as a currently available release.
 
 ## Beta CLI releases
 
-A beta is an authorized npm publication, not a release-please cut. Authorization
-may cover beta alone or the explicit beta-and-public path above.
-Prepare a short-lived candidate branch from the current public `main`; keep
-`.release-please-manifest.json` at the previous stable version. Select the next
-unused `X.Y.Z-beta.N` whose numeric base is newer than npm `latest`, checking
-both registry versions and Git tags. For a
-CLI-only beta, advance the CLI package version, add its `CHANGELOG.md` section,
-refresh the root README version and skill-pin markers, then update the lockfile
-with `pnpm install --lockfile-only`. Leave the protocol package at its already
-published stable version. If the wire contract changed, advance protocol to its
-own `X.Y.Z-beta.N`, pin that exact version in the CLI package, add both
-changelog sections, and refresh both README markers and the lockfile.
+A beta needs distribution authorization and uses a candidate branch from public
+`main`. Keep `.release-please-manifest.json` at its previous stable versions.
+Choose an unused `X.Y.Z-beta.N`, advance the affected package manifests and
+changelogs, sync README markers, and regenerate the lockfile. A CLI contract
+change also advances and pins protocol; unrelated protocol source stays fixed.
 
-Run the release gates on that exact candidate. With an explicit authorization
-for this beta cut, push the candidate branch and its exact version tag(s):
-`vX.Y.Z-beta.N` for CLI and, only when needed,
-`protocol-vX.Y.Z-beta.N` for protocol. Create an immutable GitHub Release for
-each tag **marked prerelease**. Dispatch `ci.yml` once for each distinct tagged SHA and wait
-for its exact-SHA success; tags sharing a commit reuse that evidence. Repeated
-successful runs are allowed; publication validates every required job from the
-newest successful exact-SHA run. Then dispatch `publish.yml` for the tag(s) with
-`expected_sha` set to that SHA. The protected `npm-release` environment still
-requires maintainer approval, OIDC publication, byte verification, and the
-deployed-service contract gate. Protocol must be published and verified before
-a CLI beta that pins it. `publish.yml` checks exact tag/SHA, immutable GitHub
-Release prerelease state, and package version; publishes with explicit
-`--tag beta`; verifies npm `beta` points to the new artifact and npm `latest`
-did not change. If any check fails, use a new version rather than moving a
-published tag.
+With authorization for this cut, create the exact CLI tag `vX.Y.Z-beta.N` and a
+**draft** GitHub prerelease. Run full `ci.yml` at that exact SHA and retain its
+run ID. Dispatch `prepare-native-release.yml` at the tag with `expected_sha`
+and `candidate_run_id`; it verifies all six targets, finalizes the admitted
+bytes and retains final artifacts. After finalization succeeds, dispatch
+`publish-native-release.yml` with its `final_run_id` and explicit `channel: beta`.
+Initialize a previously absent channel only with the explicit initialization
+input. The protected native environment remains required. Publication verifies
+asset identity, publishes the draft as an immutable prerelease, then advances
+the signed beta channel. A retry reuses the same final run and exact bytes.
+
+Protocol and bootstrap betas use their own `protocol-vX.Y.Z-beta.N` and
+`installer-vX.Y.Z-beta.N` tags and immutable GitHub prereleases. Their `publish.yml`
+runs accept only the exact tagged package, use the protected `npm-release`
+environment, publish with OIDC provenance and explicit `--tag beta`, and verify
+registry bytes and dist-tags. Existing versions are verified without republishing.
+The bootstrap publication gate also requires its embedded release trust and a
+usable signed stable runtime default. Native beta testing can use OS/manual
+bootstraps before that optional npm route is ready. Never move an existing tag
+or overwrite an uploaded asset to repair a release.
 
 Keep the candidate's version bump, beta changelog section, README markers, and
 lockfile **off `main`**. Merge or cherry-pick the actual product changes into
@@ -188,7 +182,7 @@ not the entrypoint for an unspecified request to release.
 updates one combined Release PR only when a maintainer explicitly dispatches
 `release-please.yml` at an exact `main` SHA. This is a repository choice, not a
 release-please requirement: `separate-pull-requests: false` and
-the `node-workspace` plugin's default merge behavior keep both candidate
+the `node-workspace` plugin's default merge behavior keep the candidate
 releases in one branch while still calculating their versions independently.
 
 The combined PR is required here because the packed CLI must depend on the
@@ -197,13 +191,13 @@ internally plausible while neither is installable: one can pin an unpublished
 protocol version and the other can leave the CLI pinned to the old version.
 `pnpm check:packed` installs both tarballs outside the workspace and enforces
 the exact-pair invariant that workspace linking otherwise hides. It also
-proves the packed CLI still contains and can stage the reviewed skill. It does
-not spawn the third-party skills installer; that proof is
-`pnpm check:packed-skill-smoke`, run when the adapter, pin, or bundle changes
+proves the packed CLI contains the verified bundled skill. Placement without
+external programs and preservation of user edits are verified by
+`pnpm check:packed-skill-smoke`, run when the adapter, placement logic, or bundle changes
 and always as publication evidence.
 
 The `node-workspace` plugin therefore uses `updateAllPackages: true`. A change
-to either package advances both packages by at least a patch and keeps the
+to a package advances the combined package set by at least a patch and keeps the
 candidate genuinely combined. This is also required by release-please 17.3.0:
 with a rootless manifest and `include-component-in-tag: false`, a CLI-only
 combined candidate is rendered as one componentless body entry. After merge,
@@ -212,10 +206,16 @@ correlate it with `release-please--branches--main`, and silently creates no
 `v<version>` release. Shipping the pair together avoids that invalid metadata
 shape without changing the established CLI tag or bypassing verification.
 
+The installer begins with `initial-version: 0.1.0` and no manifest entry until
+its first actual Release PR. Adding a baseline manifest entry to an ordinary
+feature commit would falsely look like a completed release to the output guard.
+`updateAllPackages` can patch an unchanged installer during a combined release;
+its version need not equal the native runtime version.
+
 The release workflow then repairs the generated branch after release-please
 updates it:
 
-- `scripts/sync-readme-markers.mjs` updates the root README's CLI and protocol
+- `scripts/sync-readme-markers.mjs` updates the root README's CLI, protocol and installer
   version markers.
 - `pnpm install --lockfile-only` records the bumped manifests and protocol pin
   in `pnpm-lock.yaml`.
@@ -230,8 +230,8 @@ intentionally have no CI trigger. A separate limited job uses the official
 Both the dispatch response and CI verify the exact expected commit SHA. Wait
 for that release evidence, including `pnpm check:packed` and, when the adapter,
 pin, or bundle changed, `pnpm check:packed-skill-smoke`, before considering
-the Release PR ready. Publication always reruns the skill-installer smoke
-against the exact packed tarballs. Every external process in those gates has a
+the Release PR ready. Full CI verifies skill placement and native archives; npm publication verifies
+the exact selected package tarball. Every external process in those gates has a
 short timeout and a named phase.
 
 The combined manifest deliberately has no root (`.`) package. Do not add a
@@ -271,41 +271,30 @@ the combined PR, then explicitly dispatch `release-please.yml` again with the
 exact merged `main` SHA. That run creates every applicable tag from the same
 merged commit:
 
-- CLI tag: `v<version>` (the matching npm package embeds the exact reviewed
-  skill and installs it through a verified short-lived local source)
-- Protocol tag: `protocol-v<version>`
+- Native CLI: `v<version>`, with a draft GitHub Release and an explicitly created tag.
+- Protocol: `protocol-v<version>`, with an immutable GitHub Release.
+- Optional bootstrap: `installer-v<version>`, with an immutable GitHub Release.
 
-release-please does not publish to npm. Tags created with `GITHUB_TOKEN` do not
-start tag-push workflows. After creating the authorized tags, the dispatch job
-starts one exact-main CI run, waits for it to succeed, then starts `publish.yml`
-once per created tag and binds each run to release-please's exact tag SHA. Only
-when the maintainer asked, the workflow waits at the protected `npm-release`
-environment. A maintainer approves that deployment;
-the workflow first requires successful `ci.yml` evidence at the exact tag SHA,
-then checks the packed install and builds each npm tarball exactly once. Before
-a new package can publish, it
-also compares that candidate's Notification Request contract with the deployed
-production service and fails closed if the service has not been deployed first.
-Those two tarballs are scanned for secrets and public/private boundary
-violations, including generated source-map paths and embedded source, then
-installed together outside the workspace. The workflow passes those same
-tarball paths to `npm publish` through trusted publishing with provenance; it
-never asks npm to repack the package directory.
-After publication it downloads the registry tarball and requires its complete
-bytes to equal the staged, scanned tarball before checking compiled files and
-resolution-shaping metadata. Protocol publishes before a CLI that pins it
-exactly. Concurrent tag runs are serialized and publication is idempotent: an
-already-published version is verified against the deterministically rebuilt
-tarball, never republished.
-The verifier retries only a registry `E404` five times with exponential
-backoff (15 seconds total); other failures remain immediate, and a version that
-never appears still fails after the bounded attempt ceiling.
+After creating authorized releases, the dispatch job runs full CI and validates
+all six native artifacts using that exact run ID. Protocol and installer tags
+then dispatch `publish.yml`; a CLI tag dispatches `prepare-native-release.yml`.
+Release-please never dispatches native publication or channel promotion.
+The release owner chooses the retained final run for `publish-native-release.yml`
+after reviewing finalization evidence and confirming the existing authorization.
 
-`publish.yml` also reads the GitHub Release for the dispatched tag and refuses
-to enter the protected npm job unless GitHub reports `immutable: true`. This is
-deliberately separate from the tag/SHA comparison: an exact ref proves what the
-tag means now, while immutable releases prevent that meaning and the release
-assets from being changed later.
+The npm job builds the selected tarball once, scans those exact bytes, and uses
+the same artifact for installation checks, publication and registry comparison.
+Before a new package publishes, the job checks the live service contract. Only
+the protocol and bootstrap packages are eligible. Each tag run publishes its
+own package, even when other tags share its commit. Publication is serialized;
+an existing version is verified against the rebuilt artifact and never
+republished. Registry propagation retries apply only to E404 responses and are
+bounded by `scripts/npm-registry.mjs`.
+
+`publish.yml` requires `immutable: true` on its package's GitHub Release before
+entering the protected npm job. Native publication deliberately admits a draft,
+uploads final assets, publishes it, and verifies immutability before channel
+promotion. These are different stages of the same append-only release policy.
 
 The workflow action is pinned to v4.4.1, which runs release-please 17.3.0;
 `release-please-config.json` pins its schema to the same version. Upgrade the
@@ -429,11 +418,12 @@ approve pull requests**, and save. A repository owner must then repeat the
 repository-level step above. Do not broaden the organization's or repository's
 default `GITHUB_TOKEN` permission from read-only.
 
-For npm trusted publishing, a maintainer of both npm packages must:
+For npm trusted publishing, a maintainer of the protocol and installer packages must:
 
-1. In GitHub repository Settings → Environments, create `npm-release`, add the
+1. Protect `installer-v*` against tag updates/deletions alongside the existing
+   release tag patterns. In GitHub repository Settings → Environments, create `npm-release`, add the
    maintainer as a required reviewer, and restrict deployments to the release
-   tag patterns `v*` and `protocol-v*`.
+   tag patterns `installer-v*` and `protocol-v*`.
 2. On npmjs.com, open each package's Settings → Trusted Publisher, choose
    **GitHub Actions**, and enter organization `Raidiant-io`, repository
    `notifai`, workflow filename `publish.yml`, environment `npm-release`, and
@@ -444,6 +434,19 @@ For npm trusted publishing, a maintainer of both npm packages must:
 4. Only after both packages have passed that proof, open each package's
    Settings → Publishing access and disallow token-based publishing. Trusted
    publishing continues to work with short-lived OIDC credentials.
+
+A new npm package needs a first publication before its trusted publisher can be
+configured. For `@raidiant/notifai-install`, prepare and verify the exact tarball
+and obtain scoped publication authorization first. The maintainer then performs
+the initial public publish with interactive account authentication and 2FA;
+never ask for an OTP or token in a message. Configure its trusted publisher after
+the package exists. A stage-only package's eligibility for trust configuration
+has not been established here, so it is not the automated bootstrap path.
+`npm trust` configuration requires npm 11.15 or newer; this is separate from
+the OIDC publishing floor below. New publisher configurations can default to
+staged publishing; explicitly authorize direct `npm publish` for this workflow.
+Sources: [npm trust prerequisites](https://docs.npmjs.com/cli/v11/commands/npm-trust/#prerequisites),
+[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
 npm requires GitHub-hosted runners, Node 22.14 or newer, npm 11.5.1 or newer,
 and `id-token: write`. `publish.yml` uses Node 24, checks the npm floor before
@@ -463,3 +466,9 @@ produce a major release. When practical, let related breaking changes
 accumulate in the Release PR and cut them together. Batching changes reduces
 avoidable major-version churn without weakening SemVer or misclassifying a
 break.
+
+## Native distribution candidate
+
+The in-progress native artifact and OS bootstrap lane is documented in
+[Standalone CLI distribution](STANDALONE.md). It is not yet a published channel
+and does not authorize native or npm publication.

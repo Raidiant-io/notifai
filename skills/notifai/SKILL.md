@@ -67,7 +67,7 @@ private material into a Notification Request.
 Routing, devices, and sounds are config. `notifai config show --json` returns
 each key as `{ value, source, summary }`; quote values, not "the defaults apply".
 
-An instruction about the work in hand tunes this Agent Session; it needs no command
+A work instruction tunes this Agent Session, needs no command,
 and never touches config or guidance.
 
 Write only durable preferences, in the user's words verbatim; your paraphrase
@@ -242,10 +242,11 @@ resume later. Never create a duplicate. On exit 0, act on the answer.
 
 ## When the answer arrives
 
-When a wake-up names `notifai receive`, run that exact command
-to read pending notes and answers together. An empty result means continue.
-The wake-up contains no answer and needs no acknowledgement; never recover an
-old answer from it. Hooks may have delivered the input already.
+Use any Notifai input supplied with the turn first. If none was supplied and
+the wake-up names `notifai receive`, run that exact command once to read pending
+notes and answers together. An empty result means continue. The wake-up itself
+contains no answer and needs no acknowledgement; never recover an old answer
+from it. Hooks may have delivered the input already.
 
 Within one submission, the latest reply corrects earlier choices; read typed
 parts in order. Preserve distinct submissions and clarify conflicts before
@@ -304,7 +305,7 @@ Lifecycle wiring has no scope: one install per harness for this machine;
 `notifai project enable` is the per-project switch. Never guess unattended:
 
 ```bash
-notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global>] --json
+notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global> --skills-harness <harnesses>] --json
 ```
 
 Branch on `states`, `can_send`, and `question_routing_ready`.

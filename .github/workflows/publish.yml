@@ -35,7 +35,7 @@ jobs:
             exit 1
           fi
           case "$GITHUB_REF" in
-            refs/tags/v*|refs/tags/protocol-v*) ;;
+            refs/tags/installer-v*|refs/tags/protocol-v*) ;;
             *)
               echo "publish.yml accepts only release tags" >&2
               exit 1
@@ -70,9 +70,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    outputs:
-      cli_version: ${{ steps.cli-version.outputs.version }}
-      verify_cli: ${{ steps.plan.outputs.verify_cli }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,101 +111,66 @@ jobs:
             scripts/verify-packed-install.test.mjs \
             scripts/verify-published.test.mjs
 
-      - name: Record the exact CLI version
-        id: cli-version
-        shell: bash
-        run: node -e "process.stdout.write('version=' + require('./apps/cli/package.json').version + '\\n')" >> "$GITHUB_OUTPUT"
-
-      - name: Pack once and verify the exact release artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact_root="$RUNNER_TEMP/notifai-npm-artifacts"
-          mkdir -p "$artifact_root/protocol" "$artifact_root/cli"
-          pnpm --filter @raidiant/notifai-protocol pack \
-            --pack-destination "$artifact_root/protocol"
-          pnpm --filter @raidiant/notifai pack \
-            --pack-destination "$artifact_root/cli"
-
-          mapfile -t protocol_artifacts < <(find "$artifact_root/protocol" -maxdepth 1 -type f -name '*.tgz' -print)
-          mapfile -t cli_artifacts < <(find "$artifact_root/cli" -maxdepth 1 -type f -name '*.tgz' -print)
-          if [ "${#protocol_artifacts[@]}" -ne 1 ] || [ "${#cli_artifacts[@]}" -ne 1 ]; then
-            echo "Expected exactly one protocol tarball and one CLI tarball" >&2
-            exit 1
-          fi
-          protocol_tarball="${protocol_artifacts[0]}"
-          cli_tarball="${cli_artifacts[0]}"
-          {
-            echo "PROTOCOL_TARBALL=$protocol_tarball"
-            echo "CLI_TARBALL=$cli_tarball"
-          } >> "$GITHUB_ENV"
-
-          node scripts/verify-packed-install.mjs \
-            --protocol-tarball "$protocol_tarball" \
-            --cli-tarball "$cli_tarball" \
-            --gitleaks
-          node scripts/verify-packed-skill-install.mjs \
-            --protocol-tarball "$protocol_tarball" \
-            --cli-tarball "$cli_tarball"
-
       - name: Plan idempotent package publication
         id: plan
         run: node scripts/plan-publish.mjs
 
+      - name: Pack once and verify the exact npm artifact
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/notifai-npm-artifact"
+          mkdir -p "$artifact_root"
+          pnpm --filter "$PACKAGE_NAME" pack --pack-destination "$artifact_root"
+          mapfile -t artifacts < <(find "$artifact_root" -maxdepth 1 -type f -name '*.tgz' -print)
+          test "${#artifacts[@]}" -eq 1
+          tarball="${artifacts[0]}"
+          echo "NPM_TARBALL=$tarball" >> "$GITHUB_ENV"
+          node scripts/check-packed-boundary.mjs --tarball "$tarball" --gitleaks
+          if [ "$PACKAGE_NAME" = '@raidiant/notifai-install' ]; then
+            node scripts/verify-packed-npm-installer.mjs "$tarball"
+          fi
+
+      - name: Require a usable signed default for the npm installer
+        if: steps.plan.outputs.package_name == '@raidiant/notifai-install'
+        run: node scripts/check-npm-bootstrap-release.mjs
+
+      - name: Verify an existing package before declaring a retry successful
+        if: steps.plan.outputs.publish == 'false'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL"
+
       - name: Record npm distribution tags before publication
-        if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
-        run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-dist-tags-before.json"
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
+
+      - name: Build protocol for the live service contract check
+        if: steps.plan.outputs.publish == 'true'
+        run: pnpm --filter @raidiant/notifai-protocol build
 
       - name: Verify deployed service accepts this candidate
-        if: ${{ steps.plan.outputs.publish_protocol == 'true' || steps.plan.outputs.publish_cli == 'true' }}
+        if: steps.plan.outputs.publish == 'true'
         run: node scripts/check-live-server-contract.mjs
 
-      # Protocol must reach the registry before a CLI that pins it exactly.
-      - name: Publish protocol with OIDC provenance
-        if: ${{ steps.plan.outputs.publish_protocol == 'true' }}
-        run: npm publish "$PROTOCOL_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"
+      - name: Publish the selected npm package with OIDC provenance
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
+        run: npm publish "$NPM_TARBALL" --access public --provenance --tag "$NPM_DIST_TAG"
 
-      - name: Verify published protocol bytes and metadata
-        if: ${{ steps.plan.outputs.verify_protocol == 'true' }}
-        run: >-
-          node scripts/verify-published.mjs @raidiant/notifai-protocol
-          --expected-tarball "$PROTOCOL_TARBALL"
+      - name: Verify published package bytes and metadata
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL"
 
-      - name: Verify protocol npm distribution
-        if: ${{ steps.plan.outputs.publish_protocol == 'true' }}
-        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" @raidiant/notifai-protocol
-
-      - name: Publish CLI with OIDC provenance
-        if: ${{ steps.plan.outputs.publish_cli == 'true' }}
-        run: npm publish "$CLI_TARBALL" --access public --provenance --tag "${{ steps.plan.outputs.npm_dist_tag }}"
-
-      - name: Verify published CLI bytes and metadata
-        if: ${{ steps.plan.outputs.verify_cli == 'true' }}
-        run: >-
-          node scripts/verify-published.mjs @raidiant/notifai
-          --expected-tarball "$CLI_TARBALL"
-
-      - name: Verify CLI npm distribution
-        if: ${{ steps.plan.outputs.publish_cli == 'true' }}
-        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" @raidiant/notifai
-
-  windows-cli:
-    needs: npm
-    if: needs.npm.outputs.verify_cli == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2025, windows-11-arm]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-
-      - name: Verify the exact published CLI through native Windows shells
-        run: node scripts/verify-published-windows.mjs "${{ needs.npm.outputs.cli_version }}"
+      - name: Verify npm distribution
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"

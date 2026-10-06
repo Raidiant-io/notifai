@@ -26,15 +26,14 @@ import { pathContainsDirectory } from './local-path.js'
 import { npmInvocation } from './npm-invocation.js'
 import { compareReleasePrecedence } from './version.js'
 import { updateWorkPending } from './commands-update-resume.js'
+import { buildIdentity } from './distribution.js'
+import { nativeUpdateCommand, type NativeUpdateFlags } from './commands-native-installation.js'
 
-export interface CliUpdateFlags {
-  json?: boolean
-  channel?: string
-}
+export type CliUpdateFlags = NativeUpdateFlags
 
 function runningArtifact(deps: CommandDeps): string | undefined {
   const target = deps.hookInstallTarget
-  if (target !== undefined && !isNpxAdapterTarget(target)) return target.scriptPath
+  if (target !== undefined && !isNpxAdapterTarget(target)) return (target.kind === 'native' ? target.execPath : target.scriptPath)
   return process.argv[1]
 }
 
@@ -149,7 +148,12 @@ function failed(
  * the stable hook adapter at that same artifact. The npm executable may own a
  * different global prefix; --prefix makes that ambient choice irrelevant.
  */
-export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): number {
+export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): number | Promise<number> {
+  if (buildIdentity() !== null) return nativeUpdateCommand(deps, requested)
+  if (requested.rollback || requested.repair || requested.abandon || requested.allowDowngrade) {
+    deps.io.err('Native lifecycle options require the standalone Notifai installation')
+    return EXIT.usage
+  }
   const requestedChannel = requested.channel ?? 'stable'
   if (requestedChannel !== 'stable' && requestedChannel !== 'beta') {
     deps.io.err('--channel must be stable or beta')
