@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ff02ac2c1d2a7508490d02881cb63fdbd6a5105f465fdf354df6f058a55abb3d",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Explicit --migrate-npm stages the verified native runtime only for one identified legacy global package, preserves all old package/shim files, skips setup and returns incomplete with exact-prefix package-manager instructions. It never infers legacy owner absence or removes unreceipted skill content. OS and optional npm bootstraps forward the same flag; docs explain the explicit cleanup and rerun. Notification guidance and pending-work semantics remain unchanged.",
+  "behavior_digest": "sha256:a4f13d2cf9deab5767f44a7c153c7c52161ae870fee03d07e71b75a7e5475f9c",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed merged Claude Code Windows session inbox and native standalone lifecycle guidance. Windows inbox tokens, descriptor FILETIME identity and the platform release floor from main remain authoritative. Standalone identity reads use the native helper and normalize its tagged FILETIME against the bare harness descriptor; source development retains its PowerShell reader. Explicit npm migration preserves old owners and remains incomplete through package-manager cleanup. Hook/skill/setup docs retain these distinctions without claiming live native harness or publication proof.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

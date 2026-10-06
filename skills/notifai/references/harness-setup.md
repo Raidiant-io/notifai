@@ -80,8 +80,7 @@ Installed definitions call one stable user-level adapter at
 `~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
 to the current CLI while leaving definition bytes unchanged across Node/NVM,
 package-manager, CLI-version, checkout, XDG directory, and Notifai preference
-changes. Codex Stop runs asynchronously on every platform; Claude Code Stop
-runs asynchronously on POSIX and blocks on Windows. Both declare a timeout
+changes. Codex and Claude Code Stop run asynchronously on every platform. Both declare a timeout
 above the longest answer window so their waiters can own the complete window;
 prompt-submit and session-end retain fixed short limits on both.
 Codex SessionStart stays within the harness's built-in inline-context budget;
@@ -104,10 +103,9 @@ Never bypass that gap with `notifai send --reply`.
 
 `hooks-wake-route` reports, without probing anything, whether an answer could
 start a turn in this exact Agent Session after its ordinary continuation has
-returned. It never blocks Question Routing. On Windows, Claude Code has no
-direct inbox wake because upstream exposes no inbox socket: its blocking Stop
-still holds the complete answer window and returns the answer to the same Agent
-Session without another User prompt.
+returned. It never blocks Question Routing. Claude Code's inbox is a socket on
+macOS and Linux and a named pipe on Windows; where a Claude Code release is too
+old to publish one, the answer waits for the Agent Session's next turn.
 
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
@@ -231,10 +229,9 @@ default and up to three.
 
 Those are three different controls and only the last one decides whether an
 answer is still wanted. Question Routing owns that complete window. Claude Code
-waits out of band and wakes the Agent Session on POSIX; on Windows its Stop
-stays held and returns the answer as the same Agent Session's continuation,
+waits out of band and wakes the Agent Session through its inbox,
 while Codex queues a wake-up into its Agent Session's durable inbox. Codex and
-POSIX Claude keep pending input locally until a foreground drain; the native
+Claude Code keep pending input locally until a foreground drain; the native
 wake never stores a second copy of the User's answer.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you

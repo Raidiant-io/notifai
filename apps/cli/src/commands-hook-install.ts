@@ -414,7 +414,7 @@ function machineInstallationIsCurrent(deps: CommandDeps, harness: HookInstallabl
   if (installations.length !== 1) return false
   const installation = installations[0]!
   if ((installation.problems?.length ?? 0) > 0) return false
-  if (stopShapeProblems(installation, deps.hookPlatform).length > 0) return false
+  if (stopShapeProblems(installation).length > 0) return false
   const installed = new Set(
     installation.handlers
       .map((handler) => handlerEvent(handler.command))

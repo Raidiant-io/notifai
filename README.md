@@ -100,7 +100,7 @@ not part of the current public support claim.
 | Surface | macOS | Linux | Windows |
 | --- | --- | --- | --- |
 | Approved Machine CLI: login, configuration, send, ask, doctor | Supported | Supported | Supported |
-| Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; blocking Stop continuation because no live inbox socket exists |
+| Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; live inbox wake through the session's named pipe; question picker linking not yet available |
 | Codex hooks | Asynchronous Stop and durable session queue; CLI/app-server verified | Same queue implementation; live Codex verification pending | Same queue implementation; live Codex verification pending |
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
@@ -131,9 +131,9 @@ replies` and `notifai status`, and never send a duplicate.
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
 journal until an exact continuation path can prove ownership, rather than
 starting an unproven or divergent agent turn.
-Claude Code live inbox wake requires Claude Code 2.1.224 or newer and is an
-upstream macOS/Linux capability; on Windows, Notifai keeps Stop open and returns
-the accepted answer through Claude Code's ordinary continuation channel. Cursor does not expose the conversation
+Claude Code live inbox wake requires Claude Code 2.1.224 or newer on macOS and
+Linux and 2.1.234 or newer on Windows; an older Claude Code receives the
+accepted answer at the Agent Session's next turn. Cursor does not expose the conversation
 identity needed to prove asynchronous return, and OpenCode has no proven
 exactly-once continuation after `session.idle`; blocking reply mode provides
 their reliable question path. OpenClaw's advertised Windows cell is WSL2 only;
@@ -315,8 +315,7 @@ only this moment can tell that you were present for this turn.
 The agent can keep working; only work that needs the answer waits. Registration
 alone is not proof of Provider Acceptance. **Stop** (`stop`) and
 **UserPromptSubmit** recover outstanding questions and own harness-specific
-answer delivery. Claude Code on macOS/Linux and Codex observe answers out of
-band. Claude Code on Windows holds Stop and returns the answer as a continuation.
+answer delivery. Claude Code and Codex observe answers out of band.
 Codex uses trusted tool hooks during working turns and a content-free wake when
 idle or live input capability is unavailable. Current notes and answers drain
 through a trusted tool hook, prompt hook, or `notifai receive` in the exact

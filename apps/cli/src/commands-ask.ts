@@ -21,10 +21,13 @@ import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
 import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
-import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
+import { processIdentityLiveness } from './process-identity.js'
 import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
+import { CLAUDE_PICKER_TURN, CLAUDE_QUESTION_TOOL, claudePickerShape, isClaudeRegistration } from './claude-question-bindings.js'
+import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
-import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
+import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
@@ -292,6 +295,20 @@ function recordRegisteredQuestion(
   json = false,
 ): number | Promise<number> {
   const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json)
+  const picker = claudePickerOwner(deps, sessionId, built.questions)
+  if (picker !== null) {
+    const credential = deps.store.load()
+    if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) return ordinary()
+    // The same optional, bounded discovery as below: a terminal answer to a
+    // linked picker is reported to the service as a harness answer.
+    const client = makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
+    const linked = (supported: boolean) => persistRegisteredQuestion(deps, sessionId, built, draft, service, json,
+      supported ? { owner_key: picker, turn_id: CLAUDE_PICKER_TURN, service } : undefined, picker)
+    return client.compatibility().then(
+      support => linked(Array.isArray(support?.server_capabilities) && support.server_capabilities.includes('harness_answers')),
+      () => linked(false),
+    )
+  }
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
   if (local === null) return ordinary()
@@ -308,6 +325,25 @@ function recordRegisteredQuestion(
         ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service } : undefined),
     () => persist(),
   )
+}
+
+/**
+ * The owner of a Claude Code session whose question picker can be linked to
+ * this question: both picker handlers are installed, the session is live, and
+ * the picker can show these questions as registered. Null keeps the question
+ * ordinary, which always works.
+ */
+function claudePickerOwner(deps: CommandDeps, sessionId: string, questions: BuiltQuestions['questions']): string | null {
+  if (readSessionState(sessionId, deps.env).harness !== 'claude-code' || !claudePickerShape(questions)) return null
+  const owner = readSessionIncarnation(sessionId, deps.env)
+  if (owner === null || sessionHasEnded(sessionId, deps.env) || owner.harness_process === undefined ||
+      processIdentityLiveness(owner.harness_process) !== 'alive') return null
+  const platform = deps.hookPlatform ?? process.platform
+  if (!installsClaudePickerHooks('claude-code', platform)) return null
+  const events = new Set(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
+    .filter(installation => installation.harness === 'claude-code')
+    .flatMap(installation => installation.handlers.map(handler => handlerEvent(handler.command))))
+  return events.has('permission-request') && events.has('post-tool-use') ? owner.key : null
 }
 
 function persistRegisteredQuestion(
@@ -391,8 +427,11 @@ function persistRegisteredQuestion(
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
+  const picker = native !== undefined && isClaudeRegistration(native)
+  const nativeTool = picker ? CLAUDE_QUESTION_TOOL : 'request_user_input_async'
   const nativeCommand = `notifai acknowledge ${questionId} --operation-id native-1 --native-answers '<actual answers JSON>' --text '<concrete work this answer sets in motion>' --json`
   const nativeInstruction = `If you use request_user_input_async, copy the native titles and options exactly in this turn. For an answer you actually read from that native form, your first dependent command must be: ${nativeCommand}. Use the registered question/choice IDs. Use a distinct operation ID for each distinct submission; retry the same ID and immutable body after failure, omitting answers/text only after the command confirms the operation was saved. Do not report an app answer again as a native answer. Keep the app watcher; do not close the question after native acknowledgement. If you did not emit the exact marked native form, ordinary conversation answers still retire with notifai close ${questionId}. Native linking is optional and capability-dependent; never promise form closure.`
+  const pickerInstruction = `If you ask this with ${CLAUDE_QUESTION_TOOL}, use each native title as that question's text and its options as the option labels, exactly, in this turn, with multiSelect matching multi. The picker then takes whichever answer comes first, from the user's devices or the terminal, and closes. Notifai context arrives with the picker's answer: follow it before any dependent work. For an answer given in the terminal that context names this command: ${nativeCommand}. Use the registered question/choice IDs, a distinct operation ID for each distinct submission, and the same ID and body on retry. Do not report an app answer again as a native answer, and do not close the question after acknowledging. If you did not emit the exact marked picker, ordinary conversation answers still retire with notifai close ${questionId}. Linking is optional and capability-dependent.`
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same
@@ -415,10 +454,11 @@ function persistRegisteredQuestion(
             ...(entry.multi === true ? { multi: true } : {}),
           })),
           ...(native === undefined ? {} : { native_question: {
-            tool: 'request_user_input_async',
+            tool: nativeTool,
             questions: native.questions.map(binding => ({ question_id: binding.question.id, title: nativeQuestionTitle(binding),
-              ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }) })),
-            instructions: nativeInstruction,
+              ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
+              ...(picker && binding.question.multi === true ? { multi: true } : {}) })),
+            instructions: picker ? pickerInstruction : nativeInstruction,
           } }),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
@@ -432,7 +472,7 @@ function persistRegisteredQuestion(
               'Acknowledge it, then resume the committed work without asking the user to confirm again.',
             answered_outside_notifai: native === undefined
               ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
-              : nativeInstruction,
+              : picker ? pickerInstruction : nativeInstruction,
           },
         },
         null,
@@ -483,7 +523,7 @@ function persistRegisteredQuestion(
     'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
   )
   if (native !== undefined) {
-    deps.io.out(nativeInstruction)
+    deps.io.out(picker ? pickerInstruction : nativeInstruction)
     deps.io.out(JSON.stringify({ native_questions: native.questions.map(binding => ({ title: nativeQuestionTitle(binding),
       question_id: binding.question.id, ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
       ...(binding.question.choices === undefined ? {} : { choice_ids: binding.question.choices.map(choice => choice.id) }),

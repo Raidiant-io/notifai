@@ -24,6 +24,15 @@ export const HOOK_EVENT_TABLE = [
     timeoutSeconds: 10,
   },
   {
+    // Claude Code only, matched to its question picker; see `installsClaudePickerHooks`.
+    notifai: 'permission-request',
+    document: 'PermissionRequest',
+    cursor: null,
+    openclaw: false,
+    opencodeDiscovery: false,
+    timeoutSeconds: 0,
+  },
+  {
     notifai: 'session-start',
     document: 'SessionStart',
     cursor: 'sessionStart',
@@ -126,14 +135,30 @@ export function attendDocumentEvents(harness: HookInstallableHarness | undefined
 
 /**
  * Whether this build installs the Session Attendant for a harness: Claude Code
- * and Codex, on POSIX only. Claude Code on Windows has no session descriptor
- * or inbox socket; Codex on Windows has no proven hook parent process.
+ * everywhere it publishes a session descriptor and inbox, and Codex on POSIX
+ * only. Codex on Windows has no proven hook parent process.
  */
 export function installsSessionAttendant(
   harness: HookInstallableHarness | undefined,
   platform?: NodeJS.Platform | HookHostPlatform,
 ): boolean {
-  return (harness === 'claude-code' || harness === 'codex') && hookHostPlatform(platform) === 'posix'
+  return harness === 'claude-code' || (harness === 'codex' && hookHostPlatform(platform) === 'posix')
+}
+
+/** The one tool both Claude Code picker handlers are matched to. */
+export const CLAUDE_PICKER_MATCHER = 'AskUserQuestion'
+
+/**
+ * Whether this build installs the two handlers that link a registered
+ * question to Claude Code's question picker: `PermissionRequest`, which runs
+ * while the picker is on screen, and `PostToolUse`, which runs once it has an
+ * answer. Proven on POSIX; Windows keeps the ordinary route.
+ */
+export function installsClaudePickerHooks(
+  harness: HookInstallableHarness | undefined,
+  platform?: NodeJS.Platform | HookHostPlatform,
+): boolean {
+  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
 }
 
 /** Lifecycle handlers one installed harness must carry in this CLI build. */
@@ -144,7 +169,9 @@ export function requiredHookEvents(
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
     row.notifai === 'post-tool-use'
-      ? harness === 'codex' && installsSessionAttendant(harness, platform)
+      ? (harness === 'codex' && installsSessionAttendant(harness, platform)) || installsClaudePickerHooks(harness, platform)
+      : row.notifai === 'permission-request'
+      ? installsClaudePickerHooks(harness, platform)
       : row.notifai === 'attend'
       ? installsSessionAttendant(harness, platform)
       : harness === 'cursor'

@@ -17,9 +17,9 @@ export interface ProcessIdentity {
  * `procStart` the same way, so a harness start read here compares equal to it
  * as text. Whitespace is collapsed because `lstart` pads single-digit days.
  */
-export function processStartTime(pid: number): string | null {
+export function processStartTime(pid: number, platform: NodeJS.Platform = process.platform): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
-  if (process.platform === 'win32') return windowsProcessInfo(pid)?.start ?? null
+  if (platform === 'win32') return buildIdentity() !== null ? windowsProcessInfo(pid)?.start ?? null : windowsProcessStart(pid)
   try {
     const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -36,9 +36,9 @@ export function processStartTime(pid: number): string | null {
 }
 
 /** The executable name of a process (`ps -o comm`, without its directory), or null. */
-export function processExecutableName(pid: number): string | null {
+export function processExecutableName(pid: number, platform: NodeJS.Platform = process.platform): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
-  if (process.platform === 'win32') return windowsProcessInfo(pid)?.name ?? null
+  if (platform === 'win32') return buildIdentity() !== null ? windowsProcessInfo(pid)?.name ?? null : windowsProcessProperty(pid, 'ProcessName')
   try {
     const output = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -52,31 +52,75 @@ export function processExecutableName(pid: number): string | null {
   }
 }
 
+/** Native identity reads use the sibling C launcher, never PowerShell or a
+ * cached PID start. The tagged FILETIME shares the source/harness kernel clock. */
 function windowsProcessInfo(pid: number): { start: string; name: string } | null {
   try {
-    // The compiled app uses its sibling native launcher, with no shell startup
-    // on the hook path. Source/development execution uses the same OS clock.
-    const native = buildIdentity() !== null
-    const root = process.env['SystemRoot'] || process.env['SYSTEMROOT'] || 'C:\\Windows'
-    const script = `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid}; `
-      + `[Console]::OutputEncoding=[Text.Encoding]::UTF8; `
-      + `[Console]::WriteLine('windows-filetime:'+$p.StartTime.ToUniversalTime().ToFileTimeUtc()); `
-      + `[Console]::WriteLine([IO.Path]::GetFileName($p.Path))`
-    const output = execFileSync(native ? path.join(path.dirname(process.execPath), 'notifai.exe')
-      : path.win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    native ? ['--internal-process-info', String(pid)]
-      : ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2_000 })
+    const output = execFileSync(path.join(path.dirname(process.execPath), 'notifai.exe'), ['--internal-process-info', String(pid)],
+      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2_000 })
     const [start, name] = output.trim().split(/\r?\n/)
     if (!start || !/^windows-filetime:\d+$/.test(start) || !name) return null
     return { start, name: name.replace(/\.exe$/i, '') }
+  } catch { return null }
+}
+
+/**
+ * One property of a Windows process, or null when it is gone or unreadable.
+ *
+ * Windows has no `ps`; PowerShell is the one tool every supported Windows has.
+ * A process's start is read as its FILETIME in UTC, a plain integer, because
+ * that is exactly what Claude Code writes as `procStart` in its session
+ * descriptor on Windows: the two compare equal as text, as `lstart` does
+ * elsewhere. Each read starts PowerShell, about a fifth of a second.
+ */
+function windowsProcessProperty(pid: number, property: string): string | null {
+  try {
+    return execFileSync(
+      path.win32.join(process.env['SystemRoot'] || process.env['SYSTEMROOT'] || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).${property}`],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000, windowsHide: true },
+    ).trim()
   } catch {
+    // Get-Process fails for a PID that does not exist.
     return null
   }
 }
 
+/** How long one Windows start read answers for the same PID in this process. */
+const WINDOWS_START_CACHE_MS = 5_000
+
+let windowsStarts = new Map<number, { start: string; at: number }>()
+
+/**
+ * A Windows process's start, as its FILETIME in UTC.
+ *
+ * One hook asks about the same few processes several times within a moment,
+ * and each fresh answer costs a PowerShell start. A start never changes while
+ * its PID lives, so a recent answer is reused for a PID that still exists;
+ * the window is short because Windows hands a freed PID out again quickly.
+ */
+export function windowsProcessStart(
+  pid: number,
+  read: (pid: number, property: string) => string | null = windowsProcessProperty,
+  now: () => number = Date.now,
+  exists: (pid: number) => boolean = pidExists,
+): string | null {
+  const at = now()
+  const known = windowsStarts.get(pid)
+  if (known !== undefined && at - known.at < WINDOWS_START_CACHE_MS && exists(pid)) return known.start
+  windowsStarts.delete(pid)
+  const start = read(pid, 'StartTime.ToFileTimeUtc()')
+  if (start === null || !/^\d+$/.test(start)) return null
+  if (windowsStarts.size > 64) windowsStarts = new Map()
+  windowsStarts.set(pid, { start, at })
+  return start
+}
+
 export function normalizeProcessStart(value: string): string {
-  return value.trim().replace(/\s+/g, ' ')
+  const normalized = value.trim().replace(/\s+/g, ' ')
+  // Claude Code descriptors use bare FILETIME; the native helper tags its
+  // clock. Compare the same kernel value across those two explicit producers.
+  return /^windows-filetime:\d+$/.test(normalized) ? normalized.slice('windows-filetime:'.length) : normalized
 }
 
 /** Signal 0 only asks whether the PID exists; EPERM still means it does. */

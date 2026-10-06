@@ -72,9 +72,8 @@ notifai ask "Deploy the migration to production?" \
 The agent registers the question and starts background submission immediately;
 it can continue independent work while your answer is outstanding. Registration
 alone does not prove Provider Acceptance. Question Routing keeps the exact
-Agent Session's answer path for the complete answer window. Claude Code on
-macOS/Linux and Codex observe answers out of band; Claude Code on Windows
-returns answers through a held Stop. Codex queues a wake-up, then drains current
+Agent Session's answer path for the complete answer window. Claude Code and
+Codex observe answers out of band. Codex queues a wake-up, then drains current
 notes and answers together at a supported hook or `notifai receive` boundary.
 Queue success proves wake storage, not presentation.
 
@@ -126,9 +125,8 @@ executable; macOS/Linux retain the POSIX adapter and its stable command bytes.
 Codex SessionStart guidance stays within Codex's built-in inline-context budget,
 so its stable definition does not need an output-limit override that would
 create a different approval identity.
-Claude Code Stop returns immediately into the live inbox route on macOS/Linux;
-on Windows, where upstream exposes no inbox socket, Stop stays open and returns
-the accepted answer through the harness continuation. The first migration may
+Claude Code Stop returns immediately into the live inbox route: a socket on
+macOS and Linux, a named pipe on Windows. The first migration may
 require one Codex `/hooks` approval; later repairs keep the same source and
 definition identity.
 Codex's Stop definition declares the full-window timeout explicitly; that

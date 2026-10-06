@@ -7047,25 +7047,24 @@ describe('Codex Stop wake route', () => {
     expect(readSessionState(CODEX_THREAD, h.env).waiting_answers?.[0]?.reply.text).toBe('BETA')
   })
 
-  it('continues a Windows Claude Code held Stop in the exact Agent Session', async () => {
-    const sessionId = 'windows-claude-held-stop'
+  it('holds no Windows Claude Code Stop: the answer travels through the session inbox', async () => {
+    const sessionId = 'windows-claude-async-stop'
     const h = harness([reply({ text: 'Trim them' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, harness: 'claude-code' })
     registerQuestion(sessionId, h.env, { question: 'Keep all permission rules?' }, NOW)
+    const launch = vi.fn()
 
     await hookRunCommand(
-      { ...h.deps, hookPlatform: 'win32' },
+      { ...h.deps, hookPlatform: 'win32', spawnQuestionSettlement: launch },
       'stop',
       stdin({ session_id: sessionId, cwd: h.deps.cwd }),
       'claude-code',
     )
 
-    expect(h.io.outLines).toHaveLength(1)
-    const decision = JSON.parse(h.io.outLines[0]!) as { decision: string; reason: string }
-    expect(decision).toMatchObject({ decision: 'block' })
-    expect(decision.reason).toContain('"Trim them"')
-    expect(readSessionState(sessionId, h.env).accepted).toBeDefined()
+    // No `decision: block`: the detached Stop writes nothing the harness reads.
+    expect(h.io.outLines).toEqual([])
+    expect(h.io.outLines.join('')).not.toContain('"block"')
   })
 
   it('continues a Grok held Stop and consumes its native successor marker', async () => {
@@ -7185,7 +7184,7 @@ describe('escalation waiter delivery seam', () => {
 
   it.each([
     ['codex', 'darwin', 1], ['claude-code', 'darwin', 1],
-    ['claude-code', 'win32', 0], ['grok', 'darwin', 0],
+    ['claude-code', 'win32', 1], ['grok', 'darwin', 0],
   ] as const)('starts %s submission on %s without consuming a reply', async (harnessName, platform, observers) => {
     const h = harness([reply({ text: 'Already answered' })])
     writeSessionState('submission-event', h.env, { harness: harnessName })
@@ -7498,9 +7497,10 @@ describe('escalation waiter delivery seam', () => {
   // delivers through its thread inbox and writes no continuation to fence.
   it('fences production blocking stdout immediately before the harness write', async () => {
     const h = harness([reply({ text: 'Too late for stdout' })])
+    // Grok is the harness whose answer still returns on a held Stop's stdout.
     writeSessionState('waiter-stdout-cancel', h.env, {
       last_prompt_at: AWAY,
-      harness: 'claude-code',
+      harness: 'grok',
     })
     registerQuestion('waiter-stdout-cancel', h.env, { question: 'Deploy?' }, NOW)
     const originalErr = h.io.err.bind(h.io)
@@ -7514,10 +7514,10 @@ describe('escalation waiter delivery seam', () => {
     }
 
     await hookRunCommand(
-      { ...h.deps, hookPlatform: 'win32' },
+      h.deps,
       'stop',
-      stdin({ session_id: 'waiter-stdout-cancel' }),
-      'claude-code',
+      stdin({ session_id: 'waiter-stdout-cancel', stopHookActive: false }),
+      'grok',
     )
 
     expect(ended).toBe(true)

@@ -17,7 +17,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
-import { claudeSessionPid } from './commands-harness-context.js'
+import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { loadConfig } from './config.js'
 import type { ApiClient } from './client.js'
 import { inspectHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
@@ -84,6 +84,7 @@ import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAva
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { buildIdentity } from './distribution.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { claudePickerHolds } from './claude-question-hooks.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
 // writer mistake the replacement files for its own loaded implementation.
@@ -162,7 +163,7 @@ export async function attendHook(
   // names itself; Codex is only ever the declared parent.
   const pid = input.recovery?.harnessProcess.pid ?? (harness === 'codex' || harness === 'openclaw'
     ? declaredHookSourcePid(deps.env)
-    : declaredHookSourcePid(deps.env) ?? claudeSessionPid(deps.env))
+    : claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) ?? claudeSessionPid(deps.env))
   if (pid === undefined) return end('ignored', { reason: 'harness-process-unproven' })
   const nativeOwner = harness === 'codex'
     ? seams.harnessProcess ?? (() => {
@@ -407,7 +408,9 @@ export async function attendHook(
       ...(harness === 'claude-code' && messages !== null ? {
         localInputPending: () => {
           const state = readSessionState(sessionId, deps.env)
-          return (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
+          // A picker handler that holds the only pending answer returns it itself.
+          return !claudePickerHolds(state) &&
+            (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
             hasSessionInputs(sessionId, deps.env, null)
         },
       } : {}),
@@ -531,12 +534,16 @@ function sessionMessageWriter(input: {
     if (generation === null || !attendant.mayWrite()) return 'retry-soon'
     stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
     if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
+    // While the picker is on screen nothing else can be shown, and its handler
+    // returns the answer as the picker's own result. A note still gets a wake.
+    if (batch.length === 0 && claudePickerHolds(readSessionState(sessionId, deps.env))) return 'done'
     await wakeSessionInputs(sessionId, deps.env, async (text) => {
       const result = await deliverIntoClaudeSession({
         sessionId, sourcePid: harnessPid,
         sourceDescriptor: claudeSourceDescriptor(sessionId, harnessPid, adapters),
         adapters, text, auth: claudeInboxAuth(deps.env, sessionId),
         begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
+        ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
       })
       return result.status === 'written'
     }, logger, { unique: true, replaceLost: input.settledIdle, now: () => clock.wall() })

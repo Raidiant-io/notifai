@@ -34,6 +34,8 @@ import {
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { hermesPluginCurrent, hermesPluginDir, isOurHermesPlugin } from './hermes-plugin.js'
 import {
+  CLAUDE_PICKER_MATCHER,
+  installsClaudePickerHooks,
   attendDocumentEvents,
   HOOK_EVENT_COMMAND_RE,
   HOOK_EVENT_PATTERN,
@@ -218,15 +220,11 @@ export const CODEX_INTERRUPT_TIMEOUT_SECONDS = 3
  * Codex is detached on every platform because its delivery route is a write to
  * the thread's own durable inbox rather than this hook's stdout: there is no
  * continuation to keep a turn open for, and the queue has no platform
- * dependency to gate on. Claude Code still needs its turn held on Windows,
- * where no inbox socket exists.
+ * dependency to gate on. Claude Code is detached on every platform too: its
+ * session inbox is a socket on macOS and Linux and a named pipe on Windows.
  */
-export function stopHandlerIsDetached(
-  harness: HookInstallableHarness | undefined,
-  platform?: Parameters<typeof hookHostPlatform>[0],
-): boolean {
-  if (harness === 'codex') return true
-  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+export function stopHandlerIsDetached(harness: HookInstallableHarness | undefined): boolean {
+  return harness === 'codex' || harness === 'claude-code'
 }
 
 /**
@@ -235,34 +233,23 @@ export function stopHandlerIsDetached(
  * Claude Code takes the answer over its own inbox socket and Codex takes it
  * through its thread's durable inbox, so both Stop hooks are `async: true`:
  * they return immediately, the terminal is never held, and the waiter finishes
- * out of band. Only Claude on Windows still blocks and prints a continuation to
- * stdout, because no inbox socket exists there. Every Question Routing owner
+ * out of band. Only Grok still blocks and prints a continuation to stdout,
+ * because it has no out-of-band route. Every Question Routing owner
  * declares the same complete-window timeout, because the detached waiter must
  * outlive the answer window in every case; what changed for Codex is that a
- * short or missing timeout no longer truncates a held *turn*. Blocking hosts
- * also set `statusMessage` so the held turn is not mistaken for a hang.
+ * short or missing timeout no longer truncates a held *turn*.
  */
-export const BLOCKING_STOP_STATUS_MESSAGE = 'Notifai: waiting for your answer'
-
 function stopHandler(
   adapterPath: string,
   harness: HookInstallableHarness | undefined,
   options: HookCommandOptions,
 ): HookHandler {
   const command = hookCommand(adapterPath, 'stop', harness, options)
-  if (stopHandlerIsDetached(harness, options.platform)) {
+  if (stopHandlerIsDetached(harness)) {
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'grok') {
     return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
-  }
-  if (harness === 'codex' || harness === 'claude-code') {
-    return {
-      type: 'command',
-      command,
-      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
-      statusMessage: BLOCKING_STOP_STATUS_MESSAGE,
-    }
   }
   return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }
@@ -280,6 +267,20 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   const hooks: HookConfig = Object.create(null)
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
+    if (row.notifai === 'permission-request' || (row.notifai === 'post-tool-use' && options.harness === 'claude-code')) {
+      if (!installsClaudePickerHooks(options.harness, options.platform)) continue
+      // The waiting handler owns the picker for the complete answer window,
+      // exactly as a held Stop does; the settling handler only records.
+      hooks[row.document] = [{
+        matcher: CLAUDE_PICKER_MATCHER,
+        hooks: [{
+          type: 'command',
+          command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+          timeout: row.notifai === 'permission-request' ? QUESTION_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
+        }],
+      }]
+      continue
+    }
     if (row.notifai === 'post-tool-use' &&
         (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform))) continue
     if (row.notifai === 'stop') {

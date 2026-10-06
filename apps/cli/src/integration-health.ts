@@ -25,7 +25,7 @@ export function installationFaults(installation: Installation, platform?: NodeJS
       .map(event => `missing ${event}`),
     ...events.filter(event => event !== null && !(HOOK_EVENTS as readonly string[]).includes(event))
       .map(event => `unsupported ${event}`),
-    ...stopShapeProblems(installation, platform),
+    ...stopShapeProblems(installation),
   ]
 }
 

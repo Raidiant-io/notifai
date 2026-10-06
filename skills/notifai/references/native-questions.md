@@ -13,6 +13,9 @@ not. Keep the returned question and choice IDs for reporting its answer.
 An unsupported form or missing binding stays ordinary. Preserve unrelated
 native forms, even when they contain identical wording.
 
+On Claude Code the form is its question picker, and a device answer closes it:
+read [the Claude Code file](harness-claude-code.md#linked-question-picker).
+
 ## When the native answer arrives
 
 Read the actual native answer. As the first command before work depending on
