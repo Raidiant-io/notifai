@@ -84,7 +84,7 @@ nf_hash() { if [ "$NF_SHA" = sha256sum ]; then sha256sum "$1"; else shasum -a 25
 if [ "$NF_PLATFORM" = darwin ]; then
   if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then NF_ARCH=arm64; fi
   # Filled with the reviewed publisher identity before macOS publication.
-  NF_MACOS_TEAM_ID=''
+  NF_MACOS_TEAM_ID='J3Q8DE3U2S'
   [ -n "$NF_MACOS_TEAM_ID" ] || nf_fail 'This installer has no configured macOS publisher identity yet'
 else
   command -v getconf >/dev/null 2>&1 && getconf GNU_LIBC_VERSION >/dev/null 2>&1 || nf_fail 'This release requires glibc Linux; musl is not supported'

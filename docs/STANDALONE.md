@@ -24,6 +24,13 @@ the embedded identity; such output is not release evidence. `--bun` selects an
 explicit compiler executable. `--target` selects a Bun target; cross-compilation
 alone does not demonstrate that target's native behavior.
 
+For a locally rebuilt Bun/JavaScriptCore runtime, also pass
+`--runtime-executable /absolute/path/to/rebuilt/bun --development`. This selects
+the actual executable embedded by Bun, independently of `--bun`, which selects
+the compiler. Such builds carry a `-relinked` runtime identity and cannot pass
+official publication admission. Build the runtime for the chosen target first;
+cross-compiling the application cannot build JavaScriptCore for that target.
+
 The builder regenerates the protocol output and exact CLI skill bundle before
 compilation. It embeds release identity and the skill, disables configuration
 autoload, and writes a build receipt beside the executable. `self-check --json`
@@ -149,9 +156,8 @@ recovery command and never counts as complete. Signed channel discovery also
 backs native update checks, doctor recommendations and throttled agent notices.
 No native update uses npm dist-tags or an npm global prefix.
 
-Production release trust is deliberately unconfigured in candidate source.
-`release-trust.ts` must contain the approved Ed25519 public key before native
-publication, with the private key held only by the protected release environment.
+`release-trust.ts` embeds the `notifai-release-2026-10` Ed25519 public key;
+the private key is held only by the protected release environment.
 Candidates fail closed; neither an environment override nor project configuration
 can install a trust root. Focused tests use ephemeral signed inventories through
 an explicit test seam. This does not establish live update or harness migration,
@@ -303,8 +309,9 @@ readiness and retains a local recovery command after partial setup. Runtime
 activation is never undone because approval or setup is pending. Custom zsh
 profile roots need explicit manual PATH setup.
 
-Production trust remains unconfigured. This command is candidate source,
-not an advertised replacement for the published installation route.
+Release trust is configured, but this command remains candidate source until
+reviewed runtime materials, finalization and publication pass. It is not yet an
+advertised replacement for the published installation route.
 
 ### Windows User PATH
 
@@ -477,9 +484,10 @@ Expired final artifacts require a new reviewed preparation; if assets already
 exist, mismatched replacements are refused. Retention expiry is not authority
 to overwrite an existing release.
 
-Production readiness still requires source-embedded Ed25519 trust, its protected
-private key and key ID, reviewed runtime materials, the macOS Team ID in the
-policy and shell bootstrap, and the protected macOS certificate/notary setup.
+The source-embedded Ed25519 trust and shell bootstrap publisher are configured.
+Production readiness also requires the matching protected private key and key
+ID, reviewed runtime materials with the macOS Team ID, and the protected macOS
+certificate/notary setup.
 Environment protections and release metadata branch permissions must also be
 verified. These workflows do not provision credentials, certify material
 completeness, or authorize publication. Release-please creates the native CLI tag and a draft release, then dispatches
