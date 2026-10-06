@@ -59,7 +59,8 @@ export function launchSelf(args: readonly string[], options: { cwd: string; env:
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Detached owner did not return a process identity')
     return { pid }
   }
-  const child = spawn(executable, argv, { cwd: options.cwd, env, detached: true, stdio: 'ignore', windowsHide: true })
+  const child = spawn(executable, reference ? ['--internal-detach', ...argv] : argv,
+    { cwd: options.cwd, env, detached: true, stdio: 'ignore', windowsHide: true })
   child.once('error', () => undefined)
   child.unref()
   if (child.pid === undefined) throw new Error('Detached owner could not start')

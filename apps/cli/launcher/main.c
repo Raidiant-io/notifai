@@ -47,6 +47,7 @@ static int active_build(const char *record, char *build) {
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #include <userenv.h>
 #pragma comment(lib, "userenv.lib")
 #include <wchar.h>
@@ -58,6 +59,27 @@ static int active_build(const char *record, char *build) {
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
     return 1;
+}
+
+/* The native entry replaces the script hook adapter. Capture its caller before
+ * creating the runtime child; that child's parent is this launcher on Windows.
+ * Never accept an inherited hook identity for a new native hook invocation. */
+static int hook_source(void) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W entry = {0};
+    entry.dwSize = sizeof(entry);
+    DWORD parent = 0, self = GetCurrentProcessId();
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == self) { parent = entry.th32ParentProcessID; break; }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    if (!parent) return 0;
+    wchar_t value[32];
+    swprintf(value, 32, L"%lu", parent);
+    return SetEnvironmentVariableW(L"NOTIFAI_HOOK_SOURCE_PID", value) != 0;
 }
 
 static int account_home(void) {
@@ -238,6 +260,10 @@ int wmain(int argc, wchar_t **argv) {
     }
     FreeEnvironmentStringsW(environment);
     if (!SetEnvironmentVariableW(L"NOTIFAI_NATIVE_ENTRY", L"launcher-v1")) return failure("cannot establish native entry");
+    /* --internal-detach is a deliberate self-launch: retain the original hook
+     * ancestry carried by that owner instead of replacing it with the caller. */
+    if (argc >= 2 && !wcscmp(argv[1], L"hook") && !hook_source())
+        return failure("cannot establish hook source process");
 
     /* argv[0] has the special Windows executable-name grammar. Retain the
      * original argument tail verbatim, including empty/quoted Unicode values. */
@@ -403,6 +429,10 @@ int main(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[1], "--internal-file-users"))
         return file_users(argc - 2, argv + 2);
     if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }
+    /* launchSelf already creates the detached process group on POSIX. This
+     * marker preserves the originating hook identity across that self-launch. */
+    int detached = argc >= 2 && !strcmp(argv[1], "--internal-detach");
+    if (detached) { argv++; argc--; }
     char executable[PATH_MAX];
 #ifdef __APPLE__
     char unresolved[PATH_MAX];
@@ -446,6 +476,13 @@ int main(int argc, char **argv) {
         } else i++;
     }
     if (setenv("NOTIFAI_NATIVE_ENTRY", "launcher-v1", 1)) { perror("notifai: establish native entry"); return 1; }
+    if (!detached && argc >= 2 && !strcmp(argv[1], "hook")) {
+        char source[32];
+        snprintf(source, sizeof(source), "%ld", (long)getppid());
+        if (setenv("NOTIFAI_HOOK_SOURCE_PID", source, 1)) {
+            perror("notifai: establish hook source process"); return 1;
+        }
+    }
     argv[0] = executable;
     execv(executable, argv);
     perror("notifai: launch runtime");

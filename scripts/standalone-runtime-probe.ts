@@ -1,6 +1,6 @@
 // Test-only executable. Uses the application's real storage/process adapters.
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { withFileLock } from '../apps/cli/src/file-lock.js'
@@ -19,6 +19,14 @@ assert.ok(root)
 if (mode === 'hook') {
   assert.equal(root, 'stop')
   assert.deepEqual(args, ['--owner', 'notifai', '--harness', 'codex'])
+  assert.ok(Number(process.env.NOTIFAI_HOOK_SOURCE_PID) > 0, 'native hooks must identify their harness parent')
+  if (process.env.NOTIFAI_PROBE_PARENT_PID !== undefined) {
+    assert.equal(process.env.NOTIFAI_HOOK_SOURCE_PID, process.env.NOTIFAI_PROBE_PARENT_PID,
+      'native hook entry must capture its immediate caller, replacing inherited hook ancestry')
+  }
+  if (process.env.NOTIFAI_PROBE_HOOK_OUTPUT !== undefined) {
+    writeFileSync(process.env.NOTIFAI_PROBE_HOOK_OUTPUT, process.env.NOTIFAI_HOOK_SOURCE_PID!)
+  }
   process.stdout.write('native hook command executed')
 } else if (mode === 'native-hooks') {
   const { inspectHookAdapter, installHookAdapter, hookAdapterTargetsArtifact } = await import('../apps/cli/src/hook-adapter.js')
@@ -35,6 +43,25 @@ if (mode === 'hook') {
   const result = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 20_000, windowsHide: true })
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.stdout, 'native hook command executed')
+  for (const inherited of [undefined, '2147483647']) {
+    const env: NodeJS.ProcessEnv = { ...process.env, NOTIFAI_PROBE_PARENT_PID: String(process.pid) }
+    if (inherited === undefined) delete env.NOTIFAI_HOOK_SOURCE_PID
+    else env.NOTIFAI_HOOK_SOURCE_PID = inherited
+    const direct = spawnSync(adapter.path, ['hook', 'stop', '--owner', 'notifai', '--harness', 'codex'],
+      { env, encoding: 'utf8', timeout: 20_000, windowsHide: true })
+    assert.equal(direct.status, 0, direct.stderr)
+    assert.equal(direct.stdout, 'native hook command executed')
+  }
+  // Resident self-launches retain the original harness identity. Exercise the
+  // real launchSelf path, including the Windows native detach boundary.
+  const { launchSelf } = await import('../apps/cli/src/launch-self.js')
+  const output = path.join(root, 'detached-hook-source')
+  launchSelf(['hook', 'stop', '--owner', 'notifai', '--harness', 'codex'], {
+    cwd: root, retain: () => {}, env: { ...process.env, NOTIFAI_HOOK_SOURCE_PID: String(process.pid),
+      NOTIFAI_PROBE_PARENT_PID: String(process.pid), NOTIFAI_PROBE_HOOK_OUTPUT: output },
+  })
+  for (let i = 0; i < 100 && !existsSync(output); i++) await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(readFileSync(output, 'utf8'), String(process.pid))
   const { openclawPluginSource } = await import('../apps/cli/src/openclaw-plugin.js')
   const module = path.join(root, 'openclaw-readiness.mjs')
   writeFileSync(module, openclawPluginSource({ adapterPath: adapter.path, timeoutSeconds: 5 }) + `
