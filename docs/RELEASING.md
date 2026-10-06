@@ -469,6 +469,6 @@ break.
 
 ## Native distribution candidate
 
-The in-progress native artifact and OS bootstrap lane is documented in
-[Standalone CLI distribution](STANDALONE.md). It is not yet a published channel
-and does not authorize native or npm publication.
+The native artifact and OS bootstrap lane is documented in
+[Standalone CLI distribution](STANDALONE.md). That document describes the
+mechanics; it does not authorize native or npm publication.

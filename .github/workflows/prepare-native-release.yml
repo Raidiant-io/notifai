@@ -50,6 +50,10 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
         run: node scripts/require-native-evidence.mjs --kind candidate --expected-sha "$EXPECTED_SHA" --run-id "$CANDIDATE_RUN"
+      - name: Require matching published runtime sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-runtime-sources.mjs
 
   finalize:
     name: finalize (${{ matrix.target }})
