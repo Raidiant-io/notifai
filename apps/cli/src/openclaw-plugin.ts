@@ -132,6 +132,22 @@ function ownHostFile(file) {
   if (UNINSTALL_BARRIER !== null && process.platform === "win32") execFileSync(ADAPTER, ["--internal-own-created-file", file],
     { windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] })
 }
+let registeredHostStart = null
+function hostProcessStart() {
+  if (registeredHostStart !== null) return registeredHostStart
+  const start = process.platform === "win32" && UNINSTALL_BARRIER !== null
+    ? execFileSync(ADAPTER, ["--internal-process-info", String(process.pid)], {
+      encoding: "utf8", timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+    }).trim().split(/\\r?\\n/)[0]
+    : execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+    encoding: "utf8", timeout: 2_000,
+    env: { PATH: process.env.PATH ?? "/bin:/usr/bin", TZ: "UTC", LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim().replace(/\\s+/g, " ")
+  if (!start || (process.platform === "win32" && !/^windows-filetime:\\d+$/.test(start))) throw new Error("Host process identity unavailable")
+  registeredHostStart = start
+  return start
+}
 function recordHostRoot(directory) {
   if (UNINSTALL_BARRIER === null) return
   privateHostDirectory(directory)
@@ -150,9 +166,11 @@ function recordHostRoot(directory) {
   const info = lstatSync(index)
   if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid &&
       (info.uid !== process.getuid() || (info.mode & 0o022) !== 0))) throw new Error("Unsafe host index")
-  const file = path.join(index, createHash("sha256").update(root).digest("hex") + ".json")
+  const start = hostProcessStart()
+  const key = root + String.fromCharCode(0) + process.pid + String.fromCharCode(0) + start
+  const file = path.join(index, createHash("sha256").update(key).digest("hex") + ".json")
   const temp = file + "." + randomUUID() + ".tmp"
-  writeFileSync(temp, JSON.stringify({ schema: 1, installation_id: owner.id, root }) + "\\n",
+  writeFileSync(temp, JSON.stringify({ schema: 1, installation_id: owner.id, root, pid: process.pid, start }) + "\\n",
     { mode: 0o600, flag: "wx" })
   const fd = openSync(temp, "r")
   try { fsyncSync(fd) } finally { closeSync(fd) }
@@ -171,16 +189,7 @@ function readinessPath() {
 
 function writeReadiness(target) {
   recordHostRoot(path.dirname(JOURNAL_DIR))
-  const start = process.platform === "win32" && UNINSTALL_BARRIER !== null
-    ? execFileSync(ADAPTER, ["--internal-process-info", String(process.pid)], {
-      encoding: "utf8", timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
-    }).trim().split(/\\r?\\n/)[0]
-    : execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
-    encoding: "utf8", timeout: 2_000,
-    env: { PATH: process.env.PATH ?? "/bin:/usr/bin", TZ: "UTC", LC_ALL: "C" },
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim().replace(/\\s+/g, " ")
-  if (!start || (process.platform === "win32" && !/^windows-filetime:\\d+$/.test(start))) return false
+  const start = hostProcessStart()
   const file = readinessPath()
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temp = file + "." + randomUUID() + ".tmp"
@@ -989,7 +998,8 @@ const WORKER_ACTIVATION_CONTEXT = ${JSON.stringify(WORKER_ACTIVATION_CONTEXT)}
 
 // The managed native command has one fixed installation root. Source adapters
 // and externally owned wrappers do not acquire uninstall authority here.
-const UNINSTALL_BARRIER = path.basename(path.dirname(ADAPTER)) === "bin" &&
+const UNINSTALL_BARRIER = path.basename(ADAPTER) === (process.platform === "win32" ? "notifai.exe" : "notifai") &&
+  path.basename(path.dirname(ADAPTER)) === "bin" &&
   path.basename(path.dirname(path.dirname(ADAPTER))) === ".notifai"
   ? path.join(path.dirname(path.dirname(ADAPTER)), "uninstall.json") : null
 function uninstallPending() {

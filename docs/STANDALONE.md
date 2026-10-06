@@ -171,7 +171,9 @@ machine retirement queue in every discovered state root. Reported handoffs and
 valid native acknowledgement receipts are history; unfinished work retains the
 installation. No question is cancelled by inspection. The current native
 OpenClaw adapter durably records actual host journal roots before publishing
-journals, including custom host state directories. Inspection validates both
+journals, including custom host state directories and each writer host PID/start
+identity. Source `hook-adapter` wrappers do not register as native hosts.
+Inspection validates both
 journal formats, pending pointer context, replay fences and interrupted writes;
 it never replays, redacts or settles those journals. Root discovery is not proof
 that a host has drained. Previously loaded adapters without a root record still

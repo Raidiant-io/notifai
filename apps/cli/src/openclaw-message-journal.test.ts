@@ -132,3 +132,20 @@ assert.equal(existsSync(${JSON.stringify(marker)}), false, 'closed uninstall adm
     expect(result.status, result.stderr).toBe(0)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+it('keeps source hook adapters outside native host registration', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-source-'))
+  try {
+    const file = path.join(root, 'plugin.mjs')
+    writeFileSync(file, openclawPluginSource({ adapterPath: path.join(root, '.notifai', 'bin', 'hook-adapter'), timeoutSeconds: 5 }) + `
+import assert from 'node:assert/strict'
+assert.equal(UNINSTALL_BARRIER, null)
+MESSAGE_JOURNAL_DIR = ${JSON.stringify(path.join(root, 'host-journal'))}
+saveMessageJournal({ delivery_id: 'source-fixture', phase: 'prepared' })
+assert.equal(readMessageJournal('source-fixture').phase, 'prepared')
+`)
+    const result = spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 10_000 })
+    expect(result.error).toBeUndefined()
+    expect(result.status, result.stderr).toBe(0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

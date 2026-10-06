@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:aa1e8b2f86c85d2cadd472c3b17484b23f0c33bc3f2db9ba7a76ebc96b6e43e8",
+  "behavior_digest": "sha256:bf0ff72ee4eecc1f587850738af02766a9dccf64cbc47895968c66a5079952d6",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. The current native OpenClaw adapter records its actual journal roots before publication; uninstall preparation strictly inventories pending continuation, message context, replay fences and interrupted writes without mutating or cancelling them. Native Windows host storage uses the existing launcher ownership adapter. Root inventory is not host quiescence or removal authority, and no public uninstall completion is advertised. User-facing notification guidance and domain terms remain unchanged.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness and domain terms. Durable OpenClaw host-root discovery now retains each writer PID and process start identity so empty work inventory cannot imply host absence. Registration is limited to the native stable executable and leaves source hook-adapter execution outside the native ownership protocol. Native pending-work probes exercise generated host records and observe exited writer identities. No host is stopped, no removal completion is advertised, and User notification guidance remains unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

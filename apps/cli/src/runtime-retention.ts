@@ -6,10 +6,12 @@ import { installationAccess, type InstallationAccess } from './installation-acce
 import { withFileLock } from './file-lock.js'
 import { canonicalPath } from './local-path.js'
 import { sanitizeSessionId } from './config.js'
-import { openclawHostWork } from './openclaw-host-state.js'
+import type { ProcessIdentity } from './process-identity.js'
+import { inspectOpenclawHosts } from './openclaw-host-state.js'
 
 export interface RuntimeOwnerInspection {
   status: 'clear' | 'waiting_for_questions' | 'uncertain'
+  hosts: ProcessIdentity[]
   sessions: Array<{ file: string; sessionId: string; builds: string[] }>
 }
 
@@ -166,6 +168,7 @@ export class RuntimeRetention {
    * uninstall coordinator must close launch admission and recheck before edits. */
   inspectOwners(currentSessions: string): RuntimeOwnerInspection {
     const sessions: RuntimeOwnerInspection['sessions'] = []
+    const hosts: ProcessIdentity[] = []
     try {
       if (!path.isAbsolute(currentSessions)) throw new Error('Invalid session directory')
       const directories = new Set([canonicalPath(currentSessions)])
@@ -186,7 +189,9 @@ export class RuntimeRetention {
           }
         }
       }
-      let pending = openclawHostWork(this.root, this.installationId, this.access)
+      const hostState = inspectOpenclawHosts(this.root, this.installationId, this.access)
+      hosts.push(...hostState.hosts)
+      let pending = hostState.pending
       for (const directory of [...directories].sort()) {
         const retireFile = path.join(path.dirname(directory), 'retire-queue.json')
         if (present(retireFile)) withFileLock(`${retireFile}.lock`, () => {
@@ -249,8 +254,8 @@ export class RuntimeRetention {
           })
         }
       }
-      return { status: pending ? 'waiting_for_questions' : 'clear', sessions }
-    } catch { return { status: 'uncertain', sessions } }
+      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts }
+    } catch { return { status: 'uncertain', sessions, hosts } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

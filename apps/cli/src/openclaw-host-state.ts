@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalPath } from './local-path.js'
+import type { ProcessIdentity } from './process-identity.js'
 import type { InstallationAccess } from './installation-access.js'
 
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)
@@ -13,7 +14,8 @@ function present(file: string): boolean {
 /** Strict work inventory of roots registered by the native OpenClaw adapter.
  * This never reconciles or redacts a journal, and proves neither host absence
  * nor quiescence. Removal must separately drain hosts and repeat this inventory. */
-export function openclawHostWork(root: string, installationId: string, access: InstallationAccess): boolean {
+export function inspectOpenclawHosts(root: string, installationId: string, access: InstallationAccess): { pending: boolean; hosts: ProcessIdentity[] } {
+  const hosts: ProcessIdentity[] = []
   const check = (file: string, directory: boolean) => {
     const stat = lstatSync(file)
     if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile()) ||
@@ -28,14 +30,17 @@ export function openclawHostWork(root: string, installationId: string, access: I
     return value as Record<string, unknown>
   }
   const index = path.join(root, 'openclaw-hosts')
-  if (!present(index)) return false
+  if (!present(index)) return { pending: false, hosts }
   check(root, true); check(index, true)
   let pending = false
   for (const name of readdirSync(index)) {
     const registration = read(path.join(index, name)), host = registration['root']
+    const pid = registration['pid'], start = registration['start']
     if (registration['schema'] !== 1 || registration['installation_id'] !== installationId ||
         typeof host !== 'string' || !path.isAbsolute(host) || canonicalPath(host) !== host ||
-        name !== digest(host) + '.json') throw new Error('Uncertain OpenClaw host registration')
+        !Number.isSafeInteger(pid) || (pid as number) <= 0 || typeof start !== 'string' || !start || start.length > 128 ||
+        name !== digest(host + '\0' + pid + '\0' + start) + '.json') throw new Error('Uncertain OpenClaw host registration')
+    if (!hosts.some(item => item.pid === pid && item.start === start)) hosts.push({ pid: pid as number, start })
     check(host, true)
     for (const kind of ['continuation-journal', 'message-journal']) {
       const directory = path.join(host, kind), message = kind === 'message-journal'
@@ -78,5 +83,5 @@ export function openclawHostWork(root: string, installationId: string, access: I
       }
     }
   }
-  return pending
+  return { pending, hosts }
 }

@@ -58,8 +58,11 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
   const managed = path.join(root, '.notifai')
   const id = JSON.parse(readFileSync(path.join(managed, 'install.json'), 'utf8')).id
   const retention = new RuntimeRetention(managed, id)
-  assert.equal(readdirSync(path.join(managed, 'openclaw-hosts')).length, 1)
-  assert.equal(retention.inspectOwners(path.join(root, 'no-sessions')).status, args[0])
+  const inspected = retention.inspectOwners(path.join(root, 'no-sessions'))
+  assert.ok(inspected.hosts.length > 0)
+  assert.equal(inspected.hosts.length, readdirSync(path.join(managed, 'openclaw-hosts')).length)
+  for (const host of inspected.hosts) assert.equal(processIdentityLiveness(host), 'gone')
+  assert.equal(inspected.status, args[0])
 } else if (mode === 'lock') {
   const file = path.join(root, 'shared.json')
   for (let i = 0; i < 50; i++) withFileLock(`${file}.lock`, () => {
