@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5d7d3a1fca09073456a06deef3aa6619f0c1787045142c2f706a0bbad7a6bf71",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the Windows legacy-folder installation fix. Installation no longer requires the protected permissions of an existing ~/.notifai folder before its authenticated migration step when no installation record exists there; reading any record still requires them. No hook output, guidance, question, answer, acknowledgement or wake wording changes.",
+  "behavior_digest": "sha256:57789915a3a63f5f7cf9d19b769bf6f588abc4fc9003bdeed5f1c7d9435b242d",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README installation text and domain terms. Missing commands now route to existing native launchers before OS bootstrap installation; native channel choice, setup choices and legacy-owner migration remain explicit. Removed frozen npm-runtime installation advice from both READMEs and the skill. Hook output, question routing, answers and acknowledgement behavior are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

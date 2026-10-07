@@ -461,14 +461,6 @@ describe('Notifai agent skill', () => {
     expect(setup).toMatch(/do not follow a successful structured init\s+with doctor/i)
   })
 
-  it('offers npx only as a pinned fallback behind a real install', () => {
-    const global = skill.indexOf('npm install -g @raidiant/notifai')
-    const npx = skill.indexOf('npx --yes @raidiant/notifai@')
-    expect(global).toBeGreaterThan(0)
-    expect(global).toBeLessThan(npx)
-    expect(skill).toMatch(/never as the first suggestion/i)
-  })
-
   it('gives the agent an exit-status branch for every documented outcome', () => {
     for (const code of ['| 0 |', '| 1 |', '| 2 |', '| 3 |', '| 4 |', '| 5 |']) {
       expect(skill).toContain(code)

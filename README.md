@@ -24,13 +24,15 @@ depends on private code. `docs/BOUNDARY.md` states the policy and
 
 ## Using it
 
-Install the CLI once, then let `init` coordinate the setup. Run `notifai` with
+Install the native CLI using the [OS installation instructions](skills/notifai/references/installation.md),
+then let `init` coordinate the setup. The native CLI needs no Node or npm.
+Choose the beta channel explicitly while native distribution is beta-only.
+Run `notifai` with
 no arguments later to open the interactive app: status at a glance, a test
 notification, your devices, and every setting with an explanation of what it
 does and where its current value came from.
 
 ```sh
-npm install -g @raidiant/notifai
 notifai init                 # one setup flow; safe to resume
 notifai                      # the interactive app
 notifai config show          # every setting, explained

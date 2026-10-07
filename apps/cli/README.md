@@ -7,16 +7,10 @@ guesses or sits blocked in a terminal nobody is watching. `notifai` gives
 it a way to tell you something finished, and a way to ask you a question
 and get your answer back as a banner on your phone.
 
-```sh
-npm install -g @raidiant/notifai
-notifai init
-```
-
-The `notifai` command is always a machine-wide install. Setup scope (this
-project vs this machine) does not change that. If you do not want a global
-bin, `npx --yes @raidiant/notifai@<version>` is supported. Pin the version.
-`hooks install` then writes that same pinned npx invocation into the harness
-adapter. This is slower than a real install and is not the default path.
+Install the native CLI using the [OS installation instructions](../../skills/notifai/references/installation.md),
+then run `notifai init`. No Node or npm is needed. Select beta explicitly
+while native distribution is beta-only. An existing native installation owns
+its updates through `notifai update`; the historical npm runtime is frozen.
 
 Run `notifai doctor` or `notifai update --check --json` to check for a newer
 CLI and inspect release notes, guidance, and session requirements. Enabled
