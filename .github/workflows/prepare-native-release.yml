@@ -59,7 +59,7 @@ jobs:
     name: finalize (${{ matrix.target }})
     needs: admission
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 50
     environment: native-release
     strategy:
       fail-fast: false

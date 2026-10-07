@@ -39,7 +39,7 @@ try {
     assert.match(policy.macos_team_id ?? '', /^[A-Z0-9]{10}$/)
     for (const name of ['notifai', 'notifai-runtime']) {
       const executable = path.join(extracted, name)
-      execFileSync('/usr/bin/codesign', ['--verify', '--strict', '-R', `anchor apple generic and certificate leaf[subject.OU] = "${policy.macos_team_id}"`, executable], { timeout: 30_000 })
+      execFileSync('/usr/bin/codesign', ['--verify', '--strict', `-R=anchor apple generic and certificate leaf[subject.OU] = "${policy.macos_team_id}"`, executable], { timeout: 30_000 })
       execFileSync('/usr/bin/codesign', ['-vvvv', '-R=notarized', '--check-notarization', executable], { timeout: 60_000 })
     }
   }

@@ -427,8 +427,15 @@ assets before advancing a channel. Assembly alone performs no provider mutation.
 
 ### Resumable native publication
 
-The publisher reads the exact signed bundle and confirms repository immutability,
-protected release tags, the tag's commit and the draft identity. It reuses matching
+The publisher reads the exact signed bundle and confirms the tag's commit and
+the draft identity. A draft has no by-tag address, so it finds the tag's single
+release in the release list and reads that release by ID from then on.
+Repository-wide immutability and the tag ruleset's bypass list need
+administration access the job's token deliberately lacks: the release owner
+checks them beforehand with
+`node scripts/check-public-provider-posture.mjs --require-repository-immutability`,
+and the job proves the outcome by reading the published release back as
+immutable. It reuses matching
 completed assets, uploads missing assets and refuses any completed mismatch.
 Only an expected empty `starter` upload in an unpublished draft may be removed.
 All expected assets must be verified before the draft is published, and the
