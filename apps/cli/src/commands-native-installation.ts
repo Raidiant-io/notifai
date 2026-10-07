@@ -198,14 +198,14 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     if (legacy.migration) installed = { ...installed, migration: legacy.migration }
     if (result.launcher_update_pending) throw new Error('The runtime is installed; finish launcher repair before setup')
     let pathResult: Record<string, unknown> = { ok: true, skipped: true }
-    if (flags.path !== false) {
-      if (platform !== 'win32' && deps.env['ZDOTDIR'] && path.basename(flags.shell ?? deps.env['SHELL'] ?? '') === 'zsh') {
-        throw new Error('Custom ZDOTDIR needs manual PATH setup; rerun with --no-path after adding the installed command directory')
-      }
-      pathResult = { ...installation.shellPath('configure', flags.shell ?? deps.env['SHELL'] ?? '') }
-    }
+    if (flags.path !== false) pathResult = { ...installation.shellPath('configure', flags.shell ?? deps.env['SHELL'] ?? '', deps.env) }
     installed = { ...installed, path: pathResult }
-    if (pathResult['ok'] !== true) throw new Error('The runtime is installed; PATH setup has conflicts. Preserve those files and configure PATH before rerunning setup')
+    if (pathResult['ok'] !== true) {
+      const conflicts = Array.isArray(pathResult['conflicts']) ? pathResult['conflicts'].join(', ') : ''
+      throw new Error(`The runtime is installed, but its command could not be added to PATH without changing files Notifai does not own (${conflicts}). Resolve those, or rerun with --no-path and add ${path.dirname(command)} to PATH yourself`)
+    }
+    // A shell this installer does not configure gets its one line, not a failure.
+    const pathNote = typeof pathResult['manual'] === 'string' ? ` ${pathResult['manual']}` : ''
     if (legacy.migration) {
       // Keep all old executable/package bytes. The new runtime can be verified
       // independently, but setup/update readiness remains incomplete while the
@@ -216,7 +216,7 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
       return EXIT.failed
     }
     if (flags.init === false) {
-      emit({ ok: true, code: 'installed', ...installed, setup_skipped: true }, `Notifai ${active.version} is installed. Continue with ${command} init.`)
+      emit({ ok: true, code: 'installed', ...installed, setup_skipped: true }, `Notifai ${active.version} is installed. Continue with ${command} init.${pathNote}`)
       return EXIT.ok
     }
     // Persistent PATH changes cannot update this bootstrap's parent shell.
@@ -231,7 +231,7 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     catch { setup = { ok: false, code: 'setup_interrupted' } }
     const complete = setup['ok'] === true
     emit({ ok: complete, code: complete ? 'ready' : 'setup_pending', ...installed, setup_complete: complete, setup },
-      complete ? `Notifai ${active.version} is installed and setup is complete.` : `Notifai ${active.version} is installed. Continue setup with ${command} init.`)
+      complete ? `Notifai ${active.version} is installed and setup is complete.${pathNote}` : `Notifai ${active.version} is installed. Continue setup with ${command} init.${pathNote}`)
     return complete ? EXIT.ok : EXIT.failed
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

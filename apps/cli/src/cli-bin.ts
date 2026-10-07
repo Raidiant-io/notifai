@@ -165,7 +165,9 @@ export function inspectCliInstallations(
   let native: ReturnType<typeof nativeInstallationIdentity> | null = null
   try { native = nativeInstallationIdentity(accountHome(env, platform), platform === 'win32') } catch { /* Report unverified entries without inventing native identity. */ }
   const entries = pathNotifaiEntries(withoutNpxLauncherPath(env, platform, runningArtifact), platform).map((command): CliPathEntry => {
-    const managed = native !== null && sameLocalPath(command, native.command, platform) && !lstatSync(command).isSymbolicLink()
+    // The stable command itself, or the installer's link to it in the User command directory.
+    const managed = native !== null && !lstatSync(native.command).isSymbolicLink() &&
+      sameLocalPath(canonicalPath(command), canonicalPath(native.command), platform)
     const artifact = managed ? native!.runtime : artifactForCommand(command, platform)
     return {
       command_path: command,

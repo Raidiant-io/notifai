@@ -283,18 +283,30 @@ exercises fresh installation and repeated reuse with the real native access poli
 
 ## Owned POSIX PATH entries
 
-The installation engine can configure the selected shell's interactive and
-login profiles (zsh, bash, sh/dash). It preserves existing Bash login selection,
-quotes the runtime directory, and avoids duplicate PATH entries. A private
-ownership receipt precedes each profile edit so interrupted setup can resume.
-Removal deletes only the exact owned block; User edits and unowned markers are
-preserved and reported as conflicts. Atomic writes also check the original
-content digest, including same-file concurrent edits.
+macOS and Linux follow the XDG Base Directory convention for User commands,
+like Claude Code's native installer, uv and pipx. The installer links
+`notifai` into `$XDG_BIN_HOME`, or `~/.local/bin` when that is unset, pointing
+at the stable `~/.notifai/bin/notifai`. Debian, Ubuntu and Fedora login shells
+already search that directory, as does any shell its User configured to, so
+most installations edit no startup file at all. The installer never replaces
+another program's `notifai` there; that is reported as a conflict.
 
-This engine operation is explicit, never run by hooks. It does not change the
-current parent shell, guess every installed shell, or change Windows User
-PATH; that uses the registry adapter below. Public installer orchestration still
-needs its complete journey proof.
+Only when the installing environment's `PATH` does not include the directory,
+the installer adds one marked block to the login shell's own startup files, as
+rustup and uv do: `.zshrc` and `.zprofile` for zsh, `.bashrc` plus the login
+file Bash actually reads for bash, `.profile` for sh and dash, and an owned
+`~/.config/fish/conf.d/notifai.fish` for fish. Any other shell, or zsh with a
+custom `ZDOTDIR`, gets the exact directory to add and setup continues.
+`--no-path` skips all of this.
+
+A private ownership receipt precedes the link and each startup-file edit, so
+interrupted setup resumes without duplicating them. Removal deletes only the
+owned link and the exact owned blocks; User edits, a replaced command entry and
+unowned markers are preserved and reported as conflicts. Atomic writes also
+check the original content digest, including same-file concurrent edits.
+
+This operation is explicit, never run by hooks, and never changes the current
+parent shell. Windows uses the User `Path` registry adapter below instead.
 
 ## Local native installer command
 
@@ -307,13 +319,12 @@ route without changing runtime update ownership. Repeated installation reuses
 the healthy managed runtime and preserves its original route and channel.
 
 The command refuses known PATH collisions and current-session pending work,
-authenticates candidate bytes, configures the selected shell, then invokes
+authenticates candidate bytes, makes the command reachable on PATH (below), then invokes
 `init` through the verified installed immutable launcher. `--no-path` explicitly
 keeps absolute-command use; `--no-init` installs without choosing account, skill
 scope or harness setup. JSON distinguishes runtime installation from setup
 readiness and retains a local recovery command after partial setup. Runtime
-activation is never undone because approval or setup is pending. Custom zsh
-profile roots need explicit manual PATH setup.
+activation is never undone because approval or setup is pending.
 
 Release trust and reviewed runtime materials are configured in source. A
 build is still only a candidate until finalization and publication pass for
