@@ -8,9 +8,8 @@ description: Use when work needs a User decision, approval, sign-in, credential 
 Use `notifai` for routing, retries, and delivery evidence; never hand-roll
 HTTP, hooks, or polling.
 
-If missing: `npm install -g @raidiant/notifai`. Offer pinned
-`npx --yes @raidiant/notifai@<version>` only if they refuse a global binary,
-never as the first suggestion.
+If the command is missing, read [Native installation](references/installation.md)
+to find an existing native CLI before installing.
 
 For updates, channel changes, or local integration faults, read
 [Updating Notifai](references/updates.md) before changing an existing installation.
