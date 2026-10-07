@@ -102,9 +102,11 @@ export class Installation {
   private checkRoot(): void { if (present(this.root)) this.owned(this.root, true) }
   private prepareRoot(): void { this.checkRoot(); this.access.directory(this.root) }
   private readJson(name: string): unknown | null {
-    this.checkRoot()
     const file = this.file(name)
+    // Reading a record requires a trusted root; its absence does not. A folder
+    // an older CLI left behind is protected only after candidate authentication.
     if (!present(file)) return null
+    this.checkRoot()
     this.owned(file, false)
     if (lstatSync(file).size > 256 * 1024) throw new Error('Installation record exceeds its size limit')
     return JSON.parse(readFileSync(file, 'utf8'))
