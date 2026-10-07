@@ -844,3 +844,28 @@ it('stages an explicitly requested npm migration without deleting the legacy pac
   expect(await nativeInstallCommand(deps, flags, seams)).toBe(0)
   expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'installed', reused: true, setup_skipped: true })
 })
+
+it('installs over a folder an older CLI left behind, protecting it only after authenticating the candidate', () => {
+  // Windows refuses an installation directory until its permissions are
+  // protected. A folder from an earlier non-native CLI is not protected yet,
+  // so nothing may require that before the authenticated migration step.
+  const f = fixture(undefined, 'bun-windows-x64')
+  mkdirSync(path.join(f.options.root, 'bin'), { recursive: true })
+  writeFileSync(path.join(f.options.root, 'bin', 'hook-adapter'), 'older CLI file')
+  const protectedDirectories = new Set<string>(), order: string[] = []
+  const installation = new Installation({ ...f.options, access: { ...f.options.access,
+    check(file: string, directory: boolean) {
+      // New children inherit a protected parent's permissions, as on Windows.
+      const covered = [...protectedDirectories].some(parent => file === parent || file.startsWith(parent + path.sep))
+      if (directory && !covered) throw new Error(`unprotected directory checked: ${file}`)
+    },
+    protectExistingDirectory(file: string) { order.push(file); protectedDirectories.add(file) },
+    directory(file: string) { ensurePrivateDirectory(file); protectedDirectories.add(file) },
+  } })
+  const candidate = f.candidate('1.0.0')
+  expect(installation.recoverUninstallForInstall(candidate, path.join(f.root, 'sessions'))).toEqual({ status: 'unchanged' })
+  expect(order).toEqual([])
+  expect(installation.installCandidate({ ...candidate, source: 'powershell' })).toMatchObject({ changed: true, reused: false })
+  expect(order).toEqual([f.options.root, path.join(f.options.root, 'bin')])
+  expect(readFileSync(path.join(f.options.root, 'bin', 'hook-adapter'), 'utf8')).toBe('older CLI file')
+})

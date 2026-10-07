@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Distribution, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
@@ -43,9 +43,14 @@ try {
       execFileSync('/usr/bin/codesign', ['-vvvv', '-R=notarized', '--check-notarization', executable], { timeout: 60_000 })
     }
   }
+  // An earlier non-native CLI leaves ~/.notifai/bin with ordinary inherited
+  // permissions. The real OS access policy must still admit the installation.
+  mkdirSync(path.join(home, '.notifai', 'bin'), { recursive: true })
+  writeFileSync(path.join(home, '.notifai', 'bin', 'hook-adapter'), 'older CLI file')
   const installation = new Installation({ root: path.join(home, '.notifai'), target: nativeTarget, distribution,
     access: installationAccess(path.join(extracted, `notifai${extension}`)) })
   const candidate = { directory: extracted, signedInventory, channel: metadata.build.version.includes('-') ? 'beta' : 'stable' }
+  assert.deepEqual(installation.recoverUninstallForInstall(candidate, path.join(root, 'sessions')), { status: 'unchanged' })
   const installed = installation.installCandidate({ ...candidate, source: 'manual' }) // Real candidate self-check; no probe mock.
   assert.equal(installed.reused, false)
   assert.equal(installed.version, metadata.build.version)
