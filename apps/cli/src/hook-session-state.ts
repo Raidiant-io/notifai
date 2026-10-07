@@ -16,6 +16,7 @@ import { sanitizeSessionId, sessionConfigPath, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import type { HookHarness, PendingQuestion, SessionState } from './hook-types.js'
 import type { ProcessIdentity } from './process-identity.js'
+import { systemMonotonicNs } from './monotonic-clock.js'
 export function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.json`)
 }
@@ -40,7 +41,7 @@ export function sessionHasEnded(sessionId: string, env: NodeJS.ProcessEnv): bool
 /**
  * When a lifecycle edge happened, in an order no wall-clock change can alter.
  *
- * `mono` is the system-wide monotonic clock (`process.hrtime`), shared by
+ * `mono` is the system-wide monotonic clock (`systemMonotonicNs`), shared by
  * every process on this machine within one boot. Wall time is kept for people
  * reading the files, never for ordering: an NTP step or a manual change moved
  * it backwards far enough to end a resumed session with its own earlier end.
@@ -51,7 +52,7 @@ export interface LifecycleStamp {
 }
 
 export function lifecycleStamp(wall: number = Date.now()): LifecycleStamp {
-  return { wall, mono: process.hrtime.bigint().toString() }
+  return { wall, mono: systemMonotonicNs().toString() }
 }
 
 function parseStamp(value: unknown): LifecycleStamp | null {
@@ -73,7 +74,7 @@ function parseStamp(value: unknown): LifecycleStamp | null {
 export function happenedBefore(edge: LifecycleStamp | null, reference: LifecycleStamp): boolean {
   if (edge === null) return true
   const mono = BigInt(edge.mono)
-  return mono < BigInt(reference.mono) || mono > process.hrtime.bigint()
+  return mono < BigInt(reference.mono) || mono > systemMonotonicNs()
 }
 
 /** What SessionEnd recorded: when, and which incarnation it ended. */
