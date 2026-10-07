@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:4d9bb98a82c6d12d3af3f01279a97d3fa76d4bd3983f14e09325f1936f56d441",
+  "behavior_digest": "sha256:4a98b79702220e063c1d5713f17411bb6388a0066bd620692cd8438d144400e3",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the monotonic clock change. The compiled runtime now reads the same system monotonic clock Node uses, so lifecycle stamps, wake recovery evidence and OpenClaw hand-off deadlines written by one process order correctly against another's. It changes no hook output, guidance text, question, answer, acknowledgement or wake wording; it restores the cross-process ordering the guidance already assumes for session hand-over after an update.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the User command directory change. Native installation now links notifai into the XDG User command directory and edits a login shell's startup files only when that directory is not already searched; other shells get the exact directory to add. Hooks keep invoking the stable absolute command, readiness treats the owned link as the managed installation, and no guidance, question, answer, acknowledgement or wake wording changes.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

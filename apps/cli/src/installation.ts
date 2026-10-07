@@ -556,7 +556,7 @@ export class Installation {
   }
   /** Explicit User PATH setup/removal. No hook or ordinary command edits
    * shell startup files or registry PATH; User-edited ownership is preserved. */
-  shellPath(operation: 'configure' | 'remove', shell: string) {
+  shellPath(operation: 'configure' | 'remove', shell: string, env: NodeJS.ProcessEnv = {}) {
     const active = this.activeRelease()
     return this.mutate(() => {
       if (this.options.target.startsWith('bun-windows-')) {
@@ -564,7 +564,7 @@ export class Installation {
           read: () => this.readJson('windows-path.json'), save: receipt => this.save('windows-path.json', receipt) })
         return operation === 'configure' ? pathSetup.configure() : pathSetup.remove()
       }
-      const pathSetup = new ShellPathInstallation({ home: path.dirname(this.root), bin: this.file('bin'), shell,
+      const pathSetup = new ShellPathInstallation({ home: path.dirname(this.root), bin: this.file('bin'), shell, env,
         read: () => this.readJson('shell-path.json'), save: receipt => this.save('shell-path.json', receipt) })
       return operation === 'configure' ? pathSetup.configure() : pathSetup.remove()
     })
