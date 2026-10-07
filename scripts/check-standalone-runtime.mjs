@@ -65,6 +65,14 @@ try {
     { cwd: repositoryRoot, stdio: 'inherit' })
   run(['account-home', root, os.userInfo().homedir])
   run(['identity', root])
+  // Lifecycle stamps from separate processes are ordered against each other and
+  // against Node's, so the native runtime must read the same system clock.
+  for (const entry of [launcher, launcher]) {
+    const before = process.hrtime.bigint()
+    const stamp = BigInt(execFileSync(entry, ['clock', root], { cwd: root, env, encoding: 'utf8', timeout: 20_000 }))
+    const after = process.hrtime.bigint()
+    assert.ok(before <= stamp && stamp <= after, 'native monotonic clock must match the system clock Node reads')
+  }
   if (!windows) {
     // Launcher aliases still exec the canonical payload, which is the POSIX
     // candidate name used by executable-use observation.

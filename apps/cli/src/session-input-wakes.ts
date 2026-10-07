@@ -6,6 +6,7 @@ import { type QueueControl } from './codex-queue-control.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { readAttendantLease } from './session-attendant-state.js'
+import { systemMonotonicNs } from './monotonic-clock.js'
 
 export interface InputWakeAttempt {
   token: string
@@ -213,7 +214,7 @@ export async function recoverUncertainInputWake(input: Scope & {
     const native = input.native()
     const ids = input.pendingIds()
     if (native === null || ids === null || ids.length === 0 || !current.inputIds.some(id => ids.includes(id))) return state
-    const now = (input.monotonic ?? (() => Number(process.hrtime.bigint() / 1_000_000n)))()
+    const now = (input.monotonic ?? (() => Number(systemMonotonicNs() / 1_000_000n)))()
     const prior = current.recoveryEvidence
     if (prior !== undefined && (prior.identity !== native.identity || prior.file !== native.file || native.size < prior.highWater)) return state
     const same = prior !== undefined && prior.identity === native.identity && prior.file === native.file &&

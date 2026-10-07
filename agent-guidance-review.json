@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e9cd465c88d0c54e1af4fad6d8e482cf9157c329d25f4e4fd3f46b4dca6ee020",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and its references, harness setup, readiness, README and domain terms. The skill had grown past the reading budget its own test enforces, so two sentences that restated an adjacent rule were removed: that hooks may already have delivered wake input, which the paragraph's first sentence now states as the rule, and that a longer reply window cannot resume a timed-out command, which the exit-code paragraph directly below states. No instruction, command, exit code, acknowledgement rule or question rule changed; every remaining statement keeps its meaning.",
+  "behavior_digest": "sha256:4d9bb98a82c6d12d3af3f01279a97d3fa76d4bd3983f14e09325f1936f56d441",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and update guidance, harness setup, readiness, README and domain terms against the monotonic clock change. The compiled runtime now reads the same system monotonic clock Node uses, so lifecycle stamps, wake recovery evidence and OpenClaw hand-off deadlines written by one process order correctly against another's. It changes no hook output, guidance text, question, answer, acknowledgement or wake wording; it restores the cross-process ordering the guidance already assumes for session hand-over after an update.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

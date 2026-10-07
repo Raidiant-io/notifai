@@ -10,6 +10,7 @@ import { WindowsDpapiStore } from '../apps/cli/src/credentials.js'
 import { Installation } from '../apps/cli/src/installation.js'
 import { Distribution } from '../apps/cli/src/release-distribution.js'
 import { sameLocalPath } from '../apps/cli/src/local-path.js'
+import { systemMonotonicNs } from '../apps/cli/src/monotonic-clock.js'
 import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from '../apps/cli/src/skill-integrity.js'
 
 const [mode, rawRoot, ...args] = process.argv.slice(2)
@@ -136,6 +137,8 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
   assert.ok(identity)
   assert.equal(processIdentityLiveness(identity), 'alive')
   assert.equal(processIdentityLiveness({ ...identity, start: 'a-different-process' }), 'gone')
+} else if (mode === 'clock') {
+  process.stdout.write(systemMonotonicNs().toString())
 } else if (mode === 'distribution') {
   const fixture = JSON.parse(readFileSync(path.join(root, 'signed-fixture.json'), 'utf8'))
   const distribution = new Distribution({ fixture: fixture.publicKey })

@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline'
 import type { SessionWriteResult } from './session-handoff.js'
 import type { WriteGuard } from './wake-support.js'
 import type { SessionActivity } from '@raidiant/notifai-protocol'
+import { systemMonotonicNs } from './monotonic-clock.js'
 
 const RESPONSE_MS = 30_000
 let lastActivity: { value: SessionActivity; at: number } | null = null
@@ -68,7 +69,7 @@ export function openclawMessageBridge(): (
     if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
       return { status: 'aborted', reason: 'the claim expired before the Gateway hand-off' }
     }
-    const deadlineNs = (process.hrtime.bigint() + BigInt(Math.floor(remainingMs * 1_000_000))).toString()
+    const deadlineNs = (systemMonotonicNs() + BigInt(Math.floor(remainingMs * 1_000_000))).toString()
     let timer: NodeJS.Timeout | undefined
     const response = new Promise<SessionWriteResult>((resolve) => {
       const finish = (result: SessionWriteResult): void => {
