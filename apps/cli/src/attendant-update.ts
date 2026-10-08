@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { EXIT, log, type CommandDeps } from './commands-core.js'
 import { attendHook, attendantGates, attendantRuntimeRevision } from './commands-hook-attend.js'
-import { findNativeTranscript, nativeTranscriptOwned } from './codex-native-turn.js'
+import { findNativeTranscript, nativeTranscriptOwned, recoverNativeTurnSnapshot } from './codex-native-turn.js'
 import { lifecycleStamp, readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { readClaimFile } from './hook-question-lock.js'
 import { processExecutableName, processIdentityLiveness } from './process-identity.js'
@@ -33,6 +33,9 @@ export async function resumeAttendantCommand(deps: CommandDeps, sessionId: strin
   if (transcript === null || !nativeTranscriptOwned(transcript, sessionId, deps.env)) return EXIT.failed
   const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(entry => entry.harness === 'codex')
   if (installations.length === 0 || codexTrustProblems(installations, deps.env).length > 0) return EXIT.failed
+  await recoverNativeTurnSnapshot(transcript, sessionId, deps.env,
+    () => recoveryOwner(deps, sessionId, key) !== null)
+  if (recoveryOwner(deps, sessionId, key) === null) return EXIT.failed
   const logger = log(deps)
   logger.bind({ session: sessionId })
   logger.info('attendant.state', { source: 'update-resume', phase: 'recovering' })
@@ -73,7 +76,13 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
     if (owned === null || !attendantGates(deps, owned.cwd, sessionId, 'codex', packageVersion()).ok) return result('pending')
     const claimFile = attendantClaimPath(sessionId, deps.env)
     const holder = readClaimFile(claimFile)
-    if (attendantClaimMatches(holder, packageVersion(), reference)) return result('current')
+    if (attendantClaimMatches(holder, packageVersion(), reference)) {
+      const transcript = readSessionState(sessionId, deps.env).codex_native_turn?.transcript_path
+      if (transcript !== undefined) await recoverNativeTurnSnapshot(transcript, sessionId, deps.env,
+        () => recoveryOwner(deps, sessionId, current.key) !== null)
+      if (recoveryOwner(deps, sessionId, current.key) === null) return result('pending')
+      return result('current')
+    }
     const transcript = readSessionState(sessionId, deps.env).codex_native_turn?.transcript_path ?? findNativeTranscript(sessionId, deps.env)
     if (transcript === null || !nativeTranscriptOwned(transcript, sessionId, deps.env)) return result('pending')
     let failed = false

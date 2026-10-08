@@ -1,6 +1,10 @@
 /** Read typed lifecycle and optional question records from an owned native transcript. */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, readdirSync } from 'node:fs'
 import path from 'node:path'
+import { atomicWriteFileSync } from './atomic-file.js'
+import { sanitizeSessionId, stateDir } from './config.js'
+import { withFileLock } from './file-lock.js'
 import { configHome } from './install-hooks.js'
 
 export interface NativeTurnSnapshot {
@@ -27,6 +31,52 @@ export interface NativeQuestionEmission {
 const HEADER_BYTES = 64 * 1024
 const TAIL_BYTES = 8 * 1024 * 1024
 
+interface ActivityCheckpoint {
+  schema: 1
+  sessionId: string
+  file: string
+  identity: string
+  through: number
+  observedSize: number
+  mtimeMs: number
+  prefixBytes: number
+  prefixHash: string
+  boundaryHash: string
+  latest?: NativeTurnSnapshot['latest']
+  marker?: { offset: number; bytes: number; hash: string }
+  positions: Array<[string, number]>
+}
+
+const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
+const checkpointPath = (sessionId: string, env: NodeJS.ProcessEnv): string =>
+  path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.native-cursor`)
+
+function readCheckpoint(file: string): ActivityCheckpoint | undefined {
+  try {
+    const stat = lstatSync(file)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > HEADER_BYTES) return undefined
+    const value = JSON.parse(readFileSync(file, 'utf8')) as ActivityCheckpoint
+    const offset = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+    if (value.schema !== 1 || typeof value.sessionId !== 'string' || typeof value.file !== 'string' ||
+        typeof value.identity !== 'string' || !offset(value.through) || !offset(value.observedSize) ||
+        value.through > value.observedSize || !Number.isFinite(value.mtimeMs) ||
+        !offset(value.prefixBytes) || value.prefixBytes > Math.min(HEADER_BYTES, value.through) ||
+        !/^[a-f0-9]{64}$/.test(value.prefixHash) || !/^[a-f0-9]{64}$/.test(value.boundaryHash) ||
+        !Array.isArray(value.positions) || value.positions.length > 32 ||
+        value.positions.some(entry => !Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || !offset(entry[1]) || entry[1] >= value.through)) return undefined
+    if (value.latest !== undefined && (typeof value.latest.id !== 'string' || !offset(value.latest.offset) ||
+        value.latest.offset >= value.through || typeof value.latest.ended !== 'boolean' ||
+        (value.latest.ended && !['completed', 'aborted'].includes(value.latest.outcome ?? '')) ||
+        !value.positions.some(([id, at]) => id === value.latest!.id && at === value.latest!.offset) ||
+        value.marker === undefined || !offset(value.marker.offset) || !offset(value.marker.bytes) ||
+        value.marker.bytes === 0 || value.marker.bytes > HEADER_BYTES ||
+        value.marker.offset + value.marker.bytes > value.through ||
+        !/^[a-f0-9]{64}$/.test(value.marker.hash))) return undefined
+    return value
+  } catch { return undefined }
+}
+
 /** Bounded filename discovery for an existing owner during an explicit update.
  * The reader below still verifies native metadata; filenames are not identity.
  */
@@ -52,8 +102,35 @@ export function findNativeTranscript(sessionId: string, env: NodeJS.ProcessEnv):
 export function readNativeTurnSnapshot(
   file: unknown, sessionId: string, env: NodeJS.ProcessEnv,
 ): NativeTurnSnapshot | null {
-  const observed = readNativeTranscript(file, sessionId, env, false)
-  return observed !== null && 'latest' in observed ? observed : null
+  const checkpoint = checkpointPath(sessionId, env)
+  try {
+    return withFileLock(`${checkpoint}.lock`, () => {
+      const observed = readNativeTranscript(file, sessionId, env, false, false, checkpoint)
+      return observed !== null && 'latest' in observed ? observed : null
+    }, { waitMs: 500 })
+  } catch { return null }
+}
+
+/** Explicit update recovery may catch up an existing transcript before handing
+ * over its resident writer. Ordinary polling still performs only one chunk.
+ * No-progress, lost ownership and the work budget all stop recovery as unknown.
+ */
+export async function recoverNativeTurnSnapshot(
+  file: unknown, sessionId: string, env: NodeJS.ProcessEnv, stillOwned: () => boolean,
+): Promise<NativeTurnSnapshot | null> {
+  const until = performance.now() + 2_000
+  let previous: ActivityCheckpoint | undefined
+  for (let probes = 0; probes < 32 && performance.now() < until && stillOwned(); probes++) {
+    const snapshot = readNativeTurnSnapshot(file, sessionId, env)
+    if (!stillOwned()) return null
+    if (snapshot !== null) return snapshot
+    const progress = readCheckpoint(checkpointPath(sessionId, env))
+    if (progress === undefined || (previous !== undefined &&
+        (progress.identity !== previous.identity || progress.through <= previous.through))) return null
+    previous = progress
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  return null
 }
 
 /** Observe actual native async-question calls plus their acceptance receipts.
@@ -72,6 +149,7 @@ export function nativeTranscriptOwned(file: unknown, sessionId: string, env: Nod
 
 function readNativeTranscript(
   file: unknown, sessionId: string, env: NodeJS.ProcessEnv, identityOnly: boolean, includeQuestions = false,
+  checkpointFile?: string,
 ): NativeTurnSnapshot | Pick<NativeTurnSnapshot, 'file' | 'identity'> | null {
   if (typeof file !== 'string' || !path.isAbsolute(file)) return null
   let fd: number | undefined
@@ -94,18 +172,36 @@ function readNativeTranscript(
     if (meta.type !== 'session_meta' || meta.payload?.id !== sessionId ||
         !['cli', 'vscode', 'exec'].includes(String(meta.payload.source))) return null
     if (identityOnly) return { file: canonical, identity: `${stat.dev}:${stat.ino}` }
-    const at = Math.max(0, stat.size - TAIL_BYTES)
-    const bytes = read(at, stat.size - at)
+    const identity = `${stat.dev}:${stat.ino}`
+    let checkpoint = checkpointFile === undefined ? undefined : readCheckpoint(checkpointFile)
+    if (checkpoint !== undefined && (checkpoint.sessionId !== sessionId || checkpoint.file !== canonical ||
+        checkpoint.identity !== identity || checkpoint.observedSize > stat.size ||
+        (checkpoint.observedSize === stat.size && checkpoint.mtimeMs !== stat.mtimeMs) ||
+        digest(read(0, checkpoint.prefixBytes)) !== checkpoint.prefixHash ||
+        digest(read(Math.max(0, checkpoint.through - HEADER_BYTES), Math.min(HEADER_BYTES, checkpoint.through))) !== checkpoint.boundaryHash ||
+        (checkpoint.marker !== undefined && digest(read(checkpoint.marker.offset, checkpoint.marker.bytes)) !== checkpoint.marker.hash))) {
+      checkpoint = undefined
+    }
+    // Activity advances through complete records in bounded chunks. A cold
+    // reader catches up across probes; it never skips an unobserved gap or
+    // mistakes the end of its budget for the end of the current turn.
+    // Question binding deliberately retains its full bounded-tail semantics.
+    const at = checkpointFile === undefined ? Math.max(0, stat.size - TAIL_BYTES) : checkpoint?.through ?? 0
+    const count = Math.min(TAIL_BYTES, stat.size - at)
+    const bytes = read(at, count)
+    if (bytes.length !== count) return null
     // A trailing partial record may be a newer start: do not report an older one.
-    if (bytes.length !== stat.size - at || bytes.at(-1) !== 10) return null
-    let offset = at === 0 ? 0 : bytes.indexOf(10) + 1
-    if (at > 0 && offset === 0) return null
-    let latest: NativeTurnSnapshot['latest'] | undefined
-    const positions = new Map<string, number>()
+    if (checkpointFile === undefined && bytes.at(-1) !== 10) return null
+    const limit = checkpointFile === undefined ? bytes.length : bytes.lastIndexOf(10) + 1
+    let offset = checkpointFile !== undefined || at === 0 ? 0 : bytes.indexOf(10) + 1
+    if (checkpointFile === undefined && at > 0 && offset === 0) return null
+    let latest: NativeTurnSnapshot['latest'] | undefined = checkpoint?.latest
+    let marker = checkpoint?.marker
+    const positions = new Map<string, number>(checkpoint?.positions)
     const questions: NativeQuestionEmission[] = []
     const questionCalls = new Set<string>()
     const outputs = new Map<string, boolean>()
-    while (offset < bytes.length) {
+    while (offset < limit) {
       const end = bytes.indexOf(10, offset)
       if (end < 0) return null
       const line = bytes.subarray(offset, end).toString('utf8')
@@ -114,12 +210,17 @@ function readNativeTranscript(
         const record = JSON.parse(line) as { type?: string; payload?: { type?: string; turn_id?: string } }
         const event = record.type === 'event_msg' ? record.payload : undefined
         if (event?.type === 'task_started' && typeof event.turn_id === 'string') {
+          if (checkpointFile !== undefined && end + 1 - offset > HEADER_BYTES) return null
           latest = { id: event.turn_id, offset: at + offset, ended: false }
+          marker = { offset: at + offset, bytes: end + 1 - offset, hash: digest(bytes.subarray(offset, end + 1)) }
           positions.set(event.turn_id, at + offset)
+          if (checkpointFile !== undefined && positions.size > 32) positions.delete(positions.keys().next().value!)
         } else if (latest !== undefined && event?.turn_id === latest.id &&
             ['task_complete', 'turn_aborted'].includes(event.type ?? '')) {
+          if (checkpointFile !== undefined && end + 1 - offset > HEADER_BYTES) return null
           latest.ended = true
           latest.outcome = event.type === 'turn_aborted' ? 'aborted' : 'completed'
+          marker = { offset: at + offset, bytes: end + 1 - offset, hash: digest(bytes.subarray(offset, end + 1)) }
         }
       }
       if (includeQuestions && line.includes('"response_item"')) {
@@ -148,7 +249,21 @@ function readNativeTranscript(
       offset = end + 1
     }
     const after = fstatSync(fd)
-    if (latest === undefined || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) return null
+    const current = lstatSync(canonical)
+    if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || current.isSymbolicLink() ||
+        current.dev !== stat.dev || current.ino !== stat.ino) return null
+    if (checkpointFile !== undefined && (checkpoint === undefined || at + offset > checkpoint.through)) {
+      const through = at + offset
+      const prefixBytes = Math.min(HEADER_BYTES, through)
+      const next: ActivityCheckpoint = {
+        schema: 1, sessionId, file: canonical, identity, through, observedSize: stat.size, mtimeMs: stat.mtimeMs,
+        prefixBytes, prefixHash: digest(read(0, prefixBytes)),
+        boundaryHash: digest(read(Math.max(0, through - HEADER_BYTES), Math.min(HEADER_BYTES, through))),
+        ...(latest === undefined ? {} : { latest }), ...(marker === undefined ? {} : { marker }), positions: [...positions],
+      }
+      atomicWriteFileSync(checkpointFile, `${JSON.stringify(next)}\n`)
+    }
+    if (latest === undefined || at + offset !== stat.size) return null
     return { file: canonical, identity: `${stat.dev}:${stat.ino}`, size: stat.size, latest, positions,
       ...(includeQuestions ? { questions: questions.map(question => ({ ...question, accepted: outputs.get(question.call_id) === true })) } : {}) }
   } catch {

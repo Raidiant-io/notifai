@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { nativeTranscriptOwned, readNativeQuestionSnapshot, readNativeTurnSnapshot } from './codex-native-turn.js'
+import { nativeTranscriptOwned, readNativeQuestionSnapshot, readNativeTurnSnapshot, recoverNativeTurnSnapshot } from './codex-native-turn.js'
 import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js'
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
@@ -111,6 +111,69 @@ it('refreshes actual completion without a subsequent hook and distinguishes an a
   expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('working')
   f.event('turn_aborted', 'two')
   expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('aborted')
+})
+
+it('keeps a proven current turn verifiable when ordinary output exceeds the tail window', () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'long-turn')
+  f.event('task_started', 'long-turn')
+  expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('working')
+  const line = `${JSON.stringify({ type: 'response_item', payload: { type: 'message', text: 'x'.repeat(1024) } })}\n`
+  appendFileSync(f.file, line.repeat(8200))
+  let activity = refreshCodexInputActivity('root', f.env, f.key)
+  for (let attempt = 0; activity === 'unknown' && attempt < 3; attempt++) {
+    activity = refreshCodexInputActivity('root', f.env, f.key)
+  }
+  expect(activity).toBe('working')
+  f.event('task_complete', 'long-turn')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('idle')
+})
+
+it('catches up a cold reader without skipping a newer turn inside a large history', () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'old-turn')
+  f.event('task_started', 'old-turn')
+  const output = `${JSON.stringify({ type: 'response_item', payload: { text: 'x'.repeat(1024) } })}\n`.repeat(8200)
+  appendFileSync(f.file, output)
+  f.event('task_complete', 'old-turn')
+  f.event('task_started', 'new-turn')
+  appendFileSync(f.file, output)
+  expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('unknown')
+  expect(currentCodexTurn('root', f.env, f.key)).toBe('old-turn')
+  let activity = refreshCodexInputActivity('root', f.env, f.key, f.file)
+  for (let attempt = 0; activity === 'unknown' && attempt < 4; attempt++) {
+    activity = refreshCodexInputActivity('root', f.env, f.key, f.file)
+  }
+  expect(activity).toBe('working')
+  expect(currentCodexTurn('root', f.env, f.key)).toBe('new-turn')
+  f.event('task_complete', 'new-turn')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('idle')
+})
+
+it('does not reuse a checkpoint across truncation or a partial newer turn', () => {
+  const f = fixture()
+  f.event('task_started', 'first')
+  f.event('task_complete', 'first')
+  expect(f.snapshot().latest).toMatchObject({ id: 'first', ended: true })
+  appendFileSync(f.file, '{"type":"event_msg","payload":{"type":"task_started",')
+  expect(f.snapshot()).toBeNull()
+  appendFileSync(f.file, '"turn_id":"second"}}\n')
+  expect(f.snapshot().latest).toMatchObject({ id: 'second', ended: false })
+  writeFileSync(f.file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'root', source: 'cli' } })}\n`)
+  f.event('task_started', 'replacement')
+  expect(f.snapshot().latest).toMatchObject({ id: 'replacement', ended: false })
+  expect(f.snapshot().positions.has('first')).toBe(false)
+})
+
+it('recovers an existing long transcript during an explicit update and stops when its owner changes', async () => {
+  const f = fixture()
+  f.event('task_started', 'long-turn')
+  const output = `${JSON.stringify({ type: 'response_item', payload: { text: 'x'.repeat(1024) } })}\n`.repeat(8200)
+  appendFileSync(f.file, output)
+  expect((await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true))?.latest.id).toBe('long-turn')
+  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => false)).toBeNull()
+  appendFileSync(f.file, '{"type":"event_msg"')
+  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
 })
 
 it('does not turn missing owner or a partial native record into idle', () => {
