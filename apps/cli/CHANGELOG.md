@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.8.0](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0) (2026-10-08)
+
+
+### Features
+
+* **cli:** add standalone installation and native release CI ([#262](https://github.com/Raidiant-io/notifai/issues/262)) ([91ece1b](https://github.com/Raidiant-io/notifai/commit/91ece1b045bc13290a3b8eb6112a64da3e458447))
+* **cli:** link registered questions to the Claude Code question picker ([#260](https://github.com/Raidiant-io/notifai/issues/260)) ([ba24774](https://github.com/Raidiant-io/notifai/commit/ba247745700280eaf0727da0dce8684d364e7fe7))
+* **cli:** name a Claude Code Agent Session from the session's own title ([#258](https://github.com/Raidiant-io/notifai/issues/258)) ([f8cb1c7](https://github.com/Raidiant-io/notifai/commit/f8cb1c7eaddd6eb9d80eb4d004d883f954cc182f))
+* **cli:** offer Claude Code approval for the commands an away user needs ([#257](https://github.com/Raidiant-io/notifai/issues/257)) ([48e032f](https://github.com/Raidiant-io/notifai/commit/48e032fc793543886311b42ab53be0dafde7f737))
+* **cli:** put the native command in the User command directory ([#269](https://github.com/Raidiant-io/notifai/issues/269)) ([02fdb1e](https://github.com/Raidiant-io/notifai/commit/02fdb1e80c44d346a31571ef428b592b0aed4d19))
+* **cli:** use the Claude Code session inbox on native Windows ([#261](https://github.com/Raidiant-io/notifai/issues/261)) ([f6db19a](https://github.com/Raidiant-io/notifai/commit/f6db19a6dffb9af57ff0bacb55150ad3c293f004))
+
+
+### Bug Fixes
+
+* **cli:** give each Claude Code wake its own token ([#255](https://github.com/Raidiant-io/notifai/issues/255)) ([a431bf5](https://github.com/Raidiant-io/notifai/commit/a431bf5591f3bb65f854cd191d426e7483a1141f))
+* **cli:** hand an open Claude Code session over to the installed runtime ([#265](https://github.com/Raidiant-io/notifai/issues/265)) ([3383813](https://github.com/Raidiant-io/notifai/commit/338381347b924153e619b65d9b3d9731b7b68b94))
+* **cli:** install over the folder an older CLI left on Windows ([#270](https://github.com/Raidiant-io/notifai/issues/270)) ([b3b0c23](https://github.com/Raidiant-io/notifai/commit/b3b0c2326e9680a9a9824427a05b0391e254e128))
+* **cli:** keep explicit questions and owed answers independent of Project Enablement ([#253](https://github.com/Raidiant-io/notifai/issues/253)) ([fcbb76f](https://github.com/Raidiant-io/notifai/commit/fcbb76f217ebae4c58b6e477a0f53922aaea9ab0))
+* **cli:** open Claude Code inbox writes with the session token ([#256](https://github.com/Raidiant-io/notifai/issues/256)) ([12737e1](https://github.com/Raidiant-io/notifai/commit/12737e1940753f6afe2e314edf8b2ca101afd249))
+* **cli:** order lifecycle stamps across processes in the native runtime ([#268](https://github.com/Raidiant-io/notifai/issues/268)) ([cb3e6dc](https://github.com/Raidiant-io/notifai/commit/cb3e6dc1cdc690f3833b41a17ce32ce3c804b074))
+* **cli:** refresh and verify the skill copy each harness loads ([#254](https://github.com/Raidiant-io/notifai/issues/254)) ([db07f3b](https://github.com/Raidiant-io/notifai/commit/db07f3be7d05d7b0cd84e5714dd19ce5d6149639))
+* tolerate slow Note reads in foreground commands ([#273](https://github.com/Raidiant-io/notifai/issues/273)) ([c6d1512](https://github.com/Raidiant-io/notifai/commit/c6d1512afa2dd7b159fd81e80516c724d223aa14))
+* use native installation and publication evidence ([#271](https://github.com/Raidiant-io/notifai/issues/271)) ([8ebf5ae](https://github.com/Raidiant-io/notifai/commit/8ebf5aeefe0f51f472cf17220b3f92af31543f63))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.2.1 to 8.2.2
+
 ## [11.7.1](https://github.com/Raidiant-io/notifai/compare/v11.7.0...v11.7.1) (2026-10-04)
 
 
