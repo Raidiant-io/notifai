@@ -1,9 +1,11 @@
 # Native questions linked to Notifai
 
 Use this flow only when `ask` returns `native_question`. Native forms are
-optional; Question Routing still works without them. New linking requires both
-local eligibility and confirmed service support. Capability absence leaves
-the ordinary conversation and app-answer flow available.
+optional; Question Routing still works without them. New linking requires
+local eligibility, confirmed service support and, for Codex, a connection to
+the session's app-server. Capability absence leaves the ordinary conversation
+and app-answer flow available; follow `native_question_unavailable` when `ask`
+returns it.
 
 ## Before emitting the form
 

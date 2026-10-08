@@ -28,6 +28,7 @@ import {
   readProjectSessionPointer,
 } from './hook-project-sessions.js'
 import { readSessionState } from './hook-session-state.js'
+import { codexSharedServerState } from './codex-shared-server-health.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -566,6 +567,7 @@ export async function assessReadiness(
           reused.contract,
           reused.auth,
           ...hookStates(deps),
+          ...await codexSharedServerStates(deps),
           await skillReadiness(deps, options.skillScope, options.skillHarnesses),
           reused.devices,
           reused.proof,
@@ -657,6 +659,7 @@ export async function assessReadiness(
   // device gap: init stops at the first user-elsewhere blocker, and hooks/skill
   // are reachable without a phone.
   states.push(...hookStates(deps))
+  states.push(...await codexSharedServerStates(deps))
   states.push(await skillReadiness(deps, options.skillScope, options.skillHarnesses))
 
   if (!credential || !reachable) {
@@ -1036,6 +1039,13 @@ export function remedyLine(state: ReadinessState): string {
  * a turn. Those are report lines even in `doctor`, because "look again" is not
  * a remedy.
  */
+/** Reported only where Codex hooks are installed; see codex-shared-server-health.ts. */
+async function codexSharedServerStates(deps: CommandDeps): Promise<ReadinessState[]> {
+  if (!findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).some(item => item.harness === 'codex')) return []
+  const state = await codexSharedServerState(deps.env, deps.hookPlatform ?? process.platform, deps.codexDaemonVersion)
+  return state === null ? [] : [state]
+}
+
 function hookStates(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
   const { active, contested } = resolveActiveHarness(

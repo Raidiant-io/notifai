@@ -23,6 +23,7 @@ import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from '.
 import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { processIdentityLiveness } from './process-identity.js'
+import { connectCodexAnswerControl } from './codex-answer-control.js'
 import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { CLAUDE_PICKER_TURN, CLAUDE_QUESTION_TOOL, claudePickerShape, isClaudeRegistration } from './claude-question-bindings.js'
 import { installsClaudePickerHooks } from './hook-events.js'
@@ -314,18 +315,39 @@ function recordRegisteredQuestion(
   if (local === null) return ordinary()
   const credential = deps.store.load()
   if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) return ordinary()
-  const persist = (nativeAdmission?: NativeQuestionAdmission) =>
-    persistRegisteredQuestion(deps, sessionId, built, draft, service, json, nativeAdmission, local.owner_key)
+  const persist = (nativeAdmission?: NativeQuestionAdmission, nativeUnavailable?: NativeUnavailableReason) =>
+    persistRegisteredQuestion(deps, sessionId, built, draft, service, json, nativeAdmission, local.owner_key, nativeUnavailable)
   // Discovery is optional and bounded. Missing service support must not create
   // a hidden binding or block ordinary question registration. Do not cache it.
   const client = makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
-  return client.compatibility().then(
-    support => persist(
-      Array.isArray(support?.server_capabilities) && support.server_capabilities.includes('harness_answers')
-        ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service } : undefined),
-    () => persist(),
+  const supported = client.compatibility().then(
+    support => Array.isArray(support?.server_capabilities) && support.server_capabilities.includes('harness_answers'),
+    () => false,
   )
+  // A device answer can close the native form only by steering this exact
+  // turn through the server that owns the thread. Whether one is reachable is
+  // fixed when Codex launches: an embedded (no-daemon) TUI never gains one.
+  // Without it, a linked form would outlive its answer, so do not link.
+  const reachable = (deps.codexAnswerControl ?? connectCodexAnswerControl)(
+    sessionId, local.snapshot.latest.id, deps.env, performance.now() + 1500,
+  ).then(control => {
+    if (control === null) return false
+    control.close()
+    return true
+  }, () => false)
+  return Promise.all([supported, reachable]).then(([service_ok, transport_ok]) => persist(
+    service_ok && transport_ok ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service } : undefined,
+    service_ok && !transport_ok ? 'no_owning_server_connection' : undefined,
+  ))
 }
+
+type NativeUnavailableReason = 'no_owning_server_connection'
+
+/** Agent-facing only: the User never needs to hear about app-servers. */
+const NATIVE_UNAVAILABLE_DETAIL =
+  'No connection to this Codex session\'s app-server is available, so an answer from the user\'s devices cannot close a request_user_input_async form. ' +
+  'Ask this question in plain text in the conversation and do not open request_user_input_async for it. ' +
+  'Do not explain servers, daemons or forms to the user.'
 
 /**
  * The owner of a Claude Code session whose question picker can be linked to
@@ -355,6 +377,7 @@ function persistRegisteredQuestion(
   json = false,
   nativeAdmission?: NativeQuestionAdmission,
   ownerKey?: string,
+  nativeUnavailable?: NativeUnavailableReason,
 ): number {
   let questionId: string
   const credential = deps.store.load()
@@ -409,6 +432,7 @@ function persistRegisteredQuestion(
     text_chars: built.questions[0]!.text.length,
     choices: built.questions[0]!.choices?.length ?? 0,
     media: draft.presentation.media?.length ?? 0,
+    ...(nativeUnavailable === undefined ? {} : { native_unavailable: nativeUnavailable }),
   })
   const harness = readSessionState(sessionId, deps.env).harness
   let submission: 'starting' | 'launch-failed' = 'starting'
@@ -460,6 +484,9 @@ function persistRegisteredQuestion(
               ...(picker && binding.question.multi === true ? { multi: true } : {}) })),
             instructions: picker ? pickerInstruction : nativeInstruction,
           } }),
+          ...(native === undefined && nativeUnavailable !== undefined ? { native_question_unavailable: {
+            reason: nativeUnavailable, detail: NATIVE_UNAVAILABLE_DETAIL,
+          } } : {}),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
           next: {
@@ -528,7 +555,10 @@ function persistRegisteredQuestion(
       question_id: binding.question.id, ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
       ...(binding.question.choices === undefined ? {} : { choice_ids: binding.question.choices.map(choice => choice.id) }),
     })) }))
-  } else deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
+  } else {
+    if (nativeUnavailable !== undefined) deps.io.out(NATIVE_UNAVAILABLE_DETAIL)
+    deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
+  }
   return EXIT.ok
 }
 
