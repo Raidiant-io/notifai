@@ -15,8 +15,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSyn
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
-import { ApiCallError, type ApiClient } from './client.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiCallError, createClient, type ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { hookRunCommand } from './commands-hook-run.js'
@@ -35,7 +35,10 @@ import { nativeQuestionTitle, reserveCodexQuestion } from './codex-question-bind
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => {
+  vi.restoreAllMocks()
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 const SESSION = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 const note = (id: string): AttendanceMessage => ({ message_id: id, kind: 'note', body: `Read ${id}`, created_at: new Date().toISOString(), agent_acknowledgement_text_required: true })
 
@@ -93,6 +96,26 @@ function setup() {
     hook: (turn = 'turn-1') => hookRunCommand(deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION, cwd: root, hook_event_name: 'PostToolUse', turn_id: turn }), 'codex'),
     duringClaim: (fn: () => void) => { duringClaim = fn },
   }
+}
+
+/** Exercise the HTTP client's real abort budget instead of bypassing it. */
+function delayedInputClient(h: ReturnType<typeof setup>, claimDelayMs: number, reportDelayMs = 0) {
+  h.deps.clientFactory = createClient
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+    const body = JSON.parse(String(init?.body))
+    const claim = String(url).endsWith('/delivery-attempts')
+    const delay = claim ? claimDelayMs : reportDelayMs
+    if (delay > 0) await new Promise<void>((resolve, reject) => {
+      const signal = init!.signal!
+      const abort = () => { clearTimeout(timer); reject(signal.reason) }
+      const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, delay)
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })
+    if (claim) return Response.json(await h.sequencer.client.claimDeliveryAttempt(SESSION, body))
+    expect(String(url)).toMatch(/\/delivery-attempts\/att_[^/]+\/report$/)
+    return Response.json(await h.sequencer.client.reportDeliveryAttempt(String(url).split('/').at(-2)!, body))
+  })
 }
 
 function reserveBinding(h: ReturnType<typeof setup>, questions: QuestionT[] = [{ id: 'q1', text: 'Continue?' }]) {
@@ -630,6 +653,90 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.output.join('\n')).toContain('Read sm_blocked')
     await receiveCommand(h.deps)
     expect(h.output.at(-1)).toContain('No user input is pending')
+  })
+
+  it.each([[1_000, 0], [2_500, 1_000]])('receives a Note once with a slow successful claim (%i ms) and report (%i ms)', async (claimMs, reportMs) => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_slow_claim')])
+    delayedInputClient(h, claimMs, reportMs)
+    expect(await receiveCommand(h.deps)).toBe(0)
+    expect(h.output.join('\n')).toContain('Read sm_slow_claim')
+    expect(h.claims).toEqual(['sm_slow_claim'])
+    expect(h.reports).toEqual(['handed_off'])
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
+    await receiveCommand(h.deps)
+    expect(h.output.filter(text => text.includes('Read sm_slow_claim'))).toHaveLength(1)
+  })
+
+  it('keeps prompt-hook reads short and lets the foreground command recover the queued Note', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_hook_deferred')])
+    const fetch = delayedInputClient(h, 1_000)
+    expect(await receiveSessionInputs(h.deps, SESSION, text => h.output.push(text))).toBe(false)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls.every(([, init]) => init!.signal!.aborted)).toBe(true)
+    expect(h.claims).toEqual([])
+    expect(h.output).toEqual([])
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
+    await receiveCommand(h.deps)
+    expect(h.output.join('\n')).toContain('Read sm_hook_deferred')
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
+  })
+
+  it('retains a Note after a foreground transport timeout and presents it once after recovery', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_retry')])
+    const fetch = delayedInputClient(h, 0)
+    fetch.mockRejectedValueOnce(new DOMException('Connection timed out', 'TimeoutError'))
+      .mockRejectedValueOnce(new DOMException('Connection timed out', 'TimeoutError'))
+    await receiveCommand(h.deps)
+    expect(h.output.join('\n')).toContain('User input is pending')
+    expect(h.output.join('\n')).not.toContain('Read sm_retry')
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
+    await receiveCommand(h.deps)
+    await receiveCommand(h.deps)
+    expect(h.output.filter(text => text.includes('Read sm_retry'))).toHaveLength(1)
+    expect(h.claims).toEqual(['sm_retry'])
+  })
+
+  it('does not write a foreground Note after the whole command deadline expires during its claim', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_expired_read')])
+    let now = Date.now()
+    h.deps.now = () => now
+    h.duringClaim(() => { now += 60_000 })
+    await receiveCommand(h.deps)
+    expect(h.output.join('\n')).toContain('User input is pending')
+    expect(h.output.join('\n')).not.toContain('Read sm_expired_read')
+    expect(h.reports).toEqual(['released'])
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
+  })
+
+  it('recovers a slow previous delivery report and still reads the next Note without replaying the first', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    h.stage([note('sm_report_retry')])
+    const fetch = delayedInputClient(h, 0)
+    const respond = fetch.getMockImplementation()!
+    fetch.mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/report')) throw new DOMException('Report timed out', 'TimeoutError')
+      return respond(url, init)
+    })
+    await receiveCommand(h.deps)
+    expect(h.output.join('\n')).toContain('Read sm_report_retry')
+    expect(readDeliveryJournal(SESSION, h.env)[0]?.reported).toBeUndefined()
+    fetch.mockRestore()
+    delayedInputClient(h, 0, 1_000)
+    h.stage([note('sm_after_report')])
+    await receiveCommand(h.deps)
+    expect(h.output.join('\n')).toContain('Read sm_after_report')
+    expect(h.output.filter(text => text.includes('Read sm_report_retry'))).toHaveLength(1)
+    expect(h.claims).toEqual(['sm_report_retry', 'sm_after_report'])
+    expect(readDeliveryJournal(SESSION, h.env).every(entry => entry.reported === 'handed_off')).toBe(true)
   })
 
   it('retries a failed wake without losing input and coalesces the successful wake', async () => {
