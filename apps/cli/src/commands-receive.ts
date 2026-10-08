@@ -6,7 +6,10 @@ import { currentProcessIdentity, processIdentityLiveness } from './process-ident
 import { readAttendantLease } from './session-attendant-state.js'
 import { drainSessionInputs, hasSessionInputs, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
 
-export async function receiveSessionInputs(deps: CommandDeps, sessionId: string, write: (text: string) => void): Promise<boolean> {
+export async function receiveSessionInputs(
+  deps: CommandDeps, sessionId: string, write: (text: string) => void,
+  context: 'hook' | 'command' = 'hook',
+): Promise<boolean> {
   const lease = readAttendantLease(sessionId, deps.env)
   const incarnation = readSessionIncarnation(sessionId, deps.env)
   const owner = incarnation?.harness_process
@@ -24,9 +27,11 @@ export async function receiveSessionInputs(deps: CommandDeps, sessionId: string,
   const writer = currentProcessIdentity()
   if (credential === null || writer === null) return false
   const now = deps.now ?? Date.now
-  const deadlineAt = now() + 2_000
+  // A foreground read can wait for an ordinary slow link. Synchronous prompt
+  // hooks still have to yield quickly, leaving undelivered inputs queued.
+  const deadlineAt = now() + (context === 'command' ? 30_000 : 2_000)
   const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
-    timeoutMs: 750, deadlineAt, now,
+    timeoutMs: context === 'command' ? 20_000 : 750, deadlineAt, now,
   })
   return drainSessionInputs({
     lease, mayWrite: () => now() < deadlineAt && mayWrite(), write,
@@ -44,7 +49,7 @@ export async function receiveCommand(deps: CommandDeps): Promise<number> {
   }
   log(deps).bind({ session: current.sessionId })
   observeSessionInputWake(current.sessionId, deps.env, sessionInputWake())
-  const received = await receiveSessionInputs(deps, current.sessionId, (text) => deps.io.out(text))
+  const received = await receiveSessionInputs(deps, current.sessionId, (text) => deps.io.out(text), 'command')
   if (!received) {
     const pending = hasSessionInputs(current.sessionId, deps.env, readAttendantLease(current.sessionId, deps.env))
     deps.io.out(pending

@@ -349,10 +349,16 @@ async function drainSessionInputsOnce(input: {
       if (result.agent_acknowledgement !== null) clearAcknowledgementObligation(deps.sessionId, deps.env, answer.pending.request_id!)
     } catch { return false }
   }
-  const claimUntil = deps.monotonic() + 750
+  // Recovery runs before the first claim. Start this short batching window
+  // afterward so a slow previous report cannot prevent all new claims. The
+  // caller's whole-operation deadline still fences recovery and presentation.
+  let claimUntil: number | undefined
   const handOff = await beginHandOff(deps, {
     lease, lockWaitMs: 0, stopAtRefusal: true, mayWrite: input.mayWrite,
-    mayClaim: () => deps.monotonic() < claimUntil,
+    mayClaim: () => {
+      claimUntil ??= deps.monotonic() + 750
+      return deps.monotonic() < claimUntil
+    },
     subjects: [
       ...answers.filter((answer) => answer.delivery_claim === true).map((answer) => ({ type: 'answer' as const, request_id: answer.pending.request_id! })),
       ...messages.map((message) => ({ type: 'session_message' as const, message_id: message.message_id })),
