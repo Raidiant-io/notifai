@@ -328,8 +328,11 @@ function recordRegisteredQuestion(
   // turn through the server that owns the thread. Whether one is reachable is
   // fixed when Codex launches: an embedded (no-daemon) TUI never gains one.
   // Without it, a linked form would outlive its answer, so do not link.
+  // The first `codex` launch from a daemon-hosted tool has taken ~2s cold, so
+  // a tight budget misreads a slow server as an absent one. A missing socket
+  // still fails fast, so sessions without a server do not pay this budget.
   const reachable = (deps.codexAnswerControl ?? connectCodexAnswerControl)(
-    sessionId, local.snapshot.latest.id, deps.env, performance.now() + 1500,
+    sessionId, local.snapshot.latest.id, deps.env, performance.now() + NATIVE_PREFLIGHT_BUDGET_MS,
   ).then(control => {
     if (control === null) return false
     control.close()
@@ -342,6 +345,8 @@ function recordRegisteredQuestion(
 }
 
 type NativeUnavailableReason = 'no_owning_server_connection'
+
+const NATIVE_PREFLIGHT_BUDGET_MS = 3_000
 
 /** Agent-facing only: the User never needs to hear about app-servers. */
 const NATIVE_UNAVAILABLE_DETAIL =
