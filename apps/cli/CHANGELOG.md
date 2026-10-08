@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [11.8.0-beta.6](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0-beta.6) (2026-10-08)
+
+### Features
+
+* Install and update the standalone native CLI without a Node.js runtime.
+* Use the Claude Code session inbox on Windows, link registered questions to the native question picker, and keep session names in sync with Claude Code titles.
+
+### Bug Fixes
+
+* Allow foreground Note reads to survive ordinary network latency, and recover earlier delivery reports without preventing the next Note from being read.
+* Preserve open Claude Code sessions when updating the native runtime.
+* Refresh and verify the skill copy each harness loads, and keep explicit questions and owed answers independent of Project Enablement.
+* Install over folders left by older Windows installations and use native installation guidance.
+
 ## [11.7.1](https://github.com/Raidiant-io/notifai/compare/v11.7.0...v11.7.1) (2026-10-04)
 
 
