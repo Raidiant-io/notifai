@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 
 /** Resolve an existing path through symlinks, or normalize the local spelling. */
@@ -51,4 +51,18 @@ export function pathContainsDirectory(
   return pathDirectories(env, platform).some((entry) =>
     sameLocalPath(entry, directory, platform),
   )
+}
+
+/** Resolve a Unix socket's path through symlinks. Bun cannot realpath a
+ * socket itself (EOPNOTSUPP), so follow the links and canonicalize only the
+ * directory that holds it. */
+export function canonicalSocketPath(file: string): string {
+  let current = path.resolve(file)
+  for (let hops = 0; hops < 32; hops++) {
+    if (!lstatSync(current).isSymbolicLink()) {
+      return path.join(realpathSync.native(path.dirname(current)), path.basename(current))
+    }
+    current = path.resolve(path.dirname(current), readlinkSync(current))
+  }
+  throw new Error(`Too many symbolic links resolving ${file}`)
 }

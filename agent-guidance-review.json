@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:518aac9313a6948b4ebc4a22963d30b188323ea80be3a398368add7820ea402f",
+  "behavior_digest": "sha256:894c556a80876cdffdfca11a7a47cbfc3f970932473a15902abb96180c944dda",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms. Codex ask now links a native request_user_input_async form only when the session's app-server can be reached to steer a device answer into the turn; otherwise it returns native_question_unavailable telling the agent to ask in plain text and keep transport details from the user. The native-questions reference names the new prerequisite and points at that field. Doctor gains a non-blocking Codex shared app-server report with a version-drift remedy. Hook output, answer delivery, acknowledgement and the steer path are unchanged. The ask-time transport preflight budget is 3 s so a cold Codex spawn is not misread as an absent server; agent-facing text is unchanged.",
+  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms. Codex ask now links a native request_user_input_async form only when the session's app-server can be reached to steer a device answer into the turn; otherwise it returns native_question_unavailable telling the agent to ask in plain text and keep transport details from the user. The native-questions reference names the new prerequisite and points at that field. Doctor gains a non-blocking Codex shared app-server report with a version-drift remedy. Hook output, answer delivery, acknowledgement and the steer path are unchanged. The ask-time transport preflight budget is 3 s so a cold Codex spawn is not misread as an absent server; agent-facing text is unchanged. The Codex control connection now uses a Unix-socket WebSocket client that works in the Bun-compiled runtime; agent-facing text is unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
