@@ -8618,7 +8618,7 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
-  it.each(['supported', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on current service support: %s', async mode => {
+  it.each(['supported', 'no-transport', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
@@ -8645,7 +8645,10 @@ describe('asking before the hooks have ever run', () => {
       return { server_capabilities: mode === 'missing' ? [] : mode === 'malformed' ? null : ['harness_answers'] }
     })
     const spawn = vi.fn()
-    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn }
+    const close = vi.fn()
+    const codexAnswerControl = vi.fn(async () => mode === 'no-transport' ? null
+      : { namespace: 'codex', threadId: sessionId, currentTurn: async () => true, steer: async () => {}, close })
+    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn, codexAnswerControl }
     mkdirSync(path.join(cwd, '.notifai'))
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
@@ -8676,12 +8679,25 @@ describe('asking before the hooks have ever run', () => {
       expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
       return
     }
-    if (mode !== 'supported') {
+    expect(codexAnswerControl).toHaveBeenCalledWith(sessionId, 'turn-1', env, expect.any(Number))
+    if (mode === 'no-transport') {
       expect(output.native_question).toBeUndefined()
+      expect(output.native_question_unavailable).toMatchObject({ reason: 'no_owning_server_connection' })
+      expect(output.native_question_unavailable.detail).toContain('do not open request_user_input_async')
+      expect(output.next.answered_outside_notifai).toContain(`notifai close ${output.question_id}`)
       expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
       expect(readSessionState(sessionId, env).pending).toHaveLength(1)
       return
     }
+    if (mode !== 'supported') {
+      expect(output.native_question).toBeUndefined()
+      expect(output.native_question_unavailable).toBeUndefined()
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
+      return
+    }
+    expect(close).toHaveBeenCalled()
+    expect(output.native_question_unavailable).toBeUndefined()
     expect(output.native_question).toMatchObject({ tool: 'request_user_input_async',
       questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
     })
