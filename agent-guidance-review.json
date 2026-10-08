@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:57789915a3a63f5f7cf9d19b769bf6f588abc4fc9003bdeed5f1c7d9435b242d",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README installation text and domain terms. Missing commands now route to existing native launchers before OS bootstrap installation; native channel choice, setup choices and legacy-owner migration remain explicit. Removed frozen npm-runtime installation advice from both READMEs and the skill. Hook output, question routing, answers and acknowledgement behavior are unchanged.",
+  "behavior_digest": "sha256:68df599ca96eac2841f23601ce44e3d46b5ba6370571bbd01688a85409cc3d18",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle receive callers, the skill and Note/Edit references, harness setup and diagnostics, CLI readiness and command help, README and domain terms against the foreground Note-read repair. Agents still consume supplied input first, invoke receive once for an empty wake, acknowledge each presented submission once and preserve queued input on timeout. Foreground requests may wait longer and claim batching begins after journal recovery; prompt-hook budgets, output instructions, routing admission, setup and vocabulary are unchanged. No new agent action or guidance wording is required.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
