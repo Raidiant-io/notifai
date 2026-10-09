@@ -1,3 +1,4 @@
+import { skillInventoryIssue } from './native-skills.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { installedSkillMatchesPackage, listScopedNotifaiSkills, staleInstalledSkillCopies } from './commands-skill.js'
 
@@ -9,6 +10,8 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
     return EXIT.failed
   }
   const inventory = await listScopedNotifaiSkills(deps)
+  const issue = skillInventoryIssue(inventory)
+  if (issue !== null) return fail(`${issue.detail} ${issue.remedy}`)
   if (inventory.errors.length > 0 || inventory.installed.length !== 1) {
     return fail('Skill refresh needs exactly one readable existing installation. Resolve missing or duplicate scope through setup first.')
   }

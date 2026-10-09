@@ -101,7 +101,7 @@ it('verifies an unchanged healthy integration without optional setup or a restar
   expect(readFileSync(f.installation.file, 'utf8')).toBe(protectedBytes)
 })
 
-it('keeps failed installer work resumable without changing hooks, trust or skill scope', async () => {
+it('preserves unmanaged guidance without invoking an installer or changing hooks and trust', async () => {
   const f = fixture()
   const skill = path.join(f.home, '.agents', 'skills', 'notifai')
   mkdirSync(skill, { recursive: true })
@@ -112,12 +112,15 @@ it('keeps failed installer work resumable without changing hooks, trust or skill
   removeToolHook(f.installation.file)
   const hooks = readFileSync(f.installation.file, 'utf8')
   const trust = readFileSync(f.trust, 'utf8')
+  const guidance = readFileSync(path.join(skill, 'SKILL.md'))
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false, migration_complete: false,
     resume_command: 'notifai update --resume --json' })
   expect(readFileSync(f.installation.file, 'utf8')).toBe(hooks)
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
-  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global' }))
+  expect(readFileSync(path.join(skill, 'SKILL.md'))).toEqual(guidance)
+  expect(add).not.toHaveBeenCalled()
+  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toContain('skill-unmanaged')
 })
 
 it('repairs both installed source and selected Codex definitions without touching another account', async () => {
@@ -211,13 +214,44 @@ it('lets a resident observer detect missing wiring without consuming the agent n
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
 })
 
-it('fails open on an oversized optional skill without accessing service or changing hooks', () => {
+it('reports incomplete inspection for oversized guidance without accessing service or changing hooks', () => {
   const f = fixture()
   const skill = path.join(f.home, '.agents', 'skills', 'notifai')
   mkdirSync(skill, { recursive: true })
   writeFileSync(path.join(skill, 'SKILL.md'), 'optional installed skill')
   writeFileSync(path.join(skill, 'oversized.md'), Buffer.alloc(2 * 1024 * 1024 + 1))
   const before = readFileSync(f.installation.file, 'utf8')
+  const add = vi.fn(nativeSkills.add)
+  f.deps.nativeSkills = { ...nativeSkills, add }
+  expect(integrationFaultNotice(f.deps, 'codex')).toContain('skill-inspection-incomplete')
   expect(integrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+  expect(add).not.toHaveBeenCalled()
   expect(readFileSync(f.installation.file, 'utf8')).toBe(before)
+})
+
+
+it('resumes an interrupted owned skill replacement without changing recorded harnesses or hooks', async () => {
+  const f = fixture(), bundle = shippedSkillBundle()
+  if (!bundle.ok) throw new Error(bundle.error)
+  const source = path.join(f.root, 'previous-bundle'), tree = path.join(source, 'notifai')
+  cpSync(bundle.bundle.skillRoot, tree, { recursive: true })
+  writeFileSync(path.join(tree, 'SKILL.md'), 'Previous verified release guidance')
+  writeFileSync(path.join(source, 'manifest.json'), JSON.stringify(createSkillManifest(tree, '1.0.0')))
+  const previous = verifySkillBundle(source)
+  if (!previous.ok) throw new Error(previous.error)
+  expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: previous.bundle }).ok).toBe(true)
+  const interrupted = new SkillInstallation({ cwd: f.deps.cwd, env: f.deps.env, observe(phase) {
+    if (phase === 'old-retained') throw new Error('simulated replacement interruption')
+  } })
+  expect(interrupted.reconcile({ scope: 'global', bundle: bundle.bundle }).ok).toBe(false)
+  const hooks = readFileSync(f.installation.file), trust = readFileSync(f.trust)
+  const add = vi.fn(nativeSkills.add); f.deps.nativeSkills = { ...nativeSkills, add }
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true, changed: ['skill'] })
+  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global' }))
+  expect(await nativeSkills.list('global', f.deps.cwd, f.deps.env)).toMatchObject({ skills: [
+    { owned: true, pending: false, condition: 'managed-current', agents: ['claude-code'] },
+  ] })
+  expect(readFileSync(f.installation.file)).toEqual(hooks)
+  expect(readFileSync(f.trust)).toEqual(trust)
 })

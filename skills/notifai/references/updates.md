@@ -64,8 +64,15 @@ Honor existing approval deferrals; repeating resume does not grant permission.
 1. Read the new packaged `guidance.skill_path` and this update reference. Run
    `notifai guidance` to reread the effective provenance-marked Guidance Topics.
 2. Resolve the reported `pending_actions`. An unreadable or duplicate skill
-   scope requires a decision rather than guessing. A failed native installer
-   remains incomplete; report its failure and resume only after resolving it.
+   scope requires a decision rather than guessing. An unmanaged or modified
+   skill is preserved: ask the User whether to keep it or replace it after
+   preserving their changes. Matching package bytes do not establish installer
+   ownership. An interrupted installer-owned placement or a missing owned
+   destination can resume in its recorded scope through the existing installer.
+   An incomplete inspection or unverifiable bundle does not establish stale
+   guidance; resolve that diagnosis before attempting refresh. A failed native
+   installer remains incomplete; report its failure and resume only after
+   resolving it.
    Read the refreshed skill and relevant changed references explicitly;
    replacing files does not replace the agent's existing context.
 3. Explain any diagnosed approval or restart

@@ -5960,6 +5960,7 @@ describe('init', () => {
     if (!existsSync(skillPath)) installCurrentSkill(skillPath)
     return {
       name: 'notifai',
+      owned: true,
       agents: ['claude-code'],
       scope,
       path: skillPath,
@@ -6222,6 +6223,7 @@ describe('init', () => {
             ? [
                 {
                   name: 'notifai',
+                  owned: true,
                   scope,
                   path: installedPath,
                   source: 'Raidiant-io/notifai',
@@ -9892,6 +9894,7 @@ describe('asking before the hooks have ever run', () => {
             ? [
                 {
                   name: 'notifai',
+                  owned: true,
                   scope,
                   path: path.join(cwd, 'global-skills', 'notifai'),
                   source: 'Raidiant-io/notifai',

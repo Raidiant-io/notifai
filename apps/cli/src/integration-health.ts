@@ -13,9 +13,9 @@ import { type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, isNpxAdapterTarget } from './hook-adapter.js'
 import { codexTrustProblems, findInstallations, handlerEvent, type Installation } from './install-hooks.js'
-import { conventionalSkillPath } from './native-skills.js'
+import { conventionalSkillPath, discoverNotifaiSkills, skillInventoryIssue } from './native-skills.js'
 import { packageVersion } from './release.js'
-import { createSkillManifest, shippedSkillBundle, type SkillInspectionBudget } from './skill-integrity.js'
+import { type SkillInspectionBudget } from './skill-integrity.js'
 
 export function installationFaults(installation: Installation, platform?: NodeJS.Platform): string[] {
   const events = installation.handlers.map(handler => handlerEvent(handler.command))
@@ -86,15 +86,17 @@ export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInst
       faults.push({ code: 'native-approval-pending', detail: `Native approval is unresolved for ${installation.file}.`, remedy: '/hooks' })
     }
   }
-  // Missing optional skills are not damage. Only an existing copy is checked.
-  const skills = (['project', 'global'] as const).map(scope => conventionalSkillPath(scope, 'notifai', deps.cwd, deps.env))
-    .filter(root => existsSync(path.join(root, 'SKILL.md')))
-  if (skills.length > 1) faults.push({ code: 'skill-scope-ambiguous', detail: 'Both skill scopes are installed.', remedy: 'notifai doctor --json' })
-  const bundle = skills.length > 0 ? shippedSkillBundle(undefined, budget) : null
-  for (const root of skills) {
-    if (bundle === null || !bundle.ok || createSkillManifest(root, '', budget).digest !== bundle.bundle.manifest.digest) {
-      faults.push({ code: 'skill-drift', detail: `Installed guidance differs at ${root}.`, remedy: 'notifai update --refresh-skill --json' })
-    }
+  // The production synchronous adapter and its async list share discovery.
+  // Custom adapters can provide inspect to exercise this same boundary in tests.
+  const results = (['project', 'global'] as const).map(scope => ({ scope,
+    ...(deps.nativeSkills?.inspect ?? discoverNotifaiSkills)(scope, deps.cwd, deps.env, budget) }))
+  const inventory = { installed: results.flatMap(result => result.skills),
+    errors: results.flatMap(result => result.error === undefined ? [] : [`${result.scope}: ${result.error}`]) }
+  const issue = skillInventoryIssue(inventory)
+  if (issue !== null) faults.push({ code: issue.code, detail: issue.detail, remedy: issue.remedy })
+  else for (const skill of inventory.installed) {
+    if (skill.condition !== 'managed-current') faults.push({ code: 'skill-drift',
+      detail: `Receipt-backed guidance differs from this CLI at ${skill.path}.`, remedy: 'notifai update --refresh-skill --json' })
   }
   return { cli, faults, installations }
 }
