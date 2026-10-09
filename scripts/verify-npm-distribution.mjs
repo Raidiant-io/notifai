@@ -12,13 +12,15 @@ const PACKAGES = new Map([
 ])
 
 export async function registryDistTags(name, fetchImpl = fetch) {
-  const response = await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
+  // npm's dist-tag command reads this endpoint. The package metadata document
+  // can remain cached after a successful tag write.
+  const response = await fetchImpl(`https://registry.npmjs.org/-/package/${encodeURIComponent(name)}/dist-tags`, {
     redirect: 'error',
     signal: AbortSignal.timeout(10_000),
   })
   if (response.status === 404) return {}
   if (!response.ok) throw new Error(`npm distribution lookup failed for ${name} (HTTP ${response.status})`)
-  const tags = (await response.json())['dist-tags']
+  const tags = await response.json()
   if (tags === null || typeof tags !== 'object' || Array.isArray(tags)) {
     throw new Error(`npm distribution tags missing for ${name}`)
   }

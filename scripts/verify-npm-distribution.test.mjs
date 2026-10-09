@@ -15,14 +15,17 @@ test('beta publication moves beta and preserves latest', () => {
   assert.throws(() => verifyDistribution({ ...candidate, before: { latest: '11.4.0' }, after: { latest: '11.4.0', beta: '11.4.0-beta.2' } }), /must target a version newer/)
 })
 
-test('npm distribution lookup uses the public registry and fails closed', async () => {
+test('npm distribution lookup reads the dedicated tag endpoint and fails closed', async () => {
   const tags = await registryDistTags('@raidiant/notifai', async (url, options) => {
-    assert.equal(url, 'https://registry.npmjs.org/%40raidiant%2Fnotifai')
+    assert.equal(url, 'https://registry.npmjs.org/-/package/%40raidiant%2Fnotifai/dist-tags')
     assert.equal(options.redirect, 'error')
-    return Response.json({ 'dist-tags': { latest: '11.3.2', beta: '11.4.0-beta.1' } })
+    return Response.json({ latest: '11.3.2', beta: '11.4.0-beta.1' })
   })
   assert.equal(tags.latest, '11.3.2')
   await assert.rejects(registryDistTags('@raidiant/notifai', async () => new Response('', { status: 503 })), /HTTP 503/)
+  for (const malformed of [null, [], { 'dist-tags': { beta: '11.4.0-beta.1' } }, { beta: '' }]) {
+    await assert.rejects(registryDistTags('@raidiant/notifai', async () => Response.json(malformed)), /distribution tags missing|invalid npm distribution tag/)
+  }
 })
 
 test('a first package beta preserves the absent stable tag', async () => {
