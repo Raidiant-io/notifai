@@ -7,8 +7,10 @@ import path from 'node:path'
 import test from 'node:test'
 import { releaseSigningMessage, RELEASE_TARGETS } from '../apps/cli/dist/release-distribution.js'
 import { adapterPackageManifest, generateAdapterManifest, hash } from './npm-adapter-artifact.mjs'
-import { requireOwnedHostedAccount } from './verify-packed-install.mjs'
+import { requireOwnedHostedAccount, verifyWindowsShims } from './verify-packed-install.mjs'
 import { verifyPackedAdapter } from './verify-packed-npm-adapter.mjs'
+import { commandInvocation } from './cross-platform.mjs'
+import { requireStatus, runExternal } from './run-external.mjs'
 function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-proof-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -58,4 +60,17 @@ test('real installation acceptance refuses local execution and a synthetic accou
   assert.throws(() => requireOwnedHostedAccount({}, account), /disposable first-party/)
   assert.throws(() => requireOwnedHostedAccount({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', GITHUB_REPOSITORY: 'Raidiant-io/notifai', HOME: account + '-fixture' }, account), /actual OS account/)
   assert.equal(requireOwnedHostedAccount({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', GITHUB_REPOSITORY: 'Raidiant-io/notifai', HOME: account }, account), account)
+})
+
+test('actual npm shims launch through Windows shells from a Unicode path', { skip: process.platform !== 'win32' }, t => {
+  // This is shell-startup evidence only. The fixture has no native installer,
+  // credentials or Account state; release acceptance uses the signed product.
+  const f = fixture(t)
+  const installDir = path.join(path.dirname(f.directory), 'npm shims Ω')
+  mkdirSync(installDir)
+  writeFileSync(path.join(installDir, 'package.json'), JSON.stringify({ private: true }))
+  const install = commandInvocation('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', f.pack()])
+  requireStatus(runExternal(install.file, install.args, { ...install.options, cwd: installDir,
+    timeoutMs: 120_000, phase: 'windows-shim-fixture-install' }))
+  verifyWindowsShims(installDir, /fixture adapter/, process.env)
 })

@@ -2,7 +2,7 @@
 // Read the hosted runner's OS identity; create only a unique temporary folder.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -36,8 +36,28 @@ try {
   const stat = lstatSync(temporary)
   assert.ok(stat.isDirectory() && !stat.isSymbolicLink())
   if (process.platform !== 'win32') assert.ok(stat.uid === process.getuid() && (stat.mode & 0o077) === 0)
+  const checks = ['os-account-home', 'native-target', 'private-temporary-directory']
+  if (process.platform === 'win32') {
+    // Real OS files and the actual staged helper exercise ReadLine/JSON/ACLs
+    // on both Windows targets. All data stays in the owned temporary tree.
+    const paths = [{ file: temporary, directory: true }]
+    for (let index = 0; index < 192; index++) {
+      const file = path.join(temporary, `δ🚀 quote' & $(literal); ${index}-` + 'x'.repeat(24))
+      writeFileSync(file, 'batch fixture')
+      paths.push({ file, directory: false })
+    }
+    assert.ok(Buffer.byteLength(JSON.stringify({ paths })) > 32_767, 'Batch must exceed the command-line payload limit')
+    platform.checkAccess(paths)
+    assert.throws(() => platform.checkAccess([...paths.slice(0, 2), { ...paths[2], directory: true }]),
+      /Windows installation helper failed/, 'A file cannot be admitted as a directory')
+    assert.throws(() => platform.checkAccess([paths[1], { ...paths[0], directory: false }]),
+      /Windows installation helper failed/, 'A directory cannot be admitted as a file')
+    assert.throws(() => platform.checkAccess([...paths.slice(0, 2), { file: path.join(temporary, 'missing'), directory: false }]),
+      /Windows installation helper failed/, 'One missing member must reject the batch')
+    checks.push('npm-access-batch', 'npm-access-batch-large-unicode-payload', 'npm-access-batch-rejections')
+  }
   // The Windows helper verifies its private owner/DACL before returning.
-  console.log(JSON.stringify({ ok: true, target: process.argv[2], checks: ['os-account-home', 'native-target', 'private-temporary-directory'] }))
+  console.log(JSON.stringify({ ok: true, target: process.argv[2], checks }))
 } finally {
   if (originalTemp === undefined) delete process.env.TEMP; else process.env.TEMP = originalTemp
   if (originalTmp === undefined) delete process.env.TMP; else process.env.TMP = originalTmp

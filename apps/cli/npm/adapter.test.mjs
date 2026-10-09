@@ -12,10 +12,41 @@ import { ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } from '@zip.js/zip.js'
 import { Distribution, releaseSigningMessage } from '../dist/release-distribution.js'
 import { acquireNative } from './bootstrap.mjs'
 import { runNpmAdapter } from './adapter.mjs'
-import { assertAcquisitionReady, executeNative, ownedPosixCommand } from './platform.mjs'
+import { assertAcquisitionReady, executeNative, ownedPosixCommand, windowsPackageAccess } from './platform.mjs'
 import { npmAdapterPosixAccess } from '../dist/npm-adapter-verification.js'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
+
+test('Windows batch transport keeps hostile and long pathnames as bounded data in one invocation', t => {
+  // The subprocess is substituted: this proves transport, not Windows ACLs.
+  const original = process.env.SystemRoot
+  process.env.SystemRoot = 'C:\\Windows'
+  t.after(() => { if (original === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = original })
+  const paths = [
+    { file: path.resolve("δ🚀 quote' $(literal);\nline"), directory: false },
+    { file: path.resolve('long-' + 'x'.repeat(16_000)), directory: true },
+  ]
+  const calls = []
+  const execute = (...args) => { calls.push(args); return '' }
+  windowsPackageAccess(paths, execute)
+  assert.equal(calls.length, 1)
+  const [executable, args, options] = calls[0]
+  assert.equal(executable.endsWith('powershell.exe'), true)
+  assert.deepEqual(args.slice(0, 4), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'])
+  assert.equal(args[4].length < 32_000, true)
+  const code = Buffer.from(args[4], 'base64').toString('utf16le')
+  for (const entry of paths) assert.equal(code.includes(entry.file), false)
+  assert.deepEqual(JSON.parse(Buffer.from(options.input.trim(), 'base64').toString('utf8')), { paths })
+  assert.equal(options.input.endsWith('\n'), true)
+  assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe'])
+  for (const rejected of [[], Array(258).fill(paths[0]), [{ ...paths[0], file: 'relative' }],
+    [{ ...paths[0], file: path.resolve('nul\0path') }], [{ ...paths[0], directory: 'true' }],
+    [{ ...paths[0], file: path.resolve('x'.repeat(1024 * 1024)) }]]) {
+    assert.throws(() => windowsPackageAccess(rejected, execute))
+  }
+  assert.equal(calls.length, 1)
+  assert.throws(() => windowsPackageAccess(paths, () => { throw new Error('ACL rejection') }), /Windows installation helper failed/)
+})
 async function fixture(t, { target = 'bun-linux-x64', extra = false, beta = false } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-acquisition-')), temporary = path.join(root, 'temporary')
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -145,15 +176,15 @@ test('cancellation reaches the native child and retains its exit result', { skip
 test('missing-command acquisition refuses pending transactions, retained owners, linked or writable installation roots', { skip: process.platform === 'win32' }, t => {
   const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-readiness-')), root = path.join(home, '.notifai')
   t.after(() => rmSync(home, { recursive: true, force: true }))
-  assertAcquisitionReady(home, npmAdapterPosixAccess)
+  assertAcquisitionReady(home, (file, directory) => npmAdapterPosixAccess([{ file, directory }]))
   mkdirSync(root)
   for (const name of ['uninstall.json', 'transaction.json', 'install.json', 'active.json']) {
     writeFileSync(path.join(root, name), '{}')
-    assert.throws(() => assertAcquisitionReady(home, npmAdapterPosixAccess), /recovery/)
+    assert.throws(() => assertAcquisitionReady(home, (file, directory) => npmAdapterPosixAccess([{ file, directory }])), /recovery/)
     rmSync(path.join(root, name))
   }
   const retention = path.join(root, 'runtime-retention'); mkdirSync(retention); mkdirSync(path.join(retention, 'unknown-owner'))
-  assert.throws(() => assertAcquisitionReady(home, npmAdapterPosixAccess), /owners/)
+  assert.throws(() => assertAcquisitionReady(home, (file, directory) => npmAdapterPosixAccess([{ file, directory }])), /owners/)
   rmSync(retention, { recursive: true })
   const bin = path.join(root, 'bin'), command = path.join(bin, 'notifai'); mkdirSync(bin); writeFileSync(command, 'fixture', { mode: 0o700 })
   assert.equal(ownedPosixCommand(home), command)

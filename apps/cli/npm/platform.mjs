@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-function powershell(operation, data = {}) {
+function powershell(operation, data = {}, { lineInput = false, execute = execFileSync } = {}) {
   const script = fileURLToPath(new URL('../data/install.ps1', import.meta.url)).replaceAll("'", "''")
   // Only local pathname data crosses this boundary. Encoding it separately
   // avoids PowerShell quoting and a redirected-stdin EOF dependency on ARM.
@@ -14,19 +14,35 @@ function powershell(operation, data = {}) {
   const phase = name => `[Console]::Error.WriteLine('notifai-bootstrap:${name}');`
   // Resolve only the required OS module. First-use command discovery otherwise
   // walks third-party PSModulePath entries, including slow/offline locations.
-  const code = `${phase('started')} $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $PSModuleAutoLoadingPreference='None'; Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1')); ${phase('modules-ready')} [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ${phase('encoding-ready')} . '${script}'; ${phase('helper-ready')} $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json; ${phase('operation-started')} ${operation}; ${phase('complete')}`
+  // A single terminated base64 line avoids the ARM redirected-stdin EOF
+  // dependency while keeping a bounded batch off the Windows command line.
+  const input = lineInput ? '[Console]::ReadLine()' : `'${payload}'`
+  const code = `${phase('started')} $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $PSModuleAutoLoadingPreference='None'; Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1')); ${phase('modules-ready')} [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); ${phase('encoding-ready')} . '${script}'; ${phase('helper-ready')} $inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${input})) | ConvertFrom-Json; ${phase('operation-started')} ${operation}; ${phase('complete')}`
   const systemRoot = process.env.SystemRoot
   assert.ok(systemRoot && path.win32.isAbsolute(systemRoot), 'The OS PowerShell location is unavailable')
   const executable = path.join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
   const encoded = Buffer.from(code, 'utf16le').toString('base64')
   assert.ok(encoded.length + executable.length + 256 < 32_767, 'Installer pathname exceeds the Windows command-line limit')
   try {
-    return execFileSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
+    return execute(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+      { stdio: [lineInput ? 'pipe' : 'ignore', 'pipe', 'pipe'], ...(lineInput ? { input: payload + '\n' } : {}),
+        encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
   } catch (error) {
     const last = [...String(error.stderr ?? '').matchAll(/notifai-bootstrap:([a-z-]+)/g)].at(-1)?.[1] ?? 'process-start'
     throw new Error(`Windows installation helper failed after ${last} (${error.code ?? error.status ?? 'unknown'}).`, { cause: error })
   }
+}
+
+/** One read-only OS batch per proof, with the existing npm owner/writer policy. */
+export function windowsPackageAccess(paths, execute = execFileSync) {
+  assert.ok(Array.isArray(paths) && paths.length > 0 && paths.length <= 257, 'Invalid npm access batch size')
+  for (const entry of paths) {
+    assert.ok(typeof entry.file === 'string' && path.isAbsolute(entry.file) && !entry.file.includes('\0') &&
+      typeof entry.directory === 'boolean', 'Invalid npm access path')
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify(paths)) <= 1024 * 1024, 'Npm access batch exceeds its size limit')
+  powershell("foreach ($entry in $inputData.paths) { $attributes=[IO.File]::GetAttributes($entry.file); if ((($attributes -band [IO.FileAttributes]::Directory) -ne 0) -ne $entry.directory) { throw 'Npm adapter path type changed' }; Assert-NotifaiPathAccess $entry.file -AllowDefaultOwner }",
+    { paths }, { lineInput: true, execute })
 }
 
 export function ownedPosixCommand(home, uid = process.getuid()) {
@@ -113,17 +129,19 @@ export function nativePlatform() {
       assert.ok(home, 'Resolve the OS account home before acquisition')
       assertAcquisitionReady(home, windows
         ? file => powershell('Assert-NotifaiPathAccess $inputData.file', { file })
-        : this.checkAccess, windows
+        : (file, directory) => this.checkAccess([{ file, directory }]), windows
         ? file => powershell('Assert-NotifaiPathAccess $inputData.file -AccountHome', { file })
-        : this.checkAccess)
+        : (file, directory) => this.checkAccess([{ file, directory }]))
     },
-    checkAccess(file) {
+    checkAccess(paths) {
       if (!windows) {
-        const stat = lstatSync(file)
-        assert.ok(stat.uid === process.getuid() && (stat.mode & 0o022) === 0, 'Npm adapter path is not owned by this User')
+        for (const { file } of paths) {
+          const stat = lstatSync(file)
+          assert.ok(stat.uid === process.getuid() && (stat.mode & 0o022) === 0, 'Npm adapter path is not owned by this User')
+        }
         return
       }
-      powershell('Assert-NotifaiPathAccess $inputData.file -AllowDefaultOwner', { file })
+      windowsPackageAccess(paths)
     },
     target() {
       if (windows) return powershell('Get-NotifaiWindowsTarget')

@@ -23,6 +23,12 @@ function verifyVersionOutput(label, expected, run) {
 }
 /** Exercise the three npm shims Windows users actually launch. */
 export function verifyWindowsShims(installDir, expectedVersion, env) {
+  const timings = []
+  const measuredOutput = (file, args, options) => {
+    const result = runPhase(file, args, options)
+    timings.push({ phase: result.phase, elapsed_ms: result.elapsedMs })
+    return result.stdout
+  }
   const binDir = path.join(installDir, 'node_modules', '.bin')
   const cmdShim = path.join(binDir, 'notifai.cmd')
   const powershellShim = path.join(binDir, 'notifai.ps1')
@@ -45,12 +51,12 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
   writeFileSync(cmdRunner, '@call "%NOTIFAI_CMD_SHIM%" --help\r\n', 'ascii')
   try {
     verifyVersionOutput('notifai.cmd through cmd.exe', expectedVersion, () =>
-      runPhase('cmd.exe', ['/d', '/v:off', '/c', path.basename(cmdRunner)], {
+      measuredOutput('cmd.exe', ['/d', '/v:off', '/c', path.basename(cmdRunner)], {
         cwd: installDir,
         env: shellEnv,
         timeoutMs: TIMEOUTS.cliCommand,
         phase: 'windows-cmd-shim',
-      }).stdout,
+      }),
     )
   } finally {
     rmSync(cmdRunner, { force: true })
@@ -63,16 +69,22 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
     '-ExecutionPolicy',
     'Bypass',
     '-Command',
-    '& $env:NOTIFAI_POWERSHELL_SHIM --help',
+    // Exercise the unmodified npm shim using the host's own OS module. On
+    // hosted Windows ARM, inherited third-party module discovery alone took
+    // 26 seconds before Node started. This setup belongs to the test host;
+    // it changes neither the npm wrapper nor the adapter's access checks.
+    "$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; " +
+      "Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1')); " +
+      '& $env:NOTIFAI_POWERSHELL_SHIM --help',
   ]
   for (const executable of ['powershell.exe', 'pwsh.exe']) {
     verifyVersionOutput(`notifai.ps1 through ${executable}`, expectedVersion, () =>
-      runPhase(executable, powershellArgs, {
+      measuredOutput(executable, powershellArgs, {
         cwd: installDir,
         env: shellEnv,
         timeoutMs: TIMEOUTS.cliCommand,
         phase: `windows-ps-shim-${executable}`,
-      }).stdout,
+      }),
     )
   }
 
@@ -80,12 +92,13 @@ export function verifyWindowsShims(installDir, expectedVersion, env) {
   const gitBash = path.join(programFiles, 'Git', 'bin', 'bash.exe')
   if (!existsSync(gitBash)) fail(`Git Bash is missing at ${gitBash}`)
   verifyVersionOutput('notifai POSIX shim through Git Bash', expectedVersion, () =>
-    runPhase(
+    measuredOutput(
       gitBash,
       ['-lc', 'shim_path=$(cygpath -u "$NOTIFAI_BASH_SHIM"); "$shim_path" --help'],
       { cwd: installDir, env: shellEnv, timeoutMs: TIMEOUTS.cliCommand, phase: 'windows-bash-shim' },
-    ).stdout,
+    ),
   )
+  return timings
 }
 
 
@@ -151,12 +164,14 @@ async function main() {
   try {
     const prepared = await preparePackedCli(scratch, { cliTarball: argvValue('--cli-tarball'), sourceRevision: argvValue('--expected-sha') })
     const bin = path.join(prepared.installedCli, 'bin/notifai.mjs')
-    const output = runPhase(process.execPath, [bin, '--help'], { cwd: prepared.installDir,
-      env: { ...process.env, ...prepared.env }, timeoutMs: TIMEOUTS.cliCommand, phase: 'packed-adapter-help' }).stdout
-    assert.match(output, /init/)
-    if (process.platform === 'win32') verifyWindowsShims(prepared.installDir, /init/, { ...process.env, ...prepared.env })
+    const help = runPhase(process.execPath, [bin, '--help'], { cwd: prepared.installDir,
+      env: { ...process.env, ...prepared.env }, timeoutMs: TIMEOUTS.cliCommand, phase: 'packed-adapter-help' })
+    assert.match(help.stdout, /init/)
+    const timings = [{ phase: help.phase, elapsed_ms: help.elapsedMs }]
+    if (process.platform === 'win32') timings.push(...verifyWindowsShims(prepared.installDir, /init/, { ...process.env, ...prepared.env }))
     console.log(JSON.stringify({ ok: true, version: prepared.cliManifest.version,
       build: prepared.nativeReceipt.build, skill: prepared.nativeReceipt.skill,
+      timings,
       checks: ['exact-npm-files', 'isolated-npm-install', 'signed-exact-native-acquisition', 'native-process-identity', 'embedded-skill-integrity'] }))
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 }

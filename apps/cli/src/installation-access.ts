@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { lstatSync } from 'node:fs'
 import path from 'node:path'
 import { ensurePrivateDirectory } from './atomic-file.js'
+import type { NpmAdapterAccessCheck } from './npm-adapter-verification.js'
 
 /** Installation-only adapter. Native launch checks use the same C policy
  * directly, without starting PowerShell or another process on the hook path. */
@@ -48,10 +49,13 @@ export function installationAccess(launcher = path.join(path.dirname(process.exe
 
 /** npm owns these paths. Inspect inherited ACLs without changing them or
  * requiring the protected ACLs used for Notifai-managed installation paths. */
-export function npmAdapterWindowsAccess(launcher = path.join(path.dirname(process.execPath), 'notifai.exe')) {
-  return (file: string, directory: boolean): void => {
+export function npmAdapterWindowsAccess(launcher = path.join(path.dirname(process.execPath), 'notifai.exe')): NpmAdapterAccessCheck {
+  return paths => {
     if (process.platform !== 'win32') throw new Error('Windows ownership proof is unavailable')
-    execFileSync(launcher, [directory ? '--internal-check-package-directory' : '--internal-check-package-file', file],
-      { windowsHide: true, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    if (paths.length > 257) throw new Error('Npm adapter contains too many paths')
+    for (const { file, directory } of paths) {
+      execFileSync(launcher, [directory ? '--internal-check-package-directory' : '--internal-check-package-file', file],
+        { windowsHide: true, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    }
   }
 }

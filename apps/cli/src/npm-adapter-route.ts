@@ -61,7 +61,7 @@ export function inspectNpmAdapterRoute(command: string, proof: VerifiedNpmAdapte
   try {
     const candidate = path.resolve(command), root = path.resolve(proof.directory)
     if (sameLocalPath(candidate, proof.executable, platform) && !lstatSync(candidate).isSymbolicLink()) {
-      access(candidate, false)
+      access([{ file: candidate, directory: false }])
       return { kind: 'direct', command: candidate, directory: path.dirname(candidate), global_prefix: null, temporary_bin: null }
     }
     const route = placement(proof, platform)
@@ -71,12 +71,13 @@ export function inspectNpmAdapterRoute(command: string, proof: VerifiedNpmAdapte
     // Check the package-to-prefix/cache path and command directory, including
     // intermediate scope/modules/lib directories, before trusting shim bytes.
     const stop = route.global_prefix ?? (route.kind === 'npx' ? path.dirname(path.dirname(path.dirname(route.directory))) : path.dirname(path.dirname(route.directory)))
+    const directories = new Set<string>()
     for (const start of [root, route.directory]) {
       let current = start
       for (let depth = 0; depth < 16; depth++) {
         const stat = lstatSync(current)
         if (!stat.isDirectory() || stat.isSymbolicLink()) return null
-        access(current, true)
+        directories.add(current)
         if (sameLocalPath(current, stop, platform)) break
         const parent = path.dirname(current)
         if (parent === current || depth === 15) return null
@@ -91,11 +92,12 @@ export function inspectNpmAdapterRoute(command: string, proof: VerifiedNpmAdapte
           !sameLocalPath(realpathSync(candidate), proof.executable, platform)) return null
     } else {
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) return null
-      access(candidate, false)
       const relative = path.relative(route.directory, proof.executable)
       const bytes = readFileSync(candidate, 'utf8').replaceAll('\r\n', '\n')
       if (bytes !== npmShim(relative, path.extname(name))) return null
     }
+    access([...directories].map(file => ({ file, directory: true })).concat(
+      platform === 'win32' ? [{ file: candidate, directory: false }] : []))
     return { ...route, command: candidate }
   } catch { return null }
 }

@@ -29,14 +29,59 @@ async function fixture(t, kind = 'npx', platform = process.platform) {
   bindAdapterInventory(directory, JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'), signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') }), distribution)
   // On POSIX these simulated Windows cases exercise npm's actual templates and
   // file graph with POSIX ownership, not Windows ACL or host integration proof.
-  const checkAccess = process.platform === 'win32' ? (_file, _directory) => {} : npmAdapterPosixAccess
+  const checkAccess = process.platform === 'win32' ? _paths => {} : npmAdapterPosixAccess
   const proof = verifyNpmAdapterArtifact(directory, distribution, checkAccess)
   const bin = kind === 'npx' ? path.join(modules, '.bin') : platform === 'win32' ? prefix : path.join(prefix, 'bin')
   mkdirSync(bin, { recursive: true })
   if (platform === 'win32') await cmdShim(executable, path.join(bin, 'notifai'))
   else symlinkSync(executable, path.join(bin, 'notifai'))
-  return { root, prefix, bin, proof, options: { platform, checkAccess } }
+  return { root, prefix, bin, proof, distribution, options: { platform, checkAccess } }
 }
+
+test('package proof batches every path once and rechecks access and hashes on each invocation', async t => {
+  const f = await fixture(t), batches = []
+  const checkAccess = paths => { batches.push(paths); f.options.checkAccess(paths) }
+  verifyNpmAdapterArtifact(f.proof.directory, f.distribution, checkAccess)
+  assert.equal(batches.length, 1)
+  const paths = batches[0]
+  assert.equal(new Set(paths.map(entry => entry.file)).size, paths.length)
+  for (const name of ['package.json', 'inventory.json', 'npm-adapter-files.json', 'bin/notifai.mjs']) {
+    assert.equal(paths.some(entry => entry.file === path.join(f.proof.directory, name) && !entry.directory), true, name)
+  }
+  assert.equal(paths.some(entry => entry.file === path.join(f.proof.directory, 'bin') && entry.directory), true)
+  assert.throws(() => verifyNpmAdapterArtifact(f.proof.directory, f.distribution, entries => {
+    assert.equal(entries.some(entry => entry.file === f.proof.executable), true)
+    throw new Error('Foreign payload writer')
+  }), /Foreign payload writer/)
+  const bytes = readFileSync(f.proof.executable, 'utf8')
+  writeFileSync(f.proof.executable, bytes.replace('node', 'evil'))
+  assert.throws(() => verifyNpmAdapterArtifact(f.proof.directory, f.distribution, checkAccess), /integrity/)
+  assert.equal(batches.length, 2)
+})
+
+test('route proof batches distinct ancestors and the Windows shim and rejects failed access', async t => {
+  const f = await fixture(t, 'global', 'win32'), command = path.join(f.bin, 'notifai.cmd'), batches = []
+  const options = { ...f.options, checkAccess: paths => { batches.push(paths); f.options.checkAccess(paths) } }
+  assert.equal(inspectNpmAdapterRoute(command, f.proof, options)?.kind, 'global')
+  assert.equal(batches.length, 1)
+  assert.equal(new Set(batches[0].map(entry => entry.file)).size, batches[0].length)
+  assert.equal(batches[0].some(entry => entry.file === f.prefix && entry.directory), true)
+  assert.equal(batches[0].some(entry => entry.file === command && !entry.directory), true)
+  assert.equal(inspectNpmAdapterRoute(command, f.proof, { ...options, checkAccess: () => { throw new Error('Foreign ancestor writer') } }), null)
+})
+
+test('linked or oversized package trees fail before starting an OS access batch', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t)
+  let calls = 0
+  const checkAccess = () => { calls++ }
+  const linked = path.join(f.proof.directory, 'linked')
+  symlinkSync(f.root, linked)
+  assert.throws(() => verifyNpmAdapterArtifact(f.proof.directory, f.distribution, checkAccess), /linked or non-regular/)
+  rmSync(linked)
+  for (let index = 0; index < 257; index++) writeFileSync(path.join(f.proof.directory, `unexpected-${index}`), '')
+  assert.throws(() => verifyNpmAdapterArtifact(f.proof.directory, f.distribution, checkAccess), /too many paths/)
+  assert.equal(calls, 0)
+})
 
 test('verified POSIX NPX strips only its proven temporary insertion and preserves unknown entries', { skip: process.platform === 'win32' }, async t => {
   const f = await fixture(t), env = { PATH: `${f.bin}:/unrelated::/unknown`, OTHER: 'unchanged' }
