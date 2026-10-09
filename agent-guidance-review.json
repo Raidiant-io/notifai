@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7ed0248679aec04687e0daa9cfbd87d4d1ebccf05c01787ca25dc941fc1053a5",
+  "behavior_digest": "sha256:66e51173f47c814e513e111e1d6a0081996d3dd55e7608d03d63efd270fb41a4",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle activity and update callers, the Notifai skill and update reference, harness setup, CLI readiness output, README and domain terms against bounded transcript catch-up. Existing authorization, ownership and hook trust gates still govern updates; agents use update --resume for incomplete integration and preserve pending inputs and running sessions. Incremental activity evidence removes a false unknown result during long turns and explicit updates recover existing transcripts without a new agent command. Native question observation, acknowledgement obligations, routing choices and vocabulary are unchanged, so no guidance wording or new agent action is required.",
+  "reason": "Reviewed lifecycle activity and update callers, the Notifai skill and update reference, harness setup, CLI readiness output, README and domain terms against bounded transcript catch-up. Existing authorization, ownership and hook trust gates still govern updates; agents use update --resume for incomplete integration and preserve pending inputs and running sessions. Incremental activity evidence removes a false unknown result during long turns and explicit updates recover existing transcripts without a new agent command. Native question observation, acknowledgement obligations, routing choices and vocabulary are unchanged, so no guidance wording or new agent action is required. Oversized-record recovery remains unknown until a later complete native start is observed; this is the same conservative activity contract and requires no agent action.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

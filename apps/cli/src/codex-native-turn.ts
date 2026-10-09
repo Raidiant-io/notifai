@@ -42,6 +42,8 @@ interface ActivityCheckpoint {
   prefixBytes: number
   prefixHash: string
   boundaryHash: string
+  /** An oversized record needs a later, fully observed start to reestablish activity. */
+  seekTail?: boolean
   latest?: NativeTurnSnapshot['latest']
   marker?: { offset: number; bytes: number; hash: string }
   positions: Array<[string, number]>
@@ -61,6 +63,7 @@ function readCheckpoint(file: string): ActivityCheckpoint | undefined {
         typeof value.identity !== 'string' || !offset(value.through) || !offset(value.observedSize) ||
         value.through > value.observedSize || !Number.isFinite(value.mtimeMs) ||
         !offset(value.prefixBytes) || value.prefixBytes > Math.min(HEADER_BYTES, value.through) ||
+        (value.seekTail !== undefined && typeof value.seekTail !== 'boolean') ||
         !/^[a-f0-9]{64}$/.test(value.prefixHash) || !/^[a-f0-9]{64}$/.test(value.boundaryHash) ||
         !Array.isArray(value.positions) || value.positions.length > 32 ||
         value.positions.some(entry => !Array.isArray(entry) || entry.length !== 2 ||
@@ -126,7 +129,8 @@ export async function recoverNativeTurnSnapshot(
     if (snapshot !== null) return snapshot
     const progress = readCheckpoint(checkpointPath(sessionId, env))
     if (progress === undefined || (previous !== undefined &&
-        (progress.identity !== previous.identity || progress.through <= previous.through))) return null
+        (progress.identity !== previous.identity ||
+          (progress.through <= previous.through && progress.seekTail === previous.seekTail)))) return null
     previous = progress
     await new Promise(resolve => setTimeout(resolve, 0))
   }
@@ -183,20 +187,22 @@ function readNativeTranscript(
       checkpoint = undefined
     }
     // Activity advances through complete records in bounded chunks. A cold
-    // reader catches up across probes; it never skips an unobserved gap or
-    // mistakes the end of its budget for the end of the current turn.
+    // reader catches up across probes; it never carries activity over an
+    // unobserved gap or mistakes its budget for the end of the current turn.
+    // After an oversized record, only a fresh start in the tail can restore it.
     // Question binding deliberately retains its full bounded-tail semantics.
-    const at = checkpointFile === undefined ? Math.max(0, stat.size - TAIL_BYTES) : checkpoint?.through ?? 0
+    const tail = checkpointFile === undefined || checkpoint?.seekTail === true
+    const at = tail ? Math.max(0, stat.size - TAIL_BYTES) : checkpoint?.through ?? 0
     const count = Math.min(TAIL_BYTES, stat.size - at)
     const bytes = read(at, count)
     if (bytes.length !== count) return null
     // A trailing partial record may be a newer start: do not report an older one.
-    if (checkpointFile === undefined && bytes.at(-1) !== 10) return null
-    const limit = checkpointFile === undefined ? bytes.length : bytes.lastIndexOf(10) + 1
-    let offset = checkpointFile !== undefined || at === 0 ? 0 : bytes.indexOf(10) + 1
-    if (checkpointFile === undefined && at > 0 && offset === 0) return null
-    let latest: NativeTurnSnapshot['latest'] | undefined = checkpoint?.latest
-    let marker = checkpoint?.marker
+    if (tail && bytes.at(-1) !== 10) return null
+    const limit = tail ? bytes.length : bytes.lastIndexOf(10) + 1
+    let offset = !tail || at === 0 ? 0 : bytes.indexOf(10) + 1
+    if (tail && at > 0 && offset === 0) return null
+    let latest: NativeTurnSnapshot['latest'] | undefined = tail ? undefined : checkpoint?.latest
+    let marker = tail ? undefined : checkpoint?.marker
     const positions = new Map<string, number>(checkpoint?.positions)
     const questions: NativeQuestionEmission[] = []
     const questionCalls = new Set<string>()
@@ -252,13 +258,16 @@ function readNativeTranscript(
     const current = lstatSync(canonical)
     if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || current.isSymbolicLink() ||
         current.dev !== stat.dev || current.ino !== stat.ino) return null
-    if (checkpointFile !== undefined && (checkpoint === undefined || at + offset > checkpoint.through)) {
+    if (checkpoint?.seekTail === true && (latest === undefined || latest.offset < checkpoint.through)) return null
+    const seekTail = !tail && offset === 0 && count === TAIL_BYTES
+    if (checkpointFile !== undefined && (checkpoint === undefined || seekTail || at + offset > checkpoint.through)) {
       const through = at + offset
       const prefixBytes = Math.min(HEADER_BYTES, through)
       const next: ActivityCheckpoint = {
         schema: 1, sessionId, file: canonical, identity, through, observedSize: stat.size, mtimeMs: stat.mtimeMs,
         prefixBytes, prefixHash: digest(read(0, prefixBytes)),
         boundaryHash: digest(read(Math.max(0, through - HEADER_BYTES), Math.min(HEADER_BYTES, through))),
+        ...(seekTail ? { seekTail: true } : {}),
         ...(latest === undefined ? {} : { latest }), ...(marker === undefined ? {} : { marker }), positions: [...positions],
       }
       atomicWriteFileSync(checkpointFile, `${JSON.stringify(next)}\n`)

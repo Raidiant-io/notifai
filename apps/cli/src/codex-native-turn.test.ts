@@ -254,6 +254,20 @@ it('never guesses a current start when a large conversation record exceeds the b
   expect(nativeTranscriptOwned(f.file, 'root', f.env)).toBe(true)
 })
 
+it('recovers a later fully observed turn after an oversized record without guessing across it', async () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'before-large-record')
+  f.event('task_started', 'before-large-record')
+  expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('working')
+  appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload: { text: 'x'.repeat(9 * 1024 * 1024) } })}\n`)
+  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
+  f.event('task_started', 'after-large-record')
+  const snapshot = await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)
+  expect(snapshot?.latest.id).toBe('after-large-record')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('working')
+  expect(currentCodexTurn('root', f.env, f.key)).toBe('after-large-record')
+})
+
 it('fences the exact old writer without releasing its live process claim to a concurrent successor', () => {
   const f = fixture(); const claim = path.join(f.root, 'owner.claim')
   const token = acquireClaimFile(claim, { incarnation: 'inc_example' })!
