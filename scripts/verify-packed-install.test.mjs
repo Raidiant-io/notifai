@@ -26,7 +26,7 @@ function fixture(t) {
       materials: [{ path: 'npm-adapter-files.json', bytes: Buffer.byteLength(manifest), sha256: hash(manifest) }] })) }
   const save = value => { const payload = Buffer.from(JSON.stringify(value)); writeFileSync(path.join(directory, 'inventory.json'), JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
     signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })) }
-  const pack = () => { const tarball = path.join(root, 'adapter.tgz'); execFileSync('tar', ['czf', tarball, 'package'], { cwd: root }); return tarball }
+  const pack = () => { const tarball = path.join(root, 'adapter.tgz'); execFileSync('tar', ['czf', 'adapter.tgz', 'package'], { cwd: root }); return tarball }
   save(inventory)
   return { directory, sourceRevision, version: source.version, keys, inventory, save, pack }
 }

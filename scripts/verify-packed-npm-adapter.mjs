@@ -25,7 +25,10 @@ export function verifyPackedAdapter({ tarball, sourceRevision, version, keys = R
   assertPackedTarballs({ tarballs: [path.resolve(tarball)] })
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-adapter-'))
   try {
-    execFileSync('tar', ['xzf', path.resolve(tarball)], { cwd: scratch, timeout: 30_000 })
+    // Git Bash's GNU tar treats a drive letter as a remote host. Match the
+    // packed-boundary scanner's native Windows archive tool.
+    const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32/tar.exe') : 'tar'
+    execFileSync(tar, ['xzf', path.resolve(tarball)], { cwd: scratch, timeout: 30_000 })
     const verified = verifyNpmAdapterArtifact(path.join(scratch, 'package'), new Distribution(keys), checkAccess ?? releaseAdapterAccess(scratch))
     assert.equal(verified.manifest.native.source_revision, sourceRevision, 'Packed native source identity differs')
     assert.equal(verified.manifest.adapter_version, version, 'Packed native version differs')

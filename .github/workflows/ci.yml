@@ -222,6 +222,7 @@ jobs:
         with:
           arch: x64
       - name: Verify signed npm artifact validation on Windows
+        shell: bash
         run: node --test scripts/verify-packed-install.test.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -278,6 +279,7 @@ jobs:
         with:
           arch: arm64
       - name: Verify signed npm artifact validation on Windows
+        shell: bash
         run: node --test scripts/verify-packed-install.test.mjs
 
   standalone:
