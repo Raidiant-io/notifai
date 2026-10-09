@@ -709,7 +709,7 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
       ? 'Install harness hooks, so questions reach your devices when you are away?'
       : state.id === 'claude-commands'
         ? "Let Claude Code run Notifai's send, ask, receive and acknowledge commands without asking first? Otherwise a question waits for a terminal approval while you are away."
-        : 'Install/update the agent guidance skill through the native npx skills flow?'
+        : 'Install or update the bundled Notifai skill for your agents?'
   return deps.io.confirm(question, true)
 }
 
