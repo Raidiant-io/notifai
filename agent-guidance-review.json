@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:de7af5c2d01788562c918d97f35bcc7715390a237bab95e480436c687d0eee02",
+  "behavior_digest": "sha256:a059c7e79322f2f0556da5fb57ce1920f271af16c67f06789e1fb518618f1a88",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hook guidance, the shipped skill and installation/update references, harness setup, CLI readiness and domain terms against the native-first installation contract. Setup retains two visible sections and QR-first approval; native installation owns runtime updates/removal, the optional existing-name npm launcher owns only its adapter, and old Node/global-adapter migration preserves pending work and exact-prefix cleanup. Future npm examples are candidate content and require verified publication before advertisement. Runtime guidance emitters and routing remain unchanged in this worker patch; aggregate review is required after integration with the adapter and lifecycle implementations.",
+  "reason": "Reviewed the combined npm launcher and native lifecycle behavior against all shipped guidance surfaces. Guidance now identifies the official HTTPS bootstrap and stable native hook command, preserves setup choices and pending work, separates native runtime updates/removal from npm launcher maintenance, and gives exact-prefix migration recovery. Verified launcher identity and read-only doctor behavior agree with the readiness guidance. npm examples remain conditional on verified replacement publication. The setup prompt now correctly describes bundled skill installation.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
