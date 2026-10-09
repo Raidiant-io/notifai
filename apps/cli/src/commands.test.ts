@@ -6126,14 +6126,22 @@ describe('init', () => {
       }),
     })
 
-    expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({ scriptPath: oldArtifact })
-    expect(
-      await initCommand(deps, { hooks: false, skills: false }),
-    ).toBe(EXIT.ok)
-    expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({
-      scriptPath: realpathSync(currentArtifact),
-    })
-    expect(io.outLines.join('\n')).not.toContain('notifai hooks install')
+    // Model the resumed process, not just another package with an equal version.
+    const previousArgv = process.argv
+    process.argv = [process.execPath, currentArtifact]
+    try {
+      expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({ scriptPath: oldArtifact })
+      expect(
+        await initCommand(deps, { hooks: false, skills: false }),
+        [...io.outLines, ...io.errLines].join('\n'),
+      ).toBe(EXIT.ok)
+      expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({
+        scriptPath: realpathSync(currentArtifact),
+      })
+      expect(io.outLines.join('\n')).not.toContain('notifai hooks install')
+    } finally {
+      process.argv = previousArgv
+    }
   })
 
   it('surfaces one next step, not the whole remaining list', async () => {
