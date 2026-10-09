@@ -55,6 +55,7 @@ import { buildIdentity } from './distribution.js'
 import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
 import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
 import { shippedSkillBundle } from './skill-integrity.js'
+import { installedChangelog } from './update-handoff.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -213,14 +214,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action((options: { json?: boolean }) => {
       const identity = buildIdentity()
       const skill = shippedSkillBundle(packageVersion() ?? undefined)
+      const changelog = installedChangelog(packageVersion())
       const processIdentity = currentProcessIdentity()
       const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
-      const result = { ok: identity !== null && skill.ok && processVerified, build: identity, processVerified,
+      const result = { ok: identity !== null && skill.ok && changelog.available && processVerified, build: identity, processVerified,
+        changelog,
         capabilities: { npm_adapter_routes: 1 },
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)
-        : result.ok ? `Executable and bundled skill verified (${identity?.version})`
+        : result.ok ? `Executable, bundled skill and changelog verified (${identity?.version})`
           : 'Standalone executable verification failed')
       exit(result.ok ? 0 : 1)
     })

@@ -56,6 +56,11 @@ function worker(file, args) {
 }
 let checkFailure
 try {
+  // Verify the supplied production artifact, not only the separately compiled
+  // storage/process fixture below. Its changelog must survive packaging.
+  execFileSync(process.execPath, [path.join(repositoryRoot, 'scripts/check-standalone-changelog.mjs'),
+    '--runtime', path.join(path.dirname(path.resolve(values.launcher)), `notifai-runtime${extension}`)],
+  { cwd: repositoryRoot, stdio: 'inherit', timeout: 30_000 })
   copyFileSync(path.resolve(values.launcher), launcher)
   execFileSync(values.bun, ['build', '--compile', '--no-compile-autoload-dotenv',
     '--no-compile-autoload-bunfig', '--no-compile-autoload-package-json', '--no-compile-autoload-tsconfig',
