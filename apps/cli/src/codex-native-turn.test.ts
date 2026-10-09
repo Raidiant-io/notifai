@@ -1,16 +1,22 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import fs, { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { nativeTranscriptOwned, readNativeQuestionSnapshot, readNativeTurnSnapshot, recoverNativeTurnSnapshot } from './codex-native-turn.js'
 import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js'
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { sanitizeSessionId, stateDir } from './config.js'
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof fs>()
+  return { ...actual, readSync: vi.fn(actual.readSync) }
+})
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function fixture(withOwner = false) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-turn-')); roots.push(root)
   const env = { CODEX_HOME: path.join(root, 'codex'), XDG_STATE_HOME: path.join(root, 'state') }
@@ -260,12 +266,188 @@ it('recovers a later fully observed turn after an oversized record without guess
   f.event('task_started', 'before-large-record')
   expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('working')
   appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload: { text: 'x'.repeat(9 * 1024 * 1024) } })}\n`)
-  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
+  expect((await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true))?.latest).toMatchObject({ id: 'before-large-record', ended: false })
   f.event('task_started', 'after-large-record')
   const snapshot = await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)
   expect(snapshot?.latest.id).toBe('after-large-record')
   expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('working')
   expect(currentCodexTurn('root', f.env, f.key)).toBe('after-large-record')
+})
+
+it('observes completion after a 13 MiB image/tool record without requiring another start', async () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'long-turn')
+  f.event('task_started', 'long-turn')
+  expect(refreshCodexInputActivity('root', f.env, f.key, f.file)).toBe('working')
+  appendFileSync(f.file, `${JSON.stringify({ type: 'response_item', payload: {
+    type: 'message', content: [{ type: 'image', data: 'x'.repeat(13 * 1024 * 1024) },
+      { type: 'text', text: '{"type":"event_msg","payload":{"type":"task_started","turn_id":"fake"}}' }],
+  } })}\n`)
+  f.event('task_complete', 'long-turn')
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('unknown')
+  const snapshot = await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)
+  expect(snapshot?.latest).toMatchObject({ id: 'long-turn', ended: true, outcome: 'completed' })
+  expect(snapshot?.positions.has('fake')).toBe(false)
+  expect(refreshCodexInputActivity('root', f.env, f.key)).toBe('idle')
+})
+
+const cursorFile = (f: ReturnType<typeof fixture>) => path.join(stateDir(f.env), 'sessions', `${sanitizeSessionId('root')}.native-cursor`)
+const giant = (megabytes = 13) => `${JSON.stringify({ type: 'response_item', payload: { content: [
+  { type: 'image', data: 'x'.repeat(megabytes * 1024 * 1024) }, { type: 'tool', value: [null, true, -1.25e-3] },
+] } })}\n`
+
+it('keeps later lifecycle ordering across multiple giant records and bounded probes', () => {
+  const f = fixture()
+  f.event('task_started', 'old')
+  appendFileSync(f.file, giant())
+  f.event('task_complete', 'old')
+  f.event('task_started', 'new')
+  appendFileSync(f.file, giant(9))
+  f.event('turn_aborted', 'new')
+  expect(f.snapshot()).toBeNull()
+  expect(f.snapshot()).toBeNull()
+  expect(f.snapshot()?.latest).toMatchObject({ id: 'new', ended: true, outcome: 'aborted' })
+})
+
+it('resumes an existing seekTail checkpoint without clearing or resetting session data', async () => {
+  const f = fixture()
+  f.event('task_started', 'original')
+  expect(f.snapshot()?.latest.id).toBe('original')
+  const file = cursorFile(f)
+  const cursor = JSON.parse(readFileSync(file, 'utf8')) as object
+  writeFileSync(file, JSON.stringify({ ...cursor, seekTail: true }))
+  appendFileSync(f.file, giant())
+  f.event('task_complete', 'original')
+  expect((await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true))?.latest)
+    .toMatchObject({ id: 'original', ended: true })
+})
+
+it('remains unknown at an unfinished giant record and resumes its eventual closing bytes', async () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  appendFileSync(f.file, '{"type":"response_item","payload":{"text":"' + 'x'.repeat(13 * 1024 * 1024) + '\\u00')
+  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
+  expect(f.snapshot()).toBeNull()
+  appendFileSync(f.file, '41 😀"}}\n')
+  f.event('task_complete', 'one')
+  expect((await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true))?.latest)
+    .toMatchObject({ id: 'one', ended: true })
+})
+
+it.each([128 * 1024, 9 * 1024 * 1024])('traverses a %i-byte ordinary event_msg without imposing the lifecycle marker limit', async bytes => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  appendFileSync(f.file, `${JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', text: 'x'.repeat(bytes) } })}\n`)
+  f.event('task_complete', 'one')
+  expect((await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true))?.latest)
+    .toMatchObject({ id: 'one', ended: true })
+})
+
+it('projects escaped root-payload keys while ignoring nested lifecycle-looking type fields', async () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  appendFileSync(f.file, '{"\\u0074ype":"event_msg","\\u0070ayload":{"details":{"type":"task_started","turn_id":"fake"},"text":"' +
+    'x'.repeat(9 * 1024 * 1024) + '","\\u0074ype":"agent_message"}}\n')
+  f.event('task_complete', 'one')
+  const snapshot = await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)
+  expect(snapshot?.latest).toMatchObject({ id: 'one', ended: true })
+  expect(snapshot?.positions.has('fake')).toBe(false)
+})
+
+it('persists and validates a UTF-8 sequence split exactly across the activity read budget', () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  expect(f.snapshot()?.latest.id).toBe('one')
+  const prefix = '{"type":"response_item","payload":{"text":"'
+  appendFileSync(f.file, prefix + 'x'.repeat(8 * 1024 * 1024 - Buffer.byteLength(prefix) - 1) + '😀"}}\n')
+  f.event('task_complete', 'one')
+  expect(f.snapshot()).toBeNull()
+  expect(f.snapshot()?.latest).toMatchObject({ id: 'one', ended: true })
+})
+
+it('does not relax integrity or bounded storage for an oversized lifecycle marker', async () => {
+  const f = fixture()
+  f.event('task_started', 'old')
+  appendFileSync(f.file, `${JSON.stringify({ type: 'event_msg', payload: {
+    type: 'task_started', turn_id: 'new', text: 'x'.repeat(128 * 1024),
+  } })}\n`)
+  f.event('task_complete', 'old')
+  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
+})
+
+it.each([
+  '},"type":"event_msg","payload":{"type":"task_started","turn_id":"fake"}}\n',
+  '},"\\u0070ayload":{"type":"task_started","turn_id":"fake"}}\n',
+  '},"later":[1,]}\n',
+  '}} {"type":"event_msg","payload":{"type":"task_started","turn_id":"fake"}}\n',
+])('rejects duplicate or malformed giant framing before later lifecycle evidence: %j', async suffix => {
+  const f = fixture()
+  f.event('task_started', 'real')
+  appendFileSync(f.file, '{"type":"response_item","payload":{"text":"' + 'x'.repeat(9 * 1024 * 1024) + '"' + suffix)
+  f.event('task_complete', 'real')
+  expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
+  expect(f.snapshot()).toBeNull()
+})
+
+it.each(['state', 'offset', 'oversized-state'])('rejects tampered continuation and safely re-observes actual records: %s', async change => {
+  const f = fixture()
+  f.event('task_started', 'real')
+  appendFileSync(f.file, giant())
+  f.event('task_complete', 'real')
+  expect(f.snapshot()).toBeNull()
+  const file = cursorFile(f)
+  const cursor = JSON.parse(readFileSync(file, 'utf8'))
+  if (change === 'offset') cursor.traversal.start = cursor.through + 1
+  else if (change === 'oversized-state') cursor.traversal.state.raw = 'x'.repeat(1000)
+  else cursor.traversal.state.type = 'event_msg'
+  writeFileSync(file, JSON.stringify(cursor))
+  expect(f.snapshot()).toBeNull()
+  expect((await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true))?.latest)
+    .toMatchObject({ id: 'real', ended: true })
+})
+
+it.each(['truncate', 'replace', 'same-size-mutation'])('does not carry a giant continuation over %s', async change => {
+  const f = fixture()
+  f.event('task_started', 'old')
+  appendFileSync(f.file, giant())
+  f.event('task_complete', 'old')
+  expect(f.snapshot()).toBeNull()
+  if (change === 'same-size-mutation') {
+    const bytes = readFileSync(f.file)
+    // The record now contains an unescaped newline in an already scanned string.
+    bytes[1024 * 1024] = 10
+    writeFileSync(f.file, bytes)
+    expect(await recoverNativeTurnSnapshot(f.file, 'root', f.env, () => true)).toBeNull()
+  } else {
+    if (change === 'replace') renameSync(f.file, `${f.file}.old`)
+    writeFileSync(f.file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'root', source: 'cli' } })}\n`)
+    f.event('task_started', 'replacement')
+    expect(f.snapshot()?.latest).toMatchObject({ id: 'replacement', ended: false })
+    expect(f.snapshot()?.positions.has('old')).toBe(false)
+  }
+})
+
+it('bounds probe reads and persisted memory while traversing a giant record', () => {
+  const f = fixture()
+  f.event('task_started', 'one')
+  expect(f.snapshot()?.latest.id).toBe('one')
+  appendFileSync(f.file, giant())
+  f.event('task_complete', 'one')
+  const reads = vi.mocked(readSync)
+  for (let probe = 0; probe < 2; probe++) {
+    reads.mockClear()
+    const snapshot = f.snapshot()
+    expect(snapshot === null).toBe(probe === 0)
+    const counts = reads.mock.calls.map(call => call[3] as number)
+    expect(counts.length).toBeGreaterThan(0)
+    expect(Math.max(...counts)).toBeLessThanOrEqual(8 * 1024 * 1024)
+    expect(counts.reduce((sum, count) => sum + count, 0)).toBeLessThan(9 * 1024 * 1024)
+    expect(fs.statSync(cursorFile(f)).size).toBeLessThan(16 * 1024)
+  }
+  reads.mockClear()
+  for (let probe = 0; probe < 100; probe++) expect(f.snapshot()?.latest.ended).toBe(true)
+  expect(reads.mock.calls.length).toBeGreaterThan(0)
+  expect(reads.mock.calls.every(call => (call[3] as number) <= 64 * 1024)).toBe(true)
 })
 
 it('fences the exact old writer without releasing its live process claim to a concurrent successor', () => {
