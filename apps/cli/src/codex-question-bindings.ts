@@ -11,7 +11,8 @@ import { processIdentityLiveness } from './process-identity.js'
 
 export interface CodexQuestionBinding {
   question: QuestionT
-  marker: string
+  /** Codex cards only. A Claude picker carries none: its hook receives the picker itself. */
+  marker?: string
   native?: { turn_id: string; call_id: string; index: number }
   /** Recomputed from a fresh full registration-turn snapshot before use. */
   verified?: true
@@ -34,8 +35,9 @@ export interface CodexQuestionRegistration {
   terminated?: true
 }
 
+/** The text the native form must show for this question. */
 export function nativeQuestionTitle(binding: CodexQuestionBinding): string {
-  return `[nf:${binding.marker}] ${binding.question.text}`
+  return binding.marker === undefined ? binding.question.text : `[nf:${binding.marker}] ${binding.question.text}`
 }
 
 /** Invocation-local service permission; never stored or reused for later asks. */
@@ -121,7 +123,7 @@ export function observeCodexQuestions(state: SessionState, key: string, snapshot
     return { ...registration, questions: registration.questions.map(binding => {
       const next = { ...binding }
       delete next.verified
-      if (!covered || binding.ambiguous === true) return next
+      if (!covered || binding.ambiguous === true || binding.marker === undefined) return next
       const matches = snapshot.questions?.filter(emission => emission.accepted && emission.title.includes(`[nf:${binding.marker}]`)) ?? []
       // Count multiple copies of the token in a single title as ambiguous too.
       if (matches.length > 1 || matches.some(emission => emission.title.split(`[nf:${binding.marker}]`).length !== 2)) {

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7635d840825b57c330eb5656e0d12f6fa6709f621e0b48a7d07802904785358a",
+  "behavior_digest": "sha256:905b1acd48d8942fe669e4ecfeb5cd6e3f786a47f4a7bc5d22719b9287d65af0",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms. notifai acknowledge no longer prints a constant agent_acknowledgement_required: true after recording or replaying an acknowledgement; its output now matches Session Message acknowledgement (request_id, outcome, acknowledgement). Skill text and other agent-facing output are unchanged.",
+  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms. A Claude Code question picker is now linked to a registered question by its content (question texts, option labels, selection mode) instead of a copied [nf:NNN] title marker: ask returns plain titles for AskUserQuestion, the picker instruction no longer asks to copy a marker in the registration turn, and an unlinked look-alike picker's result names the question still asking on devices. harness-claude-code.md and native-questions.md now describe content linking for Claude Code and keep the marker rule for Codex only. Codex guidance and behaviour are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
