@@ -28,6 +28,15 @@ test('publication needs all six native targets and generic gates from one source
   const standaloneOnly = fixture(); standaloneOnly.jobs.find(job => job.name === 'gates').conclusion = 'skipped'
   assert.throws(() => validateNativeEvidence(standaloneOnly), /gates must succeed/)
 })
+test('failed attempt diagnostics coexist with successful candidates but cannot replace them', () => {
+  const data = fixture()
+  const candidate = data.artifacts[0]
+  data.artifacts.push({ ...candidate, id: 99,
+    name: `standalone-failed-${nativeTargets[0]}-${expectedSha}-attempt-1` })
+  assert.equal(validateNativeEvidence(data), data.run)
+  data.artifacts.shift()
+  assert.throws(() => validateNativeEvidence(data), /Missing immutable retained artifact/)
+})
 test('provider admission rejects incomplete pages and uses an explicit retained run', async () => {
   const data = fixture('final'), requests = []
   let incomplete = false

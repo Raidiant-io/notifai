@@ -5,7 +5,8 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { withFileLock } from '../apps/cli/src/file-lock.js'
 import { atomicWriteFileSync } from '../apps/cli/src/atomic-file.js'
-import { currentProcessIdentity, processIdentityLiveness, processExecutableName } from '../apps/cli/src/process-identity.js'
+import { currentProcessIdentity, processIdentityLiveness, processExecutableName, processStartTime } from '../apps/cli/src/process-identity.js'
+import { inspectNativeFileUse, type NativeFileUse } from '../apps/cli/src/native-file-use.js'
 import { WindowsDpapiStore } from '../apps/cli/src/credentials.js'
 import { Installation } from '../apps/cli/src/installation.js'
 import { Distribution } from '../apps/cli/src/release-distribution.js'
@@ -168,8 +169,22 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
 } else if (mode === 'installation' || mode === 'uninstall') {
   const fixture = JSON.parse(readFileSync(path.join(root, 'installation-fixture.json'), 'utf8'))
   const extension = process.platform === 'win32' ? '.exe' : ''
-  const options = { root: path.join(root, '.notifai'), target: fixture.target,
+  const installationRoot = path.join(root, '.notifai')
+  const fileUseObservations: Array<{ sequence: number; launcher: string; files: string[];
+    own: ReturnType<typeof currentProcessIdentity>; parent_pid: number; observation: NativeFileUse }> = []
+  let fileUseCalls = 0
+  const options = { root: installationRoot, target: fixture.target,
     distribution: new Distribution({ fixture: fixture.publicKey }),
+    ...(mode === 'uninstall' ? { fileUse(launcher: string, files: readonly string[]) {
+      const sequence = ++fileUseCalls
+      const observation = inspectNativeFileUse(launcher, files)
+      // Keep the original filtered result; no extra process reads or logging
+      // occur between successful scans. Raw probe/parent-start data is not exposed.
+      if (fileUseObservations.length < 8) fileUseObservations.push({ sequence,
+        launcher: path.relative(installationRoot, launcher), files: files.map(file => path.relative(installationRoot, file)),
+        own: currentProcessIdentity(), parent_pid: process.ppid, observation })
+      return observation
+    } } : {}),
     probe(directory: string) {
       const result = spawnSync(path.join(directory, `notifai${extension}`), ['identity', root], { encoding: 'utf8', timeout: 20_000 })
       assert.equal(result.status, 0, result.stderr)
@@ -201,23 +216,52 @@ saveMessageJournal({ delivery_id: deliveryId, message_id: messageId, generation,
     assert.equal(installation.inspect().pending, false)
   } else if (operation === 'uninstall') {
     const sessions = path.join(root, 'no-sessions')
+    const reportFailure = (stage: string, result: { status: string }, expected: string): void => {
+      if (result.status === expected) return
+      try {
+        const identities = fileUseObservations.flatMap(item => item.observation.processes)
+          .filter((item, index, all) => all.findIndex(other => other.pid === item.pid && other.start === item.start) === index)
+        process.stderr.write(JSON.stringify({ diagnostic: 'uninstall-file-use', stage, result,
+          uninstall_state: installation.uninstallState(), file_use_calls: fileUseCalls,
+          observations_truncated: fileUseCalls > fileUseObservations.length, observations: fileUseObservations,
+          original_parent_start: 'unavailable', original_probe_identity: 'unavailable',
+          // These reads happen after failure, never substitute for the scan.
+          after_failure: { own: currentProcessIdentity(), parent: { pid: process.ppid, start: processStartTime(process.ppid) },
+            identities_truncated: identities.length > 8,
+            identities: identities.slice(0, 8).map(item => ({ ...item,
+              liveness: item.start ? processIdentityLiveness({ pid: item.pid, start: item.start }) : 'unknown',
+              name: processExecutableName(item.pid) })) } }) + '\n')
+      } catch (error) {
+        process.stderr.write(JSON.stringify({ diagnostic: 'uninstall-file-use', stage, result,
+          file_use_calls: fileUseCalls, observations_truncated: fileUseCalls > fileUseObservations.length,
+          observations: fileUseObservations,
+          diagnostic_error: error instanceof Error ? error.message : 'Diagnostic unavailable' }) + '\n')
+      }
+    }
     if (finishing) {
       const result = installation.finishUninstall(args[args.indexOf('--installation-id') + 1]!, sessions)
+      reportFailure('finishUninstall', result, 'removed')
       assert.equal(result.status, 'removed', JSON.stringify(result))
       process.stdout.write(JSON.stringify(result))
       process.exit(0)
     }
     const begun = installation.beginUninstall(installation.inspect().active!.generation, sessions)
+    reportFailure('beginUninstall', begun, 'preparing')
     assert.equal(begun.status, 'preparing', JSON.stringify(begun))
     if (begun.status !== 'preparing') throw new Error('Native uninstall did not prepare')
-    assert.equal(installation.enterUninstallRemoval(begun.token, sessions).status, 'removing')
+    const entered = installation.enterUninstallRemoval(begun.token, sessions)
+    reportFailure('enterUninstallRemoval', entered, 'removing')
+    assert.equal(entered.status, 'removing')
     const { readSessionState, sessionStatePath, sessionHasEnded } = await import('../apps/cli/src/hook-session-state.js')
     assert.ok(readSessionState('native-owner-fixture', process.env).runtime_builds?.length)
-    assert.equal(installation.releaseUninstallReferences(begun.token, sessions).status, 'released')
+    const released = installation.releaseUninstallReferences(begun.token, sessions)
+    reportFailure('releaseUninstallReferences', released, 'released')
+    assert.equal(released.status, 'released')
     assert.deepEqual(JSON.parse(readFileSync(sessionStatePath('native-owner-fixture', process.env), 'utf8')).runtime_builds, [])
     assert.equal(sessionHasEnded('native-owner-fixture', process.env), false)
     assert.throws(() => installation.cancelUninstall(begun.token), /changed/)
     const result = installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] }))
+    reportFailure('completeUninstall', result, process.platform === 'win32' ? 'incomplete' : 'removed')
     assert.equal(result.status, process.platform === 'win32' ? 'incomplete' : 'removed', JSON.stringify(result))
     if (process.platform !== 'win32') assert.equal(installation.inspect().active, null)
     else { assert.ok(result.recovery_command); process.stdout.write(JSON.stringify(result)) }

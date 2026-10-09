@@ -170,7 +170,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: standalone-${{ matrix.target }}-${{ inputs.expected_sha }}
+          # Failed attempts retain diagnostics without impersonating an admitted
+          # candidate when GitHub retries the same job in this run.
+          name: ${{ job.status == 'success' && format('standalone-{0}-{1}', matrix.target, inputs.expected_sha) || format('standalone-failed-{0}-{1}-attempt-{2}', matrix.target, inputs.expected_sha, github.run_attempt) }}
           path: |
             ${{ runner.temp }}/standalone/notifai*
             ${{ runner.temp }}/standalone/archive/
