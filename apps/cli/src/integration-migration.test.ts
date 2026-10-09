@@ -136,8 +136,13 @@ it.each(['darwin', 'win32', 'linux'] as const)('repairs owned %s hooks beside un
   expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toContain('skill-unmanaged')
 })
 
-it('allows resident recovery beside unmanaged guidance while leaving overall guidance currency pending', async () => {
-  const f = fixture()
+it('recovers residents beside current owned and unmanaged guidance without invoking the skill installer', async () => {
+  const f = fixture(), bundle = shippedSkillBundle()
+  if (!bundle.ok) throw new Error(bundle.error)
+  expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: bundle.bundle }).ok).toBe(true)
+  const receipt = path.join(f.root, 'state', 'notifai', 'skill-installations', 'global.json')
+  const receiptBefore = readFileSync(receipt)
+  const add = vi.fn(nativeSkills.add); f.deps.nativeSkills = { ...nativeSkills, add }
   const skill = path.join(f.home, '.grok', 'skills', 'notifai')
   mkdirSync(skill, { recursive: true }); writeFileSync(path.join(skill, 'SKILL.md'), 'Foreign guidance')
   const activate = vi.spyOn(attendantUpdate, 'activateInstalledAttendants').mockResolvedValue([
@@ -146,6 +151,11 @@ it('allows resident recovery beside unmanaged guidance while leaving overall gui
   const hooks = readFileSync(f.installation.file), trust = readFileSync(f.trust)
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(activate).toHaveBeenCalledWith(f.deps, realpathSync(f.artifact))
+  expect(add).not.toHaveBeenCalled()
+  expect((await nativeSkills.list('global', f.deps.cwd, f.deps.env)).skills.filter(skill => skill.owned)).toMatchObject([
+    { condition: 'managed-current', agents: ['claude-code'] },
+  ])
+  expect(readFileSync(receipt)).toEqual(receiptBefore)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: false,
     changed: ['resident-attendants'], pending_actions: [expect.stringContaining('skill-unmanaged')] })
   expect(readFileSync(f.installation.file)).toEqual(hooks)
