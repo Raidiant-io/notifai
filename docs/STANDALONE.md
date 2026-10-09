@@ -558,6 +558,13 @@ command. Pending transactions or unresolved owners block acquisition/removal.
 Help, version, doctor and ordinary product commands never acquire missing native
 files. Doctor reports adapter and runtime identity separately; equal versions
 are not artifact proof. `@version` selects adapter code, not an existing runtime.
+Windows npm inspection accepts inherited ACLs with no writers beyond the current
+User, SYSTEM and Administrators, without modifying those ACLs. Objects must be
+owned by the current User, or by Administrators when that is the inspecting
+process token's default owner (as with elevated npm). Reparse points and foreign
+owners remain rejected. Managed native directories keep their separate protected
+ACL and exact User ownership requirements.
+
 Hooks and resident work use the stable native command, never npm/NPX cache paths.
 Do not advertise these candidate npm instructions until both the replacement
 registry package and its matching native release have been verified.

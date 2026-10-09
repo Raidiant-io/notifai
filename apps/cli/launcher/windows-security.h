@@ -23,7 +23,7 @@ static int approved_writer(PSID sid, PSID user) {
         IsWellKnownSid(sid, WinBuiltinAdministratorsSid);
 }
 
-static int private_handle(HANDLE handle, int directory, PSID user, int created, int require_protected) {
+static int private_handle(HANDLE handle, int directory, PSID user, int created, int require_protected, PSID package_owner) {
     FILE_ATTRIBUTE_TAG_INFO info;
     if (GetFileType(handle) != FILE_TYPE_DISK ||
         !GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &info, sizeof(info)) ||
@@ -36,7 +36,8 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created, 
         OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, NULL, &dacl, NULL, &descriptor);
     if (error != ERROR_SUCCESS) return 0;
     int ok = owner && IsValidSid(owner) &&
-        (EqualSid(owner, user) || (created && IsWellKnownSid(owner, WinBuiltinAdministratorsSid))) &&
+        (EqualSid(owner, user) || (created && IsWellKnownSid(owner, WinBuiltinAdministratorsSid)) ||
+         (package_owner && EqualSid(owner, package_owner))) &&
         dacl && IsValidAcl(dacl);
     SECURITY_DESCRIPTOR_CONTROL control = 0;
     DWORD revision = 0;
@@ -62,10 +63,10 @@ static int private_handle(HANDLE handle, int directory, PSID user, int created, 
             user, NULL, NULL, NULL) == ERROR_SUCCESS;
     }
     LocalFree(descriptor);
-    return ok && (!created || private_handle(handle, directory, user, 0, 1));
+    return ok && (!created || private_handle(handle, directory, user, 0, 1, NULL));
 }
 
-static int checked_path(const wchar_t *input, int directory, int created, int require_protected) {
+static int checked_path(const wchar_t *input, int directory, int created, int require_protected, PSID package_owner) {
     wchar_t path[32768];
     if (!filesystem_path(input, path)) return 0;
     TOKEN_USER *user = installation_user();
@@ -73,21 +74,43 @@ static int checked_path(const wchar_t *input, int directory, int created, int re
     HANDLE handle = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES | (created ? WRITE_OWNER : 0),
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), NULL);
-    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, directory, user->User.Sid, created, require_protected);
+    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, directory, user->User.Sid, created, require_protected, package_owner);
     if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     free(user);
     return ok;
 }
 
 static int private_path(const wchar_t *input, int directory, int created) {
-    return checked_path(input, directory, created, 1);
+    return checked_path(input, directory, created, 1, NULL);
 }
 
 /* Existing shared session state need not use installation-style protected
  * inheritance. It must still have the exact User owner and no foreign writer.
  * Read-only inspection never changes that state's ACL. */
 static int owned_state_path(const wchar_t *input, int directory) {
-    return checked_path(input, directory, 0, 0);
+    return checked_path(input, directory, 0, 0, NULL);
+}
+
+/* npm owns its directories and normally inherits safe ACLs. Inspection must
+ * not protect or otherwise rewrite them. Elevated npm can create objects with
+ * the token's default Administrators owner: admit that owner only when it is
+ * this process token's actual default. All writer and reparse checks still
+ * apply. This exception never applies to managed installations or state. */
+static int owned_package_path(const wchar_t *input, int directory) {
+    HANDLE token = NULL;
+    DWORD bytes = 0;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return 0;
+    GetTokenInformation(token, TokenOwner, NULL, 0, &bytes);
+    if (!bytes || bytes > 65536) { CloseHandle(token); return 0; }
+    TOKEN_OWNER *owner = malloc(bytes);
+    if (!owner || !GetTokenInformation(token, TokenOwner, owner, bytes, &bytes)) {
+        free(owner); CloseHandle(token); return 0;
+    }
+    PSID alternate = owner->Owner && IsValidSid(owner->Owner) &&
+        IsWellKnownSid(owner->Owner, WinBuiltinAdministratorsSid) ? owner->Owner : NULL;
+    int ok = checked_path(input, directory, 0, 0, alternate);
+    free(owner); CloseHandle(token);
+    return ok;
 }
 
 static int create_private_directory(const wchar_t *input) {
@@ -129,7 +152,7 @@ static int protect_existing_directory(const wchar_t *input) {
     PSECURITY_DESCRIPTOR before = NULL, after = NULL;
     PACL original = NULL, actual = NULL, expected = NULL;
     PSID owner = NULL;
-    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, 1, user->User.Sid, 0, 0);
+    int ok = handle != INVALID_HANDLE_VALUE && private_handle(handle, 1, user->User.Sid, 0, 0, NULL);
     if (ok) ok = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
         &owner, NULL, &original, NULL, &before) == ERROR_SUCCESS && owner && EqualSid(owner, user->User.Sid) &&
         original && IsValidAcl(original);
@@ -154,7 +177,7 @@ static int protect_existing_directory(const wchar_t *input) {
     if (ok) ok = SetSecurityInfo(handle, SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
         NULL, NULL, expected, NULL) == ERROR_SUCCESS;
-    if (ok) ok = private_handle(handle, 1, user->User.Sid, 0, 1) &&
+    if (ok) ok = private_handle(handle, 1, user->User.Sid, 0, 1, NULL) &&
         GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
             NULL, NULL, &actual, NULL, &after) == ERROR_SUCCESS && actual && IsValidAcl(actual) &&
         actual->AceCount == expected->AceCount;

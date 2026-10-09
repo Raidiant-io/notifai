@@ -3,7 +3,7 @@ import { RELEASE_PUBLIC_KEYS } from './release-trust.js'
 import { NPM_ADAPTER_BIN, NPM_ADAPTER_MANIFEST } from './npm-adapter-contract.js'
 import { verifyNpmAdapterArtifact, type NpmAdapterAccessCheck } from './npm-adapter-verification.js'
 import { inspectNpmAdapterRoute, environmentForVerifiedAdapter, type NpmAdapterRoute } from './npm-adapter-route.js'
-import { installationAccess } from './installation-access.js'
+import { npmAdapterWindowsAccess } from './installation-access.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { accountHome } from './platform.js'
 import {
@@ -206,7 +206,7 @@ export function inspectCliInstallations(
   const distribution = options.distribution ?? new Distribution(RELEASE_PUBLIC_KEYS)
   const unverifiedAdapters = new Set<string>()
   const checkAccess = options.checkAccess ?? (platform === 'win32'
-    ? (buildIdentity() !== null && process.platform === 'win32' ? installationAccess().check : () => { throw new Error('Windows ownership proof is unavailable') })
+    ? (buildIdentity() !== null && process.platform === 'win32' ? npmAdapterWindowsAccess() : () => { throw new Error('Windows ownership proof is unavailable') })
     : undefined)
   const proofFor = (command: string, artifact: string | null) => {
     const bin = path.dirname(command)

@@ -45,3 +45,13 @@ export function installationAccess(launcher = path.join(path.dirname(process.exe
     protectExistingDirectory(file) { run('--internal-protect-existing-directory', file) },
   }
 }
+
+/** npm owns these paths. Inspect inherited ACLs without changing them or
+ * requiring the protected ACLs used for Notifai-managed installation paths. */
+export function npmAdapterWindowsAccess(launcher = path.join(path.dirname(process.execPath), 'notifai.exe')) {
+  return (file: string, directory: boolean): void => {
+    if (process.platform !== 'win32') throw new Error('Windows ownership proof is unavailable')
+    execFileSync(launcher, [directory ? '--internal-check-package-directory' : '--internal-check-package-file', file],
+      { windowsHide: true, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] })
+  }
+}

@@ -20,6 +20,23 @@ try {
   Require ((Run-Launcher @('--internal-private-directory', $root)) -eq 0) 'Could not create fixture parent'
   $directory = Join-Path $root 'existing'
   [void](New-Item -ItemType Directory -Path $directory)
+  # npm leaves ordinary inherited ACLs and the creating token's default owner.
+  # Inspect those objects without repairing security merely to pass validation.
+  $packageFile = Join-Path $directory 'package.json'
+  [IO.File]::WriteAllText($packageFile, '{}')
+  $packageDirectoryBefore = Descriptor $directory
+  $packageFileBefore = Descriptor $packageFile
+  Require ((Run-Launcher @('--internal-check-package-directory', $directory)) -eq 0) 'Ordinary npm directory must pass'
+  Require ((Run-Launcher @('--internal-check-package-file', $packageFile)) -eq 0) 'Ordinary npm file must pass'
+  Require ($packageDirectoryBefore -ceq (Descriptor $directory)) 'Package inspection changed directory security'
+  Require ($packageFileBefore -ceq (Descriptor $packageFile)) 'Package inspection changed file security'
+  Require ((Run-Launcher @('--internal-check-private-directory', $directory)) -ne 0) 'npm admission must not weaken managed directory checks'
+  # A foreign owner must not become trusted just because its DACL is safe.
+  & "$env:SystemRoot\System32\icacls.exe" $packageFile '/setowner' '*S-1-5-18' | Out-Null
+  Require ($LASTEXITCODE -eq 0) 'Could not establish foreign package owner'
+  $foreignBefore = Descriptor $packageFile
+  Require ((Run-Launcher @('--internal-check-package-file', $packageFile)) -ne 0) 'Foreign-owned npm file must fail'
+  Require ($foreignBefore -ceq (Descriptor $packageFile)) 'Refused package inspection changed owner'
   # Hosted administrator accounts can default newly created objects to the
   # Administrators owner. The fixture deliberately models current-User ownership.
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -53,8 +70,9 @@ try {
   $unsafeBefore = Descriptor $directory
   Require ((Run-Launcher @('--internal-protect-existing-directory', $directory)) -ne 0) 'Unsafe writers must be refused'
   Require ((Run-Launcher @('--internal-check-state-directory', $directory)) -ne 0) 'State inspection must reject unsafe writers'
+  Require ((Run-Launcher @('--internal-check-package-directory', $directory)) -ne 0) 'npm inspection must reject unsafe writers'
   Require ($unsafeBefore -ceq (Descriptor $directory)) 'Refused migration modified security'
-  @{ ok=$true; checks=@('protect-existing-directory','preserve-child-security','reject-unsafe-writers','idempotent-protection') } | ConvertTo-Json -Compress
+  @{ ok=$true; checks=@('protect-existing-directory','preserve-child-security','reject-unsafe-writers','idempotent-protection','npm-inherited-access','npm-default-owner','npm-foreign-owner','npm-read-only-inspection') } | ConvertTo-Json -Compress
 } finally {
   if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
