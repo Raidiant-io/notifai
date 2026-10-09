@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v11.8.0...v12.0.0-beta.1) (2026-10-09)
+
+### Breaking changes
+
+* The existing `@raidiant/notifai` npm package now installs and launches the managed native CLI instead of shipping a separate Node runtime. Existing native installations keep their version and channel until an explicit update.
+
+### Improvements
+
+* Use the same native runtime and bundled skill through shell, PowerShell, npm, and npx setup.
+* Report installation ownership and recovery clearly in doctor, preserve unfinished removal, and make migration from older npm installations explicit.
+* Continue interactive setup correctly when installing through a piped shell command.
+* Verify npm adapter bytes against the signed native release and coordinate publication across all supported targets.
+* Keep long Codex turns readable and link Claude question-picker content to its registered question.
+
 ## [11.8.0](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0) (2026-10-08)
 
 
