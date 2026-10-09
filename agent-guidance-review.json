@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7635d840825b57c330eb5656e0d12f6fa6709f621e0b48a7d07802904785358a",
+  "behavior_digest": "sha256:de7af5c2d01788562c918d97f35bcc7715390a237bab95e480436c687d0eee02",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms. notifai acknowledge no longer prints a constant agent_acknowledgement_required: true after recording or replaying an acknowledgement; its output now matches Session Message acknowledgement (request_id, outcome, acknowledgement). Skill text and other agent-facing output are unchanged.",
+  "reason": "Reviewed lifecycle hook guidance, the shipped skill and installation/update references, harness setup, CLI readiness and domain terms against the native-first installation contract. Setup retains two visible sections and QR-first approval; native installation owns runtime updates/removal, the optional existing-name npm launcher owns only its adapter, and old Node/global-adapter migration preserves pending work and exact-prefix cleanup. Future npm examples are candidate content and require verified publication before advertisement. Runtime guidance emitters and routing remain unchanged in this worker patch; aggregate review is required after integration with the adapter and lifecycle implementations.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

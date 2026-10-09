@@ -20,7 +20,7 @@ macOS/Linux, from a temporary directory outside the repository:
 
 ```sh
 curl --fail --location --proto '=https' --proto-redir '=https' \
-  https://raw.githubusercontent.com/Raidiant-io/notifai/main/scripts/install.sh \
+  https://notifai.sh/install.sh \
   --output install.sh
 ```
 
@@ -31,7 +31,7 @@ User-owned setup choices in the main skill.
 Windows PowerShell, from a temporary directory outside the repository:
 
 ```powershell
-Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Raidiant-io/notifai/main/scripts/install.ps1' -OutFile install.ps1
+Invoke-WebRequest -Uri 'https://notifai.sh/install.ps1' -OutFile install.ps1
 ```
 
 After inspection, run `& ./install.ps1 -NoInit -Json`, adding the authorized
@@ -43,11 +43,45 @@ Use the absolute command printed by the installer for `--version` and
 `notifai update`, which keeps the saved channel. An installer failure remains
 incomplete; use its reported recovery rather than installing a second runtime.
 
-The old `@raidiant/notifai` npm runtime is frozen. Installing it to repair PATH
-can shadow the native CLI and restore old hook behavior. Existing npm users
-need the native installer's explicit `--migrate-npm` / `-MigrateNpm` flow:
-it preserves the old package and reports cleanup instructions. Finish pending
-questions and acknowledgements and resolve its reported legacy owners before
-removing that exact package. Do not kill sessions or delete data to force an
-upgrade. The separate optional npm bootstrap is not a fallback unless its own
-publication and prerequisites are verified.
+## Optional Node/npm launcher
+
+The existing-name `@raidiant/notifai` launcher is an optional route, only after
+its replacement package and matching native artifacts are verified as published:
+
+```sh
+npx --yes @raidiant/notifai@latest init
+# Or keep an npm launcher on PATH:
+npm install -g @raidiant/notifai
+notifai init
+```
+
+Requires Node.js 20.12 or newer for this launcher. Notifai installs its own native
+runtime. Use `notifai update` for runtime updates. npm upgrades only the launcher;
+`npm uninstall -g @raidiant/notifai` removes only that launcher. The runtime remains
+until `notifai uninstall` completes its pending-work and owner checks.
+
+A fresh explicit `init` or `install` acquires the signed native release matching
+the launcher version/source, including a beta launcher's beta runtime. Existing
+native installations keep their version and saved channel. `@version` pins
+launcher code, not an existing runtime. Help, version, doctor and ordinary
+commands never acquire or recreate a missing runtime. Hooks and Session Attendants
+use the stable native path, not an NPX cache; deleting that cache does not remove
+the installed runtime.
+
+## Migrate an old installation
+
+An identified old Node-based `@raidiant/notifai` application is different from
+the native launcher. Never update its package in place while residents still
+use its files. Use the native installer's explicit `--migrate-npm` / `-MigrateNpm`
+flow to stage native files while preserving the old package. Finish pending
+questions and acknowledgements and resolve the reported legacy owners before
+removing that exact package with the reported owning-prefix command. Rerun the
+installer to finish setup. Do not kill sessions or delete data to force migration.
+
+Upgrade an older native runtime through its existing native route before adding
+a new global npm launcher. If the launcher was added first and the runtime cannot
+recognize it, follow the verified exact-prefix remedy: remove only that launcher,
+update the existing native command by absolute path, then reinstall the launcher.
+Never remove an entire global bin directory or unrelated PATH entries. Verified
+global and NPX launchers can lead to one runtime; unknown or modified commands
+still need the diagnosis's explicit remedy.
