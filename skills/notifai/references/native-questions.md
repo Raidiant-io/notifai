@@ -7,14 +7,17 @@ the ordinary conversation and app-answer flow available.
 
 ## Before emitting the form
 
-Use the returned tool, titles and options exactly, in the registration turn.
-The short title marker identifies a registered question; wording alone does
-not. Keep the returned question and choice IDs for reporting its answer.
-An unsupported form or missing binding stays ordinary. Preserve unrelated
-native forms, even when they contain identical wording.
+On Claude Code the form is its question picker, linked by its content, and a
+device answer closes it: read
+[the Claude Code file](harness-claude-code.md#linked-question-picker).
 
-On Claude Code the form is its question picker, and a device answer closes it:
-read [the Claude Code file](harness-claude-code.md#linked-question-picker).
+On Codex, use the returned tool, titles and options exactly, in the
+registration turn. The short title marker identifies a registered question;
+wording alone does not. Preserve unrelated native forms, even when they
+contain identical wording.
+
+Keep the returned question and choice IDs for reporting its answer. An
+unsupported form or missing binding stays ordinary.
 
 ## When the native answer arrives
 
@@ -45,8 +48,8 @@ An already acknowledged operation must not repeat work it previously caused.
 Keep the original app answer watcher after native acknowledgement: a reply may
 already be in flight, and the User can still answer within its original window.
 Use `close` for explicit withdrawal, not as native-answer acknowledgement.
-If you never emitted the exact returned form, an ordinary conversation answer
-still uses the unlinked question's `close` flow.
+If no linked form asked it, an ordinary conversation answer still uses the
+unlinked question's `close` flow.
 
 Reporting an answer does not prove a native form closed. Native settlement
 depends on the harness capabilities and exact binding; missing or uncertain

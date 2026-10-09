@@ -35,11 +35,13 @@ still delivered, at the Agent Session's next turn rather than on its own.
 ## Linked question picker
 
 When `ask` returns `native_question` with tool `AskUserQuestion`, you may ask
-that question in Claude Code's picker. Use each returned title as the
-question's text and its options as the option labels, exactly, in the turn that
-registered it, with `multiSelect` matching `multi`. Header and option
-descriptions are yours to write. A picker that changes a title, an option, or
-adds an unregistered question is not linked and behaves as any other picker.
+the same question in Claude Code's picker: the same question text and option
+labels, with `multiSelect` matching `multi`. Notifai recognises the picker by
+that content while the question is open, so there is nothing to copy beyond
+what you already wrote. Header and option descriptions are yours to write. A
+picker that changes a question or an option, or adds an unregistered question,
+is not linked; its result then names the question still asking on the User's
+devices, so you can retire it with `close`.
 
 The picker takes whichever answer comes first, from the User's devices or the
 terminal, and closes. Notifai context arrives with its result:
