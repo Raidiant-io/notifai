@@ -47,7 +47,7 @@ export async function buildNpmAdapter({ sourceRevision, output = path.join(repos
   for (const input of Object.keys(result.metafile.inputs)) {
     assert.ok(!/apps\/cli\/(?:src|dist)\/(?:main|program|commands-|session-|hook-)/.test(input), 'The npm artifact cannot bundle the full product runtime')
     if (!input.includes('node_modules/')) continue
-    let directory = path.dirname(path.resolve(input))
+    let directory = path.dirname(path.resolve(repositoryRoot, input))
     while (directory !== path.dirname(directory)) {
       try {
         const manifest = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'))

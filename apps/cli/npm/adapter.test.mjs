@@ -104,6 +104,26 @@ test('invalid explicit install selection fails before fetching', async t => {
   }
   assert.equal(f.calls.length, 0)
 })
+
+test('release extraction survives asynchronous native install and is cleaned only after success or failure', async t => {
+  const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
+  for (const fail of [false, true]) {
+    const f = await fixture(t), started = deferred(), finished = deferred()
+    f.platform.execute = file => { started.resolve(file); return finished.promise }
+    const pending = acquireNative(f.release, f)
+    const executable = await started.promise
+    assert.equal(existsSync(executable), true)
+    assert.equal(existsSync(f.temporary), true)
+    if (fail) {
+      finished.reject(new Error('Native installer failed'))
+      await assert.rejects(pending, /Native installer failed/)
+    } else {
+      finished.resolve(0)
+      assert.equal(await pending, 0)
+    }
+    assert.equal(existsSync(f.temporary), false)
+  }
+})
 test('native subprocess boundary preserves Unicode arguments, captured output and exit category', async () => {
   const args = ['δ🚀 spaces', '$(literal)', 'quote\" and \'']
   const result = await executeNative(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)));process.exitCode=2', ...args], { capture: true })
