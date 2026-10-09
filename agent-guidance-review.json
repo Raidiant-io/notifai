@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a059c7e79322f2f0556da5fb57ce1920f271af16c67f06789e1fb518618f1a88",
+  "behavior_digest": "sha256:612f535d6dbd7fdd586b3aec77d73b53e5355c0a37cdf4b90f243c4f8cd295f3",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the combined npm launcher and native lifecycle behavior against all shipped guidance surfaces. Guidance now identifies the official HTTPS bootstrap and stable native hook command, preserves setup choices and pending work, separates native runtime updates/removal from npm launcher maintenance, and gives exact-prefix migration recovery. Verified launcher identity and read-only doctor behavior agree with the readiness guidance. npm examples remain conditional on verified replacement publication. The setup prompt now correctly describes bundled skill installation.",
+  "reason": "Reviewed the combined npm launcher and native lifecycle behavior against all shipped guidance surfaces. Guidance now identifies the official HTTPS bootstrap and stable native hook command, preserves setup choices and pending work, separates native runtime updates/removal from npm launcher maintenance, and gives exact-prefix migration recovery. Verified launcher identity and read-only doctor behavior agree with the readiness guidance. npm examples remain conditional on verified replacement publication. The setup prompt now correctly describes bundled skill installation. Reconciled main PR 278: Claude picker guidance uses exact question content while Codex retains marked cards. Reviewed the merged ask instructions, lifecycle bindings and skill references; these preserve the native installation and runtime ownership contract.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

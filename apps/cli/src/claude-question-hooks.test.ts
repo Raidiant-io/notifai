@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   CLAUDE_PICKER_TURN,
   claudePickerAnswers,
+  claudePickerMiss,
   claudePickerShape,
   claudeTerminalAnswers,
   matchClaudePicker,
@@ -144,18 +145,50 @@ describe('Claude Code picker bindings', () => {
     expect(reserveClaudeQuestion(before, { ...other, questions: [{ id: 'q1', text: 'Free text?' }] }, { owner_key: h.incarnation.key, turn_id: CLAUDE_PICKER_TURN, service: SERVICE })).toBe(before)
   })
 
+  it('identifies a picker by the questions the agent registered, with nothing to copy', () => {
+    const h = setup([ENVIRONMENT, CHECKS])
+    expect(h.registration().questions.map((binding) => binding.marker)).toEqual([undefined, undefined])
+    expect(h.toolInput().questions.map((question) => question['question'])).toEqual(['Which environment?', 'Which checks?'])
+    expect(h.state().codex_question_marker_counter).toBeUndefined()
+  })
+
   it('binds a picker only when it shows exactly the registered questions', () => {
     const h = setup([ENVIRONMENT, CHECKS])
     const key = h.incarnation.key
     expect(matchClaudePicker(h.state(), key, h.toolInput())?.question_id).toBe('q_bound')
+    expect(matchClaudePicker(h.state(), key, h.toolInput((q) => {
+      q.reverse()
+      for (const question of q) (question['options'] as unknown[]).reverse()
+    }))?.question_id).toBe('q_bound')
     expect(matchClaudePicker(h.state(), 'another-owner', h.toolInput())).toBeNull()
-    expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q[0]!['question'] = 'Which environment?' }))).toBeNull()
+    expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q[0]!['question'] = 'Which environment now?' }))).toBeNull()
+    expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q[1]!['question'] = 'Which environment?' }))).toBeNull()
+    expect(matchClaudePicker(h.state(), key, h.toolInput((q) => {
+      (q[1]!['options'] as Array<{ label: string }>)[2]!.label = 'Lint'
+    }))).toBeNull()
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q.pop() }))).toBeNull()
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q.push({ question: 'Anything else?', options: [{ label: 'Yes' }, { label: 'No' }] }) }))).toBeNull()
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q[1]!['multiSelect'] = false }))).toBeNull()
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { (q[0]!['options'] as Array<{ label: string }>)[0]!.label = 'Stage' }))).toBeNull()
     expect(matchClaudePicker(h.state(), key, { questions: 'no' })).toBeNull()
     expect(matchClaudePicker(h.state(), key, undefined)).toBeNull()
+  })
+
+  it('names the registrations an unlinked picker resembles', () => {
+    const h = setup([ENVIRONMENT, CHECKS])
+    const key = h.incarnation.key
+    expect(claudePickerMiss(h.state(), key, h.toolInput())).toBeNull()
+    expect(claudePickerMiss(h.state(), key, h.toolInput((q) => { q.pop() })))
+      .toEqual({ question_ids: ['q_bound'], mismatch: 'different-content' })
+    expect(claudePickerMiss(h.state(), key, h.toolInput((q) => { q.forEach((question) => { question['question'] += ' now' }) }))).toBeNull()
+    expect(claudePickerMiss(h.state(), 'another-owner', h.toolInput((q) => { q.pop() }))).toBeNull()
+
+    const again = { ...h.pending, question_id: 'q_again', request_id: 'req_again' }
+    updateSessionState(SESSION, h.env, (state) => reserveClaudeQuestion(state, again,
+      { owner_key: key, turn_id: CLAUDE_PICKER_TURN, service: SERVICE }))
+    expect(matchClaudePicker(h.state(), key, h.toolInput())).toBeNull()
+    expect(claudePickerMiss(h.state(), key, h.toolInput()))
+      .toEqual({ question_ids: ['q_bound', 'q_again'], mismatch: 'duplicate-registration' })
   })
 
   it('maps an app answer to the picker and a terminal answer back to registered ids', () => {
@@ -267,7 +300,7 @@ describe('Claude Code picker hooks', () => {
   it('leaves an unregistered picker alone', async () => {
     const h = setup()
     h.stage([{ question_id: 'q1', choice_ids: ['staging'] }])
-    const unrelated = { questions: [{ question: 'Which environment?', options: [{ label: 'Staging' }, { label: 'Production' }] }] }
+    const unrelated = { questions: [{ question: 'Which region?', options: [{ label: 'Europe' }, { label: 'Americas' }] }] }
     expect(await claudePermissionRequest(h.deps, h.envelope({ tool_input: unrelated }), h.logger)).toBe('not-bound')
     expect(await claudePermissionRequest(h.deps, h.envelope({ tool_name: 'Bash' }), h.logger)).toBe('not-bound')
     expect(await claudePermissionRequest(h.deps, h.envelope({ agent_id: 'agent-1' }), h.logger)).toBe('not-bound')
@@ -275,6 +308,24 @@ describe('Claude Code picker hooks', () => {
     expect(h.claims).toEqual([])
     expect(h.state().claude_picker).toBeUndefined()
     expect(h.state().waiting_answers).toHaveLength(1)
+  })
+
+  it('leaves a picker that resembles a registration unlinked, logs why, and tells the agent what is still asking', async () => {
+    const h = setup()
+    h.stage([{ question_id: 'q1', choice_ids: ['staging'] }])
+    const gates: Array<Record<string, unknown>> = []
+    const logger = { ...h.logger, info: (event: string, fields?: Record<string, unknown>) => { if (event === 'hook.gate') gates.push(fields ?? {}) } }
+    const differs = h.toolInput((q) => { (q[0]!['options'] as Array<{ label: string }>).push({ label: 'Canary' }) })
+    expect(await claudePermissionRequest(h.deps, h.envelope({ tool_input: differs }), logger)).toBe('not-bound')
+    expect(gates).toEqual([expect.objectContaining({ stage: 'picker-unlinked', question_ids: ['q_bound'], mismatch: 'different-content' })])
+    expect(h.output).toEqual([])
+    expect(h.state().waiting_answers).toHaveLength(1)
+
+    claudePostToolUse(h.deps, h.envelope({ tool_input: differs, tool_response: { answers: { 'Which environment?': 'Canary' } } }), logger)
+    const context = (JSON.parse(h.output[0]!) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
+    expect(context).toContain('not linked to registered question q_bound')
+    expect(context).toContain('notifai close <question_id>')
+    expect(h.registration().terminated).toBeUndefined()
   })
 
   it('stops without a word when the terminal answers first, and tells the agent how to report that answer', async () => {

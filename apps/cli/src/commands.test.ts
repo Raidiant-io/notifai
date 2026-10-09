@@ -9194,7 +9194,7 @@ describe('asking before the hooks have ever run', () => {
     }
     expect(output.native_question).toMatchObject({
       tool: 'AskUserQuestion',
-      questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
+      questions: [{ question_id: output.questions[0].id, title: 'Where?', options: ['Staging', 'Production'] }],
     })
     expect(output.native_question.instructions).toContain('AskUserQuestion')
     expect(output.native_question.instructions).toContain(`notifai acknowledge ${output.question_id}`)
@@ -9204,7 +9204,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     expect(await askCommand(deps, 'Which checks?', { choice: ['Lint', 'Tests'], multi: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toMatchObject({
-      tool: 'AskUserQuestion', questions: [{ title: '[nf:002] Which checks?', options: ['Lint', 'Tests'], multi: true }],
+      tool: 'AskUserQuestion', questions: [{ title: 'Which checks?', options: ['Lint', 'Tests'], multi: true }],
     })
   })
 

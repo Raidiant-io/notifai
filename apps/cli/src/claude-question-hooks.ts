@@ -23,6 +23,7 @@ import { isDeepStrictEqual } from 'node:util'
 import {
   CLAUDE_QUESTION_TOOL,
   claudePickerAnswers,
+  claudePickerMiss,
   claudeTerminalAnswers,
   isClaudeRegistration,
   matchClaudePicker,
@@ -209,8 +210,10 @@ export async function claudePermissionRequest(
       incarnation.harness_process === undefined || processIdentityLiveness(incarnation.harness_process) !== 'alive') return 'not-bound'
   const now = deps.now ?? Date.now
   let questionId: string | null = null
+  let miss = null as ReturnType<typeof claudePickerMiss>
   updateSessionState(sessionId, deps.env, (state) => {
     const match = matchClaudePicker(state, incarnation.key, envelope.tool_input)
+    if (match === null) miss = claudePickerMiss(state, incarnation.key, envelope.tool_input)
     if (match === null || match.ordinary_only === true) return state
     questionId = match.question_id
     return {
@@ -218,7 +221,12 @@ export async function claudePermissionRequest(
       claude_picker: { question_id: match.question_id, opened_at: now(), waiter: writer },
     }
   })
-  if (questionId === null) return 'not-bound'
+  if (questionId === null) {
+    // A picker resembling a live registration but not linked to it is the
+    // failure an agent cannot see; the log is where it shows.
+    if (miss !== null) logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', ...miss, stage: 'picker-unlinked' })
+    return 'not-bound'
+  }
   const bound: string = questionId
   logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_id: bound, stage: 'picker-waiting' })
 
@@ -335,7 +343,19 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
   let stage = 'unbound'
   updateSessionState(sessionId, deps.env, (state) => {
     if (state.claude_picker === undefined && state.claude_picker_presented === undefined &&
-        matchClaudePicker(state, incarnation.key, envelope.tool_input) === null) return state
+        matchClaudePicker(state, incarnation.key, envelope.tool_input) === null) {
+      const miss = claudePickerMiss(state, incarnation.key, envelope.tool_input)
+      if (miss !== null) {
+        stage = 'picker-unlinked'
+        const ids = miss.question_ids.join(', ')
+        context = miss.mismatch === 'duplicate-registration'
+          ? `Notifai — this picker was not linked: registered questions ${ids} all ask exactly this, and their devices are still asking each. ` +
+            'Retire every one this picker answered with `notifai close <question_id>`.'
+          : `Notifai — this picker was not linked to registered question ${ids}: its questions or options differ. ` +
+            'Their devices are still asking it. If the picker asked the same thing, retire it with `notifai close <question_id>`.'
+      }
+      return state
+    }
     const next = withoutPicker(state)
     const presented = next.claude_picker_presented
     if (presented !== undefined) {

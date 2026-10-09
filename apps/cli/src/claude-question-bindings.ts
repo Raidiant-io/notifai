@@ -10,15 +10,16 @@
  * A registration is kept beside the Codex ones, in the same list, so the
  * shared lifecycle (confirmed request, ordinary presentation, retirement,
  * native answer reports) treats both alike. Only reservation and matching
- * differ: a Claude picker is identified by the tool input its hook receives,
- * never by a transcript.
+ * differ. A Codex card is found in a transcript, so it needs a marker in its
+ * title. A Claude picker's hook receives the picker itself, so the picker is
+ * identified by its content: the question text, option labels and selection
+ * mode the agent already wrote for `notifai ask`. Nothing has to be copied.
  */
 import { isDeepStrictEqual } from 'node:util'
 import type { QuestionT } from '@raidiant/notifai-protocol'
 import type { ServiceIdentity } from './credentials.js'
 import {
   nativeQuestionTitle,
-  type CodexQuestionBinding,
   type CodexQuestionRegistration,
   type NativeQuestionAdmission,
 } from './codex-question-bindings.js'
@@ -62,22 +63,8 @@ export function reserveClaudeQuestion(
       pending.question_id === undefined || pending.service_identity === undefined ||
       !isDeepStrictEqual(admission.service, pending.service_identity) || !claudePickerShape(pending.questions) ||
       state.codex_question_bindings?.some((item) => item.question_id === pending.question_id)) return state
-  const used = new Set((state.codex_question_bindings ?? []).flatMap((item) => item.questions.map((q) => q.marker)))
-  let counter = state.codex_question_marker_counter ?? 0
-  if (!Number.isSafeInteger(counter) || counter < 0) return state
-  const questions: CodexQuestionBinding[] = []
-  for (const question of pending.questions!) {
-    let marker: string
-    do {
-      if (counter >= Number.MAX_SAFE_INTEGER) return state
-      marker = (++counter).toString(36).toUpperCase().padStart(3, '0')
-    } while (used.has(marker))
-    used.add(marker)
-    questions.push({ question: structuredClone(question), marker })
-  }
   return {
     ...state,
-    codex_question_marker_counter: counter,
     codex_question_bindings: [
       ...(state.codex_question_bindings ?? []),
       {
@@ -86,7 +73,7 @@ export function reserveClaudeQuestion(
         registration_turn_id: CLAUDE_PICKER_TURN,
         transcript: { file: '', identity: CLAUDE_PICKER_TURN, registered_offset: 0 },
         service_identity: { ...pending.service_identity },
-        questions,
+        questions: pending.questions!.map((question) => ({ question: structuredClone(question) })),
       },
     ],
   }
@@ -119,11 +106,29 @@ export function pickerQuestions(toolInput: unknown): PickerQuestion[] | null {
   return questions
 }
 
+function sameLabels(shown: readonly string[], labels: readonly string[] | undefined): boolean {
+  const registered = new Set(labels)
+  return shown.length === registered.size && new Set(shown).size === shown.length && shown.every((label) => registered.has(label))
+}
+
+/** Whether the picker asks exactly this registration's questions: the same texts, labels and modes, in any order. */
+function showsRegistration(picker: readonly PickerQuestion[], registration: CodexQuestionRegistration): boolean {
+  return registration.questions.length === picker.length && registration.questions.every((binding) => {
+    const shown = picker.filter((question) => question.question === nativeQuestionTitle(binding))
+    return shown.length === 1 && sameLabels(shown[0]!.options, binding.question.choices?.map((choice) => choice.label)) &&
+      shown[0]!.multiSelect === (binding.question.multi === true)
+  })
+}
+
+function liveRegistrations(state: SessionState, ownerKey: string): CodexQuestionRegistration[] {
+  return (state.codex_question_bindings ?? []).filter((registration) =>
+    isClaudeRegistration(registration) && registration.owner_key === ownerKey && registration.terminated !== true)
+}
+
 /**
- * The one live registration this picker shows, exactly: every question of the
- * registration, in order, with its marked title, its option labels and its
- * selection mode, and nothing else. Similar wording never binds, and a picker
- * that mixes in another question is left alone.
+ * The one live registration of this session that the picker asks, exactly.
+ * Similar wording never binds, a picker that mixes in another question is
+ * left alone, and two live registrations with the same content bind neither.
  */
 export function matchClaudePicker(
   state: SessionState,
@@ -132,16 +137,28 @@ export function matchClaudePicker(
 ): CodexQuestionRegistration | null {
   const picker = pickerQuestions(toolInput)
   if (picker === null) return null
-  const matches = (state.codex_question_bindings ?? []).filter((registration) =>
-    isClaudeRegistration(registration) && registration.owner_key === ownerKey && registration.terminated !== true &&
-    registration.questions.length === picker.length &&
-    registration.questions.every((binding, index) => {
-      const shown = picker[index]!
-      return binding.ambiguous !== true && shown.question === nativeQuestionTitle(binding) &&
-        isDeepStrictEqual(shown.options, binding.question.choices?.map((choice) => choice.label)) &&
-        shown.multiSelect === (binding.question.multi === true)
-    }))
+  const matches = liveRegistrations(state, ownerKey).filter((registration) => showsRegistration(picker, registration))
   return matches.length === 1 ? matches[0]! : null
+}
+
+/**
+ * Why a picker was not linked to the live registrations it resembles by
+ * sharing a question text. Null when it resembles none.
+ */
+export function claudePickerMiss(
+  state: SessionState,
+  ownerKey: string,
+  toolInput: unknown,
+): { question_ids: string[]; mismatch: 'duplicate-registration' | 'different-content' } | null {
+  const picker = pickerQuestions(toolInput)
+  if (picker === null) return null
+  const live = liveRegistrations(state, ownerKey)
+  const exact = live.filter((registration) => showsRegistration(picker, registration))
+  if (exact.length === 1) return null
+  if (exact.length > 1) return { question_ids: exact.map((registration) => registration.question_id), mismatch: 'duplicate-registration' }
+  const near = live.filter((registration) => registration.questions.some((binding) =>
+    picker.some((question) => question.question === nativeQuestionTitle(binding))))
+  return near.length === 0 ? null : { question_ids: near.map((registration) => registration.question_id), mismatch: 'different-content' }
 }
 
 /** Record that Claude Code showed this registration's picker; a re-shown picker replaces the earlier one. */
