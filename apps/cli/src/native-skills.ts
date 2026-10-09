@@ -302,6 +302,13 @@ export function discoverNotifaiSkills(scope: SkillScope, cwd: string, env: NodeJ
 export interface SkillInventory { installed: NativeSkill[]; errors: string[] }
 export interface SkillInventoryIssue { code: string; resolution: string; detail: string; remedy: string }
 
+/** Refresh authority comes only from receipts; incomplete discovery still fails closed. */
+export function ownedSkillInventory(inventory: SkillInventory): SkillInventory {
+  return { installed: inventory.installed.filter(skill => skill.owned === true),
+    errors: [...inventory.errors, ...inventory.installed.filter(skill => skill.owned !== true &&
+      skill.condition === 'inspection-incomplete').map(skill => `Inspection incomplete: ${skill.problem ?? skill.path}`)] }
+}
+
 /** Common decision for diagnostic commands; presentation belongs to each caller. */
 export function skillInventoryIssue(inventory: SkillInventory): SkillInventoryIssue | null {
   const { installed, errors } = inventory

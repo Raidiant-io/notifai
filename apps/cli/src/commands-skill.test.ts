@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -154,7 +154,7 @@ describe('ownership-aware skill diagnostics', () => {
     expect(await updateSkillCommand(f.deps, {})).toBe(1)
     expect(f.add).not.toHaveBeenCalled(); expect(f.remove).not.toHaveBeenCalled()
   })
-  it('does not hide an extra unowned harness copy behind a current owned receipt', async () => {
+  it('keeps an extra unowned copy diagnosed while verifying the current owned receipt', async () => {
     const f = fixture(); f.install('global')
     const extra = path.join(f.home, '.claude', 'skills', 'notifai')
     cpSync(f.bundle.skillRoot, extra, { recursive: true })
@@ -163,7 +163,9 @@ describe('ownership-aware skill diagnostics', () => {
     ] })
     expect(await skillReadiness(f.deps)).toMatchObject({ technical: { resolution: 'skill-unmanaged' } })
     expect(f.faults()).toMatchObject([{ code: 'skill-unmanaged' }])
-    expect(await updateSkillCommand(f.deps, {})).toBe(1)
+    expect(await updateSkillCommand(f.deps, {})).toBe(0)
+    expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ ok: true, changed: false,
+      preserved_guidance: [expect.objectContaining({ path: extra, owned: false })] })
     expect(f.add).not.toHaveBeenCalled()
     expect(createSkillManifest(extra, '').digest).toBe(f.bundle.manifest.digest)
   })
@@ -189,14 +191,24 @@ describe('ownership-aware skill diagnostics', () => {
     const old = verifySkillBundle(source)
     if (!old.ok) throw new Error(old.error)
     expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: old.bundle }).ok).toBe(true)
-    expect(await nativeSkills.list('global', f.cwd, f.env)).toMatchObject({ skills: [{ owned: true, condition: 'managed-stale' }] })
-    expect(await skillReadiness(f.deps)).toMatchObject({ status: 'gap', technical: { resolution: 'installed-skill-content-mismatch' } })
-    expect(f.faults()).toMatchObject([{ code: 'skill-drift', remedy: 'notifai update --refresh-skill --json' }])
+    const foreign = ['.hermes', '.grok', '.openclaw'].map(harness => path.join(f.home, harness, 'skills', 'notifai'))
+    for (const target of foreign) {
+      cpSync(f.bundle.skillRoot, target, { recursive: true })
+      writeFileSync(path.join(target, 'SKILL.md'), `User guidance for ${path.basename(path.dirname(path.dirname(target)))}`)
+    }
+    const before = foreign.map(target => createSkillManifest(target, '').digest)
     expect(await updateSkillCommand(f.deps, {})).toBe(0)
     expect(f.add).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global' }))
-    expect(await nativeSkills.list('global', f.cwd, f.env)).toMatchObject({ skills: [{ owned: true, condition: 'managed-current', agents: ['claude-code'] }] })
+    expect((await nativeSkills.list('global', f.cwd, f.env)).skills.filter(skill => skill.owned)).toMatchObject([
+      { condition: 'managed-current', agents: ['claude-code'] },
+    ])
+    expect(foreign.map(target => createSkillManifest(target, '').digest)).toEqual(before)
     expect(existsSync(f.destination('global'))).toBe(false)
-    expect(f.faults()).toEqual([])
+    expect(f.faults()).toMatchObject([{ code: 'skill-unmanaged' }])
+    expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ ok: true,
+      preserved_guidance: expect.arrayContaining(foreign.map(target => expect.objectContaining({ path: target }))) })
+    expect(await updateSkillCommand(f.deps, {})).toBe(0)
+    expect(f.add).toHaveBeenCalledTimes(1)
   })
   it('detects duplicate managed scopes without choosing a refresh scope', async () => {
     const f = fixture(); f.install('project'); f.install('global')
@@ -376,8 +388,9 @@ describe('ownership-aware skill diagnostics', () => {
     ] })
     expect(await skillReadiness(f.deps)).toMatchObject({ technical: { resolution: 'skill-unreadable' } })
     expect(f.faults()).toMatchObject([{ code: 'skill-unreadable' }])
-    expect(await updateSkillCommand(f.deps, {})).toBe(1)
+    expect(await updateSkillCommand(f.deps, {})).toBe(0)
     expect(f.add).not.toHaveBeenCalled()
+    expect(readlinkSync(extra)).toBe(f.destination('global'))
   })
   it('does not treat omitted ownership in an injected inventory as a managed installation', async () => {
     const f = fixture(); f.install('global')

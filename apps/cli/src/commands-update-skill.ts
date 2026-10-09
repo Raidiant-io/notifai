@@ -1,4 +1,4 @@
-import { skillInventoryIssue } from './native-skills.js'
+import { ownedSkillInventory, skillInventoryIssue } from './native-skills.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { installedSkillMatchesPackage, listScopedNotifaiSkills, staleInstalledSkillCopies } from './commands-skill.js'
 
@@ -9,10 +9,13 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
     else deps.io.err(error)
     return EXIT.failed
   }
-  const inventory = await listScopedNotifaiSkills(deps)
+  const discovered = await listScopedNotifaiSkills(deps)
+  const inventory = ownedSkillInventory(discovered)
   const issue = skillInventoryIssue(inventory)
   if (issue !== null) return fail(`${issue.detail} ${issue.remedy}`)
   if (inventory.errors.length > 0 || inventory.installed.length !== 1) {
+    const unowned = skillInventoryIssue(discovered)
+    if (unowned !== null) return fail(`${unowned.detail} ${unowned.remedy}`)
     return fail('Skill refresh needs exactly one readable existing installation. Resolve missing or duplicate scope through setup first.')
   }
   const skill = inventory.installed[0]!
@@ -25,7 +28,8 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
       return fail(typeof operation === 'number' ? 'The native skill installer failed.' : operation.error)
     }
   }
-  const after = await listScopedNotifaiSkills(deps)
+  const afterDiscovery = await listScopedNotifaiSkills(deps)
+  const after = ownedSkillInventory(afterDiscovery)
   if (after.errors.length > 0 || after.installed.length !== 1 || after.installed[0]?.scope !== skill.scope ||
       !installedSkillMatchesPackage(after.installed[0]!)) return fail('The refreshed skill could not be verified in its original scope.')
   const behind = staleInstalledSkillCopies(after.installed[0]!, deps.cwd, deps.env)
@@ -33,6 +37,8 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
     return fail(`The refreshed skill is current, but ${behind.map((copy) => copy.label).join(', ')} still ${behind.length === 1 ? 'loads' : 'load'} an older copy (${behind.map((copy) => copy.path).join(', ')}).`)
   }
   const report = { ok: true, changed, scope: skill.scope, path: after.installed[0]!.path,
+    preserved_guidance: afterDiscovery.installed.filter(item => item.owned !== true)
+      .map(item => ({ scope: item.scope, path: item.path, owned: false, condition: item.condition })),
     next_step: 'Read the refreshed SKILL.md and references/updates.md, then run notifai guidance in this Agent Session.' }
   deps.io.out(flags.json === true || deps.io.interactive !== true ? JSON.stringify(report, null, 2) : report.next_step)
   return EXIT.ok

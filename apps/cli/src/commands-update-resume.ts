@@ -4,7 +4,8 @@ import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { activeQuestionRouteProblems } from './commands-hook-diagnostics.js'
 import { hooksInstallCommand } from './commands-hook-install.js'
-import { listScopedNotifaiSkills } from './commands-skill.js'
+import { installedSkillMatchesPackage, listScopedNotifaiSkills } from './commands-skill.js'
+import { ownedSkillInventory, skillInventoryIssue } from './native-skills.js'
 import { updateSkillCommand } from './commands-update-skill.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter, isNpxAdapterTarget } from './hook-adapter.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
@@ -69,9 +70,10 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       pending.push(waiting)
       return report(false)
     }
-    const inventory = await listScopedNotifaiSkills(deps)
-    if (inventory.errors.length > 0 || inventory.installed.length > 1) {
-      pending.push('Resolve unreadable or duplicate skill scopes before integration repair; no scope was selected.')
+    const inventory = ownedSkillInventory(await listScopedNotifaiSkills(deps))
+    const skillIssue = skillInventoryIssue(inventory)
+    if (skillIssue !== null) {
+      pending.push(`${skillIssue.detail} ${skillIssue.remedy}`)
       return report(false)
     }
     if (assessment.installations.length > 0) {
@@ -105,7 +107,15 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       if (readFileSync(installation.file, 'utf8') !== before) changed.push(`${installation.harness}-hooks`)
     }
     assessment = localIntegrationAssessment(deps)
-    const repairFaults = assessment.faults.filter(fault => fault.code !== 'native-approval-pending')
+    const after = ownedSkillInventory(await listScopedNotifaiSkills(deps))
+    const afterIssue = skillInventoryIssue(after)
+    const ownedSkillGap = afterIssue !== null || after.installed.some(skill => !installedSkillMatchesPackage(skill))
+    if (ownedSkillGap) pending.push(afterIssue === null ? 'The refreshed owned guidance could not be verified.'
+      : `${afterIssue.detail} ${afterIssue.remedy}`)
+    // Unselected foreign guidance remains diagnosed, but has no authority over
+    // independent owned hooks or resident recovery. Never hide an owned gap.
+    const repairFaults = assessment.faults.filter(fault => fault.code !== 'native-approval-pending' &&
+      (!fault.code.startsWith('skill-') || ownedSkillGap))
     pending.push(...assessment.faults.map(fault => `${fault.code}: ${fault.remedy}`))
     if (owner !== null) {
       if (isHookInstallableHarness(owner.harness) && questionRoutingCapability(owner.harness, deps.hookPlatform).stopContinuation !== 'unsupported') {
@@ -119,13 +129,13 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
         pending.push(CODEX_TOOL_HOOK_RECOVERY)
       }
     }
-    if (assessment.faults.length === 0) {
+    if (!ownedSkillGap && repairFaults.length === 0 && !assessment.faults.some(fault => fault.code === 'native-approval-pending')) {
       attendants = await activateInstalledAttendants(deps, effective.artifact_path!)
       if (attendants.some(entry => entry.state === 'activated')) changed.push('resident-attendants')
       const unresolved = attendants.filter(entry => entry.state === 'pending' || !entry.native_activity)
       if (unresolved.length > 0) pending.push(`${unresolved.length} existing Codex session(s) still need native activity or resident activation verification; keep their Agent Sessions and pending inputs intact.`)
     }
-    return report(repairFaults.length === 0)
+    return report(!ownedSkillGap && repairFaults.length === 0)
   } catch {
     pending.push('Integration could not be verified; run notifai doctor --json and resume after the diagnosed gap is resolved.')
     return report(false)

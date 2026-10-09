@@ -45,11 +45,19 @@ Removing an npm launcher leaves native hooks and runtime intact.
 Run the locally generated `update_command`. The updater verifies the selected
 installation and stable adapter, then invokes the new executable for its
 handoff with `update --resume`. It refreshes an existing installer-managed skill
-in its original scope, including each harness's own copy, and repairs diagnosed
-Notifai-owned definitions. With a
-selected Codex home, it also repairs existing source-home definitions before
+in its original receipt-backed scope and recorded harness placements, and
+repairs diagnosed Notifai-owned definitions. With a selected Codex home, it
+also repairs existing source-home definitions before
 the selected copy; other accounts are untouched. Foreign hooks, settings,
 Guidance Topics, native approval and pending work remain User-owned.
+
+Unmanaged guidance in other placements is preserved and remains diagnosed; it
+does not prevent refreshing the existing owned selection or independently safe
+hook and Session Attendant recovery. With only unmanaged guidance, resume skips
+skill installation. It never creates a default placement or adopts matching
+files. `files_complete: true` means the owned files were verified; remaining
+guidance or activation diagnoses keep `migration_complete: false`. A successful
+owned refresh does not establish that every harness has current guidance.
 
 `integration_complete: true` confirms integration. Native updates report the
 new `version`, `integration`, and any `launcher_update_pending` separately;
@@ -63,9 +71,9 @@ Honor existing approval deferrals; repeating resume does not grant permission.
 
 1. Read the new packaged `guidance.skill_path` and this update reference. Run
    `notifai guidance` to reread the effective provenance-marked Guidance Topics.
-2. Resolve the reported `pending_actions`. An unreadable or duplicate skill
-   scope requires a decision rather than guessing. An unmanaged or modified
-   skill is preserved: ask the User whether to keep it or replace it after
+2. Resolve the reported `pending_actions`. Unreadable owned placements and
+   multiple receipt-backed scopes require a decision rather than guessing.
+   An unmanaged or modified skill is preserved: ask the User whether to keep it or replace it after
    preserving their changes. Matching package bytes do not establish installer
    ownership. An interrupted installer-owned placement or a missing owned
    destination can resume in its recorded scope through the existing installer.
