@@ -34,10 +34,10 @@ official publication admission. Build the runtime for the chosen target first;
 cross-compiling the application cannot build JavaScriptCore for that target.
 
 The builder regenerates the protocol output and exact CLI skill bundle before
-compilation. It embeds release identity and the skill, disables configuration
-autoload, and writes a build receipt beside the executable. `self-check --json`
-verifies build identity, process identity and skill integrity without service access or persistent
-account/logging writes. It does not verify an OS signature or prove installation,
+compilation. It embeds release identity, the skill and the canonical changelog,
+disables configuration autoload, and writes a build receipt beside the executable.
+`self-check --json` verifies build identity, process identity, skill integrity and
+changelog availability without service access or persistent account/logging writes. It does not verify an OS signature or prove installation,
 credentials, notification delivery, resident ownership, or update behavior.
 
 ## Launch boundary
