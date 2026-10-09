@@ -1,0 +1,1 @@
+Legacy npm global wrappers generated with cmd-shim 8.0.0 for a Node-shebang dist/main.js entrypoint. They are inert migration fixtures, never executed. cmd-shim attribution is in apps/cli/npm/SHIM-NOTICE.

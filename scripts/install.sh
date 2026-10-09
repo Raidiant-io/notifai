@@ -37,7 +37,13 @@ nf_run() {
   [ "$NF_NO_PATH" = 0 ] || set -- "$@" --no-path
   [ "$NF_MIGRATE_NPM" = 0 ] || set -- "$@" --migrate-npm
   set +e
-  "$nf_executable" "$@"
+  # curl | sh leaves stdin holding installer source. Give a human setup child
+  # the controlling terminal, while explicit JSON/no-init stays noninteractive.
+  if [ "$NF_JSON" = 0 ] && [ "$NF_NO_INIT" = 0 ] && [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
+    "$nf_executable" "$@" </dev/tty
+  else
+    "$nf_executable" "$@"
+  fi
   exit "$?"
 }
 # Select the account's OS home, never a command from PATH or a relocated HOME.

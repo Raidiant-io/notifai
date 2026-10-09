@@ -105,6 +105,8 @@ describe('PATH notifai diagnosis', () => {
     const file = path.join(directory, 'notifai')
     writeFileSync(file, '#!/usr/bin/env node\n')
     chmodSync(file, 0o755)
+    expect(isExecutablePath(directory, 'darwin')).toBe(false)
+    expect(isExecutablePath(directory, 'win32')).toBe(false)
     expect(pathNotifaiEntries({ PATH: directory }, 'darwin')).toEqual([file])
     expect(
       cliBinReadiness({ PATH: directory }, 'darwin', {
@@ -114,9 +116,9 @@ describe('PATH notifai diagnosis', () => {
     ).toBe('ready')
   })
 
-  it('does not call an older executable PATH winner ready when this process is the current CLI', () => {
+  it.each(['3.0.1', '10.1.0'])('rejects a different executable PATH winner even when its version is %s', oldVersion => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-stale-winner-'))
-    const old = posixInstall(root, 'old', '3.0.1')
+    const old = posixInstall(root, 'old', oldVersion)
     const current = posixInstall(root, 'current', '10.1.0')
 
     const state = cliBinReadiness(
@@ -136,7 +138,7 @@ describe('PATH notifai diagnosis', () => {
     expect(state.remedy?.command).not.toContain(old.command)
     expect(state.technical).toMatchObject({
       current: { artifact_path: realpathSync(current.artifact), version: '10.1.0' },
-      effective: { command_path: old.command, artifact_path: realpathSync(old.artifact), version: '3.0.1' },
+      effective: { command_path: old.command, artifact_path: realpathSync(old.artifact), version: oldVersion },
     })
   })
 

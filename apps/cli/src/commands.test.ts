@@ -7197,6 +7197,31 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
+  it('doctor reports a newly observed receipt without persisting it or sending another request', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'doctor-proof-read-only-'))
+    const io = new CapturedIo()
+    let submits = 0
+    const client = {
+      health: async () => true,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'proof@example.com' }),
+      submit: async () => { submits++; return setupReceipt('unexpected') },
+      evidence: async (requestId: string) => setupEvidence(requestId, {
+        state: 'observed', observed_at: '2026-09-05T12:00:02.000Z', latency_ms: 1_000,
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    expect(writeSetupProof(deps, { request_id: 'req_read_only', device_id: readyIphone.device_id,
+      started_at: '2026-09-05T12:00:00.000Z', companion_receipt: { state: 'unknown', observed_at: null } })).toBe(true)
+    const proofDir = path.join(stateDir(deps.env), 'machine-proofs'), proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
+    const before = readFileSync(proofFile, 'utf8')
+    await doctorCommand(deps, { json: true })
+    const report = JSON.parse(io.outLines.join('\n'))
+    expect(report.states.find((state: { id: string }) => state.id === 'proof')).toMatchObject({ status: 'ready' })
+    expect(readFileSync(proofFile, 'utf8')).toBe(before)
+    expect(submits).toBe(0)
+  })
+
   it('keeps completed setup ready when the saved Companion Receipt cannot be re-read transiently', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-transient-read-'))
     mkdirSync(path.join(cwd, '.notifai'), { recursive: true })

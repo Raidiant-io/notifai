@@ -2,14 +2,12 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { lstatSync, readFileSync } from 'node:fs'
 import { legacyNpmMigration } from './legacy-npm-migration.js'
-import { stateDir } from './config.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
 import type { Installation, InstallSource } from './installation.js'
 import { managedInstallation } from './native-installation.js'
 import { updateWorkPending } from './commands-update-resume.js'
-import { pathNotifaiEntries } from './cli-bin.js'
-import { canonicalPath, sameLocalPath } from './local-path.js'
+import { nativeLifecycleCommand } from './cli-bin.js'
 
 export interface NativeUpdateFlags {
   json?: boolean
@@ -57,11 +55,12 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
       const platform = deps.hookPlatform ?? process.platform
       const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
       const stable = path.join(home, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
-      if (pathNotifaiEntries(deps.env, platform).some(entry => !sameLocalPath(canonicalPath(entry), canonicalPath(stable), platform))) {
+      if (legacyNpmMigration(deps.env, platform, stable, { nativeHome: home }).collisions.length) {
         throw new Error('Another Notifai installation is on PATH; resolve the collision with notifai doctor --json before changing this installation')
       }
     }
     const before = installation.inspect()
+    if (before.uninstall_pending) throw new Error('Finish or explicitly cancel the pending uninstall before updating Notifai')
     if (flags.cleanup) {
       const result = installation.cleanup(before.active?.generation ?? 0)
       emit({ ok: true, operation: 'cleanup', ...result },
@@ -165,7 +164,14 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     const platform = deps.hookPlatform ?? process.platform
     const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
     const stable = path.join(home, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
-    const legacy = legacyNpmMigration(deps.env, platform, stable)
+    if (installation.inspect().uninstall_pending) {
+      emit({ ok: false, code: 'uninstall_pending', ...installed,
+        recovery_command: nativeLifecycleCommand(stable, ['uninstall', '--json'], platform),
+        cancel_command: nativeLifecycleCommand(stable, ['uninstall', '--cancel', '--json'], platform) },
+        'Finish or explicitly cancel the pending uninstall, then rerun this installer.')
+      return EXIT.failed
+    }
+    const legacy = legacyNpmMigration(deps.env, platform, stable, { nativeHome: home })
     if (legacy.collisions.length && (!flags.migrateNpm || legacy.migration === null)) {
       emit({ ok: false, code: 'installation_collision', ...installed, collisions: legacy.collisions,
         ...(legacy.migration ? { migration: legacy.migration,
@@ -183,11 +189,6 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     const stat = lstatSync(inventoryFile)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) throw new Error('Release inventory must be a bounded regular file')
     const signedInventory = readFileSync(inventoryFile, 'utf8')
-    const recovery = installation.recoverUninstallForInstall({ directory, signedInventory }, path.join(stateDir(deps.env), 'sessions'))
-    if (!['unchanged', 'cancelled', 'removed'].includes(recovery.status)) {
-      emit({ ok: false, code: 'uninstall_pending', ...installed, ...recovery }, 'Finish the pending uninstall, then rerun this installer.')
-      return EXIT.failed
-    }
     const result = installation.installCandidate({ directory, signedInventory,
       source: source as InstallSource, ...(flags.channel === undefined ? {} : { channel: flags.channel }),
       ...(flags.version === undefined ? {} : { version: flags.version }) })

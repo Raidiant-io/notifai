@@ -216,6 +216,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       const processIdentity = currentProcessIdentity()
       const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
       const result = { ok: identity !== null && skill.ok && processVerified, build: identity, processVerified,
+        capabilities: { npm_adapter_routes: 1 },
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)
@@ -345,7 +346,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable output')
     .action(async (opts: { json?: boolean }) => {
       if (admission === 'diagnostic') {
-        const report = portableNativeReport(deps.env)
+        const report = portableNativeReport(deps.env, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact })
         deps.io.out(opts.json ? JSON.stringify(report) : String(report['message']))
         exit(1)
         return
