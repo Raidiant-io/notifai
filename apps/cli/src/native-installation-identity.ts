@@ -37,5 +37,8 @@ export function nativeInstallationIdentity(home: string, windows = process.platf
   if (typeof inventory['version'] !== 'string' || !isSemVer(inventory['version'])) throw new Error('Native release version is unavailable')
   return { command: path.join(root, 'bin', `notifai${extension}`),
     runtime: path.join(root, 'versions', active['active'], `notifai-runtime${extension}`),
-    version: inventory['version'], build: active['active'], installationId: installation['id'] }
+    version: inventory['version'], build: active['active'], installationId: installation['id'],
+    source_revision: typeof inventory['source_revision'] === 'string' ? inventory['source_revision'] : null,
+    channel: installation['channel'] ?? null, source: installation['source'] ?? null,
+    launcher_update_pending: installation['launcherUpdatePending'] === true }
 }

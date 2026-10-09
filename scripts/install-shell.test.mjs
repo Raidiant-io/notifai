@@ -96,3 +96,54 @@ printf '200\\n\\n'
 
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('piped human installer restores terminal input once and explicit JSON stays noninteractive', { skip: process.platform === 'win32' }, () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-shell-tty-'))
+  try {
+    const bin = path.join(root, 'tools'), nativeBin = path.join(root, '.notifai', 'bin'), marker = path.join(root, 'calls.jsonl')
+    mkdirSync(bin); mkdirSync(nativeBin, { recursive: true, mode: 0o700 })
+    const executable = (name, script) => writeFileSync(path.join(bin, name), script, { mode: 0o700 })
+    executable('uname', '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo aarch64;; esac\n')
+    executable('getent', '#!/bin/sh\nprintf "fixture:x:1000:1000:fixture:%s:/bin/sh\\n" "$BOOTSTRAP_HOME"\n')
+    if (process.platform === 'darwin') executable('stat', '#!/bin/sh\nexec /usr/bin/stat -f "%u %Lp" "$3"\n')
+    // The native command is substituted; actual product TTY selection runs.
+    writeFileSync(path.join(nativeBin, 'notifai'), `#!${process.execPath}
+const fs = require('node:fs');
+import(${JSON.stringify(path.join(repositoryRoot, 'apps/cli/dist/commands-io.js'))}).then(({realIo}) => {
+  fs.appendFileSync(process.env.BOOTSTRAP_MARKER, JSON.stringify({interactive: realIo().interactive, args: process.argv.slice(2)}) + '\\n');
+});
+`, { mode: 0o700 })
+    const python = `import os, pty, select, signal, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv('/bin/sh', ['sh', '-c', 'cat "$BOOTSTRAP_SCRIPT" | /bin/sh -s -- ' + os.environ['BOOTSTRAP_ARGS']])
+deadline = time.monotonic() + 15
+status = None
+while time.monotonic() < deadline:
+    if select.select([fd], [], [], 0.05)[0]:
+        try: os.read(fd, 65536)
+        except OSError: pass
+    got, result = os.waitpid(pid, os.WNOHANG)
+    if got:
+        status = result
+        break
+if status is None:
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    raise RuntimeError('piped installer did not exit')
+os.close(fd)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+`
+    for (const [args, interactive] of [['', true], ['--json --no-init', false]]) {
+      const result = spawnSync('python3', ['-c', python], { encoding: 'utf8', timeout: 20_000,
+        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root, BOOTSTRAP_HOME: root, BOOTSTRAP_SCRIPT: path.join(repositoryRoot, 'scripts/install.sh'),
+          BOOTSTRAP_MARKER: marker, BOOTSTRAP_ARGS: args } })
+      assert.equal(result.status, 0, result.stderr)
+      const calls = readFileSync(marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0].interactive, interactive)
+      assert.deepEqual(calls[0].args, ['install', '--source', 'shell', ...(args ? ['--json', '--no-init'] : [])])
+      rmSync(marker)
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

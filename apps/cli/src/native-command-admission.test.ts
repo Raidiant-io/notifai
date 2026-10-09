@@ -104,6 +104,9 @@ it('refuses managed actions while uninstall has closed launch admission', async 
   expect(result).toMatchObject({ code: 1, admitted: [] })
   expect(result.errors.join()).toContain('uninstall')
   expect(configSet).not.toHaveBeenCalled()
+  const doctor = vi.fn(async () => 0)
+  expect(await f.invoke(['doctor', '--json'], { doctor })).toMatchObject({ code: 0, admitted: ['read-only-managed'] })
+  expect(doctor).toHaveBeenCalledTimes(1)
 })
 
 it('routes the explicit Windows finalizer to its ownership validator only through the native launcher', async () => {

@@ -673,9 +673,10 @@ it('native update keeps the saved beta channel and reports incomplete integratio
   f.installation.stage(candidate)
   inventory = candidate.signedInventory
   record = f.channel(1, [], inventory, '1.0.0-beta.2', 'beta')
-  const discovery = await discoverCliUpdate({ env: {}, installation: f.installation })
+  const discovery = await discoverCliUpdate({ env: {}, installation: f.installation, readOnly: true })
   expect(discovery).toMatchObject({ channel: 'beta', target: '1.0.0-beta.2', newer: '1.0.0-beta.2', available: true, error: null })
   expect(f.installation.inspect().active?.generation).toBe(1)
+  expect(existsSync(path.join(f.options.root, 'channels', 'beta.json'))).toBe(false)
   const out: string[] = []
   const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root,
     store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
@@ -795,14 +796,17 @@ it('keeps runtime and launch admission unchanged when harness wiring cannot be i
   expect(existsSync(path.join(f.options.root, 'active.json'))).toBe(true)
 })
 
-it('repeated portable installation cancels untouched preparation or finishes a verified interrupted removal', () => {
+it('repeated portable installation preserves pending uninstall until an explicit lifecycle action', () => {
   const f = fixture(), candidate = f.candidate('1.0.0'), build = f.installation.stage(candidate)
   f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
   const options = { ...f.options, fileUse: () => ({ status: 'clear' as const, processes: [] }) }
   const installation = new Installation(options), sessions = path.join(f.root, 'no-sessions')
-  installation.beginUninstall(1, sessions)
+  const preparing = installation.beginUninstall(1, sessions)
+  if (preparing.status !== 'preparing') throw new Error('Uninstall did not begin')
+  const pendingBytes = readFileSync(path.join(f.options.root, 'uninstall.json'), 'utf8')
   expect(() => installation.installCandidate({ ...candidate, source: 'manual' })).toThrow(/pending uninstall/)
-  expect(installation.recoverUninstallForInstall(candidate, sessions).status).toBe('cancelled')
+  expect(readFileSync(path.join(f.options.root, 'uninstall.json'), 'utf8')).toBe(pendingBytes)
+  installation.cancelUninstall(preparing.token)
   expect(installation.installCandidate({ ...candidate, source: 'manual' }).reused).toBe(true)
   const interrupted = new Installation({ ...options, observe(phase) {
     if (phase === 'uninstall-file-removed') throw new Error('interrupted')
@@ -810,11 +814,27 @@ it('repeated portable installation cancels untouched preparation or finishes a v
   const begun = interrupted.beginUninstall(1, sessions)
   if (begun.status !== 'preparing') throw new Error('Uninstall did not begin')
   expect(interrupted.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('incomplete')
-  const invalid = { ...candidate, signedInventory: candidate.signedInventory.replace('fixture', 'untrusted') }
-  expect(() => installation.recoverUninstallForInstall(invalid, sessions)).toThrow()
+  expect(() => installation.installCandidate({ ...candidate, source: 'manual' })).toThrow(/pending uninstall/)
   expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(true)
-  expect(installation.recoverUninstallForInstall(candidate, sessions).status).toBe('removed')
+  expect(installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('removed')
   expect(installation.installCandidate({ ...candidate, source: 'manual' }).reused).toBe(false)
+})
+
+it('native install reports pending uninstall before reading a candidate or starting setup', async () => {
+  const f = fixture(), candidate = f.candidate('1.0.0'), build = f.installation.stage(candidate)
+  f.installation.activate({ build, expectedGeneration: 0, source: 'manual', channel: 'stable' })
+  f.installation.beginUninstall(1, path.join(f.root, 'no-sessions'))
+  const file = path.join(f.options.root, 'uninstall.json'), before = readFileSync(file, 'utf8'), out: string[] = []
+  const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root, hookAdapterHome: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err() {}, confirm: async () => false, openUrl() {} } }
+  expect(await nativeInstallCommand(deps, { json: true, directory: path.join(f.root, 'missing'), inventory: path.join(f.root, 'missing.json') }, {
+    installation: f.installation, pendingWork: () => { throw new Error('Must stop before setup work') },
+    init: () => { throw new Error('Must not initialize during uninstall') },
+  })).toBe(1)
+  expect(JSON.parse(out[0]!)).toMatchObject({ code: 'uninstall_pending', runtime_installed: false })
+  expect(readFileSync(file, 'utf8')).toBe(before)
+  expect(f.installation.inspect().active?.generation).toBe(1)
 })
 
 it('stages an explicitly requested npm migration without deleting the legacy package or claiming setup complete', async () => {
@@ -863,7 +883,7 @@ it('installs over a folder an older CLI left behind, protecting it only after au
     directory(file: string) { ensurePrivateDirectory(file); protectedDirectories.add(file) },
   } })
   const candidate = f.candidate('1.0.0')
-  expect(installation.recoverUninstallForInstall(candidate, path.join(f.root, 'sessions'))).toEqual({ status: 'unchanged' })
+  expect(installation.inspect().uninstall_pending).toBe(false)
   expect(order).toEqual([])
   expect(installation.installCandidate({ ...candidate, source: 'powershell' })).toMatchObject({ changed: true, reused: false })
   expect(order).toEqual([f.options.root, path.join(f.options.root, 'bin')])

@@ -34,7 +34,7 @@ interface UninstallTransaction { schema: 1; installation_id: string; generation:
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain'; reason?: string } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
-export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
+export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; uninstall_pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
 type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated' | 'uninstall-planned' | 'uninstall-file-removed'
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
@@ -425,7 +425,7 @@ export class Installation {
   }
   inspect(): InstallationStatus {
     const installation = this.readInstall(), active = this.readActive()
-    return { active, pending: present(this.file('transaction.json')), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
+    return { active, pending: present(this.file('transaction.json')), uninstall_pending: present(this.file('uninstall.json')), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
   }
   /** Authenticated active identity for explicit lifecycle commands. Ordinary
    * hooks use the lightweight launcher checks and do not hash the payload. */
@@ -458,13 +458,18 @@ export class Installation {
   }
   /** Persist a verified discovery sequence before fetching its inventory. A
    * failed download cannot make a later lower sequence acceptable again. */
-  async resolveRelease(channel: ReleaseChannel, version?: string): Promise<ResolvedRelease> {
+  async resolveRelease(channel: ReleaseChannel, version?: string, options: { readOnly?: boolean } = {}): Promise<ResolvedRelease> {
     if (!['stable', 'beta'].includes(channel)) throw new Error('Unknown release channel')
     const cached = this.channelRecord(channel)
     return this.options.distribution.resolveRelease({ channel, target: this.options.target,
       ...(version === undefined ? {} : { version }),
       ...(cached ? { seen: { sequence: cached.record.sequence, digest: hash(cached.signed) } } : {}),
       acceptChannel: signed => {
+        if (options.readOnly) {
+          const latest = this.channelRecord(channel)
+          this.options.distribution.verifyChannel(signed, channel, latest ? { sequence: latest.record.sequence, digest: hash(latest.signed) } : undefined)
+          return
+        }
         this.prepareRoot()
         this.mutate(() => {
           const latest = this.channelRecord(channel)
@@ -502,29 +507,12 @@ export class Installation {
     const result = this.activate({ ...input, build })
     return { ...result, version: release.inventory.version }
   }
-  /** A repeated installer may cancel untouched preparation or finish an
-   * already-authorized finite plan. Authenticate the portable candidate first;
-   * never infer ownership from an incomplete directory or remove wiring here. */
-  recoverUninstallForInstall(candidate: { directory: string; signedInventory: string }, currentSessions: string):
-    { status: 'unchanged' | 'cancelled' } | ReturnType<Installation['completeUninstall']> {
-    const journal = this.uninstallRecord()
-    if (!journal) return { status: 'unchanged' }
-    const verified = this.verifyFiles(candidate.directory, candidate.signedInventory)
-    this.probe(candidate.directory, verified.inventory)
-    if (journal.phase === 'removing' && !journal.plan) throw new Error('Finish owned wiring removal with notifai uninstall --json before reinstalling')
-    const begun = this.beginUninstall(journal.generation, currentSessions)
-    if (begun.status !== 'preparing' && begun.status !== 'removing') return { status: begun.status }
-    if (begun.status === 'preparing') {
-      this.cancelUninstall(begun.token)
-      return { status: 'cancelled' }
-    }
-    return this.completeUninstall(begun.token, currentSessions, () => { throw new Error('Owned wiring removal is not complete') })
-  }
   /** First-install boundary for an authenticated portable candidate. Rerunning
    * any bootstrap reuses a healthy installation; runtime changes belong to the
    * explicit update command. Existing directory migration is bounded to root/bin. */
   installCandidate(input: { directory: string; signedInventory: string; source: InstallSource;
     channel?: ReleaseChannel; version?: string }): ActivationResult & { version: string; reused: boolean } {
+    if (present(this.file('uninstall.json'))) throw new Error('Finish or explicitly cancel the pending uninstall before installing')
     if (!['shell', 'powershell', 'npm', 'manual'].includes(input.source) ||
         (input.channel !== undefined && !['stable', 'beta'].includes(input.channel))) throw new Error('Unknown installation source or channel')
     const verified = this.verifyFiles(input.directory, input.signedInventory)
@@ -539,7 +527,6 @@ export class Installation {
         this.owned(directory, true)
       }
     }
-    if (this.uninstallRecord()) throw new Error('Recover the pending uninstall before installing')
     const before = this.inspect()
     if (before.pending) throw new Error('Recover the pending installation transaction with notifai update --repair first')
     if (before.active) {

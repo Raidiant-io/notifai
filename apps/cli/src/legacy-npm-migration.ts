@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { inspectCliInstallations, type CliPathEntry } from './cli-bin.js'
+import { inspectCliInstallations, type CliPathEntry, type CliBinReadinessOptions } from './cli-bin.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
 
 export interface LegacyNpmMigration {
@@ -14,10 +14,10 @@ export interface LegacyNpmMigration {
 
 /** Read-only identification of one exact npm-global layout. This is never
  * process-absence evidence and never authorizes deleting the old package. */
-export function legacyNpmMigration(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, stable: string):
+export function legacyNpmMigration(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, stable: string, options: CliBinReadinessOptions = {}):
   { collisions: CliPathEntry[]; migration: LegacyNpmMigration | null } {
-  const collisions = inspectCliInstallations(env, platform).entries.filter(entry =>
-    !sameLocalPath(canonicalPath(entry.command_path), canonicalPath(stable), platform))
+  const collisions = inspectCliInstallations(env, platform, options).entries.filter(entry =>
+    entry.kind !== 'npm-adapter' && !sameLocalPath(canonicalPath(entry.command_path), canonicalPath(stable), platform))
   const known = collisions.filter(entry => entry.install_prefix !== null && entry.artifact_path !== null)
   if (!known.length) return { collisions, migration: null }
   const first = known[0]!, prefix = first.install_prefix!, artifact = first.artifact_path!

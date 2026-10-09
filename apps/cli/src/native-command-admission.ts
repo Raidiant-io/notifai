@@ -10,8 +10,9 @@ import { RuntimeRetention } from './runtime-retention.js'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
+import { inspectCliInstallations, type CliBinReadinessOptions } from './cli-bin.js'
 
-export type NativeAdmission = 'development' | 'installer' | 'diagnostic' | 'managed' | 'retained-owner'
+export type NativeAdmission = 'development' | 'installer' | 'diagnostic' | 'read-only-managed' | 'managed' | 'retained-owner'
 
 function ownsRetainedWork(command: Command, env: NodeJS.ProcessEnv, reference: RuntimeBuildReference): boolean {
   let session: unknown
@@ -65,19 +66,20 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
     if (command.name() === 'doctor') return 'diagnostic'
     throw new Error('Install Notifai before running this command. Run this executable with install, or use the installed Notifai command.')
   }
+  if (command.name() === 'doctor') return reference.build === installed.build ? 'read-only-managed' : 'diagnostic'
   if (command.name() !== 'uninstall') assertNativeLaunchAllowed(env)
   if (reference.build === installed.build) return 'managed'
-  if (command.name() === 'doctor') return 'diagnostic'
   if (ownsRetainedWork(command, env, reference)) return 'retained-owner'
   throw new Error(`This build is no longer active. Retry with the installed command: ${installed.command}`)
 }
 
 /** Portable diagnostics deliberately avoid the regular doctor's saved setup
  * observations, credential access, network checks and local log writes. */
-export function portableNativeReport(env: NodeJS.ProcessEnv): Record<string, unknown> {
-  let installation: ReturnType<typeof nativeInstallationIdentity> | null = null
-  try { installation = nativeInstallationIdentity(accountHome(env)) } catch { /* Not a verified local installation. */ }
-  return { ok: false, status: 'native_installation_required', running: buildIdentity(), installation,
-    message: installation ? `Use the installed command: ${installation.command}` : 'Install Notifai before running ordinary commands.',
+export function portableNativeReport(env: NodeJS.ProcessEnv, options: CliBinReadinessOptions = {}): Record<string, unknown> {
+  const inspection = inspectCliInstallations(env, process.platform, options), installation = inspection.native
+  return { ok: false, status: inspection.transaction.uninstall_pending ? 'uninstall_pending' : 'native_installation_required',
+    running: buildIdentity(), installation, inspection,
+    message: inspection.transaction.uninstall_pending ? 'Finish or explicitly cancel the pending uninstall before installing Notifai.'
+      : installation ? `Use the installed command: ${installation.command}` : 'Install Notifai before running ordinary commands.',
     read_only: true }
 }
