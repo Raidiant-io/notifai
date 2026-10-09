@@ -34,7 +34,7 @@ function fixture(platform: NodeJS.Platform = 'darwin') {
   const out: string[] = []
   const forbidden = () => { throw new Error('local recovery must not invoke service, credentials or User actions') }
   const io: CommandIo = { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl: forbidden }
-  const env = { HOME: home, USERPROFILE: home, PATH: bin, XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
+  const env = { HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'), PATH: bin, XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
   mkdirSync(path.join(root, 'state', 'skills'), { recursive: true })
   const deps: CommandDeps = { env, cwd: root, io, hookAdapterHome: home, hookPlatform: platform,
     hookInstallTarget: { execPath: process.execPath, scriptPath: artifact },
