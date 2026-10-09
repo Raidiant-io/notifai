@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 // Read the hosted runner's OS identity; create only a unique temporary folder.
 import assert from 'node:assert/strict'
-import { lstatSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { nativePlatform } from '../packages/installer/dist/platform.mjs'
+import { pathToFileURL } from 'node:url'
+import { repositoryRoot } from './cross-platform.mjs'
 
+// The source helper is staged with its canonical PowerShell data file. This
+// is source-platform evidence; the generated bundled entrypoint has its own gate.
+const staged = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-platform-source-'))
+mkdirSync(path.join(staged, 'lib'))
+mkdirSync(path.join(staged, 'data'))
+copyFileSync(path.join(repositoryRoot, 'apps/cli/npm/platform.mjs'), path.join(staged, 'lib/platform.mjs'))
+copyFileSync(path.join(repositoryRoot, 'scripts/install.ps1'), path.join(staged, 'data/install.ps1'))
+const { nativePlatform } = await import(pathToFileURL(path.join(staged, 'lib/platform.mjs')).href)
 const platform = nativePlatform()
 assert.equal(platform.existingCommand(), null, 'Hosted bootstrap proof requires a clean runner with no existing native installation')
 assert.equal(platform.target(), process.argv[2], 'npm bootstrap must select the native runner target')
@@ -25,4 +34,5 @@ try {
   if (originalTmp === undefined) delete process.env.TMP; else process.env.TMP = originalTmp
   if (temporary) rmSync(temporary, { recursive: true, force: true })
   rmSync(fixture, { recursive: true, force: true })
+  rmSync(staged, { recursive: true, force: true })
 }

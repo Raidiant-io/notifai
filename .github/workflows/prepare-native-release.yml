@@ -122,7 +122,8 @@ jobs:
           set -euo pipefail
           gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" --name "standalone-$TARGET-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-final"
           node scripts/admit-native-candidate.mjs --directory "$RUNNER_TEMP/native-final" --target "$TARGET" --expected-sha "$EXPECTED_SHA"
-          node scripts/prepare-reviewed-materials.mjs --target "$TARGET" --output "$RUNNER_TEMP/native-materials"
+          node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+          node scripts/prepare-reviewed-materials.mjs --target "$TARGET" --output "$RUNNER_TEMP/native-materials" --adapter-manifest dist/npm/notifai/npm-adapter-files.json
       - name: Sign and notarize the final macOS CLI bytes
         if: runner.os == 'macOS'
         shell: bash

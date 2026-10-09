@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import { createHash, createPublicKey, sign } from 'node:crypto'
 import { Distribution, RELEASE_TARGETS, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
+import { parseNpmAdapterManifest, NPM_ADAPTER_MANIFEST } from '../apps/cli/dist/npm-adapter-contract.js'
 import { compareReleasePrecedence } from '../apps/cli/dist/version.js'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -29,12 +30,22 @@ function sortedMaterials(materials) {
 
 /** The caller must also authenticate artifact transport, verify receipts and
  * extract every archive against this inventory before any output is published. */
-export function signReleaseInventory({ version, sourceRevision, candidates, materialsPolicy, ...signing }) {
+export function signReleaseInventory({ version, sourceRevision, candidates, materialsPolicy, adapterManifest, adapterNotice, ...signing }) {
   assert.ok(/^[a-f0-9]{40}$/.test(sourceRevision), 'Exact source revision is required')
   assert.ok(materialsPolicy?.schema === 1 && materialsPolicy.status === 'approved' && materialsPolicy.runtime === 'bun-1.4.2',
     'Publication materials require an approved pinned policy')
   assert.ok(Array.isArray(candidates) && candidates.length === RELEASE_TARGETS.length, 'Every native release target is required')
   assert.deepEqual(Object.keys(materialsPolicy.targets ?? {}).sort(), [...RELEASE_TARGETS].sort(), 'Publication materials must cover every target')
+  const adapterMaterials = []
+  if (adapterManifest !== undefined) {
+    const manifest = parseNpmAdapterManifest(adapterManifest)
+    assert.ok(manifest.adapter_version === version && manifest.native.source_revision === sourceRevision,
+      'Adapter manifest source identity differs from native release')
+    assert.ok(adapterNotice, 'npm shim redistribution notice is required')
+    for (const [name, bytes] of [[NPM_ADAPTER_MANIFEST, adapterManifest], ['licenses/npm-cmd-shim.txt', adapterNotice]]) {
+      adapterMaterials.push({ path: name, bytes: Buffer.byteLength(bytes), sha256: hash(bytes) })
+    }
+  }
   const byTarget = new Map()
   let sourceDigest
   for (const candidate of candidates) {
@@ -48,7 +59,7 @@ export function signReleaseInventory({ version, sourceRevision, candidates, mate
     assert.ok(/^[a-f0-9]{64}$/.test(candidate.check_sha256), 'Candidate executable check identity is missing')
     const materials = sortedMaterials(artifact.materials)
     assert.ok(materials.length > 0 && !materials.some(item => item.path === 'CANDIDATE-MATERIALS.txt'), 'Candidate materials cannot be published')
-    assert.deepEqual(materials, sortedMaterials(materialsPolicy.targets[build.target]), 'Candidate materials differ from reviewed publication materials')
+    assert.deepEqual(materials, sortedMaterials([...materialsPolicy.targets[build.target], ...adapterMaterials]), 'Candidate materials differ from reviewed publication materials')
     byTarget.set(build.target, { ...artifact, materials })
   }
   const bytes = signer(signing)('inventory', { schema: 1, version, source_revision: sourceRevision,

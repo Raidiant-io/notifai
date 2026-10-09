@@ -86,22 +86,27 @@ jobs:
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: node -e "if(process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
-      - name: Verify optional npm bootstrap signatures and OS boundaries
+      - name: Verify npm adapter signatures and OS boundaries
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          pnpm --filter @raidiant/notifai-install test
+          pnpm --filter @raidiant/notifai-protocol build
+          pnpm --filter @raidiant/notifai build
+          node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+          node --test scripts/npm-adapter-artifact.test.mjs
           node scripts/check-npm-bootstrap-platform.mjs "$TARGET"
-          node scripts/verify-packed-npm-installer.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: matrix.target == 'bun-linux-x64'
         with:
           node-version: '20.12.0'
       - name: Verify npm bootstrap on its minimum Node version
         if: matrix.target == 'bun-linux-x64'
-        run: pnpm --filter @raidiant/notifai-install test
+        run: |
+          node --test apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs
+          node dist/npm/notifai/bin/notifai.mjs --help
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: matrix.target == 'bun-linux-x64'
         with:

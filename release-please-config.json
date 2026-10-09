@@ -32,15 +32,6 @@
       "extra-files": [
         "/README.md"
       ]
-    },
-    "packages/installer": {
-      "release-type": "node",
-      "package-name": "@raidiant/notifai-install",
-      "component": "installer",
-      "include-component-in-tag": true,
-      "include-v-in-tag": true,
-      "changelog-path": "CHANGELOG.md",
-      "initial-version": "0.1.0"
     }
   }
 }

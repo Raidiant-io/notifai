@@ -140,11 +140,8 @@ jobs:
       - name: Verify release metadata and package contents
         run: pnpm check:release
 
-      - name: Verify registry-shaped packed installation
-        run: pnpm check:packed
-
-      - name: Verify packed skill installer when the adapter, pin, or bundle changed
-        run: pnpm check:packed-skill-smoke -- --if-changed
+      - name: Verify signed npm artifact validation tooling
+        run: node --test scripts/verify-packed-install.test.mjs
 
       - name: Verify public provider posture
         env:
@@ -220,8 +217,8 @@ jobs:
             --testNamePattern "Windows Claude"
           pnpm --filter @raidiant/notifai test -- \
             src/process-identity.test.ts src/claude-wake.test.ts
-      - name: Verify the packed CLI through native Windows shells
-        run: pnpm check:packed
+      - name: Verify npm artifact validation tooling on Windows
+        run: node --test scripts/verify-packed-install.test.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20.12.0'
@@ -272,8 +269,8 @@ jobs:
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
-      - name: Verify the packed CLI through native Windows shells
-        run: pnpm check:packed
+      - name: Verify npm artifact validation tooling on Windows
+        run: node --test scripts/verify-packed-install.test.mjs
 
   standalone:
     needs: scope

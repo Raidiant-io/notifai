@@ -37,6 +37,7 @@ async function main() {
 
     const install = commandInvocation('npm', [
       'install',
+      '--ignore-scripts',
       '--no-audit',
       '--no-fund',
       '--loglevel=error',
@@ -54,27 +55,15 @@ async function main() {
       throw new Error(`npm installed ${CLI_NAME}@${manifest.version}, expected exact ${version}`)
     }
 
-    const home = path.join(scratch, 'home')
-    const localAppData = path.join(home, 'AppData', 'Local')
-    const roamingAppData = path.join(home, 'AppData', 'Roaming')
-    mkdirSync(localAppData, { recursive: true })
-    mkdirSync(roamingAppData, { recursive: true })
-    const env = {
-      ...process.env,
-      HOME: home,
-      USERPROFILE: home,
-      LOCALAPPDATA: localAppData,
-      APPDATA: roamingAppData,
-      XDG_CONFIG_HOME: undefined,
-      XDG_STATE_HOME: undefined,
-    }
-
-    verifyWindowsShims(installDir, version, env)
-    execFileSync(process.execPath, [path.join(installedCli, 'dist', 'main.js'), 'config', 'show'], {
-      cwd: installDir,
-      env,
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
+    const { preparePackedCli } = await import('./verify-packed-install.mjs')
+    // Retain and verify registry bytes through the same signed adapter/native gate.
+    const tarball = path.join(scratch, 'published.tgz')
+    const sourceRevision = process.argv[3]
+    if (!/^[a-f0-9]{40}$/.test(sourceRevision ?? '')) throw new Error('An exact published source SHA is required')
+    execFileSync(process.execPath, ['scripts/verify-published.mjs', CLI_NAME, '--expected-sha', sourceRevision,
+      '--artifact-output', tarball], { timeout: 60_000 })
+    const prepared = await preparePackedCli(path.join(scratch, 'native-proof'), { cliTarball: tarball, sourceRevision, ownedHostedAccount: true })
+    verifyWindowsShims(installDir, /init/, { ...process.env, ...prepared.env })
     console.log(`${CLI_NAME}@${version} verified from npm on native ${process.arch} Windows.`)
   } finally {
     rmSync(scratch, { recursive: true, force: true })

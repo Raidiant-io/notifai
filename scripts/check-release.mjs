@@ -70,7 +70,20 @@ for (const entry of packages) {
   }
 
   let packed
-  try {
+  if (directory === 'apps/cli') {
+    // Developer compilation is source evidence. The distributable npm payload
+    // is generated and verified only after immutable native inventory exists.
+    const files = []
+    const collect = (dir, prefix = 'dist') => {
+      for (const item of readdirSync(dir, { withFileTypes: true })) {
+        const relative = `${prefix}/${item.name}`
+        if (item.isDirectory()) collect(path.join(dir, item.name), relative)
+        else files.push({ path: relative })
+      }
+    }
+    collect(path.join(root, directory, 'dist'))
+    packed = { files: [...entry.requiredFiles.map(path => ({ path })), ...files] }
+  } else try {
     const output = execCommand(
       'pnpm',
       ['--filter', manifest.name, 'pack', '--dry-run', '--json'],
@@ -250,8 +263,7 @@ if (process.env.GITHUB_REF_TYPE === 'tag') {
   const protocol = packages[1].manifest
   const name = process.env.GITHUB_REF_NAME
   requireValue(
-    name === `v${cli.version}` || name === `protocol-v${protocol.version}` ||
-      name === `installer-v${readJson('packages/installer/package.json').version}`,
+    name === `v${cli.version}` || name === `protocol-v${protocol.version}`,
     `tag must be v${cli.version} or protocol-v${protocol.version}`,
   )
 }

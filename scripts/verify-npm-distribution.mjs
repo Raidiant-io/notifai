@@ -6,7 +6,7 @@ import { repositoryRoot } from './cross-platform.mjs'
 import { publicationLane, requireBetaAheadOfLatest } from './publication-lane.mjs'
 
 const PACKAGES = new Map([
-  ['@raidiant/notifai-install', 'packages/installer/package.json'],
+  ['@raidiant/notifai', 'apps/cli/package.json'],
   ['@raidiant/notifai-protocol', 'packages/protocol/package.json'],
 ])
 
@@ -29,8 +29,19 @@ export async function registryDistTags(name, fetchImpl = fetch) {
   return tags
 }
 
-export function verifyDistribution({ name, version, before, after }) {
+export function verifyDistribution({ name, version, before, after, distTag = publicationLane(version) }) {
   const lane = publicationLane(version)
+  if (distTag.startsWith('candidate-')) {
+    if (distTag !== `candidate-${version}` || after[distTag] !== version) throw new Error('Candidate tag must name the exact version')
+    for (const tag of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (tag !== distTag && before[tag] !== after[tag]) throw new Error(`Candidate publication changed npm ${tag}`)
+    }
+    return
+  }
+  if (distTag !== lane) throw new Error('Promotion must use the version audience')
+  for (const tag of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (tag !== lane && before[tag] !== after[tag]) throw new Error(`Promotion changed unrelated npm ${tag}`)
+  }
   if (lane === 'beta') {
     if (before.latest !== undefined) requireBetaAheadOfLatest(version, before.latest)
     if (before.latest !== after.latest) {
@@ -59,7 +70,7 @@ async function main() {
   const before = JSON.parse(readFileSync(file, 'utf8'))[name]
   if (before === undefined) throw new Error(`missing npm distribution snapshot for ${name}`)
   const { version } = JSON.parse(readFileSync(path.join(repositoryRoot, PACKAGES.get(name)), 'utf8'))
-  verifyDistribution({ name, version, before, after: await registryDistTags(name) })
+  verifyDistribution({ name, version, before, after: await registryDistTags(name), distTag: process.env.NPM_DIST_TAG ?? publicationLane(version) })
   console.log(`Verified npm ${publicationLane(version)} distribution for ${name}@${version}`)
 }
 

@@ -5,15 +5,16 @@ import { nativeTargets, requireNativeEvidence, validateNativeEvidence } from './
 const expectedSha = 'a'.repeat(40)
 function fixture(kind = 'candidate') {
   return { expectedSha, kind, run: { id: 42, head_sha: expectedSha, head_repository: { full_name: 'Raidiant-io/notifai' },
-    path: `.github/workflows/${kind === 'candidate' ? 'ci' : 'prepare-native-release'}.yml`, event: 'workflow_dispatch', status: 'completed', conclusion: 'success' },
+    path: `.github/workflows/${kind === 'candidate' ? 'ci' : kind === 'final' ? 'prepare-native-release' : kind === 'assembled' ? 'publish-native-release' : 'publish'}.yml`, event: 'workflow_dispatch', status: 'completed', conclusion: 'success' },
   jobs: [...(kind === 'candidate' ? ['scope', 'gates', 'platform (macos-latest)', 'platform (windows-2025)', 'platform (windows-11-arm)'] : []),
-    ...nativeTargets.map(target => kind === 'candidate' ? `standalone / standalone (${target})` : `finalize (${target})`)]
+    ...(kind === 'npm' ? ['npm'] : []),
+    ...(kind === 'assembled' ? ['publish'] : nativeTargets.map(target => kind === 'candidate' ? `standalone / standalone (${target})` : kind === 'npm' ? `npm adapter (${target})` : `finalize (${target})`))]
     .map(name => ({ name, conclusion: 'success' })),
-  artifacts: nativeTargets.map((target, i) => ({ id: i + 1, name: `${kind === 'candidate' ? 'standalone' : 'native-final'}-${target}-${expectedSha}`,
+  artifacts: kind === 'assembled' ? [{ id: 1, name: `native-release-bundle-${expectedSha}`, expired: false, size_in_bytes: 1024, digest: `sha256:${'b'.repeat(64)}` }] : nativeTargets.map((target, i) => ({ id: i + 1, name: `${kind === 'candidate' ? 'standalone' : kind === 'npm' ? 'npm-native-acceptance' : 'native-final'}-${target}-${expectedSha}`,
     expired: false, size_in_bytes: 1024, digest: `sha256:${'b'.repeat(64)}` })) }
 }
 test('publication needs all six native targets and generic gates from one source run', () => {
-  for (const kind of ['candidate', 'final']) {
+  for (const kind of ['candidate', 'final', 'assembled', 'npm']) {
     const data = fixture(kind)
     assert.equal(validateNativeEvidence(data), data.run)
     for (const change of [

@@ -7,7 +7,7 @@ const repository = 'Raidiant-io/notifai'
 const digest = value => createHash('sha256').update(value).digest('hex')
 
 // Reuse the shipped verifier; release-owner tooling has no separate trust root.
-export function verifyNativePublication({ version, tagSha, runCommand, keys = RELEASE_PUBLIC_KEYS, requireCurrent = true }) {
+export function verifyNativePublication({ version, tagSha, runCommand, keys = RELEASE_PUBLIC_KEYS, requireCurrent = true, requireChannel = true }) {
   if (!isSemVer(version) || !/^[a-f0-9]{40}$/.test(tagSha)) throw new Error('An exact version and source SHA are required')
   const channelName = version.includes('-') ? 'beta' : 'stable'
   const api = endpoint => JSON.parse(runCommand('gh', ['api', `repos/${repository}/${endpoint}`]))
@@ -20,19 +20,22 @@ export function verifyNativePublication({ version, tagSha, runCommand, keys = RE
   for (let depth = 0; ref?.type === 'tag' && depth < 4; depth++) ref = api(`git/tags/${ref.sha}`).object
   if (ref?.type !== 'commit' || ref.sha !== tagSha) throw new Error('Native remote tag differs from the exact local tag')
   const verifier = new Distribution(keys)
-  const signedChannel = Buffer.from(api(`contents/${channelName}.json?ref=release-metadata`).content, 'base64').toString('utf8')
-  const channel = verifier.verifyChannel(signedChannel, channelName)
-  if ((requireCurrent && channel.version !== version) || channel.withdrawn_versions.includes(version)) {
-    throw new Error('Native announcement is superseded or withdrawn in its signed channel')
-  }
-  if (requireCurrent && channelName === 'beta') {
-    const metadata = api('contents?ref=release-metadata')
-    if (!Array.isArray(metadata)) throw new Error('Cannot inspect native channel availability')
-    if (metadata.some(entry => entry.name === 'stable.json')) {
-      const stableBytes = Buffer.from(api('contents/stable.json?ref=release-metadata').content, 'base64').toString('utf8')
-      const stable = verifier.verifyChannel(stableBytes, 'stable')
-      if (compareReleasePrecedence(stable.version, version.split('-')[0]) !== 'before') {
-        throw new Error('Native beta announcement is superseded by the signed stable channel')
+  let channel
+  if (requireChannel) {
+    const signedChannel = Buffer.from(api(`contents/${channelName}.json?ref=release-metadata`).content, 'base64').toString('utf8')
+    channel = verifier.verifyChannel(signedChannel, channelName)
+    if ((requireCurrent && channel.version !== version) || channel.withdrawn_versions.includes(version)) {
+      throw new Error('Native announcement is superseded or withdrawn in its signed channel')
+    }
+    if (requireCurrent && channelName === 'beta') {
+      const metadata = api('contents?ref=release-metadata')
+      if (!Array.isArray(metadata)) throw new Error('Cannot inspect native channel availability')
+      if (metadata.some(entry => entry.name === 'stable.json')) {
+        const stableBytes = Buffer.from(api('contents/stable.json?ref=release-metadata').content, 'base64').toString('utf8')
+        const stable = verifier.verifyChannel(stableBytes, 'stable')
+        if (compareReleasePrecedence(stable.version, version.split('-')[0]) !== 'before') {
+          throw new Error('Native beta announcement is superseded by the signed stable channel')
+        }
       }
     }
   }
@@ -41,7 +44,7 @@ export function verifyNativePublication({ version, tagSha, runCommand, keys = RE
   // gh preserves asset bytes; unlike ordinary textual command output they must
   // not be trimmed before comparison with the signed channel digest.
   const inventory = verifier.verifyInventory(signedInventory)
-  if ((channel.version === version && digest(signedInventory) !== channel.inventory_sha256) || inventory.version !== version ||
+  if ((channel?.version === version && digest(signedInventory) !== channel.inventory_sha256) || inventory.version !== version ||
       inventory.source_revision !== tagSha || inventory.artifacts.length !== RELEASE_TARGETS.length) {
     throw new Error('Native inventory does not match the signed channel, tag or full target set')
   }
@@ -54,5 +57,5 @@ export function verifyNativePublication({ version, tagSha, runCommand, keys = RE
       throw new Error(`Native release asset does not match authenticated inventory: ${artifact.filename}`)
     }
   }
-  return { distribution: 'native', inventory_sha256: digest(signedInventory), channel_sequence: channel.sequence }
+  return { distribution: 'native', inventory_sha256: digest(signedInventory), channel_sequence: channel?.sequence, version: inventory.version, source_revision: inventory.source_revision, signedInventory, inventory }
 }
