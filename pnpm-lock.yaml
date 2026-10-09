@@ -22,6 +22,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       eslint:
         specifier: ^9.30.0
         version: 9.39.5(jiti@2.6.1)
@@ -77,6 +80,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      cmd-shim:
+        specifier: 8.0.0
+        version: 8.0.0
       jsqr:
         specifier: 1.4.0
         version: 1.4.0
@@ -89,15 +95,6 @@ importers:
       vitest:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.6.1)(yaml@2.9.0))
-
-  packages/installer:
-    dependencies:
-      '@zip.js/zip.js':
-        specifier: 2.23.0
-        version: 2.23.0
-      tar-stream:
-        specifier: 3.2.2
-        version: 3.2.2
 
   packages/protocol:
     dependencies:
@@ -831,6 +828,10 @@ packages:
   cliui@9.0.1:
     resolution: {integrity: sha512-k7ndgKhwoQveBL+/1tqGJYNz097I7WOvwbmmU2AR5+magtbjPWQTS1C5vzGkBC8Ym8UWRzfKUzUUqFLypY4Q+w==}
     engines: {node: '>=20'}
+
+  cmd-shim@8.0.0:
+    resolution: {integrity: sha512-Jk/BK6NCapZ58BKUxlSI+ouKRbjH1NLZCgJkYoab+vEHUY3f6OzpNBN9u7HFSv9J6TRDGs4PLOHezoKGaFRSCA==}
+    engines: {node: ^20.17.0 || >=22.9.0}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -2198,6 +2199,8 @@ snapshots:
       string-width: 7.2.0
       strip-ansi: 7.2.0
       wrap-ansi: 9.0.2
+
+  cmd-shim@8.0.0: {}
 
   color-convert@2.0.1:
     dependencies:

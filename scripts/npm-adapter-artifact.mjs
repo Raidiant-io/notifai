@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { NPM_ADAPTER_BIN, NPM_ADAPTER_INVENTORY, NPM_ADAPTER_MANIFEST,
-  NPM_ADAPTER_PACKAGE, npmAdapterInventoryUrl, parseNpmAdapterManifest } from '../apps/cli/dist/npm-adapter-contract.js'
+  NPM_ADAPTER_MAX_BYTES, NPM_ADAPTER_PACKAGE, npmAdapterInventoryUrl, parseNpmAdapterManifest } from '../apps/cli/dist/npm-adapter-contract.js'
 
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 /** Generated package metadata is deliberately separate from the source workspace. */
@@ -17,13 +17,15 @@ export function adapterPackageManifest(source) {
     publishConfig: source.publishConfig }
 }
 
-export function generateAdapterManifest(directory, version, sourceRevision) {
+export function generateAdapterManifest(directory, version, sourceRevision, { write = true } = {}) {
   const files = []
+  let entries = 0, total = 0
   function visit(relative = '') {
     const parent = path.join(directory, relative)
     const stat = lstatSync(parent)
     assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Adapter payload directory must be regular')
     for (const name of readdirSync(parent).sort()) {
+      assert.ok(++entries <= 256, 'Adapter payload has too many paths')
       const file = relative ? `${relative}/${name}` : name
       if ([NPM_ADAPTER_MANIFEST, NPM_ADAPTER_INVENTORY].includes(file)) continue
       const stat = lstatSync(path.join(directory, file))
@@ -31,6 +33,8 @@ export function generateAdapterManifest(directory, version, sourceRevision) {
       if (stat.isDirectory()) visit(file)
       else {
         assert.ok(stat.isFile(), 'Adapter payload must contain regular files')
+        total += stat.size
+        assert.ok(total <= NPM_ADAPTER_MAX_BYTES, 'Adapter payload is too large')
         files.push({ path: file, bytes: stat.size, sha256: hash(readFileSync(path.join(directory, file))) })
       }
     }
@@ -40,7 +44,7 @@ export function generateAdapterManifest(directory, version, sourceRevision) {
   const bytes = JSON.stringify({ schema: 1, package: NPM_ADAPTER_PACKAGE, adapter_version: version,
     native: { version, source_revision: sourceRevision, inventory_url: npmAdapterInventoryUrl(version) }, files }, null, 2) + '\n'
   parseNpmAdapterManifest(bytes)
-  writeFileSync(path.join(directory, NPM_ADAPTER_MANIFEST), bytes)
+  if (write) writeFileSync(path.join(directory, NPM_ADAPTER_MANIFEST), bytes)
   return bytes
 }
 
@@ -49,6 +53,8 @@ export function generateAdapterManifest(directory, version, sourceRevision) {
 export function bindAdapterInventory(directory, signedInventory, distribution) {
   const bytes = readFileSync(path.join(directory, NPM_ADAPTER_MANIFEST), 'utf8')
   const manifest = parseNpmAdapterManifest(bytes)
+  assert.equal(generateAdapterManifest(directory, manifest.adapter_version, manifest.native.source_revision, { write: false }),
+    bytes, 'Adapter payload changed after native signing')
   const inventory = distribution.verifyInventory(signedInventory)
   assert.equal(inventory.version, manifest.native.version, 'Adapter/native versions differ')
   assert.equal(inventory.source_revision, manifest.native.source_revision, 'Adapter/native sources differ')

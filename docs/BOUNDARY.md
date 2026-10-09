@@ -14,9 +14,10 @@ everything in this repository is fully known.**
 - `packages/protocol` — client-visible request/response types and schemas
   for `/api/v1`, stable status vocabulary, capability documents and draft
   validation, and the small hashing helper shared with clients.
-- `packages/installer` — optional npm bootstrap; the release verifier and
-  extractor are generated from canonical CLI modules. No resident runtime or
-  automatic npm installation hook belongs in this package.
+- `apps/cli/npm` — canonical npm acquisition/launch adapter. Its generated
+  `dist/npm/notifai` artifact uses the existing `@raidiant/notifai` identity,
+  bundles only release verification/acquisition, and delegates product commands
+  to the independently managed native runtime. No npm lifecycle script runs.
 - Public docs, fixtures, and the boundary tooling itself.
 - `distribution` — reviewed public CLI redistribution materials, release
   material hashes, and the standalone Bun runtime entitlement profile.
@@ -61,8 +62,7 @@ size pre-flight) is an open decision tracked privately.
 `pnpm check:boundary` (also intended as a CI gate) fails the tree on:
 
 1. Top-level entries outside the allowlist.
-2. Workspace packages other than `apps/cli`, `packages/protocol` and
-   `packages/installer`.
+2. Workspace packages other than `apps/cli` and `packages/protocol`.
 3. File names matching private-material patterns (key/profile/config
    extensions, platform manifests, dotenv files).
 4. Source imports of private packages, testcontainers, or any relative
