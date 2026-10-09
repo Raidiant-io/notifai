@@ -50,7 +50,7 @@ try {
   const installation = new Installation({ root: path.join(home, '.notifai'), target: nativeTarget, distribution,
     access: installationAccess(path.join(extracted, `notifai${extension}`)) })
   const candidate = { directory: extracted, signedInventory, channel: metadata.build.version.includes('-') ? 'beta' : 'stable' }
-  assert.deepEqual(installation.recoverUninstallForInstall(candidate, path.join(root, 'sessions')), { status: 'unchanged' })
+  assert.equal(installation.inspect().uninstall_pending, false, 'Fresh installation must have no pending uninstall')
   const installed = installation.installCandidate({ ...candidate, source: 'manual' }) // Real candidate self-check; no probe mock.
   assert.equal(installed.reused, false)
   assert.equal(installed.version, metadata.build.version)

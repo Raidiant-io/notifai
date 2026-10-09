@@ -217,7 +217,11 @@ jobs:
             --testNamePattern "Windows Claude"
           pnpm --filter @raidiant/notifai test -- \
             src/process-identity.test.ts src/claude-wake.test.ts
-      - name: Verify npm artifact validation tooling on Windows
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      - name: Verify signed npm artifact validation on Windows
         run: node --test scripts/verify-packed-install.test.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -269,7 +273,11 @@ jobs:
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
-      - name: Verify npm artifact validation tooling on Windows
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: arm64
+      - name: Verify signed npm artifact validation on Windows
         run: node --test scripts/verify-packed-install.test.mjs
 
   standalone:
