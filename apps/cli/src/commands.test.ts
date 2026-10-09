@@ -8412,7 +8412,7 @@ describe('readiness assessment cost', () => {
     })
   })
 
-  it('detects a lock-file duplicate across project and global scope', async () => {
+  it('reports lock-only project and global skill records as incomplete', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-duplicate-'))
     const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
     writeFileSync(
@@ -8455,9 +8455,14 @@ describe('readiness assessment cost', () => {
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'gap',
-      detail: `project (${RELEASE_REF}) and global (v0.2.1) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
-      technical: { resolution: 'both-listed' },
+      detail: expect.stringContaining('Existing guidance is preserved'),
+      technical: { resolution: 'skill-incomplete' },
     })
+    const detail = readiness.states.find((state) => state.id === 'skill')?.detail
+    expect(detail).toContain(`project: ${path.join(cwd, '.agents', 'skills', 'notifai')} (incomplete)`)
+    expect(detail).toContain(`global: ${path.join(env.HOME!, '.agents', 'skills', 'notifai')} (incomplete)`)
+    expect(existsSync(path.join(cwd, '.agents', 'skills', 'notifai'))).toBe(false)
+    expect(existsSync(path.join(env.HOME!, '.agents', 'skills', 'notifai'))).toBe(false)
   })
 })
 
