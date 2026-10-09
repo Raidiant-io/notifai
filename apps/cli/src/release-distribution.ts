@@ -42,6 +42,7 @@ export interface ResolvedRelease {
   signedChannel: string
   artifact: ReleaseArtifact
 }
+export type ExactRelease = Pick<ResolvedRelease, 'inventory' | 'signedInventory' | 'artifact'>
 
 const REPOSITORY = 'Raidiant-io/notifai'
 const MAX_METADATA = 256 * 1024
@@ -176,7 +177,20 @@ export class Distribution {
     if (bytes.length !== artifact.bytes || sha256(bytes) !== artifact.sha256) throw new Error('Release artifact integrity mismatch')
   }
 
-  async downloadArtifact(release: ResolvedRelease): Promise<Buffer> {
+  /** Acquire the release carried by an adapter without consulting mutable
+   * channel pointers. Its signature, version and source are all mandatory. */
+  resolveExactRelease(options: { signedInventory: string; version: string;
+    sourceRevision: string; target: ReleaseTarget }): ExactRelease {
+    const inventory = this.verifyInventory(options.signedInventory)
+    if (inventory.version !== options.version || inventory.source_revision !== options.sourceRevision) {
+      throw new Error('Exact native release identity mismatch')
+    }
+    const artifact = inventory.artifacts.find(item => item.target === options.target)
+    if (!artifact) throw new Error('Release does not contain the requested target')
+    return Object.freeze({ inventory, signedInventory: options.signedInventory, artifact })
+  }
+
+  async downloadArtifact(release: ExactRelease): Promise<Buffer> {
     const bytes = await this.download(releaseUrl(release.inventory.version, release.artifact.filename), release.artifact.bytes)
     this.verifyArtifact(release.artifact, bytes)
     return bytes
