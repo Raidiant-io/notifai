@@ -54,6 +54,7 @@ function worker(file, args) {
     })
   })
 }
+let checkFailure
 try {
   copyFileSync(path.resolve(values.launcher), launcher)
   execFileSync(values.bun, ['build', '--compile', '--no-compile-autoload-dotenv',
@@ -362,4 +363,13 @@ try {
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
     checks: ['os-account-home-independent-of-environment', 'native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', 'finite-runtime-removal', ...(windows ? ['windows-temporary-finalizer'] : []), 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
-} finally { rmSync(root, { recursive: true, force: true }) }
+} catch (error) {
+  checkFailure = error
+  throw error
+} finally {
+  try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
+  catch (error) {
+    if (!checkFailure) throw error
+    console.error('Native runtime fixture cleanup also failed:', error)
+  }
+}
