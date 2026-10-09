@@ -23,7 +23,14 @@ function Descriptor([string]$file) {
   (Get-Acl -LiteralPath $file).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
 }
 try {
+  # Inspect the actual OS profile without changing its owner or ACL. Windows
+  # can create it under SYSTEM even when the process token defaults to User.
+  $accountHome = Get-NotifaiAccountHome
+  $profileBefore = Descriptor $accountHome
+  Assert-NotifaiPathAccess $accountHome -AccountHome
+  Require ($profileBefore -ceq (Descriptor $accountHome)) 'Profile inspection changed security'
   Require ((Run-Launcher @('--internal-private-directory', $root)) -eq 0) 'Could not create fixture parent'
+  Require-Rejected { Assert-NotifaiPathAccess $root -AccountHome } 'Profile exception must reject a different directory'
   $directory = Join-Path $root 'existing'
   [void](New-Item -ItemType Directory -Path $directory)
   # npm leaves ordinary inherited ACLs and the creating token's default owner.

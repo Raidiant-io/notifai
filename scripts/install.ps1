@@ -215,18 +215,25 @@ function Get-NotifaiAccountHome {
   }
   return $accountHome
 }
-# Read-only inspection of an existing path. npm and the OS profile may use
-# inherited ACLs and an elevated token's default owner; managed paths retain
-# exact User ownership and, when requested, protected inheritance.
-function Assert-NotifaiPathAccess([string]$File, [switch]$AllowDefaultOwner, [switch]$RequireProtected) {
+# Read-only inspection of an existing path. npm can inherit a token's default
+# owner. The OS-confirmed profile can belong to Windows itself; this exception
+# must never admit a system-owned npm package or managed installation path.
+function Assert-NotifaiPathAccess([string]$File, [switch]$AllowDefaultOwner, [switch]$RequireProtected, [switch]$AccountHome) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $user = $identity.User.Value
   $attributes = [IO.File]::GetAttributes($File)
   $acl = Get-NotifaiAccessControl $File $attributes
   $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
   $defaultOwner = $AllowDefaultOwner -and $identity.Owner.Value -eq 'S-1-5-32-544' -and $owner -eq $identity.Owner.Value
+  $profileOwner = $false
+  if ($AccountHome) {
+    $expectedHome = Get-NotifaiAccountHome
+    if (-not [String]::Equals([IO.Path]::GetFullPath($File).TrimEnd('\', '/'), $expectedHome.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase) -or
+        ($attributes -band [IO.FileAttributes]::Directory) -eq 0) { throw 'Account home access check requires the exact OS profile directory' }
+    $profileOwner = $owner -in @('S-1-5-18', 'S-1-5-32-544')
+  }
   if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-      ($owner -ne $user -and -not $defaultOwner) -or
+      ($owner -ne $user -and -not $defaultOwner -and -not $profileOwner) -or
       ($RequireProtected -and -not $acl.AreAccessRulesProtected)) { throw 'Existing path is not privately owned; inspect it before repair' }
   $writes = [int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
   foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
@@ -244,7 +251,7 @@ function Get-NotifaiInstalledCommand {
   catch [IO.FileNotFoundException] { return $null }
   catch [IO.DirectoryNotFoundException] { return $null }
   foreach ($file in @($accountHome, $managed, $bin, $command)) {
-    Assert-NotifaiPathAccess $file -AllowDefaultOwner:($file -eq $accountHome) -RequireProtected:($file -eq $managed -or $file -eq $bin)
+    Assert-NotifaiPathAccess $file -AccountHome:($file -eq $accountHome) -RequireProtected:($file -eq $managed -or $file -eq $bin)
   }
   if (-not [IO.File]::Exists($command)) { throw 'Existing launcher is not a regular file; repair it explicitly' }
   return $command

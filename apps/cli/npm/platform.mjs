@@ -113,7 +113,9 @@ export function nativePlatform() {
       assert.ok(home, 'Resolve the OS account home before acquisition')
       assertAcquisitionReady(home, windows
         ? file => powershell('Assert-NotifaiPathAccess $inputData.file', { file })
-        : this.checkAccess, this.checkAccess)
+        : this.checkAccess, windows
+        ? file => powershell('Assert-NotifaiPathAccess $inputData.file -AccountHome', { file })
+        : this.checkAccess)
     },
     checkAccess(file) {
       if (!windows) {

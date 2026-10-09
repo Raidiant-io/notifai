@@ -564,6 +564,10 @@ owned by the current User, or by Administrators when that is the inspecting
 process token's default owner (as with elevated npm). Reparse points and foreign
 owners remain rejected. Managed native directories keep their separate protected
 ACL and exact User ownership requirements.
+The account home is checked separately against Windows' actual profile lookup:
+its owner may also be SYSTEM or Administrators, with the same reparse and
+foreign-writer rejection. That read-only exception applies only to the exact OS
+profile directory, never npm package contents or managed installation paths.
 
 Hooks and resident work use the stable native command, never npm/NPX cache paths.
 Do not advertise these candidate npm instructions until both the replacement
