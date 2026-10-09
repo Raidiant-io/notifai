@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, sign } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { Distribution, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
+import { verifyNpmAdapterArtifact } from '../apps/cli/dist/npm-adapter-verification.js'
 import { adapterPackageManifest, bindAdapterInventory, generateAdapterManifest, hash } from './npm-adapter-artifact.mjs'
 
 function fixture(t) {
@@ -39,8 +40,18 @@ test('finalization admits only signed identical manifest materials and unchanged
   const signed = value => { const payload = Buffer.from(JSON.stringify(value)); return JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
     signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') }) }
   bindAdapterInventory(directory, signed(inventory), distribution)
+  assert.equal(verifyNpmAdapterArtifact(directory, distribution).manifest.native.source_revision, 'a'.repeat(40))
+  writeFileSync(path.join(directory, 'unexpected'), 'unmeasured')
+  assert.throws(() => verifyNpmAdapterArtifact(directory, distribution), /integrity/)
+  rmSync(path.join(directory, 'unexpected'))
+  if (process.platform !== 'win32') {
+    chmodSync(path.join(directory, 'bin'), 0o777)
+    assert.throws(() => verifyNpmAdapterArtifact(directory, distribution), /owned/)
+    chmodSync(path.join(directory, 'bin'), 0o755)
+  }
   assert.throws(() => bindAdapterInventory(directory, signed({ ...inventory, source_revision: 'c'.repeat(40) }), distribution), /sources/)
   assert.throws(() => bindAdapterInventory(directory, signed({ ...inventory, artifacts: [{ ...inventory.artifacts[0], materials: [] }] }), distribution), /identical/)
   writeFileSync(path.join(directory, 'bin/notifai.mjs'), 'changed')
+  assert.throws(() => verifyNpmAdapterArtifact(directory, distribution), /integrity/)
   assert.throws(() => bindAdapterInventory(directory, signed(inventory), distribution), /changed/)
 })
