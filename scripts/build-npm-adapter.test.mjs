@@ -18,7 +18,12 @@ const { extract } = createRequire(new URL('../apps/cli/package.json', import.met
 test('the staged adapter is deterministic, dependency-free and packs exactly its authenticated payload', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-generated-npm-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
-  const first = await buildNpmAdapter({ sourceRevision: 'a'.repeat(40), output: path.join(root, 'first') })
+  let first
+  const originalDirectory = process.cwd()
+  try {
+    process.chdir(root)
+    first = await buildNpmAdapter({ sourceRevision: 'a'.repeat(40), output: path.join(root, 'first') })
+  } finally { process.chdir(originalDirectory) }
   const second = await buildNpmAdapter({ sourceRevision: 'a'.repeat(40), output: path.join(root, 'second') })
   assert.equal(first.manifest, second.manifest, 'The same source inputs must yield the same signed material')
   const manifest = JSON.parse(first.manifest), pkg = JSON.parse(readFileSync(path.join(first.directory, 'package.json')))

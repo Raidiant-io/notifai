@@ -17,7 +17,7 @@ export async function acquireNative(release, { distribution, platform, capture =
     const executable = path.join(directory, admitted.artifact.target.startsWith('bun-windows-') ? 'notifai.exe' : 'notifai')
     const args = ['install', '--source', 'npm', '--version', admitted.inventory.version,
       '--channel', admitted.inventory.version.split('+')[0].includes('-') ? 'beta' : 'stable', ...installArgs]
-    if (!capture) return platform.execute(executable, args)
+    if (!capture) return await platform.execute(executable, args)
     const result = await platform.capture(executable, [...args, '--no-init', '--json'])
     let report
     try { report = JSON.parse(result.stdout) } catch { throw new Error('Native installer did not return one valid installation report') }
