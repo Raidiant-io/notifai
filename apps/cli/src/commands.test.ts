@@ -2398,7 +2398,6 @@ describe('command contracts', () => {
         text: 'I will deploy staging now.',
         created_at: '2026-08-13T12:01:00.000Z',
       },
-      agent_acknowledgement_required: true,
     })
     const events = readLogRecords(deps.env, {
       request: receipt.request_id,

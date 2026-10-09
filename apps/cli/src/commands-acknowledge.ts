@@ -86,14 +86,12 @@ export async function acknowledgeCommand(
       request_id: requestId,
       outcome: result.status,
       acknowledgement: result.agent_acknowledgement,
-      agent_acknowledgement_required: true,
     }
     logger.info('acknowledgement.outcome', {
       request_id: requestId,
       outcome: result.status,
       text_chars: result.agent_acknowledgement.text.length,
       created_at: result.agent_acknowledgement.created_at,
-      agent_acknowledgement_required: true,
     })
     if (lifecycleSession !== null) {
       clearAcknowledgementObligation(lifecycleSession.sessionId, deps.env, requestId)
