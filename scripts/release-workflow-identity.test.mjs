@@ -237,6 +237,9 @@ test('npm publication stages the unified CLI then separately promotes exact veri
   assert.match(publish, /Require an immutable GitHub release/u)
   const steps = publishWorkflow.jobs.npm.steps
   const index = name => steps.findIndex(step => step.name === name)
+  const build = index('Build the exact source verification modules')
+  const tooling = index('Verify release-specific artifact tooling')
+  assert.ok(build >= 0 && build < tooling, 'Clean release jobs must build imported verification modules before artifact tests')
   const pack = index('Pack once or retain the already-published candidate')
   const service = index('Verify deployed service accepts this candidate')
   const publishIndex = index('Publish the selected npm package with OIDC provenance')

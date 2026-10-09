@@ -124,6 +124,11 @@ jobs:
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
+      - name: Build the exact source verification modules
+        run: |
+          pnpm --filter @raidiant/notifai-protocol build
+          pnpm --filter @raidiant/notifai build
+
       - name: Verify release-specific artifact tooling
         run: |
           node --test \
@@ -136,11 +141,6 @@ jobs:
         env:
           PUBLICATION_MODE: ${{ inputs.mode }}
         run: node scripts/plan-publish.mjs
-
-      - name: Build the exact source verification modules
-        run: |
-          pnpm --filter @raidiant/notifai-protocol build
-          pnpm --filter @raidiant/notifai build
 
       - name: Pack once or retain the already-published candidate
         env:
