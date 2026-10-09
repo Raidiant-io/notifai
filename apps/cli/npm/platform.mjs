@@ -41,14 +41,15 @@ export function ownedPosixCommand(home, uid = process.getuid()) {
   return command
 }
 
-export function assertAcquisitionReady(home, checkAccess) {
+export function assertAcquisitionReady(home, checkAccess, checkHomeAccess = checkAccess) {
   const root = path.join(home, '.notifai')
   for (const directory of [home, root]) {
     let stat
     try { stat = lstatSync(directory) }
     catch (error) { if (directory === root && error.code === 'ENOENT') return; throw error }
     assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Native installation root is not a regular directory')
-    checkAccess(directory, true)
+    const inspect = directory === home ? checkHomeAccess : checkAccess
+    inspect(directory, true)
   }
   for (const name of ['uninstall.json', 'transaction.json', 'install.json', 'active.json']) {
     try { lstatSync(path.join(root, name)) }
@@ -110,7 +111,9 @@ export function nativePlatform() {
     },
     assertAcquisitionReady() {
       assert.ok(home, 'Resolve the OS account home before acquisition')
-      assertAcquisitionReady(home, this.checkAccess)
+      assertAcquisitionReady(home, windows
+        ? file => powershell('Assert-NotifaiPathAccess $inputData.file', { file })
+        : this.checkAccess, this.checkAccess)
     },
     checkAccess(file) {
       if (!windows) {
@@ -118,7 +121,7 @@ export function nativePlatform() {
         assert.ok(stat.uid === process.getuid() && (stat.mode & 0o022) === 0, 'Npm adapter path is not owned by this User')
         return
       }
-      powershell(`$file=$inputData.file; $attributes=[IO.File]::GetAttributes($file); $acl=Get-NotifaiAccessControl $file $attributes; $user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $writes=[int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000; if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user) { throw 'Npm adapter path is not owned by this User' }; foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and ([int64]$rule.FileSystemRights -band $writes) -ne 0 -and $rule.IdentityReference.Value -notin @($user,'S-1-5-18','S-1-5-32-544')) { throw 'Npm adapter permits another writer' } }`, { file })
+      powershell('Assert-NotifaiPathAccess $inputData.file -AllowDefaultOwner', { file })
     },
     target() {
       if (windows) return powershell('Get-NotifaiWindowsTarget')

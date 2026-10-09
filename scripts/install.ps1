@@ -215,6 +215,26 @@ function Get-NotifaiAccountHome {
   }
   return $accountHome
 }
+# Read-only inspection of an existing path. npm and the OS profile may use
+# inherited ACLs and an elevated token's default owner; managed paths retain
+# exact User ownership and, when requested, protected inheritance.
+function Assert-NotifaiPathAccess([string]$File, [switch]$AllowDefaultOwner, [switch]$RequireProtected) {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $user = $identity.User.Value
+  $attributes = [IO.File]::GetAttributes($File)
+  $acl = Get-NotifaiAccessControl $File $attributes
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  $defaultOwner = $AllowDefaultOwner -and $identity.Owner.Value -eq 'S-1-5-32-544' -and $owner -eq $identity.Owner.Value
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($owner -ne $user -and -not $defaultOwner) -or
+      ($RequireProtected -and -not $acl.AreAccessRulesProtected)) { throw 'Existing path is not privately owned; inspect it before repair' }
+  $writes = [int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
+  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        ([int64]$rule.FileSystemRights -band $writes) -ne 0 -and
+        $rule.IdentityReference.Value -notin @($user, 'S-1-5-18', 'S-1-5-32-544')) { throw 'Existing path permits another writer; inspect it before repair' }
+  }
+}
 function Get-NotifaiInstalledCommand {
   $accountHome = Get-NotifaiAccountHome
   $managed = [IO.Path]::Combine($accountHome, '.notifai')
@@ -223,21 +243,8 @@ function Get-NotifaiInstalledCommand {
   try { [void][IO.File]::GetAttributes($command) }
   catch [IO.FileNotFoundException] { return $null }
   catch [IO.DirectoryNotFoundException] { return $null }
-  $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  # Include generic write/all if an existing raw ACE has not been mapped to
-  # file-specific rights. A read-only foreign principal is permitted.
-  $writes = [int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
   foreach ($file in @($accountHome, $managed, $bin, $command)) {
-    $attributes = [IO.File]::GetAttributes($file)
-    $acl = Get-NotifaiAccessControl $file $attributes
-    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user -or
-        (($file -eq $managed -or $file -eq $bin) -and -not $acl.AreAccessRulesProtected)) { throw 'Existing installation is not privately owned; inspect it before repair' }
-    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-          ([int64]$rule.FileSystemRights -band $writes) -ne 0 -and
-          $rule.IdentityReference.Value -notin @($user, 'S-1-5-18', 'S-1-5-32-544')) { throw 'Existing installation permits another writer; inspect it before repair' }
-    }
+    Assert-NotifaiPathAccess $file -AllowDefaultOwner:($file -eq $accountHome) -RequireProtected:($file -eq $managed -or $file -eq $bin)
   }
   if (-not [IO.File]::Exists($command)) { throw 'Existing launcher is not a regular file; repair it explicitly' }
   return $command
