@@ -35,8 +35,12 @@ finish. Keep their original IDs. Never end an Agent Session, kill a waiter, or
 replace a question just to perform an optional update: ending a session can
 withdraw or retire its questions. Other running waiters retain their loaded
 code. Native installations retain immutable versions for resident work. Existing
-npm application installations replace package files in place; do not promise
-uninterrupted hook execution for that route.
+legacy Node-based npm application installations replace package files in place;
+follow [the migration instructions](installation.md) before replacing their package.
+The optional npm launcher uses the same retained native installation as the OS
+routes. `npm update` updates only that launcher, not the runtime. An adapter pin
+never changes an existing runtime version/channel; use native update/rollback.
+Removing an npm launcher leaves native hooks and runtime intact.
 
 Run the locally generated `update_command`. The updater verifies the selected
 installation and stable adapter, then invokes the new executable for its
