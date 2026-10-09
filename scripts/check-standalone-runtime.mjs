@@ -310,9 +310,12 @@ try {
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'shared.json'), 'utf8')),
     { count: 200, future_field: 'preserve-me' })
   if (windows) {
+    // This script also inspects the real OS profile, so it must inherit the
+    // actual account environment, not the runtime probe's redirected HOME.
+    // Only its temporary fixture files belong beneath this owned test root.
     execFileSync(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', path.join(repositoryRoot, 'scripts/check-windows-installation-access.ps1'),
-        '-Launcher', launcher], { cwd: root, env, stdio: 'inherit', timeout: 60_000 })
+        '-Launcher', launcher], { cwd: root, env: { ...process.env, TEMP: root, TMP: root }, stdio: 'inherit', timeout: 60_000 })
     const permissions = path.join(root, 'permissions')
     privateDirectory(permissions)
     const icacls = path.join(process.env.SystemRoot, 'System32', 'icacls.exe')
