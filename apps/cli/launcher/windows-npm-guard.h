@@ -50,6 +50,22 @@ static int guard_argument(wchar_t command[32768], size_t *used, const wchar_t *a
     return 1;
 }
 
+/* Check the actual filesystem's admission behavior after inheritance. A
+ * successful handle transfer alone must not be treated as sharing denial. */
+static int guard_denies_access(const wchar_t *name) {
+    wchar_t file[32768];
+    if (!filesystem_path(name, file)) return 0;
+    const DWORD modes[2] = { GENERIC_READ, GENERIC_WRITE };
+    for (int i = 0; i < 2; i++) {
+        HANDLE probe = CreateFileW(file, modes[i], FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        DWORD error = GetLastError();
+        if (probe != INVALID_HANDLE_VALUE) { CloseHandle(probe); SetLastError(ERROR_INVALID_STATE); return 0; }
+        if (error != ERROR_SHARING_VIOLATION) { SetLastError(error); return 0; }
+    }
+    return 1;
+}
+
 static int npm_guard(int argc, wchar_t **argv) {
     if (argc < 5) return 2; /* flag, two exact entrypoints, executable, args */
     HANDLE inherited[5] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE,
@@ -118,6 +134,8 @@ static int npm_guard(int argc, wchar_t **argv) {
      * the actual writer's lifetime, including forced termination, is the guard
      * lifetime. The explicit handle list excludes the supervisor's GO pipe. */
     for (int i = 0; i < 2; i++) { CloseHandle(inherited[i]); inherited[i] = INVALID_HANDLE_VALUE; }
+    phase = "inherited entrypoint admission";
+    for (int i = 0; i < 2; i++) if (!guard_denies_access(argv[i + 2])) goto done;
     phase = "manager identity";
     if (!GetProcessTimes(child.hProcess, &created, &exited, &kernel, &cpu)) goto done;
     birth.LowPart = created.dwLowDateTime; birth.HighPart = created.dwHighDateTime;

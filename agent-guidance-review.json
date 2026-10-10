@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:0afabda3930af497556b9667240a658c909e754ee7990d402d33221b8c083647",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle publication, the shipped skill and update/harness setup references, local readiness, README, trust and domain terms. Explicit hook installation now fences synchronous owned writes with one captured generation. Hermes host install, enable and removal use one scoped operation reservation; compatible updates and unrelated repairs continue while its originating definition stays retained. The update reference now explains pending_integrations and preserving uncertain operations and prepared sources. Caller exit or file read-back alone is not recovery proof. No new User approval, trust grant, restart, automatic cleanup or live-harness acceptance is claimed. Interrupted host-operation recovery and finite legacy npm conversion remain separately open.",
+  "behavior_digest": "sha256:8a7e49784b801993cd92e7a1c603ce9fc43be68f3093c16dbee4f7c4c61bad8d",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, shipped skill and installation/update references, harness setup, readiness, README, trust and domain terms. The new internal Windows npm process client is not yet wired to a User command. It persists manager identity through its caller before authorizing execution and refuses invalid admission, asynchronous decisions and elapsed deadlines. Its result retains uncertainty after interruption and never authorizes removing the recovery receipt. Finite legacy npm conversion and interrupted host-operation recovery remain open; no new approval, release or live-harness acceptance is claimed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
