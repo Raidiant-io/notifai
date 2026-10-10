@@ -128,6 +128,11 @@ foreach ($row in $rows) {
     $live = [Diagnostics.Process]::GetProcessById($row.ProcessId)
     $start = $live.StartTime.ToUniversalTime()
     if ([Math]::Abs(($start - $row.CreationDate.ToUniversalTime()).Ticks) -gt 10) { $uncertain = $true; continue }
+    # The supervisor owns this exact suspended process. Its module list need
+    # not exist until GO, so identify it by the kernel creation time first.
+    # A reused PID or any other reader still requires the full inspection.
+    if ($inputScope.manager -and $row.ProcessId -eq $inputScope.manager.pid -and
+        ('windows-filetime:' + $start.ToFileTimeUtc()) -ceq $inputScope.manager.start) { continue }
     $executable = $live.MainModule.FileName
     if (-not $executable -or ($live.ProcessName + '.exe') -ine $row.Name) { $uncertain = $true; continue }
     $readers.Add(@{pid=[int]$row.ProcessId; start=('windows-filetime:' + $start.ToFileTimeUtc()); executable=$executable})
@@ -140,11 +145,12 @@ foreach ($row in $rows) {
 @{readers=@($readers.ToArray()); uncertain=$uncertain} | ConvertTo-Json -Depth 4 -Compress
 `
 
-export function inspectWindowsNpmReaders(scope: NpmMaintenanceScope): WindowsReaderCensus {
+export function inspectWindowsNpmReaders(scope: NpmMaintenanceScope, manager?: ProcessIdentity): WindowsReaderCensus {
   if (process.platform !== 'win32') throw new Error('Windows process observation is unavailable')
+  if (manager !== undefined && !processIdentity(manager)) throw new Error('Maintenance process identity is unavailable')
   const powershell = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_NPM_READER_CENSUS, 'utf16le').toString('base64')], {
-    env: { ...process.env, NOTIFAI_NPM_CENSUS: JSON.stringify(scope.observation) },
+    env: { ...process.env, NOTIFAI_NPM_CENSUS: JSON.stringify({ ...scope.observation, manager }) },
     encoding: 'utf8', windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   })
   const result = JSON.parse(output) as WindowsReaderCensus

@@ -117,7 +117,7 @@ export async function npmRepairCommand(deps: CommandDeps, flags: NativeInstallFl
       if (scope !== receipt.scope) throw new Error('Maintenance scope changed')
       assertNpmScopeDirectories(prepared.app)
       const retention = new RuntimeRetention(root, prepared.native.id, access)
-      assertNpmMaintenanceQuiet({ scope: prepared.app, census: inspectWindowsNpmReaders(prepared.app), coordinator,
+      assertNpmMaintenanceQuiet({ scope: prepared.app, census: inspectWindowsNpmReaders(prepared.app, manager), coordinator,
         ...(manager ? { manager } : {}), owners: prepared.app.states.map(state => retention.inspectOwners(path.join(state.path, 'sessions'))),
         liveness: processIdentityLiveness })
     }

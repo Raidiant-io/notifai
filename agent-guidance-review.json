@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:48f91a641129c1860fed3f9cbf721a8aa5605d19d8234a772dbab07cd8d06fa2",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle, shipped skill installation/setup, CLI readiness and domain terms. Windows npm repair remains explicit, scoped and forward recovering. Interrupted local Hermes publication now has operator-assisted reservation release through existing installer admission, with exact receipt confirmation and independent known-process checks. Guidance distinguishes observed host quiescence from caller exit, preserves healthy sessions and all plugin/source files, and requires ordinary reassessment rather than replaying old intent. Doctor and update resume execute no package or host maintenance.",
+  "behavior_digest": "sha256:a83f7b33d382383cd9f17695713933d152c5037ab03d52012c17d17884ed0308",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. The Windows npm repair keeps the same explicit prepare/resume commands, exact operation confirmation, observed pause and recovery requirements. Only the census of its handshake-owned suspended manager changes: exact kernel identity is checked before loader-dependent inspection. No lifecycle callback, ordinary command or other reader receives an exemption; no guidance change is needed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
