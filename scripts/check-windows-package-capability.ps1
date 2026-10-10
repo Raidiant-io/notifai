@@ -73,3 +73,4 @@ try {
   }
   Require ($prefixBefore -ceq (Descriptor $NpmPrefix)) 'Proof changed existing npm prefix permissions'
 }
+exit 0

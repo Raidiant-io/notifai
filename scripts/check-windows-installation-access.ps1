@@ -94,3 +94,6 @@ try {
 } finally {
   if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
+# Rejection checks deliberately leave LASTEXITCODE nonzero. Successful cleanup
+# and all assertions above, rather than the last negative control, own our result.
+exit 0
