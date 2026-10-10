@@ -114,6 +114,25 @@ it('verifies an unchanged healthy integration without optional setup or a restar
   expect(readFileSync(f.installation.file, 'utf8')).toBe(protectedBytes)
 })
 
+it('refuses repair through a legacy application beside native without changing hooks, trust, or resident work', async () => {
+  const f = fixture(), root = path.join(f.home, '.notifai'), build = 'b'.repeat(64)
+  const versionDir = path.join(root, 'versions', build)
+  mkdirSync(versionDir, { recursive: true }); mkdirSync(path.join(root, 'bin'), { recursive: true })
+  writeFileSync(path.join(root, 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai',
+    id: '12345678-1234-1234-1234-123456789012', channel: 'beta', source: 'shell' }), { mode: 0o600 })
+  writeFileSync(path.join(root, 'active.json'), JSON.stringify({ schema: 1, active: build, previous: null, generation: 1 }) + '\n', { mode: 0o600 })
+  writeFileSync(path.join(versionDir, 'inventory.json'), JSON.stringify({ payload:
+    Buffer.from(JSON.stringify({ version: packageVersion(), source_revision: 'c'.repeat(40) })).toString('base64') }), { mode: 0o600 })
+  removeToolHook(f.installation.file)
+  const before = [f.installation.file, f.trust, f.artifact].map(file => readFileSync(file, 'utf8'))
+  const activate = vi.spyOn(attendantUpdate, 'activateInstalledAttendants')
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false, migration_complete: false, changed: [],
+    pending_actions: [expect.stringContaining('legacy-native-coexistence')] })
+  expect([f.installation.file, f.trust, f.artifact].map(file => readFileSync(file, 'utf8'))).toEqual(before)
+  expect(activate).not.toHaveBeenCalled()
+})
+
 it.each(['darwin', 'win32', 'linux'] as const)('repairs owned %s hooks beside unmanaged-only guidance without installing skills or changing trust', async platform => {
   const f = fixture(platform)
   const skill = path.join(f.home, '.agents', 'skills', 'notifai')

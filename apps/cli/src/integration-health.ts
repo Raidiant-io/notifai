@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { inspectCliInstallations } from './cli-bin.js'
+import { inspectCliInstallations, nativeCoexistenceGap } from './cli-bin.js'
 import { type CommandDeps } from './commands-core.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
 import { stateDir } from './config.js'
@@ -61,6 +61,9 @@ export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInst
     currentVersion: deps.runningVersion === undefined ? packageVersion() : deps.runningVersion,
   })
   const faults: IntegrationFault[] = []
+  const coexistence = nativeCoexistenceGap(cli, deps.hookPlatform ?? process.platform)
+  if (coexistence?.remedy?.by === 'user-here') faults.push({ code: 'legacy-native-coexistence', detail: coexistence.detail,
+    remedy: `${coexistence.remedy.summary} ${coexistence.remedy.command}` })
   const adapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
   const installations = integrationInstallations(deps)
   if (harness !== undefined && !installations.some(entry => entry.env === deps.env && entry.installation.harness === harness)) {

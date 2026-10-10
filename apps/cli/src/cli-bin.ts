@@ -272,6 +272,23 @@ function localPathPresent(file: string): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
 }
 
+/** A native runtime beside the old npm application is an unfinished migration,
+ * even when this process's PATH already prefers native. Other live harnesses
+ * can retain their earlier PATH (or a virtualized view of the npm prefix).
+ * Verified npm adapters are routes to native, not competing installations. */
+export function nativeCoexistenceGap(inspection: CliInstallationInspection, platform: NodeJS.Platform): ReadinessState | null {
+  if (inspection.native === null || !inspection.entries.some(entry => entry.kind === 'legacy-node')) return null
+  return {
+    id: 'cli-bin', title: 'notifai command', status: 'gap', technical: inspection,
+    detail: 'native and legacy npm applications coexist; migration is incomplete',
+    remedy: {
+      by: 'user-here',
+      summary: 'Use the absolute native command in each existing Agent Session. Preserve pending work and legacy package files until their owners finish. Resolve the exact npm prefix in the affected application before cleanup; a new shell may have a different PATH or application-storage view. Verify ordinary command resolution and real hook activity in that session before calling migration complete.',
+      command: nativeLifecycleCommand(inspection.native.command, ['doctor', '--json'], platform),
+    },
+  }
+}
+
 export function cliBinReadiness(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
@@ -288,6 +305,8 @@ export function cliBinReadiness(
       command: inspection.native ? nativeLifecycleCommand(inspection.native.command,
         inspection.transaction.uninstall_pending ? ['uninstall', '--json'] : ['update', '--repair', '--json'], platform) : updateCommand },
   }
+  const coexistence = nativeCoexistenceGap(inspection, platform)
+  if (coexistence !== null) return coexistence
   if (effective === null && entries.length > 0) {
     return {
       id: 'cli-bin',
