@@ -22,21 +22,35 @@ describe('Windows npm entry guards follow the actual writer', { skip: process.pl
     writeFileSync(source, String.raw`#include <windows.h>
 #include <stdio.h>
 #include <wchar.h>
+#pragma comment(lib, "advapi32.lib")
 int wmain(int argc, wchar_t **argv) {
   if (argc != 2) return 2;
   wchar_t extended[32768];
   if (swprintf(extended, 32768, L"\\\\?\\%ls", argv[1]) < 0) return 2;
-  const DWORD flags[2] = { FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS };
+  HANDLE token = NULL;
+  PRIVILEGE_SET privileges = {0};
+  BOOL enabled = FALSE;
+  privileges.PrivilegeCount = 1;
+  privileges.Control = PRIVILEGE_SET_ALL_NECESSARY;
+  privileges.Privilege[0].Attributes = SE_PRIVILEGE_ENABLED;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    LookupPrivilegeValueW(NULL, L"SeBackupPrivilege", &privileges.Privilege[0].Luid);
+    PrivilegeCheck(token, &privileges, &enabled);
+    CloseHandle(token);
+  }
+  fprintf(stderr, "backup_privilege_enabled=%d\n", enabled);
+  const DWORD flags[4] = { 0, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS };
   printf("[");
-  for (int p = 0; p < 2; p++) for (int f = 0; f < 2; f++) {
+  for (int p = 0; p < 2; p++) for (int f = 0; f < 4; f++) {
     HANDLE h = CreateFileW(p ? extended : argv[1], GENERIC_READ,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, flags[f], NULL);
     DWORD error = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
     BY_HANDLE_FILE_INFORMATION info = {0};
     if (h != INVALID_HANDLE_VALUE) { GetFileInformationByHandle(h, &info); CloseHandle(h); }
     ULARGE_INTEGER id; id.LowPart = info.nFileIndexLow; id.HighPart = info.nFileIndexHigh;
-    printf("%s{\"extended\":%d,\"backup\":%d,\"error\":%lu,\"volume\":%lu,\"file_id\":\"%llu\"}",
-      p || f ? "," : "", p, f, error, info.dwVolumeSerialNumber, id.QuadPart);
+    printf("%s{\"extended\":%d,\"flags\":%lu,\"error\":%lu,\"volume\":%lu,\"file_id\":\"%llu\"}",
+      p || f ? "," : "", p, flags[f], error, info.dwVolumeSerialNumber, id.QuadPart);
   }
   printf("]\n");
   return 0;
