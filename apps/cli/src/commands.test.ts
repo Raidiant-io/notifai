@@ -5563,6 +5563,9 @@ describe('interactive command UX', () => {
     await doctorCommand(deps, { json: true })
     expect(io.outLines).toHaveLength(1)
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ invocation: {
+      executable: process.execPath, cwd, state_directory: path.join(cwd, 'state', 'notifai'),
+    } })
     expect(io.intros).toEqual([])
     expect(io.checks).toEqual([])
   })

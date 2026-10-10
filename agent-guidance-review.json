@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e8f715c6f833063b9437d4bb4b357e29e56d44e8f2c1beb7c03a4a74efb112ea",
+  "behavior_digest": "sha256:b264ab1e11436d726d020f9679113fd5d1d0eea9ca84da59390e467b0fb3d030",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle, shipped skill installation guidance, harness setup, readiness and domain terms. Legacy migration now reports agent-owned assessment and in-place replacement requirements instead of uninstall-first instructions; it still does not expose or claim unattended conversion. Internal preparation authenticates the selected signed release payload, normalizes it before npm, reserves its directory, and pins recovery to that archive and inventory. The package contract admits only the declared launcher shims. Normal commands and retained owners gain no installer behavior.",
+  "reason": "Reviewed lifecycle, shipped skill installation guidance, harness setup, readiness and domain terms. Legacy migration now reports agent-owned assessment and in-place replacement requirements instead of uninstall-first instructions; it still does not expose or claim unattended conversion. Internal preparation authenticates the selected signed release payload, normalizes it before npm, reserves its directory, and pins recovery to that archive and inventory. The package contract admits only the declared launcher shims. Normal commands and retained owners gain no installer behavior. Structured doctor output now reports only this invocation executable, cwd and effective state directory, so agents can distinguish actual application observations from external-shell guesses; it grants no maintenance authority.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

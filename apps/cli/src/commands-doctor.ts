@@ -10,7 +10,7 @@ import { hermesPluginListed, hermesVersionSupported } from './hermes-plugin.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
-import { type CliConfig } from './config.js'
+import { stateDir, type CliConfig } from './config.js'
 import {
   HARNESS_LABELS,
   HERMES_QUESTION_ROUTING_UNAVAILABLE,
@@ -931,7 +931,9 @@ export async function doctorCommand(
   if (flags.json || deps.io.interactive !== true) {
     deps.io.out(
       JSON.stringify(
-        { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed },
+        { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed,
+          invocation: { executable: process.execPath, cwd: deps.cwd,
+            state_directory: stateDir(deps.env, deps.hookPlatform ?? process.platform) } },
         null,
         2,
       ),
