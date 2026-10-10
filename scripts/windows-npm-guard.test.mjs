@@ -64,7 +64,8 @@ setTimeout(() => process.exit(19), 15000).unref();
     void child.completion.catch(() => {})
     const timer = setTimeout(() => child.kill('SIGKILL'), 20_000)
     void child.completion.finally(() => clearTimeout(timer)).catch(() => {})
-    return { child, ready, entries, marker, finish, args, digests }
+    return { child, ready, entries, marker, finish, args, digests, diagnostic: () => ({ output, error,
+      guard_exit: child.exitCode, guard_pid: child.pid }) }
   }
   function entryAccess(file, allowed) {
     for (const operation of ['readFileSync', 'writeFileSync']) {
@@ -73,7 +74,7 @@ setTimeout(() => process.exit(19), 15000).unref();
       const check = spawnSync(process.execPath, ['-e', source, file], { encoding: 'utf8', timeout: 5000, windowsHide: true })
       assert.equal(check.error, undefined)
       if (allowed) assert.equal(check.status, 0, check.stderr)
-      else assert.notEqual(check.status, 0, 'Legacy entry unexpectedly admitted a new reader/writer')
+      else assert.notEqual(check.status, 0, `Legacy entry unexpectedly admitted ${operation}: ${file}`)
     }
   }
   async function admitted(fixture) {
@@ -83,7 +84,11 @@ setTimeout(() => process.exit(19), 15000).unref();
     assert.deepEqual(ready.guard_sha256, fixture.digests)
     fixture.managerPid = ready.pid
     assert.equal(existsSync(fixture.marker), false)
-    fixture.entries.forEach(file => entryAccess(file, false))
+    try { fixture.entries.forEach(file => entryAccess(file, false)) }
+    catch (error) {
+      await delay(20)
+      throw new Error(`${error.message}; ${JSON.stringify(fixture.diagnostic())}`, { cause: error })
+    }
   }
   it('starts only after GO, preserves argv, supplies EOF stdin and returns the manager exit', async () => {
     const f = start(); await admitted(f)

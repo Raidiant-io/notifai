@@ -70,6 +70,8 @@ static int npm_guard(int argc, wchar_t **argv) {
     DWORD status = 1, count = 0;
     unsigned char permission = 0;
     int initialized = 0, finished = 0;
+    const char *phase = "entrypoint access";
+    DWORD failure_error = 0;
     user = installation_user();
     if (!user || !filesystem_path(argv[4], executable)) goto done;
     for (int i = 0; i < 2; i++) {
@@ -80,6 +82,7 @@ static int npm_guard(int argc, wchar_t **argv) {
             !private_handle(inherited[i], 0, user->User.Sid, 0, 0, NULL) ||
             !guard_digest(inherited[i], digests[i])) goto done;
     }
+    phase = "child standard handles";
     inherited[2] = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         &security, OPEN_EXISTING, 0, NULL);
     if (inherited[2] == INVALID_HANDLE_VALUE) goto done;
@@ -88,7 +91,9 @@ static int npm_guard(int argc, wchar_t **argv) {
         if (!DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(), &inherited[i],
             0, TRUE, DUPLICATE_SAME_ACCESS)) goto done;
     }
+    phase = "argument bounds";
     for (int i = 4; i < argc; i++) if (!guard_argument(command, &used, argv[i])) goto done;
+    phase = "child job";
     job = CreateJobObjectW(NULL, NULL);
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) goto done;
@@ -106,24 +111,30 @@ static int npm_guard(int argc, wchar_t **argv) {
     startup.StartupInfo.hStdOutput = inherited[3];
     startup.StartupInfo.hStdError = inherited[4];
     startup.lpAttributeList = attributes;
+    phase = "suspended manager creation";
     if (!CreateProcessW(executable, command, NULL, NULL, TRUE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, NULL, NULL, &startup.StartupInfo, &child)) goto done;
     /* The suspended manager now owns these file objects. Retire our copies so
      * the actual writer's lifetime, including forced termination, is the guard
      * lifetime. The explicit handle list excludes the supervisor's GO pipe. */
     for (int i = 0; i < 2; i++) { CloseHandle(inherited[i]); inherited[i] = INVALID_HANDLE_VALUE; }
+    phase = "manager identity";
     if (!GetProcessTimes(child.hProcess, &created, &exited, &kernel, &cpu)) goto done;
     birth.LowPart = created.dwLowDateTime; birth.HighPart = created.dwHighDateTime;
     if (printf("{\"pid\":%lu,\"start\":\"windows-filetime:%llu\",\"guard_sha256\":[\"%s\",\"%s\"]}\n",
         child.dwProcessId, birth.QuadPart, digests[0], digests[1]) < 0 || fflush(stdout)) goto done;
     /* The caller persists the exact child identity and proves old-reader
      * completion before GO. EOF never executes even one manager instruction. */
+    phase = "caller admission";
+    SetLastError(ERROR_SUCCESS);
     if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), &permission, 1, &count, NULL) || count != 1 || permission != 'G') goto done;
+    phase = "manager completion";
     if (ResumeThread(child.hThread) == (DWORD)-1) goto done;
     if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0 ||
         !GetExitCodeProcess(child.hProcess, &status)) goto done;
     finished = 1;
 done:
+    failure_error = GetLastError();
     if (child.hProcess && !finished) {
         if (TerminateJobObject(job, 1)) WaitForSingleObject(child.hProcess, INFINITE);
         status = 1;
@@ -134,6 +145,6 @@ done:
     if (initialized) DeleteProcThreadAttributeList(attributes);
     free(attributes); free(user);
     for (int i = 0; i < 5; i++) if (inherited[i] != INVALID_HANDLE_VALUE) CloseHandle(inherited[i]);
-    if (!finished) fputs("notifai: npm conversion was not completed\n", stderr);
+    if (!finished) fprintf(stderr, "notifai: npm conversion was not completed (%s; Windows error %lu)\n", phase, failure_error);
     return (int)status;
 }
