@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, verify } from 'node:crypto'
 import { releaseMaterialPath } from './release-path.js'
 import { isPrerelease, isSemVer } from './version.js'
+import { localContinuity, type LocalContinuity } from './local-continuity.js'
 
 export const RELEASE_TARGETS = ['bun-darwin-arm64', 'bun-darwin-x64', 'bun-linux-arm64',
   'bun-linux-x64', 'bun-windows-arm64', 'bun-windows-x64'] as const
@@ -17,11 +18,12 @@ export interface ReleaseArtifact {
   materials: ReleaseMaterial[]
 }
 export interface ReleaseInventory {
-  schema: 1
+  schema: 1 | 2
   version: string
   source_revision: string
   store_schema: number
   launcher_schema: number
+  local_continuity?: LocalContinuity
   artifacts: ReleaseArtifact[]
 }
 export interface SeenChannel { sequence: number; digest: string }
@@ -42,6 +44,7 @@ export interface ResolvedRelease {
   signedChannel: string
   artifact: ReleaseArtifact
 }
+export type ExactRelease = Pick<ResolvedRelease, 'inventory' | 'signedInventory' | 'artifact'>
 
 const REPOSITORY = 'Raidiant-io/notifai'
 const MAX_METADATA = 256 * 1024
@@ -90,12 +93,20 @@ export class Distribution {
     if (publicKey.asymmetricKeyType !== 'ed25519' || signature.length !== 64 ||
       !verify(null, releaseSigningMessage(kind, payload), publicKey, signature)) throw new Error('Invalid release signature')
     const value: unknown = JSON.parse(payload.toString('utf8'))
-    if (!record(value) || value['schema'] !== 1) throw new Error('Unsupported release record schema')
+    if (!record(value) || (value['schema'] !== 1 && !(kind === 'inventory' && value['schema'] === 2))) {
+      throw new Error('Unsupported release record schema')
+    }
     return value
   }
 
   verifyInventory(bytes: string): ReleaseInventory {
     const value = this.verifyRecord('inventory', bytes)
+    if (value['schema'] === 2) {
+      const continuity = localContinuity(value['local_continuity'])
+      value['local_continuity'] = Object.freeze(continuity)
+    } else if (value['local_continuity'] !== undefined) {
+      throw new Error('Historical inventory cannot declare an enforcing continuity contract')
+    }
     if (!version(value['version']) || typeof value['source_revision'] !== 'string' ||
       !/^[a-f0-9]{40}$/.test(value['source_revision']) || !positive(value['store_schema']) ||
       !positive(value['launcher_schema']) || !Array.isArray(value['artifacts']) ||
@@ -176,7 +187,20 @@ export class Distribution {
     if (bytes.length !== artifact.bytes || sha256(bytes) !== artifact.sha256) throw new Error('Release artifact integrity mismatch')
   }
 
-  async downloadArtifact(release: ResolvedRelease): Promise<Buffer> {
+  /** Acquire the release carried by an adapter without consulting mutable
+   * channel pointers. Its signature, version and source are all mandatory. */
+  resolveExactRelease(options: { signedInventory: string; version: string;
+    sourceRevision: string; target: ReleaseTarget }): ExactRelease {
+    const inventory = this.verifyInventory(options.signedInventory)
+    if (inventory.version !== options.version || inventory.source_revision !== options.sourceRevision) {
+      throw new Error('Exact native release identity mismatch')
+    }
+    const artifact = inventory.artifacts.find(item => item.target === options.target)
+    if (!artifact) throw new Error('Release does not contain the requested target')
+    return Object.freeze({ inventory, signedInventory: options.signedInventory, artifact })
+  }
+
+  async downloadArtifact(release: ExactRelease): Promise<Buffer> {
     const bytes = await this.download(releaseUrl(release.inventory.version, release.artifact.filename), release.artifact.bytes)
     this.verifyArtifact(release.artifact, bytes)
     return bytes

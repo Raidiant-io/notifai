@@ -19,8 +19,8 @@
  *
  * Usage:
  *   node scripts/verify-published.mjs                # every publishable package
- *   node scripts/verify-published.mjs @raidiant/notifai-install
- *   node scripts/verify-published.mjs @raidiant/notifai-install --expected-tarball artifact.tgz
+ *   node scripts/verify-published.mjs @raidiant/notifai
+ *   node scripts/verify-published.mjs @raidiant/notifai --expected-tarball artifact.tgz
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -31,6 +31,11 @@ import process from 'node:process'
 import {repositoryRoot} from './cross-platform.mjs'
 import {lookupPublishedTarball} from './npm-registry.mjs'
 import { expectedTarballFailure } from './tarball-integrity.mjs'
+import { releaseAdapterAccess } from './verify-packed-npm-adapter.mjs'
+import { assertPackedTarballs } from './check-packed-boundary.mjs'
+import { Distribution } from '../apps/cli/dist/release-distribution.js'
+import { RELEASE_PUBLIC_KEYS } from '../apps/cli/dist/release-trust.js'
+import { verifyNpmAdapterArtifact } from '../apps/cli/dist/npm-adapter-verification.js'
 import { PUBLISHABLE_PACKAGES } from './package-contract.mjs'
 
 const root = repositoryRoot
@@ -40,10 +45,12 @@ const notes = []
 const PACKAGES = PUBLISHABLE_PACKAGES
 
 const requested = []
-let expectedTarball
+let expectedTarball, artifactOutput, expectedSha
 for (let index = 2; index < process.argv.length; index += 1) {
   const argument = process.argv[index]
-  if (argument === '--expected-tarball') {
+  if (argument === '--artifact-output') { artifactOutput = process.argv[++index]
+  } else if (argument === '--expected-sha') { expectedSha = process.argv[++index]
+  } else if (argument === '--expected-tarball') {
     expectedTarball = process.argv[index + 1]
     index += 1
     if (expectedTarball === undefined) failures.push('--expected-tarball requires a path')
@@ -107,7 +114,7 @@ function treeFiles(directory) {
 }
 
 for (const entry of selected) {
-  const manifest = JSON.parse(readFileSync(path.join(root, entry.directory, 'package.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(path.join(root, entry.sourceDirectory, 'package.json'), 'utf8'))
   const version = manifest.version
   const label = `${entry.name}@${version}`
 
@@ -125,7 +132,9 @@ for (const entry of selected) {
 
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-verify-'))
   try {
-    const response = await fetch(tarballUrl)
+    const registryUrl = new URL(tarballUrl)
+    if (registryUrl.origin !== 'https://registry.npmjs.org' || registryUrl.username || registryUrl.password) throw new Error('Registry tarball must use the canonical npm origin')
+    const response = await fetch(registryUrl, { redirect: 'error', signal: AbortSignal.timeout(120_000) })
     if (!response.ok) {
       failures.push(`${label}: could not download ${tarballUrl} (HTTP ${response.status})`)
       continue
@@ -139,7 +148,21 @@ for (const entry of selected) {
       )
       if (integrityFailure !== null) failures.push(`${label}: ${integrityFailure}`)
     }
+    assertPackedTarballs({ tarballs: [path.join(scratch, 'package.tgz')] })
     execFileSync('tar', ['xzf', 'package.tgz'], { cwd: scratch })
+    if (entry.name === '@raidiant/notifai') {
+      if (!/^[a-f0-9]{40}$/.test(expectedSha ?? '')) throw new Error('Adapter verification requires --expected-sha')
+      const verified = verifyNpmAdapterArtifact(path.join(scratch, 'package'), new Distribution(RELEASE_PUBLIC_KEYS), releaseAdapterAccess(scratch))
+      if (verified.manifest.adapter_version !== version || verified.manifest.native.source_revision !== expectedSha) {
+        throw new Error('Registry adapter source/version differs from the exact release')
+      }
+      if (expectedTarball === undefined && artifactOutput === undefined) throw new Error('Supply the exact --expected-tarball or retain registry bytes with --artifact-output')
+      if (failures.length === 0) {
+        if (artifactOutput) writeFileSync(artifactOutput, publishedTarball, { flag: 'wx', mode: 0o600 })
+        notes.push(`${label}: registry adapter files and signed native source identity verified`)
+      }
+      continue
+    }
 
     const publishedDist = path.join(scratch, 'package', 'dist')
     const localDist = path.join(root, entry.directory, 'dist')

@@ -53,7 +53,7 @@ test('production packaging requires exact reviewed material bytes and refuses ca
 test('macOS finalization calls codesign and the keychain the way the real tools accept', () => {
   const read = name => readFileSync(new URL(name, import.meta.url), 'utf8')
   // codesign reads a bare -R value as a requirement file; requirement text needs the -R= form.
-  for (const name of ['sign-macos-standalone.mjs', 'verify-standalone-archive.mjs', 'install.sh', '../packages/installer/src/platform.mjs']) {
+  for (const name of ['sign-macos-standalone.mjs', 'verify-standalone-archive.mjs', 'install.sh', '../apps/cli/npm/platform.mjs']) {
     assert.doesNotMatch(read(name), /'-R',|\s-R\s/, name)
   }
   const signing = read('sign-macos-standalone.mjs')

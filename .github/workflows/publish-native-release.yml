@@ -11,6 +11,19 @@ on:
         description: Successful prepare-native-release run holding exact final artifacts
         required: true
         type: string
+      mode:
+        description: Retain signed bytes, publish retained assets, or separately promote verified distributions
+        type: choice
+        options: [assemble, publish, promote]
+        default: assemble
+      assembled_run_id:
+        description: Exact successful assemble run to restore for publication or promotion
+        required: false
+        type: string
+      candidate_run_id:
+        description: Successful exact-source npm/native acceptance run, required for promotion
+        required: false
+        type: string
       channel:
         description: Explicit discovery promotion after immutable publication
         type: choice
@@ -56,7 +69,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           FINAL_RUN: ${{ inputs.final_run_id }}
-        run: node scripts/require-native-evidence.mjs --kind final --expected-sha "$EXPECTED_SHA" --run-id "$FINAL_RUN"
+          ASSEMBLED_RUN: ${{ inputs.assembled_run_id }}
+          MODE: ${{ inputs.mode }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/require-native-evidence.mjs --kind final --expected-sha "$EXPECTED_SHA" --run-id "$FINAL_RUN"
+          if [ "$MODE" != assemble ]; then
+            node scripts/require-native-evidence.mjs --kind assembled --expected-sha "$EXPECTED_SHA" --run-id "$ASSEMBLED_RUN"
+          fi
+          if [ "$MODE" = promote ]; then
+            node scripts/require-native-evidence.mjs --kind npm --expected-sha "$EXPECTED_SHA" --run-id "$CANDIDATE_RUN"
+          fi
 
   publish:
     needs: admission
@@ -81,6 +105,7 @@ jobs:
       - run: pnpm --filter @raidiant/notifai-protocol build
       - run: pnpm --filter @raidiant/notifai build
       - name: Restore exactly the admitted final artifacts
+        if: inputs.mode == 'assemble'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,6 +118,7 @@ jobs:
             gh run download "$FINAL_RUN" --repo "$GITHUB_REPOSITORY" --name "native-final-$target-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-input/$target"
           done
       - name: Assemble and sign the exact admitted inventory
+        if: inputs.mode == 'assemble'
         shell: bash
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
@@ -102,21 +128,54 @@ jobs:
           set -euo pipefail
           version=$(node -p 'require("./apps/cli/package.json").version')
           test "$GITHUB_REF" = "refs/tags/v$version"
-          node scripts/assemble-native-release.mjs --input "$RUNNER_TEMP/native-input" --output "$RUNNER_TEMP/native-release" --version "$version" --expected-sha "$EXPECTED_SHA" --key-id "$SIGNING_KEY_ID"
+          node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+          node scripts/assemble-native-release.mjs --input "$RUNNER_TEMP/native-input" --output "$RUNNER_TEMP/native-release" --version "$version" --expected-sha "$EXPECTED_SHA" --key-id "$SIGNING_KEY_ID" --adapter-manifest dist/npm/notifai/npm-adapter-files.json
+      - name: Restore the retained signed bundle without rebuilding or resigning
+        if: inputs.mode != 'assemble'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ASSEMBLED_RUN: ${{ inputs.assembled_run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/require-native-evidence.mjs --kind assembled --expected-sha "$EXPECTED_SHA" --run-id "$ASSEMBLED_RUN"
+          gh run download "$ASSEMBLED_RUN" --repo "$GITHUB_REPOSITORY" --name "native-release-bundle-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-release"
+      - name: Verify the retained signed bundle identity
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/verify-native-bundle.mjs "$RUNNER_TEMP/native-release" "$EXPECTED_SHA"
+      - name: Retain the identical signed bundle for acceptance and retries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-release-bundle-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/native-release/
+          if-no-files-found: error
+          retention-days: 90
       - name: Verify deployed service accepts this candidate
+        if: inputs.mode != 'assemble'
         run: node scripts/check-live-server-contract.mjs
-      - name: Publish immutable bytes, then optionally promote discovery
+      - name: Publish candidate assets or promote admitted distributions
+        if: inputs.mode != 'assemble'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           CHANNEL: ${{ inputs.channel }}
+          MODE: ${{ inputs.mode }}
           INITIALIZE_CHANNEL: ${{ inputs.initialize_channel }}
           NOTIFAI_RELEASE_SIGNING_KEY: ${{ secrets.NOTIFAI_RELEASE_SIGNING_KEY }}
           SIGNING_KEY_ID: ${{ vars.NOTIFAI_RELEASE_SIGNING_KEY_ID }}
         run: |
           set -euo pipefail
-          args=(--directory "$RUNNER_TEMP/native-release" --expected-sha "$EXPECTED_SHA" --publish)
+          args=(--directory "$RUNNER_TEMP/native-release" --expected-sha "$EXPECTED_SHA")
+          if [ "$MODE" = publish ]; then
+            test "$CHANNEL" = none
+            args+=(--publish)
+          else
+            test "$MODE" = promote
+            test "$CHANNEL" != none
+          fi
           if [ "$CHANNEL" != none ]; then
             args+=(--promote --channel "$CHANNEL" --key-id "$SIGNING_KEY_ID")
             if [ "$INITIALIZE_CHANNEL" = true ]; then args+=(--initialize-channel); fi

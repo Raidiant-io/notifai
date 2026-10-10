@@ -1,0 +1,64 @@
+name: Windows access policy
+
+on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact source commit to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  access:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Admit the exact source commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Compile the native access implementation
+        shell: pwsh
+        run: node scripts/build-launcher.mjs "$env:RUNNER_TEMP/native-access"
+      - name: Verify Windows PowerShell access policy
+        shell: powershell
+        run: ./scripts/check-windows-installation-access.ps1 -Launcher "$env:RUNNER_TEMP/native-access/notifai.exe"
+      - name: Verify modern PowerShell access policy
+        shell: pwsh
+        run: ./scripts/check-windows-installation-access.ps1 -Launcher "$env:RUNNER_TEMP/native-access/notifai.exe"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-access-${{ matrix.arch }}-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/native-access/notifai.exe
+          if-no-files-found: error
+          retention-days: 30

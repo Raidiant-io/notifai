@@ -1,5 +1,12 @@
-import { buildIdentity } from './distribution.js'
-import { nativeInstallationIdentity } from './native-installation-identity.js'
+import { inspectExecutionDomain, physicalCliPath, type CliExecutionDomain } from './cli-execution-domain.js'
+import { buildIdentity, Distribution, RELEASE_TARGETS, type ReleaseTarget } from './distribution.js'
+import { RELEASE_PUBLIC_KEYS } from './release-trust.js'
+import { NPM_ADAPTER_BIN, NPM_ADAPTER_MANIFEST } from './npm-adapter-contract.js'
+import { verifyNpmAdapterArtifact, type NpmAdapterAccessCheck } from './npm-adapter-verification.js'
+import { inspectNpmAdapterRoute, environmentForVerifiedAdapter, type NpmAdapterRoute } from './npm-adapter-route.js'
+import { npmAdapterWindowsAccess } from './installation-access.js'
+import { nativeBootstrapPending, nativeInstallationIdentity } from './native-installation-identity.js'
+import { Installation } from './installation.js'
 import { accountHome } from './platform.js'
 import {
   accessSync,
@@ -17,25 +24,53 @@ import { cliUpdateChannel, cliUpdateRecoveryCommand } from './cli-contract.js'
 import { canonicalPath, pathDirectories, sameLocalPath } from './local-path.js'
 
 const POSIX_NAMES = ['notifai']
-const WINDOWS_NAMES = ['notifai.exe', 'notifai.cmd', 'notifai']
+const WINDOWS_NAMES = ['notifai.exe', 'notifai.cmd', 'notifai.ps1', 'notifai']
 
 export interface CliBinReadinessOptions {
+  executionDomain?: CliExecutionDomain
+  inspectExecutionDomain?: boolean
   runningArtifactPath?: string
   currentVersion?: string | null
+  nativeHome?: string | undefined
+  distribution?: Pick<Distribution, 'verifyInventory'>
+  checkAccess?: NpmAdapterAccessCheck
+  invokingNpmAdapterArtifact?: string | undefined
 }
 
 export interface CliPathEntry {
+  observed_in?: 'invoking_path' | 'app_storage_candidate'
+  identity?: ReturnType<typeof physicalCliPath>
   command_path: string
   executable: boolean
   artifact_path: string | null
   version: string | null
   install_prefix: string | null
+  kind: 'native' | 'npm-adapter' | 'legacy-node' | 'dangling' | 'unknown'
+  adapter?: { version: string; source_revision: string; directory: string; route: NpmAdapterRoute }
+  problem?: string
 }
 
 export interface CliInstallationInspection {
+  execution_domain?: CliExecutionDomain
   current: { artifact_path: string; version: string | null }
   effective: CliPathEntry | null
   entries: CliPathEntry[]
+  native: ReturnType<typeof nativeInstallationIdentity> | null
+  transaction: { install_pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; recovery_command?: string }
+  update_owner: 'native' | null
+  invoking_adapter: { artifact_path: string; version: string; source_revision: string } | null
+}
+
+export function consumeNpmAdapterLocator(env: NodeJS.ProcessEnv): string | undefined {
+  const locator = env['NOTIFAI_NPM_ADAPTER_ARTIFACT']
+  delete env['NOTIFAI_NPM_ADAPTER_ARTIFACT']
+  return locator && locator.length <= 4096 && path.isAbsolute(locator) ? locator : undefined
+}
+
+/** Lifecycle advice always names the durable native owner, never PATH. */
+export function nativeLifecycleCommand(command: string, args: readonly string[], platform: NodeJS.Platform): string {
+  const quote = (value: string) => `'${value.replaceAll("'", platform === 'win32' ? "''" : "'\\''")}'`
+  return `${platform === 'win32' ? '& ' : ''}${quote(command)} ${args.map(arg => /^[A-Za-z0-9@/_.=-]+$/.test(arg) ? arg : quote(arg)).join(' ')}`
 }
 
 /** npm exec prepends its own temporary .bin; it is not the user's installed CLI. */
@@ -88,9 +123,10 @@ export function pathNotifaiEntries(
 
 export function isExecutablePath(file: string, platform: NodeJS.Platform = process.platform): boolean {
   if (!existsSync(file)) return false
-  if (platform === 'win32') return true
   try {
     const target = lstatSync(file).isSymbolicLink() ? realpathSync(file) : file
+    if (!lstatSync(target).isFile()) return false
+    if (platform === 'win32') return true
     accessSync(target, constants.X_OK)
     return true
   } catch {
@@ -99,9 +135,16 @@ export function isExecutablePath(file: string, platform: NodeJS.Platform = proce
 }
 
 function windowsShimArtifact(file: string): string | null {
-  if (path.extname(file).toLowerCase() !== '.cmd') return null
+  const extension = path.extname(file).toLowerCase()
+  if (!['.cmd', '.ps1'].includes(extension)) return null
   try {
+    const stat = lstatSync(file)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) return null
     const source = readFileSync(file, 'utf8')
+    if (extension === '.ps1') {
+      const match = /\$basedir[\\/](node_modules[\\/]@raidiant[\\/]notifai[\\/]dist[\\/]main\.js)/i.exec(source)
+      return match?.[1] ? canonicalPath(path.join(path.dirname(file), match[1].replaceAll('\\', path.sep))) : null
+    }
     const match = /(?:%dp0%|%~dp0)?([^"\r\n]*node_modules[\\/]@raidiant[\\/]notifai[\\/]dist[\\/]main\.js)/i.exec(source)
     if (match?.[0] === undefined) return null
     const expanded = match[0]
@@ -129,8 +172,10 @@ function artifactForCommand(file: string, platform: NodeJS.Platform): string | n
 function artifactVersion(artifact: string | null): string | null {
   if (artifact === null) return null
   try {
+    const file = path.join(path.dirname(artifact), '..', 'package.json'), stat = lstatSync(file)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) return null
     const parsed: unknown = JSON.parse(
-      readFileSync(path.join(path.dirname(artifact), '..', 'package.json'), 'utf8'),
+      readFileSync(file, 'utf8'),
     )
     if (typeof parsed !== 'object' || parsed === null) return null
     const version = (parsed as { version?: unknown }).version
@@ -162,28 +207,114 @@ export function inspectCliInstallations(
   options: CliBinReadinessOptions = {},
 ): CliInstallationInspection {
   const runningArtifact = canonicalPath(options.runningArtifactPath ?? (buildIdentity() !== null ? process.execPath : process.argv[1]) ?? 'notifai')
+  const home = options.nativeHome ?? accountHome(env, platform), root = path.join(home, '.notifai')
   let native: ReturnType<typeof nativeInstallationIdentity> | null = null
-  try { native = nativeInstallationIdentity(accountHome(env, platform), platform === 'win32') } catch { /* Report unverified entries without inventing native identity. */ }
-  const entries = pathNotifaiEntries(withoutNpxLauncherPath(env, platform, runningArtifact), platform).map((command): CliPathEntry => {
+  try { native = nativeInstallationIdentity(home, platform === 'win32') } catch { /* Missing identity never establishes native ownership. */ }
+  const distribution = options.distribution ?? new Distribution(RELEASE_PUBLIC_KEYS)
+  const unverifiedAdapters = new Set<string>()
+  const checkAccess = options.checkAccess ?? (platform === 'win32'
+    ? (buildIdentity() !== null && process.platform === 'win32' ? npmAdapterWindowsAccess() : () => { throw new Error('Windows ownership proof is unavailable') })
+    : undefined)
+  const proofFor = (command: string, artifact: string | null) => {
+    const bin = path.dirname(command)
+    const candidates = new Set([
+      ...(artifact === null ? [] : [path.dirname(path.dirname(artifact))]),
+      path.join(bin, 'node_modules', '@raidiant', 'notifai'),
+      path.join(path.dirname(bin), 'lib', 'node_modules', '@raidiant', 'notifai'),
+      path.join(path.dirname(bin), '@raidiant', 'notifai'),
+    ])
+    for (const directory of candidates) {
+      if (!existsSync(path.join(directory, NPM_ADAPTER_MANIFEST)) && !existsSync(path.join(directory, NPM_ADAPTER_BIN))) continue
+      unverifiedAdapters.add(command)
+      try {
+        const proof = verifyNpmAdapterArtifact(directory, distribution, checkAccess)
+        const route = inspectNpmAdapterRoute(command, proof, { platform, ...(checkAccess ? { checkAccess } : {}) })
+        if (route) return { proof, route }
+      } catch { /* A marker only identifies a candidate, never grants trust. */ }
+    }
+    return null
+  }
+  const runningProof = proofFor(runningArtifact, runningArtifact)
+  const invokingProof = options.invokingNpmAdapterArtifact && path.isAbsolute(options.invokingNpmAdapterArtifact)
+    ? proofFor(options.invokingNpmAdapterArtifact, options.invokingNpmAdapterArtifact) : null
+  const launcherProof = runningProof ?? invokingProof
+  const inspectedEnv = launcherProof ? environmentForVerifiedAdapter(launcherProof.proof, env, { platform, ...(checkAccess ? { checkAccess } : {}) })
+    : buildIdentity() === null ? withoutNpxLauncherPath(env, platform, runningArtifact) : env
+  const domain = options.executionDomain ?? (options.inspectExecutionDomain ? inspectExecutionDomain(env, platform) : undefined)
+  const pathEntries = pathNotifaiEntries(inspectedEnv, platform)
+  const candidates = domain?.candidate_prefixes.flatMap(prefix => pathNotifaiEntries({ PATH: prefix }, platform)) ?? []
+  const entries = [...new Set([...pathEntries, ...candidates])].map((command): CliPathEntry => {
     // The stable command itself, or the installer's link to it in the User command directory.
-    const managed = native !== null && !lstatSync(native.command).isSymbolicLink() &&
+    const managed = native !== null && existsSync(native.command) && lstatSync(native.command).isFile() && !lstatSync(native.command).isSymbolicLink() &&
       sameLocalPath(canonicalPath(command), canonicalPath(native.command), platform)
     const artifact = managed ? native!.runtime : artifactForCommand(command, platform)
+    const adapter = managed ? null : proofFor(command, artifact)
+    const prefix = installPrefix(artifact, command, platform)
     return {
       command_path: command,
+      ...(domain ? { observed_in: pathEntries.includes(command) ? 'invoking_path' as const : 'app_storage_candidate' as const,
+        identity: physicalCliPath(command) } : {}),
       executable: isExecutablePath(command, platform),
-      artifact_path: artifact,
-      version: managed ? native!.version : artifactVersion(artifact),
-      install_prefix: installPrefix(artifact, command, platform),
+      artifact_path: adapter ? native?.runtime ?? null : artifact,
+      version: managed || adapter ? native?.version ?? null : artifactVersion(artifact),
+      install_prefix: adapter ? adapter.route.global_prefix : prefix,
+      kind: managed ? 'native' : adapter ? 'npm-adapter' : !existsSync(command) ? 'dangling' : prefix !== null ? 'legacy-node' : 'unknown',
+      ...(adapter ? { adapter: { version: adapter.proof.manifest.adapter_version,
+        source_revision: adapter.proof.manifest.native.source_revision, directory: adapter.proof.directory, route: adapter.route } } : {}),
+      ...(!adapter && unverifiedAdapters.has(command) ? { problem: 'npm adapter release, payload or command ownership could not be verified' } : {}),
     }
   })
+  const bootstrap = nativeBootstrapPending(home)
+  let recovery: string | undefined
+  if (bootstrap && native?.target && RELEASE_TARGETS.includes(native.target as ReleaseTarget)) {
+    try {
+      // Rare interrupted-bootstrap diagnosis: authenticate the staged bytes
+      // before recommending any executable. Normal command inspection does not
+      // hash runtime payloads or run a recovery operation.
+      const installation = new Installation({ root, target: native.target as ReleaseTarget,
+        distribution: distribution instanceof Distribution ? distribution : new Distribution(RELEASE_PUBLIC_KEYS) })
+      if (!installation.inspect().bootstrap_pending) throw new Error('Bootstrap identity changed')
+      const pending = installation.pendingRelease()
+      if (pending) recovery = nativeLifecycleCommand(pending.launcher, ['install', '--upgrade', '--version', pending.version,
+        '--channel', pending.channel, '--no-init', '--no-path', '--json'], platform)
+    } catch { /* An unverified executable is never recovery advice. */ }
+  }
   return {
     current: {
       artifact_path: runningArtifact,
       version: options.currentVersion === undefined ? packageVersion() : options.currentVersion,
     },
-    effective: entries.find((entry) => entry.executable) ?? null,
+    effective: entries.find((entry) => entry.executable && pathEntries.includes(entry.command_path)) ?? null,
+    ...(domain ? { execution_domain: domain } : {}),
     entries,
+    native,
+    transaction: { install_pending: localPathPresent(path.join(root, 'transaction.json')), uninstall_pending: !bootstrap && localPathPresent(path.join(root, 'uninstall.json')),
+      ...(bootstrap ? { bootstrap_pending: true as const } : {}), ...(recovery ? { recovery_command: recovery } : {}) },
+    update_owner: native === null ? null : 'native',
+    invoking_adapter: invokingProof ? { artifact_path: invokingProof.proof.executable,
+      version: invokingProof.proof.manifest.adapter_version, source_revision: invokingProof.proof.manifest.native.source_revision } : null,
+  }
+}
+
+function localPathPresent(file: string): boolean {
+  try { lstatSync(file); return true }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+}
+
+/** A native runtime beside the old npm application is an unfinished migration,
+ * even when this process's PATH already prefers native. Other live harnesses
+ * can retain their earlier PATH (or a virtualized view of the npm prefix).
+ * Verified npm adapters are routes to native, not competing installations. */
+export function nativeCoexistenceGap(inspection: CliInstallationInspection, platform: NodeJS.Platform): ReadinessState | null {
+  if (inspection.native === null || !inspection.entries.some(entry => entry.kind === 'legacy-node')) return null
+  return {
+    id: 'cli-bin', title: 'notifai command', status: 'gap', technical: inspection,
+    detail: 'native and legacy npm applications coexist; migration is incomplete',
+    remedy: {
+      by: 'user-here',
+      summary: 'Use the absolute native command in each existing Agent Session. Preserve pending work and legacy package files until their owners finish. Resolve the exact npm prefix in the affected application before cleanup; a new shell may have a different PATH or application-storage view. Verify ordinary command resolution and real hook activity in that session before calling migration complete.',
+      command: nativeLifecycleCommand(inspection.native.command, ['doctor', '--json'], platform),
+    },
   }
 }
 
@@ -194,7 +325,24 @@ export function cliBinReadiness(
 ): ReadinessState {
   const inspection = inspectCliInstallations(env, platform, options)
   const { current, effective, entries } = inspection
-  const updateCommand = buildIdentity() === null ? cliUpdateRecoveryCommand(cliUpdateChannel(current.version)) : 'notifai doctor --json'
+  const updateCommand = inspection.native ? nativeLifecycleCommand(inspection.native.command, ['doctor', '--json'], platform)
+    : buildIdentity() === null ? cliUpdateRecoveryCommand(cliUpdateChannel(current.version)) : 'notifai init'
+  if (inspection.transaction.bootstrap_pending) return {
+    id: 'cli-bin', title: 'notifai command', status: 'gap', technical: inspection,
+    detail: 'the first native upgrade is interrupted; its exact candidate must finish recovery',
+    remedy: { by: 'cli', summary: inspection.transaction.recovery_command ? 'resume the authenticated staged candidate'
+      : 'inspect the interrupted bootstrap; its candidate could not be authenticated',
+      ...(inspection.transaction.recovery_command ? { command: inspection.transaction.recovery_command } : {}) },
+  }
+  if (inspection.transaction.uninstall_pending || inspection.transaction.install_pending) return {
+    id: 'cli-bin', title: 'notifai command', status: 'gap', technical: inspection,
+    detail: inspection.transaction.uninstall_pending ? 'uninstall is pending; installation and ordinary work remain paused' : 'installation recovery is pending',
+    remedy: { by: 'user-here', summary: inspection.transaction.uninstall_pending ? 'finish the pending uninstall, or explicitly cancel it' : 'repair the pending installation',
+      command: inspection.native ? nativeLifecycleCommand(inspection.native.command,
+        inspection.transaction.uninstall_pending ? ['uninstall', '--json'] : ['update', '--repair', '--json'], platform) : updateCommand },
+  }
+  const coexistence = nativeCoexistenceGap(inspection, platform)
+  if (coexistence !== null) return coexistence
   if (effective === null && entries.length > 0) {
     return {
       id: 'cli-bin',
@@ -222,19 +370,18 @@ export function cliBinReadiness(
       id: 'cli-bin',
       title: 'notifai command',
       status: 'optional-gap',
+      technical: inspection,
       detail:
         'no `notifai` on PATH — this process runs, but a typed `notifai …` command will not be found',
       remedy: {
         by: 'user-here',
-        summary: 'install notifai globally so the command is on your PATH',
+        summary: inspection.native ? 'use the installed command and open a shell with its command directory on PATH' : 'install notifai globally so the command is on your PATH',
         command: updateCommand,
       },
     }
   }
 
-  const effectiveIsCurrent =
-    effective.artifact_path === current.artifact_path ||
-    (buildIdentity() === null && effective.version !== null && current.version !== null && effective.version === current.version)
+  const effectiveIsCurrent = effective.artifact_path !== null && sameLocalPath(effective.artifact_path, current.artifact_path, platform)
   if (!effectiveIsCurrent) {
     return {
       id: 'cli-bin',

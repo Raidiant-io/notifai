@@ -1,21 +1,37 @@
 import path from 'node:path'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { stateDir } from './config.js'
-import { managedInstallation } from './native-installation.js'
+import { managedInstallation, type IntegrationPublication } from './native-installation.js'
 import type { Installation } from './installation.js'
 import { findInstallations, findLegacyProjectInstallations } from './install-hooks.js'
 import { hooksUninstallCommand } from './commands-hook-install.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
 import { SkillInstallation } from './skill-installation.js'
+import { inspectCliInstallations, nativeLifecycleCommand, type CliBinReadinessOptions } from './cli-bin.js'
 
 export interface NativeUninstallFlags { json?: boolean; cancel?: boolean; finish?: boolean; installationId?: string; installationRoot?: string }
-interface Seams { installation?: Installation; removeWiring?: () => { ok: boolean; conflicts: string[] }; sessions?: string }
-function removeOwnedWiring(deps: CommandDeps, stateRoots: string[]): { ok: boolean; conflicts: string[] } {
+interface Seams { installation?: Installation; removeWiring?: () => { ok: boolean; conflicts: string[] }; sessions?: string; inspection?: CliBinReadinessOptions }
+function removeOwnedWiring(deps: CommandDeps, stateRoots: string[], installation: Installation, uninstallToken: string): { ok: boolean; conflicts: string[] } {
   const conflicts: string[] = []
+  // The existing uninstall barrier excludes new setup. Persist each external
+  // remover as well, so a dead uninstall caller cannot forget its host work.
+  const publication: IntegrationPublication = (action, scope) => {
+    if (scope !== undefined) installation.assertIntegrationScopeAvailable(scope)
+    return action()
+  }
+  publication.host = (input, action) => {
+    const uninstall = installation.uninstallState(), active = installation.inspect().active
+    if (!uninstall || !active) throw new Error('Uninstall authority is unavailable')
+    const operation = installation.beginIntegrationOperation(uninstall.generation, input,
+      { installation_id: uninstall.installationId, build: active.active }, uninstallToken)
+    const result = action()
+    installation.completeIntegrationOperation(operation)
+    return result
+  }
   const quiet = { ...deps, io: { ...deps.io, confirm: deps.io.confirm.bind(deps.io), openUrl: deps.io.openUrl.bind(deps.io),
     out() {}, err(message: string) { conflicts.push(message) } } }
   for (const harness of HOOK_INSTALLABLE_HARNESSES) {
-    if (hooksUninstallCommand(quiet, { harness }) !== EXIT.ok && conflicts.length === 0) conflicts.push(`Could not remove ${harness} wiring`)
+    if (hooksUninstallCommand(quiet, { harness }, publication) !== EXIT.ok && conflicts.length === 0) conflicts.push(`Could not remove ${harness} wiring`)
   }
   const remaining = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform, conflicts)
   remaining.push(...findLegacyProjectInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform, conflicts))
@@ -37,6 +53,13 @@ export async function nativeUninstallCommand(deps: CommandDeps, flags: NativeUni
     return result['ok'] === true ? EXIT.ok : EXIT.failed
   }
   try {
+    const platform = deps.hookPlatform ?? process.platform
+    const routes = inspectCliInstallations(deps.env, platform, { nativeHome: deps.hookAdapterHome, ...seams.inspection }).entries
+    const adapterCleanup = [...new Set(routes.filter(entry => entry.kind === 'npm-adapter' && entry.install_prefix !== null)
+      .map(entry => entry.install_prefix!))].map(prefix => ({ package_manager: 'npm',
+      args: ['uninstall', '--global', '--prefix', prefix, '@raidiant/notifai'],
+      requires: 'Finish native uninstall before removing this npm launcher. npm removes only the launcher, not the native runtime.',
+      command: nativeLifecycleCommand('npm', ['uninstall', '--global', '--prefix', prefix, '@raidiant/notifai'], platform) }))
     if (flags.finish && flags.cancel) throw new Error('Choose either --finish or --cancel')
     if (!flags.finish && (flags.installationId || flags.installationRoot)) throw new Error('Recovery identity is only valid with --finish')
     if (flags.finish && (!flags.installationId || !flags.installationRoot || !path.isAbsolute(flags.installationRoot) || path.basename(flags.installationRoot) !== '.notifai')) {
@@ -46,7 +69,7 @@ export async function nativeUninstallCommand(deps: CommandDeps, flags: NativeUni
     const sessions = seams.sessions ?? path.join(stateDir(deps.env), 'sessions')
     if (flags.finish) {
       const result = installation.finishUninstall(flags.installationId!, sessions)
-      return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result }, 'Windows installation cleanup finished.')
+      return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result, adapter_cleanup: adapterCleanup }, 'Windows installation cleanup finished.')
     }
     const problems: string[] = []
     const wiring = seams.removeWiring || flags.cancel ? [] : findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform, problems)
@@ -79,9 +102,9 @@ export async function nativeUninstallCommand(deps: CommandDeps, flags: NativeUni
     if (!before?.planned && gate.status !== 'removing') return emit({ ok: false, ...gate,
       recovery_command: 'notifai uninstall --json', cancel_command: 'notifai uninstall --cancel --json' },
     'Notifai is waiting for its running commands to exit. Retry uninstall when they finish, or cancel it.')
-    const result = installation.completeUninstall(begun.token, sessions, seams.removeWiring ?? (() => removeOwnedWiring(deps, begun.owners.stateRoots)))
-    return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result }, result.status === 'removed'
-      ? 'Notifai was uninstalled. Your configuration and session history were preserved.'
+    const result = installation.completeUninstall(begun.token, sessions, seams.removeWiring ?? (() => removeOwnedWiring(deps, begun.owners.stateRoots, installation, begun.token)))
+    return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result, adapter_cleanup: adapterCleanup }, result.status === 'removed'
+      ? `Notifai was uninstalled. Your configuration and session history were preserved.${adapterCleanup.length ? ` Remove the remaining npm launcher with: ${adapterCleanup.map(item => item.command).join('; ')}` : ''}`
       : result.recovery_command ? 'Run this PowerShell command after this command exits to finish removing Notifai.'
         : `Uninstall remains incomplete: ${result.conflicts?.join('; ') ?? result.status}`)
   } catch (error) {

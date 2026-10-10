@@ -1,10 +1,14 @@
+import { stampIntegrationSource, INTEGRATION_REVISION_PLACEHOLDER } from './integration-revision.js'
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import { accountHome } from './platform.js'
+import { createHash } from 'node:crypto'
+import { atomicWriteFileSync } from './atomic-file.js'
+import type { IntegrationPublication } from './native-installation.js'
 
 export const HERMES_PLUGIN_ID = 'notifai'
 export const HERMES_PLUGIN_MARKER = '# notifai managed hermes plugin v1'
@@ -14,9 +18,9 @@ export function hermesPluginDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(home, 'plugins', HERMES_PLUGIN_ID)
 }
 
-export function hermesPluginSource(adapterPath: string, nodePath?: string): string {
+export function hermesPluginSource(adapterPath: string, nodePath?: string, integrationScope = ''): string {
   const command = nodePath === undefined ? [adapterPath] : [nodePath, adapterPath]
-  return `${HERMES_PLUGIN_MARKER}
+  return stampIntegrationSource(`${HERMES_PLUGIN_MARKER}
 """Notifai activation and Session Attendant for a local Hermes CLI session."""
 import atexit
 import json
@@ -26,6 +30,7 @@ import subprocess
 import threading
 import time
 
+NOTIFAI_INTEGRATION_REVISION = "${INTEGRATION_REVISION_PLACEHOLDER}"
 COMMAND = ${JSON.stringify(command)}
 _attendants = {}
 _lock = threading.RLock()
@@ -39,7 +44,7 @@ def _run_attendant(ctx, session_id, cwd, stopped):
     wall_anchor = time.time_ns()
     mono_anchor = time.monotonic_ns()
     try:
-        proc = subprocess.Popen(COMMAND + ["hook", "hermes-attend", "--owner", "notifai", "--harness", "hermes"],
+        proc = subprocess.Popen(COMMAND + ["hook", "hermes-attend", "--owner", "notifai", "--harness", "hermes", "--integration-revision", NOTIFAI_INTEGRATION_REVISION],
                                 cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, bufsize=1)
         with _lock:
@@ -185,7 +190,7 @@ def _activation(info):
     envelope = {"session_id": session_id, "cwd": cwd,
                 "hook_event_name": "SubagentStart" if worker else "SessionStart"}
     try:
-        result = subprocess.run(COMMAND + ["hook", event, "--owner", "notifai", "--harness", "hermes"],
+        result = subprocess.run(COMMAND + ["hook", event, "--owner", "notifai", "--harness", "hermes", "--integration-revision", NOTIFAI_INTEGRATION_REVISION],
                                 input=json.dumps(envelope), text=True, capture_output=True,
                                 timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
@@ -203,7 +208,7 @@ def register(ctx):
     ctx.register_hook("on_session_finalize", lambda session_id=None, **_: _stop_attendant(str(session_id or "")))
     ctx.register_hook("on_session_reset", lambda session_id=None, **_: _stop_all())
     atexit.register(_stop_all)
-`
+`, integrationScope)
 }
 
 export function isOurHermesPlugin(dir: string): boolean {
@@ -256,14 +261,19 @@ export function preflightHermesPlugin(env: NodeJS.ProcessEnv = process.env): voi
   }
 }
 
-export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv = process.env, nodePath?: string): string {
+export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv = process.env, nodePath?: string,
+  publish: IntegrationPublication = action => action()): string {
   const installed = hermesPluginDir(env)
   preflightHermesPlugin(env)
-  const source = hermesPluginSource(adapterPath, nodePath)
-  if (existsSync(installed) && readFileSync(path.join(installed, '__init__.py'), 'utf8') === source) {
-    hermesCommand(['enable', HERMES_PLUGIN_ID], env)
+  const source = hermesPluginSource(adapterPath, nodePath, path.join(installed, '__init__.py'))
+  if (existsSync(installed)) {
+    publish(() => refreshHermesPlugin(adapterPath, env, nodePath), installed)
+    const enable = () => { hermesCommand(['enable', HERMES_PLUGIN_ID], env); return verifyInstallation() }
+    if (publish.host) publish.host({ scope: installed, operation: 'enable' }, enable)
+    else enable()
   } else {
     const temp = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-plugin-'))
+    let started = false, completed = false
     try {
       writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai activation and Session Attendant"\nprovides_hooks:\n  - on_session_finalize\n  - on_session_reset\n')
       writeFileSync(path.join(temp, '__init__.py'), source)
@@ -274,29 +284,87 @@ export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv 
       git(['init', '-q'])
       git(['add', 'plugin.yaml', '__init__.py'])
       git(['-c', 'user.name=Notifai', '-c', 'user.email=notifai@example.invalid', 'commit', '-qm', 'plugin'])
-      hermesCommand(['install', pathToFileURL(temp).href, '--enable', '--no-deps', ...(existsSync(installed) ? ['--force'] : [])], env)
+      const install = () => {
+        started = true
+        hermesCommand(['install', pathToFileURL(temp).href, '--enable', '--no-deps'], env)
+        verifyInstallation()
+      }
+      if (publish.host) publish.host({ scope: installed, operation: 'install', revision: createHash('sha256').update(source).digest('hex'), source: temp }, install)
+      else install()
+      completed = true
     } finally {
-      rmSync(temp, { recursive: true, force: true })
+      // A timed-out or orphaned host may still be reading its prepared source.
+      // The native setup receipt names it for scoped recovery.
+      if (!started || completed) rmSync(temp, { recursive: true, force: true })
     }
   }
-  if (!isOurHermesPlugin(installed) || !hermesPluginListed(env)) {
-    throw new Error('Hermes did not report an enabled Notifai plugin after installation')
+  return verifyInstallation()
+  function verifyInstallation(): string {
+    if (!isOurHermesPlugin(installed) || readFileSync(path.join(installed, '__init__.py'), 'utf8') !== source || !hermesPluginListed(env)) {
+      throw new Error('Hermes did not report the intended enabled Notifai plugin after installation')
+    }
+    return installed
   }
+}
+
+/** Refresh only the recognized owned module. The host's install receipt,
+ * enablement and already-loaded Python module remain under Hermes authority. */
+export function refreshHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv, nodePath?: string): string {
+  const installed = hermesPluginDir(env)
+  if (!isOurHermesPlugin(installed)) throw new Error('The owned Hermes plugin is unavailable; preserve its configuration')
+  const file = path.join(installed, '__init__.py'), before = readFileSync(file, 'utf8')
+  const next = hermesPluginSource(adapterPath, nodePath, path.join(installed, '__init__.py'))
+  if (next !== before) atomicWriteFileSync(file, next, { requireCurrentUserOwner: true,
+    expectedContentsSha256: createHash('sha256').update(before).digest('hex') })
   return installed
 }
 
-export function uninstallHermesPlugin(env: NodeJS.ProcessEnv = process.env): boolean {
+export function uninstallHermesPlugin(env: NodeJS.ProcessEnv = process.env, publish: IntegrationPublication = action => action()): boolean {
   const installed = hermesPluginDir(env)
+  publish(() => {}, installed)
   if (!existsSync(installed)) return false
   if (!isOurHermesPlugin(installed)) throw new Error('Hermes plugin named notifai is foreign; leave it unchanged')
-  hermesCommand(['remove', HERMES_PLUGIN_ID], env)
-  if (existsSync(installed)) throw new Error('Hermes still has the Notifai plugin after removal')
-  return true
+  const remove = () => {
+    hermesCommand(['remove', HERMES_PLUGIN_ID], env)
+    if (existsSync(installed)) throw new Error('Hermes still has the Notifai plugin after removal')
+    return true
+  }
+  return publish.host ? publish.host({ scope: installed, operation: 'remove' }, remove) : remove()
 }
 
 export function hermesPluginCurrent(adapterHome: string | undefined, env: NodeJS.ProcessEnv): boolean {
   const dir = hermesPluginDir(env)
   const target = inspectHookAdapter(adapterHome).target
   return isOurHermesPlugin(dir) && readFileSync(path.join(dir, '__init__.py'), 'utf8') ===
-    hermesPluginSource(hookAdapterPath(adapterHome), process.platform === 'win32' && target?.kind !== 'native' ? target?.execPath : undefined)
+    hermesPluginSource(hookAdapterPath(adapterHome), process.platform === 'win32' && target?.kind !== 'native' ? target?.execPath : undefined, path.join(dir, '__init__.py'))
+}
+
+/** Admit the loaded native bridge once. A refresh replaces only Python bytes;
+ * it must not retire that bridge. Removal or replacement of the owned plugin
+ * directory/manifest still revokes ownership. This is a lifetime observation,
+ * never permission to load the replacement module into this process. */
+export function retainedHermesPlugin(adapterHome: string | undefined, env: NodeJS.ProcessEnv): () => boolean {
+  const directory = hermesPluginDir(env)
+  const inspect = () => {
+    if (process.platform === 'win32' || typeof process.getuid !== 'function') throw new Error('Unproven Hermes plugin ownership')
+    const dir = lstatSync(directory), manifest = lstatSync(path.join(directory, 'plugin.yaml')),
+      module = lstatSync(path.join(directory, '__init__.py'))
+    if (!dir.isDirectory() || dir.isSymbolicLink() || !manifest.isFile() || manifest.isSymbolicLink() ||
+        !module.isFile() || module.isSymbolicLink() || manifest.size > 64 * 1024 || module.size > 256 * 1024 ||
+        [dir, manifest, module].some(stat => stat.uid !== process.getuid!() || (stat.mode & 0o022) !== 0) ||
+        !isOurHermesPlugin(directory)) throw new Error('Hermes plugin ownership changed')
+    return { path: realpathSync(directory), directory: `${dir.dev}:${dir.ino}`, manifest: `${manifest.dev}:${manifest.ino}`,
+      digest: createHash('sha256').update(readFileSync(path.join(directory, 'plugin.yaml'))).digest('hex') }
+  }
+  try {
+    const before = inspect()
+    if (!hermesPluginCurrent(adapterHome, env)) return () => false
+    const stillOwned = () => {
+      try {
+        const now = inspect()
+        return now.path === before.path && now.directory === before.directory && now.manifest === before.manifest && now.digest === before.digest
+      } catch { return false }
+    }
+    return stillOwned() ? stillOwned : () => false
+  } catch { return () => false }
 }

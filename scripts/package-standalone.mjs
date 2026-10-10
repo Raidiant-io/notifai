@@ -81,7 +81,7 @@ export async function packageStandalone({ directory, materials, output }) {
   const artifact = { target: build.target, filename: `notifai-${build.version}-${build.target.slice(4)}.${extension ? 'zip' : 'tar.gz'}`,
     bytes: archive.length, sha256: hash(archive), runtime_sha256: hash(runtime), launcher_sha256: hash(launcher),
     materials: materialEntries.map(([name, bytes]) => ({ path: name, bytes: bytes.length, sha256: hash(bytes) })) }
-  const metadata = { schema: 1, build, artifact, check_sha256: hash(checkBytes) }
+  const metadata = { schema: 1, build, artifact, capabilities: check.capabilities, check_sha256: hash(checkBytes) }
   mkdirSync(output) // Exclusive destination; never replace a previous candidate.
   try {
     writeFileSync(path.join(output, artifact.filename), archive, { flag: 'wx', mode: 0o600 })

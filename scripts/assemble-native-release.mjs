@@ -25,7 +25,7 @@ const directory = file => { const stat = lstatSync(file); assert.ok(stat.isDirec
 const archiveChecks = ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation',
   'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path']
 
-export async function assembleNativeRelease({ input, output, version, sourceRevision, materialsPolicy, ...signing }) {
+export async function assembleNativeRelease({ input, output, version, sourceRevision, materialsPolicy, adapterManifest, adapterNotice, ...signing }) {
   directory(input)
   const roots = RELEASE_TARGETS.map(target => {
     const root = path.join(input, target)
@@ -33,7 +33,7 @@ export async function assembleNativeRelease({ input, output, version, sourceRevi
     return root
   })
   const candidates = roots.map(root => json(path.join(root, 'archive', 'artifact.json')))
-  const signedInventory = signReleaseInventory({ version, sourceRevision, materialsPolicy, candidates, ...signing })
+  const signedInventory = signReleaseInventory({ version, sourceRevision, materialsPolicy, adapterManifest, adapterNotice, candidates, ...signing })
   const distribution = new Distribution(signing.trustedKeys)
   const inventory = distribution.verifyInventory(signedInventory)
   // Verify receipts before creating any release output. Each is tied to the
@@ -45,6 +45,8 @@ export async function assembleNativeRelease({ input, output, version, sourceRevi
     assert.equal(hash(checkBytes), candidate.check_sha256, 'Executable receipt changed after packaging')
     assert.equal(check.ok, true, 'Native executable verification failed')
     assert.deepEqual(check.build, candidate.build, 'Native executable build differs')
+    assert.deepEqual(check.capabilities, candidate.capabilities, 'Native executable capabilities differ')
+    assert.equal(check.capabilities?.local_continuity, inventory.local_continuity.contract, 'Native executable continuity differs')
     assert.equal(check.launcher_sha256, artifact.launcher_sha256)
     assert.equal(check.runtime_sha256, artifact.runtime_sha256)
     const installed = json(path.join(root, 'archive-check.json'))
@@ -86,15 +88,18 @@ export async function assembleNativeRelease({ input, output, version, sourceRevi
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const { values } = parseArgs({ options: { input: { type: 'string' }, output: { type: 'string' }, version: { type: 'string' },
-    'expected-sha': { type: 'string' }, 'key-id': { type: 'string' } } })
+    'expected-sha': { type: 'string' }, 'key-id': { type: 'string' }, 'adapter-manifest': { type: 'string' } } })
   assert.ok(values.input && values.output && values.version && values['expected-sha'] && values['key-id'], 'Explicit input/output/version/source/key identity is required')
   assert.ok(Object.keys(RELEASE_PUBLIC_KEYS).length, 'Production release trust is not configured')
   assert.ok(process.env.NOTIFAI_RELEASE_SIGNING_KEY, 'Protected release signing key is unavailable')
   const privateKey = createPrivateKey(process.env.NOTIFAI_RELEASE_SIGNING_KEY)
   delete process.env.NOTIFAI_RELEASE_SIGNING_KEY
+  assert.ok(values['adapter-manifest'], 'Release-bound npm manifest is required')
+  const adapterManifest = readFileSync(values['adapter-manifest'], 'utf8')
+  const adapterNotice = readFileSync(path.join(repositoryRoot, 'apps/cli/npm/SHIM-NOTICE'), 'utf8')
   const materialsPolicy = json(path.join(repositoryRoot, 'distribution', 'release-materials.json'))
   const result = await assembleNativeRelease({ input: path.resolve(values.input), output: path.resolve(values.output),
     version: values.version, sourceRevision: values['expected-sha'], keyId: values['key-id'], privateKey,
-    trustedKeys: RELEASE_PUBLIC_KEYS, materialsPolicy })
+    trustedKeys: RELEASE_PUBLIC_KEYS, materialsPolicy, adapterManifest, adapterNotice })
   process.stdout.write(JSON.stringify(result) + '\n')
 }

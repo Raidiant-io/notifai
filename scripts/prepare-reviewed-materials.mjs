@@ -5,11 +5,12 @@ import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { parseNpmAdapterManifest, NPM_ADAPTER_MANIFEST } from '../apps/cli/dist/npm-adapter-contract.js'
 import { RELEASE_TARGETS } from '../apps/cli/dist/release-distribution.js'
 import { releaseMaterialPath } from '../apps/cli/dist/release-path.js'
 import { repositoryRoot } from './cross-platform.mjs'
 
-export function prepareReviewedMaterials({ target, output, sourceRoot = path.join(repositoryRoot, 'distribution') }) {
+export function prepareReviewedMaterials({ target, output, sourceRoot = path.join(repositoryRoot, 'distribution'), adapterManifest, adapterNotice }) {
   const policy = JSON.parse(readFileSync(path.join(sourceRoot, 'release-materials.json'), 'utf8'))
   assert.ok(policy.schema === 1 && policy.status === 'approved' && policy.runtime === 'bun-1.4.2', 'Reviewed publication materials are not ready')
   assert.ok(RELEASE_TARGETS.includes(target), 'Unknown material target')
@@ -30,6 +31,14 @@ export function prepareReviewedMaterials({ target, output, sourceRoot = path.joi
     assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, 'Publication material hash differs')
     files.push([entry.path, bytes])
   }
+  if (adapterManifest !== undefined) {
+    parseNpmAdapterManifest(adapterManifest)
+    assert.ok(!names.has(NPM_ADAPTER_MANIFEST), 'Reviewed material collides with adapter manifest')
+    files.push([NPM_ADAPTER_MANIFEST, adapterManifest])
+    assert.ok(adapterNotice, 'npm shim redistribution notice is required')
+    assert.ok(!names.has('licenses/npm-cmd-shim.txt'), 'Reviewed material collides with npm notice')
+    files.push(['licenses/npm-cmd-shim.txt', adapterNotice])
+  }
   mkdirSync(output, { mode: 0o700 })
   try {
     for (const [name, bytes] of files) {
@@ -41,7 +50,9 @@ export function prepareReviewedMaterials({ target, output, sourceRoot = path.joi
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const { values } = parseArgs({ options: { target: { type: 'string' }, output: { type: 'string' } } })
+  const { values } = parseArgs({ options: { target: { type: 'string' }, output: { type: 'string' }, 'adapter-manifest': { type: 'string' } } })
   assert.ok(values.output, 'An exclusive material output directory is required')
-  prepareReviewedMaterials(values)
+  assert.ok(values['adapter-manifest'], 'The release-bound npm adapter manifest is required')
+  prepareReviewedMaterials({ ...values, adapterManifest: readFileSync(values['adapter-manifest'], 'utf8'),
+    adapterNotice: readFileSync(path.join(repositoryRoot, 'apps/cli/npm/SHIM-NOTICE'), 'utf8') })
 }

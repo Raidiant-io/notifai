@@ -60,6 +60,7 @@ run(values.bun, ['build', '--compile', `--target=${values.target}`,
   '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig',
   '--no-compile-autoload-package-json', '--no-compile-autoload-tsconfig',
   '--asset=apps/cli/dist/skill-source',
+  '--asset=apps/cli/CHANGELOG.md',
   '--define', `NOTIFAI_COMPILED_BUILD=${JSON.stringify(identity)}`,
   'apps/cli/src/main.ts', '--outfile', output])
 writeFileSync(`${output}.build.json`, `${JSON.stringify(identity, null, 2)}\n`)

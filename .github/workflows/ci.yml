@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      windows_access_only:
+        description: Focused native ACL checks only; never release evidence
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,7 +26,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-access:
+    if: ${{ inputs.windows_access_only }}
+    uses: ./.github/workflows/windows-access.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
   scope:
+    if: ${{ !inputs.windows_access_only }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
@@ -74,7 +85,7 @@ jobs:
 
   gates:
     needs: scope
-    if: ${{ always() && !inputs.standalone_only }}
+    if: ${{ always() && !inputs.standalone_only && !inputs.windows_access_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -140,11 +151,8 @@ jobs:
       - name: Verify release metadata and package contents
         run: pnpm check:release
 
-      - name: Verify registry-shaped packed installation
-        run: pnpm check:packed
-
-      - name: Verify packed skill installer when the adapter, pin, or bundle changed
-        run: pnpm check:packed-skill-smoke -- --if-changed
+      - name: Verify signed npm artifact validation tooling
+        run: node --test scripts/verify-packed-install.test.mjs
 
       - name: Verify public provider posture
         env:
@@ -220,8 +228,13 @@ jobs:
             --testNamePattern "Windows Claude"
           pnpm --filter @raidiant/notifai test -- \
             src/process-identity.test.ts src/claude-wake.test.ts
-      - name: Verify the packed CLI through native Windows shells
-        run: pnpm check:packed
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      - name: Verify signed npm artifact validation on Windows
+        shell: bash
+        run: node --test scripts/verify-packed-install.test.mjs scripts/windows-npm-process.test.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20.12.0'
@@ -272,8 +285,13 @@ jobs:
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
-      - name: Verify the packed CLI through native Windows shells
-        run: pnpm check:packed
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: arm64
+      - name: Verify signed npm artifact validation on Windows
+        shell: bash
+        run: node --test scripts/verify-packed-install.test.mjs scripts/windows-npm-process.test.mjs
 
   standalone:
     needs: scope

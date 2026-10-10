@@ -70,6 +70,8 @@ export interface CommandSpinner {
 }
 
 export interface CommandDeps {
+  /** Ephemeral, untrusted npm invocation locator; never forwarded or persisted. */
+  invokingNpmAdapterArtifact?: string
   io: CommandIo
   store: CredentialStore
   env: NodeJS.ProcessEnv

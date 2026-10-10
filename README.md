@@ -24,9 +24,38 @@ depends on private code. `docs/BOUNDARY.md` states the policy and
 
 ## Using it
 
-Install the native CLI using the [OS installation instructions](skills/notifai/references/installation.md),
-then let `init` coordinate the setup. The native CLI needs no Node or npm.
-Choose the beta channel explicitly while native distribution is beta-only.
+Use the native installer for your computer; it installs Notifai and starts setup.
+No Node.js or npm needed.
+
+```sh
+# macOS / Linux / WSL
+curl -fsSL https://notifai.sh/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+irm https://notifai.sh/install.ps1 | iex
+```
+
+Setup defaults to QR approval with your signed-in Companion App; notification
+and browser approval are selectable alternatives. Run `notifai init` to resume.
+See [installation and migration](skills/notifai/references/installation.md) for agent-safe script inspection,
+platform prerequisites, channel selection and legacy npm migration.
+
+Optional Node/npm launcher, once its replacement package and matching native
+release are verified as published:
+
+```sh
+npx --yes @raidiant/notifai@latest init
+# Or: npm install -g @raidiant/notifai, then notifai init
+```
+
+Requires Node.js 20.12 or newer for this launcher. Notifai installs its own native
+runtime. Use `notifai update` for runtime updates. npm updates/removes only the
+launcher; `notifai uninstall` removes the runtime after its safety checks.
+Existing native versions and channels survive launcher changes. `@version`
+selects launcher code, not a command to replace an existing runtime.
+
 Run `notifai` with
 no arguments later to open the interactive app: status at a glance, a test
 notification, your devices, and every setting with an explanation of what it
@@ -189,10 +218,9 @@ failure.
 
 ## Development
 
-The optional standalone bootstrap source is `@raidiant/notifai-install`
-<!--x-release-please-start-installer-->0.1.0<!--x-release-please-end-->.
-It is not published yet. See [standalone distribution](docs/STANDALONE.md) for
-candidate installation routes and the native update policy.
+The CLI source builds both the native product and the optional same-name npm
+launcher artifact. See [standalone distribution](docs/STANDALONE.md) for the
+candidate lifecycle contract; candidate documentation does not prove publication.
 
 Requires Node >= 20.12 and pnpm. Release evidence runs on Node 24.
 

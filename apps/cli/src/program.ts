@@ -56,6 +56,9 @@ import { buildIdentity } from './distribution.js'
 import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
 import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
 import { shippedSkillBundle } from './skill-integrity.js'
+import { installedChangelog } from './update-handoff.js'
+import { LOCAL_CONTINUITY } from './local-continuity.js'
+import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -149,6 +152,8 @@ export interface BuildProgramOptions {
   runners?: Partial<ProgramRunners>
   /** Logging starts only after a compiled command is admitted. */
   beforeAction?: (admission: NativeAdmission) => void
+  /** Process seam for the pre-action stable-launch race only. */
+  retryNativeSelection?: typeof retryNativeSelection
 }
 
 export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {}): Command {
@@ -176,9 +181,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // it. Without this, adding that default would silently break
     // `notifai help send` for everyone who reaches for it before `--help`.
     .helpCommand(true)
-    .hook('preAction', (_program, actionCommand) => {
+    .hook('preAction', async (_program, actionCommand) => {
       try { admission = admitNativeCommand(actionCommand, deps.env) }
       catch (error) {
+        if (error instanceof NativeSelectionChanged) {
+          try {
+            const code = await (options.retryNativeSelection ?? retryNativeSelection)(error, process.argv.slice(2), deps)
+            exit(code)
+            return
+          } catch (retryError) {
+            // The process seam failed to launch. No fallback to this obsolete
+            // action is safe; retain the ordinary admission failure path.
+            if (options.exit) throw retryError
+            error = retryError
+          }
+        }
         const message = error instanceof Error ? error.message : String(error)
         if (actionCommand.opts()['json'] === true) deps.io.out(JSON.stringify({ ok: false, code: 'native_command_not_admitted', message }))
         else deps.io.err(message)
@@ -215,13 +232,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action((options: { json?: boolean }) => {
       const identity = buildIdentity()
       const skill = shippedSkillBundle(packageVersion() ?? undefined)
+      const changelog = installedChangelog(packageVersion())
       const processIdentity = currentProcessIdentity()
       const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
-      const result = { ok: identity !== null && skill.ok && processVerified, build: identity, processVerified,
+      const result = { ok: identity !== null && skill.ok && changelog.available && processVerified, build: identity, processVerified,
+        changelog,
+        capabilities: { npm_adapter_routes: 1, local_continuity: LOCAL_CONTINUITY },
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)
-        : result.ok ? `Executable and bundled skill verified (${identity?.version})`
+        : result.ok ? `Executable, bundled skill and changelog verified (${identity?.version})`
           : 'Standalone executable verification failed')
       exit(result.ok ? 0 : 1)
     })
@@ -319,10 +339,19 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable installation and setup report; never prompts')
     .option('--directory <directory>', 'directory containing the verified release files (default: this executable directory)')
     .option('--inventory <file>', 'signed release inventory (default: inventory.json beside the release)')
-    .option('--migrate-npm', 'stage native files while preserving one identified legacy npm installation; report its required cleanup')
+    .option('--migrate-npm', 'stage native files while preserving one identified legacy npm installation; report its separate repair requirements')
+    .option('--recover-integration <token>', 'inspect or release one interrupted local Hermes publication reservation; preserves all plugin files')
+    .option('--quiescence <file>', 'operator-observed local host publication pause for integration recovery')
+    .option('--prepare', 'with --migrate-npm, prepare a signed Windows npm repair without replacing the old package')
+    .option('--scope <file>', 'actual affected-shell observation for npm repair preparation')
+    .option('--node <file>', 'administrator-installed Windows Node executable for npm repair')
+    .option('--artifact <file>', 'npm adapter archive authenticated by the selected native inventory')
+    .option('--resume <directory>', 'resume the exact prepared npm repair operation')
+    .option('--confirm <digest>', 'confirm the exact assessed repair operation; required readiness is rechecked')
     .option('--source <source>', 'bootstrap route: shell, powershell, npm or manual', 'manual')
     .option('--channel <channel>', 'stable or beta; reruns keep the existing channel unless explicitly requested')
     .option('--version <version>', 'require this exact application version')
+    .option('--upgrade', 'bootstrap a compatible update using this verified candidate; requires exact version, channel, no-init and no-path')
     .option('--shell <shell>', 'selected POSIX shell for PATH setup (default: SHELL)')
     .option('--no-path', 'skip persistent PATH setup; use the reported absolute command')
     .option('--no-init', 'install the runtime without starting account or harness setup')
@@ -347,7 +376,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable output')
     .action(async (opts: { json?: boolean }) => {
       if (admission === 'diagnostic') {
-        const report = portableNativeReport(deps.env)
+        const report = portableNativeReport(deps.env, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact })
         deps.io.out(opts.json ? JSON.stringify(report) : String(report['message']))
         exit(1)
         return
@@ -791,7 +820,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // checkout wrote it.
     .option('--owner <name>', 'internal ownership marker')
     .option('--harness <name>', 'internal harness output adapter')
-    .action(async (event: string, opts: { harness?: string }) => {
+    .option('--integration-revision <sha256>', 'internal loaded-definition revision')
+    .action(async (event: string, opts: { harness?: string; integrationRevision?: string }) => {
       if (event === 'hermes-attend' && opts.harness === 'hermes') {
         const { hermesAttendCommand } = await import('./hermes-attendant.js')
         exit(await hermesAttendCommand(deps, process.stdin, process.stdout))
@@ -809,6 +839,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
           ? async () => settlementInput
           : () => readStdinWithTimeout(),
         harness,
+        opts.integrationRevision,
       ))
     })
 

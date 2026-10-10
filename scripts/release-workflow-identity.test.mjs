@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import {readFileSync, readdirSync} from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import {existsSync, readFileSync, readdirSync} from 'node:fs'
 import test from 'node:test'
 import {parse} from 'yaml'
 import {verifyReleasePleaseOutput} from './verify-release-please-output.mjs'
@@ -75,8 +76,7 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
     'pnpm -r typecheck',
     'pnpm lint',
     'pnpm check:release',
-    'pnpm check:packed',
-    'pnpm check:packed-skill-smoke -- --if-changed',
+    'node --test scripts/verify-packed-install.test.mjs',
     'commitlint',
   ]) assert.match(gates, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')))
 
@@ -87,7 +87,7 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
     const windows = ciWorkflow.jobs[id].steps.map(step => step.run ?? '').join('\n')
     assert.match(windows, /src\/credentials\.test\.ts/u)
     assert.match(windows, /src\/install-hooks\.test\.ts/u)
-    assert.match(windows, /pnpm check:packed/u)
+    assert.match(windows, /verify-packed-install\.test\.mjs/u)
     assert.doesNotMatch(windows, /typecheck|pnpm lint|check:release/u)
   }
 })
@@ -146,6 +146,11 @@ test('native finalization and publication retain exact artifacts across independ
   assert.ok(publishSteps.indexOf('assemble-native-release') < publishSteps.indexOf('publish-native-release.mjs'))
   assert.ok(publishSteps.indexOf('check-live-server-contract') < publishSteps.indexOf('publish-native-release.mjs'))
   assert.equal(nativePublish.on.workflow_dispatch.inputs.channel.default, 'none')
+  assert.equal(nativePublish.on.workflow_dispatch.inputs.mode.default, 'assemble')
+  assert.equal(nativePublish.jobs.publish.steps.find(step => step.run?.includes('assemble-native-release')).if, "inputs.mode == 'assemble'")
+  assert.equal(nativePublish.jobs.publish.steps.find(step => step.name === 'Restore the retained signed bundle without rebuilding or resigning').if, "inputs.mode != 'assemble'")
+  assert.match(publishSteps, /--kind assembled/)
+  assert.match(publishSteps, /native-release-bundle-\$EXPECTED_SHA/)
 })
 
 test('release-please is explicit, exact-main guarded, and uses a verified predecessor', () => {
@@ -170,7 +175,6 @@ test('release refs dispatch CI and publication at one exact SHA', () => {
   assert.match(release, /if \[ "\$returned_sha" != "\$expected_sha" \]/u)
   assert.match(release, /dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/u)
   assert.match(release, /dispatch_workflow prepare-native-release\.yml "\$CLI_TAG" "\$CLI_SHA" "\$CANDIDATE_RUN_ID"/u)
-  assert.match(release, /dispatch_workflow publish\.yml "\$INSTALLER_TAG" "\$INSTALLER_SHA"/u)
   assert.doesNotMatch(release, /dispatch_workflow publish\.yml "\$CLI_TAG"/u)
 })
 
@@ -186,9 +190,6 @@ test('release candidate dispatch maps every strict-shell release output', () => 
     ['CLI_RELEASE_CREATED', 'cli_release_created'],
     ['CLI_TAG', 'cli_tag'],
     ['CLI_SHA', 'cli_sha'],
-    ['INSTALLER_RELEASE_CREATED', 'installer_release_created'],
-    ['INSTALLER_TAG', 'installer_tag'],
-    ['INSTALLER_SHA', 'installer_sha'],
     ['PROTOCOL_RELEASE_CREATED', 'protocol_release_created'],
     ['PROTOCOL_TAG', 'protocol_tag'],
     ['PROTOCOL_SHA', 'protocol_sha'],
@@ -230,24 +231,29 @@ test('publication requires exact-SHA CI before the protected OIDC job', () => {
   assert.doesNotMatch(releaseTooling.run, /pnpm (?:build|-r test|lint|-r typecheck|check:release)/u)
 })
 
-test('npm publication excludes the native CLI and verifies exact selected bytes', () => {
+test('npm publication stages the unified CLI then separately promotes exact verified bytes', () => {
   assert.doesNotMatch(publish, /\n  push:/u)
-  assert.match(publish, /refs\/tags\/installer-v\*\|refs\/tags\/protocol-v\*/u)
-  assert.doesNotMatch(publish, /refs\/tags\/v\*/u)
+  assert.match(publish, /refs\/tags\/v\*\|refs\/tags\/protocol-v\*/u)
   assert.match(publish, /Require an immutable GitHub release/u)
   const steps = publishWorkflow.jobs.npm.steps
   const index = name => steps.findIndex(step => step.name === name)
-  const pack = index('Pack once and verify the exact npm artifact')
+  const build = index('Build the exact source verification modules')
+  const tooling = index('Verify release-specific artifact tooling')
+  assert.ok(build >= 0 && build < tooling, 'Clean release jobs must build imported verification modules before artifact tests')
+  const pack = index('Pack once or retain the already-published candidate')
   const service = index('Verify deployed service accepts this candidate')
   const publishIndex = index('Publish the selected npm package with OIDC provenance')
   const verify = index('Verify published package bytes and metadata')
   assert.ok(pack >= 0 && pack < service && service < publishIndex && publishIndex < verify)
   assert.ok(index('Build protocol for the live service contract check') < service)
-  assert.match(steps[pack].run, /verify-packed-npm-installer\.mjs "\$tarball"/u)
+  assert.match(steps[pack].run, /verify-packed-npm-adapter\.mjs "\$tarball"/u)
   assert.match(steps[pack].run, /check-packed-boundary\.mjs --tarball "\$tarball" --gitleaks/u)
   assert.match(steps[publishIndex].run, /npm publish "\$NPM_TARBALL" --access public --provenance/u)
   assert.match(steps[verify].run, /--expected-tarball "\$NPM_TARBALL"/u)
-  assert.ok(index('Require a usable signed default for the npm installer') < publishIndex)
+  const promotion = index('Promote only the already-verified npm version')
+  assert.ok(index('Admit both immutable distributions before promotion') < promotion)
+  assert.equal(steps[promotion].if, "inputs.mode == 'promote'")
+  assert.equal(publishWorkflow.on.workflow_dispatch.inputs.mode.default, 'candidate')
   const retry = steps.find(step => step.name === 'Verify an existing package before declaring a retry successful')
   assert.equal(retry.if, "steps.plan.outputs.publish == 'false'")
   assert.match(retry.run, /--expected-tarball "\$NPM_TARBALL"/u)
@@ -264,7 +270,7 @@ test('native releases begin as tag-addressable drafts and never publish from rel
 test('the rootless combined manifest and release outputs remain exact', () => {
   assert.equal(releaseConfig.packages['.'], undefined)
   assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)
-  assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/installer', 'packages/protocol'])
+  assert.deepEqual(Object.keys(releaseConfig.packages).sort(), ['apps/cli', 'packages/protocol'])
   assert.deepEqual(releaseConfig.plugins, [{type: 'node-workspace', updateAllPackages: true}])
 
   const sha = 'a'.repeat(40)
@@ -296,4 +302,33 @@ test('the rootless combined manifest and release outputs remain exact', () => {
     }),
     /only stable package releases/u,
   )
+})
+
+test('every release Bash step is syntactically valid before provider execution', () => {
+  for (const name of readdirSync('.github/workflows').filter(name => name.endsWith('.yml'))) {
+    const workflow = parse(read(`.github/workflows/${name}`))
+    for (const job of Object.values(workflow.jobs)) for (const step of job.steps ?? []) {
+      if (!step.run || ['powershell', 'pwsh'].includes(step.shell)) continue
+      const script = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'fixture')
+      const result = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' })
+      assert.equal(result.status, 0, `${name}: ${step.name}: ${result.stderr}`)
+    }
+  }
+})
+
+
+test('release test and script selectors exist and minimum Node executes the generated entrypoint', () => {
+  for (const name of readdirSync('.github/workflows').filter(name => name.endsWith('.yml'))) {
+    const text = read(`.github/workflows/${name}`)
+    for (const match of text.matchAll(/(?:scripts|apps\/cli\/npm)\/[a-z0-9-]+(?:\.test)?\.mjs/g)) assert.ok(existsSync(match[0]), `${name}: ${match[0]}`)
+    for (const match of text.matchAll(/src\/[a-z0-9-]+\.test\.ts/g)) {
+      assert.ok(existsSync(`apps/cli/${match[0]}`) || existsSync(`packages/protocol/${match[0]}`), `${name}: ${match[0]}`)
+    }
+  }
+  const minimum = parse(standalone).jobs.candidate.steps.find(step => step.name === 'Verify npm bootstrap on its minimum Node version')
+  assert.match(minimum.run, /node dist\/npm\/notifai\/bin\/notifai.mjs --help/)
+  const admission = publishWorkflow.jobs['dispatch-integrity'].steps.find(step => step.name === 'Require retained npm/native acceptance before CLI promotion')
+  assert.match(admission.run, /--kind npm/)
+  assert.equal(publishWorkflow.jobs['adapter-acceptance'].needs, 'npm')
+  assert.equal(publishWorkflow.jobs['adapter-acceptance'].strategy.matrix.include.length, 6)
 })

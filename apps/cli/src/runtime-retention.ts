@@ -7,6 +7,7 @@ import { withFileLock } from './file-lock.js'
 import { canonicalPath } from './local-path.js'
 import { sanitizeSessionId } from './config.js'
 import type { ProcessIdentity } from './process-identity.js'
+import { validRuntimeBuildReference, type RuntimeBuildReference } from './launch-self.js'
 import { inspectOpenclawHosts } from './openclaw-host-state.js'
 
 export interface RuntimeOwnerInspection {
@@ -14,8 +15,9 @@ export interface RuntimeOwnerInspection {
   reason?: string
   stateRoots: string[]
   hosts: ProcessIdentity[]
-  residents: Array<{ file: string; identity: ProcessIdentity }>
-  sessions: Array<{ file: string; sessionId: string; builds: string[]; digest: string }>
+  residents: Array<{ file: string; identity: ProcessIdentity; runtime: RuntimeBuildReference | null }>
+  sessions: Array<{ file: string; sessionId: string; builds: string[]; references: RuntimeBuildReference[]; pending: boolean; digest: string }>
+  unattributedPending: boolean
 }
 
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)
@@ -200,6 +202,7 @@ export class RuntimeRetention {
     const hosts: ProcessIdentity[] = []
     const stateRoots: string[] = []
     const residents: RuntimeOwnerInspection['residents'] = []
+    let unattributedPending = false
     try {
       if (!path.isAbsolute(currentSessions)) throw new Error('Invalid session directory')
       const directories = new Set([canonicalPath(currentSessions)])
@@ -224,12 +227,13 @@ export class RuntimeRetention {
       const hostState = inspectOpenclawHosts(this.root, this.installationId, this.access)
       hosts.push(...hostState.hosts)
       let pending = hostState.pending
+      if (hostState.pending) unattributedPending = true
       for (const directory of [...directories].sort()) {
         const retireFile = path.join(path.dirname(directory), 'retire-queue.json')
         if (present(retireFile)) withFileLock(`${retireFile}.lock`, () => {
           const queue = this.readValue(retireFile, 16 * 1024 * 1024)
           if (!Array.isArray(queue)) throw new Error('Uncertain retirement queue')
-          if (queue.length > 0) pending = true
+          if (queue.length > 0) { pending = true; unattributedPending = true }
         })
         if (!present(directory)) continue
         const stat = lstatSync(directory)
@@ -252,7 +256,10 @@ export class RuntimeRetention {
             throw new Error('Uncertain resident process identity')
           }
           if (present(file + '.guard')) throw new Error('Resident claim changed during inventory')
-          residents.push({ file, identity: { pid: claim['pid'] as number, start: claim['start'] } })
+          const runtime = claim['runtime_build']
+          if (runtime !== undefined && !validRuntimeBuildReference(runtime)) throw new Error('Uncertain resident runtime')
+          residents.push({ file, identity: { pid: claim['pid'] as number, start: claim['start'] },
+            runtime: validRuntimeBuildReference(runtime) ? runtime : null })
         }
         const names = new Set(entries.flatMap(name => {
           const matched = /^([A-Za-z0-9_-]+)(?:\.json|\.inputs\.json|\.deliveries)$/.exec(name)
@@ -262,29 +269,31 @@ export class RuntimeRetention {
           const file = path.join(directory, name)
           withFileLock(`${file}.lock`, () => {
             const state = this.read(file, 16 * 1024 * 1024)
-            if (this.pendingSidecars(file, state !== null)) pending = true
-            if (state === null) return
+            let sessionPending = this.pendingSidecars(file, state !== null)
+            if (state === null) {
+              if (sessionPending) { pending = true; unattributedPending = true }
+              return
+            }
             this.checkState(file, false)
             const sessionId = state['session_id']
             if (typeof sessionId !== 'string' || `${sanitizeSessionId(sessionId)}.json` !== name) throw new Error('Uncertain session identity')
             const references = state['runtime_builds'] ?? []
             if (!Array.isArray(references) || references.some(item => !item || !uuid(item.installation_id) ||
                 typeof item.build !== 'string' || !/^[a-f0-9]{64}$/.test(item.build))) throw new Error('Uncertain runtime references')
-            sessions.push({ file, sessionId, digest: createHash('sha256').update(readFileSync(file)).digest('hex'), builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build) })
             for (const field of ['pending', 'retiring', 'waiting_answers', 'delivered_answers', 'acknowledgement_due',
               'message_acknowledgement_due', 'openclaw_foreground_replies']) {
               const value = state[field]
               if (value !== undefined && !Array.isArray(value)) throw new Error('Uncertain pending work')
-              if (Array.isArray(value) && value.length > 0) pending = true
+              if (Array.isArray(value) && value.length > 0) sessionPending = true
             }
-            if (state['accepted'] !== undefined) pending = true
+            if (state['accepted'] !== undefined) sessionPending = true
             const native = state['native_answer_operations']
             if (native !== undefined && (!Array.isArray(native) || native.some(item => item === null || typeof item !== 'object'))) {
               throw new Error('Uncertain native answer state')
             }
             if (Array.isArray(native)) for (const item of native) {
               const acknowledgement = item.acknowledgement
-              if (acknowledgement === undefined) { pending = true; continue }
+              if (acknowledgement === undefined) { sessionPending = true; continue }
               if (!acknowledgement || typeof acknowledgement !== 'object' ||
                   typeof acknowledgement.text !== 'string' || typeof acknowledgement.created_at !== 'string' ||
                   !Number.isFinite(Date.parse(acknowledgement.created_at)) ||
@@ -292,20 +301,24 @@ export class RuntimeRetention {
                   typeof item.report.reply_id !== 'string' || !/^rpl_[A-Za-z0-9_-]+$/.test(item.report.reply_id) ||
                   typeof item.request_id !== 'string' || !/^req_[A-Za-z0-9_-]+$/.test(item.request_id)) throw new Error('Uncertain native acknowledgement')
             }
-            if (state['input_wake'] !== undefined) pending = true
+            if (state['input_wake'] !== undefined) sessionPending = true
             const wakes = state['input_wake_attempts']
             if (wakes !== undefined && !Array.isArray(wakes)) throw new Error('Uncertain input wakes')
             if (Array.isArray(wakes)) for (const wake of wakes) {
               if (!wake || !['prepared', 'sending', 'accepted', 'unknown', 'consumed', 'cancelled'].includes(wake.phase)) {
                 throw new Error('Uncertain input wake')
               }
-              if (!['consumed', 'cancelled'].includes(wake.phase)) pending = true
+              if (!['consumed', 'cancelled'].includes(wake.phase)) sessionPending = true
             }
+            sessions.push({ file, sessionId, digest: createHash('sha256').update(readFileSync(file)).digest('hex'),
+              builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build),
+              references, pending: sessionPending })
+            if (sessionPending) pending = true
           })
         }
       }
-      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents, stateRoots }
-    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, stateRoots, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
+      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents, stateRoots, unattributedPending }
+    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, stateRoots, unattributedPending, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

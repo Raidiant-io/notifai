@@ -49,12 +49,14 @@ static int active_build(const char *record, char *build) {
 #include <windows.h>
 #include <tlhelp32.h>
 #include <userenv.h>
+#include <appmodel.h>
 #pragma comment(lib, "userenv.lib")
 #include <wchar.h>
 #include "windows-path.h"
 #include "windows-security.h"
 #include "windows-user-path.h"
 #include "windows-file-users.h"
+#include "windows-npm-process.h"
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -150,7 +152,7 @@ static int managed_runtime(wchar_t *executable) {
 
 /* OS process identity is read from one open handle: a recycled PID cannot mix
  * a creation time from one process with the executable of another. */
-static int process_info(const wchar_t *argument) {
+static int process_info(const wchar_t *argument, int domain) {
     wchar_t *end;
     errno = 0;
     unsigned long pid = wcstoul(argument, &end, 10);
@@ -162,10 +164,13 @@ static int process_info(const wchar_t *argument) {
     DWORD length = 32768;
     BOOL ok = GetProcessTimes(handle, &created, &exited, &kernel, &user) &&
         QueryFullProcessImageNameW(handle, 0, executable, &length);
+    wchar_t family[512];
+    UINT32 family_length = 512;
+    LONG package_status = domain ? GetPackageFamilyName(handle, &family_length, family) : APPMODEL_ERROR_NO_PACKAGE;
     CloseHandle(handle);
-    if (!ok) return 1;
+    if (!ok || (package_status != ERROR_SUCCESS && package_status != APPMODEL_ERROR_NO_PACKAGE)) return 1;
     wchar_t *name = wcsrchr(executable, L'\\');
-    name = name ? name + 1 : executable;
+    name = domain ? executable : name ? name + 1 : executable;
     char utf8[32768 * 3];
     if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1,
                             utf8, sizeof(utf8), NULL, NULL)) return 1;
@@ -173,6 +178,21 @@ static int process_info(const wchar_t *argument) {
     ticks.LowPart = created.dwLowDateTime;
     ticks.HighPart = created.dwHighDateTime;
     printf("windows-filetime:%llu\n%s\n", ticks.QuadPart, utf8);
+    if (domain) {
+        char family_utf8[1536] = "-";
+        if (package_status == ERROR_SUCCESS && !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                family, -1, family_utf8, sizeof(family_utf8), NULL, NULL)) return 1;
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE) return 1;
+        PROCESSENTRY32W entry = {0}; entry.dwSize = sizeof(entry);
+        DWORD parent = 0; int found = 0;
+        if (Process32FirstW(snapshot, &entry)) do {
+            if (entry.th32ProcessID == pid) { parent = entry.th32ParentProcessID; found = 1; break; }
+        } while (Process32NextW(snapshot, &entry));
+        CloseHandle(snapshot);
+        if (!found) return 1;
+        printf("%s\n%lu\n", family_utf8, parent);
+    }
     return 0;
 }
 
@@ -199,6 +219,7 @@ static int uninstall_pending(const wchar_t *executable) {
 }
 
 int wmain(int argc, wchar_t **argv) {
+    if (argc >= 2 && !wcscmp(argv[1], L"--internal-npm-manager")) return npm_manager(argc, argv);
     if (argc == 2 && !wcscmp(argv[1], L"--internal-account-home")) return account_home();
     if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-read"))
         return user_path_command(0) ? 0 : failure("cannot inspect User PATH");
@@ -206,7 +227,9 @@ int wmain(int argc, wchar_t **argv) {
         return user_path_command(1) ? 0 : failure("User PATH changed or could not be safely written");
     if (argc == 2 && !wcscmp(argv[1], L"--internal-launcher-version")) { puts("1"); return 0; }
     if (argc == 3 && !wcscmp(argv[1], L"--internal-process-info"))
-        return process_info(argv[2]);
+        return process_info(argv[2], 0);
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-process-domain"))
+        return process_info(argv[2], 1);
     if (argc >= 3 && !wcscmp(argv[1], L"--internal-file-users"))
         return file_users(argc - 2, argv + 2);
     if (argc == 3 && !wcscmp(argv[1], L"--internal-private-directory"))
@@ -215,6 +238,10 @@ int wmain(int argc, wchar_t **argv) {
         return protect_existing_directory(argv[2]) ? 0 : failure("existing installation directory access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-own-created-file"))
         return private_path(argv[2], 0, 1) ? 0 : failure("created installation file access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-check-package-directory"))
+        return owned_package_path(argv[2], 1) ? 0 : failure("npm directory access is unsafe");
+    if (argc == 3 && !wcscmp(argv[1], L"--internal-check-package-file"))
+        return owned_package_path(argv[2], 0) ? 0 : failure("npm file access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-check-state-directory"))
         return owned_state_path(argv[2], 1) ? 0 : failure("session directory access is unsafe");
     if (argc == 3 && !wcscmp(argv[1], L"--internal-check-state-file"))
@@ -259,10 +286,15 @@ int wmain(int argc, wchar_t **argv) {
         }
     }
     FreeEnvironmentStringsW(environment);
-    if (!SetEnvironmentVariableW(L"NOTIFAI_NATIVE_ENTRY", L"launcher-v1")) return failure("cannot establish native entry");
+    if (!SetEnvironmentVariableW(L"NOTIFAI_NATIVE_ENTRY", L"launcher-v1") ||
+        !SetEnvironmentVariableW(L"NOTIFAI_NATIVE_ROUTE", stable_entry ? L"stable-v1" : L"immutable-v1"))
+        return failure("cannot establish native entry");
+    wchar_t retry[4] = {0};
+    DWORD retry_length = GetEnvironmentVariableW(L"NOTIFAI_NATIVE_RETRY", retry, 4);
+    int forwarding = stable_entry && retry_length == 1 && (retry[0] == L'1' || retry[0] == L'2');
     /* --internal-detach is a deliberate self-launch: retain the original hook
      * ancestry carried by that owner instead of replacing it with the caller. */
-    if (argc >= 2 && !wcscmp(argv[1], L"hook") && !hook_source())
+    if (!forwarding && argc >= 2 && !wcscmp(argv[1], L"hook") && !hook_source())
         return failure("cannot establish hook source process");
 
     /* argv[0] has the special Windows executable-name grammar. Retain the
@@ -475,8 +507,13 @@ int main(int argc, char **argv) {
             if (result) { perror("notifai: clear runtime controls"); return 1; }
         } else i++;
     }
-    if (setenv("NOTIFAI_NATIVE_ENTRY", "launcher-v1", 1)) { perror("notifai: establish native entry"); return 1; }
-    if (!detached && argc >= 2 && !strcmp(argv[1], "hook")) {
+    if (setenv("NOTIFAI_NATIVE_ENTRY", "launcher-v1", 1) ||
+        setenv("NOTIFAI_NATIVE_ROUTE", stable_entry ? "stable-v1" : "immutable-v1", 1)) {
+        perror("notifai: establish native entry"); return 1;
+    }
+    const char *retry = getenv("NOTIFAI_NATIVE_RETRY");
+    int forwarding = stable_entry && retry && (!strcmp(retry, "1") || !strcmp(retry, "2"));
+    if (!forwarding && !detached && argc >= 2 && !strcmp(argv[1], "hook")) {
         char source[32];
         snprintf(source, sizeof(source), "%ld", (long)getppid());
         if (setenv("NOTIFAI_HOOK_SOURCE_PID", source, 1)) {

@@ -24,7 +24,7 @@ export async function cliUpdateCheckCommand(
     return EXIT.usage
   }
   const version = packageVersion()
-  const installation = inspectCliInstallations(deps.env, deps.hookPlatform ?? process.platform)
+  const installation = inspectCliInstallations(deps.env, deps.hookPlatform ?? process.platform, { inspectExecutionDomain: true })
   const discovery = await discoverCliUpdate({ env: deps.env, fetchImpl: deps.fetchImpl, current: installation.effective?.version ?? version })
   const { tags, newer, available } = discovery
   const readiness = await assessReadiness(deps, { json: true })

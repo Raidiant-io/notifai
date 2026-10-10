@@ -5,9 +5,9 @@ capability. Read [Updating Notifai](updates.md) for safe recovery, existing
 authorization and deferrals, and exact-session tool-boundary Note evidence.
 An optional newer release is separate from a fault in installed integration.
 
-When something did not happen and you cannot see why — most of all after `ask`,
-whose push happens later inside a hook the harness swallows — the local log is
-the only account:
+When something did not happen and you cannot see why — especially after `ask`,
+which starts background submission immediately — inspect the local log.
+Local registration alone proves neither submission nor Provider Acceptance:
 
 ```bash
 notifai logs                     # recent record for this project

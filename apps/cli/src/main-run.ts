@@ -13,18 +13,20 @@ import { argvFlagNames, bootstrapLogger, nullLogger } from './logging.js'
 import { buildProgram } from './program.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { buildIdentity } from './distribution.js'
+import { consumeNpmAdapterLocator } from './cli-bin.js'
 
 /**
  * The local record for this invocation.
  *
- * Source execution starts logging here. Compiled execution first admits the
- * command to its managed installation; portable diagnostics and rejected
- * commands never read logging configuration or write local logs.
+ * Logging starts only after a command action is admitted. Help, version,
+ * diagnostics and rejected commands do not create local log state.
  */
 // Installers verify a staged payload before activation. That check must not
 // create logs or inspect the user's configuration as a side effect.
 const compiled = buildIdentity() !== null
-const logger = compiled || ['self-check', 'install'].includes(process.argv[2] ?? '') ? nullLogger() : bootstrapLogger()
+const invokingNpmAdapterArtifact = consumeNpmAdapterLocator(process.env)
+const diagnostic = ['doctor', 'self-check', '--help', '-h', '--version', '-V', 'help'].includes(process.argv[2] ?? '')
+const logger = nullLogger()
 
 const deps: CommandDeps = {
   io: realIo(),
@@ -34,6 +36,7 @@ const deps: CommandDeps = {
   nativeSkills,
   spawnQuestionSettlement,
   logger,
+  ...(invokingNpmAdapterArtifact ? { invokingNpmAdapterArtifact } : {}),
 }
 
 const startedAt = Date.now()
@@ -47,4 +50,5 @@ process.on('exit', (code) => {
 
 await buildProgram(deps, { beforeAction(admission) {
   if (compiled && (admission === 'managed' || admission === 'retained-owner')) deps.logger = bootstrapLogger()
+  else if (!compiled && !diagnostic && process.argv[2] !== 'install') deps.logger = bootstrapLogger()
 } }).parseAsync(process.argv)

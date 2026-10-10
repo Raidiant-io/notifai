@@ -40,7 +40,7 @@ function providerFetch({
         bypass_actors: [],
         conditions: {
           ref_name: {
-            include: ['refs/tags/v*', 'refs/tags/protocol-v*', 'refs/tags/installer-v*', 'refs/tags/android-v*'],
+            include: ['refs/tags/v*', 'refs/tags/protocol-v*', 'refs/tags/android-v*'],
             exclude: excludes,
           },
         },
@@ -139,7 +139,7 @@ test('fails the deep posture check when the release-tag ruleset has an exclusion
   )
 })
 
-test('installer package tags use their own exact immutable release', async () => {
-  await checkPublicProviderPosture({ releaseTag: 'installer-v0.1.0', expectedSha: commit },
-    providerFetch({ releaseTag: 'installer-v0.1.0' }))
+test('retired standalone component tags cannot admit npm publication', async () => {
+  await assert.rejects(checkPublicProviderPosture({ releaseTag: 'installer-v0.1.0', expectedSha: commit },
+    providerFetch({ releaseTag: 'installer-v0.1.0' })), /unsupported release version/)
 })

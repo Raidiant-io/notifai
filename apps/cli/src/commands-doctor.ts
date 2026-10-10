@@ -10,7 +10,8 @@ import { hermesPluginListed, hermesVersionSupported } from './hermes-plugin.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
-import { type CliConfig } from './config.js'
+import { stateDir, type CliConfig } from './config.js'
+import { pendingNpmRepairs } from './npm-repair-status.js'
 import {
   HARNESS_LABELS,
   HERMES_QUESTION_ROUTING_UNAVAILABLE,
@@ -537,6 +538,7 @@ export async function assessReadiness(
     previous?: Readiness
     refresh?: readonly ReadinessRefresh[]
     json?: boolean
+    readOnly?: boolean
   } = {},
 ): Promise<Readiness> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
@@ -556,7 +558,7 @@ export async function assessReadiness(
     if (reused !== null) {
       return {
         states: [
-          cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform),
+          cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact, inspectExecutionDomain: true }),
           projectEnablementReadiness(deps, config),
           projectReadiness(deps, config),
           reused.credential,
@@ -576,7 +578,7 @@ export async function assessReadiness(
   let accountClient: ApiClient | null = null
   let accountDevices: RoutableDevice[] | null = null
 
-  states.push(cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform))
+  states.push(cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact, inspectExecutionDomain: true }))
   states.push(projectEnablementReadiness(deps, config))
   states.push(projectReadiness(deps, config))
 
@@ -721,7 +723,7 @@ export async function assessReadiness(
     )
   }
 
-  states.push(await setupProofState(deps, config, accountClient, accountDevices))
+  states.push(await setupProofState(deps, config, accountClient, accountDevices, options.readOnly === true))
 
   return { states }
 }
@@ -735,7 +737,7 @@ async function applyRegistryRecommendation(
   ) {
     return
   }
-  const { newer } = await discoverCliUpdate({ env: deps.env, fetchImpl: deps.fetchImpl })
+  const { newer } = await discoverCliUpdate({ env: deps.env, fetchImpl: deps.fetchImpl, readOnly: true })
   if (newer === null) return
   const contract = states.find((state) => state.id === 'contract')
   if (contract === undefined || contract.status === 'gap' || contract.status === 'optional-gap') return
@@ -753,6 +755,7 @@ async function setupProofState(
   config: CliConfig,
   client: ApiClient | null,
   devices: RoutableDevice[] | null,
+  readOnly = false,
 ): Promise<ReadinessState> {
   if (client === null || devices === null) {
     return {
@@ -826,7 +829,7 @@ async function setupProofState(
     const observed = observedCompanionReceipt(snapshot, proof.device_id)
     if (observed) {
       let localPersistence: SetupProofPersistenceFailure | undefined
-      if (proof.companion_receipt.state !== 'observed') {
+      if (!readOnly && proof.companion_receipt.state !== 'observed') {
         if (!writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))) {
           localPersistence = { status: 'unavailable', code: 'write_failed' }
           log(deps).error('cli.error', {
@@ -919,7 +922,7 @@ export async function doctorCommand(
   options: { readiness?: Readiness } = {},
 ): Promise<number> {
   const readiness =
-    options.readiness ?? (await assessReadiness(deps, flags.json === true ? { json: true } : {}))
+    options.readiness ?? (await assessReadiness(deps, { readOnly: true, ...(flags.json === true ? { json: true } : {}) }))
   await applyRegistryRecommendation(deps, readiness.states)
   const blocker = firstBlocker(readiness)
   const ok = blocker === null
@@ -929,7 +932,10 @@ export async function doctorCommand(
   if (flags.json || deps.io.interactive !== true) {
     deps.io.out(
       JSON.stringify(
-        { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed },
+        { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed,
+          npm_repairs: pendingNpmRepairs(deps.env),
+          invocation: { executable: process.execPath, cwd: deps.cwd,
+            state_directory: stateDir(deps.env, deps.hookPlatform ?? process.platform) } },
         null,
         2,
       ),
@@ -1441,6 +1447,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     {
       ...(runningArtifact === undefined ? {} : { runningArtifactPath: runningArtifact }),
       currentVersion: packageVersion(),
+      nativeHome: deps.hookAdapterHome,
+      invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact,
     },
   )
   const effectiveArtifact = cliInstallations.effective?.artifact_path ?? null

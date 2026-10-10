@@ -15,6 +15,8 @@ import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
 import { RuntimeRetention, type RuntimeOwnerInspection } from './runtime-retention.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { canShareLocalState, ContinuityPending, installedRuntime, LOCAL_CONTINUITY } from './local-continuity.js'
+import { LEGACY_BOOTSTRAP_INVENTORIES } from './legacy-native-bootstrap.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -23,7 +25,8 @@ interface InstallRecord {
   id: string
   owner: 'notifai'
   source: InstallSource
-  target: ReleaseTarget
+  target?: ReleaseTarget
+  runtime?: { target: ReleaseTarget; contract: typeof LOCAL_CONTINUITY }
   channel: ReleaseChannel
   previousChannel: ReleaseChannel | null
   launcherBuild: string
@@ -31,12 +34,18 @@ interface InstallRecord {
 }
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
 interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan; cleanup_build?: string }
+export interface IntegrationOperation {
+  token: string; scope: string; operation: 'install' | 'enable' | 'remove'; build: string
+  owner: ProcessIdentity
+  source?: string; revision?: string
+}
+export type IntegrationOperationInput = Omit<IntegrationOperation, 'token' | 'build' | 'owner'>
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain'; reason?: string } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
-export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
+export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; pending_integrations?: IntegrationOperation[]; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
-type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated' | 'uninstall-planned' | 'uninstall-file-removed'
+type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated' | 'uninstall-planned' | 'uninstall-file-removed' | 'bootstrap-closed' | 'bootstrap-fenced'
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
 const buildId = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 function present(file: string): boolean {
@@ -74,7 +83,8 @@ export class Installation {
   private readonly probe: (directory: string, inventory: ReleaseInventory) => void
   constructor(private readonly options: { root: string; target: ReleaseTarget; distribution: Distribution;
     access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void;
-    bootIdentity?: () => string | null; fileUse?: (launcher: string, files: readonly string[]) => NativeFileUse }) {
+    bootIdentity?: () => string | null; fileUse?: (launcher: string, files: readonly string[]) => NativeFileUse;
+    sessionsDirectory?: string; externalWriters?: () => string | null; legacyBootstrapInventories?: readonly string[] }) {
     if (!path.isAbsolute(options.root)) throw new Error('Installation root must be absolute')
     this.access = options.access ?? installationAccess()
     this.root = path.resolve(options.root)
@@ -83,9 +93,12 @@ export class Installation {
       const launcher = path.join(directory, `notifai${this.extension}`)
       const output = execFileSync(launcher, ['self-check', '--json'], { encoding: 'utf8', timeout: 20_000,
         windowsHide: true, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
-      const result = JSON.parse(output) as { ok?: boolean; build?: { version?: string; sourceRevision?: string; sourceDirty?: boolean; target?: string } }
+      const result = JSON.parse(output) as { ok?: boolean; capabilities?: { local_continuity?: string }; build?: { version?: string; sourceRevision?: string; sourceDirty?: boolean; target?: string } }
       if (result.ok !== true || result.build?.version !== inventory.version || result.build.sourceRevision !== inventory.source_revision ||
           result.build.sourceDirty !== false || result.build.target !== options.target) throw new Error('Candidate self-check did not establish the signed build identity')
+      if (inventory.schema === 2 && result.capabilities?.local_continuity !== inventory.local_continuity?.contract) {
+        throw new Error('Candidate does not implement its signed local continuity contract')
+      }
     })
   }
 
@@ -114,11 +127,248 @@ export class Installation {
   private save(name: string, value: unknown): void {
     this.write(this.file(name), `${JSON.stringify(value)}\n`)
   }
-  private mutate<T>(action: () => T): T {
+  private mutate<T>(action: () => T, resumeBootstrap = false): T {
     return withFileLock(this.file('installation.lock'), () => {
-      if (present(this.file('uninstall.json'))) throw new Error('Finish or recover the pending uninstall before changing this installation')
+      if (present(this.file('uninstall.json')) && !(resumeBootstrap && this.bootstrapTarget() !== null)) {
+        throw new Error(this.bootstrapTarget() !== null
+          ? 'Recover the exact pending native bootstrap before changing this installation'
+          : 'Finish or explicitly cancel the pending uninstall before changing this installation')
+      }
       return action()
     }, { waitMs: 5_000, strictRelease: true })
+  }
+
+  /** A host may finish publishing after its caller disappears. Retain the
+   * originating definition's compatibility obligation until confirmed success;
+   * a PID disappearing or a matching file is not completion evidence. */
+  pendingIntegrationOperations(): IntegrationOperation[] {
+    const value = this.readJson('integration-operations.json') as { schema?: unknown; installation_id?: unknown; operations?: IntegrationOperation[] } | null
+    if (value === null) return []
+    if (value.schema !== 1 || value.installation_id !== this.readInstall()?.id || !Array.isArray(value.operations) ||
+        value.operations.some(item => !item || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(item.token) ||
+          typeof item.scope !== 'string' || !path.isAbsolute(item.scope) || !['install', 'enable', 'remove'].includes(item.operation) ||
+          item.source !== undefined && (typeof item.source !== 'string' || !path.isAbsolute(item.source)) ||
+          item.revision !== undefined && !buildId(item.revision) || !buildId(item.build) ||
+          !item.owner || !Number.isSafeInteger(item.owner.pid) || item.owner.pid < 1 ||
+          typeof item.owner.start !== 'string' || !item.owner.start || item.owner.start.length > 128 ||
+          item.operation === 'install' && (item.source === undefined || item.revision === undefined)) ||
+        new Set(value.operations.map(item => item.scope)).size !== value.operations.length) throw new Error('Uncertain host plugin operation')
+    return value.operations
+  }
+
+  assertIntegrationScopeAvailable(scope: string): void {
+    if (this.pendingIntegrationOperations().some(item => sameLocalPath(item.scope, canonicalPath(scope), process.platform))) {
+      throw new Error(`Host plugin operation remains pending at ${scope}. Confirm the original host installer has finished before repairing, removing or retrying this plugin; other compatible updates can continue.`)
+    }
+  }
+
+  beginIntegrationOperation(expectedGeneration: number, input: IntegrationOperationInput,
+    identity: { installation_id: string; build: string }, uninstallToken?: string): string {
+    const reserve = () => {
+      if (uninstallToken !== undefined) {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
+        const journal = this.uninstallRecord(), owner = currentProcessIdentity(), active = this.readActive()
+        if (input.operation !== 'remove' || !journal || journal.token !== uninstallToken || journal.phase !== 'removing' || journal.plan ||
+            journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start ||
+            journal.generation !== expectedGeneration || active?.generation !== expectedGeneration ||
+            active.active !== identity.build || journal.installation_id !== identity.installation_id) throw new Error('Uninstall removal authority changed')
+      }
+      if (!path.isAbsolute(input.scope) || !['install', 'enable', 'remove'].includes(input.operation) ||
+          input.revision !== undefined && !buildId(input.revision) ||
+          input.operation === 'install' && (input.source === undefined || input.revision === undefined)) throw new Error('Invalid host plugin operation')
+      if (input.source !== undefined) {
+        if (!path.isAbsolute(input.source)) throw new Error('Invalid plugin source')
+        this.owned(input.source, true)
+      }
+      const scope = canonicalPath(input.scope)
+      this.assertIntegrationScopeAvailable(scope)
+      const operations = this.pendingIntegrationOperations(), token = randomUUID(), owner = currentProcessIdentity()
+      if (!owner) throw new Error('Host plugin coordinator identity is unavailable')
+      operations.push({ ...input, scope, token, build: identity.build, owner })
+      this.save('integration-operations.json', { schema: 1, installation_id: identity.installation_id, operations })
+      return token
+    }
+    return uninstallToken === undefined ? this.publishIntegration(expectedGeneration, reserve, identity)
+      : withFileLock(this.file('installation.lock'), reserve, { waitMs: 5_000, strictRelease: true })
+  }
+
+  /** Only the caller that observed successful host completion and exact scoped
+   * read-back calls this. It may finish after a compatible native activation. */
+  completeIntegrationOperation(token: string): void {
+    withFileLock(this.file('installation.lock'), () => {
+      const operations = this.pendingIntegrationOperations()
+      if (!operations.some(item => item.token === token)) throw new Error('Integration setup identity changed')
+      const remaining = operations.filter(item => item.token !== token)
+      if (remaining.length === 0) rmSync(this.file('integration-operations.json'))
+      else this.save('integration-operations.json', { schema: 1, installation_id: this.readInstall()!.id, operations: remaining })
+    }, { waitMs: 5_000, strictRelease: true })
+  }
+
+  integrationRecoveryConfirmation(token: string): string {
+    const operation = this.pendingIntegrationOperations().find(item => item.token === token)
+    const installation = this.readInstall()
+    if (!operation || !installation) throw new Error('Integration setup identity changed')
+    return hash(JSON.stringify({ installation_id: installation.id, ...operation }))
+  }
+
+  /** Operator-assisted release, never successful host completion. The caller
+   * independently establishes a maintained local publication pause; PID exit
+   * is necessary but does not prove a wrapper or child stopped publishing.
+   * No host command, plugin/source write or uninstall cancellation occurs. */
+  releaseIntegrationOperation(token: string, confirmation: string, expectedGeneration: number,
+    verifyQuiescence: (operation: IntegrationOperation) => void): IntegrationOperation {
+    return withFileLock(this.file('installation.lock'), () => {
+      const operations = this.pendingIntegrationOperations(), operation = operations.find(item => item.token === token)
+      if (!operation || this.integrationRecoveryConfirmation(token) !== confirmation) throw new Error('Integration recovery confirmation changed')
+      if (this.readActive()?.generation !== expectedGeneration || this.readJson('transaction.json') !== null) {
+        throw new Error('Native installation changed during recovery assessment')
+      }
+      if (processIdentityLiveness(operation.owner) !== 'gone') throw new Error('The original host plugin coordinator is still running or uncertain')
+      verifyQuiescence(operation)
+      const remaining = operations.filter(item => item.token !== token)
+      if (remaining.length === 0) rmSync(this.file('integration-operations.json'))
+      else this.save('integration-operations.json', { schema: 1, installation_id: this.readInstall()!.id, operations: remaining })
+      return operation
+    }, { waitMs: 5_000, strictRelease: true })
+  }
+
+  /** The existing transaction owns recovery. This small presence marker uses
+   * the filename shipped native launchers already honor; its distinct schema
+   * makes their uninstall parser refuse it. It is never an uninstall plan. */
+  private bootstrapTarget(): string | null {
+    const record = this.readJson('uninstall.json') as Record<string, unknown> | null
+    if (record?.['schema'] !== 2 || record['operation'] !== 'continuity-bootstrap') return null
+    const transaction = this.transaction(this.readJson('transaction.json'))
+    if (!buildId(record['build']) || record['build'] !== transaction.to.active ||
+        record['installation_id'] !== transaction.next.id || transaction.previous === null || transaction.previous.runtime !== undefined ||
+        transaction.next.runtime === undefined || transaction.kind !== 'activation') throw new Error('Invalid native bootstrap recovery')
+    return record['build']
+  }
+  private legacyRejectionProven(version: VerifiedVersion): boolean {
+    return version.inventory.schema === 1 && (this.options.legacyBootstrapInventories ?? LEGACY_BOOTSTRAP_INVENTORIES)
+      .includes(hash(readFileSync(path.join(version.directory, 'inventory.json'))))
+  }
+  /** One short first-upgrade boundary, under installation.lock. Existing
+   * questions/owners defer it without waiting or stopping anything. Moving the
+   * target into runtime rejects old ordinary commands, retained entrypoints and core
+   * updater writes; harmless authenticated cache/staging/PATH work can finish.
+   * The historical binaries are retained unchanged. */
+  private bootstrapLegacy(transaction: Transaction, installed: InstallRecord): void {
+    const build = transaction.to.active
+    const pending = (reason: string): never => { throw new ContinuityPending(build, reason) }
+    try {
+      const external = this.options.externalWriters?.()
+      if (external) pending(external)
+      const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
+      const owners = () => retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'))
+      const quiet = (): void => {
+        const observed = owners()
+        if (observed.status !== 'clear' || observed.unattributedPending ||
+            observed.sessions.some(session => session.pending || session.references.some(ref => ref.installation_id !== installed.id)) ||
+            observed.residents.some(resident => processIdentityLiveness(resident.identity) !== 'gone') ||
+            observed.hosts.some(host => processIdentityLiveness(host) !== 'gone')) {
+          pending('The first native upgrade needs its existing questions and runtime owners to finish; their work is preserved.')
+        }
+      }
+      quiet()
+      const oldFiles: string[] = []
+      const versions = this.file('versions')
+      this.owned(versions, true)
+      for (const existing of readdirSync(versions)) {
+        if (/^\.staged-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(existing)) continue
+        if (!buildId(existing)) pending('An unrecognized runtime directory needs inspection.')
+        const version = this.verifyVersion(existing)
+        if (version.inventory.schema !== 1) continue
+        if (!this.legacyRejectionProven(version)) pending('This historical runtime has no proven writer rejection boundary.')
+        oldFiles.push(path.join(version.directory, `notifai-runtime${this.extension}`))
+      }
+      if (!oldFiles.length) pending('No authenticated historical native runtime establishes this bootstrap boundary.')
+      if (present(this.file('uninstall.json')) && this.bootstrapTarget() !== build) throw new Error('Existing uninstall must be recovered separately')
+      this.save('uninstall.json', { schema: 2, operation: 'continuity-bootstrap', installation_id: installed.id, build })
+      this.options.observe?.('bootstrap-closed')
+      const launcher = path.join(this.versionDirectory(build), `notifai${this.extension}`)
+      // Unlike uninstall, never exempt an old invoking payload/Windows parent.
+      const use = this.options.fileUse ? this.options.fileUse(launcher, oldFiles)
+        : inspectNativeFileUse(launcher, oldFiles, { excludeForeground: false })
+      if (use.status !== 'clear') pending('An old native process is live or could not be inspected; retry the staged candidate after it finishes.')
+      quiet()
+      const identity = { ...installed }
+      delete identity.target
+      this.save('install.json', { ...identity, runtime: { target: this.options.target, contract: LOCAL_CONTINUITY } })
+      this.options.observe?.('bootstrap-fenced')
+    } finally {
+      // Before the permanent fence, a busy/uncertain result immediately restores
+      // the working installation. After it, only exact transaction recovery may
+      // reopen admission; restoring the legacy target could revive an obsolete updater.
+      if (this.readInstall()?.runtime === undefined && this.bootstrapTarget() === build) rmSync(this.file('uninstall.json'), { force: true })
+    }
+  }
+  /** Publish a prepared owned-file change only while the assessed runtime is
+   * still authoritative. Callers do no network/host/process waits here. */
+  publishIntegration<T>(expectedGeneration: number, action: () => T,
+    identity?: { installation_id: string; build: string }): T {
+    return this.mutate(() => {
+      const active = this.readActive()
+      if (active?.generation !== expectedGeneration || present(this.file('transaction.json')) ||
+          identity && (this.readInstall()?.id !== identity.installation_id || active.active !== identity.build)) {
+        throw new Error('Update superseded; inspect the active installation before repairing integrations')
+      }
+      const result = action()
+      if (result instanceof Promise) throw new Error('Integration publication must be synchronous')
+      return result
+    })
+  }
+
+  /** Called under installation.lock before preparing or recovering activation.
+   * Unknown lifetime evidence overestimates writers; it never grants clearance. */
+  private assertContinuity(build: string, installed: InstallRecord | null): void {
+    const candidate = this.verifyVersion(build)
+    if (candidate.inventory.schema !== 2) throw new ContinuityPending(build,
+      'This release cannot enforce local continuity; it may be retained but cannot become active.')
+    const external = this.options.externalWriters?.()
+    if (external) throw new ContinuityPending(build, external)
+    // First native installation also shares the existing state directory with
+    // legacy owners. An absent install record does not establish quiescence.
+    const installationId = installed?.id ?? '00000000-0000-0000-0000-000000000000'
+    const retention = new RuntimeRetention(this.root, installationId, this.access, this.options.bootIdentity)
+    const owners = retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'))
+    if (owners.status === 'uncertain') throw new ContinuityPending(build, owners.reason ?? 'Runtime ownership is uncertain.')
+    if (owners.unattributedPending || owners.sessions.some(owner => owner.pending && owner.references.length === 0 ||
+        owner.references.some(reference => reference.installation_id !== installationId)) ||
+        owners.hosts.some(host => processIdentityLiveness(host) !== 'gone')) {
+      throw new ContinuityPending(build, 'An existing writer has no verified native generation.')
+    }
+    const builds = new Set(owners.sessions.flatMap(owner => owner.builds))
+    for (const setup of this.pendingIntegrationOperations()) builds.add(setup.build)
+    const liveBuilds = new Set<string>()
+    for (const resident of owners.residents) {
+      if (processIdentityLiveness(resident.identity) === 'gone') continue
+      if (resident.runtime?.installation_id !== installationId) throw new ContinuityPending(build,
+        'An existing resident has no verified native generation.')
+      builds.add(resident.runtime.build)
+      liveBuilds.add(resident.runtime.build)
+    }
+    const active = this.readActive()
+    if (active) builds.add(active.active)
+    const versions = this.file('versions')
+    this.owned(versions, true)
+    for (const existing of readdirSync(versions)) {
+      // Download/extraction scratch is never a managed command destination.
+      if (/^\.staged-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(existing)) continue
+      if (!buildId(existing)) throw new ContinuityPending(build, 'An unrecognized runtime directory needs inspection.')
+      if (!this.neverAdmitted(existing) && retention.reason(existing) !== null) builds.add(existing)
+    }
+    for (const existing of builds) {
+      if (existing === build) continue
+      let previous: VerifiedVersion
+      try { previous = this.verifyVersion(existing) } catch { throw new ContinuityPending(build, 'A retained runtime cannot be authenticated.') }
+      // A completed bootstrap permanently withdrew legacy native command admission.
+      // Preserve old references and files, without treating them as resumable
+      // writers. An actually observed old resident still blocks on uncertainty.
+      if (installed?.runtime !== undefined && !liveBuilds.has(existing) && this.legacyRejectionProven(previous)) continue
+      if (!canShareLocalState(candidate.inventory, previous.inventory)) throw new ContinuityPending(build,
+        `Existing runtime ${previous.inventory.version} has an unknown or different local continuity contract.`)
+    }
   }
   private uninstallRecord(): UninstallTransaction | null {
     const value = this.readJson('uninstall.json') as Partial<UninstallTransaction> | null
@@ -141,6 +391,7 @@ export class Installation {
   beginUninstall(expectedGeneration: number, currentSessions: string): UninstallPreparation {
     if (!this.uninstallRecord()?.plan) this.activeRelease(expectedGeneration)
     return withFileLock(this.file('installation.lock'), () => {
+      if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before uninstalling its runtime')
       const active = this.readActive(), installed = this.readInstall(), journal = this.uninstallRecord()
       if (present(this.file('transaction.json'))) throw new Error('Installation changed or uninstall needs recovery')
       if (journal?.plan) {
@@ -188,6 +439,7 @@ export class Installation {
   enterUninstallRemoval(token: string, currentSessions: string): { status: 'removing' | 'waiting_for_questions' | 'residents_running' | 'uncertain' } {
     try {
       return withFileLock(this.file('installation.lock'), () => {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
         const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive()
         const owner = currentProcessIdentity()
         if (!journal || journal.token !== token || !['preparing', 'removing'].includes(journal.phase) || journal.installation_id !== installed?.id ||
@@ -230,6 +482,7 @@ export class Installation {
       const admitted = this.enterUninstallRemoval(token, currentSessions)
       if (admitted.status !== 'removing') return { status: admitted.status }
       return withFileLock(this.file('installation.lock'), () => {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
         const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive(), owner = currentProcessIdentity()
         if (!journal || journal.phase !== 'removing' || journal.token !== token || journal.installation_id !== installed?.id ||
             journal.generation !== active?.generation || journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) return { status: 'uncertain' }
@@ -277,6 +530,13 @@ export class Installation {
         }
       }
       visit(directory)
+    }
+    if (present(this.file('staged-runtimes'))) {
+      this.owned(this.file('staged-runtimes'), true)
+      for (const name of readdirSync(this.file('staged-runtimes'))) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name) || !this.neverAdmitted(name.slice(0, -5))) throw new Error('Unverified staged runtime record')
+        names.push(`staged-runtimes/${name}`)
+      }
     }
     for (const channel of ['stable', 'beta'] as const) if (this.channelRecord(channel)) names.push(`channels/${channel}.json`)
     for (const name of ['shell-path.json', 'windows-path.json']) if (present(this.file(name))) names.push(name)
@@ -363,6 +623,7 @@ export class Installation {
         if (released.status !== 'released') return { status: released.status }
       }
       return withFileLock(this.file('installation.lock'), () => {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
         const journal = this.uninstallRecord(), owner = currentProcessIdentity()
         if (!journal || journal.phase !== 'removing' || journal.token !== token ||
             journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) return { status: 'uncertain' }
@@ -411,7 +672,7 @@ export class Installation {
   }
   private installRecord(value: unknown): InstallRecord {
     const item = value as Partial<InstallRecord> | null
-    if (!item || item.schema !== 1 || item.owner !== 'notifai' || item.target !== this.options.target ||
+    if (!item || item.schema !== 1 || item.owner !== 'notifai' || installedRuntime(item)?.target !== this.options.target ||
         typeof item.id !== 'string' || !/^[a-f0-9-]{36}$/.test(item.id) ||
         !['shell', 'powershell', 'npm', 'manual'].includes(item.source ?? '') ||
         !['stable', 'beta'].includes(item.channel ?? '') || !buildId(item.launcherBuild) ||
@@ -425,7 +686,11 @@ export class Installation {
   }
   inspect(): InstallationStatus {
     const installation = this.readInstall(), active = this.readActive()
-    return { active, pending: present(this.file('transaction.json')), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
+    const bootstrap = this.bootstrapTarget() !== null
+    const pendingIntegrations = this.pendingIntegrationOperations()
+    return { active, pending: present(this.file('transaction.json')), uninstall_pending: present(this.file('uninstall.json')) && !bootstrap,
+      ...(pendingIntegrations.length > 0 ? { pending_integrations: pendingIntegrations } : {}),
+      ...(bootstrap ? { bootstrap_pending: true as const } : {}), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
   }
   /** Authenticated active identity for explicit lifecycle commands. Ordinary
    * hooks use the lightweight launcher checks and do not hash the payload. */
@@ -458,13 +723,18 @@ export class Installation {
   }
   /** Persist a verified discovery sequence before fetching its inventory. A
    * failed download cannot make a later lower sequence acceptable again. */
-  async resolveRelease(channel: ReleaseChannel, version?: string): Promise<ResolvedRelease> {
+  async resolveRelease(channel: ReleaseChannel, version?: string, options: { readOnly?: boolean } = {}): Promise<ResolvedRelease> {
     if (!['stable', 'beta'].includes(channel)) throw new Error('Unknown release channel')
     const cached = this.channelRecord(channel)
     return this.options.distribution.resolveRelease({ channel, target: this.options.target,
       ...(version === undefined ? {} : { version }),
       ...(cached ? { seen: { sequence: cached.record.sequence, digest: hash(cached.signed) } } : {}),
       acceptChannel: signed => {
+        if (options.readOnly) {
+          const latest = this.channelRecord(channel)
+          this.options.distribution.verifyChannel(signed, channel, latest ? { sequence: latest.record.sequence, digest: hash(latest.signed) } : undefined)
+          return
+        }
         this.prepareRoot()
         this.mutate(() => {
           const latest = this.channelRecord(channel)
@@ -502,31 +772,15 @@ export class Installation {
     const result = this.activate({ ...input, build })
     return { ...result, version: release.inventory.version }
   }
-  /** A repeated installer may cancel untouched preparation or finish an
-   * already-authorized finite plan. Authenticate the portable candidate first;
-   * never infer ownership from an incomplete directory or remove wiring here. */
-  recoverUninstallForInstall(candidate: { directory: string; signedInventory: string }, currentSessions: string):
-    { status: 'unchanged' | 'cancelled' } | ReturnType<Installation['completeUninstall']> {
-    const journal = this.uninstallRecord()
-    if (!journal) return { status: 'unchanged' }
-    const verified = this.verifyFiles(candidate.directory, candidate.signedInventory)
-    this.probe(candidate.directory, verified.inventory)
-    if (journal.phase === 'removing' && !journal.plan) throw new Error('Finish owned wiring removal with notifai uninstall --json before reinstalling')
-    const begun = this.beginUninstall(journal.generation, currentSessions)
-    if (begun.status !== 'preparing' && begun.status !== 'removing') return { status: begun.status }
-    if (begun.status === 'preparing') {
-      this.cancelUninstall(begun.token)
-      return { status: 'cancelled' }
-    }
-    return this.completeUninstall(begun.token, currentSessions, () => { throw new Error('Owned wiring removal is not complete') })
-  }
   /** First-install boundary for an authenticated portable candidate. Rerunning
    * any bootstrap reuses a healthy installation; runtime changes belong to the
    * explicit update command. Existing directory migration is bounded to root/bin. */
   installCandidate(input: { directory: string; signedInventory: string; source: InstallSource;
-    channel?: ReleaseChannel; version?: string }): ActivationResult & { version: string; reused: boolean } {
+    channel?: ReleaseChannel; version?: string; upgrade?: boolean }): ActivationResult & { version: string; reused: boolean } {
+    if (present(this.file('uninstall.json')) && this.bootstrapTarget() === null) throw new Error('Finish or explicitly cancel the pending uninstall before installing')
     if (!['shell', 'powershell', 'npm', 'manual'].includes(input.source) ||
         (input.channel !== undefined && !['stable', 'beta'].includes(input.channel))) throw new Error('Unknown installation source or channel')
+    if (input.upgrade && (!input.version || !input.channel)) throw new Error('--upgrade requires an exact --version and --channel')
     const verified = this.verifyFiles(input.directory, input.signedInventory)
     if (input.version !== undefined && input.version !== verified.inventory.version) throw new Error('Candidate does not match the requested exact version')
     this.probe(input.directory, verified.inventory)
@@ -539,11 +793,27 @@ export class Installation {
         this.owned(directory, true)
       }
     }
-    if (this.uninstallRecord()) throw new Error('Recover the pending uninstall before installing')
     const before = this.inspect()
-    if (before.pending) throw new Error('Recover the pending installation transaction with notifai update --repair first')
+    if (before.pending) {
+      const transaction = this.transaction(this.readJson('transaction.json'))
+      const staged = this.verifyVersion(transaction.to.active)
+      if ((transaction.previous !== null && !input.upgrade) ||
+          this.identity(verified.inventory, verified.artifact) !== transaction.to.active ||
+          input.signedInventory !== readFileSync(path.join(staged.directory, 'inventory.json'), 'utf8') ||
+          (input.channel !== undefined && input.channel !== transaction.next.channel)) {
+        throw new Error('Resume the exact staged candidate or explicitly abandon the pending installation transaction')
+      }
+      const after = this.recover()
+      return { changed: true, active: after.active!, version: staged.inventory.version, reused: false,
+        launcher_update_pending: after.launcher_update_pending }
+    }
     if (before.active) {
       const active = this.activeRelease(before.active.generation)
+      if (input.upgrade) {
+        const build = this.stage(input)
+        return { ...this.activate({ build, source: before.source!, channel: input.channel!,
+          expectedGeneration: before.active.generation }), version: verified.inventory.version, reused: false }
+      }
       if ((input.version !== undefined && active.version !== input.version) ||
           (input.channel !== undefined && before.channel !== input.channel)) {
         throw new Error('An installation already exists; use notifai update to change its version or channel')
@@ -555,6 +825,14 @@ export class Installation {
     if (channel === 'stable' && isPrerelease(verified.inventory.version)) throw new Error('Prerelease installation requires explicit beta channel')
     const build = this.stage(input)
     return { ...this.activate({ build, source: input.source, channel, expectedGeneration: 0 }), version: verified.inventory.version, reused: false }
+  }
+  /** Exact recoverable target; no new channel discovery and no runtime change. */
+  pendingRelease(): { launcher: string; version: string; channel: ReleaseChannel } | null {
+    const record = this.readJson('transaction.json')
+    if (!record) return null
+    const transaction = this.transaction(record), staged = this.verifyVersion(transaction.to.active)
+    return { launcher: path.join(staged.directory, `notifai${this.extension}`), version: staged.inventory.version,
+      channel: transaction.next.channel }
   }
   /** Explicit User PATH setup/removal. No hook or ordinary command edits
    * shell startup files or registry PATH; User-edited ownership is preserved. */
@@ -582,7 +860,7 @@ export class Installation {
     const check = (file: string, isDirectory: boolean) => managed ? this.owned(file, isDirectory) : owned(file, isDirectory)
     check(directory, true)
     const inventory = this.options.distribution.verifyInventory(signedInventory)
-    if (inventory.store_schema !== 1 || inventory.launcher_schema !== 1) throw new Error('This installer cannot establish store and launcher compatibility for the candidate')
+    if (inventory.store_schema !== inventory.schema || inventory.launcher_schema !== 1) throw new Error('This installer cannot establish store and launcher compatibility for the candidate')
     const artifact = inventory.artifacts.find(item => item.target === this.options.target)
     if (!artifact) throw new Error('Candidate does not contain this installation target')
     for (const [name, expected] of [[`notifai-runtime${this.extension}`, artifact.runtime_sha256], [`notifai${this.extension}`, artifact.launcher_sha256]]) {
@@ -638,11 +916,31 @@ export class Installation {
       this.verifyFiles(staged, input.signedInventory, true)
       this.mutate(() => {
         if (present(destination)) this.verifyVersion(build)
-        else renameSync(staged, destination)
+        else {
+          // Publish positive never-admitted evidence before making this build
+          // addressable. Missing evidence is always conservative, including
+          // historical builds and an interrupted activation.
+          if (verified.inventory.schema === 2) {
+            this.access.directory(this.file('staged-runtimes'))
+            this.save(`staged-runtimes/${build}.json`, { schema: 1, build, inventory_sha256: hash(input.signedInventory) })
+          }
+          renameSync(staged, destination)
+        }
         this.keepStaged(build)
       })
       return build
     } finally { if (present(staged)) rmSync(staged, { recursive: true }) }
+  }
+  private neverAdmitted(build: string): boolean {
+    const record = this.readJson(`staged-runtimes/${build}.json`) as { schema?: unknown; build?: unknown; inventory_sha256?: unknown } | null
+    if (record === null) return false
+    const version = this.verifyVersion(build)
+    // Historical installers do not consume this receipt on activation.
+    if (version.inventory.schema !== 2) return false
+    if (record.schema !== 1 || record.build !== build || record.inventory_sha256 !== hash(readFileSync(path.join(version.directory, 'inventory.json')))) {
+      throw new Error('Unverified staged runtime evidence')
+    }
+    return true
   }
   private keepStaged(build: string): void {
     const installed = this.readInstall()
@@ -684,7 +982,11 @@ export class Installation {
     // Discovery can advance while an interrupted transaction is waiting. An
     // already committed generation stays usable; recovery never silently rolls
     // it back. A not-yet-committed withdrawn candidate cannot become active.
-    if (!sameGeneration(current, transaction.to)) this.assertNotWithdrawn(next.inventory.version)
+    if (!sameGeneration(current, transaction.to)) {
+      this.assertNotWithdrawn(next.inventory.version)
+      if (installed && installed.runtime === undefined && transaction.next.runtime !== undefined) this.bootstrapLegacy(transaction, installed)
+      this.assertContinuity(transaction.to.active, this.readInstall())
+    }
     this.checkStable(transaction.previous, transaction.next)
     this.access.directory(this.file('bin'))
     const stable = this.file(path.join('bin', `notifai${this.extension}`))
@@ -707,9 +1009,13 @@ export class Installation {
     this.options.observe?.('metadata')
     new RuntimeRetention(this.root, transaction.next.id, this.access, this.options.bootIdentity)
       .activate(transaction.from?.active ?? null, transaction.to.active)
+    // Remove the exemption before launch admission can see this generation.
+    // A crash here overestimates writers; it cannot admit an untracked writer.
+    rmSync(this.file(`staged-runtimes/${transaction.to.active}.json`), { force: true })
     this.write(this.file('active.json'), activeBytes(transaction.to))
     this.options.observe?.('activated')
     if (!sameGeneration(this.readActive(), transaction.to)) throw new Error('Active generation read-back failed')
+    if (this.bootstrapTarget() === transaction.to.active) rmSync(this.file('uninstall.json'))
     rmSync(this.file('transaction.json'))
   }
   /** Explicit housekeeping. No live-generation deletion and no age heuristic.
@@ -724,12 +1030,13 @@ export class Installation {
       }
       const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
       const removed: string[] = [], retained: Array<{ build: string; reason: string; bytes: number }> = []
+      const setupBuilds = new Set(this.pendingIntegrationOperations().map(item => item.build))
       this.owned(this.file('versions'), true)
       for (const build of readdirSync(this.file('versions'))) {
         if (!buildId(build)) continue // Staging and unrelated entries are never cleanup authority.
         let bytes = 0
         const protectedBuild = [active.active, active.previous, installed.launcherBuild].includes(build)
-        let reason = protectedBuild ? 'active_previous_or_launcher' : retention.reason(build)
+        let reason = setupBuilds.has(build) ? 'pending_host_plugin_operation' : protectedBuild ? 'active_previous_or_launcher' : retention.reason(build)
         try {
           const directory = this.versionDirectory(build)
           this.owned(directory, true)
@@ -793,7 +1100,7 @@ export class Installation {
     this.mutate(() => {
       const value = this.readJson('transaction.json')
       if (value !== null) this.finish(this.transaction(value))
-    })
+    }, true)
     return this.inspect()
   }
   /** Explicitly abandon only a transaction that has not committed its active
@@ -814,6 +1121,7 @@ export class Installation {
       if ((installed && installed.id !== transaction.next.id) || (!installed && transaction.previous)) {
         throw new Error('Installation owner changed during recovery')
       }
+      if (installed?.runtime && transaction.previous !== null && transaction.previous.runtime === undefined) throw new Error('Recover the exact pending native bootstrap; its admission fence cannot be abandoned')
       this.checkStable(transaction.previous, transaction.next)
       const stable = this.file(path.join('bin', `notifai${this.extension}`))
       if (transaction.previous) {
@@ -830,6 +1138,20 @@ export class Installation {
     })
     return this.inspect()
   }
+  /** Deterministic eligibility before an external package operation. This
+   * stricter forward-only path preserves the channel and does not promise a
+   * quiet bootstrap or owner continuity; activation still proves those. */
+  assertForwardTransition(build: string, expectedGeneration: number, channel: ReleaseChannel): void {
+    const from = this.readActive(), installed = this.readInstall(), candidate = this.verifyVersion(build)
+    if (!from || !installed || from.generation !== expectedGeneration || installed.channel !== channel) throw new Error('The assessed native installation changed')
+    if (candidate.inventory.schema !== 2 || candidate.inventory.local_continuity?.contract !== LOCAL_CONTINUITY) throw new Error('The repair candidate must enforce the current local continuity contract')
+    if (channel === 'stable' && isPrerelease(candidate.inventory.version)) throw new Error('Prerelease cannot activate on stable')
+    this.assertNotWithdrawn(candidate.inventory.version)
+    if (from.active !== build && compareReleasePrecedence(candidate.inventory.version, this.verifyVersion(from.active).inventory.version) !== 'after') {
+      throw new Error('The repair candidate must be a forward update or the already-active paired runtime')
+    }
+  }
+
   activate(input: { build: string; expectedGeneration: number; source: InstallSource; channel: ReleaseChannel; allowStableDowngrade?: boolean }): ActivationResult {
     if (!['stable', 'beta'].includes(input.channel) || !['shell', 'powershell', 'npm', 'manual'].includes(input.source)) {
       throw new Error('Unknown installation source or channel')
@@ -867,9 +1189,13 @@ export class Installation {
     })
   }
   private commit(from: ActiveGeneration | null, previous: InstallRecord | null, build: string, source: InstallSource, channel: ReleaseChannel): ActivationResult {
+    // Historical readers remain authenticated, but can never become an active
+    // updater again. Leave no recoverable downgrade transaction for them.
+    if (this.verifyVersion(build).inventory.schema !== 2) throw new ContinuityPending(build,
+      'This release cannot enforce local continuity; it may be retained but cannot become active.')
     const to: ActiveGeneration = { schema: 1, active: build, previous: from?.active ?? null, generation: (from?.generation ?? 0) + 1 }
     const next: InstallRecord = { schema: 1, id: previous?.id ?? randomUUID(), owner: 'notifai', source: previous?.source ?? source,
-      target: this.options.target, channel, previousChannel: previous?.channel ?? null, launcherBuild: build, launcherUpdatePending: false }
+      runtime: { target: this.options.target, contract: LOCAL_CONTINUITY }, channel, previousChannel: previous?.channel ?? null, launcherBuild: build, launcherUpdatePending: false }
     const transaction: Transaction = { schema: 1, kind: 'activation', from, to, previous, next }
     this.save('transaction.json', transaction)
     this.options.observe?.('prepared')

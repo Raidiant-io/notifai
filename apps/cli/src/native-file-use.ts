@@ -8,11 +8,12 @@ export interface NativeFileUse {
   reason?: string
 }
 
-/** Explicit uninstall only. C checks exact executable identity. Exclude only
- * this foreground command and its completed read-only probe. On Windows the
+/** Installation maintenance only. C checks exact executable identity. Uninstall
+ * excludes this foreground command and its completed read-only probe; first
+ * native bootstrap excludes only its completed observer. On Windows the
  * foreground C parent waits for this payload; its locked image is retained for
  * external cleanup. No process is signalled and no arbitrary PID is exempted. */
-export function inspectNativeFileUse(launcher: string, files: readonly string[]): NativeFileUse {
+export function inspectNativeFileUse(launcher: string, files: readonly string[], options: { excludeForeground?: boolean } = {}): NativeFileUse {
   const processes: NativeFileUse['processes'] = []
   try {
     if (!path.isAbsolute(launcher) || files.length === 0 || files.some(file => !path.isAbsolute(file))) throw new Error('Invalid file-use request')
@@ -52,8 +53,8 @@ export function inspectNativeFileUse(launcher: string, files: readonly string[])
         // The synchronous child has exited. This process cannot have had its
         // PID recycled while running this code. The Windows parent is exempt
         // only with the same kernel creation time observed before the scan.
-        if (item.pid === result.pid || item.pid === process.pid || (process.platform === 'win32' &&
-            item.pid === process.ppid && parentStart !== null && item.start === parentStart)) continue
+        if (item.pid === result.pid || options.excludeForeground !== false && (item.pid === process.pid || (process.platform === 'win32' &&
+            item.pid === process.ppid && parentStart !== null && item.start === parentStart))) continue
         if (!processes.some(known => known.pid === item.pid && known.start === item.start)) processes.push({ pid: item.pid, ...(item.start ? { start: item.start } : {}) })
       }
     }

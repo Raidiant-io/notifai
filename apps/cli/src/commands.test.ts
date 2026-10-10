@@ -3654,7 +3654,7 @@ describe('Cursor hook commands', () => {
     expect(io.outLines).toContain(
       `ok    Question routing: cursor (${path.join(cwd, 'home', '.cursor', 'hooks.json')})`,
     )
-    expect(io.outLines.some((line) => line.includes('Cursor: start one fresh conversation'))).toBe(true)
+    expect(io.outLines.some((line) => line.includes('Cursor: verify the installed hooks'))).toBe(true)
   })
 
   it('uninstalls only Notifai Cursor hooks and preserves foreign hooks', () => {
@@ -3933,7 +3933,7 @@ describe('Codex hook representation', () => {
 
     const compatible = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
-      harness: 'codex',
+      harness: 'codex', integrationScope: json,
     })
     delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
     applyPlan(json, { hooks: compatible })
@@ -3962,7 +3962,7 @@ describe('Codex hook representation', () => {
 
     const compatible = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
-      harness: 'codex',
+      harness: 'codex', integrationScope: json,
     })
     delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
     applyPlan(json, { hooks: compatible })
@@ -3970,7 +3970,7 @@ describe('Codex hook representation', () => {
 
     const changed = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
-      harness: 'codex',
+      harness: 'codex', integrationScope: json,
     })
     changed['SessionStart']![0]!.hooks[0]!.additionalContextLimit = 0
     applyPlan(json, mergeHooks(loadSettings(json), changed, scriptPath).document)
@@ -4184,7 +4184,7 @@ describe('harness activation guidance', () => {
   const execPath = process.execPath
   const scriptPath = fileURLToPath(import.meta.url)
 
-  it('requires a fresh Claude Code session so SessionStart can activate it', () => {
+  it('requires observed loading while preserving existing Claude Code work', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-activation-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
@@ -4195,7 +4195,7 @@ describe('harness activation guidance', () => {
 
     const output = io.outLines.join('\n')
     expect(output).toContain('Installed claude-code hooks in')
-    expect(output).toContain('Start one fresh Claude Code session, send one prompt, then run `notifai doctor`.')
+    expect(output).toContain('verify a real callback from the changed definition')
     expect(output).not.toMatch(/timeout|asynchronous|600s/i)
   })
 
@@ -4218,7 +4218,7 @@ describe('harness activation guidance', () => {
     expect(output).not.toMatch(/Codex runs every matching handler|harmless/i)
   })
 
-  it('names required Codex trust and fresh-session activation in the correct order', () => {
+  it('names required Codex trust and preserves the existing session', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-activation-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
@@ -4229,7 +4229,8 @@ describe('harness activation guidance', () => {
 
     const output = io.outLines.join('\n')
     expect(output).toContain('The changed Notifai handlers need approval')
-    expect(output).toMatch(/open `\/hooks`[\s\S]*start one fresh Codex session[\s\S]*`notifai doctor`/i)
+    expect(output).toContain('Keep existing working sessions and pending questions')
+    expect(output).toContain('`notifai doctor --json`')
   })
 
   it('says existing Codex approval still matches after an idempotent repair', () => {
@@ -4262,7 +4263,7 @@ describe('harness activation guidance', () => {
 
     const output = io.outLines.join('\n')
     expect(output).toContain('Installed cursor hooks in')
-    expect(output).toContain('Start one fresh Cursor conversation, send one prompt, finish its first turn, then run `notifai doctor`.')
+    expect(output).toContain('verify a real callback from the changed definition')
     expect(output).not.toMatch(/Codex|Claude Code|OpenCode/)
     expect(output).not.toMatch(/timeout|worktree|fails closed/i)
   })
@@ -4383,7 +4384,7 @@ describe('harness activation guidance', () => {
     )
 
     expect(io.outLines.join('\n')).toContain('Installed opencode hooks in')
-    expect(io.outLines.join('\n')).toContain('Restart OpenCode, start one fresh session, send one prompt, then run `notifai doctor`.')
+    expect(io.outLines.join('\n')).toContain('verify a real callback from the changed definition')
     expect(io.outLines.join('\n')).not.toMatch(/Permission prompts|exactly-once continuation/)
     const pluginFile = path.join(cwd, 'opencode-home', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
@@ -4455,7 +4456,7 @@ describe('harness activation guidance', () => {
     expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
     expect(io.outLines.join('\n')).toContain('Installed openclaw hooks in')
     expect(io.outLines.join('\n')).toContain(
-      'Restart the OpenClaw Gateway, start one fresh Agent Session, send one prompt, then run `notifai doctor`.',
+      'verify a real callback from the changed definition',
     )
     const pluginFile = path.join(cwd, 'openclaw-home', 'extensions', 'notifai', 'index.js')
     const plugin = readFileSync(pluginFile, 'utf8')
@@ -4513,7 +4514,7 @@ describe('harness activation guidance', () => {
     expect(hooksInstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.ok)
     const document = JSON.parse(readFileSync(owned, 'utf8')) as { hooks: ReturnType<typeof buildHookConfig> }
     expect(document.hooks['Stop']?.[0]?.hooks[0]).toMatchObject({
-      command: hookCommand(hookAdapterPath(deps.hookAdapterHome), 'stop', 'grok'),
+      command: expect.stringContaining(hookCommand(hookAdapterPath(deps.hookAdapterHome), 'stop', 'grok') + ' --integration-revision '),
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,
     })
     expect(findInstallations(deps.env, deps.hookAdapterHome).filter((entry) => entry.harness === 'grok'))
@@ -5562,6 +5563,9 @@ describe('interactive command UX', () => {
     await doctorCommand(deps, { json: true })
     expect(io.outLines).toHaveLength(1)
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ invocation: {
+      executable: process.execPath, cwd, state_directory: path.join(cwd, 'state', 'notifai'),
+    } })
     expect(io.intros).toEqual([])
     expect(io.checks).toEqual([])
   })
@@ -5960,6 +5964,7 @@ describe('init', () => {
     if (!existsSync(skillPath)) installCurrentSkill(skillPath)
     return {
       name: 'notifai',
+      owned: true,
       agents: ['claude-code'],
       scope,
       path: skillPath,
@@ -6126,14 +6131,22 @@ describe('init', () => {
       }),
     })
 
-    expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({ scriptPath: oldArtifact })
-    expect(
-      await initCommand(deps, { hooks: false, skills: false }),
-    ).toBe(EXIT.ok)
-    expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({
-      scriptPath: realpathSync(currentArtifact),
-    })
-    expect(io.outLines.join('\n')).not.toContain('notifai hooks install')
+    // Model the resumed process, not just another package with an equal version.
+    const previousArgv = process.argv
+    process.argv = [process.execPath, currentArtifact]
+    try {
+      expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({ scriptPath: oldArtifact })
+      expect(
+        await initCommand(deps, { hooks: false, skills: false }),
+        [...io.outLines, ...io.errLines].join('\n'),
+      ).toBe(EXIT.ok)
+      expect(inspectHookAdapter(deps.hookAdapterHome).target).toMatchObject({
+        scriptPath: realpathSync(currentArtifact),
+      })
+      expect(io.outLines.join('\n')).not.toContain('notifai hooks install')
+    } finally {
+      process.argv = previousArgv
+    }
   })
 
   it('surfaces one next step, not the whole remaining list', async () => {
@@ -6214,6 +6227,7 @@ describe('init', () => {
             ? [
                 {
                   name: 'notifai',
+                  owned: true,
                   scope,
                   path: installedPath,
                   source: 'Raidiant-io/notifai',
@@ -7195,6 +7209,31 @@ describe('init', () => {
     expect(submitCalls).toBe(1)
     expect(io.prompts).toEqual([])
     expect(io.outLines.join('\n')).toContain('All set.')
+  })
+
+  it('doctor reports a newly observed receipt without persisting it or sending another request', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'doctor-proof-read-only-'))
+    const io = new CapturedIo()
+    let submits = 0
+    const client = {
+      health: async () => true,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'proof@example.com' }),
+      submit: async () => { submits++; return setupReceipt('unexpected') },
+      evidence: async (requestId: string) => setupEvidence(requestId, {
+        state: 'observed', observed_at: '2026-09-05T12:00:02.000Z', latency_ms: 1_000,
+      }),
+    } as unknown as ApiClient
+    const deps: CommandDeps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    expect(writeSetupProof(deps, { request_id: 'req_read_only', device_id: readyIphone.device_id,
+      started_at: '2026-09-05T12:00:00.000Z', companion_receipt: { state: 'unknown', observed_at: null } })).toBe(true)
+    const proofDir = path.join(stateDir(deps.env), 'machine-proofs'), proofFile = path.join(proofDir, readdirSync(proofDir)[0]!)
+    const before = readFileSync(proofFile, 'utf8')
+    await doctorCommand(deps, { json: true })
+    const report = JSON.parse(io.outLines.join('\n'))
+    expect(report.states.find((state: { id: string }) => state.id === 'proof')).toMatchObject({ status: 'ready' })
+    expect(readFileSync(proofFile, 'utf8')).toBe(before)
+    expect(submits).toBe(0)
   })
 
   it('keeps completed setup ready when the saved Companion Receipt cannot be re-read transiently', async () => {
@@ -8377,7 +8416,7 @@ describe('readiness assessment cost', () => {
     })
   })
 
-  it('detects a lock-file duplicate across project and global scope', async () => {
+  it('reports lock-only project and global skill records as incomplete', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-duplicate-'))
     const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
     writeFileSync(
@@ -8420,9 +8459,14 @@ describe('readiness assessment cost', () => {
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'gap',
-      detail: `project (${RELEASE_REF}) and global (v0.2.1) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
-      technical: { resolution: 'both-listed' },
+      detail: expect.stringContaining('Existing guidance is preserved'),
+      technical: { resolution: 'skill-incomplete' },
     })
+    const detail = readiness.states.find((state) => state.id === 'skill')?.detail
+    expect(detail).toContain(`project: ${path.join(cwd, '.agents', 'skills', 'notifai')} (incomplete)`)
+    expect(detail).toContain(`global: ${path.join(env.HOME!, '.agents', 'skills', 'notifai')} (incomplete)`)
+    expect(existsSync(path.join(cwd, '.agents', 'skills', 'notifai'))).toBe(false)
+    expect(existsSync(path.join(env.HOME!, '.agents', 'skills', 'notifai'))).toBe(false)
   })
 })
 
@@ -9609,7 +9653,7 @@ describe('asking before the hooks have ever run', () => {
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
     expect(fired?.status).toBe('optional-gap')
     expect(fired?.detail).toMatch(/Claude Code/)
-    expect(fired?.detail).toMatch(/Codex: start one fresh session/i)
+    expect(fired?.detail).toMatch(/Codex: follow the specific trust or stale-Stop diagnosis/i)
     expect(fired?.detail).not.toMatch(/approve.*start/i)
 
     io.errLines = []
@@ -9859,6 +9903,7 @@ describe('asking before the hooks have ever run', () => {
             ? [
                 {
                   name: 'notifai',
+                  owned: true,
                   scope,
                   path: path.join(cwd, 'global-skills', 'notifai'),
                   source: 'Raidiant-io/notifai',
