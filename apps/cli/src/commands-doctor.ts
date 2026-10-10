@@ -557,7 +557,7 @@ export async function assessReadiness(
     if (reused !== null) {
       return {
         states: [
-          cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact }),
+          cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact, inspectExecutionDomain: true }),
           projectEnablementReadiness(deps, config),
           projectReadiness(deps, config),
           reused.credential,
@@ -577,7 +577,7 @@ export async function assessReadiness(
   let accountClient: ApiClient | null = null
   let accountDevices: RoutableDevice[] | null = null
 
-  states.push(cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact }))
+  states.push(cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact, inspectExecutionDomain: true }))
   states.push(projectEnablementReadiness(deps, config))
   states.push(projectReadiness(deps, config))
 

@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'nod
 import path from 'node:path'
 import { accountHome, configHome } from './platform.js'
 import { SkillInstallation, type SkillPlacement } from './skill-installation.js'
+import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 import { SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
 import { sameLocalPath } from './local-path.js'
 import { openclawStateDir } from './openclaw-plugin.js'
@@ -36,6 +37,7 @@ export interface SkillsListResult {
 }
 
 export interface SkillsAddOptions {
+  publishIntegration?: IntegrationPublication
   /** Supported harness names for a new placement; refresh retains receipts. */
   agents?: readonly string[]
   skill: string
@@ -340,6 +342,7 @@ export function skillInventoryIssue(inventory: SkillInventory): SkillInventoryIs
 /** The bundled installer never downloads or executes another installer. */
 export const nativeSkills: NativeSkills = {
   async add(options) {
+    const publish = options.publishIntegration ?? integrationPublication(options)
     if (options.skill !== 'notifai' || options.scope === undefined) return { code: 1, error: 'Choose project or global scope for the bundled Notifai skill' }
     if (options.agents?.some(agent => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(agent))) {
       return { code: 1, error: 'Choose supported Notifai harness names for the skill' }
@@ -348,8 +351,8 @@ export const nativeSkills: NativeSkills = {
     if (version === null) return { code: 1, error: 'This CLI cannot establish which bundled skill belongs to it' }
     const bundle = shippedSkillBundle(version)
     if (!bundle.ok) return { code: 1, error: bundle.error }
-    const result = new SkillInstallation(options).reconcile({ scope: options.scope, bundle: bundle.bundle,
-      ...(options.agents === undefined ? {} : { agents: options.agents as SourceContextHarness[] }) })
+    const result = publish(() => new SkillInstallation(options).reconcile({ scope: options.scope!, bundle: bundle.bundle,
+      ...(options.agents === undefined ? {} : { agents: options.agents as SourceContextHarness[] }) }))
     return result.ok ? 0 : { code: 1, error: result.conflicts.join('; ') }
   },
   async remove(options) {

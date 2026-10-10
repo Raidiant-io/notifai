@@ -1,14 +1,17 @@
 import { ownedSkillInventory, skillInventoryIssue } from './native-skills.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { installedSkillMatchesPackage, listScopedNotifaiSkills, staleInstalledSkillCopies } from './commands-skill.js'
+import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 
 /** Refresh one existing scope through the native installer, without setup. */
-export async function updateSkillCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
+export async function updateSkillCommand(deps: CommandDeps, flags: { json?: boolean }, publication?: IntegrationPublication): Promise<number> {
   const fail = (error: string): number => {
     if (flags.json === true || deps.io.interactive !== true) deps.io.out(JSON.stringify({ ok: false, error }))
     else deps.io.err(error)
     return EXIT.failed
   }
+  let publish: IntegrationPublication
+  try { publish = publication ?? integrationPublication(deps) } catch (error) { return fail(String(error)) }
   const discovered = await listScopedNotifaiSkills(deps)
   const inventory = ownedSkillInventory(discovered)
   const issue = skillInventoryIssue(inventory)
@@ -22,7 +25,7 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
   if (deps.nativeSkills === undefined) return fail('The packaged skill installer is unavailable.')
   const changed = !installedSkillMatchesPackage(skill) || staleInstalledSkillCopies(skill, deps.cwd, deps.env).length > 0
   if (changed) {
-    const operation = await deps.nativeSkills.add({ skill: 'notifai', scope: skill.scope,
+    const operation = await deps.nativeSkills.add({ skill: 'notifai', scope: skill.scope, publishIntegration: publish,
       cwd: deps.cwd, env: deps.env }).catch((error: unknown) => ({ code: 1, error: String(error) }))
     if ((typeof operation === 'number' ? operation : operation.code) !== 0) {
       return fail(typeof operation === 'number' ? 'The native skill installer failed.' : operation.error)

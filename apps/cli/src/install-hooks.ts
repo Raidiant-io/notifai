@@ -1,3 +1,4 @@
+import { stampHookDefinition } from './integration-revision.js'
 import {
   existsSync,
   lstatSync,
@@ -184,6 +185,7 @@ export function quoteWindowsArg(value: string): string {
 }
 
 export interface BuildOptions {
+  integrationScope?: string
   /** Stable user-level executable installed by the hook adapter module. */
   adapterPath: string
   /** The installed adapter stamps its exact harness into project pointers. */
@@ -322,7 +324,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       else group.hooks.push(attend)
     }
   }
-  return hooks
+  return stampHookDefinition(hooks, options.integrationScope ?? '')
 }
 
 export interface CursorHookHandler {
@@ -353,7 +355,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
     if ('cursorLoopLimit' in row) handler.loop_limit = row.cursorLoopLimit
     hooks[row.cursor] = [...(hooks[row.cursor] ?? []), handler]
   }
-  return hooks
+  return stampHookDefinition(hooks, options.integrationScope ?? '')
 }
 
 /**
@@ -1154,7 +1156,8 @@ function prepareFileWrite(file: string, previous: string | null, next: string | 
     if (current !== previous) throw new Error(`Configuration changed while preparing ${file}; retry.`)
     if (current === next) return
     if (next === null) rmSync(file, { force: true })
-    else atomicWriteFileSync(file, next, { requireCurrentUserOwner: true })
+    else atomicWriteFileSync(file, next, { requireCurrentUserOwner: true,
+      expectedContentsSha256: previous === null ? null : createHash('sha256').update(previous).digest('hex') })
   }
 }
 

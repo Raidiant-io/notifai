@@ -2,7 +2,7 @@
 # First execution trusts HTTPS; installed updates use the embedded release key.
 # No Node, npm, Bun, Git or JSON interpreter is required by this bootstrap.
 set -eu
-NF_JSON=0 NF_VERSION='' NF_CHANNEL='' NF_NO_INIT=0 NF_NO_PATH=0 NF_MIGRATE_NPM=0
+NF_JSON=0 NF_VERSION='' NF_CHANNEL='' NF_NO_INIT=0 NF_NO_PATH=0 NF_MIGRATE_NPM=0 NF_UPGRADE=0
 nf_fail() {
   if [ "$NF_JSON" = 1 ]; then printf '{"ok":false,"code":"bootstrap_failed","message":"%s"}\n' "$1"
   else printf 'Notifai installation failed: %s\n' "$1" >&2; fi
@@ -19,14 +19,18 @@ while [ "$#" -gt 0 ]; do
     --no-init) NF_NO_INIT=1; shift;;
     --no-path) NF_NO_PATH=1; shift;;
     --migrate-npm) NF_MIGRATE_NPM=1; shift;;
+    --upgrade) NF_UPGRADE=1; shift;;
     --version) [ "$#" -ge 2 ] && [ -z "$NF_VERSION" ] || nf_fail 'Supply one exact application version'; NF_VERSION=$2; shift 2;;
     --channel) [ "$#" -ge 2 ] && [ -z "$NF_CHANNEL" ] || nf_fail 'Supply one release channel'; NF_CHANNEL=$2; shift 2;;
-    --help) printf '%s\n' 'Install Notifai: --json --version <exact> --channel <stable|beta> --no-init --no-path --migrate-npm'; exit 0;;
+    --help) printf '%s\n' 'Install Notifai: --json --version <exact> --channel <stable|beta> --no-init --no-path --migrate-npm --upgrade'; exit 0;;
     *) nf_fail 'Unknown installer option';;
   esac
 done
 case "$NF_CHANNEL" in ''|stable|beta) ;; *) nf_fail 'Channel must be stable or beta';; esac
 [ -z "$NF_VERSION" ] || nf_version "$NF_VERSION" || nf_fail 'Version must be an exact semantic version'
+if [ "$NF_UPGRADE" = 1 ]; then
+  [ -n "$NF_VERSION" ] && [ -n "$NF_CHANNEL" ] && [ "$NF_NO_INIT" = 1 ] && [ "$NF_NO_PATH" = 1 ] || nf_fail 'Upgrade requires exact version, channel, no-init and no-path'
+fi
 nf_run() {
   nf_executable=$1; shift
   set -- install --source shell "$@"
@@ -36,6 +40,7 @@ nf_run() {
   [ "$NF_NO_INIT" = 0 ] || set -- "$@" --no-init
   [ "$NF_NO_PATH" = 0 ] || set -- "$@" --no-path
   [ "$NF_MIGRATE_NPM" = 0 ] || set -- "$@" --migrate-npm
+  [ "$NF_UPGRADE" = 0 ] || set -- "$@" --upgrade
   set +e
   # curl | sh leaves stdin holding installer source. Give a human setup child
   # the controlling terminal, while explicit JSON/no-init stays noninteractive.
@@ -78,7 +83,7 @@ if [ -e "$NF_EXISTING" ] || [ -L "$NF_EXISTING" ]; then
     ' || nf_fail 'Existing installation is not privately owned; inspect it before repair'
   done
   [ -f "$NF_EXISTING" ] && [ -x "$NF_EXISTING" ] || nf_fail 'Existing launcher is not an executable file; repair it explicitly'
-  nf_run "$NF_EXISTING"
+  [ "$NF_UPGRADE" = 1 ] || nf_run "$NF_EXISTING"
 fi
 for nf_tool in curl tar gzip awk mktemp wc tr chmod mv mkdir rm; do
   command -v "$nf_tool" >/dev/null 2>&1 || nf_fail 'A required OS download or archive tool is unavailable'

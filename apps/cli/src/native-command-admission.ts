@@ -11,6 +11,7 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
 import { inspectCliInstallations, type CliBinReadinessOptions } from './cli-bin.js'
+import { NativeSelectionChanged } from './native-launch-retry.js'
 
 export type NativeAdmission = 'development' | 'installer' | 'diagnostic' | 'read-only-managed' | 'managed' | 'retained-owner'
 
@@ -49,7 +50,12 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
   // child programs cannot accidentally inherit admission. This is a launch
   // contract, not a credential or a defence against code running as this User.
   const launched = env['NOTIFAI_NATIVE_ENTRY'] === 'launcher-v1'
+  const stableRoute = env['NOTIFAI_NATIVE_ROUTE'] === 'stable-v1'
+  const retry = env['NOTIFAI_NATIVE_RETRY']
+  const attempts = retry === undefined ? 0 : /^[12]$/.test(retry) ? Number(retry) : 2
   delete env['NOTIFAI_NATIVE_ENTRY']
+  delete env['NOTIFAI_NATIVE_ROUTE']
+  delete env['NOTIFAI_NATIVE_RETRY']
   if (!launched) {
     if (command.name() === 'doctor') return 'diagnostic'
     throw new Error('Run the native launcher named notifai; direct runtime payload execution cannot change this installation.')
@@ -70,6 +76,7 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
   if (command.name() !== 'uninstall') assertNativeLaunchAllowed(env)
   if (reference.build === installed.build) return 'managed'
   if (ownsRetainedWork(command, env, reference)) return 'retained-owner'
+  if (stableRoute && attempts < 2) throw new NativeSelectionChanged(installed.command, attempts)
   throw new Error(`This build is no longer active. Retry with the installed command: ${installed.command}`)
 }
 

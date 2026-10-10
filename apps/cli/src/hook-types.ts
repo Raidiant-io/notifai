@@ -79,6 +79,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Literal revision received from the loaded hook/module, scoped to this incarnation. */
+  integration_observation?: { incarnation: string; revision: string }
   /** Immutable native builds serving live or resumable work in this session. */
   runtime_builds?: RuntimeBuildReference[]
   /** Exact native associations and sticky ordinary-presentation decisions. */

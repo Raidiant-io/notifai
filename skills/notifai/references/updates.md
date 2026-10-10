@@ -41,13 +41,15 @@ same native runtime is supported coexistence.
 
 ## Perform the authorized update
 
-Choose a quiet point after outstanding questions and Agent Acknowledgements
-finish. Keep their original IDs. Never end an Agent Session, kill a waiter, or
-replace a question just to perform an optional update: ending a session can
-withdraw or retire its questions. Other running waiters retain their loaded
-code. Native installations retain immutable versions for resident work. Existing
-legacy Node-based npm application installations replace package files in place;
-follow [the migration instructions](installation.md) before replacing their package.
+Compatible native updates preserve existing owners and their outstanding
+questions, Notes, Answer Edits and Agent Acknowledgements. Keep their original
+IDs and Agent Sessions. The signed release contract must establish compatibility
+with every retained generation that can still write or resume; a matching
+version number is insufficient. Unknown or incompatible continuity leaves the
+verified candidate staged and reports the exact recovery command. Follow that
+diagnosis without ending sessions or discarding pending work. Existing legacy
+Node-based npm applications replace package files in place; follow
+[the migration instructions](installation.md) before replacing their package.
 The optional npm launcher uses the same retained native installation as the OS
 routes. `npm update` updates only that launcher, not the runtime. An adapter pin
 never changes an existing runtime version/channel; use native update/rollback.
@@ -64,11 +66,14 @@ Guidance Topics, native approval and pending work remain User-owned.
 
 Unmanaged guidance in other placements is preserved and remains diagnosed; it
 does not prevent refreshing the existing owned selection or independently safe
-hook and Session Attendant recovery. With only unmanaged guidance, resume skips
+hook repair. Healthy compatible Session Attendants keep their original runtime
+and work. With only unmanaged guidance, resume skips
 skill installation. It never creates a default placement or adopts matching
-files. `files_complete: true` means the owned files were verified; remaining
-guidance or activation diagnoses keep `migration_complete: false`. A successful
-owned refresh does not establish that every harness has current guidance.
+files. `files_complete: true` means the required owned files were verified.
+`migration_complete` additionally requires the approval and loaded-definition
+evidence for changes this operation made. Unrelated problems remain in
+`diagnostics`; they do not widen the repair or prevent its completion. A
+successful owned refresh does not establish that every harness has current guidance.
 
 `integration_complete: true` confirms integration. Native updates report the
 new `version`, `integration`, and any `launcher_update_pending` separately;
@@ -84,8 +89,9 @@ Honor existing approval deferrals; repeating resume does not grant permission.
    `notifai guidance` to reread the effective provenance-marked Guidance Topics.
 2. Resolve the reported `pending_actions`. Unreadable owned placements and
    multiple receipt-backed scopes require a decision rather than guessing.
-   An unmanaged or modified skill is preserved: ask the User whether to keep it or replace it after
-   preserving their changes. Matching package bytes do not establish installer
+   Preserve an unmanaged or modified skill. Ask about replacement only if that
+   placement is needed for the requested outcome; unrelated diagnostics need no
+   new approval. Matching package bytes do not establish installer
    ownership. An interrupted installer-owned placement or a missing owned
    destination can resume in its recorded scope through the existing installer.
    An incomplete inspection or unverifiable bundle does not establish stale
@@ -150,17 +156,25 @@ or restart it merely because proof is missing.
 
 ## Harness differences
 
-| Harness | Existing integration after a CLI or guidance update | When a fresh runtime is needed |
+An unchanged definition and a healthy compatible owner need no new activation.
+For a changed definition, resume retains the affected scope and waits for an
+actual root callback carrying that definition's revision. Reading current files,
+running the CLI by absolute path or simulating a hook cannot establish loading.
+Follow the remaining diagnosis before arranging a reload; preserve pending work.
+If the original Agent Session has ended naturally, an observed replacement in
+the same scope can establish loading without adopting the original session's debt.
+
+| Harness | Existing integration after a CLI or guidance update | Changed-definition loading |
 | --- | --- | --- |
-| Claude Code | Command hooks invoke the stable adapter again; explicitly reread changed guidance. | Newly installed lifecycle hooks need a fresh Agent Session for activation. |
-| Codex | Continue when the loaded Stop fingerprint and hook approvals still match. | Changed handler identity or source can need `/hooks` approval; a stale loaded Stop definition needs a fresh Agent Session. Follow the concrete new-CLI diagnosis. |
-| Cursor | Existing hooks use the updated adapter; reread guidance in the current conversation. | New lifecycle activation needs a fresh conversation, a prompt, and its first completed or errored turn. |
-| OpenCode | The loaded plugin invokes the adapter per event and obtains current guidance per model request. | Restart OpenCode when generated plugin code changed or required lifecycle activation is missing. |
-| OpenClaw | The loaded Gateway plugin checks before prompts and injects guidance once per observed generation; explicitly reread changed guidance in the current one. | Restart the Gateway when generated plugin code changed or required lifecycle activation is missing. |
-| Hermes | The local classic CLI can use the new executable and reread guidance in the same Agent Session. `notifai guidance` carries the shared weekly notice. | When the managed plugin changes, start a fresh classic CLI Agent Session so Hermes freezes the current section into its prompt. The v0.21.5 plugin can be refreshed with `notifai hooks install --harness hermes`. |
-| Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | A newly installed SessionStart hook needs a fresh Agent Session for lifecycle observation; hook output cannot activate model-visible context. |
+| Claude Code | Command hooks invoke the stable adapter again; explicitly reread changed guidance. | Observe the changed command on a natural lifecycle callback; a definition held in memory may require a fresh Agent Session. |
+| Codex | Preserve compatible owners and existing trust. | Changed handlers can require `/hooks` approval. Use the specific reload or stale-Stop remedy, then verify actual callbacks, including the tool-boundary callback where supported. |
+| Cursor | Existing hooks use the updated adapter; reread guidance in the current conversation. | Observe the changed command for the exact conversation. First-time activation needs a prompt and its first completed or errored turn. |
+| OpenCode | The loaded plugin invokes the adapter per event and obtains guidance per model request. | Changed module code loads at startup. Arrange a restart only when that scope still needs it, then observe a natural callback. |
+| OpenClaw | The loaded Gateway plugin checks before prompts and injects guidance once per observed generation. | Changed module code needs Gateway reload. Preserve existing routes until a safe reload, then verify a prompt in the current generation. |
+| Hermes | A compatible native attendant preserves the attached classic CLI answer bridge while the owned module is refreshed. Reread guidance explicitly. | Changed Python code must be observed from a loaded plugin. Older attendants may require preserving the old file until their work finishes; follow the concrete continuity diagnosis. |
+| Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | Observe the changed SessionStart command. Hook output cannot activate model-visible context, so load the skill directly. |
 
 Cursor and OpenCode do not gain asynchronous Question Routing merely by
-updating. Hermes needs a fresh local classic CLI session with its current
-plugin and a live attendant. OpenClaw needs its loaded Gateway plugin and a current generation;
+updating. Hermes needs its attached classic CLI bridge and a live attendant.
+OpenClaw needs its loaded Gateway plugin and a current generation;
 see [Harness setup](harness-setup.md) for that route and its limits.

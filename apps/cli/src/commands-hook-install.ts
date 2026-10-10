@@ -65,12 +65,15 @@ import {
   removeOpenclawNotifaiConfigText,
 } from './openclaw-plugin.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
-import { installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import { installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 import { packageVersion } from './release.js'
 import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
 import { activeNpmCli } from './npm-invocation.js'
 import { removeClaudeCommandRules } from './claude-command-approval.js'
 export interface HooksInstallFlags {
+  /** Internal maintenance path: preserve host enablement and loaded owners. */
+  refreshOnly?: boolean
   harness?: string
   /** Init owns the final setup result and suppresses per-harness close narration. */
   narrate?: boolean
@@ -130,28 +133,20 @@ function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarne
     ? 'Your existing Codex hook approvals still match. ' : ''
   const activation = !changed
     ? approvalNote + 'Hook installation is unchanged; this write needs no restart. Continue the current Agent Session if its lifecycle and trust are ready; `notifai update --check --json` reports any remaining session requirement.'
-    : harness === 'codex'
-      ? codexTrustProblems(
-          findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(
-            (installation) => installation.harness === 'codex',
-          ),
-          deps.env,
-        ).length === 0
-        ? 'Your existing Codex hook approvals still match. Start one fresh Codex session, send one prompt, and run `notifai doctor`.'
-        : 'The changed Notifai handlers need approval. Open `/hooks` in Codex and approve or enable them, then start one fresh Codex session, send one prompt, and run `notifai doctor`.'
-      : harness === 'cursor'
-        ? 'Start one fresh Cursor conversation, send one prompt, finish its first turn, then run `notifai doctor`.'
-        : harness === 'opencode'
-          ? 'Restart OpenCode, start one fresh session, send one prompt, then run `notifai doctor`.'
-          : harness === 'openclaw'
-            ? 'Restart the OpenClaw Gateway, start one fresh Agent Session, send one prompt, then run `notifai doctor`.'
-          : `Start one fresh ${label} session, send one prompt, then run \`notifai doctor\`.`
+    : (harness === 'codex' ? approvalNote || 'The changed Notifai handlers need approval. Open `/hooks` in Codex to approve or enable them. ' : '') +
+      'Keep existing working sessions and pending questions. Run `notifai doctor --json` for the affected scope; verify a real callback from the changed definition and follow only its remaining reload or approval requirement.'
+
   if (deps.io.interactive === true && deps.io.note) {
     void deps.io.note(`${file}\n${activation}`, `${label} hooks installed`)
     return
   }
   deps.io.out(`Installed ${harness} hooks in ${file}`)
   deps.io.out(activation)
+}
+
+export function hooksRefreshCommand(deps: CommandDeps, harness: string, publication?: IntegrationPublication): number {
+  const publish = publication ?? integrationPublication(deps)
+  return publish(() => hooksInstallCommand(deps, { harness, refreshOnly: true, narrate: false }))
 }
 
 export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
@@ -171,12 +166,12 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
   if (!harness) return EXIT.usage
   if (harness === 'hermes') {
     try {
-      preflightHermesPlugin(deps.env)
+      if (!flags.refreshOnly) preflightHermesPlugin(deps.env)
       const target = resolveHookAdapterTarget(deps, flags)
       const adapter = installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)
-      const file = installHermesPlugin(adapter.path, deps.env,
+      const file = (flags.refreshOnly ? refreshHermesPlugin : installHermesPlugin)(adapter.path, deps.env,
         (deps.hookPlatform ?? process.platform) === 'win32' && target.kind !== 'native' ? target.execPath : undefined)
-      deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Start a fresh local classic CLI Agent Session; its live attendant can route questions after activation.`)
+      deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Keep a healthy existing classic CLI bridge. Run \`notifai doctor --json\` for the affected scope and verify the changed module on a natural activation before declaring its repair complete.`)
       return EXIT.ok
     } catch (err) {
       deps.io.err(`Could not install Hermes plugin: ${String(err)}`)
@@ -235,6 +230,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
       scriptPath,
       installOpenclawPlugin(deps, settingsTarget, {
         adapterPath,
+        ...(flags.refreshOnly ? { refreshOnly: true } : {}),
         timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
         platform: hookPlatform,
         ...(nodePath === undefined ? {} : { nodePath }),
@@ -258,6 +254,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
         const result = mergeCursorHooks(
           document,
           buildCursorHookConfig({
+            integrationScope: settingsTarget,
             adapterPath,
             harness: 'cursor',
             platform: hookPlatform,
@@ -285,6 +282,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     const result = mergeHooks(
       document,
       buildHookConfig({
+        integrationScope: file,
         adapterPath,
         harness,
         platform: hookPlatform,
@@ -459,7 +457,7 @@ function installOpencodePlugin(
           throw new Error(`${file} exists and was not written by Notifai; move it aside first.`)
         }
       }
-      atomicWriteFileSync(file, opencodePluginSource(options), {
+      atomicWriteFileSync(file, opencodePluginSource({ ...options, integrationScope: file }), {
         mode: 0o600,
         preserveMode: false,
         requireCurrentUserOwner: true,
@@ -490,6 +488,7 @@ function installGrokHooks(
         }
       }
       atomicWriteFileSync(file, `${JSON.stringify({ hooks: buildHookConfig({
+        integrationScope: file,
         adapterPath: options.adapterPath,
         harness: 'grok',
         platform: options.platform,
@@ -547,6 +546,7 @@ function installOpenclawPlugin(
     platform?: NodeJS.Platform
     nodePath?: string
     narrate?: boolean
+    refreshOnly?: boolean
   },
 ): number {
   const pluginDir = path.dirname(file)
@@ -562,7 +562,7 @@ function installOpenclawPlugin(
           throw new Error(`${file} exists and was not written by Notifai; move it aside first.`)
         }
       }
-      atomicWriteFileSync(file, openclawPluginSource(options), {
+      atomicWriteFileSync(file, openclawPluginSource({ ...options, integrationScope: file }), {
         mode: 0o600,
         preserveMode: false,
         requireCurrentUserOwner: true,
@@ -578,7 +578,7 @@ function installOpenclawPlugin(
         requireCurrentUserOwner: true,
       })
     })
-    blockers = writeOpenclawEnablement(deps)
+    if (!options.refreshOnly) blockers = writeOpenclawEnablement(deps)
   } catch (err) {
     deps.io.err(String(err))
     return EXIT.failed

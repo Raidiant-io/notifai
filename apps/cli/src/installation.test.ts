@@ -29,12 +29,12 @@ function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
   const extension = target.startsWith('bun-windows-') ? '.exe' : ''
   const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
-  const candidate = (version: string, archive?: Buffer) => {
+  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v1') => {
     const directory = path.join(root, version); mkdirSync(directory)
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
     writeFileSync(path.join(directory, `notifai-runtime${extension}`), runtime)
     writeFileSync(path.join(directory, `notifai${extension}`), launcher)
-    const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: 'a'.repeat(40),
+    const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: continuity, legacy_inventories: [] }, version, source_revision: 'a'.repeat(40),
       store_schema: 1, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-${target === 'bun-windows-x64' ? 'windows-x64.zip' : 'linux-x64.tar.gz'}`,
         bytes: archive?.length ?? 100, sha256: digest(archive ?? version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
     const signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
@@ -62,6 +62,72 @@ it('activates immutable generations, rejects stale decisions, and rolls back wit
   expect(f.installation.rollback(2).active.active).toBe(first)
   expect(readFileSync(path.join(f.options.root, 'unrelated.txt'), 'utf8')).toBe('preserve')
   for (const build of [first, second]) expect(existsSync(path.join(f.options.root, 'versions', build, 'notifai-runtime'))).toBe(true)
+})
+
+it('activates compatible updates while old questions and resident claims keep their original bytes', () => {
+  const f = fixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'old-question'
+  const sessionsDirectory = path.dirname(sessionStatePath(session, env))
+  const installation = new Installation({ ...f.options, sessionsDirectory })
+  installation.installCandidate({ ...f.candidate('1.0.0'), source: 'shell' })
+  const first = installation.activeRelease(), id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id
+  const reference = { installation_id: id, build: first.build }
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [reference],
+    acknowledgement_due: [{ request_id: 'req_still_owned', recorded_at: 1 }] })
+  const file = sessionStatePath(session, env), before = readFileSync(file)
+  const claim = path.join(sessionsDirectory, 'unindexed.attendant')
+  const token = acquireClaimFile(claim, { runtime_build: reference })!
+  const claimBefore = readFileSync(claim)
+  try {
+    const result = installation.installCandidate({ ...f.candidate('2.0.0'), source: 'npm', upgrade: true, version: '2.0.0', channel: 'stable' })
+    expect(result.version).toBe('2.0.0')
+    expect(installation.inspect().source).toBe('shell')
+    expect(readFileSync(file)).toEqual(before)
+    expect(readFileSync(claim)).toEqual(claimBefore)
+    expect(existsSync(path.join(f.options.root, 'versions', first.build, 'notifai-runtime'))).toBe(true)
+  } finally { releaseClaimFile(claim, token) }
+})
+
+it('keeps an exact waiting candidate and rechecks unknown legacy work on recovery', () => {
+  const f = fixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'legacy'
+  const installation = new Installation({ ...f.options, sessionsDirectory: path.dirname(sessionStatePath(session, env)) })
+  writeSessionState(session, env, { acknowledgement_due: [{ request_id: 'req_legacy', recorded_at: 1 }] })
+  const candidate = f.candidate('1.0.0'), file = sessionStatePath(session, env), before = readFileSync(file)
+  expect(() => installation.installCandidate({ ...candidate, source: 'manual' })).toThrow(/existing writer/)
+  expect(installation.inspect()).toMatchObject({ active: null, pending: true })
+  expect(() => installation.recover()).toThrow(/existing writer/)
+  expect(readFileSync(file)).toEqual(before)
+  // The real owner settles its debt. Bare historical state is not a writer.
+  writeSessionState(session, env, {})
+  expect(installation.recover().active?.generation).toBe(1)
+  expect(installation.activeRelease().version).toBe('1.0.0')
+})
+
+it('blocks an unindexed live legacy claim but ignores an exactly gone owner', () => {
+  const f = fixture(), sessionsDirectory = path.join(f.root, 'sessions')
+  mkdirSync(sessionsDirectory)
+  const installation = new Installation({ ...f.options, sessionsDirectory })
+  const claim = path.join(sessionsDirectory, 'orphan.attendant'), token = acquireClaimFile(claim, {})!
+  try {
+    expect(() => installation.installCandidate({ ...f.candidate('1.0.0'), source: 'manual' })).toThrow(/resident/)
+    const contents = JSON.parse(readFileSync(claim, 'utf8'))
+    writeFileSync(claim, JSON.stringify({ ...contents, start: 'another process incarnation' }))
+    expect(installation.recover().active?.generation).toBe(1)
+  } finally { releaseClaimFile(claim, token) }
+})
+
+it('checks all retained generations and fences stale integration writers at publication', () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, source: 'manual', channel: 'stable', expectedGeneration: 0 })
+  const second = f.installation.stage(f.candidate('2.0.0'))
+  f.installation.activate({ build: second, source: 'manual', channel: 'stable', expectedGeneration: 1 })
+  let wrote = false
+  expect(() => f.installation.publishIntegration(1, () => { wrote = true })).toThrow(/superseded/)
+  expect(wrote).toBe(false)
+  const third = f.installation.stage(f.candidate('3.0.0', undefined, 'incompatible-state-v2'))
+  expect(() => f.installation.activate({ build: third, source: 'manual', channel: 'stable', expectedGeneration: 2 })).toThrow(/continuity/)
+  expect(f.installation.inspect().active?.active).toBe(second)
+  expect(() => f.installation.publishIntegration(2, () => { wrote = true })).toThrow(/superseded/)
+  expect(wrote).toBe(false)
 })
 
 it('cleans only authenticated retired builds from an earlier boot, preserving active and previous generations', () => {
@@ -649,7 +715,6 @@ it('native rollback runs integration through the restored immutable executable a
     io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
   const result = await nativeUpdateCommand(deps, { rollback: true, json: true }, {
     installation: f.installation,
-    pendingWork: () => null,
     resume: executable => { launches.push(executable); return { ok: true, files_complete: true, migration_complete: true, pending_actions: [] } },
   })
   expect(result).toBe(0)
@@ -681,7 +746,7 @@ it('native update keeps the saved beta channel and reports incomplete integratio
   const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root,
     store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
     io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
-  expect(await nativeUpdateCommand(deps, { json: true }, { installation: f.installation, pendingWork: () => null,
+  expect(await nativeUpdateCommand(deps, { json: true }, { installation: f.installation,
     resume: () => { throw new Error('interrupted integration') } })).toBe(1)
   expect(JSON.parse(out[0]!)).toMatchObject({ ok: false, version: '1.0.0-beta.2', channel: 'beta',
     integration_complete: false, recovery_command: 'notifai update --resume --json' })
@@ -711,7 +776,7 @@ it('native installation activates authenticated local bytes and reports setup se
     store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
     io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
   const flags = { directory: candidate.directory, inventory, source: 'manual', json: true, path: false }
-  const seams = { installation: f.installation, pendingWork: () => null,
+  const seams = { installation: f.installation,
     init: (executable: string, env: NodeJS.ProcessEnv) => {
       launches.push(executable)
       expect(env['PATH']).toBe(path.join(f.options.root, 'bin'))
@@ -729,7 +794,7 @@ it('native installation activates authenticated local bytes and reports setup se
   expect(f.installation.inspect()).toMatchObject({ source: 'manual', active: { generation: 1 } })
 })
 
-it('native installer refuses pending work before installation and preserves an activated runtime when setup fails', async () => {
+it('native installer preserves an activated runtime when setup fails', async () => {
   const f = fixture(), candidate = f.candidate('1.0.0')
   const inventory = path.join(candidate.directory, 'inventory.json'); writeFileSync(inventory, candidate.signedInventory)
   const out: string[] = []
@@ -737,10 +802,7 @@ it('native installer refuses pending work before installation and preserves an a
     store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
     io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
   const flags = { directory: candidate.directory, inventory, path: false, json: true }
-  expect(await nativeInstallCommand(deps, flags, { installation: f.installation, pendingWork: () => 'A question is pending' })).toBe(1)
-  expect(f.installation.inspect().active).toBeNull()
-  out.length = 0
-  expect(await nativeInstallCommand(deps, flags, { installation: f.installation, pendingWork: () => null,
+  expect(await nativeInstallCommand(deps, flags, { installation: f.installation,
     init: () => { throw new Error('interrupted setup') } })).toBe(1)
   expect(JSON.parse(out[0]!)).toMatchObject({ runtime_installed: true, setup_complete: false })
   expect(f.installation.activeRelease().version).toBe('1.0.0')
@@ -829,7 +891,7 @@ it('native install reports pending uninstall before reading a candidate or start
     store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
     io: { out: line => out.push(line), err() {}, confirm: async () => false, openUrl() {} } }
   expect(await nativeInstallCommand(deps, { json: true, directory: path.join(f.root, 'missing'), inventory: path.join(f.root, 'missing.json') }, {
-    installation: f.installation, pendingWork: () => { throw new Error('Must stop before setup work') },
+    installation: f.installation,
     init: () => { throw new Error('Must not initialize during uninstall') },
   })).toBe(1)
   expect(JSON.parse(out[0]!)).toMatchObject({ code: 'uninstall_pending', runtime_installed: false })
@@ -851,7 +913,7 @@ it('stages an explicitly requested npm migration without deleting the legacy pac
     store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
     io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
   const flags = { json: true, directory: candidate.directory, inventory, path: false, init: false }
-  const seams = { installation: f.installation, pendingWork: () => null }
+  const seams = { installation: f.installation }
   expect(await nativeInstallCommand(deps, flags, seams)).toBe(1)
   expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'installation_collision', runtime_installed: false })
   expect(f.installation.inspect().active).toBeNull()
@@ -888,4 +950,23 @@ it('installs over a folder an older CLI left behind, protecting it only after au
   expect(installation.installCandidate({ ...candidate, source: 'powershell' })).toMatchObject({ changed: true, reused: false })
   expect(order).toEqual([f.options.root, path.join(f.options.root, 'bin')])
   expect(readFileSync(path.join(f.options.root, 'bin', 'hook-adapter'), 'utf8')).toBe('older CLI file')
+})
+
+it.each(['unknown', 'reboot'] as const)('does not let a never-admitted candidate poison later updates (%s boot)', mode => {
+  const f = fixture()
+  let boot: string | null = mode === 'unknown' ? null : '11111111-1111-1111-1111-111111111111'
+  const installation = new Installation({ ...f.options, bootIdentity: () => boot })
+  const original = f.candidate('1.0.0')
+  installation.installCandidate({ ...original, source: 'shell' })
+  const rejected = installation.stage(f.candidate('2.0.0', undefined, 'incompatible-state-v2'))
+  expect(() => installation.activate({ build: rejected, expectedGeneration: 1, source: 'shell', channel: 'stable' })).toThrow(/continuity/)
+  installation.abandonPending(1)
+  if (mode === 'reboot') boot = '22222222-2222-2222-2222-222222222222'
+  const compatible = installation.stage(f.candidate('3.0.0'))
+  expect(installation.activate({ build: compatible, expectedGeneration: 1, source: 'shell', channel: 'stable' }).changed).toBe(true)
+  expect(existsSync(path.join(f.options.root, 'versions', rejected, 'inventory.json'))).toBe(true)
+  // Restaging a previously active build must never recreate the exemption.
+  const old = installation.inspect().active!.previous!
+  expect(installation.stage(original)).toBe(old)
+  expect(existsSync(path.join(f.options.root, 'staged-runtimes', `${old}.json`))).toBe(false)
 })

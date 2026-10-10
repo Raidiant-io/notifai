@@ -56,7 +56,7 @@ printf '200\\n\\n'
     const members = [['notifai', launcher], ['notifai-runtime', runtime], ['licenses/NOTICE.txt', 'fixture notice']]
     await setArchive(members)
     const marker = path.join(root, 'called')
-    const run = () => spawnSync('/bin/sh', [path.join(repositoryRoot, 'scripts/install.sh'), '--json', '--version', '1.0.0', '--no-init', '--no-path', '--migrate-npm'], {
+    const run = (extra = []) => spawnSync('/bin/sh', [path.join(repositoryRoot, 'scripts/install.sh'), '--json', '--version', '1.0.0', '--no-init', '--no-path', '--migrate-npm', ...extra], {
       cwd: root, env: { PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temporary, BOOTSTRAP_FIXTURES: fixtures, BOOTSTRAP_MARKER: marker, BOOTSTRAP_HOME: root, HOME: root },
       encoding: 'utf8', timeout: 20_000,
     })
@@ -87,6 +87,15 @@ printf '200\\n\\n'
     assert.equal(reused.status, 7, reused.stderr || reused.stdout)
     assert.deepEqual(readFileSync(marker, 'utf8').trim().split('\n'),
       ['install', '--source', 'shell', '--version', '1.0.0', '--json', '--no-init', '--no-path', '--migrate-npm'])
+    rmSync(marker)
+    const unpinned = run(['--upgrade'])
+    assert.equal(unpinned.status, 1)
+    assert.match(JSON.parse(unpinned.stdout).message, /requires exact/)
+    await setArchive(members)
+    const upgraded = run(['--upgrade', '--channel', 'stable'])
+    assert.equal(upgraded.status, 7, upgraded.stderr || upgraded.stdout)
+    const upgradeArgs = readFileSync(marker, 'utf8').trim().split('\n')
+    assert.ok(upgradeArgs.includes('--upgrade') && upgradeArgs.includes('--directory'), 'Explicit upgrade must execute the downloaded candidate, not the old installed updater')
     rmSync(marker)
     chmodSync(installedBin, 0o777)
     const unsafeExisting = run()

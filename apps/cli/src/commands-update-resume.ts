@@ -1,9 +1,9 @@
 /** Resume owned integration work using this installed package's authority. */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { activeQuestionRouteProblems } from './commands-hook-diagnostics.js'
-import { hooksInstallCommand } from './commands-hook-install.js'
+import { hooksRefreshCommand } from './commands-hook-install.js'
 import { installedSkillMatchesPackage, listScopedNotifaiSkills } from './commands-skill.js'
 import { ownedSkillInventory, skillInventoryIssue } from './native-skills.js'
 import { updateSkillCommand } from './commands-update-skill.js'
@@ -16,7 +16,9 @@ import { isSemVer } from './version.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
 import { sameLocalPath } from './local-path.js'
 import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messages.js'
-import { activateInstalledAttendants, type AttendantActivation } from './attendant-update.js'
+import { integrationPublication } from './native-installation.js'
+import { buildIdentity } from './distribution.js'
+import { pendingHookRepairs, withHookRepairIntent } from './integration-repair.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -38,11 +40,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   }
   const pending: string[] = []
   const changed: string[] = []
-  let attendants: AttendantActivation[] = []
+  const diagnostics: string[] = []
   const report = (filesComplete: boolean): number => {
     const complete = filesComplete && pending.length === 0
     const result = { ok: filesComplete, read_only: false, running_version: packageVersion(),
-      files_complete: filesComplete, migration_complete: complete, pending_actions: pending, changed, attendants,
+      files_complete: filesComplete, migration_complete: complete, pending_actions: [...new Set(pending)],
+      diagnostics: [...new Set(diagnostics)], changed, attendants: [],
       resume_command: 'notifai update --resume --json', changelog: installedChangelog(packageVersion(), flags.from),
       next_step: 'Read this package’s SKILL.md and references/updates.md, then run notifai guidance in the active Agent Session. Preserve outstanding work and existing User deferrals.' }
     if (flags.json === true || deps.io.interactive !== true) deps.io.out(JSON.stringify(result, null, 2))
@@ -54,62 +57,62 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     out: (_line: string) => {}, err: (line: string) => pending.push(line) }
   const repairDeps = { ...deps, io: quietIo }
   try {
+    const publish = integrationPublication(deps)
+    const native = buildIdentity() !== null
     let assessment = localIntegrationAssessment(deps)
     const coexistence = assessment.faults.find(fault => fault.code === 'legacy-native-coexistence')
-    if (coexistence !== undefined) {
+    if (!native && coexistence !== undefined) {
       pending.push(`${coexistence.code}: ${coexistence.remedy}`)
       return report(false)
     }
     const effective = assessment.cli.effective
     // A command invoked through another prefix has no authority to retarget
     // shared integration or replace its guidance merely because it can run.
-    if (effective?.artifact_path === null || effective === null ||
-        !hookAdapterTargetsArtifact({ execPath: process.execPath, scriptPath: assessment.cli.current.artifact_path }, effective.artifact_path)) {
+    if (!native && (effective?.artifact_path === null || effective === null ||
+        !hookAdapterTargetsArtifact({ execPath: process.execPath, scriptPath: assessment.cli.current.artifact_path }, effective.artifact_path))) {
       pending.push('Resolve the effective installation before resuming integration; run notifai doctor --json.')
       return report(false)
     }
     const active = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
     const owner = active.contested.length === 0 ? active.active : null
     const waiting = updateWorkPending(deps)
-    if (waiting !== null) {
+    if (!native && waiting !== null) {
       pending.push(waiting)
       return report(false)
     }
     const inventory = ownedSkillInventory(await listScopedNotifaiSkills(deps))
     const skillIssue = skillInventoryIssue(inventory)
-    if (skillIssue !== null) {
-      pending.push(`${skillIssue.detail} ${skillIssue.remedy}`)
-      return report(false)
-    }
+    const integrationArtifact = native ? assessment.cli.current.artifact_path : effective?.artifact_path
     if (assessment.installations.length > 0) {
       const adapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
       if (adapter.problems.length > 0 || adapter.target === null || isNpxAdapterTarget(adapter.target) ||
-          !hookAdapterTargetsArtifact(adapter.target, effective.artifact_path!) ||
+          !integrationArtifact || !hookAdapterTargetsArtifact(adapter.target, integrationArtifact) ||
           (adapter.target.kind !== 'native' && !sameLocalPath(adapter.target.execPath, process.execPath, deps.hookPlatform ?? process.platform))) {
         if (adapter.target?.kind === 'native') throw new Error('Repair the native installation before resuming integration')
-        if (installHookAdapter({ execPath: process.execPath, scriptPath: effective.artifact_path! }, deps.hookAdapterHome,
-          deps.hookPlatform, deps.env).changed) changed.push('hook-adapter')
+        if (!integrationArtifact) throw new Error('Installed artifact is unavailable')
+        if (publish(() => installHookAdapter({ execPath: process.execPath, scriptPath: integrationArtifact }, deps.hookAdapterHome,
+          deps.hookPlatform, deps.env)).changed) changed.push('hook-adapter')
       }
     }
-    if (inventory.installed.length === 1) {
+    if (skillIssue === null && inventory.installed.length === 1) {
       let skillReport: { changed?: boolean; error?: string } = {}
       const skillResult = await updateSkillCommand({ ...repairDeps, io: { ...quietIo,
         out: (line: string) => { try { skillReport = JSON.parse(line) } catch { /* local status only */ } },
-      } }, { json: true })
+      } }, { json: true }, publish)
       if (skillResult !== EXIT.ok) {
         pending.push(skillReport.error ?? 'Skill refresh failed; resume through the native installer in the existing scope.')
-        return report(false)
       }
       if (skillReport.changed === true) changed.push('skill')
     }
     for (const { installation, env } of assessment.installations) {
       if (installationFaults(installation, deps.hookPlatform).length === 0) continue
       const before = readFileSync(installation.file, 'utf8')
-      if (hooksInstallCommand({ ...repairDeps, env }, { harness: installation.harness, narrate: false }) !== EXIT.ok) {
+      if (hooksRefreshCommand({ ...repairDeps, env }, installation.harness, action => publish(() =>
+        withHookRepairIntent({ ...deps, env }, installation, env === deps.env ? owner : null, action))) !== EXIT.ok) {
         pending.push(`Could not finish ${installation.harness} hook migration.`)
-        return report(false)
+        continue
       }
-      if (readFileSync(installation.file, 'utf8') !== before) changed.push(`${installation.harness}-hooks`)
+      if (!existsSync(installation.file) || readFileSync(installation.file, 'utf8') !== before) changed.push(`${installation.harness}-hooks`)
     }
     assessment = localIntegrationAssessment(deps)
     const after = ownedSkillInventory(await listScopedNotifaiSkills(deps))
@@ -119,28 +122,27 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       : `${afterIssue.detail} ${afterIssue.remedy}`)
     // Unselected foreign guidance remains diagnosed, but has no authority over
     // independent owned hooks or resident recovery. Never hide an owned gap.
-    const repairFaults = assessment.faults.filter(fault => fault.code !== 'native-approval-pending' &&
-      (!fault.code.startsWith('skill-') || ownedSkillGap))
-    pending.push(...assessment.faults.map(fault => `${fault.code}: ${fault.remedy}`))
+    const repairFaults = assessment.faults.filter(fault => fault.code === 'hooks-drift' ||
+      (!native && fault.code === 'adapter-drift'))
+    diagnostics.push(...assessment.faults.map(fault => `${fault.code}: ${fault.remedy}`))
+    pending.push(...repairFaults.map(fault => `${fault.code}: ${fault.remedy}`))
     if (owner !== null) {
       if (isHookInstallableHarness(owner.harness) && questionRoutingCapability(owner.harness, deps.hookPlatform).stopContinuation !== 'unsupported') {
-        pending.push(...activeQuestionRouteProblems(deps, owner,
-          assessment.installations.filter(entry => entry.env === deps.env).map(entry => entry.installation)))
-      }
-      if (changed.includes(`${owner.harness}-hooks`)) {
-        pending.push('Changed hooks need exact-session activation verification; preserve the current Agent Session until a specific approval or fresh-session requirement is proven.')
+        const problems = activeQuestionRouteProblems(deps, owner,
+          assessment.installations.filter(entry => entry.env === deps.env).map(entry => entry.installation))
+        diagnostics.push(...problems)
       }
       if (owner.harness === 'codex' && owner.sessionId !== undefined && !codexToolHookReady(deps, owner.sessionId)) {
-        pending.push(CODEX_TOOL_HOOK_RECOVERY)
+        diagnostics.push(CODEX_TOOL_HOOK_RECOVERY)
       }
     }
-    if (!ownedSkillGap && repairFaults.length === 0 && !assessment.faults.some(fault => fault.code === 'native-approval-pending')) {
-      attendants = await activateInstalledAttendants(deps, effective.artifact_path!)
-      if (attendants.some(entry => entry.state === 'activated')) changed.push('resident-attendants')
-      const unresolved = attendants.filter(entry => entry.state === 'pending' || !entry.native_activity)
-      if (unresolved.length > 0) pending.push(`${unresolved.length} existing Codex session(s) still need native activity or resident activation verification; keep their Agent Sessions and pending inputs intact.`)
-    }
-    return report(!ownedSkillGap && repairFaults.length === 0)
+    // Fence even a no-write resume: another runtime may have activated while
+    // asynchronous skill discovery was in flight. Resolve durable requirements
+    // from a fresh synchronous inspection under that same authority.
+    return publish(() => {
+      pending.push(...pendingHookRepairs(deps, localIntegrationAssessment(deps).installations))
+      return report(!ownedSkillGap && repairFaults.length === 0)
+    })
   } catch {
     pending.push('Integration could not be verified; run notifai doctor --json and resume after the diagnosed gap is resolved.')
     return report(false)

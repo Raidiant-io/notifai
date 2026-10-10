@@ -6,8 +6,17 @@ import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
 import type { Installation, InstallSource } from './installation.js'
 import { managedInstallation } from './native-installation.js'
-import { updateWorkPending } from './commands-update-resume.js'
 import { nativeLifecycleCommand } from './cli-bin.js'
+import { ContinuityPending } from './local-continuity.js'
+
+function stagedRecovery(deps: CommandDeps, installation?: Installation): string {
+  try {
+    const pending = (installation ?? managedInstallation(deps)).pendingRelease()
+    if (pending) return nativeLifecycleCommand(pending.launcher, ['install', '--upgrade', '--version', pending.version,
+      '--channel', pending.channel, '--no-init', '--no-path', '--json'], deps.hookPlatform ?? process.platform)
+  } catch { /* Diagnostic uncertainty grants no activation authority. */ }
+  return 'notifai doctor --json'
+}
 
 export interface NativeUpdateFlags {
   json?: boolean
@@ -20,7 +29,6 @@ export interface NativeUpdateFlags {
 }
 interface NativeUpdateSeams {
   installation?: Installation
-  pendingWork?: () => string | null
   resume?: (executable: string, from: string) => Record<string, unknown>
 }
 function resumeIntegration(deps: CommandDeps, executable: string, from: string): Record<string, unknown> {
@@ -51,14 +59,6 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
         ((flags.rollback || flags.repair || flags.abandon || flags.cleanup) && (flags.channel !== undefined || flags.allowDowngrade)) ||
         (flags.allowDowngrade && flags.channel !== 'stable')) throw new Error('Choose one operation; --allow-downgrade requires --channel stable')
     const installation = seams.installation ?? managedInstallation(deps)
-    if (!seams.installation) {
-      const platform = deps.hookPlatform ?? process.platform
-      const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
-      const stable = path.join(home, '.notifai', 'bin', platform === 'win32' ? 'notifai.exe' : 'notifai')
-      if (legacyNpmMigration(deps.env, platform, stable, { nativeHome: home }).collisions.length) {
-        throw new Error('Another Notifai installation is on PATH; resolve the collision with notifai doctor --json before changing this installation')
-      }
-    }
     const before = installation.inspect()
     if (before.uninstall_pending) throw new Error('Finish or explicitly cancel the pending uninstall before updating Notifai')
     if (flags.cleanup) {
@@ -67,8 +67,6 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
         `Removed ${result.removed.length} retired builds; retained ${result.retained.length} active, referenced or unverified builds.`)
       return EXIT.ok
     }
-    const waiting = seams.pendingWork ? seams.pendingWork() : updateWorkPending(deps)
-    if (waiting) throw new Error(waiting)
     if (flags.abandon) {
       const after = installation.abandonPending(before.active?.generation ?? 0)
       emit({ ok: true, operation: 'abandon', installation: after }, 'Uncommitted installation changes were abandoned; retained runtimes and data were preserved.')
@@ -106,13 +104,17 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
     return ok ? EXIT.ok : EXIT.failed
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    emit({ ok: false, operation: 'update', message, recovery_command: 'notifai doctor --json' }, message)
+    emit({ ok: false, operation: 'update', message,
+      ...(error instanceof ContinuityPending ? { code: error.code, staged_build: error.build,
+        runtime_active: false, recovery_command: stagedRecovery(deps, seams.installation) }
+        : { recovery_command: 'notifai doctor --json' }) }, message)
     return EXIT.failed
   }
 }
 
 
 export interface NativeInstallFlags {
+  upgrade?: boolean
   migrateNpm?: boolean
   json?: boolean
   directory?: string
@@ -126,7 +128,6 @@ export interface NativeInstallFlags {
 }
 interface NativeInstallSeams {
   installation?: Installation
-  pendingWork?: () => string | null
   init?: (executable: string, env: NodeJS.ProcessEnv) => Record<string, unknown>
 }
 
@@ -160,6 +161,9 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     const source = flags.source ?? 'manual'
     if (!['shell', 'powershell', 'npm', 'manual'].includes(source)) throw new Error('--source must be shell, powershell, npm or manual')
     if (flags.channel !== undefined && flags.channel !== 'stable' && flags.channel !== 'beta') throw new Error('--channel must be stable or beta')
+    if (flags.upgrade && (!flags.version || !flags.channel || flags.init !== false || flags.path !== false)) {
+      throw new Error('--upgrade requires --version, --channel, --no-init and --no-path')
+    }
     const installation = seams.installation ?? managedInstallation(deps)
     const platform = deps.hookPlatform ?? process.platform
     const home = resolveHookAdapterHome(deps.hookAdapterHome, deps.env, platform)
@@ -181,8 +185,6 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
         : 'Resolve the existing Notifai installation before installing.')
       return EXIT.failed
     }
-    const waiting = seams.pendingWork ? seams.pendingWork() : updateWorkPending(deps)
-    if (waiting) throw new Error(waiting)
     // Default to this portable release, never to the invocation directory.
     const directory = path.resolve(flags.directory ?? path.dirname(process.execPath))
     const inventoryFile = path.resolve(flags.inventory ?? path.join(directory, 'inventory.json'))
@@ -191,6 +193,7 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     const signedInventory = readFileSync(inventoryFile, 'utf8')
     const result = installation.installCandidate({ directory, signedInventory,
       source: source as InstallSource, ...(flags.channel === undefined ? {} : { channel: flags.channel }),
+      ...(flags.upgrade ? { upgrade: true } : {}),
       ...(flags.version === undefined ? {} : { version: flags.version }) })
     const active = installation.activeRelease(result.active.generation)
     const command = path.join(path.dirname(path.dirname(path.dirname(active.launcher))), 'bin', path.basename(active.launcher))
@@ -236,7 +239,9 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     return complete ? EXIT.ok : EXIT.failed
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    emit({ ok: false, code: installed['runtime_installed'] ? 'installation_incomplete' : 'installation_failed', ...installed, message }, message)
+    emit({ ok: false, code: error instanceof ContinuityPending ? error.code : installed['runtime_installed'] ? 'installation_incomplete' : 'installation_failed',
+      ...installed, message, ...(error instanceof ContinuityPending ? { staged_build: error.build,
+        recovery_command: stagedRecovery(deps, seams.installation) } : {}) }, message)
     return EXIT.failed
   }
 }

@@ -15,6 +15,7 @@ import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
 import { RuntimeRetention, type RuntimeOwnerInspection } from './runtime-retention.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { canShareLocalState, ContinuityPending } from './local-continuity.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -74,7 +75,8 @@ export class Installation {
   private readonly probe: (directory: string, inventory: ReleaseInventory) => void
   constructor(private readonly options: { root: string; target: ReleaseTarget; distribution: Distribution;
     access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void;
-    bootIdentity?: () => string | null; fileUse?: (launcher: string, files: readonly string[]) => NativeFileUse }) {
+    bootIdentity?: () => string | null; fileUse?: (launcher: string, files: readonly string[]) => NativeFileUse;
+    sessionsDirectory?: string; externalWriters?: () => string | null }) {
     if (!path.isAbsolute(options.root)) throw new Error('Installation root must be absolute')
     this.access = options.access ?? installationAccess()
     this.root = path.resolve(options.root)
@@ -83,9 +85,12 @@ export class Installation {
       const launcher = path.join(directory, `notifai${this.extension}`)
       const output = execFileSync(launcher, ['self-check', '--json'], { encoding: 'utf8', timeout: 20_000,
         windowsHide: true, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
-      const result = JSON.parse(output) as { ok?: boolean; build?: { version?: string; sourceRevision?: string; sourceDirty?: boolean; target?: string } }
+      const result = JSON.parse(output) as { ok?: boolean; capabilities?: { local_continuity?: string }; build?: { version?: string; sourceRevision?: string; sourceDirty?: boolean; target?: string } }
       if (result.ok !== true || result.build?.version !== inventory.version || result.build.sourceRevision !== inventory.source_revision ||
           result.build.sourceDirty !== false || result.build.target !== options.target) throw new Error('Candidate self-check did not establish the signed build identity')
+      if (inventory.schema === 2 && result.capabilities?.local_continuity !== inventory.local_continuity?.contract) {
+        throw new Error('Candidate does not implement its signed local continuity contract')
+      }
     })
   }
 
@@ -119,6 +124,67 @@ export class Installation {
       if (present(this.file('uninstall.json'))) throw new Error('Finish or recover the pending uninstall before changing this installation')
       return action()
     }, { waitMs: 5_000, strictRelease: true })
+  }
+  /** Publish a prepared owned-file change only while the assessed runtime is
+   * still authoritative. Callers do no network/host/process waits here. */
+  publishIntegration<T>(expectedGeneration: number, action: () => T,
+    identity?: { installation_id: string; build: string }): T {
+    return this.mutate(() => {
+      const active = this.readActive()
+      if (active?.generation !== expectedGeneration || present(this.file('transaction.json')) ||
+          identity && (this.readInstall()?.id !== identity.installation_id || active.active !== identity.build)) {
+        throw new Error('Update superseded; inspect the active installation before repairing integrations')
+      }
+      const result = action()
+      if (result instanceof Promise) throw new Error('Integration publication must be synchronous')
+      return result
+    })
+  }
+
+  /** Called under installation.lock before preparing or recovering activation.
+   * Unknown lifetime evidence overestimates writers; it never grants clearance. */
+  private assertContinuity(build: string, installed: InstallRecord | null): void {
+    const candidate = this.verifyVersion(build)
+    if (candidate.inventory.schema !== 2) throw new ContinuityPending(build,
+      'This release cannot enforce local continuity; it may be retained but cannot become active.')
+    const external = this.options.externalWriters?.()
+    if (external) throw new ContinuityPending(build, external)
+    // First native installation also shares the existing state directory with
+    // legacy owners. An absent install record does not establish quiescence.
+    const installationId = installed?.id ?? '00000000-0000-0000-0000-000000000000'
+    const retention = new RuntimeRetention(this.root, installationId, this.access, this.options.bootIdentity)
+    const owners = retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'))
+    if (owners.status === 'uncertain') throw new ContinuityPending(build, owners.reason ?? 'Runtime ownership is uncertain.')
+    if (owners.unattributedPending || owners.sessions.some(owner => owner.pending && owner.references.length === 0 ||
+        owner.references.some(reference => reference.installation_id !== installationId)) ||
+        owners.hosts.some(host => processIdentityLiveness(host) !== 'gone')) {
+      throw new ContinuityPending(build, 'An existing writer has no verified native generation.')
+    }
+    const builds = new Set(owners.sessions.flatMap(owner => owner.builds))
+    for (const resident of owners.residents) {
+      if (processIdentityLiveness(resident.identity) === 'gone') continue
+      if (resident.runtime?.installation_id !== installationId) throw new ContinuityPending(build,
+        'An existing resident has no verified native generation.')
+      builds.add(resident.runtime.build)
+    }
+    const active = this.readActive()
+    if (active) builds.add(active.active)
+    const versions = this.file('versions')
+    this.owned(versions, true)
+    for (const existing of readdirSync(versions)) {
+      // Download/extraction scratch is never a managed command destination.
+      if (/^\.staged-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(existing)) continue
+      if (!buildId(existing)) throw new ContinuityPending(build, 'An unrecognized runtime directory needs inspection.')
+      if (!this.neverAdmitted(existing) && retention.reason(existing) !== null) builds.add(existing)
+    }
+    for (const existing of builds) {
+      if (existing === build) continue
+      let previous: VerifiedVersion
+      try { previous = this.verifyVersion(existing) } catch { throw new ContinuityPending(build, 'A retained runtime cannot be authenticated.') }
+      const digest = hash(readFileSync(path.join(previous.directory, 'inventory.json')))
+      if (!canShareLocalState(candidate.inventory, previous.inventory, digest)) throw new ContinuityPending(build,
+        `Existing runtime ${previous.inventory.version} has an unknown or different local continuity contract.`)
+    }
   }
   private uninstallRecord(): UninstallTransaction | null {
     const value = this.readJson('uninstall.json') as Partial<UninstallTransaction> | null
@@ -277,6 +343,13 @@ export class Installation {
         }
       }
       visit(directory)
+    }
+    if (present(this.file('staged-runtimes'))) {
+      this.owned(this.file('staged-runtimes'), true)
+      for (const name of readdirSync(this.file('staged-runtimes'))) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name) || !this.neverAdmitted(name.slice(0, -5))) throw new Error('Unverified staged runtime record')
+        names.push(`staged-runtimes/${name}`)
+      }
     }
     for (const channel of ['stable', 'beta'] as const) if (this.channelRecord(channel)) names.push(`channels/${channel}.json`)
     for (const name of ['shell-path.json', 'windows-path.json']) if (present(this.file(name))) names.push(name)
@@ -511,10 +584,11 @@ export class Installation {
    * any bootstrap reuses a healthy installation; runtime changes belong to the
    * explicit update command. Existing directory migration is bounded to root/bin. */
   installCandidate(input: { directory: string; signedInventory: string; source: InstallSource;
-    channel?: ReleaseChannel; version?: string }): ActivationResult & { version: string; reused: boolean } {
+    channel?: ReleaseChannel; version?: string; upgrade?: boolean }): ActivationResult & { version: string; reused: boolean } {
     if (present(this.file('uninstall.json'))) throw new Error('Finish or explicitly cancel the pending uninstall before installing')
     if (!['shell', 'powershell', 'npm', 'manual'].includes(input.source) ||
         (input.channel !== undefined && !['stable', 'beta'].includes(input.channel))) throw new Error('Unknown installation source or channel')
+    if (input.upgrade && (!input.version || !input.channel)) throw new Error('--upgrade requires an exact --version and --channel')
     const verified = this.verifyFiles(input.directory, input.signedInventory)
     if (input.version !== undefined && input.version !== verified.inventory.version) throw new Error('Candidate does not match the requested exact version')
     this.probe(input.directory, verified.inventory)
@@ -528,9 +602,26 @@ export class Installation {
       }
     }
     const before = this.inspect()
-    if (before.pending) throw new Error('Recover the pending installation transaction with notifai update --repair first')
+    if (before.pending) {
+      const transaction = this.transaction(this.readJson('transaction.json'))
+      const staged = this.verifyVersion(transaction.to.active)
+      if ((transaction.previous !== null && !input.upgrade) ||
+          this.identity(verified.inventory, verified.artifact) !== transaction.to.active ||
+          input.signedInventory !== readFileSync(path.join(staged.directory, 'inventory.json'), 'utf8') ||
+          (input.channel !== undefined && input.channel !== transaction.next.channel)) {
+        throw new Error('Resume the exact staged candidate or explicitly abandon the pending installation transaction')
+      }
+      const after = this.recover()
+      return { changed: true, active: after.active!, version: staged.inventory.version, reused: false,
+        launcher_update_pending: after.launcher_update_pending }
+    }
     if (before.active) {
       const active = this.activeRelease(before.active.generation)
+      if (input.upgrade) {
+        const build = this.stage(input)
+        return { ...this.activate({ build, source: before.source!, channel: input.channel!,
+          expectedGeneration: before.active.generation }), version: verified.inventory.version, reused: false }
+      }
       if ((input.version !== undefined && active.version !== input.version) ||
           (input.channel !== undefined && before.channel !== input.channel)) {
         throw new Error('An installation already exists; use notifai update to change its version or channel')
@@ -542,6 +633,14 @@ export class Installation {
     if (channel === 'stable' && isPrerelease(verified.inventory.version)) throw new Error('Prerelease installation requires explicit beta channel')
     const build = this.stage(input)
     return { ...this.activate({ build, source: input.source, channel, expectedGeneration: 0 }), version: verified.inventory.version, reused: false }
+  }
+  /** Exact recoverable target; no new channel discovery and no runtime change. */
+  pendingRelease(): { launcher: string; version: string; channel: ReleaseChannel } | null {
+    const record = this.readJson('transaction.json')
+    if (!record) return null
+    const transaction = this.transaction(record), staged = this.verifyVersion(transaction.to.active)
+    return { launcher: path.join(staged.directory, `notifai${this.extension}`), version: staged.inventory.version,
+      channel: transaction.next.channel }
   }
   /** Explicit User PATH setup/removal. No hook or ordinary command edits
    * shell startup files or registry PATH; User-edited ownership is preserved. */
@@ -625,11 +724,31 @@ export class Installation {
       this.verifyFiles(staged, input.signedInventory, true)
       this.mutate(() => {
         if (present(destination)) this.verifyVersion(build)
-        else renameSync(staged, destination)
+        else {
+          // Publish positive never-admitted evidence before making this build
+          // addressable. Missing evidence is always conservative, including
+          // historical builds and an interrupted activation.
+          if (verified.inventory.schema === 2) {
+            this.access.directory(this.file('staged-runtimes'))
+            this.save(`staged-runtimes/${build}.json`, { schema: 1, build, inventory_sha256: hash(input.signedInventory) })
+          }
+          renameSync(staged, destination)
+        }
         this.keepStaged(build)
       })
       return build
     } finally { if (present(staged)) rmSync(staged, { recursive: true }) }
+  }
+  private neverAdmitted(build: string): boolean {
+    const record = this.readJson(`staged-runtimes/${build}.json`) as { schema?: unknown; build?: unknown; inventory_sha256?: unknown } | null
+    if (record === null) return false
+    const version = this.verifyVersion(build)
+    // Historical installers do not consume this receipt on activation.
+    if (version.inventory.schema !== 2) return false
+    if (record.schema !== 1 || record.build !== build || record.inventory_sha256 !== hash(readFileSync(path.join(version.directory, 'inventory.json')))) {
+      throw new Error('Unverified staged runtime evidence')
+    }
+    return true
   }
   private keepStaged(build: string): void {
     const installed = this.readInstall()
@@ -671,7 +790,10 @@ export class Installation {
     // Discovery can advance while an interrupted transaction is waiting. An
     // already committed generation stays usable; recovery never silently rolls
     // it back. A not-yet-committed withdrawn candidate cannot become active.
-    if (!sameGeneration(current, transaction.to)) this.assertNotWithdrawn(next.inventory.version)
+    if (!sameGeneration(current, transaction.to)) {
+      this.assertNotWithdrawn(next.inventory.version)
+      this.assertContinuity(transaction.to.active, transaction.previous)
+    }
     this.checkStable(transaction.previous, transaction.next)
     this.access.directory(this.file('bin'))
     const stable = this.file(path.join('bin', `notifai${this.extension}`))
@@ -694,6 +816,9 @@ export class Installation {
     this.options.observe?.('metadata')
     new RuntimeRetention(this.root, transaction.next.id, this.access, this.options.bootIdentity)
       .activate(transaction.from?.active ?? null, transaction.to.active)
+    // Remove the exemption before launch admission can see this generation.
+    // A crash here overestimates writers; it cannot admit an untracked writer.
+    rmSync(this.file(`staged-runtimes/${transaction.to.active}.json`), { force: true })
     this.write(this.file('active.json'), activeBytes(transaction.to))
     this.options.observe?.('activated')
     if (!sameGeneration(this.readActive(), transaction.to)) throw new Error('Active generation read-back failed')
@@ -854,6 +979,10 @@ export class Installation {
     })
   }
   private commit(from: ActiveGeneration | null, previous: InstallRecord | null, build: string, source: InstallSource, channel: ReleaseChannel): ActivationResult {
+    // Historical readers remain authenticated, but can never become an active
+    // updater again. Leave no recoverable downgrade transaction for them.
+    if (this.verifyVersion(build).inventory.schema !== 2) throw new ContinuityPending(build,
+      'This release cannot enforce local continuity; it may be retained but cannot become active.')
     const to: ActiveGeneration = { schema: 1, active: build, previous: from?.active ?? null, generation: (from?.generation ?? 0) + 1 }
     const next: InstallRecord = { schema: 1, id: previous?.id ?? randomUUID(), owner: 'notifai', source: previous?.source ?? source,
       target: this.options.target, channel, previousChannel: previous?.channel ?? null, launcherBuild: build, launcherUpdatePending: false }

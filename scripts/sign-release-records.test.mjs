@@ -16,6 +16,7 @@ function candidates(version = '1.0.0') {
     artifact: { target, filename: `notifai-${version}-${target.slice(4)}.${target.includes('windows') ? 'zip' : 'tar.gz'}`,
       bytes: 100, sha256: hash(target), runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64), materials: [material] },
     check_sha256: 'e'.repeat(64),
+    capabilities: { local_continuity: 'notifai-session-state-v1' },
   }))
 }
 const policy = { schema: 1, status: 'approved', runtime: 'bun-1.4.2',
@@ -26,6 +27,9 @@ function inventory(version = '1.0.0', changes = {}) {
 test('complete matching release records round-trip through the shipped verifier; publication material is mandatory', () => {
   const signed = inventory()
   assert.equal(distribution.verifyInventory(signed).artifacts.length, 6)
+  assert.equal(distribution.verifyInventory(signed).schema, 2)
+  const incompatible = candidates(); incompatible[0].capabilities.local_continuity = 'unreviewed'
+  assert.throws(() => inventory('1.0.0', { candidates: incompatible }), /continuity/)
   assert.equal(inventory(), signed, 'Retries must produce exactly the same signed inventory')
   const missing = candidates().slice(1)
   assert.throws(() => inventory('1.0.0', { candidates: missing }), /target/)

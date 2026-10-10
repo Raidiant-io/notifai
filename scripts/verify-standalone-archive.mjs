@@ -10,6 +10,7 @@ import path from 'node:path'
 import { Distribution, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
 import { extractReleaseArchive } from '../apps/cli/dist/release-archive.js'
 import { Installation } from '../apps/cli/dist/installation.js'
+import { LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
 import { installationAccess } from '../apps/cli/dist/installation-access.js'
 import { repositoryRoot } from './cross-platform.mjs'
 
@@ -21,7 +22,7 @@ const nativeTarget = `bun-${process.platform === 'win32' ? 'windows' : process.p
 assert.equal(metadata.build.target, nativeTarget, 'Archive verification requires its native target')
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
 const distribution = new Distribution({ 'ci-only': publicKey.export({ type: 'spki', format: 'pem' }).toString() })
-const payload = Buffer.from(JSON.stringify({ schema: 1, version: metadata.build.version, source_revision: metadata.build.sourceRevision,
+const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: LOCAL_CONTINUITY, legacy_inventories: [] }, version: metadata.build.version, source_revision: metadata.build.sourceRevision,
   store_schema: 1, launcher_schema: 1, artifacts: [metadata.artifact] }))
 const signedInventory = JSON.stringify({ key_id: 'ci-only', payload: payload.toString('base64'),
   signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })

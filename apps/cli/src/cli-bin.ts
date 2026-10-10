@@ -1,3 +1,4 @@
+import { inspectExecutionDomain, physicalCliPath, type CliExecutionDomain } from './cli-execution-domain.js'
 import { buildIdentity, Distribution } from './distribution.js'
 import { RELEASE_PUBLIC_KEYS } from './release-trust.js'
 import { NPM_ADAPTER_BIN, NPM_ADAPTER_MANIFEST } from './npm-adapter-contract.js'
@@ -25,6 +26,8 @@ const POSIX_NAMES = ['notifai']
 const WINDOWS_NAMES = ['notifai.exe', 'notifai.cmd', 'notifai.ps1', 'notifai']
 
 export interface CliBinReadinessOptions {
+  executionDomain?: CliExecutionDomain
+  inspectExecutionDomain?: boolean
   runningArtifactPath?: string
   currentVersion?: string | null
   nativeHome?: string | undefined
@@ -34,6 +37,8 @@ export interface CliBinReadinessOptions {
 }
 
 export interface CliPathEntry {
+  observed_in?: 'invoking_path' | 'app_storage_candidate'
+  identity?: ReturnType<typeof physicalCliPath>
   command_path: string
   executable: boolean
   artifact_path: string | null
@@ -45,6 +50,7 @@ export interface CliPathEntry {
 }
 
 export interface CliInstallationInspection {
+  execution_domain?: CliExecutionDomain
   current: { artifact_path: string; version: string | null }
   effective: CliPathEntry | null
   entries: CliPathEntry[]
@@ -233,7 +239,10 @@ export function inspectCliInstallations(
   const launcherProof = runningProof ?? invokingProof
   const inspectedEnv = launcherProof ? environmentForVerifiedAdapter(launcherProof.proof, env, { platform, ...(checkAccess ? { checkAccess } : {}) })
     : buildIdentity() === null ? withoutNpxLauncherPath(env, platform, runningArtifact) : env
-  const entries = pathNotifaiEntries(inspectedEnv, platform).map((command): CliPathEntry => {
+  const domain = options.executionDomain ?? (options.inspectExecutionDomain ? inspectExecutionDomain(env, platform) : undefined)
+  const pathEntries = pathNotifaiEntries(inspectedEnv, platform)
+  const candidates = domain?.candidate_prefixes.flatMap(prefix => pathNotifaiEntries({ PATH: prefix }, platform)) ?? []
+  const entries = [...new Set([...pathEntries, ...candidates])].map((command): CliPathEntry => {
     // The stable command itself, or the installer's link to it in the User command directory.
     const managed = native !== null && existsSync(native.command) && lstatSync(native.command).isFile() && !lstatSync(native.command).isSymbolicLink() &&
       sameLocalPath(canonicalPath(command), canonicalPath(native.command), platform)
@@ -242,6 +251,8 @@ export function inspectCliInstallations(
     const prefix = installPrefix(artifact, command, platform)
     return {
       command_path: command,
+      ...(domain ? { observed_in: pathEntries.includes(command) ? 'invoking_path' as const : 'app_storage_candidate' as const,
+        identity: physicalCliPath(command) } : {}),
       executable: isExecutablePath(command, platform),
       artifact_path: adapter ? native?.runtime ?? null : artifact,
       version: managed || adapter ? native?.version ?? null : artifactVersion(artifact),
@@ -257,7 +268,8 @@ export function inspectCliInstallations(
       artifact_path: runningArtifact,
       version: options.currentVersion === undefined ? packageVersion() : options.currentVersion,
     },
-    effective: entries.find((entry) => entry.executable) ?? null,
+    effective: entries.find((entry) => entry.executable && pathEntries.includes(entry.command_path)) ?? null,
+    ...(domain ? { execution_domain: domain } : {}),
     entries,
     native,
     transaction: { install_pending: localPathPresent(path.join(root, 'transaction.json')), uninstall_pending: localPathPresent(path.join(root, 'uninstall.json')) },

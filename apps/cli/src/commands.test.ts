@@ -3654,7 +3654,7 @@ describe('Cursor hook commands', () => {
     expect(io.outLines).toContain(
       `ok    Question routing: cursor (${path.join(cwd, 'home', '.cursor', 'hooks.json')})`,
     )
-    expect(io.outLines.some((line) => line.includes('Cursor: start one fresh conversation'))).toBe(true)
+    expect(io.outLines.some((line) => line.includes('Cursor: verify the installed hooks'))).toBe(true)
   })
 
   it('uninstalls only Notifai Cursor hooks and preserves foreign hooks', () => {
@@ -3933,7 +3933,7 @@ describe('Codex hook representation', () => {
 
     const compatible = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
-      harness: 'codex',
+      harness: 'codex', integrationScope: json,
     })
     delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
     applyPlan(json, { hooks: compatible })
@@ -3962,7 +3962,7 @@ describe('Codex hook representation', () => {
 
     const compatible = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
-      harness: 'codex',
+      harness: 'codex', integrationScope: json,
     })
     delete compatible['SessionStart']?.[0]?.hooks[0]?.additionalContextLimit
     applyPlan(json, { hooks: compatible })
@@ -3970,7 +3970,7 @@ describe('Codex hook representation', () => {
 
     const changed = buildHookConfig({
       adapterPath: hookAdapterPath(deps.hookAdapterHome),
-      harness: 'codex',
+      harness: 'codex', integrationScope: json,
     })
     changed['SessionStart']![0]!.hooks[0]!.additionalContextLimit = 0
     applyPlan(json, mergeHooks(loadSettings(json), changed, scriptPath).document)
@@ -4184,7 +4184,7 @@ describe('harness activation guidance', () => {
   const execPath = process.execPath
   const scriptPath = fileURLToPath(import.meta.url)
 
-  it('requires a fresh Claude Code session so SessionStart can activate it', () => {
+  it('requires observed loading while preserving existing Claude Code work', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-activation-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
@@ -4195,7 +4195,7 @@ describe('harness activation guidance', () => {
 
     const output = io.outLines.join('\n')
     expect(output).toContain('Installed claude-code hooks in')
-    expect(output).toContain('Start one fresh Claude Code session, send one prompt, then run `notifai doctor`.')
+    expect(output).toContain('verify a real callback from the changed definition')
     expect(output).not.toMatch(/timeout|asynchronous|600s/i)
   })
 
@@ -4218,7 +4218,7 @@ describe('harness activation guidance', () => {
     expect(output).not.toMatch(/Codex runs every matching handler|harmless/i)
   })
 
-  it('names required Codex trust and fresh-session activation in the correct order', () => {
+  it('names required Codex trust and preserves the existing session', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-activation-'))
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
@@ -4229,7 +4229,8 @@ describe('harness activation guidance', () => {
 
     const output = io.outLines.join('\n')
     expect(output).toContain('The changed Notifai handlers need approval')
-    expect(output).toMatch(/open `\/hooks`[\s\S]*start one fresh Codex session[\s\S]*`notifai doctor`/i)
+    expect(output).toContain('Keep existing working sessions and pending questions')
+    expect(output).toContain('`notifai doctor --json`')
   })
 
   it('says existing Codex approval still matches after an idempotent repair', () => {
@@ -4262,7 +4263,7 @@ describe('harness activation guidance', () => {
 
     const output = io.outLines.join('\n')
     expect(output).toContain('Installed cursor hooks in')
-    expect(output).toContain('Start one fresh Cursor conversation, send one prompt, finish its first turn, then run `notifai doctor`.')
+    expect(output).toContain('verify a real callback from the changed definition')
     expect(output).not.toMatch(/Codex|Claude Code|OpenCode/)
     expect(output).not.toMatch(/timeout|worktree|fails closed/i)
   })
@@ -4383,7 +4384,7 @@ describe('harness activation guidance', () => {
     )
 
     expect(io.outLines.join('\n')).toContain('Installed opencode hooks in')
-    expect(io.outLines.join('\n')).toContain('Restart OpenCode, start one fresh session, send one prompt, then run `notifai doctor`.')
+    expect(io.outLines.join('\n')).toContain('verify a real callback from the changed definition')
     expect(io.outLines.join('\n')).not.toMatch(/Permission prompts|exactly-once continuation/)
     const pluginFile = path.join(cwd, 'opencode-home', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
@@ -4455,7 +4456,7 @@ describe('harness activation guidance', () => {
     expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
     expect(io.outLines.join('\n')).toContain('Installed openclaw hooks in')
     expect(io.outLines.join('\n')).toContain(
-      'Restart the OpenClaw Gateway, start one fresh Agent Session, send one prompt, then run `notifai doctor`.',
+      'verify a real callback from the changed definition',
     )
     const pluginFile = path.join(cwd, 'openclaw-home', 'extensions', 'notifai', 'index.js')
     const plugin = readFileSync(pluginFile, 'utf8')
@@ -4513,7 +4514,7 @@ describe('harness activation guidance', () => {
     expect(hooksInstallCommand(deps, { harness: 'grok', execPath, scriptPath })).toBe(EXIT.ok)
     const document = JSON.parse(readFileSync(owned, 'utf8')) as { hooks: ReturnType<typeof buildHookConfig> }
     expect(document.hooks['Stop']?.[0]?.hooks[0]).toMatchObject({
-      command: hookCommand(hookAdapterPath(deps.hookAdapterHome), 'stop', 'grok'),
+      command: expect.stringContaining(hookCommand(hookAdapterPath(deps.hookAdapterHome), 'stop', 'grok') + ' --integration-revision '),
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,
     })
     expect(findInstallations(deps.env, deps.hookAdapterHome).filter((entry) => entry.harness === 'grok'))
@@ -9649,7 +9650,7 @@ describe('asking before the hooks have ever run', () => {
     const fired = readiness.states.find((state) => state.id === 'hooks-fired')
     expect(fired?.status).toBe('optional-gap')
     expect(fired?.detail).toMatch(/Claude Code/)
-    expect(fired?.detail).toMatch(/Codex: start one fresh session/i)
+    expect(fired?.detail).toMatch(/Codex: follow the specific trust or stale-Stop diagnosis/i)
     expect(fired?.detail).not.toMatch(/approve.*start/i)
 
     io.errLines = []

@@ -45,6 +45,8 @@ export async function assembleNativeRelease({ input, output, version, sourceRevi
     assert.equal(hash(checkBytes), candidate.check_sha256, 'Executable receipt changed after packaging')
     assert.equal(check.ok, true, 'Native executable verification failed')
     assert.deepEqual(check.build, candidate.build, 'Native executable build differs')
+    assert.deepEqual(check.capabilities, candidate.capabilities, 'Native executable capabilities differ')
+    assert.equal(check.capabilities?.local_continuity, inventory.local_continuity.contract, 'Native executable continuity differs')
     assert.equal(check.launcher_sha256, artifact.launcher_sha256)
     assert.equal(check.runtime_sha256, artifact.runtime_sha256)
     const installed = json(path.join(root, 'archive-check.json'))

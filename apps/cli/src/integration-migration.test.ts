@@ -12,9 +12,14 @@ import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
 import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from './skill-integrity.js'
 import { SkillInstallation } from './skill-installation.js'
-import { readSessionState, writeSessionState } from './hook-session-state.js'
+import { markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
 import * as attendantUpdate from './attendant-update.js'
 import * as skillIntegrity from './skill-integrity.js'
+import * as nativeInstallation from './native-installation.js'
+import { withHookRepairIntent } from './integration-repair.js'
+import { sourceIntegrationRevision } from './integration-revision.js'
+import { hookRunCommand } from './commands-hook-run.js'
+import { enableProject, projectBinding } from './project-enablement.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -103,6 +108,15 @@ it('resumes owned Claude guidance beside unmanaged harnesses, preserving foreign
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(add).toHaveBeenCalledTimes(1)
   expect(readFileSync(f.installation.file, 'utf8')).toBe(repaired)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false,
+    pending_actions: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
+  // Only actual approval evidence in this scope clears the requirement.
+  const current = findInstallations(f.deps.env, f.home).find(entry => entry.harness === 'codex')!
+  writeFileSync(f.trust, current.handlers.map(handler =>
+    `[hooks.state.${JSON.stringify(codexTrustKey(current, handler))}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
+  ).join('\n'))
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: true, pending_actions: [] })
 })
 
 it('verifies an unchanged healthy integration without optional setup or a restart', async () => {
@@ -146,8 +160,8 @@ it.each(['darwin', 'win32', 'linux'] as const)('repairs owned %s hooks beside un
   const trust = readFileSync(f.trust, 'utf8')
   const guidance = readFileSync(path.join(skill, 'SKILL.md'))
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
-  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: false,
-    changed: ['codex-hooks'], pending_actions: expect.arrayContaining([expect.stringContaining('skill-unmanaged')]) })
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
+    changed: ['codex-hooks'], pending_actions: [], diagnostics: expect.arrayContaining([expect.stringContaining('skill-unmanaged')]) })
   expect(readFileSync(f.installation.file, 'utf8')).toContain(platform === 'win32' ? 'session-start' : 'post-tool-use')
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
   expect(readFileSync(path.join(skill, 'SKILL.md'))).toEqual(guidance)
@@ -155,7 +169,7 @@ it.each(['darwin', 'win32', 'linux'] as const)('repairs owned %s hooks beside un
   expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toContain('skill-unmanaged')
 })
 
-it('recovers residents beside current owned and unmanaged guidance without invoking the skill installer', async () => {
+it('preserves residents beside current owned and unmanaged guidance without invoking installers', async () => {
   const f = fixture(), bundle = shippedSkillBundle()
   if (!bundle.ok) throw new Error(bundle.error)
   expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: bundle.bundle }).ok).toBe(true)
@@ -169,14 +183,14 @@ it('recovers residents beside current owned and unmanaged guidance without invok
   ])
   const hooks = readFileSync(f.installation.file), trust = readFileSync(f.trust)
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
-  expect(activate).toHaveBeenCalledWith(f.deps, realpathSync(f.artifact))
+  expect(activate).not.toHaveBeenCalled()
   expect(add).not.toHaveBeenCalled()
   expect((await nativeSkills.list('global', f.deps.cwd, f.deps.env)).skills.filter(skill => skill.owned)).toMatchObject([
     { condition: 'managed-current', agents: ['claude-code'] },
   ])
   expect(readFileSync(receipt)).toEqual(receiptBefore)
-  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: false,
-    changed: ['resident-attendants'], pending_actions: [expect.stringContaining('skill-unmanaged')] })
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
+    changed: [], pending_actions: [], diagnostics: [expect.stringContaining('skill-unmanaged')] })
   expect(readFileSync(f.installation.file)).toEqual(hooks)
   expect(readFileSync(f.trust)).toEqual(trust)
   expect(readFileSync(path.join(skill, 'SKILL.md'), 'utf8')).toBe('Foreign guidance')
@@ -185,12 +199,12 @@ it('recovers residents beside current owned and unmanaged guidance without invok
   activate.mockClear()
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(activate).not.toHaveBeenCalled()
-  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false,
-    pending_actions: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: true, pending_actions: [],
+    diagnostics: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
 })
 
 it.each(['edited', 'linked', 'invalid-receipt', 'invalid-bundle', 'oversized-foreign'] as const)(
-  'keeps %s custody or inspection gaps blocking owned migration beside unmanaged guidance', async kind => {
+  'preserves %s skill custody or inspection gaps while repairing independent owned hooks', async kind => {
     const f = fixture(), bundle = shippedSkillBundle()
     if (!bundle.ok) throw new Error(bundle.error)
     expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: bundle.bundle }).ok).toBe(true)
@@ -209,7 +223,8 @@ it.each(['edited', 'linked', 'invalid-receipt', 'invalid-bundle', 'oversized-for
     expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
     expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false, migration_complete: false })
     expect(add).not.toHaveBeenCalled(); expect(activate).not.toHaveBeenCalled()
-    expect(readFileSync(f.installation.file)).toEqual(hooks)
+    expect(readFileSync(f.installation.file).equals(hooks)).toBe(false)
+    expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
     expect(readFileSync(f.trust)).toEqual(trust)
     expect(readFileSync(path.join(foreign, 'SKILL.md'), 'utf8')).toBe('Unmanaged guidance')
   },
@@ -225,7 +240,8 @@ it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('preserves a
   const hooks = readFileSync(f.installation.file)
   try {
     expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
-    expect(readFileSync(f.installation.file)).toEqual(hooks)
+    expect(readFileSync(f.installation.file).equals(hooks)).toBe(false)
+    expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
   } finally { chmodSync(selected, 0o700) }
   expect(createSkillManifest(selected, '').digest).toBe(bundle.bundle.manifest.digest)
 })
@@ -273,7 +289,7 @@ it('preserves pending exact-owner work before any integration change', async () 
   expect(readSessionState('exact-owner', f.deps.env).message_acknowledgement_due).toEqual([{ message_id: 'sm_pending', recorded_at: 1_800_000_000_000 }])
 })
 
-it('does not choose between duplicate native skill scopes or mutate hooks', async () => {
+it('preserves duplicate skill scopes while repairing independently owned hooks', async () => {
   const f = fixture()
   const bundle = shippedSkillBundle()
   if (!bundle.ok) throw new Error(bundle.error)
@@ -285,7 +301,8 @@ it('does not choose between duplicate native skill scopes or mutate hooks', asyn
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false,
     pending_actions: [expect.stringContaining('Multiple receipt-backed')] })
-  expect(readFileSync(f.installation.file, 'utf8')).toBe(before)
+  expect(readFileSync(f.installation.file, 'utf8')).not.toBe(before)
+  expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
 })
 
 it('keeps healthy callbacks silent and deduplicates later faults across callbacks and Projects', () => {
@@ -360,4 +377,74 @@ it('resumes an interrupted owned skill replacement without changing recorded har
   ] })
   expect(readFileSync(f.installation.file)).toEqual(hooks)
   expect(readFileSync(f.trust)).toEqual(trust)
+})
+
+it('retains required approval after interruption immediately following hook publication', async () => {
+  const f = fixture()
+  removeToolHook(f.installation.file)
+  const doc = JSON.parse(readFileSync(f.installation.file, 'utf8'))
+  doc.hooks.PostToolUse = [{ hooks: [{ type: 'command', command: 'foreign-tool-handler' }] }]
+  writeFileSync(f.installation.file, JSON.stringify(doc))
+  expect(() => withHookRepairIntent(f.deps, f.installation, null, () => {
+    expect(hooksInstallCommand(f.deps, { harness: 'codex', narrate: false, refreshOnly: true })).toBe(0)
+    throw new Error('interrupted after publication')
+  })).toThrow('interrupted after publication')
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ changed: [], migration_complete: false,
+    pending_actions: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
+})
+
+it('rejects a no-write resume superseded during final asynchronous discovery', async () => {
+  const f = fixture()
+  let superseded = false, calls = 0
+  vi.spyOn(nativeInstallation, 'integrationPublication').mockReturnValue(action => {
+    if (superseded) throw new Error('Update superseded')
+    return action()
+  })
+  f.deps.nativeSkills = { ...nativeSkills, list: async (...args) => {
+    const result = await nativeSkills.list(...args)
+    if (++calls >= 4) superseded = true
+    return result
+  } }
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ changed: [], migration_complete: false })
+})
+
+it('requires the loaded revision and accepts a same-scope replacement after the original owner ends', async () => {
+  const f = fixture()
+  f.deps.env.CLAUDECODE = '1'
+  f.deps.env.CLAUDE_CODE_SESSION_ID = 'original'
+  mkdirSync(path.join(f.root, '.notifai'), { recursive: true })
+  writeFileSync(path.join(f.root, '.notifai', 'config.toml'), 'project = "migration-fixture"\n')
+  enableProject(projectBinding(f.root, f.deps.env, 'migration-fixture')!)
+  expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
+  const hooks = findInstallations(f.deps.env, f.home).find(entry => entry.harness === 'claude-code')!
+  const callback = async (session: string, revision: string, event = 'session-start', child = false) =>
+    hookRunCommand(f.deps, event, async () => JSON.stringify({ session_id: session, cwd: f.root,
+      ...(child ? { agent_id: 'worker' } : {}) }), 'claude-code', revision)
+  const oldRevision = 'a'.repeat(64)
+  await callback('original', oldRevision)
+  removeToolHook(hooks.file, 'UserPromptSubmit')
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false })
+  const expected = sourceIntegrationRevision(readFileSync(hooks.file, 'utf8'))!
+  // An old loaded command can invoke this very runtime, but cannot prove reload.
+  await callback('original', oldRevision, 'user-prompt-submit')
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false })
+  await callback('original', expected, 'subagent-start', true)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false })
+  writeSessionState('original', f.deps.env, { ...readSessionState('original', f.deps.env),
+    acknowledgement_due: [{ request_id: 'original-debt', recorded_at: 1 }] })
+  markSessionEnded('original', f.deps.env, Date.now())
+  f.deps.env.CLAUDE_CODE_SESSION_ID = 'replacement'
+  await callback('replacement', oldRevision)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false })
+  await callback('replacement', expected)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: true })
+  expect(readSessionState('original', f.deps.env).acknowledgement_due?.[0]?.request_id).toBe('original-debt')
+  expect(readSessionState('replacement', f.deps.env).acknowledgement_due).toBeUndefined()
 })

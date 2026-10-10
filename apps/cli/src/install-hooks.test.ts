@@ -154,26 +154,26 @@ describe('hook config', () => {
     const cursor = buildCursorHookConfig({ adapterPath: ADAPTER, harness: 'cursor' })
 
     expect(claude['SessionStart']?.[0]?.hooks[0]).toMatchObject({
-      command: hookCommand(ADAPTER, 'session-start', 'claude-code'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'session-start', 'claude-code') + " --integration-revision "),
     })
     expect(codex['SessionStart']?.[0]?.hooks[0]).toMatchObject({
-      command: hookCommand(ADAPTER, 'session-start', 'codex'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'session-start', 'codex') + " --integration-revision "),
       timeout: 5,
     })
     expect(codex['SessionStart']?.[0]?.hooks[0]).not.toHaveProperty('additionalContextLimit')
     expect(claude['SessionStart']?.[0]?.hooks[0]).not.toHaveProperty('additionalContextLimit')
     expect(cursor['sessionStart']?.[0]).toMatchObject({
-      command: hookCommand(ADAPTER, 'session-start', 'cursor'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'session-start', 'cursor') + " --integration-revision "),
     })
     expect(claude['SubagentStart']?.[0]?.hooks[0]).toMatchObject({
-      command: hookCommand(ADAPTER, 'subagent-start', 'claude-code'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'subagent-start', 'claude-code') + " --integration-revision "),
     })
     expect(codex['SubagentStart']?.[0]?.hooks[0]).toMatchObject({
-      command: hookCommand(ADAPTER, 'subagent-start', 'codex'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'subagent-start', 'codex') + " --integration-revision "),
     })
     expect(cursor['subagentStart']).toBeUndefined()
     expect(cursor['stop']?.[0]).toMatchObject({
-      command: hookCommand(ADAPTER, 'activation-stop', 'cursor'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'activation-stop', 'cursor') + " --integration-revision "),
       loop_limit: 1,
     })
   })
@@ -183,7 +183,7 @@ describe('hook config', () => {
     expect(Object.keys(config)).toEqual(['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'])
     expect(config['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',
-      command: hookCommand(ADAPTER, 'stop', 'grok'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'stop', 'grok') + " --integration-revision "),
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,
     })
     expect(JSON.stringify(config)).not.toContain('hook attend')
@@ -243,7 +243,7 @@ describe('hook config', () => {
     // default and reports nothing, so a wait near that boundary loses answers.
     expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',
-      command: hookCommand(ADAPTER, 'stop', 'claude-code'),
+      command: expect.stringContaining(hookCommand(ADAPTER, 'stop', 'claude-code') + " --integration-revision "),
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,
       async: true,
     })
@@ -261,7 +261,7 @@ describe('hook config', () => {
     const claude = buildHookConfig(options)
 
     const stop = claude['Stop']?.[0]?.hooks[0]
-    expect(stop?.command).toBe(hookCommand(options.adapterPath, 'stop', 'claude-code', options))
+    expect(stop?.command).toContain(hookCommand(options.adapterPath, 'stop', 'claude-code', options) + ' --integration-revision ')
     expect(stop?.async).toBe(true)
     expect(stop).not.toHaveProperty('statusMessage')
     expect(stop?.timeout).toBe(
@@ -367,7 +367,7 @@ describe('hook config', () => {
       // attendant ends itself with its session.
       expect(handlers[1]).toEqual({
         type: 'command',
-        command: hookCommand(ADAPTER, 'attend', 'claude-code'),
+        command: expect.stringContaining(hookCommand(ADAPTER, 'attend', 'claude-code') + " --integration-revision "),
         async: true,
       })
     }
@@ -398,14 +398,14 @@ describe('hook config', () => {
       ])
       expect(handlers[1]).toEqual({
         type: 'command',
-        command: hookCommand(ADAPTER, 'attend', 'codex'),
+        command: expect.stringContaining(hookCommand(ADAPTER, 'attend', 'codex') + " --integration-revision "),
         async: true,
         timeout: CODEX_ATTEND_TIMEOUT_SECONDS,
       })
     }
     // An interrupted Codex turn fires Interrupt, not Stop; Codex caps it at 3 s.
     expect(hooks['Interrupt']).toEqual([
-      { hooks: [{ type: 'command', command: hookCommand(ADAPTER, 'attend', 'codex'), async: true, timeout: 3 }] },
+      { hooks: [{ type: 'command', command: expect.stringContaining(hookCommand(ADAPTER, 'attend', 'codex') + ' --integration-revision '), async: true, timeout: 3 }] },
     ])
     expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })).not.toHaveProperty('Interrupt')
     expect(CODEX_ATTEND_TIMEOUT_SECONDS).toBe(QUESTION_STOP_TIMEOUT_SECONDS)
@@ -1909,7 +1909,7 @@ describe('Windows hook commands and discovery', () => {
       nodePath: winNode,
     })
     expect(source).toContain(`const NODE = ${JSON.stringify(winNode)}`)
-    expect(source).toContain('spawn(NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "opencode"]')
+    expect(source).toContain('spawn(NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "opencode", "--integration-revision", NOTIFAI_INTEGRATION_REVISION]')
     expect(source).toContain('shell: false')
     expect(source).toContain('windowsHide: true')
     expect(source).not.toContain('spawn(ADAPTER,')
@@ -1929,7 +1929,7 @@ describe('Windows hook commands and discovery', () => {
       nodePath: winNode,
     })
     expect(source).toContain(`const NODE = ${JSON.stringify(winNode)}`)
-    expect(source).toContain('spawn(NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "openclaw"]')
+    expect(source).toContain('spawn(NODE, [ADAPTER, "hook", event, "--owner", "notifai", "--harness", "openclaw", "--integration-revision", NOTIFAI_INTEGRATION_REVISION]')
     expect(source).toContain('shell: false')
     expect(source).toContain('windowsHide: true')
     expect(source).not.toContain('spawn(ADAPTER,')

@@ -64,9 +64,10 @@ A fresh explicit `init` or `install` acquires the signed native release matching
 the launcher version/source, including a beta launcher's beta runtime. Existing
 native installations keep their version and saved channel. `@version` pins
 launcher code, not an existing runtime. Help, version, doctor and ordinary
-commands never acquire or recreate a missing runtime. Hooks and Session Attendants
-use the stable native path, not an NPX cache; deleting that cache does not remove
-the installed runtime.
+commands never acquire or recreate a missing runtime. Hooks use the stable
+native path; resident Session Attendants retain their immutable native runtime.
+Neither depends on an NPX cache, so deleting that cache does not remove the
+installed runtime or its retained owners.
 
 ## Migrate an old installation
 

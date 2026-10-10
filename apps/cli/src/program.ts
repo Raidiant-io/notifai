@@ -56,6 +56,8 @@ import { nativeInstallCommand, type NativeInstallFlags } from './commands-native
 import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 import { installedChangelog } from './update-handoff.js'
+import { LOCAL_CONTINUITY } from './local-continuity.js'
+import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -148,6 +150,8 @@ export interface BuildProgramOptions {
   runners?: Partial<ProgramRunners>
   /** Logging starts only after a compiled command is admitted. */
   beforeAction?: (admission: NativeAdmission) => void
+  /** Process seam for the pre-action stable-launch race only. */
+  retryNativeSelection?: typeof retryNativeSelection
 }
 
 export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {}): Command {
@@ -175,9 +179,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // it. Without this, adding that default would silently break
     // `notifai help send` for everyone who reaches for it before `--help`.
     .helpCommand(true)
-    .hook('preAction', (_program, actionCommand) => {
+    .hook('preAction', async (_program, actionCommand) => {
       try { admission = admitNativeCommand(actionCommand, deps.env) }
       catch (error) {
+        if (error instanceof NativeSelectionChanged) {
+          try {
+            const code = await (options.retryNativeSelection ?? retryNativeSelection)(error, process.argv.slice(2), deps)
+            exit(code)
+            return
+          } catch (retryError) {
+            // The process seam failed to launch. No fallback to this obsolete
+            // action is safe; retain the ordinary admission failure path.
+            if (options.exit) throw retryError
+            error = retryError
+          }
+        }
         const message = error instanceof Error ? error.message : String(error)
         if (actionCommand.opts()['json'] === true) deps.io.out(JSON.stringify({ ok: false, code: 'native_command_not_admitted', message }))
         else deps.io.err(message)
@@ -219,7 +235,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
       const result = { ok: identity !== null && skill.ok && changelog.available && processVerified, build: identity, processVerified,
         changelog,
-        capabilities: { npm_adapter_routes: 1 },
+        capabilities: { npm_adapter_routes: 1, local_continuity: LOCAL_CONTINUITY },
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)
@@ -325,6 +341,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--source <source>', 'bootstrap route: shell, powershell, npm or manual', 'manual')
     .option('--channel <channel>', 'stable or beta; reruns keep the existing channel unless explicitly requested')
     .option('--version <version>', 'require this exact application version')
+    .option('--upgrade', 'bootstrap a compatible update using this verified candidate; requires exact version, channel, no-init and no-path')
     .option('--shell <shell>', 'selected POSIX shell for PATH setup (default: SHELL)')
     .option('--no-path', 'skip persistent PATH setup; use the reported absolute command')
     .option('--no-init', 'install the runtime without starting account or harness setup')
@@ -784,7 +801,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // checkout wrote it.
     .option('--owner <name>', 'internal ownership marker')
     .option('--harness <name>', 'internal harness output adapter')
-    .action(async (event: string, opts: { harness?: string }) => {
+    .option('--integration-revision <sha256>', 'internal loaded-definition revision')
+    .action(async (event: string, opts: { harness?: string; integrationRevision?: string }) => {
       if (event === 'hermes-attend' && opts.harness === 'hermes') {
         const { hermesAttendCommand } = await import('./hermes-attendant.js')
         exit(await hermesAttendCommand(deps, process.stdin, process.stdout))
@@ -802,6 +820,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
           ? async () => settlementInput
           : () => readStdinWithTimeout(),
         harness,
+        opts.integrationRevision,
       ))
     })
 

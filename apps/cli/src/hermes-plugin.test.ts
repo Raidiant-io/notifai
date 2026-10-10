@@ -3,10 +3,24 @@ import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, expect, it } from 'vitest'
-import { hermesPluginDir, hermesPluginSource, installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import { hermesPluginDir, hermesPluginSource, installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 
 const roots: string[] = []
 afterAll(() => roots.forEach(root => rmSync(root, { recursive: true, force: true })))
+
+it('refreshes an owned Hermes module without invoking the host or changing its enablement', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-refresh-')); roots.push(root)
+  const env = { HOME: root, HERMES_HOME: path.join(root, 'hermes'), PATH: '' }, dir = hermesPluginDir(env)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, '__init__.py'), hermesPluginSource('/old/adapter'))
+  writeFileSync(path.join(dir, 'plugin.yaml'), 'name: notifai\n')
+  const settings = path.join(env.HERMES_HOME, 'config.yaml'), contents = 'plugins:\n  notifai:\n    enabled: false\n'
+  writeFileSync(settings, contents)
+  expect(refreshHermesPlugin('/new/adapter', env)).toBe(dir)
+  expect(readFileSync(path.join(dir, '__init__.py'), 'utf8')).toBe(hermesPluginSource('/new/adapter', undefined, path.join(dir, '__init__.py')))
+  expect(readFileSync(settings, 'utf8')).toBe(contents)
+  expect(readFileSync(path.join(dir, 'plugin.yaml'), 'utf8')).toBe('name: notifai\n')
+})
 
 it('leaves a foreign Hermes plugin with the same name untouched', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-foreign-'))

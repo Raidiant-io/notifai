@@ -9,7 +9,8 @@ param(
   [switch]$Json,
   [switch]$NoInit,
   [switch]$NoPath,
-  [switch]$MigrateNpm
+  [switch]$MigrateNpm,
+  [switch]$Upgrade
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -264,13 +265,15 @@ function Get-NotifaiInstallArguments {
   if ($NoInit) { $nativeArgs += '--no-init' }
   if ($NoPath) { $nativeArgs += '--no-path' }
   if ($MigrateNpm) { $nativeArgs += '--migrate-npm' }
+  if ($Upgrade) { $nativeArgs += '--upgrade' }
   return $nativeArgs
 }
 function Invoke-NotifaiBootstrap {
   $selectedChannel = if ($Channel) { $Channel } else { 'stable' }
   if ($Version -and -not (Test-NotifaiVersion $Version)) { throw 'Version must be an exact semantic version' }
+  if ($Upgrade -and (-not $Version -or -not $Channel -or -not $NoInit -or -not $NoPath)) { throw 'Upgrade requires exact version, channel, no-init and no-path' }
   $existing = Get-NotifaiInstalledCommand
-  if ($existing) {
+  if ($existing -and -not $Upgrade) {
     Invoke-NotifaiCandidate $existing (Get-NotifaiInstallArguments)
     return
   }

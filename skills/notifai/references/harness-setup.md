@@ -177,8 +177,10 @@ the second question back would only delay it.
 
 ## Bounded recovery
 
-Follow the exact `notifai doctor` diagnostic. Common recovery is one repair,
-one fresh activation, and one new doctor check. Stop if the current pointer
+Follow the exact `notifai doctor` diagnostic. Repair the affected owned scope,
+verify the capability it changed, and recheck once. Preserve healthy compatible
+owners. A changed definition may need reload or approval; unchanged files do
+not require a fresh session. Stop if the current pointer
 belongs to another active session or if the hook still has not fired; ask the
 user or coordinator instead of retrying indefinitely.
 
