@@ -30,7 +30,7 @@ function fixture() {
       Buffer.from(JSON.stringify({ version: '1.2.3' })).toString('base64') }), { mode: 0o600 })
   }
   writeFileSync(path.join(root, 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai', id,
-    runtime: { target, contract: 'notifai-session-state-v1' } }), { mode: 0o600 })
+    runtime: { target, contract: 'notifai-session-state-v2' } }), { mode: 0o600 })
   writeFileSync(path.join(root, 'active.json'), JSON.stringify({ schema: 1, active, previous: retired, generation: 2 }) + '\n', { mode: 0o600 })
   vi.stubGlobal('NOTIFAI_COMPILED_BUILD', { sourceDirty: false, target })
   const env = { HOME: home, USERPROFILE: home, XDG_STATE_HOME: home, NOTIFAI_NATIVE_ENTRY: 'launcher-v1' }

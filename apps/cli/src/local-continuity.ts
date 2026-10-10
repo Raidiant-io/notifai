@@ -4,8 +4,10 @@ import type { ReleaseInventory } from './release-distribution.js'
  * state, owner entrypoints, claims, fencing and cleanup semantics. Release
  * evidence must cover all retained generations, not just adjacent versions,
  * and generated integration definitions they may still publish after activation.
- * Pending host setup receipts retain that obligation independently of a PID. */
-export const LOCAL_CONTINUITY = 'notifai-session-state-v1'
+ * Pending host setup receipts retain that obligation independently of a PID.
+ * v2 includes Linux Secret Service migration: its credential-file removal cannot
+ * overlap pre-desktop v1 runtimes that still read that file. */
+export const LOCAL_CONTINUITY = 'notifai-session-state-v2'
 
 /** Identity-only consumers retain the schema1 envelope. Native writer identity
  * now lives in runtime; absence of the old top-level target permanently fences

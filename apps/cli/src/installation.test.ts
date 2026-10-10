@@ -30,7 +30,7 @@ function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
   const extension = target.startsWith('bun-windows-') ? '.exe' : ''
   const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
-  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v1', schema: 1 | 2 = 2) => {
+  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v2', schema: 1 | 2 = 2) => {
     const directory = path.join(root, version); mkdirSync(directory)
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
     writeFileSync(path.join(directory, `notifai-runtime${extension}`), runtime)
@@ -204,7 +204,7 @@ it('bootstraps a quiet historical installation without changing retained files o
   const boot = new Installation({ ...f.options, sessionsDirectory: path.dirname(file) })
   const result = boot.installCandidate(f.upgrade)
   expect(result.version).toBe('2.0.0')
-  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, runtime: { target: f.options.target, contract: 'notifai-session-state-v1' } })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, runtime: { target: f.options.target, contract: 'notifai-session-state-v2' } })
   expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('target')
   expect(boot.inspect()).toMatchObject({ active: { previous: f.build, generation: 2 }, pending: false, uninstall_pending: false })
   expect(readFileSync(file)).toEqual(before)
@@ -241,7 +241,7 @@ it.each(['bootstrap-fenced', 'launcher', 'metadata', 'activated'] as const)('rec
     if (phase === interrupted) throw new Error('interrupted')
   } })
   expect(() => installation.installCandidate(f.upgrade)).toThrow('interrupted')
-  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, runtime: { target: f.options.target, contract: 'notifai-session-state-v1' } })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, runtime: { target: f.options.target, contract: 'notifai-session-state-v2' } })
   expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('target')
   expect(installation.inspect()).toMatchObject({ pending: true, bootstrap_pending: true, uninstall_pending: false })
   expect(() => new Installation(f.options).abandonPending(1)).toThrow(/bootstrap/)
@@ -317,13 +317,13 @@ it('allows later compatible updates despite authenticated old portable staging a
 })
 
 it.each([
-  { runtime: { target: 'bun-linux-x64', contract: 'notifai-session-state-v1' } },
+  { runtime: { target: 'bun-linux-x64', contract: 'notifai-session-state-v2' } },
   { target: null },
   { target: undefined },
   { schema: 2 },
   { target: 'bun-windows-x64' },
   { target: undefined, runtime: { target: 'bun-linux-x64', contract: 'unknown' } },
-  { target: undefined, runtime: { target: 'bun-windows-x64', contract: 'notifai-session-state-v1' } },
+  { target: undefined, runtime: { target: 'bun-windows-x64', contract: 'notifai-session-state-v2' } },
 ])('rejects ambiguous or unsupported writer identity %j', change => {
   const f = legacyFixture(), file = path.join(f.options.root, 'install.json')
   const prior = JSON.parse(readFileSync(file, 'utf8'))
@@ -341,7 +341,7 @@ it('never restores old writer admission through channel changes, repair or compa
   installation.rollback(4)
   const record = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))
   expect(record).not.toHaveProperty('target')
-  expect(record.runtime).toEqual({ target: f.options.target, contract: 'notifai-session-state-v1' })
+  expect(record.runtime).toEqual({ target: f.options.target, contract: 'notifai-session-state-v2' })
 })
 
 it('activates immutable generations, rejects stale decisions, and rolls back without losing files', () => {
@@ -416,7 +416,8 @@ it('checks all retained generations and fences stale integration writers at publ
   let wrote = false
   expect(() => f.installation.publishIntegration(1, () => { wrote = true })).toThrow(/superseded/)
   expect(wrote).toBe(false)
-  const third = f.installation.stage(f.candidate('3.0.0', undefined, 'incompatible-state-v2'))
+  // Pre-desktop v1 readers still need the credential file that v2 migrates.
+  const third = f.installation.stage(f.candidate('3.0.0', undefined, 'notifai-session-state-v1'))
   expect(() => f.installation.activate({ build: third, source: 'manual', channel: 'stable', expectedGeneration: 2 })).toThrow(/continuity/)
   expect(f.installation.inspect().active?.active).toBe(second)
   expect(() => f.installation.publishIntegration(2, () => { wrote = true })).toThrow(/superseded/)

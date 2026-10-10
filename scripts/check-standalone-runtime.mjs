@@ -141,7 +141,7 @@ try {
     const launcherBytes = windows ? Buffer.concat([readFileSync(launcher), Buffer.from(`fixture ${version}`)]) : readFileSync(launcher)
     writeFileSync(path.join(directory, `notifai${extension}`), launcherBytes, { mode: 0o700 })
     const digest = bytes => createHash('sha256').update(bytes).digest('hex')
-    const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: 'notifai-session-state-v1' }, version, source_revision: 'a'.repeat(40),
+    const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: 'notifai-session-state-v2' }, version, source_revision: 'a'.repeat(40),
       store_schema: 2, launcher_schema: 1, artifacts: [{ target,
         filename: `notifai-${version}-${windows ? 'windows' : process.platform}-${process.arch}.${windows ? 'zip' : 'tar.gz'}`,
         bytes: 100, sha256: digest(version), runtime_sha256: digest(readFileSync(runtime)), materials: [], launcher_sha256: digest(launcherBytes) }] }))
