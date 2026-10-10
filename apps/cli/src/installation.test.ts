@@ -146,6 +146,56 @@ it('reserves host removal during native uninstall and leaves no receipt that poi
   expect(installation.pendingIntegrationOperations()).toEqual([])
 })
 
+it('releases only an orphaned host reservation after fresh quiescence, preserving edits and pending answers', () => {
+  const f = fixture(), first = f.installation.installCandidate({ ...f.candidate('1.0.0'), source: 'manual' })
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id as string
+  const scope = path.join(f.root, 'hermes', 'plugins', 'notifai'), source = path.join(f.root, 'prepared-plugin')
+  mkdirSync(scope, { recursive: true }); mkdirSync(source)
+  const plugin = path.join(scope, '__init__.py'), prepared = path.join(source, '__init__.py')
+  writeFileSync(plugin, 'later User edit'); writeFileSync(prepared, 'preserved prepared source')
+  const token = f.installation.beginIntegrationOperation(1, { scope, source, revision: 'b'.repeat(64), operation: 'install' },
+    { installation_id: id, build: first.active.active })
+  const initial = f.installation.integrationRecoveryConfirmation(token)
+  expect(() => f.installation.releaseIntegrationOperation(token, initial, 1, () => {})).toThrow(/coordinator is still running/)
+  const file = path.join(f.options.root, 'integration-operations.json'), receipt = JSON.parse(readFileSync(file, 'utf8'))
+  receipt.operations[0].owner = { pid: 2147483647, start: 'exited fixture owner' }
+  writeFileSync(file, JSON.stringify(receipt))
+  const confirmation = f.installation.integrationRecoveryConfirmation(token)
+  expect(() => f.installation.releaseIntegrationOperation(token, initial, 1, () => {})).toThrow(/confirmation changed/)
+  f.installation.installCandidate({ ...f.candidate('2.0.0'), source: 'manual', upgrade: true, version: '2.0.0', channel: 'stable' })
+  expect(() => f.installation.releaseIntegrationOperation(token, confirmation, 1, () => {})).toThrow(/changed during recovery/)
+  expect(() => f.installation.releaseIntegrationOperation(token, confirmation, 2, () => { throw new Error('child still running') })).toThrow(/child still running/)
+  expect(f.installation.pendingIntegrationOperations()).toHaveLength(1)
+  const env = { XDG_STATE_HOME: path.join(f.root, 'state') }
+  writeSessionState('healthy-owner', env, { harness: 'hermes', acknowledgement_due: [{ request_id: 'pending-answer' }] } as Parameters<typeof writeSessionState>[2])
+  const state = sessionStatePath('healthy-owner', env), before = readFileSync(state)
+  expect(f.installation.releaseIntegrationOperation(token, confirmation, 2, operation => expect(operation.scope).toBe(canonicalPath(scope))).token).toBe(token)
+  expect(f.installation.pendingIntegrationOperations()).toEqual([])
+  expect(readFileSync(plugin, 'utf8')).toBe('later User edit')
+  expect(readFileSync(prepared, 'utf8')).toBe('preserved prepared source')
+  expect(readFileSync(state)).toEqual(before)
+  expect(() => f.installation.releaseIntegrationOperation(token, confirmation, 2, () => {})).toThrow(/confirmation changed/)
+})
+
+it('releases an orphaned host removal without cancelling the native removing barrier', () => {
+  const f = fixture(), sessions = path.join(f.root, 'sessions')
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const first = installation.installCandidate({ ...f.candidate('1.0.0'), source: 'manual' })
+  const id = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id as string
+  const begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Fixture did not begin uninstall')
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('removing')
+  const token = installation.beginIntegrationOperation(1, { scope: path.join(f.root, 'hermes', 'plugins', 'notifai'), operation: 'remove' },
+    { installation_id: id, build: first.active.active }, begun.token)
+  const file = path.join(f.options.root, 'integration-operations.json'), receipt = JSON.parse(readFileSync(file, 'utf8'))
+  receipt.operations[0].owner = { pid: 2147483647, start: 'exited fixture owner' }
+  writeFileSync(file, JSON.stringify(receipt))
+  installation.releaseIntegrationOperation(token, installation.integrationRecoveryConfirmation(token), 1, () => {})
+  expect(installation.inspect().uninstall_pending).toBe(true)
+  expect(installation.uninstallState()?.phase).toBe('removing')
+  expect(installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('removed')
+})
+
 it('bootstraps a quiet historical installation without changing retained files or session references', () => {
   const f = legacyFixture(), installation = new Installation(f.options)
   const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'settled-old-session'

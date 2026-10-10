@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:46b2e2a8d9a578f876512ccee6dc1a8c9ae5b258a1baefef3cb4a618559b1d7d",
+  "behavior_digest": "sha256:48f91a641129c1860fed3f9cbf721a8aa5605d19d8234a772dbab07cd8d06fa2",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle, shipped skill installation/setup, CLI readiness and domain terms. Explicit Windows npm repair now prepares a pinned signed adapter and paired native runtime, verifies the administrator-controlled manager, and resumes only during an agent-arranged approved pause with fresh reader and debt observations. The skill describes exact scope observation, consent versus readiness, forward recovery and reopening only after command verification. Doctor and update resume report the same bounded receipts without executing npm. Ordinary sends/hooks and retained owners gain no maintenance behavior.",
+  "reason": "Reviewed lifecycle, shipped skill installation/setup, CLI readiness and domain terms. Windows npm repair remains explicit, scoped and forward recovering. Interrupted local Hermes publication now has operator-assisted reservation release through existing installer admission, with exact receipt confirmation and independent known-process checks. Guidance distinguishes observed host quiescence from caller exit, preserves healthy sessions and all plugin/source files, and requires ordinary reassessment rather than replaying old intent. Doctor and update resume execute no package or host maintenance.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

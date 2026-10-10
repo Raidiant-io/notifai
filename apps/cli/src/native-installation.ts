@@ -2,7 +2,7 @@ import { inspectExecutionDomain } from './cli-execution-domain.js'
 import path from 'node:path'
 import { buildIdentity, Distribution, RELEASE_TARGETS, type ReleaseTarget } from './distribution.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
-import { Installation, type IntegrationOperation } from './installation.js'
+import { Installation, type IntegrationOperation, type IntegrationOperationInput } from './installation.js'
 import { RELEASE_PUBLIC_KEYS } from './release-trust.js'
 import { stateDir } from './config.js'
 import { legacyNpmMigration } from './legacy-npm-migration.js'
@@ -10,7 +10,7 @@ import { currentRuntimeBuild } from './launch-self.js'
 
 export interface IntegrationPublication {
   <T>(action: () => T, scope?: string): T
-  host?: <T>(input: Omit<IntegrationOperation, 'token' | 'build'>, action: () => T) => T
+  host?: <T>(input: IntegrationOperationInput, action: () => T) => T
   pending?: () => IntegrationOperation[]
 }
 

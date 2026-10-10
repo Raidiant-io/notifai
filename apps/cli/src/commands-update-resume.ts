@@ -152,7 +152,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       // First-time host setup is not a failed runtime update. Keep its scope
       // visible without making unrelated owned repairs depend on its outcome.
       diagnostics.push(...(publish.pending?.() ?? []).map(item =>
-        `Plugin setup remains pending at ${item.scope}; preserve its prepared source and confirm the original host installer has finished before repairing that scope.`))
+        `Plugin setup remains pending at ${item.scope}; preserve its prepared source. Inspect reservation recovery with notifai install --recover-integration ${item.token} --json; the responsible agent must establish host publication quiescence before releasing it.`))
       return report(!ownedSkillGap && repairFaults.length === 0)
     })
   } catch {

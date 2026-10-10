@@ -36,8 +36,10 @@ interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; 
 interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan; cleanup_build?: string }
 export interface IntegrationOperation {
   token: string; scope: string; operation: 'install' | 'enable' | 'remove'; build: string
+  owner: ProcessIdentity
   source?: string; revision?: string
 }
+export type IntegrationOperationInput = Omit<IntegrationOperation, 'token' | 'build' | 'owner'>
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain'; reason?: string } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
@@ -147,6 +149,8 @@ export class Installation {
           typeof item.scope !== 'string' || !path.isAbsolute(item.scope) || !['install', 'enable', 'remove'].includes(item.operation) ||
           item.source !== undefined && (typeof item.source !== 'string' || !path.isAbsolute(item.source)) ||
           item.revision !== undefined && !buildId(item.revision) || !buildId(item.build) ||
+          !item.owner || !Number.isSafeInteger(item.owner.pid) || item.owner.pid < 1 ||
+          typeof item.owner.start !== 'string' || !item.owner.start || item.owner.start.length > 128 ||
           item.operation === 'install' && (item.source === undefined || item.revision === undefined)) ||
         new Set(value.operations.map(item => item.scope)).size !== value.operations.length) throw new Error('Uncertain host plugin operation')
     return value.operations
@@ -158,7 +162,7 @@ export class Installation {
     }
   }
 
-  beginIntegrationOperation(expectedGeneration: number, input: Omit<IntegrationOperation, 'token' | 'build'>,
+  beginIntegrationOperation(expectedGeneration: number, input: IntegrationOperationInput,
     identity: { installation_id: string; build: string }, uninstallToken?: string): string {
     const reserve = () => {
       if (uninstallToken !== undefined) {
@@ -178,8 +182,9 @@ export class Installation {
       }
       const scope = canonicalPath(input.scope)
       this.assertIntegrationScopeAvailable(scope)
-      const operations = this.pendingIntegrationOperations(), token = randomUUID()
-      operations.push({ ...input, scope, token, build: identity.build })
+      const operations = this.pendingIntegrationOperations(), token = randomUUID(), owner = currentProcessIdentity()
+      if (!owner) throw new Error('Host plugin coordinator identity is unavailable')
+      operations.push({ ...input, scope, token, build: identity.build, owner })
       this.save('integration-operations.json', { schema: 1, installation_id: identity.installation_id, operations })
       return token
     }
@@ -196,6 +201,34 @@ export class Installation {
       const remaining = operations.filter(item => item.token !== token)
       if (remaining.length === 0) rmSync(this.file('integration-operations.json'))
       else this.save('integration-operations.json', { schema: 1, installation_id: this.readInstall()!.id, operations: remaining })
+    }, { waitMs: 5_000, strictRelease: true })
+  }
+
+  integrationRecoveryConfirmation(token: string): string {
+    const operation = this.pendingIntegrationOperations().find(item => item.token === token)
+    const installation = this.readInstall()
+    if (!operation || !installation) throw new Error('Integration setup identity changed')
+    return hash(JSON.stringify({ installation_id: installation.id, ...operation }))
+  }
+
+  /** Operator-assisted release, never successful host completion. The caller
+   * independently establishes a maintained local publication pause; PID exit
+   * is necessary but does not prove a wrapper or child stopped publishing.
+   * No host command, plugin/source write or uninstall cancellation occurs. */
+  releaseIntegrationOperation(token: string, confirmation: string, expectedGeneration: number,
+    verifyQuiescence: (operation: IntegrationOperation) => void): IntegrationOperation {
+    return withFileLock(this.file('installation.lock'), () => {
+      const operations = this.pendingIntegrationOperations(), operation = operations.find(item => item.token === token)
+      if (!operation || this.integrationRecoveryConfirmation(token) !== confirmation) throw new Error('Integration recovery confirmation changed')
+      if (this.readActive()?.generation !== expectedGeneration || this.readJson('transaction.json') !== null) {
+        throw new Error('Native installation changed during recovery assessment')
+      }
+      if (processIdentityLiveness(operation.owner) !== 'gone') throw new Error('The original host plugin coordinator is still running or uncertain')
+      verifyQuiescence(operation)
+      const remaining = operations.filter(item => item.token !== token)
+      if (remaining.length === 0) rmSync(this.file('integration-operations.json'))
+      else this.save('integration-operations.json', { schema: 1, installation_id: this.readInstall()!.id, operations: remaining })
+      return operation
     }, { waitMs: 5_000, strictRelease: true })
   }
 
