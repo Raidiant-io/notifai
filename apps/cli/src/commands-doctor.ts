@@ -1031,6 +1031,13 @@ export function remedyLine(state: ReadinessState): string {
  * a remedy.
  */
 function hookStates(deps: CommandDeps): ReadinessState[] {
+  const detected = detectedHarnesses(deps.cwd, deps.env)
+  return hookStatesWithContext(deps).map((state) => state.id === 'hooks'
+    ? { ...state, technical: { ...(typeof state.technical === 'object' && state.technical !== null ? state.technical : {}), detected } }
+    : state)
+}
+
+function hookStatesWithContext(deps: CommandDeps): ReadinessState[] {
   const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
   const { active, contested } = resolveActiveHarness(
     deps.env,

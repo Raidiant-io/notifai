@@ -5558,10 +5558,13 @@ describe('interactive command UX', () => {
       },
       store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'empty store' },
     }
+    mkdirSync(path.join(cwd, 'codex'), { recursive: true })
 
     await doctorCommand(deps, { json: true })
     expect(io.outLines).toHaveLength(1)
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
+    const report = JSON.parse(io.outLines[0] ?? '{}') as { states: { id: string; technical?: { detected?: string[] } }[] }
+    expect(report.states.find((state) => state.id === 'hooks')?.technical?.detected).toContain('codex')
     expect(io.intros).toEqual([])
     expect(io.checks).toEqual([])
   })
