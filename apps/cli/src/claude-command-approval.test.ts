@@ -11,7 +11,7 @@ describe('Claude Code command rules', () => {
     for (const command of ['send', 'ask', 'receive', 'acknowledge', 'status', 'replies', 'close']) {
       expect(CLAUDE_COMMAND_RULES.some((rule) => rule.startsWith(`Bash(notifai ${command}`))).toBe(true)
     }
-    for (const command of ['init', 'config', 'logout', 'hooks', 'logs', 'update', 'project', 'guidance set', 'doctor']) {
+    for (const command of ['init', 'config', 'logout', 'auth', 'hooks', 'logs', 'update', 'project', 'guidance set', 'doctor']) {
       expect(CLAUDE_COMMAND_RULES.some((rule) => rule.startsWith(`Bash(notifai ${command} `) || rule === `Bash(notifai ${command})`)).toBe(false)
     }
     expect(CLAUDE_COMMAND_RULES.every((rule) => /^Bash\(notifai [a-z ]+( \*)?\)$/.test(rule))).toBe(true)

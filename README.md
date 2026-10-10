@@ -77,7 +77,7 @@ notifai update               # update the CLI this shell and the hooks use
 
 The `project` group controls User-owned Project Enablement for lifecycle hooks;
 it is separate from hook installation and is not permission to send. `devices`
-accepts `--platform <ios|android|macos>` and `--json`; send routing still uses
+accepts `--platform <ios|android|macos|windows|linux>` and `--json`; send routing still uses
 the per-request device flags documented by `notifai send --help`.
 
 Agents can ask for a reply, collect it directly, and send the required Agent
@@ -120,6 +120,12 @@ The sending CLI runs on macOS, Linux, and Windows. iPhone and Android are both
 active Companion Apps. The public protocol and CLI model Android as a
 first-class surface (`android:fcm`), including capability inspection, Device
 Installation filtering, authoring, and offline validation.
+
+The desktop Companion App (macOS, Windows, Linux) is in development and not
+shipped. It presents requests in its own on-screen Edge rather than through
+operating-system notifications, over its own connection to the service (the
+`stream` provider and `GET /api/v1/companion/changes`), so desktop drafts take
+only a `sound` option.
 
 Android support starts at Android 6/API 23 and requires Google Play services:
 a physical supported device has the Google Play Store, while emulators use a

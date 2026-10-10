@@ -8,10 +8,11 @@ import {
   type AndroidOptionsT,
   type IosOptionsT,
   type LifecycleT,
-  type MacosOptionsT,
+  type DesktopOptionsT,
   type MediaItemT,
   type NotificationDraftT,
   NOTIFICATION_KINDS,
+  isDesktopPlatform,
   PLATFORMS,
   type Platform,
   type QuestionT,
@@ -360,14 +361,28 @@ export function buildDraft(
     }
   }
 
-  const appleOptions: IosOptionsT & MacosOptionsT = {}
+  if (
+    isDesktopPlatform(platform) &&
+    ((level !== null && level !== undefined) || flags.threadId !== undefined || flags.data?.length)
+  ) {
+    return {
+      ok: false,
+      error:
+        'The desktop Companion App takes only a sound. Remove --level, --thread-id and --data, or unset the configured interruption_level; the Edge owns every other presentation choice.',
+    }
+  }
+
+  const appleOptions: IosOptionsT = {}
   const androidOptions: AndroidOptionsT = {}
+  const desktopOptions: DesktopOptionsT = {}
   if (sound === 'none') {
     appleOptions.sound = null
     androidOptions.sound = null
+    desktopOptions.sound = null
   } else if (sound !== null && sound !== undefined) {
     appleOptions.sound = sound
     androidOptions.sound = sound
+    desktopOptions.sound = sound
   }
   if (flags.threadId !== undefined) {
     appleOptions.thread_id = flags.threadId
@@ -434,19 +449,24 @@ export function buildDraft(
 
   const hasAppleOptions = Object.keys(appleOptions).length > 0
   const hasAndroidOptions = Object.keys(androidOptions).length > 0
+  const hasDesktopOptions = Object.keys(desktopOptions).length > 0
   let platformOptions: NonNullable<NotificationDraftT['platform']> | undefined
   if (flags.platform === undefined) {
-    if (hasAppleOptions || hasAndroidOptions) {
+    if (hasAppleOptions || hasAndroidOptions || hasDesktopOptions) {
       platformOptions = {
-        ...(hasAppleOptions ? { ios: appleOptions, macos: appleOptions } : {}),
+        ...(hasAppleOptions ? { ios: appleOptions } : {}),
         ...(hasAndroidOptions ? { android: androidOptions } : {}),
+        ...(hasDesktopOptions
+          ? { macos: desktopOptions, windows: desktopOptions, linux: desktopOptions }
+          : {}),
       }
     }
   } else if (platform === 'android') {
     if (hasAndroidOptions) platformOptions = { android: androidOptions }
+  } else if (isDesktopPlatform(platform)) {
+    if (hasDesktopOptions) platformOptions = { [platform]: desktopOptions }
   } else if (hasAppleOptions) {
-    platformOptions =
-      platform === 'ios' ? { ios: appleOptions } : { macos: appleOptions }
+    platformOptions = { ios: appleOptions }
   }
 
   const draft: NotificationDraftT = {

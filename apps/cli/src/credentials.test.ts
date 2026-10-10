@@ -15,8 +15,10 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   FileStore,
   KeychainStore,
+  SecretServiceStore,
   WindowsDpapiStore,
   defaultCredentialStore,
+  secretServiceAvailable,
   windowsDpapiOperation,
   type MachineCredential,
   type ProcessRunner,
@@ -152,6 +154,13 @@ describe('defaultCredentialStore', () => {
     expect(store.describe()).not.toMatch(/NTFS/)
   })
 
+  it('selects the Secret Service on a linux desktop session', () => {
+    const { env } = sandbox('default-linux-secret-service')
+    const store = defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: true })
+    expect(store).toBeInstanceOf(SecretServiceStore)
+    expect(store.describe()).toBe('Secret Service (io.notifai.cli)')
+  })
+
   it('uses the file store on macOS when Keychain is unavailable', () => {
     const { env } = sandbox('default-darwin-file')
     const store = defaultCredentialStore(env, { platform: 'darwin', keychainAvailable: false })
@@ -237,6 +246,112 @@ describe('FileStore', () => {
     writeRaw(file, future)
     expect(new FileStore(env).load()).toBeNull()
     expect(readFileSync(file, 'utf8')).toBe(future)
+  })
+})
+
+function mockSecretTool(options: { failStore?: boolean } = {}): {
+  runner: ProcessRunner
+  calls: RunCommandSpec[]
+  vault: Map<string, string>
+} {
+  const vault = new Map<string, string>()
+  const calls: RunCommandSpec[] = []
+  const runner: ProcessRunner = {
+    run(spec) {
+      calls.push(spec)
+      const [operation, ...rest] = spec.args
+      const key = rest.filter((arg) => !arg.startsWith('--')).join('\0')
+      if (operation === 'store') {
+        if (options.failStore) return { status: 1, stdout: Buffer.alloc(0) }
+        vault.set(key, spec.input.toString('utf8'))
+        return { status: 0, stdout: Buffer.alloc(0) }
+      }
+      if (operation === 'lookup') {
+        const value = vault.get(key)
+        return value === undefined
+          ? { status: 1, stdout: Buffer.alloc(0) }
+          : { status: 0, stdout: Buffer.from(value, 'utf8') }
+      }
+      if (operation === 'clear') {
+        vault.delete(key)
+        return { status: 0, stdout: Buffer.alloc(0) }
+      }
+      return { status: 1, stdout: Buffer.alloc(0) }
+    },
+  }
+  return { runner, calls, vault }
+}
+
+describe('SecretServiceStore', () => {
+  it('round-trips through secret-tool with the secret on stdin only', () => {
+    const { env } = sandbox('secret-service-roundtrip')
+    const { runner, calls } = mockSecretTool()
+    const store = new SecretServiceStore(env, { run: runner })
+    expect(store.load()).toBeNull()
+    store.save(SAMPLE)
+    expect(store.load()).toEqual(SAMPLE)
+    store.save(OTHER)
+    expect(store.load()).toEqual(OTHER)
+    store.clear()
+    expect(store.load()).toBeNull()
+
+    for (const call of calls) {
+      expect(call.command).toBe('secret-tool')
+      expect(call.args.slice(-4)).toEqual(['service', 'io.notifai.cli', 'account', 'machine'])
+      expect(call.timeoutMs).toBe(15_000)
+    }
+    const stored = calls.find((call) => call.args[0] === 'store')!
+    expect(JSON.parse(stored.input.toString('utf8'))).toEqual({ format: 'notifai.machine-credential.v1', ...SAMPLE })
+    assertNoSecretInArgs(calls)
+    expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
+  })
+
+  it('fails closed with a remedy when the keyring refuses the write', () => {
+    const { env } = sandbox('secret-service-refused')
+    const store = new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner })
+    expect(() => store.save(SAMPLE)).toThrow(/unlock the keyring and retry, or set NOTIFAI_CREDENTIALS=file/)
+    expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
+  })
+
+  it('moves a plaintext credential into the service and removes the file', () => {
+    const { env } = sandbox('secret-service-migrate')
+    new FileStore(env, { platform: 'linux' }).save(SAMPLE)
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    expect(existsSync(file)).toBe(true)
+    const { runner, vault } = mockSecretTool()
+    const store = new SecretServiceStore(env, { run: runner })
+    expect(store.load()).toEqual(SAMPLE)
+    expect(existsSync(file)).toBe(false)
+    expect(vault.size).toBe(1)
+    expect(store.load()).toEqual(SAMPLE)
+  })
+
+  it('keeps the plaintext credential working while the service refuses it', () => {
+    const { env } = sandbox('secret-service-migrate-refused')
+    new FileStore(env, { platform: 'linux' }).save(SAMPLE)
+    const store = new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner })
+    expect(store.load()).toEqual(SAMPLE)
+    expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(true)
+  })
+
+  it('clears a leftover plaintext file too', () => {
+    const { env } = sandbox('secret-service-clear')
+    new FileStore(env, { platform: 'linux' }).save(SAMPLE)
+    new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner }).clear()
+    expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
+  })
+})
+
+describe('secretServiceAvailable', () => {
+  it('needs both a session bus and secret-tool on PATH', () => {
+    const bin = path.join(tmp, 'secret-tool-bin')
+    writeRaw(path.join(bin, 'secret-tool'), '#!/bin/sh\n')
+    const runtime = path.join(tmp, 'runtime-with-bus')
+    writeRaw(path.join(runtime, 'bus'), '')
+    expect(secretServiceAvailable({ DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', PATH: bin })).toBe(true)
+    expect(secretServiceAvailable({ XDG_RUNTIME_DIR: runtime, PATH: bin })).toBe(true)
+    expect(secretServiceAvailable({ PATH: bin })).toBe(false)
+    expect(secretServiceAvailable({ DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', PATH: tmp })).toBe(false)
   })
 })
 

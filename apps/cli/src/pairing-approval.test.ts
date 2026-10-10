@@ -145,7 +145,7 @@ describe('QR-first computer approval', () => {
   })
   it('logout removes both the pending proof and protected QR artifact', async () => {
     const test = ceremony(); await loginCommand(test.deps, {})
-    logoutCommand(test.deps)
+    await logoutCommand(test.deps)
     expect(readPendingPairing(test.deps.env, 0)).toBeNull()
     expect(existsSync(pairingQrPath(test.deps.env))).toBe(false)
     expect(existsSync(pairingQrTextPath(test.deps.env))).toBe(false)

@@ -4,14 +4,14 @@ import {
   type NotificationDraftT,
   ANDROID_SOUNDS,
   IOS_SOUNDS,
-  MACOS_SOUNDS,
+  DESKTOP_SOUNDS,
   INTERRUPTION_LEVELS,
   REPLY_MAX_LENGTH,
   COLLAPSE_KEY_MAX_BYTES,
   MEDIA_MAX_ITEMS,
   NOTIFICATION_IMAGE_MAX_BYTES,
   NOTIFICATION_CONTRACT_FINGERPRINT,
-  type ApplePlatform,
+  type DesktopPlatform,
   type Platform,
 } from './notification.js'
 import { BODY_MAX_LENGTH, SUMMARY_MAX_LENGTH } from './content.js'
@@ -39,8 +39,8 @@ export interface CapabilityDocument {
   platform: Platform
   /** Opaque identity of the complete Notification Request schema this service accepts. */
   notification_contract_fingerprint: string
-  /** Provider payload ceiling in bytes for this platform. */
-  payload_limit_bytes: number
+  /** Provider payload ceiling in bytes; null when no push provider carries the request. */
+  payload_limit_bytes: number | null
   sounds: string[]
   interruption_levels: string[]
   fields: CapabilityField[]
@@ -154,112 +154,106 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
 }
 
 /**
- * macOS UserNotifications support verified against Apple's UNNotificationContent
- * surface: title, subtitle, body, sound, badge, threadIdentifier,
- * interruptionLevel, relevanceScore, targetContentIdentifier, and attachments.
- * The framework exposes attachments, but the current companion path does not
- * attach remote images; the catalog reports that delivery downgrade below.
- * https://developer.apple.com/documentation/usernotifications/unnotificationcontent
+ * The desktop Companion App presents requests in its own Edge over its own
+ * connection to the service, so no provider envelope limits the request and
+ * the Edge, not the operating system, owns every presentation choice but sound.
  */
-export const MACOS_CAPABILITIES_V1: CapabilityDocument = {
-  schema_version: 1,
-  platform: 'macos',
-  notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
-  payload_limit_bytes: 4096,
-  sounds: [...MACOS_SOUNDS],
-  interruption_levels: [...INTERRUPTION_LEVELS],
-  fields: [
-    { path: 'presentation.title', status: 'supported' },
-    {
-      path: 'presentation.summary',
-      status: 'unsupported',
-      constraints: {
-        required: true,
-        max_length: SUMMARY_MAX_LENGTH,
-        format: 'plain_text',
-        surfaces: ['banner', 'list', 'focused_fallback'],
+const MACOS_IPHONE_ONLY_FIELDS = [
+  'badge',
+  'thread_id',
+  'category',
+  'interruption_level',
+  'relevance_score',
+  'target_content_id',
+  'custom_data',
+] as const
+
+function desktopCapabilities(platform: DesktopPlatform): CapabilityDocument {
+  return {
+    schema_version: 1,
+    platform,
+    notification_contract_fingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
+    payload_limit_bytes: null,
+    sounds: [...DESKTOP_SOUNDS],
+    interruption_levels: [],
+    fields: [
+      { path: 'presentation.title', status: 'supported' },
+      {
+        path: 'presentation.summary',
+        status: 'supported',
+        constraints: {
+          required: true,
+          max_length: SUMMARY_MAX_LENGTH,
+          format: 'plain_text',
+          surfaces: ['island', 'list', 'focused_fallback'],
+        },
       },
-      reason: 'The dormant Mac Companion App is not maintained or verified for this content epoch.',
-    },
-    {
-      path: 'presentation.body',
-      status: 'unsupported',
-      constraints: {
-        required: false,
-        max_length: BODY_MAX_LENGTH,
-        format: 'markdown',
-        surface: 'focused',
-        remote_images: 'not fetched',
+      {
+        path: 'presentation.body',
+        status: 'supported',
+        constraints: {
+          required: false,
+          max_length: BODY_MAX_LENGTH,
+          format: 'markdown',
+          surface: 'focused',
+          remote_images: 'not fetched',
+        },
       },
-      reason: 'Focused Markdown Body loading is not maintained on the dormant Mac Companion App.',
-    },
-    {
-      path: 'source',
-      status: 'supported',
-      reason: 'session_id is machine-only and never displayed; session_label is the human session name.',
-    },
-    // The Mac registers the reply category and answers through the same
-    // ReplyOutbox as iOS. One difference worth naming: iOS renders
-    // closed questions with a notification content extension, which macOS has
-    // no equivalent of, so choices arrive as buttons in the app rather than on
-    // the banner. The answer reaches the agent either way.
-    { path: 'reply', status: 'supported' },
-    {
-      path: 'presentation.media',
-      status: 'downgraded',
-      constraints: {
-        max_items: MEDIA_MAX_ITEMS,
-        max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
-        media_types: ['jpeg', 'png', 'gif'],
-        representative: 'first resolvable',
-        banner_shows: 'none',
+      {
+        path: 'source',
+        status: 'supported',
+        reason: 'session_id is machine-only and never displayed; session_label is the human session name.',
       },
-      reason:
-        'The macOS banner omits images; the full ordered collection remains available in the app.',
-    },
-    {
-      path: 'platform.macos.sound',
-      status: 'supported',
-      constraints: { allowed: [...MACOS_SOUNDS, null], custom: true },
-      reason: 'Bundled semantic names, Account custom sound ids/names, or null (silent).',
-    },
-    { path: 'platform.macos.badge', status: 'supported' },
-    { path: 'platform.macos.thread_id', status: 'supported' },
-    {
-      path: 'platform.macos.category',
-      status: 'unsupported',
-      reason: 'Caller-selected categories are unsupported; the companion registers fixed, app-owned reply categories.',
-    },
-    {
-      path: 'platform.macos.interruption_level',
-      status: 'supported',
-      constraints: {
-        allowed: [...INTERRUPTION_LEVELS],
-        downgraded_values: ['time_sensitive'],
-        default: 'active',
+      {
+        path: 'reply',
+        status: 'supported',
+        constraints: {
+          max_length: REPLY_MAX_LENGTH,
+          free_text: 'in the Edge',
+          closed_and_multi_question: 'in the Edge',
+          default_window_seconds: 86400,
+        },
       },
-      reason:
-        'passive and active are supported; time_sensitive is accepted but Time Sensitive breakthrough is unavailable. critical is unsupported.',
-    },
-    { path: 'platform.macos.relevance_score', status: 'supported' },
-    { path: 'platform.macos.target_content_id', status: 'supported' },
-    {
-      path: 'platform.macos.custom_data',
-      status: 'supported',
-      constraints: { max_keys: 16, max_value_length: 512, namespace: 'notifai' },
-    },
-    {
-      path: 'icon',
-      status: 'unsupported',
-      reason: 'macOS has no arbitrary per-notification app-icon field.',
-    },
-    {
-      path: 'localization',
-      status: 'unsupported',
-      reason: 'The V1 macOS Companion App ships no localization catalogs, so loc-key fields cannot resolve.',
-    },
-  ],
+      {
+        path: 'presentation.media',
+        status: 'supported',
+        constraints: {
+          max_items: MEDIA_MAX_ITEMS,
+          max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
+          media_types: ['jpeg', 'png', 'gif'],
+          representative: 'first resolvable',
+        },
+      },
+      {
+        path: `platform.${platform}.sound`,
+        status: 'supported',
+        constraints: { allowed: [...DESKTOP_SOUNDS, null], custom: true },
+        reason: 'Bundled semantic names, Account custom sound ids/names, or null (silent).',
+      },
+      ...(platform === 'macos'
+        ? MACOS_IPHONE_ONLY_FIELDS.map((field) => ({
+            path: `platform.macos.${field}`,
+            status: 'unsupported' as const,
+            reason: 'An iPhone option; the Edge ignores it on the desktop.',
+          }))
+        : []),
+      {
+        path: 'icon',
+        status: 'unsupported',
+        reason: 'The Edge shows the Project avatar, never a per-notification icon.',
+      },
+      {
+        path: 'localization',
+        status: 'unsupported',
+        reason: 'The desktop Companion App ships no caller-addressable localization catalogs.',
+      },
+    ],
+  }
 }
+
+export const MACOS_CAPABILITIES_V1 = desktopCapabilities('macos')
+export const WINDOWS_CAPABILITIES_V1 = desktopCapabilities('windows')
+export const LINUX_CAPABILITIES_V1 = desktopCapabilities('linux')
 
 /** Android 6+ with Google Play services, using an application-owned FCM data envelope. */
 export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
@@ -409,8 +403,10 @@ export function createCapabilityRegistry(
 /** V1 publishes the client-visible contract for every current Companion surface. */
 export const CAPABILITY_DOCUMENTS_V1 = [
   IOS_CAPABILITIES_V1,
-  MACOS_CAPABILITIES_V1,
   ANDROID_CAPABILITIES_V1,
+  MACOS_CAPABILITIES_V1,
+  WINDOWS_CAPABILITIES_V1,
+  LINUX_CAPABILITIES_V1,
 ] as const
 export const CAPABILITIES_V1 = createCapabilityRegistry(CAPABILITY_DOCUMENTS_V1)
 
@@ -593,13 +589,13 @@ export function validateDraft(
   }
 
   for (const document of documents) {
-    if (document.platform !== 'android') {
-      const options = typed.platform?.[document.platform]
+    if (document.platform === 'ios') {
+      const options = typed.platform?.ios
       if (options?.category !== undefined && options.category !== null) {
         errors.push({
           code: 'unsupported_field',
-          path: `platform.${document.platform}.category`,
-          message: findReason(document, `platform.${document.platform}.category`),
+          path: 'platform.ios.category',
+          message: findReason(document, 'platform.ios.category'),
         })
       }
     }
@@ -636,6 +632,7 @@ export function validateDraft(
       }
     }
 
+    if (document.payload_limit_bytes === null) continue
     const estimated = estimatePayloadBytes(typed, document.platform)
     if (estimated > document.payload_limit_bytes) {
       const provider = document.platform === 'android' ? 'FCM' : 'APNs'
@@ -668,9 +665,7 @@ function draftValueAtPath(draft: NotificationDraftT, path: string): unknown {
 }
 
 function estimatePayloadBytes(draft: NotificationDraftT, platform: Platform): number {
-  return platform === 'android'
-    ? estimateFcmPayloadBytes(draft)
-    : estimateApnsPayloadBytes(draft, platform)
+  return platform === 'android' ? estimateFcmPayloadBytes(draft) : estimateApnsPayloadBytes(draft)
 }
 
 const ESTIMATED_ENVELOPE_IDS = {
@@ -693,17 +688,11 @@ const ESTIMATED_PROJECT_IDENTITY = {
  * Conservative byte accounting for the exact APNs envelope. A fixed-length
  * signed media URL keeps pre-flight validation safe before a real URL exists.
  */
-export function estimateApnsPayloadBytes(
-  draft: NotificationDraftT,
-  platform: ApplePlatform = 'ios',
-): number {
+export function estimateApnsPayloadBytes(draft: NotificationDraftT): number {
   const envelope = buildApnsEnvelope(
     draft,
     ESTIMATED_ENVELOPE_IDS,
-    platform === 'ios' && draft.presentation.media !== undefined
-      ? ESTIMATED_MEDIA_URL
-      : null,
-    platform,
+    draft.presentation.media !== undefined ? ESTIMATED_MEDIA_URL : null,
     // A project may resolve to a sender name and signed avatar URL at dispatch;
     // reserve worst-case room so acceptance implies deliverability.
     draft.project !== undefined ? ESTIMATED_PROJECT_IDENTITY : null,

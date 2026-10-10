@@ -755,11 +755,11 @@ describe('command contracts', () => {
       },
     } as unknown as ApiClient
 
-    expect(await devicesCommand(makeDeps(io, client), { platform: 'linux' })).toBe(
+    expect(await devicesCommand(makeDeps(io, client), { platform: 'beos' })).toBe(
       EXIT.usage,
     )
     expect(calls).toBe(0)
-    expect(io.errLines.join('\n')).toContain('ios or macos or android')
+    expect(io.errLines.join('\n')).toContain('ios or macos or android or windows or linux')
   })
 
   it('rejects an invalid draft before calling submit', async () => {
@@ -5373,7 +5373,7 @@ describe('interactive command UX', () => {
     expect(io.outLines.filter((line) => line === 'Pairing code: CODE-3')).toHaveLength(1)
     expect(readPendingPairing(deps.env, now)?.pairing_id).toBe('pair_3')
 
-    logoutCommand(deps)
+    await logoutCommand(deps)
     expect(readPendingPairing(deps.env, now)).toBeNull()
   })
 

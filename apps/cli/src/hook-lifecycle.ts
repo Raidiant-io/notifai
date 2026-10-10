@@ -407,9 +407,6 @@ async function answerableDevices(ctx: HookContext): Promise<string[]> {
   return devices
     .filter(
       (device) =>
-        (device.platform === 'ios' ||
-          device.platform === 'macos' ||
-          device.platform === 'android') &&
         device.registration_healthy &&
         device.capabilities?.includes('answer') === true &&
         device.derived_status !== 'must_update',
