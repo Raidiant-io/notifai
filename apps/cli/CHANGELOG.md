@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0-beta.17](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.16...v12.0.0-beta.17) (2026-10-10)
+
+### Fixes
+
+* Allow Windows npm repair to recognize its own suspended package manager before Windows initializes the process module list. Other readers and mismatched process identities still prevent replacement.
+
 ## [12.0.0-beta.16](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.15...v12.0.0-beta.16) (2026-10-10)
 
 ### Fixes

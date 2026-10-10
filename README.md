@@ -204,7 +204,7 @@ dashboard and the iPhone Companion App; the CLI never takes a payment.
 ## Status
 
 Notifai is published under Apache-2.0. The current packages are
-`@raidiant/notifai` <!--x-release-please-start-notifai-->12.0.0-beta.16<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->8.2.2<!--x-release-please-end-->; their
+`@raidiant/notifai` <!--x-release-please-start-notifai-->12.0.0-beta.17<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->8.2.2<!--x-release-please-end-->; their
 versions advance independently. Released clients keep ordinary notification
 workflows during the documented compatibility window; newer work is negotiated
 as named capabilities instead of making every version mismatch a product-wide
