@@ -103,7 +103,6 @@ export class Distribution {
     const value = this.verifyRecord('inventory', bytes)
     if (value['schema'] === 2) {
       const continuity = localContinuity(value['local_continuity'])
-      Object.freeze(continuity.legacy_inventories)
       value['local_continuity'] = Object.freeze(continuity)
     } else if (value['local_continuity'] !== undefined) {
       throw new Error('Historical inventory cannot declare an enforcing continuity contract')

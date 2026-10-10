@@ -5,7 +5,7 @@ import { createHash, createPublicKey, sign } from 'node:crypto'
 import { Distribution, RELEASE_TARGETS, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
 import { parseNpmAdapterManifest, NPM_ADAPTER_MANIFEST } from '../apps/cli/dist/npm-adapter-contract.js'
 import { compareReleasePrecedence } from '../apps/cli/dist/version.js'
-import { LOCAL_CONTINUITY, LOCAL_CONTINUITY_READERS } from '../apps/cli/dist/local-continuity.js'
+import { LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 export function validateReleaseSigner({ keyId, privateKey, trustedKeys }) {
@@ -65,8 +65,8 @@ export function signReleaseInventory({ version, sourceRevision, candidates, mate
     byTarget.set(build.target, { ...artifact, materials })
   }
   const bytes = signer(signing)('inventory', { schema: 2, version, source_revision: sourceRevision,
-    local_continuity: { contract: LOCAL_CONTINUITY, legacy_inventories: [...LOCAL_CONTINUITY_READERS] },
-    store_schema: 1, launcher_schema: 1, artifacts: RELEASE_TARGETS.map(target => byTarget.get(target)) })
+    local_continuity: { contract: LOCAL_CONTINUITY },
+    store_schema: 2, launcher_schema: 1, artifacts: RELEASE_TARGETS.map(target => byTarget.get(target)) })
   new Distribution(signing.trustedKeys).verifyInventory(bytes)
   return bytes
 }

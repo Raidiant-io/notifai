@@ -2,6 +2,7 @@ import { lstatSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { activeRecord, activeBytes } from './installation.js'
 import { isSemVer } from './version.js'
+import { installedRuntime } from './local-continuity.js'
 
 function localRecord(file: string): Record<string, unknown> {
   const stat = lstatSync(file)
@@ -12,6 +13,14 @@ function localRecord(file: string): Record<string, unknown> {
   const value: unknown = JSON.parse(readFileSync(file, 'utf8'))
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid native installation identity')
   return value as Record<string, unknown>
+}
+
+/** Diagnostic only. Exact candidate recovery remains Installation's authority. */
+export function nativeBootstrapPending(home: string): boolean {
+  try {
+    const value = localRecord(path.join(home, '.notifai', 'uninstall.json'))
+    return value['schema'] === 2 && value['operation'] === 'continuity-bootstrap'
+  } catch { return false }
 }
 
 /** Read-only LOCAL identity for readiness and command generation. Installation
@@ -38,6 +47,7 @@ export function nativeInstallationIdentity(home: string, windows = process.platf
   return { command: path.join(root, 'bin', `notifai${extension}`),
     runtime: path.join(root, 'versions', active['active'], `notifai-runtime${extension}`),
     version: inventory['version'], build: active['active'], installationId: installation['id'],
+    target: installedRuntime(installation)?.target ?? null,
     source_revision: typeof inventory['source_revision'] === 'string' ? inventory['source_revision'] : null,
     channel: installation['channel'] ?? null, source: installation['source'] ?? null,
     launcher_update_pending: installation['launcherUpdatePending'] === true }

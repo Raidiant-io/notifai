@@ -1,11 +1,12 @@
 import { inspectExecutionDomain, physicalCliPath, type CliExecutionDomain } from './cli-execution-domain.js'
-import { buildIdentity, Distribution } from './distribution.js'
+import { buildIdentity, Distribution, RELEASE_TARGETS, type ReleaseTarget } from './distribution.js'
 import { RELEASE_PUBLIC_KEYS } from './release-trust.js'
 import { NPM_ADAPTER_BIN, NPM_ADAPTER_MANIFEST } from './npm-adapter-contract.js'
 import { verifyNpmAdapterArtifact, type NpmAdapterAccessCheck } from './npm-adapter-verification.js'
 import { inspectNpmAdapterRoute, environmentForVerifiedAdapter, type NpmAdapterRoute } from './npm-adapter-route.js'
 import { npmAdapterWindowsAccess } from './installation-access.js'
-import { nativeInstallationIdentity } from './native-installation-identity.js'
+import { nativeBootstrapPending, nativeInstallationIdentity } from './native-installation-identity.js'
+import { Installation } from './installation.js'
 import { accountHome } from './platform.js'
 import {
   accessSync,
@@ -55,7 +56,7 @@ export interface CliInstallationInspection {
   effective: CliPathEntry | null
   entries: CliPathEntry[]
   native: ReturnType<typeof nativeInstallationIdentity> | null
-  transaction: { install_pending: boolean; uninstall_pending: boolean }
+  transaction: { install_pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; recovery_command?: string }
   update_owner: 'native' | null
   invoking_adapter: { artifact_path: string; version: string; source_revision: string } | null
 }
@@ -263,6 +264,21 @@ export function inspectCliInstallations(
       ...(!adapter && unverifiedAdapters.has(command) ? { problem: 'npm adapter release, payload or command ownership could not be verified' } : {}),
     }
   })
+  const bootstrap = nativeBootstrapPending(home)
+  let recovery: string | undefined
+  if (bootstrap && native?.target && RELEASE_TARGETS.includes(native.target as ReleaseTarget)) {
+    try {
+      // Rare interrupted-bootstrap diagnosis: authenticate the staged bytes
+      // before recommending any executable. Normal command inspection does not
+      // hash runtime payloads or run a recovery operation.
+      const installation = new Installation({ root, target: native.target as ReleaseTarget,
+        distribution: distribution instanceof Distribution ? distribution : new Distribution(RELEASE_PUBLIC_KEYS) })
+      if (!installation.inspect().bootstrap_pending) throw new Error('Bootstrap identity changed')
+      const pending = installation.pendingRelease()
+      if (pending) recovery = nativeLifecycleCommand(pending.launcher, ['install', '--upgrade', '--version', pending.version,
+        '--channel', pending.channel, '--no-init', '--no-path', '--json'], platform)
+    } catch { /* An unverified executable is never recovery advice. */ }
+  }
   return {
     current: {
       artifact_path: runningArtifact,
@@ -272,7 +288,8 @@ export function inspectCliInstallations(
     ...(domain ? { execution_domain: domain } : {}),
     entries,
     native,
-    transaction: { install_pending: localPathPresent(path.join(root, 'transaction.json')), uninstall_pending: localPathPresent(path.join(root, 'uninstall.json')) },
+    transaction: { install_pending: localPathPresent(path.join(root, 'transaction.json')), uninstall_pending: !bootstrap && localPathPresent(path.join(root, 'uninstall.json')),
+      ...(bootstrap ? { bootstrap_pending: true as const } : {}), ...(recovery ? { recovery_command: recovery } : {}) },
     update_owner: native === null ? null : 'native',
     invoking_adapter: invokingProof ? { artifact_path: invokingProof.proof.executable,
       version: invokingProof.proof.manifest.adapter_version, source_revision: invokingProof.proof.manifest.native.source_revision } : null,
@@ -310,6 +327,13 @@ export function cliBinReadiness(
   const { current, effective, entries } = inspection
   const updateCommand = inspection.native ? nativeLifecycleCommand(inspection.native.command, ['doctor', '--json'], platform)
     : buildIdentity() === null ? cliUpdateRecoveryCommand(cliUpdateChannel(current.version)) : 'notifai init'
+  if (inspection.transaction.bootstrap_pending) return {
+    id: 'cli-bin', title: 'notifai command', status: 'gap', technical: inspection,
+    detail: 'the first native upgrade is interrupted; its exact candidate must finish recovery',
+    remedy: { by: 'cli', summary: inspection.transaction.recovery_command ? 'resume the authenticated staged candidate'
+      : 'inspect the interrupted bootstrap; its candidate could not be authenticated',
+      ...(inspection.transaction.recovery_command ? { command: inspection.transaction.recovery_command } : {}) },
+  }
   if (inspection.transaction.uninstall_pending || inspection.transaction.install_pending) return {
     id: 'cli-bin', title: 'notifai command', status: 'gap', technical: inspection,
     detail: inspection.transaction.uninstall_pending ? 'uninstall is pending; installation and ordinary work remain paused' : 'installation recovery is pending',

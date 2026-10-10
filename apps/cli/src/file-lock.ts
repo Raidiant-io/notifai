@@ -288,7 +288,12 @@ function publishChoosing(
   for (;;) {
     let handle: number
     try {
-      mkdirSync(directory, { recursive: true, mode: 0o700 })
+      try { mkdirSync(directory, { recursive: true, mode: 0o700 }) } catch (err) {
+        // Bun/APFS can report EEXIST when another contender recreates the
+        // directory during recursive mkdir. Validate the actual directory
+        // below; EEXIST from publishing our unique entry is still an error.
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      }
       const registrar = assertOwnedDirectory(directory)
       chmodSync(directory, 0o700)
       // Recover before registration so a delayed stale cleanup can only name an

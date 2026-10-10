@@ -3,12 +3,12 @@ import { openclawPluginSource } from './openclaw-plugin.js'
 import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { ensurePrivateDirectory } from './atomic-file.js'
-import { Installation } from './installation.js'
+import { activeBytes, Installation } from './installation.js'
 import { nativeUninstallCommand } from './commands-native-uninstall.js'
 import { nativeInstallCommand, nativeUpdateCommand } from './commands-native-installation.js'
 import type { CommandDeps } from './commands-core.js'
@@ -20,6 +20,7 @@ import { sanitizeSessionId } from './config.js'
 import { canonicalPath } from './local-path.js'
 import { currentProcessIdentity, processStartTime } from './process-identity.js'
 import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
+import { inspectCliInstallations, cliBinReadiness } from './cli-bin.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -29,13 +30,13 @@ function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
   const extension = target.startsWith('bun-windows-') ? '.exe' : ''
   const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
-  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v1') => {
+  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v1', schema: 1 | 2 = 2) => {
     const directory = path.join(root, version); mkdirSync(directory)
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
     writeFileSync(path.join(directory, `notifai-runtime${extension}`), runtime)
     writeFileSync(path.join(directory, `notifai${extension}`), launcher)
-    const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: continuity, legacy_inventories: [] }, version, source_revision: 'a'.repeat(40),
-      store_schema: 1, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-${target === 'bun-windows-x64' ? 'windows-x64.zip' : 'linux-x64.tar.gz'}`,
+    const payload = Buffer.from(JSON.stringify({ schema, ...(schema === 2 ? { local_continuity: { contract: continuity } } : {}), version, source_revision: 'a'.repeat(40),
+      store_schema: schema, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-${target === 'bun-windows-x64' ? 'windows-x64.zip' : 'linux-x64.tar.gz'}`,
         bytes: archive?.length ?? 100, sha256: digest(archive ?? version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
     const signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
@@ -50,6 +51,173 @@ function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-
   }
   return { root, options, candidate, channel, installation: new Installation(options) }
 }
+
+/** Seed an already-shipped installation without asking the new installer to
+ * activate code that cannot enforce its contract. These signatures are test
+ * keys, not historical release acceptance evidence. */
+function legacyFixture() {
+  const f = fixture(), old = f.candidate('1.0.0', undefined, undefined, 1)
+  const build = f.installation.stage(old), id = '55555555-5555-4555-8555-555555555555'
+  const options = { ...f.options, sessionsDirectory: path.join(f.options.root, 'sessions'),
+    legacyBootstrapInventories: [createHash('sha256').update(old.signedInventory).digest('hex')],
+    fileUse: () => ({ status: 'clear' as const, processes: [] }) }
+  ensurePrivateDirectory(path.join(options.root, 'bin'))
+  copyFileSync(path.join(old.directory, 'notifai'), path.join(options.root, 'bin', 'notifai'))
+  writeFileSync(path.join(options.root, 'install.json'), JSON.stringify({ schema: 1, id, owner: 'notifai', source: 'shell',
+    target: options.target, channel: 'stable', previousChannel: null, launcherBuild: build, launcherUpdatePending: false }), { mode: 0o600 })
+  writeFileSync(path.join(options.root, 'active.json'), activeBytes({ schema: 1, active: build, previous: null, generation: 1 }), { mode: 0o600 })
+  const candidate = f.candidate('2.0.0')
+  const upgrade = { ...candidate, source: 'manual' as const, upgrade: true, version: '2.0.0', channel: 'stable' as const }
+  return { ...f, options, old, build, id, upgrade }
+}
+
+it('bootstraps a quiet historical installation without changing retained files or session references', () => {
+  const f = legacyFixture(), installation = new Installation(f.options)
+  const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'settled-old-session'
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: f.id, build: f.build }] })
+  const file = sessionStatePath(session, env), before = readFileSync(file)
+  const boot = new Installation({ ...f.options, sessionsDirectory: path.dirname(file) })
+  const result = boot.installCandidate(f.upgrade)
+  expect(result.version).toBe('2.0.0')
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, runtime: { target: f.options.target, contract: 'notifai-session-state-v1' } })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('target')
+  expect(boot.inspect()).toMatchObject({ active: { previous: f.build, generation: 2 }, pending: false, uninstall_pending: false })
+  expect(readFileSync(file)).toEqual(before)
+  expect(readFileSync(path.join(f.options.root, 'versions', f.build, 'notifai-runtime'), 'utf8')).toBe('runtime 1.0.0')
+  expect(() => installation.rollback(2)).toThrow(/cannot enforce/)
+})
+
+it.each(['in_use', 'uncertain'] as const)('leaves the old command working when bootstrap process inspection is %s', status => {
+  const f = legacyFixture(), oldMetadata = readFileSync(path.join(f.options.root, 'install.json'))
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status, processes: [] }) })
+  expect(() => installation.installCandidate(f.upgrade)).toThrow(/old native process/)
+  expect(readFileSync(path.join(f.options.root, 'install.json'))).toEqual(oldMetadata)
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  expect(installation.inspect()).toMatchObject({ active: { active: f.build, generation: 1 }, pending: true })
+  expect(new Installation(f.options).installCandidate(f.upgrade).version).toBe('2.0.0')
+})
+
+it('rechecks question debt after admission closes and keeps newly observed work intact', () => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'racing-question'
+  const installation = new Installation({ ...f.options, sessionsDirectory: path.dirname(sessionStatePath(session, env)), fileUse: () => {
+    writeSessionState(session, env, { runtime_builds: [{ installation_id: f.id, build: f.build }],
+      acknowledgement_due: [{ request_id: 'req_raced', recorded_at: 1 }] })
+    return { status: 'clear', processes: [] }
+  } })
+  expect(() => installation.installCandidate(f.upgrade)).toThrow(/existing questions/)
+  expect(JSON.parse(readFileSync(sessionStatePath(session, env), 'utf8')).acknowledgement_due[0].request_id).toBe('req_raced')
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, target: f.options.target })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('runtime')
+})
+
+it.each(['bootstrap-fenced', 'launcher', 'metadata', 'activated'] as const)('recovers only the exact candidate after interruption at %s', interrupted => {
+  const f = legacyFixture(), installation = new Installation({ ...f.options, observe: phase => {
+    if (phase === interrupted) throw new Error('interrupted')
+  } })
+  expect(() => installation.installCandidate(f.upgrade)).toThrow('interrupted')
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, runtime: { target: f.options.target, contract: 'notifai-session-state-v1' } })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('target')
+  expect(installation.inspect()).toMatchObject({ pending: true, bootstrap_pending: true, uninstall_pending: false })
+  expect(() => new Installation(f.options).abandonPending(1)).toThrow(/bootstrap/)
+  expect(() => new Installation(f.options).installCandidate({ ...f.upgrade, ...f.candidate('3.0.0'), version: '3.0.0' })).toThrow(/exact staged/)
+  const recovered = new Installation(f.options)
+  expect(recovered.installCandidate(f.upgrade).version).toBe('2.0.0')
+  expect(recovered.inspect()).toMatchObject({ active: { generation: 2, previous: f.build }, pending: false })
+  expect(existsSync(path.join(f.options.root, 'uninstall.json'))).toBe(false)
+  expect(() => recovered.rollback(2)).toThrow(/cannot enforce/)
+})
+
+it('reopens old admission if a pre-fence crash is followed by newly observed question debt', () => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'late-owner'
+  const sessionsDirectory = path.dirname(sessionStatePath(session, env))
+  const interrupted = new Installation({ ...f.options, sessionsDirectory, fileUse: () => ({ status: 'in_use', processes: [] }) })
+  expect(() => interrupted.installCandidate(f.upgrade)).toThrow(/old native process/)
+  // Simulate abrupt process death after marker publication: JS finally did not run.
+  const transaction = JSON.parse(readFileSync(path.join(f.options.root, 'transaction.json'), 'utf8'))
+  const marker = path.join(f.options.root, 'uninstall.json')
+  writeFileSync(marker, JSON.stringify({ schema: 2, operation: 'continuity-bootstrap', installation_id: f.id, build: transaction.to.active }), { mode: 0o600 })
+  writeSessionState(session, env, { runtime_builds: [{ installation_id: f.id, build: f.build }],
+    acknowledgement_due: [{ request_id: 'req_late_owner', recorded_at: 1 }] })
+  const stateBefore = readFileSync(sessionStatePath(session, env))
+  expect(() => new Installation({ ...f.options, sessionsDirectory }).recover()).toThrow(/existing questions/)
+  expect(existsSync(marker)).toBe(false)
+  expect(readFileSync(sessionStatePath(session, env))).toEqual(stateBefore)
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, target: f.options.target })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('runtime')
+})
+
+// Real Windows access helpers run against packaged artifacts in native CI.
+it.skipIf(process.platform === 'win32')('diagnoses interrupted bootstrap with authenticated exact recovery, never uninstall advice', () => {
+  const f = legacyFixture(), root = path.join(f.root, '.notifai')
+  renameSync(f.options.root, root)
+  const options = { ...f.options, root, sessionsDirectory: path.join(root, 'sessions') }
+  const installation = new Installation({ ...options, observe: phase => {
+    if (phase === 'bootstrap-fenced') throw new Error('interrupted')
+  } })
+  expect(() => installation.installCandidate(f.upgrade)).toThrow('interrupted')
+  const inspectionOptions = { nativeHome: f.root, distribution: options.distribution }
+  const inspection = inspectCliInstallations({}, 'linux', inspectionOptions)
+  expect(inspection.transaction).toMatchObject({ install_pending: true, bootstrap_pending: true, uninstall_pending: false,
+    recovery_command: expect.stringContaining('install --upgrade --version 2.0.0 --channel stable --no-init --no-path --json') })
+  expect(cliBinReadiness({}, 'linux', inspectionOptions).remedy).toMatchObject({ by: 'cli', command: inspection.transaction.recovery_command })
+  // Local metadata alone is not permission to recommend a changed executable.
+  const pending = installation.pendingRelease()!
+  writeFileSync(pending.launcher, 'modified after staging')
+  const tampered = inspectCliInstallations({}, 'linux', inspectionOptions)
+  expect(tampered.transaction.bootstrap_pending).toBe(true)
+  expect(tampered.transaction).not.toHaveProperty('recovery_command')
+})
+
+it('preserves an existing uninstall journal and rejects unaudited historical inventories', () => {
+  const f = legacyFixture(), barrier = path.join(f.options.root, 'uninstall.json')
+  writeFileSync(barrier, 'existing uninstall', { mode: 0o600 })
+  expect(() => new Installation(f.options).installCandidate(f.upgrade)).toThrow()
+  expect(readFileSync(barrier, 'utf8')).toBe('existing uninstall')
+  rmSync(barrier)
+  expect(() => new Installation({ ...f.options, legacyBootstrapInventories: [] }).installCandidate(f.upgrade)).toThrow(/no proven writer rejection/)
+  expect(existsSync(barrier)).toBe(false)
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toMatchObject({ schema: 1, target: f.options.target })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).not.toHaveProperty('runtime')
+})
+
+it('allows later compatible updates despite authenticated old portable staging after the fence', () => {
+  const f = legacyFixture(), late = f.candidate('1.5.0', undefined, undefined, 1)
+  const options = { ...f.options, legacyBootstrapInventories: [...f.options.legacyBootstrapInventories,
+    createHash('sha256').update(late.signedInventory).digest('hex')] }
+  const installation = new Installation(options)
+  installation.installCandidate(f.upgrade)
+  installation.stage(late)
+  expect(installation.installCandidate({ ...f.upgrade, ...f.candidate('3.0.0'), version: '3.0.0' }).version).toBe('3.0.0')
+})
+
+it.each([
+  { runtime: { target: 'bun-linux-x64', contract: 'notifai-session-state-v1' } },
+  { target: null },
+  { target: undefined },
+  { schema: 2 },
+  { target: 'bun-windows-x64' },
+  { target: undefined, runtime: { target: 'bun-linux-x64', contract: 'unknown' } },
+  { target: undefined, runtime: { target: 'bun-windows-x64', contract: 'notifai-session-state-v1' } },
+])('rejects ambiguous or unsupported writer identity %j', change => {
+  const f = legacyFixture(), file = path.join(f.options.root, 'install.json')
+  const prior = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...prior, ...change }))
+  expect(() => new Installation(f.options).inspect()).toThrow(/Invalid installation ownership/)
+})
+
+it('never restores old writer admission through channel changes, repair or compatible rollback', () => {
+  const f = legacyFixture(), installation = new Installation(f.options)
+  installation.installCandidate(f.upgrade)
+  const second = installation.inspect().active!.active
+  installation.activate({ build: second, expectedGeneration: 2, source: 'shell', channel: 'beta' })
+  installation.repairLauncher(3)
+  installation.installCandidate({ ...f.upgrade, ...f.candidate('3.0.0'), version: '3.0.0' })
+  installation.rollback(4)
+  const record = JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))
+  expect(record).not.toHaveProperty('target')
+  expect(record.runtime).toEqual({ target: f.options.target, contract: 'notifai-session-state-v1' })
+})
 
 it('activates immutable generations, rejects stale decisions, and rolls back without losing files', () => {
   const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
@@ -191,7 +359,7 @@ it('finds pending work across indexed state roots before any uninstall mutation'
 })
 
 // Native Windows C ownership is exercised by check-standalone-runtime, not this text launcher fixture.
-it.skipIf(process.platform === 'win32')('finds OpenClaw pending message context in its recorded custom host root', () => {
+it.skipIf(process.platform === 'win32').each(['current', 'released-v6'])('finds %s OpenClaw pending message context in its recorded custom host root', plugin => {
   const f = fixture(), root = path.join(f.root, '.notifai')
   const installation = new Installation({ ...f.options, root })
   const build = installation.stage(f.candidate('1.0.0'))
@@ -205,7 +373,10 @@ it.skipIf(process.platform === 'win32')('finds OpenClaw pending message context 
     openclaw_session_id: 'native-session', generation, native_revision: 'revision', boot_id: generation,
     deadline_ns: '12345678', attempt: 1, phase: 'transcript', text: 'pending context' }
   const producer = path.join(f.root, 'host.mjs')
-  writeFileSync(producer, openclawPluginSource({ adapterPath: path.join(root, 'bin', 'notifai'), timeoutSeconds: 5 }) + `
+  const source = plugin === 'current' ? openclawPluginSource({ adapterPath: path.join(root, 'bin', 'notifai'), timeoutSeconds: 5 })
+    : readFileSync(new URL('./fixtures/openclaw-v6.mjs.txt', import.meta.url), 'utf8')
+      .replaceAll('/__NOTIFAI_FIXTURE__/.notifai/bin/notifai', path.join(root, 'bin', 'notifai'))
+  writeFileSync(producer, source + `
 JOURNAL_DIR = ${JSON.stringify(path.join(hostRoot, 'continuation-journal'))}
 MESSAGE_JOURNAL_DIR = ${JSON.stringify(path.join(hostRoot, 'message-journal'))}
 saveMessageJournal(${JSON.stringify(record)})

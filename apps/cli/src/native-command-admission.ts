@@ -84,6 +84,10 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
  * observations, credential access, network checks and local log writes. */
 export function portableNativeReport(env: NodeJS.ProcessEnv, options: CliBinReadinessOptions = {}): Record<string, unknown> {
   const inspection = inspectCliInstallations(env, process.platform, options), installation = inspection.native
+  if (inspection.transaction.bootstrap_pending) return { ok: false, status: 'bootstrap_pending',
+    running: buildIdentity(), installation, inspection, read_only: true,
+    message: 'Resume the exact staged candidate to finish the first native upgrade.',
+    ...(inspection.transaction.recovery_command ? { recovery_command: inspection.transaction.recovery_command } : {}) }
   return { ok: false, status: inspection.transaction.uninstall_pending ? 'uninstall_pending' : 'native_installation_required',
     running: buildIdentity(), installation, inspection,
     message: inspection.transaction.uninstall_pending ? 'Finish or explicitly cancel the pending uninstall before installing Notifai.'
