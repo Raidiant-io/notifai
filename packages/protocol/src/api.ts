@@ -356,10 +356,20 @@ export const FcmRegistrationRequest = Type.Object(
   { additionalProperties: false },
 )
 
-/** Provider-specific registration shapes; FCM deliberately has no environment field. */
+/**
+ * A desktop Companion App receives over its own changes feed, so it registers
+ * no token: the service routes to it while that feed is being read.
+ */
+export const StreamRegistrationRequest = Type.Object(
+  { provider: Type.Literal('stream') },
+  { additionalProperties: false },
+)
+
+/** Provider-specific registration shapes; only APNs carries an environment. */
 export const PutRegistrationRequest = Type.Union([
   ApnsRegistrationRequest,
   FcmRegistrationRequest,
+  StreamRegistrationRequest,
 ])
 export type PutRegistrationRequestT = Static<typeof PutRegistrationRequest>
 

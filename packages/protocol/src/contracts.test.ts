@@ -17,7 +17,11 @@ import {
   estimateFcmPayloadBytes,
   IOS_CAPABILITIES_V1,
   MACOS_CAPABILITIES_V1,
+  WINDOWS_CAPABILITIES_V1,
+  LINUX_CAPABILITIES_V1,
+  CAPABILITY_DOCUMENTS_V1,
   MEDIA_MAX_ITEMS,
+  ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS,
   NOTIFICATION_CONTRACT_FINGERPRINT,
   NOTIFICATION_IMAGE_MAX_BYTES,
   parseAlphaAccessLaneHint,
@@ -195,8 +199,8 @@ describe('account preference and reply capability contracts', () => {
 
 describe('platform and provider vocabulary', () => {
   it('publishes Android and FCM as client-visible contract values', () => {
-    expect(PLATFORMS).toEqual(['ios', 'macos', 'android'])
-    expect(PROVIDERS).toEqual(['apns', 'fcm'])
+    expect(PLATFORMS).toEqual(['ios', 'macos', 'android', 'windows', 'linux'])
+    expect(PROVIDERS).toEqual(['apns', 'fcm', 'stream'])
     expect(REPLY_SOURCES).toContain('remote_input')
 
     expect(
@@ -471,7 +475,6 @@ describe('validateDraft', () => {
       withProject,
       { requestId: 'req_x', deliveryId: 'del_x' },
       null,
-      'ios',
       {
         name: 'My App',
         imageUrl: 'https://signed.example/avatar.png',
@@ -738,13 +741,13 @@ describe('validateDraft', () => {
     const deadline = new Date('2026-08-03T09:15:00.000Z')
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
 
-    const envelope = buildApnsEnvelope(withReply, ids, null, 'ios', null, deadline)
+    const envelope = buildApnsEnvelope(withReply, ids, null, null, deadline)
     expect((envelope.payload['notifai'] as Record<string, unknown>)['reply_expires_at']).toBe(
       '2026-08-03T09:15:00.000Z',
     )
 
     // No reply requested means no deadline to publish, whatever is passed in.
-    const withoutReply = buildApnsEnvelope(draft(), ids, null, 'ios', null, deadline)
+    const withoutReply = buildApnsEnvelope(draft(), ids, null, null, deadline)
     expect(
       (withoutReply.payload['notifai'] as Record<string, unknown>)['reply_expires_at'],
     ).toBeUndefined()
@@ -762,13 +765,13 @@ describe('validateDraft', () => {
   it('carries the acknowledgement snapshot on original questions only', () => {
     const ids = { requestId: 'req_x', deliveryId: 'del_x' }
     const question = draft({ reply: freeTextReply() })
-    const required = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), null, {
+    const required = buildApnsEnvelope(question, ids, null, null, new Date(0), null, {
       agentAcknowledgementRequired: true,
     })
-    const disabled = buildApnsEnvelope(question, ids, null, 'ios', null, new Date(0), null, {
+    const disabled = buildApnsEnvelope(question, ids, null, null, new Date(0), null, {
       agentAcknowledgementRequired: false,
     })
-    const ordinary = buildApnsEnvelope(draft(), ids, null, 'ios', null, null, null, {
+    const ordinary = buildApnsEnvelope(draft(), ids, null, null, null, null, {
       agentAcknowledgementRequired: true,
     })
 
@@ -797,7 +800,6 @@ describe('validateDraft', () => {
       sync,
       { requestId: 'req_sync', deliveryId: 'del_sync' },
       null,
-      'ios',
       null,
       null,
       null,
@@ -874,7 +876,7 @@ describe('validateDraft', () => {
       reply: { expires_in_seconds: 3600, questions },
     })
 
-    const envelope = buildApnsEnvelope(question, ids, null, 'ios')
+    const envelope = buildApnsEnvelope(question, ids, null)
     const alert = (envelope.payload['aps'] as Record<string, unknown>)['alert'] as Record<
       string,
       unknown
@@ -887,14 +889,6 @@ describe('validateDraft', () => {
     expect(JSON.stringify(alert)).not.toContain(secretLabel)
     expect(JSON.stringify(alert)).not.toContain('Wait for the replacement')
     expect((envelope.payload['notifai'] as Record<string, unknown>)['questions']).toEqual(questions)
-
-    const macos = buildApnsEnvelope(question, ids, null, 'macos')
-    const macosAlert = (macos.payload['aps'] as Record<string, unknown>)['alert'] as Record<
-      string,
-      unknown
-    >
-    expect(macosAlert.subtitle).toBeUndefined()
-    expect(JSON.stringify(macosAlert)).not.toContain(CLOSED_CHOICE_BANNER_AFFORDANCE)
 
     const fcm = JSON.parse(buildFcmDataEnvelope(question, ids, null).data.notifai) as Record<
       string,
@@ -985,32 +979,40 @@ describe('validateDraft', () => {
     expect(validateDraft(legacy, IOS_CAPABILITIES_V1).ok).toBe(false)
   })
 
-  it('describes the iOS, macOS, and Android capability contracts', () => {
+  it('describes the iOS, Android, and desktop capability contracts', () => {
     expect(CAPABILITIES_V1.describe('ios')?.platform).toBe('ios')
-    expect(CAPABILITIES_V1.describe('macos')).toBe(MACOS_CAPABILITIES_V1)
     expect(CAPABILITIES_V1.describe('android')).toBe(ANDROID_CAPABILITIES_V1)
-    expect([
-      IOS_CAPABILITIES_V1,
-      MACOS_CAPABILITIES_V1,
-      ANDROID_CAPABILITIES_V1,
-    ].map((document) => document.notification_contract_fingerprint)).toEqual([
-      NOTIFICATION_CONTRACT_FINGERPRINT,
-      NOTIFICATION_CONTRACT_FINGERPRINT,
-      NOTIFICATION_CONTRACT_FINGERPRINT,
+    expect(CAPABILITIES_V1.describe('macos')).toBe(MACOS_CAPABILITIES_V1)
+    expect(CAPABILITIES_V1.describe('windows')).toBe(WINDOWS_CAPABILITIES_V1)
+    expect(CAPABILITIES_V1.describe('linux')).toBe(LINUX_CAPABILITIES_V1)
+    expect(CAPABILITY_DOCUMENTS_V1.map((document) => document.notification_contract_fingerprint))
+      .toEqual(CAPABILITY_DOCUMENTS_V1.map(() => NOTIFICATION_CONTRACT_FINGERPRINT))
+    for (const document of [MACOS_CAPABILITIES_V1, WINDOWS_CAPABILITIES_V1, LINUX_CAPABILITIES_V1]) {
+      expect(document).toMatchObject({ payload_limit_bytes: null, interruption_levels: [] })
+      expect(document.fields).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: 'presentation.summary', status: 'supported' }),
+          expect.objectContaining({ path: 'presentation.body', status: 'supported' }),
+          expect.objectContaining({ path: 'presentation.media', status: 'supported' }),
+          expect.objectContaining({ path: 'reply', status: 'supported' }),
+          expect.objectContaining({ path: `platform.${document.platform}.sound`, status: 'supported' }),
+        ]),
+      )
+    }
+    for (const document of [WINDOWS_CAPABILITIES_V1, LINUX_CAPABILITIES_V1]) {
+      expect(document.fields.some((field) => field.path.startsWith(`platform.${document.platform}.`)
+        && !field.path.endsWith('.sound'))).toBe(false)
+    }
+    expect(MACOS_CAPABILITIES_V1.fields.filter((field) => field.path.startsWith('platform.macos.')
+      && field.status !== 'supported').map((field) => field.path)).toEqual([
+      'platform.macos.badge',
+      'platform.macos.thread_id',
+      'platform.macos.category',
+      'platform.macos.interruption_level',
+      'platform.macos.relevance_score',
+      'platform.macos.target_content_id',
+      'platform.macos.custom_data',
     ])
-    expect(MACOS_CAPABILITIES_V1.fields).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: 'presentation.media', status: 'downgraded' }),
-        expect.objectContaining({ path: 'presentation.summary', status: 'unsupported' }),
-        expect.objectContaining({ path: 'presentation.body', status: 'unsupported' }),
-        expect.objectContaining({ path: 'source', status: 'supported' }),
-        expect.objectContaining({ path: 'reply', status: 'supported' }),
-        expect.objectContaining({ path: 'platform.macos.sound', status: 'supported' }),
-        expect.objectContaining({ path: 'platform.macos.thread_id', status: 'supported' }),
-        expect.objectContaining({ path: 'platform.macos.category', status: 'unsupported' }),
-      ]),
-    )
-    expect(MACOS_CAPABILITIES_V1.fields.some((field) => field.path === 'sound_file')).toBe(false)
     expect(ANDROID_CAPABILITIES_V1).toMatchObject({
       platform: 'android',
       payload_limit_bytes: 4096,
@@ -1033,26 +1035,38 @@ describe('validateDraft', () => {
     )
   })
 
-  it('warns when the macOS banner omits an ordered media collection', () => {
-    const withMedia = draft({
+  it('lets the desktop Edge take media and any reply without a provider size limit', () => {
+    const rich = draft({
       presentation: {
         title: 'Hi',
-        body: 'Body',
+        summary: 'Summary',
+        body: 'x'.repeat(8000),
         media: [{ media_id: 'med_first' }, { media_id: 'med_second', alt: 'Graph' }],
       },
+      reply: {
+        expires_in_seconds: 3600,
+        questions: [
+          { id: 'where', text: 'Deploy where?', choices: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+          { id: 'why', text: 'Why?' },
+        ],
+      },
+      platform: { macos: { sound: 'done' }, windows: { sound: null }, linux: { sound: 'snd_custom' } },
     })
 
-    expect(validateDraft(withMedia, MACOS_CAPABILITIES_V1)).toMatchObject({
-      ok: true,
-      errors: [],
-      warnings: [
-        {
-          path: 'presentation.media',
-          message: expect.stringContaining('banner omits images'),
-        },
-      ],
-    })
-    expect(validateDraft(withMedia, IOS_CAPABILITIES_V1).warnings).toEqual([])
+    for (const document of [MACOS_CAPABILITIES_V1, WINDOWS_CAPABILITIES_V1, LINUX_CAPABILITIES_V1]) {
+      expect(validateDraft(rich, document)).toEqual({ ok: true, errors: [], warnings: [] })
+    }
+    // Released CLIs send their iPhone options to macOS too; the Edge ignores them.
+    expect(validateDraft(draft({ platform: { macos: { thread_id: 't', interruption_level: 'passive' } } }),
+      MACOS_CAPABILITIES_V1)).toEqual({ ok: true, errors: [], warnings: [] })
+    expect(validateDraft(draft({ platform: { windows: { thread_id: 't' } } } as never), WINDOWS_CAPABILITIES_V1).ok)
+      .toBe(false)
+  })
+
+  it('accepts the fingerprint of every earlier schema this one still accepts', () => {
+    expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS[0]).toBe(NOTIFICATION_CONTRACT_FINGERPRINT)
+    expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).toContain('notification-draft/e39eb879c1426c91')
+    expect(new Set(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).size).toBe(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS.length)
   })
 
   it('reports Android native-surface downgrades without rejecting supported in-app behavior', () => {
@@ -1105,9 +1119,6 @@ describe('validateDraft', () => {
     const timeSensitive = draft({
       platform: { ios: { interruption_level: 'time_sensitive' } },
     })
-    const macTimeSensitive = draft({
-      platform: { macos: { interruption_level: 'time_sensitive' } },
-    })
     const active = draft({ platform: { ios: { interruption_level: 'active' } } })
 
     expect(validateDraft(timeSensitive, IOS_CAPABILITIES_V1)).toMatchObject({
@@ -1119,9 +1130,6 @@ describe('validateDraft', () => {
         },
       ],
     })
-    expect(validateDraft(macTimeSensitive, MACOS_CAPABILITIES_V1).warnings).toEqual([
-      expect.objectContaining({ path: 'platform.macos.interruption_level' }),
-    ])
     expect(validateDraft(active, IOS_CAPABILITIES_V1).warnings).toEqual([])
   })
 
@@ -1319,7 +1327,6 @@ describe('validateDraft', () => {
         createdAt: new Date(0),
       },
       null,
-      'ios',
       null,
       null,
       null,
@@ -1329,50 +1336,6 @@ describe('validateDraft', () => {
     const rendered = new TextEncoder().encode(JSON.stringify(envelope.payload)).length
     expect(estimateApnsPayloadBytes(maximum)).toBe(rendered)
     expect(rendered).toBeLessThanOrEqual(IOS_CAPABILITIES_V1.payload_limit_bytes)
-  })
-
-  it('uses macOS platform options in the shared APNs envelope', () => {
-    const macosDraft = draft({
-      presentation: { title: 'Hi', body: 'Body' },
-      platform: {
-        macos: {
-          sound: null,
-          badge: 3,
-          thread_id: 'desktop-builds',
-          interruption_level: 'passive',
-          relevance_score: 0.8,
-          target_content_id: 'build-detail',
-          custom_data: { run_id: '42' },
-        },
-      },
-    })
-    const envelope = buildApnsEnvelope(
-      macosDraft,
-      {
-        requestId: 'req_00000000000000000000000000',
-        deliveryId: 'del_00000000000000000000000000',
-        receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
-        createdAt: new Date(0),
-      },
-      null,
-      'macos',
-    )
-    const aps = envelope.payload['aps'] as Record<string, unknown>
-    const notifai = envelope.payload['notifai'] as Record<string, unknown>
-
-    expect(envelope.priority).toBe(5)
-    expect(aps).toMatchObject({
-      badge: 3,
-      'thread-id': 'desktop-builds',
-      'interruption-level': 'passive',
-      'relevance-score': 0.8,
-      'target-content-id': 'build-detail',
-    })
-    expect(aps).not.toHaveProperty('sound')
-    expect(notifai['data']).toEqual({ run_id: '42' })
-    expect(estimateApnsPayloadBytes(macosDraft, 'macos')).toBe(
-      new TextEncoder().encode(JSON.stringify(envelope.payload)).length,
-    )
   })
 })
 
@@ -1601,24 +1564,6 @@ describe('APNs envelope rendering', () => {
     )
   })
 
-  it('warns when macOS delivery omits a requested image', () => {
-    const withImage = draft({
-      presentation: { title: 'Hi', body: 'Body', media: [{ media_id: 'med_example' }] },
-    })
-
-    expect(validateDraft(withImage, MACOS_CAPABILITIES_V1)).toMatchObject({
-      ok: true,
-      errors: [],
-      warnings: [
-        {
-          path: 'presentation.media',
-          message: expect.stringContaining('macOS banner omits'),
-        },
-      ],
-    })
-    expect(validateDraft(withImage, IOS_CAPABILITIES_V1).warnings).toEqual([])
-  })
-
   it('uses the same excerpt, media, and Source Context rules for estimation and rendering', () => {
     const withContent = draft({
       source: {
@@ -1675,7 +1620,6 @@ describe('APNs envelope rendering', () => {
       draft({ lifecycle: { tier: 'done', state: 'answered_elsewhere', retires_request_id: 'req_old' } }),
       { requestId: 'req_x', deliveryId: 'del_x' },
       null,
-      'ios',
       null,
       null,
       { answeredVia: 'the paired iPhone', answer: 'Ship it' },
@@ -1926,13 +1870,12 @@ describe('unified content and Source Context schema', () => {
       expect.arrayContaining([
         expect.objectContaining({
           path: 'presentation.media',
-          status: 'downgraded',
+          status: 'supported',
           constraints: expect.objectContaining({
             max_items: MEDIA_MAX_ITEMS,
             max_bytes_per_item: NOTIFICATION_IMAGE_MAX_BYTES,
             media_types: ['jpeg', 'png', 'gif'],
             representative: 'first resolvable',
-            banner_shows: 'none',
           }),
         }),
         expect.objectContaining({ path: 'source', status: 'supported' }),

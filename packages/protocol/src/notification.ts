@@ -40,16 +40,22 @@ export const NotificationMediaTypeSchema = Type.Union(
 )
 
 /** Device platforms known to the public contract. Delivery support is registry-owned. */
-export const PLATFORMS = ['ios', 'macos', 'android'] as const
+export const PLATFORMS = ['ios', 'macos', 'android', 'windows', 'linux'] as const
 export type Platform = (typeof PLATFORMS)[number]
 export const PlatformSchema = Type.Union(PLATFORMS.map((platform) => Type.Literal(platform)))
 
-/** Apple platforms that share the APNs envelope contract. */
-export const APPLE_PLATFORMS = ['ios', 'macos'] as const
-export type ApplePlatform = (typeof APPLE_PLATFORMS)[number]
+/** Desktop Companion App platforms. They present requests in the app's own Edge. */
+export const DESKTOP_PLATFORMS = ['macos', 'windows', 'linux'] as const
+export type DesktopPlatform = (typeof DESKTOP_PLATFORMS)[number]
+export function isDesktopPlatform(platform: Platform): platform is DesktopPlatform {
+  return (DESKTOP_PLATFORMS as readonly string[]).includes(platform)
+}
 
-/** Push providers known to the public contract. Platform routing chooses the adapter. */
-export const PROVIDERS = ['apns', 'fcm'] as const
+/**
+ * Delivery providers known to the public contract. `stream` is the desktop
+ * Companion App's own connection to the service: no third-party push service.
+ */
+export const PROVIDERS = ['apns', 'fcm', 'stream'] as const
 export type Provider = (typeof PROVIDERS)[number]
 export const ProviderSchema = Type.Union(PROVIDERS.map((provider) => Type.Literal(provider)))
 
@@ -212,13 +218,13 @@ export const ReplyRequest = Type.Object(
 export const SEMANTIC_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
 /** Semantic sound names shipped by the iOS Companion App. */
 export const IOS_SOUNDS = SEMANTIC_SOUNDS
-/** Semantic sound names shipped by the macOS Companion App. */
-export const MACOS_SOUNDS = SEMANTIC_SOUNDS
+/** Semantic sound names shipped by the desktop Companion App. */
+export const DESKTOP_SOUNDS = SEMANTIC_SOUNDS
 /** Semantic sound names shipped by the Android Companion App. */
 export const ANDROID_SOUNDS = SEMANTIC_SOUNDS
 /** A semantic sound name a Companion App can play. */
 export type IosSound = (typeof IOS_SOUNDS)[number]
-export type MacosSound = (typeof MACOS_SOUNDS)[number]
+export type DesktopSound = (typeof DESKTOP_SOUNDS)[number]
 export type AndroidSound = (typeof ANDROID_SOUNDS)[number]
 /** CLI spelling adds `none` for the contract's explicit silent (`null`) value. */
 export const CLI_SOUNDS = [...SEMANTIC_SOUNDS, 'none'] as const
@@ -278,13 +284,25 @@ export const IosOptions = Type.Object(
   { additionalProperties: false },
 )
 
-/** macOS UserNotifications options carried in the shared APNs alert envelope. */
+/** Desktop Companion App options: the Edge owns every other presentation choice. */
+export const DesktopOptions = Type.Object(
+  {
+    /** A semantic sound, an Account custom sound id/name, or null (silent). */
+    sound: Type.Optional(SoundChoice),
+  },
+  { additionalProperties: false },
+)
+
+/**
+ * macOS desktop options. Released CLIs send their iPhone options here too, so
+ * the iPhone-only fields stay accepted; the desktop Companion App honors only
+ * `sound` and its capability document marks the rest unsupported.
+ */
 export const MacosOptions = Type.Object(
   {
     sound: Type.Optional(SoundChoice),
     badge: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     thread_id: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()])),
-    /** Caller-selected categories are unsupported; companions own their fixed reply categories. */
     category: Type.Optional(Type.Null()),
     interruption_level: Type.Optional(
       Type.Union(INTERRUPTION_LEVELS.map((level) => Type.Literal(level))),
@@ -293,7 +311,6 @@ export const MacosOptions = Type.Object(
     target_content_id: Type.Optional(
       Type.Union([Type.String({ minLength: 1, maxLength: 128 }), Type.Null()]),
     ),
-    /** Namespaced custom data delivered under the `notifai` key. */
     custom_data: Type.Optional(
       Type.Record(Type.String({ pattern: '^[a-z][a-z0-9_]{0,63}$' }), Type.String({ maxLength: 512 }), {
         maxProperties: 16,
@@ -447,6 +464,8 @@ export const NotificationDraft = Type.Object(
           ios: Type.Optional(IosOptions),
           macos: Type.Optional(MacosOptions),
           android: Type.Optional(AndroidOptions),
+          windows: Type.Optional(DesktopOptions),
+          linux: Type.Optional(DesktopOptions),
         },
         { additionalProperties: false },
       ),
@@ -460,6 +479,7 @@ export type SourceContextT = Static<typeof SourceContext>
 export type DeliveryPolicyT = Static<typeof DeliveryPolicy>
 export type ReplyRequestT = Static<typeof ReplyRequest>
 export type IosOptionsT = Static<typeof IosOptions>
+export type DesktopOptionsT = Static<typeof DesktopOptions>
 export type MacosOptionsT = Static<typeof MacosOptions>
 export type AndroidOptionsT = Static<typeof AndroidOptions>
 export type NotificationDraftT = Static<typeof NotificationDraft>
@@ -483,6 +503,17 @@ function fnv1a64(value: string): string {
 
 export const NOTIFICATION_CONTRACT_FINGERPRINT =
   'notification-draft/' + fnv1a64(JSON.stringify(NotificationDraft))
+
+/**
+ * Every fingerprint a service on this schema accepts: its own, then each
+ * earlier schema whose every draft this one still accepts. A client sending
+ * any other fingerprint is newer than the service and waits for it.
+ */
+export const ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS: readonly string[] = [
+  NOTIFICATION_CONTRACT_FINGERPRINT,
+  // Before the Windows and Linux desktop platforms (CLI 11.x).
+  'notification-draft/e39eb879c1426c91',
+]
 
 export function defaultDeliveryPolicy(): DeliveryPolicyT {
   return { ttl_seconds: 86400, collapse_key: null }
