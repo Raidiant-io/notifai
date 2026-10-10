@@ -148,9 +148,38 @@ function Expand-NotifaiArchive([string]$Archive, [string]$Destination) {
     }
   } finally { $zip.Dispose() }
 }
+function Add-NotifaiBootstrapType([string]$Source) {
+  if ($PSVersionTable.PSEdition -ne 'Desktop') { Add-Type -TypeDefinition $Source -ErrorAction Stop; return }
+  # Framework CodeDom passes csc an ANSI environment block. Keep its temporary
+  # paths relative even when the User's profile/TEMP contains non-ANSI text.
+  # Only this synchronous compiler invocation changes process-local cwd/env.
+  $scratch = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'notifai-compiler-' + [Guid]::NewGuid().ToString('N'))
+  New-NotifaiPrivateDirectory $scratch
+  $previousDirectory = [Environment]::CurrentDirectory
+  $previousTemp = $env:TEMP
+  $previousTmp = $env:TMP
+  $parameters = [CodeDom.Compiler.CompilerParameters]::new()
+  $parameters.GenerateInMemory = $true
+  [void]$parameters.ReferencedAssemblies.Add([ComponentModel.Win32Exception].Assembly.Location)
+  $parameters.TempFiles = [CodeDom.Compiler.TempFileCollection]::new('.', $false)
+  try {
+    [Environment]::CurrentDirectory = $scratch
+    $env:TEMP = '.'
+    $env:TMP = '.'
+    Add-Type -TypeDefinition $Source -CompilerParameters $parameters -ErrorAction Stop
+  } finally {
+    try { $parameters.TempFiles.Dispose() }
+    finally {
+      [Environment]::CurrentDirectory = $previousDirectory
+      $env:TEMP = $previousTemp
+      $env:TMP = $previousTmp
+      [IO.Directory]::Delete($scratch, $true)
+    }
+  }
+}
 function Get-NotifaiWindowsTarget {
   if (-not ('NotifaiBootstrap.Native' -as [type])) {
-    Add-Type -TypeDefinition @'
+    Add-NotifaiBootstrapType @'
 using System;
 using System.Runtime.InteropServices;
 namespace NotifaiBootstrap {
@@ -221,7 +250,7 @@ function Get-NotifaiAccountHome {
 # Only the registered package owning this current-User npm location is admitted.
 function Get-NotifaiPathSecurity([string]$File, [bool]$Package) {
   if (-not ('NotifaiBootstrap.PathSecurity' -as [type])) {
-    Add-Type -TypeDefinition @'
+    Add-NotifaiBootstrapType @'
 using System;
 using System.IO;
 using System.Text;

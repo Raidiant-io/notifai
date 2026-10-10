@@ -38,6 +38,7 @@ try {
   if (process.platform !== 'win32') assert.ok(stat.uid === process.getuid() && (stat.mode & 0o077) === 0)
   const checks = ['os-account-home', 'native-target', 'private-temporary-directory']
   if (process.platform === 'win32') {
+    assert.equal(platform.target(), process.argv[2], 'Architecture helper must compile with the Unicode TEMP too')
     // Real OS files and the actual staged helper exercise ReadLine/JSON/ACLs
     // on both Windows targets. All data stays in the owned temporary tree.
     const paths = [{ file: temporary, directory: true }]
