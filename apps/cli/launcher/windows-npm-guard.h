@@ -153,8 +153,17 @@ static int npm_guard(int argc, wchar_t **argv) {
     finished = 1;
 done:
     failure_error = GetLastError();
+    if (!finished) {
+        fprintf(stderr, "notifai: npm conversion was not completed (%s; Windows error %lu; admission bytes %lu; manager state %lu)\n",
+            phase, failure_error, count, child.hProcess ? WaitForSingleObject(child.hProcess, 0) : WAIT_FAILED);
+        fflush(stderr);
+    }
     if (child.hProcess && !finished) {
-        if (TerminateJobObject(job, 1)) WaitForSingleObject(child.hProcess, INFINITE);
+        BOOL terminated = TerminateJobObject(job, 1);
+        DWORD termination_error = terminated ? ERROR_SUCCESS : GetLastError();
+        fprintf(stderr, "notifai: npm manager termination requested (%d; Windows error %lu)\n", terminated, termination_error);
+        fflush(stderr);
+        if (terminated) WaitForSingleObject(child.hProcess, INFINITE);
         status = 1;
     }
     if (child.hThread) CloseHandle(child.hThread);
@@ -163,6 +172,5 @@ done:
     if (initialized) DeleteProcThreadAttributeList(attributes);
     free(attributes); free(user);
     for (int i = 0; i < 5; i++) if (inherited[i] != INVALID_HANDLE_VALUE) CloseHandle(inherited[i]);
-    if (!finished) fprintf(stderr, "notifai: npm conversion was not completed (%s; Windows error %lu)\n", phase, failure_error);
     return (int)status;
 }
