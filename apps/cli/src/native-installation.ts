@@ -2,13 +2,17 @@ import { inspectExecutionDomain } from './cli-execution-domain.js'
 import path from 'node:path'
 import { buildIdentity, Distribution, RELEASE_TARGETS, type ReleaseTarget } from './distribution.js'
 import { resolveHookAdapterHome } from './hook-adapter.js'
-import { Installation } from './installation.js'
+import { Installation, type IntegrationOperation } from './installation.js'
 import { RELEASE_PUBLIC_KEYS } from './release-trust.js'
 import { stateDir } from './config.js'
 import { legacyNpmMigration } from './legacy-npm-migration.js'
 import { currentRuntimeBuild } from './launch-self.js'
 
-export type IntegrationPublication = <T>(action: () => T) => T
+export interface IntegrationPublication {
+  <T>(action: () => T, scope?: string): T
+  host?: <T>(input: Omit<IntegrationOperation, 'token' | 'build'>, action: () => T) => T
+  pending?: () => IntegrationOperation[]
+}
 
 /** Capture authority before asynchronous assessment, then fence the synchronous
  * owned-file transaction at publication. Never acquire this lock for a host,
@@ -18,7 +22,18 @@ export function integrationPublication(deps: Parameters<typeof managedInstallati
   const installation = managedInstallation(deps), active = installation.inspect().active
   const reference = currentRuntimeBuild(deps.env)
   if (!active || reference?.build !== active.active) throw new Error('Update superseded before integration assessment')
-  return action => installation.publishIntegration(active.generation, action, reference)
+  const publish: IntegrationPublication = (action, scope) => installation.publishIntegration(active.generation, () => {
+    if (scope !== undefined) installation.assertIntegrationScopeAvailable(scope)
+    return action()
+  }, reference)
+  publish.host = (input, action) => {
+    const token = installation.beginIntegrationOperation(active.generation, input, reference)
+    const result = action()
+    installation.completeIntegrationOperation(token)
+    return result
+  }
+  publish.pending = () => installation.pendingIntegrationOperations()
+  return publish
 }
 
 export function managedInstallation(deps: { env: NodeJS.ProcessEnv; hookAdapterHome?: string; hookPlatform?: NodeJS.Platform; fetchImpl?: typeof fetch | undefined }): Installation {

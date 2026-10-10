@@ -8,6 +8,7 @@ import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import { accountHome } from './platform.js'
 import { createHash } from 'node:crypto'
 import { atomicWriteFileSync } from './atomic-file.js'
+import type { IntegrationPublication } from './native-installation.js'
 
 export const HERMES_PLUGIN_ID = 'notifai'
 export const HERMES_PLUGIN_MARKER = '# notifai managed hermes plugin v1'
@@ -260,14 +261,19 @@ export function preflightHermesPlugin(env: NodeJS.ProcessEnv = process.env): voi
   }
 }
 
-export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv = process.env, nodePath?: string): string {
+export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv = process.env, nodePath?: string,
+  publish: IntegrationPublication = action => action()): string {
   const installed = hermesPluginDir(env)
   preflightHermesPlugin(env)
   const source = hermesPluginSource(adapterPath, nodePath, path.join(installed, '__init__.py'))
-  if (existsSync(installed) && readFileSync(path.join(installed, '__init__.py'), 'utf8') === source) {
-    hermesCommand(['enable', HERMES_PLUGIN_ID], env)
+  if (existsSync(installed)) {
+    publish(() => refreshHermesPlugin(adapterPath, env, nodePath), installed)
+    const enable = () => { hermesCommand(['enable', HERMES_PLUGIN_ID], env); return verifyInstallation() }
+    if (publish.host) publish.host({ scope: installed, operation: 'enable' }, enable)
+    else enable()
   } else {
     const temp = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-plugin-'))
+    let started = false, completed = false
     try {
       writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai activation and Session Attendant"\nprovides_hooks:\n  - on_session_finalize\n  - on_session_reset\n')
       writeFileSync(path.join(temp, '__init__.py'), source)
@@ -278,15 +284,27 @@ export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv 
       git(['init', '-q'])
       git(['add', 'plugin.yaml', '__init__.py'])
       git(['-c', 'user.name=Notifai', '-c', 'user.email=notifai@example.invalid', 'commit', '-qm', 'plugin'])
-      hermesCommand(['install', pathToFileURL(temp).href, '--enable', '--no-deps', ...(existsSync(installed) ? ['--force'] : [])], env)
+      const install = () => {
+        started = true
+        hermesCommand(['install', pathToFileURL(temp).href, '--enable', '--no-deps'], env)
+        verifyInstallation()
+      }
+      if (publish.host) publish.host({ scope: installed, operation: 'install', revision: createHash('sha256').update(source).digest('hex'), source: temp }, install)
+      else install()
+      completed = true
     } finally {
-      rmSync(temp, { recursive: true, force: true })
+      // A timed-out or orphaned host may still be reading its prepared source.
+      // The native setup receipt names it for scoped recovery.
+      if (!started || completed) rmSync(temp, { recursive: true, force: true })
     }
   }
-  if (!isOurHermesPlugin(installed) || !hermesPluginListed(env)) {
-    throw new Error('Hermes did not report an enabled Notifai plugin after installation')
+  return verifyInstallation()
+  function verifyInstallation(): string {
+    if (!isOurHermesPlugin(installed) || readFileSync(path.join(installed, '__init__.py'), 'utf8') !== source || !hermesPluginListed(env)) {
+      throw new Error('Hermes did not report the intended enabled Notifai plugin after installation')
+    }
+    return installed
   }
-  return installed
 }
 
 /** Refresh only the recognized owned module. The host's install receipt,
@@ -301,13 +319,17 @@ export function refreshHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv,
   return installed
 }
 
-export function uninstallHermesPlugin(env: NodeJS.ProcessEnv = process.env): boolean {
+export function uninstallHermesPlugin(env: NodeJS.ProcessEnv = process.env, publish: IntegrationPublication = action => action()): boolean {
   const installed = hermesPluginDir(env)
+  publish(() => {}, installed)
   if (!existsSync(installed)) return false
   if (!isOurHermesPlugin(installed)) throw new Error('Hermes plugin named notifai is foreign; leave it unchanged')
-  hermesCommand(['remove', HERMES_PLUGIN_ID], env)
-  if (existsSync(installed)) throw new Error('Hermes still has the Notifai plugin after removal')
-  return true
+  const remove = () => {
+    hermesCommand(['remove', HERMES_PLUGIN_ID], env)
+    if (existsSync(installed)) throw new Error('Hermes still has the Notifai plugin after removal')
+    return true
+  }
+  return publish.host ? publish.host({ scope: installed, operation: 'remove' }, remove) : remove()
 }
 
 export function hermesPluginCurrent(adapterHome: string | undefined, env: NodeJS.ProcessEnv): boolean {

@@ -173,6 +173,16 @@ Follow the remaining diagnosis before arranging a reload; preserve pending work.
 If the original Agent Session has ended naturally, an observed replacement in
 the same scope can establish loading without adopting the original session's debt.
 
+Hermes first-time setup, enabling and removal use the host's own plugin command.
+An interrupted host operation is reported in `pending_integrations` with its
+exact plugin scope. Preserve its prepared source and avoid another install,
+refresh or removal in that scope until the original operation is confirmed
+finished. A disappeared caller or matching files alone do not prove completion.
+Compatible native updates and unrelated repairs can continue; an incompatible
+update or native uninstall retains the affected runtime. Do not delete the
+operation record to silence the diagnosis. Uncertain host completion requires
+scoped recovery evidence, not a blanket restart of every Agent Session.
+
 | Harness | Existing integration after a CLI or guidance update | Changed-definition loading |
 | --- | --- | --- |
 | Claude Code | Command hooks invoke the stable adapter again; explicitly reread changed guidance. | Observe the changed command on a natural lifecycle callback; a definition held in memory may require a fresh Agent Session. |

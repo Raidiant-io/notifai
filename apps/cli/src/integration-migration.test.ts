@@ -20,6 +20,7 @@ import { withHookRepairIntent } from './integration-repair.js'
 import { sourceIntegrationRevision } from './integration-revision.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { enableProject, projectBinding } from './project-enablement.js'
+import { hermesPluginDir, hermesPluginSource } from './hermes-plugin.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -57,6 +58,38 @@ function fixture(platform: NodeJS.Platform = 'darwin') {
   deps.now = () => now
   return { root, home, artifact, deps, out, installation, trust, tick: () => { now += 60_001 } }
 }
+
+it('fences an explicit hook installation before any adapter or definition changes', () => {
+  const f = fixture(), before = readFileSync(f.installation.file)
+  removeToolHook(f.installation.file)
+  const damaged = readFileSync(f.installation.file)
+  expect(damaged).not.toEqual(before)
+  const publish = vi.fn(() => { throw new Error('Update superseded') })
+  vi.spyOn(nativeInstallation, 'integrationPublication').mockReturnValue(publish)
+  expect(() => hooksInstallCommand(f.deps, { harness: 'codex', narrate: false })).toThrow('Update superseded')
+  expect(publish).toHaveBeenCalledOnce()
+  expect(readFileSync(f.installation.file)).toEqual(damaged)
+})
+
+it('leaves interrupted Hermes setup scoped while unrelated update integration succeeds', async () => {
+  const f = fixture(), scope = hermesPluginDir(f.deps.env), file = path.join(scope, '__init__.py')
+  mkdirSync(scope, { recursive: true })
+  const source = hermesPluginSource('/older/adapter')
+  writeFileSync(file, source)
+  writeFileSync(path.join(scope, 'plugin.yaml'), 'name: notifai\n')
+  const publish: nativeInstallation.IntegrationPublication = (action, target) => {
+    if (target === scope) throw new Error('Host plugin operation remains pending')
+    return action()
+  }
+  publish.pending = () => [{ token: '11111111-1111-4111-8111-111111111111', scope,
+    operation: 'install', source: f.root, revision: 'a'.repeat(64), build: 'b'.repeat(64) }]
+  vi.spyOn(nativeInstallation, 'integrationPublication').mockReturnValue(publish)
+  expect(localIntegrationAssessment(f.deps).faults).toContainEqual(expect.objectContaining({ code: 'hooks-drift', file }))
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
+    pending_actions: [], diagnostics: expect.arrayContaining([expect.stringContaining('Plugin setup remains pending')]) })
+  expect(readFileSync(file, 'utf8')).toBe(source)
+})
 
 function removeToolHook(file: string, event = 'PostToolUse') {
   const hooks = JSON.parse(readFileSync(file, 'utf8'))

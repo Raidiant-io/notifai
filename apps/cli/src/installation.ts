@@ -34,10 +34,14 @@ interface InstallRecord {
 }
 interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
 interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan; cleanup_build?: string }
+export interface IntegrationOperation {
+  token: string; scope: string; operation: 'install' | 'enable' | 'remove'; build: string
+  source?: string; revision?: string
+}
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain'; reason?: string } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
-export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
+export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; pending_integrations?: IntegrationOperation[]; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
 type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated' | 'uninstall-planned' | 'uninstall-file-removed' | 'bootstrap-closed' | 'bootstrap-fenced'
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
@@ -129,6 +133,69 @@ export class Installation {
           : 'Finish or explicitly cancel the pending uninstall before changing this installation')
       }
       return action()
+    }, { waitMs: 5_000, strictRelease: true })
+  }
+
+  /** A host may finish publishing after its caller disappears. Retain the
+   * originating definition's compatibility obligation until confirmed success;
+   * a PID disappearing or a matching file is not completion evidence. */
+  pendingIntegrationOperations(): IntegrationOperation[] {
+    const value = this.readJson('integration-operations.json') as { schema?: unknown; installation_id?: unknown; operations?: IntegrationOperation[] } | null
+    if (value === null) return []
+    if (value.schema !== 1 || value.installation_id !== this.readInstall()?.id || !Array.isArray(value.operations) ||
+        value.operations.some(item => !item || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(item.token) ||
+          typeof item.scope !== 'string' || !path.isAbsolute(item.scope) || !['install', 'enable', 'remove'].includes(item.operation) ||
+          item.source !== undefined && (typeof item.source !== 'string' || !path.isAbsolute(item.source)) ||
+          item.revision !== undefined && !buildId(item.revision) || !buildId(item.build) ||
+          item.operation === 'install' && (item.source === undefined || item.revision === undefined)) ||
+        new Set(value.operations.map(item => item.scope)).size !== value.operations.length) throw new Error('Uncertain host plugin operation')
+    return value.operations
+  }
+
+  assertIntegrationScopeAvailable(scope: string): void {
+    if (this.pendingIntegrationOperations().some(item => sameLocalPath(item.scope, canonicalPath(scope), process.platform))) {
+      throw new Error(`Host plugin operation remains pending at ${scope}. Confirm the original host installer has finished before repairing, removing or retrying this plugin; other compatible updates can continue.`)
+    }
+  }
+
+  beginIntegrationOperation(expectedGeneration: number, input: Omit<IntegrationOperation, 'token' | 'build'>,
+    identity: { installation_id: string; build: string }, uninstallToken?: string): string {
+    const reserve = () => {
+      if (uninstallToken !== undefined) {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
+        const journal = this.uninstallRecord(), owner = currentProcessIdentity(), active = this.readActive()
+        if (input.operation !== 'remove' || !journal || journal.token !== uninstallToken || journal.phase !== 'removing' || journal.plan ||
+            journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start ||
+            journal.generation !== expectedGeneration || active?.generation !== expectedGeneration ||
+            active.active !== identity.build || journal.installation_id !== identity.installation_id) throw new Error('Uninstall removal authority changed')
+      }
+      if (!path.isAbsolute(input.scope) || !['install', 'enable', 'remove'].includes(input.operation) ||
+          input.revision !== undefined && !buildId(input.revision) ||
+          input.operation === 'install' && (input.source === undefined || input.revision === undefined)) throw new Error('Invalid host plugin operation')
+      if (input.source !== undefined) {
+        if (!path.isAbsolute(input.source)) throw new Error('Invalid plugin source')
+        this.owned(input.source, true)
+      }
+      const scope = canonicalPath(input.scope)
+      this.assertIntegrationScopeAvailable(scope)
+      const operations = this.pendingIntegrationOperations(), token = randomUUID()
+      operations.push({ ...input, scope, token, build: identity.build })
+      this.save('integration-operations.json', { schema: 1, installation_id: identity.installation_id, operations })
+      return token
+    }
+    return uninstallToken === undefined ? this.publishIntegration(expectedGeneration, reserve, identity)
+      : withFileLock(this.file('installation.lock'), reserve, { waitMs: 5_000, strictRelease: true })
+  }
+
+  /** Only the caller that observed successful host completion and exact scoped
+   * read-back calls this. It may finish after a compatible native activation. */
+  completeIntegrationOperation(token: string): void {
+    withFileLock(this.file('installation.lock'), () => {
+      const operations = this.pendingIntegrationOperations()
+      if (!operations.some(item => item.token === token)) throw new Error('Integration setup identity changed')
+      const remaining = operations.filter(item => item.token !== token)
+      if (remaining.length === 0) rmSync(this.file('integration-operations.json'))
+      else this.save('integration-operations.json', { schema: 1, installation_id: this.readInstall()!.id, operations: remaining })
     }, { waitMs: 5_000, strictRelease: true })
   }
 
@@ -239,6 +306,7 @@ export class Installation {
       throw new ContinuityPending(build, 'An existing writer has no verified native generation.')
     }
     const builds = new Set(owners.sessions.flatMap(owner => owner.builds))
+    for (const setup of this.pendingIntegrationOperations()) builds.add(setup.build)
     const liveBuilds = new Set<string>()
     for (const resident of owners.residents) {
       if (processIdentityLiveness(resident.identity) === 'gone') continue
@@ -290,6 +358,7 @@ export class Installation {
   beginUninstall(expectedGeneration: number, currentSessions: string): UninstallPreparation {
     if (!this.uninstallRecord()?.plan) this.activeRelease(expectedGeneration)
     return withFileLock(this.file('installation.lock'), () => {
+      if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before uninstalling its runtime')
       const active = this.readActive(), installed = this.readInstall(), journal = this.uninstallRecord()
       if (present(this.file('transaction.json'))) throw new Error('Installation changed or uninstall needs recovery')
       if (journal?.plan) {
@@ -337,6 +406,7 @@ export class Installation {
   enterUninstallRemoval(token: string, currentSessions: string): { status: 'removing' | 'waiting_for_questions' | 'residents_running' | 'uncertain' } {
     try {
       return withFileLock(this.file('installation.lock'), () => {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
         const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive()
         const owner = currentProcessIdentity()
         if (!journal || journal.token !== token || !['preparing', 'removing'].includes(journal.phase) || journal.installation_id !== installed?.id ||
@@ -379,6 +449,7 @@ export class Installation {
       const admitted = this.enterUninstallRemoval(token, currentSessions)
       if (admitted.status !== 'removing') return { status: admitted.status }
       return withFileLock(this.file('installation.lock'), () => {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
         const journal = this.uninstallRecord(), installed = this.readInstall(), active = this.readActive(), owner = currentProcessIdentity()
         if (!journal || journal.phase !== 'removing' || journal.token !== token || journal.installation_id !== installed?.id ||
             journal.generation !== active?.generation || journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) return { status: 'uncertain' }
@@ -519,6 +590,7 @@ export class Installation {
         if (released.status !== 'released') return { status: released.status }
       }
       return withFileLock(this.file('installation.lock'), () => {
+        if (this.pendingIntegrationOperations().length > 0) throw new Error('Finish the pending host plugin operation before removing its runtime')
         const journal = this.uninstallRecord(), owner = currentProcessIdentity()
         if (!journal || journal.phase !== 'removing' || journal.token !== token ||
             journal.owner.pid !== owner?.pid || journal.owner.start !== owner?.start) return { status: 'uncertain' }
@@ -582,7 +654,9 @@ export class Installation {
   inspect(): InstallationStatus {
     const installation = this.readInstall(), active = this.readActive()
     const bootstrap = this.bootstrapTarget() !== null
+    const pendingIntegrations = this.pendingIntegrationOperations()
     return { active, pending: present(this.file('transaction.json')), uninstall_pending: present(this.file('uninstall.json')) && !bootstrap,
+      ...(pendingIntegrations.length > 0 ? { pending_integrations: pendingIntegrations } : {}),
       ...(bootstrap ? { bootstrap_pending: true as const } : {}), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
   }
   /** Authenticated active identity for explicit lifecycle commands. Ordinary
@@ -923,12 +997,13 @@ export class Installation {
       }
       const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
       const removed: string[] = [], retained: Array<{ build: string; reason: string; bytes: number }> = []
+      const setupBuilds = new Set(this.pendingIntegrationOperations().map(item => item.build))
       this.owned(this.file('versions'), true)
       for (const build of readdirSync(this.file('versions'))) {
         if (!buildId(build)) continue // Staging and unrelated entries are never cleanup authority.
         let bytes = 0
         const protectedBuild = [active.active, active.previous, installed.launcherBuild].includes(build)
-        let reason = protectedBuild ? 'active_previous_or_launcher' : retention.reason(build)
+        let reason = setupBuilds.has(build) ? 'pending_host_plugin_operation' : protectedBuild ? 'active_previous_or_launcher' : retention.reason(build)
         try {
           const directory = this.versionDirectory(build)
           this.owned(directory, true)

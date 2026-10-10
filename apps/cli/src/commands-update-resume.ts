@@ -1,5 +1,6 @@
 /** Resume owned integration work using this installed package's authority. */
 import { existsSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { activeQuestionRouteProblems } from './commands-hook-diagnostics.js'
@@ -14,7 +15,7 @@ import { packageVersion } from './release.js'
 import { installedChangelog } from './update-handoff.js'
 import { isSemVer } from './version.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
-import { sameLocalPath } from './local-path.js'
+import { canonicalPath, sameLocalPath } from './local-path.js'
 import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messages.js'
 import { integrationPublication } from './native-installation.js'
 import { buildIdentity } from './distribution.js'
@@ -58,6 +59,8 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   const repairDeps = { ...deps, io: quietIo }
   try {
     const publish = integrationPublication(deps)
+    const setupPending = (file: string | undefined) => file !== undefined && (publish.pending?.() ?? []).some(item =>
+      sameLocalPath(item.scope, canonicalPath(path.dirname(file)), deps.hookPlatform ?? process.platform))
     const native = buildIdentity() !== null
     let assessment = localIntegrationAssessment(deps)
     const coexistence = assessment.faults.find(fault => fault.code === 'legacy-native-coexistence')
@@ -105,10 +108,11 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       if (skillReport.changed === true) changed.push('skill')
     }
     for (const { installation, env } of assessment.installations) {
+      if (setupPending(installation.file)) continue
       if (installationFaults(installation, deps.hookPlatform).length === 0) continue
       const before = readFileSync(installation.file, 'utf8')
-      if (hooksRefreshCommand({ ...repairDeps, env }, installation.harness, action => publish(() =>
-        withHookRepairIntent({ ...deps, env }, installation, env === deps.env ? owner : null, action))) !== EXIT.ok) {
+      if (hooksRefreshCommand({ ...repairDeps, env }, installation.harness, (action, scope) => publish(() =>
+        withHookRepairIntent({ ...deps, env }, installation, env === deps.env ? owner : null, action), scope)) !== EXIT.ok) {
         pending.push(`Could not finish ${installation.harness} hook migration.`)
         continue
       }
@@ -122,7 +126,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       : `${afterIssue.detail} ${afterIssue.remedy}`)
     // Unselected foreign guidance remains diagnosed, but has no authority over
     // independent owned hooks or resident recovery. Never hide an owned gap.
-    const repairFaults = assessment.faults.filter(fault => fault.code === 'hooks-drift' ||
+    const repairFaults = assessment.faults.filter(fault => fault.code === 'hooks-drift' && !setupPending(fault.file) ||
       (!native && fault.code === 'adapter-drift'))
     diagnostics.push(...assessment.faults.map(fault => `${fault.code}: ${fault.remedy}`))
     pending.push(...repairFaults.map(fault => `${fault.code}: ${fault.remedy}`))
@@ -141,6 +145,10 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     // from a fresh synchronous inspection under that same authority.
     return publish(() => {
       pending.push(...pendingHookRepairs(deps, localIntegrationAssessment(deps).installations))
+      // First-time host setup is not a failed runtime update. Keep its scope
+      // visible without making unrelated owned repairs depend on its outcome.
+      diagnostics.push(...(publish.pending?.() ?? []).map(item =>
+        `Plugin setup remains pending at ${item.scope}; preserve its prepared source and confirm the original host installer has finished before repairing that scope.`))
       return report(!ownedSkillGap && repairFaults.length === 0)
     })
   } catch {

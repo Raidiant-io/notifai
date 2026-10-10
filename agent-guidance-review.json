@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a132b7a1636d42807030c7377bb4e73e0fd3b87561785ccfe78ffc979bcd62f5",
+  "behavior_digest": "sha256:0afabda3930af497556b9667240a658c909e754ee7990d402d33221b8c083647",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle admission and retained owners, the Notifai skill and update/installation/harness references, readiness recovery, README, trust policy and domain terms. Added first-native-upgrade guidance: retain existing work until a quiet point, then resume the exact authenticated candidate. Native bootstrap moves writer identity while preserving identity-only plugin readers, protects recovery and cannot restore obsolete updater admission. Compatible subsequent updates retain existing owners. Diagnostics distinguish bootstrap from uninstall and never recommend unverified candidate bytes. Legacy npm conversion and actual historical native binary acceptance remain unproven; no package removal, channel change, native trust grant or forced restart is introduced. The unchanged released OpenClaw v6 writer was executed against the new metadata in source tests; this is not a live Gateway acceptance claim.",
+  "reason": "Reviewed lifecycle publication, the shipped skill and update/harness setup references, local readiness, README, trust and domain terms. Explicit hook installation now fences synchronous owned writes with one captured generation. Hermes host install, enable and removal use one scoped operation reservation; compatible updates and unrelated repairs continue while its originating definition stays retained. The update reference now explains pending_integrations and preserving uncertain operations and prepared sources. Caller exit or file read-back alone is not recovery proof. No new User approval, trust grant, restart, automatic cleanup or live-harness acceptance is claimed. Interrupted host-operation recovery and finite legacy npm conversion remain separately open.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

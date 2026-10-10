@@ -71,6 +71,63 @@ function legacyFixture() {
   return { ...f, options, old, build, id, upgrade }
 }
 
+it('keeps an interrupted host setup scoped while compatible B and C activate and retain its definition', () => {
+  const f = fixture()
+  let boot = '11111111-1111-4111-8111-111111111111'
+  const installation = new Installation({ ...f.options, bootIdentity: () => boot })
+  const first = installation.installCandidate({ ...f.candidate('1.0.0'), source: 'manual' })
+  const identity = { installation_id: JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id as string,
+    build: first.active.active }
+  const scope = path.join(f.root, 'hermes', 'plugins', 'notifai'), source = path.join(f.root, 'prepared-plugin')
+  mkdirSync(source)
+  const input = { scope, source, revision: 'a'.repeat(64), operation: 'install' as const }
+  const token = installation.beginIntegrationOperation(1, input, identity)
+  const restarted = new Installation({ ...f.options, bootIdentity: () => boot })
+  expect(() => restarted.assertIntegrationScopeAvailable(scope)).toThrow(/operation remains pending/)
+  expect(() => restarted.beginIntegrationOperation(1, input, identity)).toThrow(/operation remains pending/)
+  expect(restarted.publishIntegration(1, () => 'unrelated repair')).toBe('unrelated repair')
+  expect(() => restarted.beginUninstall(1, path.join(f.root, 'sessions'))).toThrow(/pending host plugin operation/)
+  for (const version of ['2.0.0', '3.0.0']) {
+    restarted.installCandidate({ ...f.candidate(version), source: 'manual', upgrade: true, version, channel: 'stable' })
+  }
+  boot = '22222222-2222-4222-8222-222222222222'
+  expect(restarted.cleanup(3).retained).toContainEqual(expect.objectContaining({ build: first.active.active, reason: 'pending_host_plugin_operation' }))
+  expect(() => restarted.installCandidate({ ...f.candidate('4.0.0', undefined, 'incompatible-definitions'), source: 'manual',
+    upgrade: true, version: '4.0.0', channel: 'stable' })).toThrow(/continuity contract/)
+  expect(restarted.inspect().active?.generation).toBe(3)
+  expect(() => restarted.completeIntegrationOperation('wrong-operation')).toThrow(/identity changed/)
+  expect(restarted.pendingIntegrationOperations()).toHaveLength(1)
+  restarted.abandonPending(3)
+  restarted.completeIntegrationOperation(token)
+  expect(restarted.pendingIntegrationOperations()).toEqual([])
+  expect(existsSync(path.join(f.options.root, 'integration-operations.json'))).toBe(false)
+  expect(() => restarted.assertIntegrationScopeAvailable(scope)).not.toThrow()
+  expect(restarted.cleanup(3).removed).toContain(first.active.active)
+})
+
+it('reserves host removal during native uninstall and leaves no receipt that poisons reinstall', () => {
+  const f = fixture(), candidate = f.candidate('1.0.0'), sessions = path.join(f.root, 'sessions')
+  const installation = new Installation({ ...f.options, fileUse: () => ({ status: 'clear', processes: [] }) })
+  const first = installation.installCandidate({ ...candidate, source: 'manual' })
+  const identity = { installation_id: JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id as string,
+    build: first.active.active }
+  const scope = path.join(f.root, 'hermes', 'plugins', 'notifai')
+  const enabled = installation.beginIntegrationOperation(1, { scope, operation: 'enable' }, identity)
+  installation.completeIntegrationOperation(enabled)
+  expect(existsSync(path.join(f.options.root, 'integration-operations.json'))).toBe(false)
+  const begun = installation.beginUninstall(1, sessions)
+  if (begun.status !== 'preparing') throw new Error('Fixture did not begin uninstall')
+  expect(installation.enterUninstallRemoval(begun.token, sessions).status).toBe('removing')
+  expect(() => installation.beginIntegrationOperation(1, { scope, operation: 'remove' }, identity, 'wrong-token')).toThrow(/authority changed/)
+  const removal = installation.beginIntegrationOperation(1, { scope, operation: 'remove' }, identity, begun.token)
+  expect(installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).not.toBe('removed')
+  expect(() => installation.beginIntegrationOperation(1, { scope, operation: 'enable' }, identity)).toThrow(/uninstall/)
+  installation.completeIntegrationOperation(removal)
+  expect(installation.completeUninstall(begun.token, sessions, () => ({ ok: true, conflicts: [] })).status).toBe('removed')
+  expect(installation.installCandidate({ ...candidate, source: 'manual' }).active.generation).toBe(1)
+  expect(installation.pendingIntegrationOperations()).toEqual([])
+})
+
 it('bootstraps a quiet historical installation without changing retained files or session references', () => {
   const f = legacyFixture(), installation = new Installation(f.options)
   const env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'settled-old-session'

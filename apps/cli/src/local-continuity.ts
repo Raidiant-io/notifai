@@ -2,7 +2,9 @@ import type { ReleaseInventory } from './release-distribution.js'
 
 /** Change this identity when concurrent local readers/writers no longer share
  * state, owner entrypoints, claims, fencing and cleanup semantics. Release
- * evidence must cover all retained generations, not just adjacent versions. */
+ * evidence must cover all retained generations, not just adjacent versions,
+ * and generated integration definitions they may still publish after activation.
+ * Pending host setup receipts retain that obligation independently of a PID. */
 export const LOCAL_CONTINUITY = 'notifai-session-state-v1'
 
 /** Identity-only consumers retain the schema1 envelope. Native writer identity

@@ -65,7 +65,7 @@ import {
   removeOpenclawNotifaiConfigText,
 } from './openclaw-plugin.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
-import { installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import { hermesPluginDir, installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 import { packageVersion } from './release.js'
 import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
@@ -145,11 +145,22 @@ function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarne
 }
 
 export function hooksRefreshCommand(deps: CommandDeps, harness: string, publication?: IntegrationPublication): number {
-  const publish = publication ?? integrationPublication(deps)
-  return publish(() => hooksInstallCommand(deps, { harness, refreshOnly: true, narrate: false }))
+  return installHooks(deps, { harness, refreshOnly: true, narrate: false }, publication ?? integrationPublication(deps))
 }
 
 export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
+  let publish: IntegrationPublication
+  try { publish = integrationPublication(deps) }
+  catch (error) {
+    deps.io.err(String(error))
+    return EXIT.failed
+  }
+  return installHooks(deps, flags, publish)
+}
+
+/** One captured generation covers an explicit multi-harness install too. A
+ * later harness cannot silently adopt a generation activated in between. */
+function installHooks(deps: CommandDeps, flags: HooksInstallFlags, publish: IntegrationPublication): number {
   if (flags.harness === undefined) {
     const detected = detectedHarnesses(deps.cwd, deps.env)
     if (detected.length === 0) {
@@ -158,26 +169,40 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
     }
     let ok = true
     for (const harness of detected) {
-      if (hooksInstallCommand(deps, { ...flags, harness }) !== EXIT.ok) ok = false
+      if (installHooks(deps, { ...flags, harness }, publish) !== EXIT.ok) ok = false
     }
     return ok ? EXIT.ok : EXIT.failed
   }
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
   if (harness === 'hermes') {
-    try {
-      if (!flags.refreshOnly) preflightHermesPlugin(deps.env)
-      const target = resolveHookAdapterTarget(deps, flags)
-      const adapter = installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)
-      const file = (flags.refreshOnly ? refreshHermesPlugin : installHermesPlugin)(adapter.path, deps.env,
-        (deps.hookPlatform ?? process.platform) === 'win32' && target.kind !== 'native' ? target.execPath : undefined)
+    const done = (file: string) => {
       deps.io.out(`Installed the Notifai Hermes plugin at ${file}. Keep a healthy existing classic CLI bridge. Run \`notifai doctor --json\` for the affected scope and verify the changed module on a natural activation before declaring its repair complete.`)
       return EXIT.ok
-    } catch (err) {
+    }
+    const failed = (err: unknown) => {
       deps.io.err(`Could not install Hermes plugin: ${String(err)}`)
       return EXIT.failed
     }
+    try {
+      if (!flags.refreshOnly) preflightHermesPlugin(deps.env)
+      const target = resolveHookAdapterTarget(deps, flags)
+      const nodePath = (deps.hookPlatform ?? process.platform) === 'win32' && target.kind !== 'native' ? target.execPath : undefined
+      const file = flags.refreshOnly ? publish(() => {
+        const adapter = installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)
+        return refreshHermesPlugin(adapter.path, deps.env, nodePath)
+      }, hermesPluginDir(deps.env)) : installHermesPlugin(publish(() => installHookAdapter(target, deps.hookAdapterHome, deps.hookPlatform, deps.env)).path,
+        deps.env, nodePath, publish)
+      return done(file)
+    } catch (err) {
+      return failed(err)
+    }
   }
+  return publish(() => installDocumentHooks(deps, flags, harness))
+}
+
+/** No external host work belongs inside this publication boundary. */
+function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harness: Exclude<HookInstallableHarness, 'hermes'>): number {
   const adapterTarget = resolveHookAdapterTarget(deps, flags)
   const scriptPath =
     flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
@@ -707,12 +732,12 @@ function stripNotifaiHandlers(
   return { existing, removed }
 }
 
-export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlags): number {
+export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlags, publication?: IntegrationPublication): number {
   const harness = resolveHarness(deps, flags.harness)
   if (!harness) return EXIT.usage
   if (harness === 'hermes') {
     try {
-      deps.io.out(uninstallHermesPlugin(deps.env)
+      deps.io.out(uninstallHermesPlugin(deps.env, publication ?? integrationPublication(deps))
         ? 'Removed the Notifai Hermes plugin through Hermes.'
         : 'No Notifai Hermes plugin is installed.')
       return EXIT.ok

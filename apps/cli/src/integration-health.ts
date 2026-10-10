@@ -48,6 +48,7 @@ export function integrationInstallations(deps: CommandDeps) {
 
 export interface IntegrationFault {
   code: string
+  file?: string
   /** Paths and detailed evidence stay local, never Notification Request copy. */
   detail: string
   remedy: string
@@ -83,7 +84,7 @@ export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInst
   }
   for (const { installation, env } of installations.filter(entry => harness === undefined || entry.installation.harness === harness)) {
     const problems = installationFaults(installation, deps.hookPlatform)
-    if (problems.length > 0) faults.push({ code: 'hooks-drift', detail: `${installation.file}: ${problems.join('; ')}`,
+    if (problems.length > 0) faults.push({ code: 'hooks-drift', file: installation.file, detail: `${installation.file}: ${problems.join('; ')}`,
       remedy: `notifai hooks install --harness ${installation.harness}` })
     if (installation.harness === 'codex' && codexTrustProblems([installation], env).length > 0) {
       faults.push({ code: 'native-approval-pending', detail: `Native approval is unresolved for ${installation.file}.`, remedy: '/hooks' })
