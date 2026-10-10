@@ -10,7 +10,7 @@ import { completeNpmReplacement, inspectNpmReplacement, replaceNpmPackage } from
 
 const state = vi.hoisted(() => ({ home: '', phase: 'package_verified', pending: false, active: 'a'.repeat(64), generation: 1,
   candidate: 'b'.repeat(64), channel: 'stable', scope: '', probeFails: false,
-  install: vi.fn(), transition: vi.fn(), manager: { node: 'C:\\Program Files\\nodejs\\node.exe',
+  install: vi.fn(), transition: vi.fn(), census: vi.fn(), manager: { node: 'C:\\Program Files\\nodejs\\node.exe',
     npm: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js', version: '11.17.0', sha256: 'c'.repeat(64) } }))
 vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }))
 vi.mock('./distribution.js', async original => ({ ...await original<Record<string, unknown>>(),
@@ -26,7 +26,7 @@ vi.mock('./native-installation-identity.js', () => ({ nativeInstallationIdentity
 vi.mock('./installation-access.js', () => ({ installationAccess: () => ({}), npmAdapterWindowsAccess: () => vi.fn() }))
 vi.mock('./windows-npm-manager.js', () => ({ inspectWindowsNpmManager: () => ({ ...state.manager }) }))
 vi.mock('./windows-npm-maintenance.js', () => ({ assertNpmScopeDirectories: vi.fn(), assertNpmMaintenanceQuiet: vi.fn(),
-  inspectWindowsNpmReaders: () => ({ readers: [], uncertain: false }) }))
+  inspectWindowsNpmReaders: state.census }))
 vi.mock('./runtime-retention.js', () => ({ RuntimeRetention: class { inspectOwners() { return { status: 'clear' } } } }))
 vi.mock('./process-identity.js', () => ({ currentProcessIdentity: () => ({ pid: 10, start: 'windows-filetime:100' }), processIdentityLiveness: () => 'gone' }))
 vi.mock('./npm-replacement.js', async original => ({ ...await original<Record<string, unknown>>(),
@@ -38,6 +38,7 @@ const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
 let root: string, deps: CommandDeps, output: string[]
 beforeEach(() => {
   vi.clearAllMocks()
+  state.census.mockImplementation(() => ({ readers: [], uncertain: false }))
   root = mkdtempSync(path.join(os.tmpdir(), 'notifai-repair-command-')); state.home = root
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' })
   state.phase = 'package_verified'; state.pending = false; state.active = 'a'.repeat(64); state.generation = 1; state.probeFails = false
@@ -60,6 +61,23 @@ beforeEach(() => {
 })
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); rmSync(root, { recursive: true, force: true }) })
 const resume = () => npmRepairCommand(deps, { migrateNpm: true, resume: path.join(root, 'operation'), confirm: 'confirmed-scope', json: true })
+
+it('observes the handshake-owned manager during replacement admission', async () => {
+  state.phase = 'prepared'
+  const manager = { pid: 20, start: 'windows-filetime:200' }
+  state.census.mockImplementation((_scope, observedManager) => {
+    if (observedManager !== undefined && observedManager !== manager) throw new Error('Suspended manager was not identified')
+    return { readers: [], uncertain: false }
+  })
+  vi.mocked(replaceNpmPackage).mockImplementation(async (_directory, _context, verifyMaintenance) => {
+    verifyMaintenance(state.scope, 0, manager)
+    return { manager, started: true, exit_code: 0, stdout: '', stderr: '' }
+  })
+  expect(await resume()).toBe(0)
+  expect(state.census).toHaveBeenNthCalledWith(1, JSON.parse(state.scope).app, manager)
+  expect(state.census).toHaveBeenNthCalledWith(2, JSON.parse(state.scope).app, undefined)
+  expect(completeNpmReplacement).toHaveBeenCalledTimes(1)
+})
 
 it('resumes after native activation without rerunning npm or preserving Node runtime controls', async () => {
   state.probeFails = true

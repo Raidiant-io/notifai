@@ -1,19 +1,28 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { runNpmManager } from '../apps/cli/dist/npm-conversion-process.js'
+import { inspectWindowsNpmReaders } from '../apps/cli/dist/windows-npm-maintenance.js'
 
 describe('Windows npm manager custody', { skip: process.platform !== 'win32' }, () => {
   let root, launcher
   const children = new Set()
   before(() => {
     root = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-process-'))
-    execFileSync(process.execPath, ['scripts/build-launcher.mjs', root], { stdio: 'pipe' })
-    launcher = path.join(root, 'notifai.exe')
+    // Installed-artifact checks may supply an independently verified launcher.
+    // CI builds the current source; a missing compiler never silently falls back.
+    launcher = process.env['NOTIFAI_TEST_NPM_LAUNCHER']
+    if (launcher) {
+      assert.ok(path.isAbsolute(launcher))
+      assert.ok(lstatSync(launcher).isFile() && !lstatSync(launcher).isSymbolicLink())
+    } else {
+      execFileSync(process.execPath, ['scripts/build-launcher.mjs', root], { stdio: 'pipe' })
+      launcher = path.join(root, 'notifai.exe')
+    }
   })
   after(async () => {
     for (const child of children) child.kill('SIGKILL')
@@ -148,6 +157,30 @@ setTimeout(() => process.exit(19), 15000).unref();
     assert.ok(result.manager)
     assert.ok(result.failure)
     assert.equal(existsSync(f.marker), false)
+  })
+  for (const exact of [true, false]) it(`observes the suspended manager before GO with ${exact ? 'its exact' : 'a mismatched'} identity`, async () => {
+    const f = prepare()
+    const scope = { observation: { prefix: f.directory, state_roots: [f.directory], producers: [] } }
+    let census
+    const result = await runNpmManager({ launcher,
+      executable: process.execPath, args: [f.manager, f.marker, f.finish], cwd: f.directory, env: process.env,
+      admit(manager) {
+        assert.equal(existsSync(f.marker), false)
+        const start = `windows-filetime:${BigInt(manager.start.split(':')[1]) + 1n}`
+        census = inspectWindowsNpmReaders(scope, exact ? manager : { ...manager, start })
+        // The live coordinator is a separate reader and must still be observed.
+        assert.ok(census.readers.some(reader => reader.pid === process.pid))
+        if (census.uncertain) throw new Error('Relevant process inspection is incomplete')
+        writeFileSync(f.finish, 'exit after first effect')
+      } })
+    assert.ok(census)
+    assert.equal(census.uncertain, !exact)
+    assert.equal(result.started, exact)
+    assert.equal(existsSync(f.marker), exact)
+    if (exact) {
+      assert.equal(result.failure, undefined)
+      assert.equal(result.exit_code, 23)
+    } else assert.match(result.failure, /inspection is incomplete/)
   })
   it('refuses rejected asynchronous admission without crashing its caller', async () => {
     const f = prepare()
