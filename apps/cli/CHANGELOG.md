@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0-beta.16](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.15...v12.0.0-beta.16) (2026-10-10)
+
+### Fixes
+
+* Keep active questions and session owners on compatible retained runtimes during native updates. Stage incompatible first upgrades until existing work can finish safely.
+* Repair verified legacy Windows npm installations in place through their package manager during an approved observed maintenance window. Preserve the complete package and recover interrupted replacement forward without uninstalling first.
+* Repair only changed owned harness integration, preserve User edits and healthy owners, and recover abandoned Hermes publication reservations without replaying host operations.
+* Report the actual CLI execution domain and scoped pending repair in diagnostics.
+* Compile Windows PowerShell bootstrap helpers correctly when temporary paths contain Unicode, quotes or shell punctuation.
+
 ## [12.0.0-beta.15](https://github.com/Raidiant-io/notifai/compare/v11.8.0...v12.0.0-beta.15) (2026-10-09)
 
 ### Breaking changes
