@@ -93,6 +93,8 @@ export interface ApiClient {
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   requestPairingNotification(pairingId: string, pollVerifier: string, email: string): Promise<{ status: 'requested' }>
+  /** Revoke the calling machine's own credential; it stops working on the next request. */
+  revokeMachine(): Promise<{ ok: true }>
   accessStatus(): Promise<AccountAccessResponse>
   /**
    * Read-only. There is no client-side write: filing this errand is the
@@ -318,6 +320,7 @@ export function createClient(
         poll_verifier: pollVerifier,
       }),
     requestPairingNotification: (pairingId, pollVerifier, email) => call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/notification`, { poll_verifier: pollVerifier, email }),
+    revokeMachine: () => call('POST', '/api/v1/machine/revoke'),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     accessRequest: () => call('GET', '/api/v1/account/alpha-access-request'),
     listDevices: () => call('GET', '/api/v1/devices'),

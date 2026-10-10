@@ -5372,7 +5372,7 @@ describe('interactive command UX', () => {
     expect(io.outLines.filter((line) => line === 'Pairing code: CODE-3')).toHaveLength(1)
     expect(readPendingPairing(deps.env, now)?.pairing_id).toBe('pair_3')
 
-    logoutCommand(deps)
+    await logoutCommand(deps)
     expect(readPendingPairing(deps.env, now)).toBeNull()
   })
 

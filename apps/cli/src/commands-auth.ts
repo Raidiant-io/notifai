@@ -399,10 +399,168 @@ export async function loginCommand(
   return EXIT.auth
 }
 
-export function logoutCommand(deps: CommandDeps): number {
+/**
+ * Remove this machine's credential. `--revoke` first revokes it on the
+ * service, so a copy that left this machine stops working too; if the
+ * service cannot be reached the credential is kept, because removing it
+ * would leave an Approved Machine nobody here can revoke.
+ */
+export async function logoutCommand(deps: CommandDeps, flags: { revoke?: boolean } = {}): Promise<number> {
+  const credential = deps.store.load()
+  if (flags.revoke && credential) {
+    const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
+    try {
+      await client.revokeMachine()
+    } catch (err) {
+      const alreadyGone = err instanceof ApiCallError && (err.code === 'machine_revoked' || err.status === 401)
+      if (!alreadyGone) {
+        const code = reportError(deps, err)
+        deps.io.err('next: Retry `notifai logout --revoke`, or revoke this computer in the dashboard.')
+        return code
+      }
+    }
+  }
   deps.store.clear()
   clearPendingPairing(deps.env)
-  deps.io.out('Machine credential removed. Revoke it in the dashboard too if the machine is untrusted.')
+  if (flags.revoke && credential) {
+    deps.io.out('This computer was signed out and its machine credential revoked.')
+  } else if (flags.revoke) {
+    deps.io.out('This computer was not signed in; there was nothing to revoke.')
+  } else {
+    deps.io.out('Machine credential removed. Run `notifai logout --revoke` or revoke it in the dashboard if a copy may exist elsewhere.')
+  }
+  return EXIT.ok
+}
+
+/**
+ * The approval this computer is waiting for, so a signed-in Companion App on
+ * the same machine can offer it to the User; the next `notifai login` or
+ * `notifai init` collects the credential. The poll verifier and the
+ * credential-to-be stay private to the CLI.
+ */
+function pendingApprovalView(deps: CommandDeps): { pending_approval?: Record<string, string> } {
+  const now = (deps.now ?? Date.now)()
+  const pending = readPendingPairing(deps.env, now)
+  if (pending === null || !(Date.parse(pending.expires_at) > now)) return {}
+  return {
+    pending_approval: {
+      code: pending.code,
+      approve_url: pending.approve_url,
+      base_url: pending.base_url,
+      machine_name: pending.machine_name,
+      expires_at: pending.expires_at,
+    },
+  }
+}
+
+/** What a Companion App on this machine hands the CLI after approving it. */
+interface AdoptedCredentialInput {
+  machine_id: string
+  secret: string
+  base_url: string
+  machine_name: string
+}
+
+const ADOPT_MACHINE_ID = /^mac_[A-Za-z0-9_-]+$/
+const ADOPT_SECRET = /^[A-Za-z0-9_-]{32,}$/
+
+function parseAdoptInput(raw: string): AdoptedCredentialInput | string {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return 'standard input is not JSON'
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'standard input is not a JSON object'
+  const input = value as Record<string, unknown>
+  const machineId = input['machine_id']
+  const secret = input['secret']
+  const baseUrl = input['base_url']
+  const machineName = input['machine_name']
+  if (typeof machineId !== 'string' || !ADOPT_MACHINE_ID.test(machineId)) return 'machine_id is missing or malformed'
+  if (typeof secret !== 'string' || !ADOPT_SECRET.test(secret)) return 'secret is missing or malformed'
+  if (typeof machineName !== 'string' || machineName.trim() === '') return 'machine_name is missing'
+  if (typeof baseUrl !== 'string') return 'base_url is missing'
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    return 'base_url is not a URL'
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username !== '' || url.password !== '') {
+    return 'base_url must be an http or https origin without credentials'
+  }
+  return { machine_id: machineId, secret, base_url: url.origin, machine_name: machineName.trim() }
+}
+
+/**
+ * Store a machine credential that a Companion App on this machine already
+ * obtained, so one sign-in sets up both. The CLI stays the only writer of its
+ * credential store. The secret arrives on standard input only, never argv,
+ * and an existing different credential is never replaced: sign out first.
+ */
+export function authAdoptCommand(
+  deps: CommandDeps,
+  flags: { stdin?: boolean; json?: boolean },
+  readInput: () => string,
+): number {
+  const fail = (exitCode: number, code: string, message: string, extra: Record<string, unknown> = {}): number => {
+    if (flags.json) deps.io.out(JSON.stringify({ adopted: false, error: { code, message }, ...extra }, null, 2))
+    else deps.io.err(message)
+    return exitCode
+  }
+  if (!flags.stdin) {
+    return fail(EXIT.usage, 'input_required', 'Pass --stdin and write the credential JSON to standard input.')
+  }
+  let raw: string
+  try {
+    raw = readInput()
+  } catch (err) {
+    return fail(EXIT.usage, 'input_unreadable', `Could not read standard input: ${String(err)}`)
+  }
+  const input = parseAdoptInput(raw)
+  if (typeof input === 'string') return fail(EXIT.usage, 'invalid_credential', `Credential not adopted: ${input}.`)
+
+  const existing = deps.store.load()
+  if (existing && (existing.machineId !== input.machine_id || existing.secret !== input.secret)) {
+    return fail(
+      EXIT.failed,
+      'already_signed_in',
+      `This computer is already signed in as machine "${existing.machineName}" (${existing.machineId}). Run \`notifai logout --revoke\` first to replace it.`,
+      { machine_id: existing.machineId },
+    )
+  }
+  const credential = existing ?? {
+    machineId: input.machine_id,
+    secret: input.secret,
+    baseUrl: input.base_url,
+    machineName: input.machine_name,
+  }
+  if (!existing) {
+    try {
+      deps.store.save(credential)
+    } catch (err) {
+      return fail(EXIT.failed, 'store_failed', `Credential not adopted: ${err instanceof Error ? err.message : String(err)}.`)
+    }
+  }
+  clearPendingPairing(deps.env)
+  if (flags.json) {
+    deps.io.out(
+      JSON.stringify(
+        {
+          adopted: true,
+          machine_id: credential.machineId,
+          machine_name: credential.machineName,
+          base_url: credential.baseUrl,
+          store: deps.store.describe(),
+        },
+        null,
+        2,
+      ),
+    )
+  } else {
+    deps.io.out(`Signed in as machine "${credential.machineName}" (${credential.machineId})`)
+  }
   return EXIT.ok
 }
 
@@ -419,7 +577,7 @@ export function authStatusCommand(deps: CommandDeps, flags: { json?: boolean }):
               base_url: credential.baseUrl,
               store: deps.store.describe(),
             }
-          : { signed_in: false },
+          : { signed_in: false, ...pendingApprovalView(deps) },
         null,
         2,
       ),

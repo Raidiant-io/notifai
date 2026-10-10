@@ -7,6 +7,7 @@ import {
   askCommand,
   accessStatusCommand,
   agentSessionRenameCommand,
+  authAdoptCommand,
   authStatusCommand,
   capabilitiesCommand,
   closeCommand,
@@ -101,6 +102,7 @@ const defaultRunners = {
   updateResume: updateResumeCommand,
   login: loginCommand,
   logout: logoutCommand,
+  authAdopt: authAdoptCommand,
   authStatus: authStatusCommand,
   accessStatus: accessStatusCommand,
   devices: devicesCommand,
@@ -451,10 +453,11 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   program
     .command('logout')
     .helpGroup(GROUP.advanced)
-    .summary('Remove the stored machine credential')
-    .description('Remove the stored machine credential')
-    .action(() => {
-      exit(runners.logout(deps))
+    .summary('Sign this computer out')
+    .description('Remove the stored machine credential; --revoke also revokes it on the service')
+    .option('--revoke', 'revoke this computer on the service before removing the credential')
+    .action(async (opts: { revoke?: boolean }) => {
+      exit(await runners.logout(deps, opts))
     })
 
   const auth = program
@@ -468,6 +471,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable output')
     .action((opts: { json?: boolean }) => {
       exit(runners.authStatus(deps, opts))
+    })
+  auth
+    .command('adopt')
+    .description('Store a machine credential a Notifai app on this computer already obtained (JSON on stdin)')
+    .option('--stdin', 'read {machine_id, secret, base_url, machine_name} JSON from standard input')
+    .option('--json', 'machine-readable output')
+    .action((opts: { stdin?: boolean; json?: boolean }) => {
+      exit(runners.authAdopt(deps, opts, () => readFileSync(0, 'utf8')))
     })
   auth
     .command('access')

@@ -753,7 +753,7 @@ async function accountScreen(deps: CommandDeps, readiness: Readiness): Promise<b
     message: 'Account',
     options: [
       { value: 'relogin', label: 'Pair this machine again' },
-      { value: 'logout', label: 'Sign out', hint: 'removes the stored credential' },
+      { value: 'logout', label: 'Sign out', hint: 'revokes this computer and removes its credential' },
       { value: 'back', label: '← Back' },
     ],
     initialValue: 'back',
@@ -761,9 +761,9 @@ async function accountScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   if (cancelled(action) || action === 'back') return false
 
   if (action === 'logout') {
-    const sure = await clack.confirm({ message: 'Remove the stored credential?', initialValue: false })
+    const sure = await clack.confirm({ message: 'Sign this computer out and revoke it?', initialValue: false })
     if (cancelled(sure) || sure !== true) return false
-    logoutCommand(deps)
+    await logoutCommand(deps, { revoke: true })
     return true
   }
 

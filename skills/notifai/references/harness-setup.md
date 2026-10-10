@@ -38,14 +38,14 @@ run setup again. If it reports a new code, relay that code. A timeout or closed
 shell does not strand an approval already given.
 
 `--name <name>` sets the Machine name; the hostname is the default.
-`notifai logout` discards the saved credential and any pending approval and QR.
+`notifai logout` discards the saved credential and any pending approval and QR;
+`notifai logout --revoke` first revokes this computer on the service.
 
 `notifai auth status --json` says whether this machine is paired.
 `notifai auth access --json` says whether the account has access, including
 access already requested and waiting on a person — not something to ask them to
 do again. They fail differently and are worth separating before you report
 either as broken.
-`notifai logout` removes the stored credential.
 
 ## Install deliberately
 

@@ -7,6 +7,7 @@ export {
 } from './commands-core.js'
 export {
   accessStatusCommand,
+  authAdoptCommand,
   authStatusCommand,
   loginCommand,
   logoutCommand,

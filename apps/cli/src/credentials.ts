@@ -44,6 +44,7 @@ export interface CredentialStoreOptions {
   platform?: NodeJS.Platform
   run?: ProcessRunner
   keychainAvailable?: boolean
+  secretServiceAvailable?: boolean
 }
 
 const SERVICE = 'io.notifai.cli'
@@ -184,9 +185,9 @@ export class KeychainStore implements CredentialStore {
 /**
  * Explicit plaintext file store.
  *
- * Default on Linux, where mode 0600 is a real ACL. Also the
- * `NOTIFAI_CREDENTIALS=file` development and test escape hatch on every
- * platform. POSIX mode bits are not an NTFS ACL, so this is not a protected
+ * Default on Linux without a Secret Service, where mode 0600 is a real ACL.
+ * Also the `NOTIFAI_CREDENTIALS=file` development and test escape hatch on
+ * every platform. POSIX mode bits are not an NTFS ACL, so this is not a protected
  * Windows store.
  */
 export class FileStore implements CredentialStore {
@@ -326,6 +327,85 @@ export class WindowsDpapiStore implements CredentialStore {
   }
 }
 
+const SECRET_TOOL_TIMEOUT_MS = 15_000
+const SECRET_ATTRIBUTES = ['service', SERVICE, 'account', 'machine'] as const
+
+/**
+ * Linux default when a desktop session offers the Secret Service (GNOME
+ * Keyring, KWallet, KeePassXC): libsecret's `secret-tool`, which reads the
+ * secret from stdin rather than argv. The desktop Companion App keeps its own
+ * session in the same service.
+ *
+ * A credential left in the plaintext file by an earlier CLI moves into the
+ * service the first time it is read, and the file is removed.
+ */
+export class SecretServiceStore implements CredentialStore {
+  private readonly run: ProcessRunner
+  private readonly file: FileStore
+
+  constructor(env: NodeJS.ProcessEnv = process.env, options: CredentialStoreOptions = {}) {
+    this.run = options.run ?? defaultProcessRunner
+    this.file = new FileStore(env, { platform: options.platform ?? 'linux' })
+  }
+
+  load(): MachineCredential | null {
+    const result = this.secretTool(['lookup', ...SECRET_ATTRIBUTES], Buffer.alloc(0))
+    if (result.status === 0) {
+      const stored = parseCredentialJson(result.stdout.toString('utf8').trim())
+      if (stored) return stored
+    }
+    const legacy = this.file.load()
+    if (legacy === null) return null
+    try {
+      this.save(legacy)
+    } catch {
+      // The service refused it; the file keeps working until it accepts.
+    }
+    return legacy
+  }
+
+  save(credential: MachineCredential): void {
+    const serialized = Buffer.from(JSON.stringify(serializeCredential(credential)), 'utf8')
+    const result = this.secretTool(['store', '--label=Notifai machine credential', ...SECRET_ATTRIBUTES], serialized)
+    if (result.status !== 0) {
+      throw new Error(
+        'Secret Service credential save failed; unlock the keyring and retry, or set NOTIFAI_CREDENTIALS=file',
+      )
+    }
+    this.file.clear()
+  }
+
+  clear(): void {
+    this.secretTool(['clear', ...SECRET_ATTRIBUTES], Buffer.alloc(0))
+    this.file.clear()
+  }
+
+  describe(): string {
+    return `Secret Service (${SERVICE})`
+  }
+
+  private secretTool(args: readonly string[], input: Buffer): RunCommandResult {
+    return this.run.run({ command: 'secret-tool', args, input, timeoutMs: SECRET_TOOL_TIMEOUT_MS })
+  }
+}
+
+/**
+ * A session bus and `secret-tool` on PATH. Headless machines (servers, CI,
+ * SSH-only boxes) have neither and keep the 0600 file.
+ */
+export function secretServiceAvailable(env: NodeJS.ProcessEnv): boolean {
+  const bus = env['DBUS_SESSION_BUS_ADDRESS']
+  const runtime = env['XDG_RUNTIME_DIR']
+  const hasBus =
+    (typeof bus === 'string' && bus !== '') ||
+    (typeof runtime === 'string' && runtime !== '' && existsSync(path.join(runtime, 'bus')))
+  if (!hasBus) return false
+  const searchPath = env['PATH'] ?? ''
+  return searchPath
+    .split(path.delimiter)
+    .some((dir) => dir !== '' && existsSync(path.join(dir, 'secret-tool')))
+}
+
 function serializeCredential(credential: MachineCredential): Record<string, string> {
   return { format: CREDENTIAL_FORMAT, ...credential }
 }
@@ -400,6 +480,10 @@ export function defaultCredentialStore(
   const platform = options.platform ?? process.platform
   if (env['NOTIFAI_CREDENTIALS'] === 'file') return new FileStore(env, { platform })
   if (platform === 'win32') return new WindowsDpapiStore(env, options)
+  if (platform === 'linux') {
+    const secretService = options.secretServiceAvailable ?? secretServiceAvailable(env)
+    return secretService ? new SecretServiceStore(env, options) : new FileStore(env, { platform })
+  }
   const keychain =
     options.keychainAvailable !== undefined
       ? options.keychainAvailable
