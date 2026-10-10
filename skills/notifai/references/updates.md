@@ -28,6 +28,17 @@ Use `session`, `harness_installations`, and `guidance.installed` to explain
 the possible impact. A plain CLI or guidance update does not by itself require
 a new Agent Session. `restart_required: null` means unproven, not false.
 
+Installation diagnostics describe the invoking process. After a migration,
+verify ordinary `notifai` command resolution and a real hook callback inside
+each affected existing Agent Session. An absolute-path version check or a new
+shell does not establish what a running desktop application invokes. Windows
+packaged applications can retain a virtualized npm installation that an external
+shell cannot see at the same path. Run the native command by absolute path in
+the affected application, and resolve its exact owning prefix there before any
+package cleanup. Preserve its pending work and approvals. An old npm application
+beside native is incomplete migration; a verified npm launcher routing to that
+same native runtime is supported coexistence.
+
 ## Perform the authorized update
 
 Choose a quiet point after outstanding questions and Agent Acknowledgements

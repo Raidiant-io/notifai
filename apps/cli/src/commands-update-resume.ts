@@ -55,6 +55,11 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   const repairDeps = { ...deps, io: quietIo }
   try {
     let assessment = localIntegrationAssessment(deps)
+    const coexistence = assessment.faults.find(fault => fault.code === 'legacy-native-coexistence')
+    if (coexistence !== undefined) {
+      pending.push(`${coexistence.code}: ${coexistence.remedy}`)
+      return report(false)
+    }
     const effective = assessment.cli.effective
     // A command invoked through another prefix has no authority to retarget
     // shared integration or replace its guidance merely because it can run.

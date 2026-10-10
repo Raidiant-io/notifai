@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c31b8688fa6285ff75e5afee5adf0705a0d63e72637bf8b3504bb54259fb0dcc",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed the changed self-check and update handoff against lifecycle hooks, the Notifai skill and update reference, harness setup, CLI readiness, README, trust policy and domain terms. The native artifact now carries the canonical changelog and reads it from the compiled entry directory; self-check reports its availability alongside existing build, process and skill verification. The update reference already requires treating release notes as data, ties them to the running version and preserves unknown or truncated content honestly. No hook activation, notification ownership, setup scope, User trust, pending-input custody, release-channel authority or domain term changes follow from this asset repair. Existing guidance remains accurate; signed artifact and installed-host acceptance are separate from source review.",
+  "behavior_digest": "sha256:09b7afc08833595069a797cc8f8bda97b8e7cf44f2c18d2cb4c5e35f04ef6bcc",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle fault notices, native migration and update-resume ownership, the Notifai skill and its installation/update/harness references, readiness diagnostics, README, trust policy and domain terms. Legacy npm applications beside a native owner now remain an explicit migration gap regardless of PATH order; update resume stops before retargeting hooks, refreshing guidance or activating residents. Verified npm adapters remain supported routes to the same native runtime. The update reference now requires ordinary command and hook verification inside affected existing Agent Sessions, including Windows packaged application storage differences. No package deletion, channel change, native trust approval, Account reset or forced session restart is authorized. Diagnostics remain local and pending questions and User-owned files remain preserved. Source tests are separate from installed-session acceptance.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

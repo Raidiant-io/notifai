@@ -17,10 +17,11 @@ import type { Installation } from './installation.js'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 const hash = (bytes: string) => createHash('sha256').update(bytes).digest('hex')
-function fixture() {
+function fixture(platform: NodeJS.Platform = 'linux') {
   const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-routes-')); roots.push(home)
   const root = path.join(home, '.notifai'), build = 'b'.repeat(64)
-  const command = path.join(root, 'bin', 'notifai'), runtime = path.join(root, 'versions', build, 'notifai-runtime')
+  const extension = platform === 'win32' ? '.exe' : ''
+  const command = path.join(root, 'bin', `notifai${extension}`), runtime = path.join(root, 'versions', build, `notifai-runtime${extension}`)
   mkdirSync(path.dirname(command), { recursive: true }); mkdirSync(path.dirname(runtime), { recursive: true })
   writeFileSync(command, 'native launcher', { mode: 0o700 }); writeFileSync(runtime, 'native runtime', { mode: 0o700 })
   writeFileSync(path.join(root, 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai',
@@ -53,6 +54,28 @@ function fixture() {
   const options = { nativeHome: home, distribution, runningArtifactPath: runtime, currentVersion: '11.8.0' }
   return { home, root, command, runtime, adapter, options }
 }
+
+it.each(['linux', 'win32'] as const)('reports legacy/native coexistence on %s regardless of PATH order or the running CLI', platform => {
+  const f = fixture(platform), prefix = path.join(f.home, 'old npm')
+  const pkg = path.join(prefix, ...(platform === 'win32' ? [] : ['lib']), 'node_modules', '@raidiant', 'notifai')
+  const artifact = path.join(pkg, 'dist', 'main.js'), bin = platform === 'win32' ? prefix : path.join(prefix, 'bin')
+  mkdirSync(path.dirname(artifact), { recursive: true }); mkdirSync(bin, { recursive: true })
+  writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@raidiant/notifai', version: '11.7.1', bin: { notifai: 'dist/main.js' } }))
+  writeFileSync(artifact, '#!/usr/bin/env node\n', { mode: 0o700 })
+  if (platform === 'win32') writeFileSync(path.join(bin, 'notifai.cmd'), '@ECHO off\r\nnode "%dp0%node_modules\\@raidiant\\notifai\\dist\\main.js" %*\r\n')
+  else symlinkSync(artifact, path.join(bin, 'notifai'))
+  for (const directories of [[bin, path.dirname(f.command)], [path.dirname(f.command), bin]]) {
+    const env = { HOME: f.home, USERPROFILE: f.home, PATH: directories.join(platform === 'win32' ? ';' : ':') }
+    for (const runningArtifactPath of [f.runtime, artifact]) {
+      const state = cliBinReadiness(env, platform, { ...f.options, runningArtifactPath })
+      expect(state.status).toBe('gap')
+      expect(state.detail).toContain('migration is incomplete')
+      expect(state.remedy?.command).toContain(f.command)
+      expect(state.remedy?.summary).toContain('existing Agent Session')
+    }
+  }
+  expect(readFileSync(artifact, 'utf8')).toBe('#!/usr/bin/env node\n')
+})
 
 it('admits distinct signed global adapters as routes to one native runtime without legacy migration or version changes', () => {
   const f = fixture(), old = f.adapter(path.join(f.home, 'old prefix'), '12.0.0'), beta = f.adapter(path.join(f.home, 'β prefix'), '12.1.0-beta.1')
