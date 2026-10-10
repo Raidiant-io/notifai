@@ -9,12 +9,41 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { runGuardedNpm } from '../apps/cli/dist/npm-conversion-process.js'
 
 describe('Windows npm entry guards follow the actual writer', { skip: process.platform !== 'win32' }, () => {
-  let root, launcher
+  let root, launcher, probe
   const children = new Set()
   before(() => {
     root = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-guard-'))
     execFileSync(process.execPath, ['scripts/build-launcher.mjs', root], { stdio: 'pipe' })
     launcher = path.join(root, 'notifai.exe')
+    // A separate process distinguishes lost sharing denial from a difference
+    // between Node's open and the guard's native open. Used only on failure.
+    probe = path.join(root, 'probe.exe')
+    const source = path.join(root, 'probe.c')
+    writeFileSync(source, String.raw`#include <windows.h>
+#include <stdio.h>
+#include <wchar.h>
+int wmain(int argc, wchar_t **argv) {
+  if (argc != 2) return 2;
+  wchar_t extended[32768];
+  if (swprintf(extended, 32768, L"\\\\?\\%ls", argv[1]) < 0) return 2;
+  const DWORD flags[2] = { FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS };
+  printf("[");
+  for (int p = 0; p < 2; p++) for (int f = 0; f < 2; f++) {
+    HANDLE h = CreateFileW(p ? extended : argv[1], GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, flags[f], NULL);
+    DWORD error = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    BY_HANDLE_FILE_INFORMATION info = {0};
+    if (h != INVALID_HANDLE_VALUE) { GetFileInformationByHandle(h, &info); CloseHandle(h); }
+    ULARGE_INTEGER id; id.LowPart = info.nFileIndexLow; id.HighPart = info.nFileIndexHigh;
+    printf("%s{\"extended\":%d,\"backup\":%d,\"error\":%lu,\"volume\":%lu,\"file_id\":\"%llu\"}",
+      p || f ? "," : "", p, f, error, info.dwVolumeSerialNumber, id.QuadPart);
+  }
+  printf("]\n");
+  return 0;
+}
+`)
+    execFileSync('cl.exe', ['/nologo', '/O2', '/MT', '/W4', '/WX', '/std:c11', '/D_CRT_SECURE_NO_WARNINGS',
+      `/Fo${path.join(root, 'probe.obj')}`, `/Fe${probe}`, source], { cwd: root, stdio: 'pipe' })
   })
   after(async () => {
     for (const child of children) child.kill('SIGKILL')
@@ -79,7 +108,10 @@ setTimeout(() => process.exit(19), 15000).unref();
       const check = spawnSync(process.execPath, ['-e', source, file], { encoding: 'utf8', timeout: 5000, windowsHide: true })
       assert.equal(check.error, undefined)
       if (allowed) assert.equal(check.status, 0, check.stderr)
-      else assert.notEqual(check.status, 0, `Legacy entry unexpectedly admitted ${operation}: ${file}; output=${JSON.stringify(check.stdout)}`)
+      else {
+        const native = check.status === 0 ? spawnSync(probe, [file], { encoding: 'utf8', timeout: 5000, windowsHide: true }) : null
+        assert.notEqual(check.status, 0, `Legacy entry unexpectedly admitted ${operation}: ${file}; output=${JSON.stringify(check.stdout)}; native=${JSON.stringify(native && { status: native.status, stdout: native.stdout, stderr: native.stderr })}`)
+      }
     }
   }
   async function admitted(fixture) {
