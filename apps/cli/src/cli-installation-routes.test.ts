@@ -151,7 +151,8 @@ it('identifies the complete cmd-shim-generated legacy Windows triplet at its exa
   const result = legacyNpmMigration(env, 'win32', stable, options)
   expect(result.collisions).toHaveLength(3)
   expect(result.migration).toMatchObject({ artifact: canonicalPath(artifact), prefix: canonicalPath(prefix), version: '11.8.0',
-    cleanup: { args: ['uninstall', '--global', '--prefix', canonicalPath(prefix), '@raidiant/notifai'] } })
+    repair: { package_manager: 'npm', status: 'assessment_required', owner: 'agent' } })
+  expect(result.migration).not.toHaveProperty('cleanup')
   expect(readFileSync(artifact, 'utf8')).toBe('legacy runtime bytes')
   writeFileSync(path.join(prefix, 'notifai.cmd'), ' '.repeat(16 * 1024 + 1))
   expect(legacyNpmMigration(env, 'win32', stable, options).migration).toBeNull()
