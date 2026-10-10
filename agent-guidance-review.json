@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:905b1acd48d8942fe669e4ecfeb5cd6e3f786a47f4a7bc5d22719b9287d65af0",
+  "behavior_digest": "sha256:57c24495a07d6de7ba3decda7642ef5ea9d498f95cf43cdf3ac0ef3d8bafaa6a",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms. A Claude Code question picker is now linked to a registered question by its content (question texts, option labels, selection mode) instead of a copied [nf:NNN] title marker: ask returns plain titles for AskUserQuestion, the picker instruction no longer asks to copy a marker in the registration turn, and an unlinked look-alike picker's result names the question still asking on devices. harness-claude-code.md and native-questions.md now describe content linking for Claude Code and keep the marker rule for Codex only. Codex guidance and behaviour are unchanged.",
+  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms against the desktop stream contract (#281) and one sign-in per machine (#282). #281 adds windows and linux platforms, the stream provider and the companion changes feed, and refuses --level, --thread-id and --data for a desktop --platform; the skill names no platform values and already reserves --level, --sound and --device for the User, hooks now treat any healthy answer-capable Device Installation as answerable (internal routing), and the README states the desktop Companion App is unshipped. #282 adds logout --revoke, which harness-setup.md now documents; auth status --json naming a pending approval, which keeps its documented meaning; and auth adopt, which is for a Notifai app on the same computer and stays out of agent guidance because agents never handle credentials.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
