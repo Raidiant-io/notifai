@@ -73,11 +73,15 @@ installed runtime or its retained owners.
 
 An identified old Node-based `@raidiant/notifai` application is different from
 the native launcher. Never update its package in place while residents still
-use its files. Use the native installer's explicit `--migrate-npm` / `-MigrateNpm`
-flow to stage native files while preserving the old package. Finish pending
-questions and acknowledgements and resolve the reported legacy owners before
-removing that exact package with the reported owning-prefix command. Rerun the
-installer to finish setup. Do not kill sessions or delete data to force migration.
+use its files. The native installer's `--migrate-npm` / `-MigrateNpm` stages native
+files while preserving that package; it does not complete the conversion.
+Follow the reported repair assessment: establish the affected app's command and
+state root, verify and back up the package, and prepare the selected signed npm
+launcher. The agent owns replacement through a trusted compatible npm at the
+same prefix, after pending work drains and any necessary User-approved producer
+pause is observed. Preserve unknown or modified files and unresolved readers.
+Do not uninstall first, kill sessions, or give the User an uninstall/reinstall
+chore. Preparation and a successful npm exit do not prove runtime or hook readiness.
 
 Upgrade an older native runtime through its existing native route before adding
 a new global npm launcher. If the launcher was added first and the runtime cannot

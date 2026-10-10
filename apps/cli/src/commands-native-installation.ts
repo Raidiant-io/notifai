@@ -179,7 +179,7 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     if (legacy.collisions.length && (!flags.migrateNpm || legacy.migration === null)) {
       emit({ ok: false, code: 'installation_collision', ...installed, collisions: legacy.collisions,
         ...(legacy.migration ? { migration: legacy.migration,
-          message: 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving that package; cleanup remains an explicit package-manager action.' }
+          message: 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving that package. Its replacement needs a separate assessed maintenance operation.' }
           : { message: 'Another Notifai installation is on PATH. Resolve this collision before installing; no package or shim was changed.' }) },
       legacy.migration ? 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving the old package.'
         : 'Resolve the existing Notifai installation before installing.')
@@ -215,8 +215,8 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
       // independently, but setup/update readiness remains incomplete while the
       // previous command is still exposed through PATH.
       emit({ ok: false, code: 'migration_pending_legacy_owners', ...installed, setup_skipped: true,
-        next_step: 'After all legacy work settles and its programs stop, remove the reported npm package through its exact prefix. Then rerun this native installer to finish setup.' },
-      `The native CLI is staged at ${command}. The npm package is preserved. Finish legacy work, stop its programs, remove @raidiant/notifai from the reported prefix through npm, then rerun this installer.`)
+        next_step: legacy.migration.repair.requires },
+      `The native CLI is staged at ${command}. The npm package is preserved. Your agent must assess and prepare its replacement at the existing command location, then arrange any necessary pause before finishing setup.`)
       return EXIT.failed
     }
     if (flags.init === false) {

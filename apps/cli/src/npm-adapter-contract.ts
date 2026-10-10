@@ -19,6 +19,16 @@ export interface NpmAdapterManifest {
   files: NpmAdapterFile[]
 }
 
+/** npm may install only this package and its three platform command shims. */
+export function assertNpmAdapterPackage(value: unknown, manifest: NpmAdapterManifest): void {
+  const pkg = value as Record<string, unknown> | null
+  const bin = pkg?.['bin'] as Record<string, unknown> | null
+  if (!pkg || pkg['name'] !== manifest.package || pkg['version'] !== manifest.adapter_version ||
+      !bin || typeof bin !== 'object' || Array.isArray(bin) || Object.keys(bin).length !== 1 || bin['notifai'] !== NPM_ADAPTER_BIN ||
+      ['scripts', 'dependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies',
+        'directories', 'man'].some(key => Object.hasOwn(pkg, key))) throw new Error('Invalid published npm adapter package contract')
+}
+
 export function npmAdapterInventoryUrl(version: string): string {
   if (version.length > 100 || !isSemVer(version)) throw new Error('Invalid npm adapter version')
   return `https://github.com/Raidiant-io/notifai/releases/download/v${version}/inventory.json`

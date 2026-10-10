@@ -1147,9 +1147,10 @@ it('stages an explicitly requested npm migration without deleting the legacy pac
   expect(f.installation.inspect().active).toBeNull()
   expect(await nativeInstallCommand(deps, { ...flags, migrateNpm: true }, seams)).toBe(1)
   expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'migration_pending_legacy_owners', runtime_installed: true, setup_complete: false,
-    migration: { prefix: canonicalPath(prefix), cleanup: { args: ['uninstall', '--global', '--prefix', canonicalPath(prefix), '@raidiant/notifai'] } } })
+    migration: { prefix: canonicalPath(prefix), repair: { package_manager: 'npm', status: 'assessment_required', owner: 'agent' } } })
   expect(readFileSync(artifact, 'utf8')).toBe('preserve the legacy executable')
-  // Model the User completing the separately reported package-manager action.
+  // Model resolution of the separately assessed collision. This fixture does
+  // not establish package replacement or authorize removing a live package.
   rmSync(path.join(bin, 'notifai')); rmSync(packageRoot, { recursive: true })
   expect(await nativeInstallCommand(deps, flags, seams)).toBe(0)
   expect(JSON.parse(out.pop()!)).toMatchObject({ code: 'installed', reused: true, setup_skipped: true })

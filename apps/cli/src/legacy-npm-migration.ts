@@ -9,7 +9,7 @@ export interface LegacyNpmMigration {
   artifact: string
   version: string
   command_paths: string[]
-  cleanup: { package_manager: 'npm'; args: string[]; requires: string }
+  repair: { package_manager: 'npm'; status: 'assessment_required'; owner: 'agent'; requires: string }
 }
 
 /** Read-only identification of one exact npm-global layout. This is never
@@ -38,8 +38,7 @@ export function legacyNpmMigration(env: NodeJS.ProcessEnv, platform: NodeJS.Plat
     const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
     if (manifest.name !== '@raidiant/notifai' || manifest.bin?.notifai !== 'dist/main.js' || typeof manifest.version !== 'string') throw new Error('Unrecognized npm package')
     return { collisions, migration: { status: 'migration_pending_legacy_owners', prefix, artifact, version: manifest.version,
-      command_paths: collisions.map(entry => entry.command_path), cleanup: { package_manager: 'npm',
-        args: ['uninstall', '--global', '--prefix', prefix, '@raidiant/notifai'],
-        requires: 'Finish outstanding questions, answers and acknowledgements, then stop every harness and other program using the old CLI. Use the npm installation that owns this prefix. Native setup never deletes legacy package files.' } } }
+      command_paths: collisions.map(entry => entry.command_path), repair: { package_manager: 'npm', status: 'assessment_required', owner: 'agent',
+        requires: 'Establish the affected application command and state root, verify the complete old package and a trusted compatible npm, and preserve a full backup. Replace through npm with the selected signed launcher only during an observed approved pause of its producers, after pending work drains. Keep the existing command location; do not uninstall first. Unknown ownership or readers stay pending.' } } }
   } catch { return { collisions, migration: null } }
 }

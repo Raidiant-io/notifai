@@ -4,7 +4,7 @@ import type { Stats } from 'node:fs'
 import path from 'node:path'
 import type { Distribution, ReleaseInventory } from './release-distribution.js'
 import { NPM_ADAPTER_BIN, NPM_ADAPTER_INVENTORY, NPM_ADAPTER_MANIFEST,
-  NPM_ADAPTER_MAX_METADATA, parseNpmAdapterManifest, type NpmAdapterManifest } from './npm-adapter-contract.js'
+  NPM_ADAPTER_MAX_METADATA, parseNpmAdapterManifest, assertNpmAdapterPackage, type NpmAdapterManifest } from './npm-adapter-contract.js'
 
 export interface VerifiedNpmAdapter {
   directory: string
@@ -88,8 +88,6 @@ export function verifyNpmAdapterArtifact(directory: string, distribution: Pick<D
   }
   if (expected.size) throw new Error('Npm adapter payload is incomplete')
   const executable = path.join(directory, NPM_ADAPTER_BIN)
-  const pkg = JSON.parse(metadata('package.json')) as { name?: unknown; version?: unknown; bin?: { notifai?: unknown }; scripts?: unknown; dependencies?: unknown }
-  if (pkg.name !== manifest.package || pkg.version !== manifest.adapter_version || pkg.bin?.notifai !== NPM_ADAPTER_BIN ||
-      pkg.scripts !== undefined || pkg.dependencies !== undefined) throw new Error('Invalid published npm adapter package contract')
+  assertNpmAdapterPackage(JSON.parse(metadata('package.json')), manifest)
   return { directory, executable, manifest, inventory, signedInventory }
 }

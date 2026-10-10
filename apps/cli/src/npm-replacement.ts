@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, copyFileSync, constants, fsyncSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { withFileLock } from './file-lock.js'
 import type { InstallationAccess } from './installation-access.js'
 import { inspectLegacyNpmPackage, snapshotLegacyNpmPackage, assertNpmReplacementState, type LegacyNpmPackage } from './legacy-npm-package.js'
-import { NPM_MIGRATION_ADAPTER as ADAPTER } from './legacy-npm-releases.js'
+import { prepareNpmAdapterArchive, type NpmReplacementTarget } from './npm-adapter-archive.js'
+import { isSemVer } from './version.js'
 import { canonicalPath } from './local-path.js'
 import { inspectNpmAdapterRoute } from './npm-adapter-route.js'
 import { verifyNpmAdapterArtifact, type NpmAdapterAccessCheck } from './npm-adapter-verification.js'
@@ -20,7 +21,7 @@ interface ReplacementReceipt {
   token: string
   prefix: string
   snapshot_sha256: string
-  inventory_sha256: string
+  target: NpmReplacementTarget
   node: FileProof
   npm: FileProof
   /** The agent names the assessed application, execution view and state root. */
@@ -67,11 +68,11 @@ function synchronous(action: () => unknown): void {
     throw new Error('Npm maintenance checks must complete synchronously')
   }
 }
-function tarball(directory: string, access: InstallationAccess): string {
+function tarball(directory: string, access: InstallationAccess, target: NpmReplacementTarget): string {
   const file = path.join(directory, 'adapter.tgz'), stat = lstatSync(file)
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024 * 1024) throw new Error('Invalid prepared npm artifact')
   access.check(file, false)
-  if (createHash('sha512').update(readFileSync(file)).digest('base64') !== ADAPTER.integrity) throw new Error('Npm artifact does not match the pinned release')
+  if (digest(readFileSync(file)) !== target.archive_sha256) throw new Error('Npm artifact does not match the pinned release')
   return file
 }
 function environment(directory: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -101,10 +102,10 @@ function preserved(directory: string, original: LegacyNpmPackage, context: NpmRe
     }
   }
 }
-function adapter(directory: string, context: NpmReplacementContext) {
+function adapter(directory: string, context: NpmReplacementContext, target: NpmReplacementTarget) {
   const prefix = path.join(directory, 'prepared')
   const proof = verifyNpmAdapterArtifact(path.join(prefix, 'node_modules/@raidiant/notifai'), context.distribution, context.packageAccess)
-  if (proof.manifest.adapter_version !== ADAPTER.version || !['notifai', 'notifai.cmd', 'notifai.ps1'].every(name =>
+  if (proof.manifest.adapter_version !== target.version || digest(proof.signedInventory) !== target.inventory_sha256 || !['notifai', 'notifai.cmd', 'notifai.ps1'].every(name =>
     inspectNpmAdapterRoute(path.join(prefix, name), proof, { platform: 'win32', checkAccess: context.packageAccess })?.kind === 'global')) {
     throw new Error('Prepared npm adapter or command routes are not verified')
   }
@@ -125,7 +126,8 @@ function read(directory: string, context: NpmReplacementContext): ReplacementRec
     typeof item.start === 'string' && /^windows-filetime:\d+$/.test(item.start)
   if (value?.schema !== 1 || typeof value.token !== 'string' || !/^[a-f0-9-]{36}$/.test(value.token) ||
       typeof value.prefix !== 'string' || !path.isAbsolute(value.prefix) || typeof value.scope !== 'string' || !value.scope.trim() || value.scope.length > 1024 ||
-      !/^[a-f0-9]{64}$/.test(value.snapshot_sha256) || !/^[a-f0-9]{64}$/.test(value.inventory_sha256) ||
+      !/^[a-f0-9]{64}$/.test(value.snapshot_sha256) || !value.target || typeof value.target.version !== 'string' || !isSemVer(value.target.version) ||
+      !/^[a-f0-9]{64}$/.test(value.target.inventory_sha256) || !/^[a-f0-9]{64}$/.test(value.target.archive_sha256) ||
       !['prepared', 'replacing', 'package_verified'].includes(value.phase) || typeof value.may_have_run !== 'boolean' ||
       !identity(value.coordinator) || !identity(value.manager) ||
       ![value.node, value.npm].every(item => item && typeof item.file === 'string' && path.isAbsolute(item.file) &&
@@ -139,7 +141,7 @@ function read(directory: string, context: NpmReplacementContext): ReplacementRec
  * independently trusted manager files and establishes the affected app view.
  * No legacy package file changes here and no preparation result proves idle. */
 export async function prepareNpmReplacement(input: { prefix: string; node: string; npm: string;
-  artifact: string; scope: string }, context: NpmReplacementContext): Promise<{ directory: string; dependency_files: number }> {
+  artifact: string; signedInventory: string; scope: string }, context: NpmReplacementContext): Promise<{ directory: string; dependency_files: number }> {
   if (process.platform !== 'win32' || ![input.prefix, input.node, input.npm, input.artifact].every(file => path.isAbsolute(file)) ||
       !input.scope.trim() || input.scope.length > 1024) throw new Error('Invalid Windows npm maintenance preparation')
   const prefix = realpathSync(input.prefix), directory = canonicalPath(operationDirectory(prefix, context))
@@ -150,18 +152,22 @@ export async function prepareNpmReplacement(input: { prefix: string; node: strin
   synchronous(() => context.verifyEnvironment(prefix, input.node, input.npm))
   const node = fileProof(input.node), npm = fileProof(input.npm)
   const original = inspectLegacyNpmPackage(prefix, context.packageAccess)
-  context.access.directory(directory)
+  // A second preparer can pass the early absence check during assessment.
+  // Reserve once, under the existing short installation lock, before writing.
+  withFileLock(path.join(context.installationRoot, 'installation.lock'), () => {
+    try { lstatSync(directory); throw new Error('Npm maintenance directory already exists') }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    context.access.directory(directory)
+  }, { waitMs: 5000, strictRelease: true })
   // Incomplete preparation stays outside the live prefix for inspection. It
   // cannot be executed: operation.json is published only after all checks.
   for (const child of ['tmp', 'cache', 'prepared']) context.access.directory(path.join(directory, child))
   const artifact = path.join(directory, 'adapter.tgz')
   const source = lstatSync(input.artifact)
   if (!source.isFile() || source.isSymbolicLink() || source.size > 16 * 1024 * 1024) throw new Error('Invalid npm artifact source')
-  copyFileSync(input.artifact, artifact, constants.COPYFILE_EXCL)
-  context.access.beforePublish(artifact)
-  const fd = openSync(artifact, 'r+')
-  try { fsyncSync(fd) } finally { closeSync(fd) }
-  tarball(directory, context.access)
+  const prepared = await prepareNpmAdapterArchive(readFileSync(input.artifact), input.signedInventory, context.distribution)
+  atomicWriteFileSync(artifact, prepared.bytes, { requireCurrentUserOwner: true, prepareTemporary: context.access.beforePublish })
+  tarball(directory, context.access, prepared.target)
   for (const name of ['user.npmrc', 'global.npmrc']) atomicWriteFileSync(path.join(directory, name), '', {
     requireCurrentUserOwner: true, prepareTemporary: context.access.beforePublish,
   })
@@ -171,9 +177,9 @@ export async function prepareNpmReplacement(input: { prefix: string; node: strin
     args: args(directory, path.join(directory, 'prepared'), npm.file), cwd: directory, env: environment(directory, context.env),
     admit() { assertFile(node); assertFile(npm); synchronous(() => context.verifyEnvironment(prefix, node.file, npm.file)) } })
   if (result.failure || result.exit_code !== 0) throw new Error('Npm adapter preparation failed; the legacy package was preserved')
-  const replacement = adapter(directory, context)
+  adapter(directory, context, prepared.target)
   save(directory, { schema: 1, token: randomUUID(), prefix, snapshot_sha256: snapshot,
-    inventory_sha256: digest(replacement.signedInventory), node, npm, scope: input.scope,
+    target: prepared.target, node, npm, scope: input.scope,
     phase: 'prepared', coordinator: null, manager: null, may_have_run: false }, context)
   return { directory, dependency_files: original.dependency_files }
 }
@@ -210,9 +216,8 @@ export async function replaceNpmPackage(directory: string, context: NpmReplaceme
     if (digest(bytes) !== receipt.snapshot_sha256) throw new Error('Npm preservation metadata changed')
     const original = JSON.parse(bytes.toString('utf8')) as LegacyNpmPackage
     if (original.prefix !== receipt.prefix || original.directory !== path.join(receipt.prefix, 'node_modules/@raidiant/notifai')) throw new Error('Npm preservation scope changed')
-    const replacement = adapter(directory, context)
-    if (digest(replacement.signedInventory) !== receipt.inventory_sha256) throw new Error('Prepared npm release changed')
-    tarball(directory, context.access)
+    const replacement = adapter(directory, context, receipt.target)
+    tarball(directory, context.access, receipt.target)
     for (const name of ['user.npmrc', 'global.npmrc']) {
       context.access.check(path.join(directory, name), false)
       if (readFileSync(path.join(directory, name)).length) throw new Error('Prepared npm configuration changed')
@@ -235,7 +240,7 @@ export async function replaceNpmPackage(directory: string, context: NpmReplaceme
         synchronous(() => context.verifyEnvironment(receipt.prefix, receipt.node.file, receipt.npm.file))
         synchronous(() => verifyMaintenance(receipt.scope, original.dependency_files))
         assertNpmReplacementState(original, replacement, recovering, context.packageAccess)
-        tarball(directory, context.access)
+        tarball(directory, context.access, receipt.target)
         for (const name of ['user.npmrc', 'global.npmrc']) {
           context.access.check(path.join(directory, name), false)
           if (readFileSync(path.join(directory, name)).length) throw new Error('Prepared npm configuration changed')
@@ -244,7 +249,7 @@ export async function replaceNpmPackage(directory: string, context: NpmReplaceme
     }).then(result => {
       if (result.failure || result.exit_code !== 0) return result
       const installed = verifyNpmAdapterArtifact(original.directory, context.distribution, context.packageAccess)
-      if (digest(installed.signedInventory) !== receipt.inventory_sha256 || !['notifai', 'notifai.cmd', 'notifai.ps1'].every(name =>
+      if (digest(installed.signedInventory) !== receipt.target.inventory_sha256 || !['notifai', 'notifai.cmd', 'notifai.ps1'].every(name =>
         inspectNpmAdapterRoute(path.join(receipt.prefix, name), installed, { platform: 'win32', checkAccess: context.packageAccess })?.kind === 'global')) {
         throw new Error('Npm replacement returned without verified command routes')
       }
