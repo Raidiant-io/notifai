@@ -42,11 +42,19 @@ we want to hear about it.
 **Machine credentials are stored per-machine, not in the repository.**
 On macOS they go to the Keychain. On Windows they are protected with the
 Data Protection API for the current user and stored under
-`%LOCALAPPDATA%\notifai`, not roaming configuration. On Linux they are a
-`0600` file. `NOTIFAI_CREDENTIALS=file` forces the plaintext file store
-for development and tests; POSIX mode bits are not an NTFS ACL, so that
-override is not a protected Windows store. A credential is scoped to one
-machine and can be revoked without affecting others.
+`%LOCALAPPDATA%\notifai`, not roaming configuration. On a Linux desktop
+session they go to the Secret Service through `secret-tool`; a Linux
+machine without one (a server, CI, SSH-only) keeps a `0600` file.
+`NOTIFAI_CREDENTIALS=file` forces the plaintext file store for development
+and tests; POSIX mode bits are not an NTFS ACL, so that override is not a
+protected Windows store. A credential is scoped to one machine and can be
+revoked without affecting others; `notifai logout --revoke` revokes it from
+the machine itself.
+
+A Notifai desktop app on the same machine hands the CLI a credential with
+`notifai auth adopt --stdin`, so one sign-in sets up both. The secret
+travels on standard input only, and adopt never replaces a different
+credential that is already stored.
 
 **A Companion Receipt proves delivery to a device, not display to a
 person.** It is deliberately not evidence that anyone saw anything.
