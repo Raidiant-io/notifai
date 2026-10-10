@@ -8,33 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [12.0.0-beta.15](https://github.com/Raidiant-io/notifai/compare/v11.8.0...v12.0.0-beta.15) (2026-10-09)
-
-### Breaking changes
-
-* The existing `@raidiant/notifai` npm package now installs and launches the managed native CLI instead of shipping a separate Node runtime. Existing native installations keep their version and channel until an explicit update.
-
-### Improvements
-
-* Include readable release notes in every native binary and verify the bundled changelog against canonical source.
-
-* Refresh installer-owned guidance and recover owned hooks and sessions even when unrelated user-installed skills are present; preserve those files and keep their diagnosis visible.
-* Verify npm publication using its current dist-tag endpoint, with bounded reads and no repeat publication or unrelated tag changes.
-
-* Resume Codex activity tracking across oversized transcript entries without resetting existing sessions.
-* Give doctor, setup and update the same skill ownership diagnosis; preserve user-managed content and recover interrupted installer-owned placements.
-
-* Batch Windows npm permission verification instead of starting one PowerShell process per package path. Keep signed payload checks and reject unsafe members.
-
-* Verify npm-owned Windows directories and account profiles without changing their ACLs, while preserving strict ownership of managed native paths.
-
-* Use the same native runtime and bundled skill through shell, PowerShell, npm, and npx setup.
-* Report installation ownership and recovery clearly in doctor, preserve unfinished removal, and make migration from older npm installations explicit.
-* Continue interactive setup correctly when installing through a piped shell command.
-* Verify npm adapter bytes against the signed native release and coordinate publication across all supported targets.
-* Keep long Codex turns readable and link Claude question-picker content to its registered question.
-
-
 ## [11.8.0](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0) (2026-10-08)
 
 
