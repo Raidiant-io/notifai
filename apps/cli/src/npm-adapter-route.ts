@@ -14,7 +14,7 @@ export interface NpmAdapterRoute {
 /** Exact Node-shebang wrapper templates from npm cmd-shim 8.0.0. A target
  * substring alone never admits a wrapper with additional executable code.
  * cmd-shim's ISC attribution accompanies the generated npm artifact. */
-function npmShim(relative: string, extension: string): string {
+export function npmShim(relative: string, extension: string): string {
   const target = relative.replaceAll('\\', '/')
   if (extension === '.cmd') return [
     '@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL', 'CALL :find_dp0', '',

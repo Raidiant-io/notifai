@@ -3,9 +3,9 @@ import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import type { ProcessIdentity } from './process-identity.js'
 
-export interface GuardedNpmManager extends ProcessIdentity { guard_sha256: [string, string] }
+export type NpmManager = ProcessIdentity
 export interface NpmManagerResult {
-  manager: GuardedNpmManager | null
+  manager: NpmManager | null
   /** GO was queued; the manager may have started. This is not execution proof. */
   started: boolean
   exit_code: number | null
@@ -16,33 +16,32 @@ export interface NpmManagerResult {
 
 /** Execute one already prepared npm operation. The caller owns package,
  * manager, prefix and artifact verification; this module owns only the native
- * admission handshake and its finite process lifetime. Nothing resolves PATH.
+ * suspended-start handshake and its finite process lifetime. Nothing resolves PATH.
  *
- * `admit` runs synchronously while npm is suspended with both old entrypoint
- * objects guarded. It must persist this exact manager identity, establish old
- * reader completion and recheck the authorized operation before returning.
+ * `admit` runs synchronously while npm is suspended. It must persist this exact
+ * manager identity, establish old reader completion and recheck the authorized
+ * operation before returning.
  * Throwing sends no GO. An exit code never authorizes deleting the operation
  * receipt: the caller must also verify the package and every affected shim.
+ * This is process custody, not protection against new package readers. The
+ * caller owns the explicit, observed cooperative maintenance window.
  */
-export function runGuardedNpm(input: {
+export function runNpmManager(input: {
   launcher: string
-  entries: [string, string]
-  expectedHashes: [string, string]
   executable: string
   args: readonly string[]
   cwd: string
   env: NodeJS.ProcessEnv
-  admit: (manager: GuardedNpmManager) => undefined
+  admit: (manager: NpmManager) => undefined
   timeoutMs?: number
 }): Promise<NpmManagerResult> {
-  if (process.platform !== 'win32') throw new Error('Guarded npm conversion requires Windows file admission')
-  if (![input.launcher, input.executable, input.cwd, ...input.entries].every(file => path.isAbsolute(file)) ||
-      input.expectedHashes.some(hash => !/^[a-f0-9]{64}$/.test(hash))) throw new Error('Invalid guarded npm operation')
+  if (process.platform !== 'win32') throw new Error('Npm manager custody requires Windows')
+  if (![input.launcher, input.executable, input.cwd].every(file => path.isAbsolute(file))) throw new Error('Invalid npm operation')
   const timeout = input.timeoutMs ?? 120_000
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new Error('Invalid npm operation deadline')
   return new Promise(resolve => {
     const result: NpmManagerResult = { manager: null, started: false, exit_code: null, stdout: '', stderr: '' }
-    const child = spawn(input.launcher, ['--internal-npm-guard', ...input.entries, input.executable, ...input.args], {
+    const child = spawn(input.launcher, ['--internal-npm-manager', input.executable, ...input.args], {
       cwd: input.cwd, env: input.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     })
     let header = Buffer.alloc(0), announced = false, finished = false
@@ -68,8 +67,8 @@ export function runGuardedNpm(input: {
       }, 5000)
     }
     const deadline = setTimeout(() => fail('Npm conversion exceeded its deadline; recover the recorded operation'), timeout)
-    child.once('error', () => fail('The native npm guard could not be started'))
-    child.stdin.on('error', () => fail('The native npm guard closed before admission completed'))
+    child.once('error', () => fail('The native npm supervisor could not be started'))
+    child.stdin.on('error', () => fail('The native npm supervisor closed before admission completed'))
     child.stderr.on('data', (chunk: Buffer) => {
       if (Buffer.byteLength(result.stderr) + chunk.length > 64 * 1024) return fail('Npm error output exceeded its limit')
       result.stderr += chunk.toString('utf8')
@@ -84,16 +83,12 @@ export function runGuardedNpm(input: {
         }
         if (end > 1024 || result.failure) return fail('Invalid native npm admission report')
         try {
-          const value = JSON.parse(header.subarray(0, end).toString('utf8')) as Partial<GuardedNpmManager>
+          const value = JSON.parse(header.subarray(0, end).toString('utf8')) as Partial<NpmManager>
           if (!Number.isSafeInteger(value.pid) || value.pid! < 1 || typeof value.start !== 'string' ||
-              !/^windows-filetime:\d+$/.test(value.start) || !Array.isArray(value.guard_sha256) ||
-              value.guard_sha256.length !== 2 || value.guard_sha256.some(hash => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash))) {
+              !/^windows-filetime:\d+$/.test(value.start)) {
             throw new Error('Invalid native npm admission report')
           }
-          result.manager = { pid: value.pid!, start: value.start, guard_sha256: [...value.guard_sha256] }
-          if (value.guard_sha256.some((hash, i) => hash !== input.expectedHashes[i])) {
-            throw new Error('The guarded legacy entrypoints changed')
-          }
+          result.manager = { pid: value.pid!, start: value.start }
           announced = true
           // Never await an asynchronous decision with suspended npm as a
           // background promise. Network preparation and User decisions precede
