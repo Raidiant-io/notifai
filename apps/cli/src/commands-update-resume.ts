@@ -20,6 +20,7 @@ import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messa
 import { integrationPublication } from './native-installation.js'
 import { buildIdentity } from './distribution.js'
 import { pendingHookRepairs, withHookRepairIntent } from './integration-repair.js'
+import { pendingNpmRepairs } from './npm-repair-status.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -43,9 +44,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   const changed: string[] = []
   const diagnostics: string[] = []
   const report = (filesComplete: boolean): number => {
+    const npmRepairs = pendingNpmRepairs(deps.env)
+    if (npmRepairs.length) pending.push('A scoped npm repair remains pending; the responsible agent must resume its exact prepared operation after observing the approved pause.')
     const complete = filesComplete && pending.length === 0
     const result = { ok: filesComplete, read_only: false, running_version: packageVersion(),
       files_complete: filesComplete, migration_complete: complete, pending_actions: [...new Set(pending)],
+      npm_repairs: npmRepairs,
       diagnostics: [...new Set(diagnostics)], changed, attendants: [],
       resume_command: 'notifai update --resume --json', changelog: installedChangelog(packageVersion(), flags.from),
       next_step: 'Read this package’s SKILL.md and references/updates.md, then run notifai guidance in the active Agent Session. Preserve outstanding work and existing User deferrals.' }

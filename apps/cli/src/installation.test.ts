@@ -71,6 +71,24 @@ function legacyFixture() {
   return { ...f, options, old, build, id, upgrade }
 }
 
+it('rejects unusable paired repair targets before any activation or package replacement', () => {
+  const f = fixture()
+  const first = f.installation.installCandidate({ ...f.candidate('2.0.0'), source: 'manual' })
+  for (const candidate of [f.candidate('3.0.0', undefined, undefined, 1), f.candidate('3.0.0-beta.1'),
+    f.candidate('1.0.0'), f.candidate('3.1.0', undefined, 'other-contract')]) {
+    const build = f.installation.stage(candidate)
+    expect(() => f.installation.assertForwardTransition(build, 1, 'stable')).toThrow()
+    expect(f.installation.inspect().active).toEqual(first.active)
+    expect(f.installation.inspect().pending).toBe(false)
+  }
+  const next = f.candidate('4.0.0'), build = f.installation.stage(next)
+  expect(() => f.installation.assertForwardTransition(build, 1, 'stable')).not.toThrow()
+  ensurePrivateDirectory(path.join(f.options.root, 'channels'))
+  writeFileSync(path.join(f.options.root, 'channels/stable.json'), f.channel(1, ['4.0.0']), { mode: 0o600 })
+  expect(() => f.installation.assertForwardTransition(build, 1, 'stable')).toThrow(/withdrawn/)
+  expect(() => f.installation.assertForwardTransition(first.active.active, 1, 'stable')).not.toThrow()
+})
+
 it('keeps an interrupted host setup scoped while compatible B and C activate and retain its definition', () => {
   const f = fixture()
   let boot = '11111111-1111-4111-8111-111111111111'

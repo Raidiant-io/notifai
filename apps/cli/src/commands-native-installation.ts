@@ -8,6 +8,7 @@ import type { Installation, InstallSource } from './installation.js'
 import { managedInstallation } from './native-installation.js'
 import { nativeLifecycleCommand } from './cli-bin.js'
 import { ContinuityPending } from './local-continuity.js'
+import { npmRepairCommand } from './commands-npm-repair.js'
 
 function stagedRecovery(deps: CommandDeps, installation?: Installation): string {
   try {
@@ -114,6 +115,12 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
 
 
 export interface NativeInstallFlags {
+  prepare?: boolean
+  scope?: string
+  node?: string
+  artifact?: string
+  resume?: string
+  confirm?: string
   upgrade?: boolean
   migrateNpm?: boolean
   json?: boolean
@@ -152,6 +159,9 @@ function installedSetup(deps: CommandDeps, executable: string, json: boolean): R
 /** Offline-capable native installation from already obtained release files.
  * Trust comes only from the compiled keys, never from a bootstrap argument. */
 export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInstallFlags, seams: NativeInstallSeams = {}): Promise<number> {
+  if (flags.prepare || flags.resume !== undefined || flags.scope !== undefined || flags.node !== undefined || flags.artifact !== undefined || flags.confirm !== undefined) {
+    return npmRepairCommand(deps, flags)
+  }
   const emit = (report: Record<string, unknown>, message: string) => {
     if (flags.json || !deps.io.interactive) deps.io.out(JSON.stringify(report, null, 2))
     else deps.io.out(message)

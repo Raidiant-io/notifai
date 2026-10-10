@@ -1105,6 +1105,20 @@ export class Installation {
     })
     return this.inspect()
   }
+  /** Deterministic eligibility before an external package operation. This
+   * stricter forward-only path preserves the channel and does not promise a
+   * quiet bootstrap or owner continuity; activation still proves those. */
+  assertForwardTransition(build: string, expectedGeneration: number, channel: ReleaseChannel): void {
+    const from = this.readActive(), installed = this.readInstall(), candidate = this.verifyVersion(build)
+    if (!from || !installed || from.generation !== expectedGeneration || installed.channel !== channel) throw new Error('The assessed native installation changed')
+    if (candidate.inventory.schema !== 2 || candidate.inventory.local_continuity?.contract !== LOCAL_CONTINUITY) throw new Error('The repair candidate must enforce the current local continuity contract')
+    if (channel === 'stable' && isPrerelease(candidate.inventory.version)) throw new Error('Prerelease cannot activate on stable')
+    this.assertNotWithdrawn(candidate.inventory.version)
+    if (from.active !== build && compareReleasePrecedence(candidate.inventory.version, this.verifyVersion(from.active).inventory.version) !== 'after') {
+      throw new Error('The repair candidate must be a forward update or the already-active paired runtime')
+    }
+  }
+
   activate(input: { build: string; expectedGeneration: number; source: InstallSource; channel: ReleaseChannel; allowStableDowngrade?: boolean }): ActivationResult {
     if (!['stable', 'beta'].includes(input.channel) || !['shell', 'powershell', 'npm', 'manual'].includes(input.source)) {
       throw new Error('Unknown installation source or channel')

@@ -9,7 +9,7 @@ import { LEGACY_NPM_RELEASES } from './legacy-npm-releases.js'
 import { npmShim } from './npm-adapter-route.js'
 import { npmAdapterInventoryUrl } from './npm-adapter-contract.js'
 import { runNpmManager, type NpmManagerResult } from './npm-conversion-process.js'
-import { prepareNpmReplacement, replaceNpmPackage, type NpmReplacementContext } from './npm-replacement.js'
+import { completeNpmReplacement, inspectNpmReplacement, npmReplacementConfirmation, prepareNpmReplacement, replaceNpmPackage, verifyCompletedNpmPackage, type NpmReplacementContext } from './npm-replacement.js'
 import { Distribution, RELEASE_TARGETS, releaseSigningMessage } from './release-distribution.js'
 import { processIdentityLiveness } from './process-identity.js'
 
@@ -114,6 +114,22 @@ describe('finite npm replacement receipt and forward recovery', () => {
   })
   afterEach(() => { Object.defineProperty(process, 'platform', platform); rmSync(root, { recursive: true, force: true }) })
   const receipt = (directory: string) => JSON.parse(readFileSync(path.join(directory, 'operation.json'), 'utf8'))
+
+  it('retains one confirmation through package recovery and completes only after route verification', async () => {
+    const prepared = await prepareNpmReplacement(input, context)
+    const confirmation = npmReplacementConfirmation(inspectNpmReplacement(prepared.directory, context))
+    expect(() => verifyCompletedNpmPackage(prepared.directory, context)).toThrow(/not been verified/)
+    const observe = vi.fn(() => undefined)
+    await replaceNpmPackage(prepared.directory, context, observe)
+    expect(observe).toHaveBeenLastCalledWith(input.scope, 1, { pid: 202, start: 'windows-filetime:456' })
+    expect(npmReplacementConfirmation(verifyCompletedNpmPackage(prepared.directory, context))).toBe(confirmation)
+    const runs = vi.mocked(runNpmManager).mock.calls.length
+    completeNpmReplacement(prepared.directory, context)
+    expect(receipt(prepared.directory).phase).toBe('complete')
+    expect(vi.mocked(runNpmManager)).toHaveBeenCalledTimes(runs)
+    writeFileSync(path.join(prefix, 'notifai.cmd'), 'later user edit')
+    expect(() => verifyCompletedNpmPackage(prepared.directory, context)).toThrow(/changed/)
+  })
 
   it('prepares off-prefix, authenticates bytes and preserves all files before replacing through npm', async () => {
     const prepared = await prepareNpmReplacement(input, context)

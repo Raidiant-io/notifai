@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b264ab1e11436d726d020f9679113fd5d1d0eea9ca84da59390e467b0fb3d030",
+  "behavior_digest": "sha256:46b2e2a8d9a578f876512ccee6dc1a8c9ae5b258a1baefef3cb4a618559b1d7d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle, shipped skill installation guidance, harness setup, readiness and domain terms. Legacy migration now reports agent-owned assessment and in-place replacement requirements instead of uninstall-first instructions; it still does not expose or claim unattended conversion. Internal preparation authenticates the selected signed release payload, normalizes it before npm, reserves its directory, and pins recovery to that archive and inventory. The package contract admits only the declared launcher shims. Normal commands and retained owners gain no installer behavior. Structured doctor output now reports only this invocation executable, cwd and effective state directory, so agents can distinguish actual application observations from external-shell guesses; it grants no maintenance authority.",
+  "reason": "Reviewed lifecycle, shipped skill installation/setup, CLI readiness and domain terms. Explicit Windows npm repair now prepares a pinned signed adapter and paired native runtime, verifies the administrator-controlled manager, and resumes only during an agent-arranged approved pause with fresh reader and debt observations. The skill describes exact scope observation, consent versus readiness, forward recovery and reopening only after command verification. Doctor and update resume report the same bounded receipts without executing npm. Ordinary sends/hooks and retained owners gain no maintenance behavior.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

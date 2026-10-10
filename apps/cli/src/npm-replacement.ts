@@ -16,7 +16,7 @@ import type { Distribution } from './release-distribution.js'
 
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 interface FileProof { file: string; identity: string; sha256: string }
-interface ReplacementReceipt {
+export interface ReplacementReceipt {
   schema: 1
   token: string
   prefix: string
@@ -26,7 +26,7 @@ interface ReplacementReceipt {
   npm: FileProof
   /** The agent names the assessed application, execution view and state root. */
   scope: string
-  phase: 'prepared' | 'replacing' | 'package_verified'
+  phase: 'prepared' | 'replacing' | 'package_verified' | 'complete'
   coordinator: ProcessIdentity | null
   manager: ProcessIdentity | null
   may_have_run: boolean
@@ -46,7 +46,7 @@ export interface NpmReplacementContext {
    * changes to already trusted files; they do not establish that trust. */
   verifyEnvironment: (prefix: string, node: string, npm: string) => undefined
 }
-function operationDirectory(prefix: string, context: NpmReplacementContext): string {
+function operationDirectory(prefix: string, context: Pick<NpmReplacementContext, 'installationRoot'>): string {
   if (!path.isAbsolute(context.installationRoot)) throw new Error('Npm maintenance needs the verified native installation root')
   const stat = lstatSync(realpathSync(prefix), { bigint: true })
   if (!stat.isDirectory() || stat.ino <= 0n) throw new Error('Npm prefix identity is unavailable')
@@ -75,7 +75,7 @@ function tarball(directory: string, access: InstallationAccess, target: NpmRepla
   if (digest(readFileSync(file)) !== target.archive_sha256) throw new Error('Npm artifact does not match the pinned release')
   return file
 }
-function environment(directory: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function npmReplacementEnvironment(directory: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const result = { ...env }
   for (const key of Object.keys(result)) if (/^(node_|npm_|npm_config_|bun_)/i.test(key)) delete result[key]
   result['TEMP'] = result['TMP'] = path.join(directory, 'tmp')
@@ -116,19 +116,19 @@ function save(directory: string, receipt: ReplacementReceipt, context: NpmReplac
     requireCurrentUserOwner: true, prepareTemporary: context.access.beforePublish,
   })
 }
-function read(directory: string, context: NpmReplacementContext): ReplacementReceipt {
+function read(directory: string, context: Pick<NpmReplacementContext, 'access'>): ReplacementReceipt {
   context.access.check(directory, true)
   const file = path.join(directory, 'operation.json'), stat = lstatSync(file)
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) throw new Error('Invalid npm maintenance receipt')
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 24 * 1024) throw new Error('Invalid npm maintenance receipt')
   context.access.check(file, false)
   const value = JSON.parse(readFileSync(file, 'utf8')) as ReplacementReceipt
   const identity = (item: ProcessIdentity | null) => item === null || Number.isSafeInteger(item?.pid) && item.pid > 0 &&
     typeof item.start === 'string' && /^windows-filetime:\d+$/.test(item.start)
   if (value?.schema !== 1 || typeof value.token !== 'string' || !/^[a-f0-9-]{36}$/.test(value.token) ||
-      typeof value.prefix !== 'string' || !path.isAbsolute(value.prefix) || typeof value.scope !== 'string' || !value.scope.trim() || value.scope.length > 1024 ||
+      typeof value.prefix !== 'string' || !path.isAbsolute(value.prefix) || typeof value.scope !== 'string' || !value.scope.trim() || value.scope.length > 16 * 1024 ||
       !/^[a-f0-9]{64}$/.test(value.snapshot_sha256) || !value.target || typeof value.target.version !== 'string' || !isSemVer(value.target.version) ||
       !/^[a-f0-9]{64}$/.test(value.target.inventory_sha256) || !/^[a-f0-9]{64}$/.test(value.target.archive_sha256) ||
-      !['prepared', 'replacing', 'package_verified'].includes(value.phase) || typeof value.may_have_run !== 'boolean' ||
+      !['prepared', 'replacing', 'package_verified', 'complete'].includes(value.phase) || typeof value.may_have_run !== 'boolean' ||
       !identity(value.coordinator) || !identity(value.manager) ||
       ![value.node, value.npm].every(item => item && typeof item.file === 'string' && path.isAbsolute(item.file) &&
         typeof item.identity === 'string' && /^\d+:\d+$/.test(item.identity) && /^[a-f0-9]{64}$/.test(item.sha256))) {
@@ -137,13 +137,50 @@ function read(directory: string, context: NpmReplacementContext): ReplacementRec
   return value
 }
 
+/** The same validated receipt serves diagnosis, consent and forward recovery. */
+export function inspectNpmReplacement(directory: string, context: Pick<NpmReplacementContext, 'installationRoot' | 'access'>): ReplacementReceipt {
+  directory = realpathSync(directory)
+  const receipt = read(directory, context)
+  if (canonicalPath(operationDirectory(receipt.prefix, context)) !== canonicalPath(directory)) throw new Error('Npm operation is outside its canonical prefix slot')
+  return receipt
+}
+
+export function npmReplacementConfirmation(receipt: ReplacementReceipt): string {
+  return digest(JSON.stringify({ token: receipt.token, scope: receipt.scope, prefix: receipt.prefix,
+    target: receipt.target, snapshot: receipt.snapshot_sha256 }))
+}
+
+/** Recovery after npm finished must not run the manager again merely because
+ * native activation was interrupted. Recheck the installed authenticated route. */
+export function verifyCompletedNpmPackage(directory: string, context: NpmReplacementContext): ReplacementReceipt {
+  const receipt = inspectNpmReplacement(directory, context)
+  if (!['package_verified', 'complete'].includes(receipt.phase)) throw new Error('The npm package has not been verified')
+  for (const owner of [receipt.manager, receipt.coordinator]) if (owner && processIdentityLiveness(owner) !== 'gone') throw new Error('The previous npm operation has not been proved stopped')
+  const installed = verifyNpmAdapterArtifact(path.join(receipt.prefix, 'node_modules/@raidiant/notifai'), context.distribution, context.packageAccess)
+  if (digest(installed.signedInventory) !== receipt.target.inventory_sha256 || !['notifai', 'notifai.cmd', 'notifai.ps1'].every(name =>
+    inspectNpmAdapterRoute(path.join(receipt.prefix, name), installed, { platform: 'win32', checkAccess: context.packageAccess })?.kind === 'global')) {
+    throw new Error('The verified npm replacement changed')
+  }
+  return receipt
+}
+
+/** Only the command owner calls this after paired native activation and an
+ * actual adapter-to-native command succeeded within the maintained pause. */
+export function completeNpmReplacement(directory: string, context: NpmReplacementContext): void {
+  withFileLock(path.join(directory, 'operation.lock'), () => {
+    const receipt = verifyCompletedNpmPackage(directory, context)
+    receipt.phase = 'complete'
+    save(directory, receipt, context)
+  }, { waitMs: 5000, strictRelease: true })
+}
+
 /** Agent-run preparation, before the approved app pause. The caller supplies
  * independently trusted manager files and establishes the affected app view.
  * No legacy package file changes here and no preparation result proves idle. */
 export async function prepareNpmReplacement(input: { prefix: string; node: string; npm: string;
   artifact: string; signedInventory: string; scope: string }, context: NpmReplacementContext): Promise<{ directory: string; dependency_files: number }> {
   if (process.platform !== 'win32' || ![input.prefix, input.node, input.npm, input.artifact].every(file => path.isAbsolute(file)) ||
-      !input.scope.trim() || input.scope.length > 1024) throw new Error('Invalid Windows npm maintenance preparation')
+      !input.scope.trim() || input.scope.length > 16 * 1024) throw new Error('Invalid Windows npm maintenance preparation')
   const prefix = realpathSync(input.prefix), directory = canonicalPath(operationDirectory(prefix, context))
   const relative = path.relative(prefix, directory)
   if (!relative || relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) throw new Error('Prepare npm maintenance outside the npm prefix')
@@ -174,7 +211,7 @@ export async function prepareNpmReplacement(input: { prefix: string; node: strin
   const snapshot = snapshotLegacyNpmPackage(original, path.join(directory, 'original'), context.access)
   const result = await runNpmManager({ launcher: context.launcher, executable: node.file,
     signal: context.signal,
-    args: args(directory, path.join(directory, 'prepared'), npm.file), cwd: directory, env: environment(directory, context.env),
+    args: args(directory, path.join(directory, 'prepared'), npm.file), cwd: directory, env: npmReplacementEnvironment(directory, context.env),
     admit() { assertFile(node); assertFile(npm); synchronous(() => context.verifyEnvironment(prefix, node.file, npm.file)) } })
   if (result.failure || result.exit_code !== 0) throw new Error('Npm adapter preparation failed; the legacy package was preserved')
   adapter(directory, context, prepared.target)
@@ -190,7 +227,7 @@ export async function prepareNpmReplacement(input: { prefix: string; node: strin
  * verifyMaintenance must observe the assessed state root and process census
  * anew before each GO. No package success claims runtime or hook completion. */
 export async function replaceNpmPackage(directory: string, context: NpmReplacementContext,
-  verifyMaintenance: (scope: string, dependencyFiles: number) => undefined): Promise<NpmManagerResult> {
+  verifyMaintenance: (scope: string, dependencyFiles: number, manager?: ProcessIdentity) => undefined): Promise<NpmManagerResult> {
   if (process.platform !== 'win32' || !path.isAbsolute(directory)) throw new Error('Windows npm maintenance requires an absolute operation directory')
   directory = realpathSync(directory)
   const coordinator = currentProcessIdentity()
@@ -229,7 +266,7 @@ export async function replaceNpmPackage(directory: string, context: NpmReplaceme
     const recovering = receipt.may_have_run
     return await runNpmManager({ launcher: context.launcher, executable: receipt.node.file,
       signal: context.signal,
-      args: args(directory, receipt.prefix, receipt.npm.file), cwd: directory, env: environment(directory, context.env),
+      args: args(directory, receipt.prefix, receipt.npm.file), cwd: directory, env: npmReplacementEnvironment(directory, context.env),
       admit(manager) {
         receipt.manager = manager
         receipt.phase = 'replacing'
@@ -238,7 +275,7 @@ export async function replaceNpmPackage(directory: string, context: NpmReplaceme
         save(directory, receipt, context)
         assertFile(receipt.node); assertFile(receipt.npm)
         synchronous(() => context.verifyEnvironment(receipt.prefix, receipt.node.file, receipt.npm.file))
-        synchronous(() => verifyMaintenance(receipt.scope, original.dependency_files))
+        synchronous(() => verifyMaintenance(receipt.scope, original.dependency_files, manager))
         assertNpmReplacementState(original, replacement, recovering, context.packageAccess)
         tarball(directory, context.access, receipt.target)
         for (const name of ['user.npmrc', 'global.npmrc']) {

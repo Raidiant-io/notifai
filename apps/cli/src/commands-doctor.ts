@@ -11,6 +11,7 @@ import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
 import { stateDir, type CliConfig } from './config.js'
+import { pendingNpmRepairs } from './npm-repair-status.js'
 import {
   HARNESS_LABELS,
   HERMES_QUESTION_ROUTING_UNAVAILABLE,
@@ -932,6 +933,7 @@ export async function doctorCommand(
     deps.io.out(
       JSON.stringify(
         { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed,
+          npm_repairs: pendingNpmRepairs(deps.env),
           invocation: { executable: process.execPath, cwd: deps.cwd,
             state_directory: stateDir(deps.env, deps.hookPlatform ?? process.platform) } },
         null,
