@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e937508127c9305493529c96487e2621c02adbbca15925874040767294aaf88d",
+  "behavior_digest": "sha256:d5e3663bf73a7368c9ec3a7236519235af487e8d5d0c44ca0b19a64a7df90c91",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness, trust, README and domain terms. Internal legacy package assessment recognizes exact published bytes, preserves all dependencies and command shims, and does not authorize replacing customizations. Windows process custody no longer claims file admission: its caller must establish cooperative maintenance and persist the suspended manager before GO. These internal modules are not yet wired to a User command. Actual app/state observations, finite recovery and integration proof remain required; no unattended conversion or release acceptance is claimed.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, readiness, trust, README and domain terms. The internal finite Windows npm replacement API now prepares authenticated adapter bytes, preserves the complete old package, reserves the physical prefix and repairs interrupted npm operations forward while refusing later User edits. Its caller must independently establish the actual app view, trusted manager and observed cooperative maintenance; no idle assertion or unattended conversion command is exposed. Cancellation cannot authorize a suspended manager. These internals do not change shipped Agent instructions or claim affected-session acceptance.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

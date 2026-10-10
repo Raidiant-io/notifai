@@ -159,6 +159,16 @@ setTimeout(() => process.exit(19), 15000).unref();
     assert.equal(existsSync(f.marker), false)
     await delay(20) // An unhandled rejection fails this test even after return.
   })
+  it('sends no GO when admission cancels the operation synchronously', async () => {
+    const f = prepare(), controller = new AbortController()
+    const result = await runNpmManager({ launcher,
+      executable: process.execPath, args: [f.manager, f.marker, f.finish], cwd: f.directory, env: process.env,
+      signal: controller.signal, admit() { controller.abort() } })
+    assert.equal(result.started, false)
+    assert.ok(result.manager)
+    assert.match(result.failure, /interrupted/)
+    assert.equal(existsSync(f.marker), false)
+  })
   it('retains its receipt after a post-GO deadline and terminates the exact manager', async () => {
     const f = prepare(), receipt = path.join(f.directory, 'receipt.json')
     const result = await runNpmManager({ launcher,

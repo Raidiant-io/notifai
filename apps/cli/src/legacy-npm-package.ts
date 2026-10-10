@@ -3,7 +3,8 @@ import { closeSync, constants, copyFileSync, fsyncSync, lstatSync, openSync, rea
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import type { InstallationAccess } from './installation-access.js'
-import type { NpmAdapterAccessCheck } from './npm-adapter-verification.js'
+import type { NpmAdapterAccessCheck, VerifiedNpmAdapter } from './npm-adapter-verification.js'
+import { NPM_ADAPTER_INVENTORY, NPM_ADAPTER_MANIFEST } from './npm-adapter-contract.js'
 import { LEGACY_NPM_RELEASES } from './legacy-npm-releases.js'
 import { npmShim } from './npm-adapter-route.js'
 import { canonicalPath } from './local-path.js'
@@ -141,4 +142,75 @@ export function snapshotLegacyNpmPackage(proof: LegacyNpmPackage, destination: s
       prepareTemporary: access.beforePublish })
     return hash(contents)
   } catch (error) { rmSync(destination, { recursive: true, force: true }); throw error }
+}
+
+/** Recheck the exact publication scope immediately before npm. During forward
+ * recovery, missing files and authenticated replacement bytes are expected;
+ * an unrecognized file or later edit is never permission to overwrite it.
+ * This does not establish process quiescence or manager trust. */
+export function assertNpmReplacementState(original: LegacyNpmPackage, replacement: VerifiedNpmAdapter,
+  recovering: boolean, checkAccess: NpmAdapterAccessCheck): void {
+  if (identity(original.prefix) !== original.prefix_identity) throw new Error('Npm prefix identity changed')
+  const old = new Map(original.files.map(file => [file.path, file]))
+  const target = new Map(replacement.manifest.files.map(file => [file.path, file.sha256]))
+  for (const name of [NPM_ADAPTER_MANIFEST, NPM_ADAPTER_INVENTORY]) {
+    target.set(name, hash(readFileSync(path.join(replacement.directory, name))))
+  }
+  const seen = new Set<string>(), directories = new Set<string>(), accessPaths: Parameters<NpmAdapterAccessCheck>[0][number][] = []
+  let total = 0
+  function inspect(file: string, directory: boolean) {
+    const stat = lstatSync(file)
+    if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile())) throw new Error('Npm replacement scope contains a linked or non-regular path')
+    accessPaths.push({ file, directory })
+    return stat
+  }
+  for (const relative of ['', 'node_modules', 'node_modules/@raidiant']) inspect(path.join(original.prefix, relative), true)
+  function walk(relative: string) {
+    if (seen.size + directories.size >= 8192 || relative.split('/').length > 32) throw new Error('Npm replacement scope exceeds its bounds')
+    const directory = path.join(original.directory, relative)
+    inspect(directory, true)
+    directories.add(relative)
+    const previous = original.directories.find(item => item.path === relative)
+    if (!recovering && (!previous || identity(directory) !== previous.identity)) throw new Error('Legacy npm directory changed')
+    if (recovering && relative && !previous && ![...target.keys()].some(file => file.startsWith(`${relative}/`))) throw new Error('Npm replacement contains a new directory')
+    const names = new Set<string>()
+    for (const name of readdirSync(directory)) {
+      if (!safeName(name) || names.has(name.toLowerCase())) throw new Error('Ambiguous npm replacement path')
+      names.add(name.toLowerCase())
+      const local = relative ? `${relative}/${name}` : name, file = path.join(original.directory, local), stat = lstatSync(file)
+      if (stat.isDirectory() && !stat.isSymbolicLink()) walk(local)
+      else {
+        inspect(file, false)
+        if (seen.size + directories.size >= 8192 || stat.size > 32 * 1024 * 1024 ||
+            (total += stat.size) > 128 * 1024 * 1024) throw new Error('Npm replacement scope exceeds its bounds')
+        const digest = hash(readFileSync(file)), previous = old.get(local)
+        const unchanged = previous?.sha256 === digest && previous.identity === identity(file)
+        if (!unchanged && !(recovering && target.get(local) === digest)) throw new Error('Npm replacement would overwrite a new or modified file')
+        seen.add(local)
+      }
+    }
+  }
+  try { walk('') } catch (error) {
+    // Only the package root may be absent after a started manager. A missing
+    // descendant during traversal is a concurrent change, not a safe gap.
+    if (!recovering || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    let absent = false
+    try { lstatSync(original.directory) } catch (missing) { absent = (missing as NodeJS.ErrnoException).code === 'ENOENT' }
+    if (!absent || seen.size || directories.size) throw error
+  }
+  if (!recovering && (seen.size !== original.files.length || directories.size !== original.directories.length)) throw new Error('Legacy npm files changed')
+  for (const shim of original.shims) {
+    const file = path.join(original.prefix, shim.path)
+    let stat
+    try { stat = inspect(file, false) } catch (error) {
+      if (recovering && (error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+    if (stat.size > 16 * 1024) throw new Error('Npm shim exceeds its bounds')
+    const bytes = readFileSync(file)
+    if (hash(bytes) === shim.sha256 && identity(file) === shim.identity) continue
+    const expected = npmShim('node_modules/@raidiant/notifai/bin/notifai.mjs', path.extname(shim.path))
+    if (!recovering || bytes.toString('utf8').replaceAll('\r\n', '\n') !== expected) throw new Error('Npm replacement would overwrite a modified command')
+  }
+  for (let i = 0; i < accessPaths.length; i += 256) checkAccess(accessPaths.slice(i, i + 256))
 }

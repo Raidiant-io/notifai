@@ -34,6 +34,7 @@ export function runNpmManager(input: {
   env: NodeJS.ProcessEnv
   admit: (manager: NpmManager) => undefined
   timeoutMs?: number
+  signal?: AbortSignal | undefined
 }): Promise<NpmManagerResult> {
   if (process.platform !== 'win32') throw new Error('Npm manager custody requires Windows')
   if (![input.launcher, input.executable, input.cwd].every(file => path.isAbsolute(file))) throw new Error('Invalid npm operation')
@@ -51,6 +52,7 @@ export function runNpmManager(input: {
       finished = true
       clearTimeout(deadline)
       clearTimeout(forceDeadline)
+      input.signal?.removeEventListener('abort', abort)
       resolve(result)
     }
     const fail = (message: string) => {
@@ -67,6 +69,9 @@ export function runNpmManager(input: {
       }, 5000)
     }
     const deadline = setTimeout(() => fail('Npm conversion exceeded its deadline; recover the recorded operation'), timeout)
+    const abort = () => fail('Npm conversion was interrupted; recover the recorded operation')
+    input.signal?.addEventListener('abort', abort, { once: true })
+    if (input.signal?.aborted) abort()
     child.once('error', () => fail('The native npm supervisor could not be started'))
     child.stdin.on('error', () => fail('The native npm supervisor closed before admission completed'))
     child.stderr.on('data', (chunk: Buffer) => {
@@ -100,6 +105,7 @@ export function runNpmManager(input: {
             void Promise.resolve(admission).catch(() => {})
             throw new Error('Npm admission must finish synchronously')
           }
+          if (result.failure || input.signal?.aborted) return abort()
           if (performance.now() >= expires) throw new Error('Npm admission exceeded its deadline')
           child.stdin.end('G')
           result.started = true
