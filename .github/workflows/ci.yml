@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      windows_access_only:
+        description: Focused native ACL checks only; never release evidence
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,7 +26,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-access:
+    if: ${{ inputs.windows_access_only }}
+    uses: ./.github/workflows/windows-access.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
   scope:
+    if: ${{ !inputs.windows_access_only }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
@@ -74,7 +85,7 @@ jobs:
 
   gates:
     needs: scope
-    if: ${{ always() && !inputs.standalone_only }}
+    if: ${{ always() && !inputs.standalone_only && !inputs.windows_access_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

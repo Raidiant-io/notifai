@@ -216,15 +216,113 @@ function Get-NotifaiAccountHome {
   }
   return $accountHome
 }
+# Read the descriptor and physical location through one non-following handle.
+# Package capabilities restrict a User's access; they do not replace it.
+# Only the registered package owning this current-User npm location is admitted.
+function Get-NotifaiPathSecurity([string]$File, [bool]$Package) {
+  if (-not ('NotifaiBootstrap.PathSecurity' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
+namespace NotifaiBootstrap {
+  public sealed class PathSecurity {
+    public RawSecurityDescriptor Descriptor;
+    public uint Attributes;
+    public string Capability;
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint length, uint flags);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int kind, out TagInfo info, uint size);
+    [DllImport("kernel32.dll")]
+    static extern uint GetFileType(SafeFileHandle file);
+    [StructLayout(LayoutKind.Sequential)] struct TagInfo { public uint Attributes; public uint Tag; }
+    [DllImport("advapi32.dll")]
+    static extern uint GetSecurityInfo(SafeFileHandle file, int kind, uint information, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll")]
+    static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("advapi32.dll")]
+    static extern IntPtr FreeSid(IntPtr sid);
+    [DllImport("userenv.dll", CharSet=CharSet.Unicode)]
+    static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
+    static extern int GetPackagesByPackageFamily(string family, ref uint count, IntPtr names, ref uint size, IntPtr buffer);
+    static SafeFileHandle Open(string file, uint access) {
+      var handle = CreateFile(file, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+      if (handle.IsInvalid) { handle.Dispose(); throw new Win32Exception(); }
+      return handle;
+    }
+    static string Physical(SafeFileHandle handle) {
+      var path = new StringBuilder(32768);
+      uint length = GetFinalPathNameByHandle(handle, path, 32768, 0);
+      if (length == 0 || length >= 32768) throw new Win32Exception();
+      return path.ToString();
+    }
+    static string PackageCapability(string physical) {
+      string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+      string prefix;
+      using (var handle = Open(home, 0x80)) { prefix = Physical(handle).TrimEnd('\\') + @"\AppData\Local\Packages\"; }
+      if (!physical.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+      string relative = physical.Substring(prefix.Length);
+      int end = relative.IndexOf('\\');
+      if (end <= 0 || end > 255) return null;
+      string family = relative.Substring(0, end), tail = relative.Substring(end);
+      const string npm = @"\LocalCache\Roaming\npm";
+      if (!tail.Equals(npm, StringComparison.OrdinalIgnoreCase) && !tail.StartsWith(npm + @"\", StringComparison.OrdinalIgnoreCase)) return null;
+      uint count = 0, size = 0;
+      if (GetPackagesByPackageFamily(family, ref count, IntPtr.Zero, ref size, IntPtr.Zero) != 122 || count == 0 || size == 0) return null;
+      IntPtr pointer;
+      if (DeriveAppContainerSidFromAppContainerName(family, out pointer) != 0) return null;
+      try {
+        var sid = new SecurityIdentifier(pointer);
+        byte[] bytes = new byte[sid.BinaryLength]; sid.GetBinaryForm(bytes, 0);
+        if (bytes.Length != 40 || bytes[1] != 8 || BitConverter.ToUInt32(bytes, 8) != 2) return null;
+        bytes[8] = 3;
+        return new SecurityIdentifier(bytes, 0).Value;
+      } finally { FreeSid(pointer); }
+    }
+    public static PathSecurity Read(string file, bool package) {
+      using (var handle = Open(file, 0x20080)) {
+        TagInfo info;
+        if (GetFileType(handle) != 1 || !GetFileInformationByHandleEx(handle, 9, out info, 8) || (info.Attributes & 0x400) != 0) throw new IOException("Existing path is linked or not a disk object");
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint error = GetSecurityInfo(handle, 1, 5, out owner, out group, out dacl, out sacl, out descriptor);
+        if (error != 0) throw new Win32Exception((int)error);
+        try {
+          uint length = GetSecurityDescriptorLength(descriptor);
+          if (length == 0 || length > 1024 * 1024) throw new IOException("Invalid path security descriptor");
+          byte[] bytes = new byte[length]; Marshal.Copy(descriptor, bytes, 0, bytes.Length);
+          return new PathSecurity { Descriptor = new RawSecurityDescriptor(bytes, 0), Attributes = info.Attributes,
+            Capability = package ? PackageCapability(Physical(handle)) : null };
+        } finally { LocalFree(descriptor); }
+      }
+    }
+  }
+}
+'@
+  }
+  return [NotifaiBootstrap.PathSecurity]::Read($File, $Package)
+}
 # Read-only inspection of an existing path. npm can inherit a token's default
 # owner. The OS-confirmed profile can belong to Windows itself; this exception
 # must never admit a system-owned npm package or managed installation path.
 function Assert-NotifaiPathAccess([string]$File, [switch]$AllowDefaultOwner, [switch]$RequireProtected, [switch]$AccountHome) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $user = $identity.User.Value
-  $attributes = [IO.File]::GetAttributes($File)
-  $acl = Get-NotifaiAccessControl $File $attributes
-  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  $security = Get-NotifaiPathSecurity $File $AllowDefaultOwner
+  $attributes = [IO.FileAttributes]$security.Attributes
+  $acl = $security.Descriptor
+  if ($null -eq $acl.Owner -or $null -eq $acl.DiscretionaryAcl) { throw 'Existing path has no owner or discretionary access control' }
+  $owner = $acl.Owner.Value
   $defaultOwner = $AllowDefaultOwner -and $identity.Owner.Value -eq 'S-1-5-32-544' -and $owner -eq $identity.Owner.Value
   $profileOwner = $false
   if ($AccountHome) {
@@ -235,12 +333,13 @@ function Assert-NotifaiPathAccess([string]$File, [switch]$AllowDefaultOwner, [sw
   }
   if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
       ($owner -ne $user -and -not $defaultOwner -and -not $profileOwner) -or
-      ($RequireProtected -and -not $acl.AreAccessRulesProtected)) { throw 'Existing path is not privately owned; inspect it before repair' }
+      ($RequireProtected -and ($acl.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -eq 0)) { throw 'Existing path is not privately owned; inspect it before repair' }
   $writes = [int64][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x50000000
-  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-        ([int64]$rule.FileSystemRights -band $writes) -ne 0 -and
-        $rule.IdentityReference.Value -notin @($user, 'S-1-5-18', 'S-1-5-32-544')) { throw 'Existing path permits another writer; inspect it before repair' }
+  foreach ($rule in $acl.DiscretionaryAcl) {
+    if ($rule.AceType -eq [Security.AccessControl.AceType]::AccessDenied) { continue }
+    if ($rule.AceType -ne [Security.AccessControl.AceType]::AccessAllowed) { throw 'Existing path has unsupported access rules' }
+    if (([int64]$rule.AccessMask -band $writes) -ne 0 -and
+        $rule.SecurityIdentifier.Value -notin @($user, 'S-1-5-18', 'S-1-5-32-544', $security.Capability)) { throw 'Existing path permits another writer; inspect it before repair' }
   }
 }
 function Get-NotifaiInstalledCommand {
