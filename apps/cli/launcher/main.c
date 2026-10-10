@@ -56,6 +56,7 @@ static int active_build(const char *record, char *build) {
 #include "windows-security.h"
 #include "windows-user-path.h"
 #include "windows-file-users.h"
+#include "windows-npm-guard.h"
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -218,6 +219,7 @@ static int uninstall_pending(const wchar_t *executable) {
 }
 
 int wmain(int argc, wchar_t **argv) {
+    if (argc >= 2 && !wcscmp(argv[1], L"--internal-npm-guard")) return npm_guard(argc, argv);
     if (argc == 2 && !wcscmp(argv[1], L"--internal-account-home")) return account_home();
     if (argc == 2 && !wcscmp(argv[1], L"--internal-user-path-read"))
         return user_path_command(0) ? 0 : failure("cannot inspect User PATH");
