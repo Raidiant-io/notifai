@@ -9,6 +9,7 @@ import { nativeReleaseBundle } from './publish-native-assets.mjs'
 import { assembleNativeRelease } from './assemble-native-release.mjs'
 import { generateAdapterManifest } from './npm-adapter-artifact.mjs'
 import { Distribution, RELEASE_TARGETS } from '../apps/cli/dist/release-distribution.js'
+import { LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 const json = (file, value) => writeFileSync(file, JSON.stringify(value))
@@ -37,7 +38,7 @@ async function fixture(t) {
     writeFileSync(path.join(directory, `notifai${extension}`), launcher)
     writeFileSync(path.join(directory, `notifai-runtime${extension}`), runtime)
     json(path.join(directory, `notifai-runtime${extension}.build.json`), build)
-    json(path.join(directory, 'check.json'), { ok: true, build, capabilities: { local_continuity: 'notifai-session-state-v1' }, runtime_sha256: hash(runtime), launcher_sha256: hash(launcher),
+    json(path.join(directory, 'check.json'), { ok: true, build, capabilities: { local_continuity: LOCAL_CONTINUITY }, runtime_sha256: hash(runtime), launcher_sha256: hash(launcher),
       checks: ['isolated-no-runtime-path', 'embedded-skill-integrity', 'process-identity', 'cwd-config', 'BUN_OPTIONS', 'BUN_BE_BUN'] })
     const metadata = await packageStandalone({ directory, materials, output: path.join(directory, 'archive') })
     policy.targets[target] = metadata.artifact.materials.filter(m => !['npm-adapter-files.json', 'licenses/npm-cmd-shim.txt'].includes(m.path))
