@@ -8,7 +8,7 @@ import {
   REPLY_CHOICE_CATEGORY_ID,
   SESSION_MESSAGES_SYNC,
   SOUND_LIBRARY_SYNC,
-  type ApplePlatform,
+  type IosOptionsT,
   type NotificationDraftT,
 } from './notification.js'
 
@@ -75,13 +75,12 @@ function replyUsesCard(draft: NotificationDraftT): boolean {
  */
 export function collapsedChoiceAlert(
   draft: NotificationDraftT,
-  platform: ApplePlatform = 'ios',
 ): { title: string; subtitle?: string; body: string } {
   const alert: { title: string; subtitle?: string; body: string } = {
     title: draft.presentation.title,
     body: draft.presentation.summary,
   }
-  if (platform !== 'ios' || !replyUsesCard(draft)) return alert
+  if (!replyUsesCard(draft)) return alert
 
   const alreadyVisible = [alert.title, alert.body].some((value) =>
     value.includes(CLOSED_CHOICE_BANNER_AFFORDANCE),
@@ -97,7 +96,6 @@ export function buildApnsEnvelope(
   draft: NotificationDraftT,
   ids: EnvelopeIds,
   mediaUrl: string | null,
-  platform: ApplePlatform = 'ios',
   projectIdentity: ProjectIdentity | null = null,
   /** Service-owned close time of this request's reply window. */
   replyExpiresAt: Date | null = null,
@@ -105,7 +103,7 @@ export function buildApnsEnvelope(
   replyMetadata: ReplyMetadata | null = null,
   agentAcknowledgementSync: AgentAcknowledgementSync | null = null,
 ): ApnsEnvelope {
-  const options = draft.platform?.[platform]
+  const options = draft.platform?.ios
   if (draft.lifecycle?.tier === 'done') {
     return {
       payload: {
@@ -128,7 +126,7 @@ export function buildApnsEnvelope(
   }
 
   const aps: Record<string, unknown> = {
-    alert: collapsedChoiceAlert(draft, platform),
+    alert: collapsedChoiceAlert(draft),
   }
   if (options?.sound !== null) {
     aps['sound'] = apnsSoundFilename(options?.sound ?? defaultSoundForKind(effectiveKind(draft)))
@@ -219,7 +217,7 @@ function notifaiKey(
   mediaUrl: string | null,
   projectIdentity: ProjectIdentity | null,
   replyExpiresAt: Date | null,
-  options?: NonNullable<NotificationDraftT['platform']>[ApplePlatform],
+  options?: IosOptionsT,
   retirementAnswerContext?: RetirementAnswerContext | null,
   replyMetadata?: ReplyMetadata | null,
   agentAcknowledgementSync?: AgentAcknowledgementSync | null,

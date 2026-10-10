@@ -603,35 +603,28 @@ describe('draft building', () => {
       interruption_level: 'time_sensitive',
       custom_data: { run_id: '42', branch: 'main' },
     })
-    expect(build.draft.platform?.macos).toEqual(build.draft.platform?.ios)
+    for (const desktop of ['macos', 'windows', 'linux'] as const) {
+      expect(build.draft.platform?.[desktop]).toEqual({ sound: null })
+    }
     expect(build.draft.platform?.android).toEqual({
       sound: null,
       custom_data: { run_id: '42', branch: 'main' },
     })
   })
 
-  it('maps optional fields into the selected macOS platform slot', () => {
+  it('maps only the sound into a selected desktop platform slot', () => {
     const config = loadConfig({ cwd: base.cwd, env: base.env })
-    const build = buildDraft(config, {
-      title: 'T',
-      body: 'B',
-      platform: 'macos',
-      sound: 'none',
-      threadId: 'desktop-builds',
-      level: 'passive',
-      data: ['run_id=42'],
-    })
+    const build = buildDraft(config, { title: 'T', body: 'B', platform: 'linux', sound: 'done' })
     if (!build.ok) throw new Error(build.error)
 
-    expect(build.platform).toBe('macos')
-    expect(build.draft.platform).toEqual({
-      macos: {
-        sound: null,
-        thread_id: 'desktop-builds',
-        interruption_level: 'passive',
-        custom_data: { run_id: '42' },
-      },
-    })
+    expect(build.platform).toBe('linux')
+    expect(build.draft.platform).toEqual({ linux: { sound: 'done' } })
+    for (const extra of [{ threadId: 'builds' }, { level: 'passive' }, { data: ['run_id=42'] }]) {
+      expect(buildDraft(config, { title: 'T', body: 'B', platform: 'macos', ...extra })).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('desktop Companion App takes only a sound'),
+      })
+    }
   })
 
   it('maps supported optional fields into the selected Android platform slot', () => {
@@ -699,7 +692,7 @@ describe('draft building', () => {
     expect(buildDraft(config, { title: 'T', body: 'B', sound: 'n'.repeat(200) }).ok).toBe(false)
     expect(buildDraft(config, { title: 'T', body: 'B', data: ['nokey'] }).ok).toBe(false)
     expect(buildDraft(config, { title: 'T', body: 'B', level: 'shouting' }).ok).toBe(false)
-    expect(buildDraft(config, { title: 'T', body: 'B', platform: 'linux' }).ok).toBe(false)
+    expect(buildDraft(config, { title: 'T', body: 'B', platform: 'beos' }).ok).toBe(false)
   })
 
   it('puts a custom sound name on the draft for the server to resolve', () => {
