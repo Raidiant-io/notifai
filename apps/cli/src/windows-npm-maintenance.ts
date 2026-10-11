@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
@@ -73,8 +72,6 @@ export function assertNpmScopeDirectories(scope: NpmMaintenanceScope): void {
     if (actual.identity !== observed.identity || !sameLocalPath(actual.path, observed.path, 'win32')) throw new Error('The assessed application directory changed')
   }
 }
-
-export const npmMaintenanceDigest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
 /** A fresh observation inside an approved cooperative pause. This establishes
  * no exclusion against newly started programs, wrappers, embedded consumers or
