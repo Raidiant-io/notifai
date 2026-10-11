@@ -8,6 +8,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0-beta.21](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.20...v12.0.0-beta.21) (2026-10-11)
+
+### Fixes
+
+* Preserve existing Linux file credentials across desktop and headless sessions. Keep secure credential authority explicit and prevent cleared keyring credentials from reappearing.
+* Stage and resume a verified transition from earlier native runtimes without losing pending work or allowing incompatible writers to overlap.
+
+### Improvements
+
+* Include the current desktop Companion connection and one-sign-in support in the CLI candidate. Desktop app distribution remains separate.
+
+## [12.0.0-beta.20](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.19...v12.0.0-beta.20) (2026-10-11)
+
+### Fixes
+
+* Allow Windows repair enough time to verify a complete Node/npm installation, while preserving all trust checks and a bounded package-manager lifetime.
+* Create a linked Codex question form only when the owning app-server can receive its answer; otherwise keep the question in the ordinary reply flow.
+* Restore the Codex app-server connection from compiled native builds and allow for cold starts.
+
+## [12.0.0-beta.19](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.17...v12.0.0-beta.19) (2026-10-11)
+
+### Fixes
+
+* Preserve understood dormant session records during native activation instead of letting old cleanup and ended-session work block updates indefinitely. Live owners, undelivered input and uncertain state still hold activation.
+* Allow a verified standalone installer to abandon an uncommitted first upgrade before the permanent writer fence, so a corrected candidate can replace it safely.
+
+## [12.0.0-beta.17](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.16...v12.0.0-beta.17) (2026-10-10)
+
+### Fixes
+
+* Allow Windows npm repair to recognize its own suspended package manager before Windows initializes the process module list. Other readers and mismatched process identities still prevent replacement.
+
+## [12.0.0-beta.16](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.15...v12.0.0-beta.16) (2026-10-10)
+
+### Fixes
+
+* Keep active questions and session owners on compatible retained runtimes during native updates. Stage incompatible first upgrades until existing work can finish safely.
+* Repair verified legacy Windows npm installations in place through their package manager during an approved observed maintenance window. Preserve the complete package and recover interrupted replacement forward without uninstalling first.
+* Repair only changed owned harness integration, preserve User edits and healthy owners, and recover abandoned Hermes publication reservations without replaying host operations.
+* Report the actual CLI execution domain and scoped pending repair in diagnostics.
+* Compile Windows PowerShell bootstrap helpers correctly when temporary paths contain Unicode, quotes or shell punctuation.
+
+## [12.0.0-beta.15](https://github.com/Raidiant-io/notifai/compare/v11.8.0...v12.0.0-beta.15) (2026-10-09)
+
+### Breaking changes
+
+* The existing `@raidiant/notifai` npm package now installs and launches the managed native CLI instead of shipping a separate Node runtime. Existing native installations keep their version and channel until an explicit update.
+
+### Improvements
+
+* Include readable release notes in every native binary and verify the bundled changelog against canonical source.
+
+* Refresh installer-owned guidance and recover owned hooks and sessions even when unrelated user-installed skills are present; preserve those files and keep their diagnosis visible.
+* Verify npm publication using its current dist-tag endpoint, with bounded reads and no repeat publication or unrelated tag changes.
+
+* Resume Codex activity tracking across oversized transcript entries without resetting existing sessions.
+* Give doctor, setup and update the same skill ownership diagnosis; preserve user-managed content and recover interrupted installer-owned placements.
+
+* Batch Windows npm permission verification instead of starting one PowerShell process per package path. Keep signed payload checks and reject unsafe members.
+
+* Verify npm-owned Windows directories and account profiles without changing their ACLs, while preserving strict ownership of managed native paths.
+
+* Use the same native runtime and bundled skill through shell, PowerShell, npm, and npx setup.
+* Report installation ownership and recovery clearly in doctor, preserve unfinished removal, and make migration from older npm installations explicit.
+* Continue interactive setup correctly when installing through a piped shell command.
+* Verify npm adapter bytes against the signed native release and coordinate publication across all supported targets.
+* Keep long Codex turns readable and link Claude question-picker content to its registered question.
+
+
 ## [11.8.0](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0) (2026-10-08)
 
 
