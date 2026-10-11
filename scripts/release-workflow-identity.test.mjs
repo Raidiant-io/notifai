@@ -94,7 +94,7 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
 
 test('public hosted workflows exist only for release preparation and publication', () => {
   assert.deepEqual(
-    ['ci.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml'],
+    ['ci.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml', 'windows-access.yml'],
     readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).sort(),
   )
   assert.equal(ciWorkflow.jobs['dependency-review'], undefined)
