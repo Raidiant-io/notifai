@@ -216,6 +216,18 @@ export function inspectCliInstallations(
     ? (buildIdentity() !== null && process.platform === 'win32' ? npmAdapterWindowsAccess() : () => { throw new Error('Windows ownership proof is unavailable') })
     : undefined)
   const proofFor = (command: string, artifact: string | null) => {
+    const requestedCommand = command
+    if (platform === 'win32') {
+      try {
+        // App virtualization can map the command into app storage while its
+        // logical parents still name a different directory. Verify the actual
+        // command's physical package and ancestors. A linked command remains
+        // untrusted; signatures, payload, shim bytes and ACLs still apply.
+        const stat = lstatSync(command)
+        if (!stat.isFile() || stat.isSymbolicLink()) return null
+        command = realpathSync.native(command)
+      } catch { return null }
+    }
     const bin = path.dirname(command)
     const candidates = new Set([
       ...(artifact === null ? [] : [path.dirname(path.dirname(artifact))]),
@@ -225,7 +237,7 @@ export function inspectCliInstallations(
     ])
     for (const directory of candidates) {
       if (!existsSync(path.join(directory, NPM_ADAPTER_MANIFEST)) && !existsSync(path.join(directory, NPM_ADAPTER_BIN))) continue
-      unverifiedAdapters.add(command)
+      unverifiedAdapters.add(requestedCommand)
       try {
         const proof = verifyNpmAdapterArtifact(directory, distribution, checkAccess)
         const route = inspectNpmAdapterRoute(command, proof, { platform, ...(checkAccess ? { checkAccess } : {}) })

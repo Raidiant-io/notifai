@@ -10,6 +10,7 @@ import { legacyNpmMigration } from './legacy-npm-migration.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
 import { npmAdapterInventoryUrl } from './npm-adapter-contract.js'
 import { canonicalPath } from './local-path.js'
+import { npmShim } from './npm-adapter-route.js'
 import { nativeUninstallCommand } from './commands-native-uninstall.js'
 import type { CommandDeps } from './commands-core.js'
 import type { Installation } from './installation.js'
@@ -32,9 +33,9 @@ function fixture(platform: NodeJS.Platform = 'linux') {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519')
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() })
   function adapter(prefix: string, version: string, npx = false) {
-    const modules = npx ? path.join(prefix, 'node_modules') : path.join(prefix, 'lib', 'node_modules')
+    const modules = npx || platform === 'win32' ? path.join(prefix, 'node_modules') : path.join(prefix, 'lib', 'node_modules')
     const directory = path.join(modules, '@raidiant', 'notifai'), executable = path.join(directory, 'bin', 'notifai.mjs')
-    const bin = npx ? path.join(modules, '.bin') : path.join(prefix, 'bin'), shim = path.join(bin, 'notifai')
+    const bin = npx ? path.join(modules, '.bin') : platform === 'win32' ? prefix : path.join(prefix, 'bin'), shim = path.join(bin, platform === 'win32' ? 'notifai.cmd' : 'notifai')
     mkdirSync(path.dirname(executable), { recursive: true }); mkdirSync(bin, { recursive: true })
     const files = { 'bin/notifai.mjs': '#!/usr/bin/env node\nthrow new Error("inspection must never execute me")\n',
       'package.json': JSON.stringify({ name: '@raidiant/notifai', version, bin: { notifai: 'bin/notifai.mjs' } }) }
@@ -48,7 +49,9 @@ function fixture(platform: NodeJS.Platform = 'linux') {
         runtime_sha256: 'e'.repeat(64), launcher_sha256: 'f'.repeat(64), materials: [{ path: 'npm-adapter-files.json', bytes: Buffer.byteLength(manifest), sha256: hash(manifest) }] }] }))
     writeFileSync(path.join(directory, 'inventory.json'), JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
       signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') }), { mode: 0o600 })
-    symlinkSync(executable, shim)
+    if (platform === 'win32') {
+      for (const extension of ['', '.cmd', '.ps1']) writeFileSync(path.join(bin, `notifai${extension}`), npmShim(path.relative(bin, executable), extension))
+    } else symlinkSync(executable, shim)
     return { bin, shim, executable, directory, prefix }
   }
   const options = { nativeHome: home, distribution, runningArtifactPath: runtime, currentVersion: '11.8.0' }
@@ -174,4 +177,36 @@ it('reports exact-prefix npm cleanup after native removal without deleting the v
   expect(await nativeUninstallCommand(deps, { json: true }, { installation, inspection: f.options, removeWiring: () => ({ ok: true, conflicts: [] }) })).toBe(0)
   expect(JSON.parse(out[0]!).adapter_cleanup).toMatchObject([{ args: ['uninstall', '--global', '--prefix', canonicalPath(route.prefix), '@raidiant/notifai'] }])
   expect(readFileSync(route.executable, 'utf8')).toContain('inspection must never execute me')
+})
+
+
+it('verifies a Windows command alias through its physical package without trusting the logical parent', () => {
+  const f = fixture('win32'), route = f.adapter(path.join(f.home, 'app-storage'), '12.0.0')
+  const logical = path.join(f.home, 'logical-npm')
+  symlinkSync(route.prefix, logical, 'junction')
+  const env = { USERPROFILE: f.home, PATH: logical }
+  const options = { ...f.options, checkAccess(paths: readonly { file: string }[]) {
+    // A packaged app can map files into app storage while a logical ancestor
+    // remains outside it and fails ACL inspection. Physical proof must stand alone.
+    if (paths.some(item => item.file.startsWith(logical))) throw new Error('logical parent belongs to another directory')
+  }, executionDomain: { platform: 'win32', process: 1, ancestors: [], candidate_prefixes: [route.prefix],
+    coverage: { path: 'invoking_process' as const, shell_precedence: 'unobserved' as const,
+      other_applications: 'unobserved' as const, ancestry: 'observed' as const } } }
+  const result = inspectCliInstallations(env, 'win32', options)
+  expect(result.effective).toMatchObject({ command_path: path.join(logical, 'notifai.cmd'), kind: 'npm-adapter',
+    artifact_path: f.runtime, adapter: { directory: canonicalPath(route.directory) } })
+  expect(result.effective).not.toHaveProperty('problem')
+  expect(cliBinReadiness(env, 'win32', options).status).toBe('ready')
+  // Integration checks need no process census or guessed app-storage prefix.
+  expect(inspectCliInstallations(env, 'win32', { ...options, executionDomain: undefined }).effective?.kind).toBe('npm-adapter')
+  const linkedPrefix = path.join(f.home, 'linked-command')
+  mkdirSync(linkedPrefix)
+  symlinkSync(route.shim, path.join(linkedPrefix, 'notifai.cmd'))
+  expect(inspectCliInstallations({ ...env, PATH: linkedPrefix }, 'win32', options).effective?.kind).toBe('unknown')
+  expect(inspectCliInstallations(env, 'win32', { ...options,
+    checkAccess() { throw new Error('physical ownership unavailable') },
+  }).effective?.kind).toBe('unknown')
+  // Changed payload remains rejected through both spellings.
+  writeFileSync(route.executable, 'modified payload')
+  expect(inspectCliInstallations(env, 'win32', options).effective?.kind).toBe('unknown')
 })
