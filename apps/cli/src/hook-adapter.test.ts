@@ -213,10 +213,12 @@ describe('stable hook adapter', () => {
 
   it('uses the OS account home even when HOME is overridden', () => {
     const original = process.env['HOME']
+    const originalAdapter = hookAdapterPath()
     process.env['HOME'] = '/tmp/attacker-selected-home'
     try {
-      expect(hookAdapterPath()).toBe(
-        path.join(os.userInfo().homedir, '.notifai', 'bin', 'hook-adapter'),
+      expect(hookAdapterPath()).toBe(originalAdapter)
+      expect(path.dirname(hookAdapterPath())).toBe(
+        path.join(os.userInfo().homedir, '.notifai', 'bin'),
       )
       expect(hookAdapterPath()).not.toContain('attacker-selected-home')
     } finally {
