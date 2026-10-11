@@ -96,7 +96,7 @@ export async function npmRepairCommand(deps: CommandDeps, flags: NativeInstallFl
       const receipt = inspectNpmReplacement(operation, context)
       emit({ ok: true, code: 'npm_repair_prepared', operation, confirmation: npmReplacementConfirmation(receipt),
         version: receipt.target.version, dependency_files: result.dependency_files, scope: app.observation,
-        next_step: 'Your agent must obtain approval for this exact replacement, observe the named producers and possible JavaScript readers stopped, and keep them stopped through runtime activation and command verification. Preparation is not evidence of a safe window.' },
+        next_step: 'Wait for work using this Notifai package and its recorded applications to finish. Leave unrelated applications running. If an affected application needs interruption, obtain approval naming that application and this exact replacement. Preparation is not evidence of a safe window.' },
       'Repair is prepared and the original package is preserved. Your agent can now arrange the scoped pause and resume this operation.')
       return EXIT.ok
     }
@@ -154,7 +154,7 @@ export async function npmRepairCommand(deps: CommandDeps, flags: NativeInstallFl
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     emit({ ok: false, code: 'npm_repair_pending', ...(operation ? { operation } : {}), message,
-      next_step: 'Your agent must resolve the named observation or maintenance condition, then resume the same prepared operation. Keep any approved pause in place until command verification succeeds.' }, message)
+      next_step: 'Resolve only the reported package, application or session condition, then resume this same operation. Leave unrelated applications running. Keep any explicitly approved pause limited to the affected application until command verification succeeds.' }, message)
     return EXIT.failed
   }
 }

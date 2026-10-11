@@ -79,7 +79,11 @@ Follow the reported repair assessment: establish the affected app's command and
 state root, verify and back up the package, and prepare the selected signed npm
 launcher. The agent owns replacement through a trusted compatible npm at the
 same prefix, after pending work drains and any necessary User-approved producer
-pause is observed. Preserve unknown or modified files and unresolved readers.
+pause is observed. Tie each affected process to this package, its observed
+command route or its recorded session state. Runtime names such as Node, Bun or
+Deno do not establish that relationship. Leave unrelated applications running;
+when safe replacement cannot be established, defer this replacement and preserve
+the existing installation. Preserve unknown or modified files and unresolved readers.
 Do not uninstall first, kill sessions, or give the User an uninstall/reinstall
 chore. Preparation and a successful npm exit do not prove runtime or hook readiness.
 
@@ -97,7 +101,9 @@ with npm 11; other toolchains remain diagnosed rather than implicitly trusted.
    Use physical prefix/state roots. If a packaged app reports a different
    logical command path, retain it as `command` and record the physical mapping
    proved in that app as `physical_command`; do not infer the mapping externally.
-   Include every producer that can launch the old command. Embedded consumers,
+   Include the applications observed to launch the old command, using exact
+   process identities. Sharing a runtime executable is not a producer relationship.
+   Embedded consumers,
    wrappers, remote storage and unestablished roots need separate assessment;
    do not label them direct CLI use to make the check pass.
 2. Prepare with `--prepare --scope <file> --node <absolute-node.exe>
@@ -105,14 +111,18 @@ with npm 11; other toolchains remain diagnosed rather than implicitly trusted.
    the adapter and its paired native runtime. Preparation preserves the old
    package and dependencies, does not activate the new runtime, and reports the
    exact operation directory and confirmation digest.
-3. Arrange the necessary pause through an answerable User question. Name the
-   producers that must remain stopped and the exact prepared replacement,
+3. Prefer the affected work finishing naturally. If interruption is necessary,
+   arrange it through an answerable User question. Name the affected applications,
+   the evidence connecting each to this package or state, and the exact replacement,
    including installed dependencies. Approval supplies consent, not proof that
    processes stopped or questions settled. Do the work for the User once that
    approval and readiness exist.
 4. Resume the same candidate with `--resume <operation> --confirm <digest>`.
-   The CLI rechecks the manager, named producers, possible JavaScript readers
-   (including sandbox accounts), state roots and pending work before npm runs.
+   The CLI rechecks the manager, named applications, direct readers and preloads
+   of this package, state roots and pending work before npm runs. A process list
+   is a scoped observation, not proof about arbitrary embedded imports or future
+   launches. Unknown scope defers the replacement; it does not expand a pause
+   to other applications or all JavaScript runtimes.
    Keep the approved pause through native activation and command verification.
    A pending result preserves the operation; resolve its named condition and
    resume it. Do not uninstall first, discard the backup, select another target

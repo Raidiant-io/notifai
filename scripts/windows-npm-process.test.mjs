@@ -7,6 +7,7 @@ import { after, before, describe, it } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { runNpmManager } from '../apps/cli/dist/npm-conversion-process.js'
 import { inspectWindowsNpmReaders } from '../apps/cli/dist/windows-npm-maintenance.js'
+import './windows-npm-readers.test.mjs'
 
 describe('Windows npm manager custody', { skip: process.platform !== 'win32' }, () => {
   let root, launcher
@@ -160,7 +161,7 @@ setTimeout(() => process.exit(19), 15000).unref();
   })
   for (const exact of [true, false]) it(`observes the suspended manager before GO with ${exact ? 'its exact' : 'a mismatched'} identity`, async () => {
     const f = prepare()
-    const scope = { observation: { prefix: f.directory, state_roots: [f.directory], producers: [] } }
+    const scope = { observation: { prefix: f.directory, command: path.join(f.directory, 'notifai.cmd'), state_roots: [f.directory], producers: [] } }
     let census
     const result = await runNpmManager({ launcher,
       executable: process.execPath, args: [f.manager, f.marker, f.finish], cwd: f.directory, env: process.env,
@@ -168,8 +169,8 @@ setTimeout(() => process.exit(19), 15000).unref();
         assert.equal(existsSync(f.marker), false)
         const start = `windows-filetime:${BigInt(manager.start.split(':')[1]) + 1n}`
         census = inspectWindowsNpmReaders(scope, exact ? manager : { ...manager, start })
-        // The live coordinator is a separate reader and must still be observed.
-        assert.ok(census.readers.some(reader => reader.pid === process.pid))
+        // A JavaScript coordinator outside this package is not a legacy reader.
+        assert.ok(!census.readers.some(reader => reader.pid === process.pid))
         if (census.uncertain) throw new Error('Relevant process inspection is incomplete')
         writeFileSync(f.finish, 'exit after first effect')
       } })

@@ -11,7 +11,7 @@ const scope: NpmMaintenanceScope = { observation, prefix: { path: observation.pr
   states: [{ path: observation.state_roots[0]!, identity: '1:3' }] }
 const clear = (): RuntimeOwnerInspection => ({ status: 'clear', stateRoots: observation.state_roots,
   hosts: [], residents: [], sessions: [], unattributedPending: false })
-const reader = (identity = coordinator) => ({ ...identity, executable: 'C:\\Tools\\node.exe' })
+const reader = (identity = coordinator) => ({ ...identity, executable: 'C:\\Tools\\node.exe', reason: 'package' as const })
 function check(census: WindowsReaderCensus, owners = [clear()], liveness: 'gone' | 'unknown' | 'alive' = 'gone') {
   return () => assertNpmMaintenanceQuiet({ scope, coordinator, manager, census, owners, liveness: () => liveness })
 }
@@ -28,18 +28,18 @@ describe('observed Windows npm replacement window', () => {
   })
   it('admits only the exact coordinator and suspended manager', () => {
     expect(check({ readers: [reader(), reader(manager)], uncertain: false })).not.toThrow()
-    expect(check({ readers: [reader({ ...manager, start: 'windows-filetime:201' })], uncertain: false })).toThrow(/possible legacy reader/)
+    expect(check({ readers: [reader({ ...manager, start: 'windows-filetime:201' })], uncertain: false })).toThrow(/package: PID 20/)
   })
   it('refuses a restarted producer or detached reader without script-name guesses', () => {
-    expect(check({ readers: [{ ...producer, pid: 31, start: 'windows-filetime:301' }], uncertain: false })).toThrow(/possible legacy reader/)
-    expect(check({ readers: [reader({ pid: 99, start: 'windows-filetime:999' })], uncertain: false })).toThrow(/possible legacy reader/)
+    expect(check({ readers: [{ ...producer, pid: 31, start: 'windows-filetime:301', reason: 'application' }], uncertain: false })).toThrow(/application: PID 31/)
+    expect(check({ readers: [reader({ pid: 99, start: 'windows-filetime:999' })], uncertain: false })).toThrow(/package: PID 99/)
   })
   it('refuses uncertainty even when the observed list is empty', () => {
     expect(check({ readers: [], uncertain: true })).toThrow(/incomplete/)
-    expect(check({ readers: [], uncertain: false }, [clear()], 'unknown')).toThrow(/producer/)
+    expect(check({ readers: [], uncertain: false }, [clear()], 'unknown')).toThrow(/assessed application/)
   })
   it('approval cannot substitute for an observed producer exit', () => {
-    expect(check({ readers: [], uncertain: false }, [clear()], 'alive')).toThrow(/producer/)
+    expect(check({ readers: [], uncertain: false }, [clear()], 'alive')).toThrow(/assessed application/)
   })
   it('checks every assessed state root and its independent debt', () => {
     expect(check({ readers: [], uncertain: false }, [])).toThrow(/session work/)

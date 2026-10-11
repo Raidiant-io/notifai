@@ -28,6 +28,12 @@ Use `session`, `harness_installations`, and `guidance.installed` to explain
 the possible impact. A plain CLI or guidance update does not by itself require
 a new Agent Session. `restart_required: null` means unproven, not false.
 
+Maintenance blockers must identify the affected Notifai files, command route or
+session state and the process using them. A shared runtime name is insufficient.
+Leave unrelated work running and defer only the blocked replacement. The legacy
+npm procedure in [installation](installation.md#migrate-an-old-installation)
+owns the scoped checks and any necessary application-pause approval.
+
 Installation diagnostics describe the invoking process. After a migration,
 verify ordinary `notifai` command resolution and a real hook callback inside
 each affected existing Agent Session. An absolute-path version check or a new
