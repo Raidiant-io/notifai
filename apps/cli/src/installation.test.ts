@@ -3,10 +3,10 @@ import { openclawPluginSource } from './openclaw-plugin.js'
 import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import { activeBytes, Installation } from './installation.js'
 import { nativeUninstallCommand } from './commands-native-uninstall.js'
@@ -15,15 +15,17 @@ import type { CommandDeps } from './commands-core.js'
 import { discoverCliUpdate } from './cli-release.js'
 import { Distribution, releaseSigningMessage } from './release-distribution.js'
 import { RuntimeRetention } from './runtime-retention.js'
-import { sessionStatePath, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, sessionStatePath, writeSessionState } from './hook-session-state.js'
+import { observeQueuedMessagePrompt, owedAcknowledgements } from './hook-acknowledgements.js'
 import { sanitizeSessionId } from './config.js'
 import { canonicalPath } from './local-path.js'
 import { currentProcessIdentity, processStartTime } from './process-identity.js'
+import * as processIdentity from './process-identity.js'
 import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import { inspectCliInstallations, cliBinReadiness } from './cli-bin.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-x64' = 'bun-linux-x64') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-installation-')); roots.push(root)
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
@@ -210,6 +212,166 @@ it('bootstraps a quiet historical installation without changing retained files o
   expect(readFileSync(file)).toEqual(before)
   expect(readFileSync(path.join(f.options.root, 'versions', f.build, 'notifai-runtime'), 'utf8')).toBe('runtime 1.0.0')
   expect(() => installation.rollback(2)).toThrow(/cannot enforce/)
+})
+
+it.each(['retirement', 'empty-wake'] as const)('bootstraps with deferred %s cleanup while preserving its exact state', kind => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'deferred-cleanup'
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: f.id, build: f.build }] })
+  const file = sessionStatePath(session, env)
+  const state = JSON.parse(readFileSync(file, 'utf8'))
+  const cleanup = kind === 'retirement'
+    ? { retiring: [{ request_id: 'req_retired', question_id: 'q_retired', collapse_key: 'closed-question',
+        device_ids: ['device'], question: 'Already retired', state: 'expired' }] }
+    : { input_wake: { incarnation: 'inc_old', token: 'wake-token', queued: true,
+        writer: { pid: 2147483647, start: 'exited fixture owner' } } }
+  writeFileSync(file, JSON.stringify({ ...state, ...cleanup }))
+  const before = readFileSync(file)
+  const boot = new Installation({ ...f.options, sessionsDirectory: path.dirname(file) })
+  // Destructive removal still needs every piece of cleanup to finish.
+  expect(boot.beginUninstall(1, path.dirname(file)).status).toBe('waiting_for_questions')
+  expect(boot.installCandidate(f.upgrade).version).toBe('2.0.0')
+  expect(readFileSync(file)).toEqual(before)
+  expect(boot.inspect()).toMatchObject({ active: { generation: 2 }, pending: false })
+})
+
+it('keeps actual input debt pending beside a dead wake', () => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'unread-answer'
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: f.id, build: f.build }],
+    acknowledgement_due: [{ request_id: 'req_unread', recorded_at: 1 }] })
+  const file = sessionStatePath(session, env), state = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...state, input_wake: { incarnation: 'inc_old', token: 'wake-token', queued: true,
+    writer: { pid: 2147483647, start: 'exited fixture owner' } } }))
+  const before = readFileSync(file)
+  const boot = new Installation({ ...f.options, sessionsDirectory: path.dirname(file) })
+  expect(() => boot.installCandidate(f.upgrade)).toThrow(/existing questions/)
+  expect(readFileSync(file)).toEqual(before)
+  expect(boot.inspect().active?.active).toBe(f.build)
+})
+
+it.each(['live-wake', 'unknown-wake', 'unknown-retirement'] as const)('keeps %s intact and pending during bootstrap', kind => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'unsettled-cleanup'
+  writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: f.id, build: f.build }] })
+  const file = sessionStatePath(session, env), state = JSON.parse(readFileSync(file, 'utf8'))
+  const work = kind === 'unknown-retirement' ? { retiring: [{ request_id: 'req_unknown', state: 'unknown' }] }
+    : { input_wake: { incarnation: 'inc_old', token: 'wake-token', queued: true,
+        writer: kind === 'live-wake' ? currentProcessIdentity() : { pid: 'invalid', start: 'unknown' } } }
+  writeFileSync(file, JSON.stringify({ ...state, ...work }))
+  const before = readFileSync(file)
+  expect(() => new Installation({ ...f.options, sessionsDirectory: path.dirname(file) }).installCandidate(f.upgrade)).toThrow(/existing questions/)
+  expect(readFileSync(file)).toEqual(before)
+})
+
+it('carries an orphan retirement queue through bootstrap while destructive removal still waits', () => {
+  const f = legacyFixture(), file = path.join(f.options.root, 'retire-queue.json')
+  const before = JSON.stringify([{ request_id: 'req_retired', collapse_key: 'closed-question',
+    device_ids: ['device'], question: 'Already retired', state: 'answered_elsewhere', enqueued_at: 1 }])
+  writeFileSync(file, before, { mode: 0o600 })
+  const boot = new Installation(f.options)
+  expect(boot.beginUninstall(1, f.options.sessionsDirectory).status).toBe('waiting_for_questions')
+  expect(boot.installCandidate(f.upgrade).version).toBe('2.0.0')
+  expect(readFileSync(file, 'utf8')).toBe(before)
+})
+
+it('abandons only a staged pre-fence bootstrap so a corrected candidate can replace it', async () => {
+  const f = legacyFixture(), installation = new Installation({ ...f.options, fileUse: () => ({ status: 'in_use', processes: [] }) })
+  expect(() => installation.installCandidate(f.upgrade)).toThrow(/old native process/)
+  const staged = installation.pendingRelease()!, before = readFileSync(path.join(f.options.root, 'install.json'))
+  const output: string[] = []
+  const deps = { io: { out: (text: string) => output.push(text), err() {} } } as unknown as CommandDeps
+  expect(await nativeUpdateCommand(deps, { abandon: true, json: true }, { installation })).toBe(0)
+  expect(JSON.parse(output[0]!)).toMatchObject({ ok: true, operation: 'abandon', installation: { pending: false } })
+  expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8'))).toEqual(JSON.parse(before.toString()))
+  expect(existsSync(staged.launcher)).toBe(true)
+  const corrected = new Installation(f.options)
+  expect(corrected.installCandidate({ ...f.upgrade, ...f.candidate('3.0.0'), version: '3.0.0' }).version).toBe('3.0.0')
+})
+
+it.each(['gone', 'alive', 'missing', 'malformed', 'unknown-liveness', 'unreported-input', 'unreported-delivery'] as const)('preserves dormant message input through bootstrap only with a %s harness identity', owner => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'old-message-session'
+  const context = 'A preserved note awaiting its original session.'
+  // This predates native owner indexing, as dormant sessions on real hosts do.
+  writeSessionState(session, env, { harness: 'codex',
+    message_acknowledgement_due: [{ message_id: 'sm_preserved', recorded_at: 1, text_required: true, queued_context: context }],
+    retiring: [{ request_id: 'req_retired', collapse_key: 'closed-question', device_ids: ['device'], question: 'Closed', state: 'expired' }] })
+  if (owner !== 'missing') beginSessionIncarnation(session, env, { stamp: lifecycleStamp(),
+    harnessProcess: owner === 'alive' ? currentProcessIdentity()! : { pid: 2147483647, start: 'exited fixture owner' } })
+  const file = sessionStatePath(session, env), before = readFileSync(file)
+  if (owner === 'unknown-liveness') vi.spyOn(processIdentity, 'processIdentityLiveness').mockReturnValue('unknown')
+  if (owner === 'malformed') writeFileSync(file.replace(/\.json$/, '.incarnation.json'), JSON.stringify({
+    key: 'key', incarnation: 'inc_123456789012', start: { wall: 1, mono: '1' }, harness_process: { pid: -1, start: 'invalid' },
+  }))
+  if (owner === 'unreported-input') writeFileSync(file.replace(/\.json$/, '.inputs.json'), JSON.stringify({
+    session_id: session, incarnation: 'inc_123456789012', generation: 1,
+    messages: [{ message_id: 'sm_unread', created_at: '2026-01-01T00:00:00Z', agent_acknowledgement_text_required: true,
+      kind: 'note', body: 'Input whose handoff has not been reported' }],
+  }))
+  if (owner === 'unreported-delivery') writeFileSync(file.replace(/\.json$/, '.deliveries'), JSON.stringify({ session_id: session,
+    entries: [{ attempt_id: 'attempt_unreported', stage: 'written', writer: currentProcessIdentity(),
+      subject: { type: 'session_message', message_id: 'sm_preserved' } }],
+  }))
+  const boot = new Installation({ ...f.options, sessionsDirectory: path.dirname(file) })
+  expect(boot.beginUninstall(1, path.dirname(file)).status).toBe('waiting_for_questions')
+  if (owner !== 'gone') {
+    expect(() => boot.installCandidate(f.upgrade)).toThrow(/existing questions/)
+    expect(readFileSync(file)).toEqual(before)
+    return
+  }
+  expect(boot.installCandidate(f.upgrade).version).toBe('2.0.0')
+  expect(readFileSync(file)).toEqual(before)
+  expect(boot.installCandidate({ ...f.upgrade, ...f.candidate('3.0.0'), version: '3.0.0' }).version).toBe('3.0.0')
+  expect(readFileSync(file)).toEqual(before)
+  // The new reader still recognizes an exact queued prompt and retains its
+  // acknowledgement. This does not prove a dormant harness actually resumed.
+  expect(observeQueuedMessagePrompt(session, env, context)).toEqual(['sm_preserved'])
+  expect(owedAcknowledgements(readSessionState(session, env))).toEqual([
+    { message_id: 'sm_preserved', recorded_at: 1, text_required: true },
+  ])
+})
+
+it.skipIf(process.platform === 'win32')('refuses symlink incarnation evidence without touching dormant message debt', () => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'symlink-owner'
+  writeSessionState(session, env, { harness: 'codex', message_acknowledgement_due: [
+    { message_id: 'sm_preserved', recorded_at: 1, text_required: true, queued_context: 'Preserved note' },
+  ] })
+  beginSessionIncarnation(session, env, { stamp: lifecycleStamp(), harnessProcess: { pid: 2147483647, start: 'exited fixture owner' } })
+  const file = sessionStatePath(session, env), before = readFileSync(file), incarnation = file.replace(/\.json$/, '.incarnation.json')
+  const foreign = path.join(f.root, 'foreign-incarnation.json')
+  renameSync(incarnation, foreign); symlinkSync(foreign, incarnation)
+  expect(() => new Installation({ ...f.options, sessionsDirectory: path.dirname(file) }).installCandidate(f.upgrade)).toThrow(/existing questions/)
+  expect(readFileSync(file)).toEqual(before)
+  expect(lstatSync(incarnation).isSymbolicLink()).toBe(true)
+})
+
+it.each(['closed', 'missing-end', 'other-incarnation', 'live', 'malformed-answer', 'null-reply-part', 'malformed-reply-part', 'pending', 'accepted'] as const)('preserves request debt only for a proved ended incarnation: %s', kind => {
+  const f = legacyFixture(), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'ended-request-owner'
+  const reply = { reply_id: 'rpl_preserved', seq: 1, delivery_id: null, device_id: null, device_name: 'Fixture',
+    text: 'Saved answer', answers: [], source: 'app', created_at: '2026-01-01T00:00:00Z' }
+  const answer = { pending: { request_id: 'req_preserved', question: 'Fixture question', asked_at: 1 },
+    reply, replies: [reply], delivery_claim: true as const }
+  writeSessionState(session, env, { harness: 'codex', acknowledgement_due: [{ request_id: 'req_preserved', recorded_at: 1 }],
+    waiting_answers: [answer], delivered_answers: [answer] })
+  beginSessionIncarnation(session, env, { stamp: lifecycleStamp(), harnessProcess: kind === 'live'
+    ? currentProcessIdentity()! : { pid: 2147483647, start: 'exited fixture owner' } })
+  if (kind !== 'missing-end') markSessionEnded(session, env, Date.now())
+  const file = sessionStatePath(session, env), ended = file.replace(/\.json$/, '.ended')
+  if (kind === 'other-incarnation') writeFileSync(ended, JSON.stringify({ ...JSON.parse(readFileSync(ended, 'utf8')), ends: 'different-owner' }))
+  if (kind === 'malformed-answer') writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), waiting_answers: [{ pending: {} }] }))
+  if (kind === 'null-reply-part' || kind === 'malformed-reply-part') {
+    const state = JSON.parse(readFileSync(file, 'utf8'))
+    state.waiting_answers[0].reply.answers = [kind === 'null-reply-part' ? null : { question_id: 'q', choice_ids: 'invalid', text: null }]
+    writeFileSync(file, JSON.stringify(state))
+  }
+  if (kind === 'pending' || kind === 'accepted') writeFileSync(file, JSON.stringify({
+    ...JSON.parse(readFileSync(file, 'utf8')), [kind]: kind === 'pending' ? [answer.pending] : { answers: [answer] },
+  }))
+  const before = readFileSync(file)
+  const boot = new Installation({ ...f.options, sessionsDirectory: path.dirname(file) })
+  expect(boot.beginUninstall(1, path.dirname(file)).status).toBe('waiting_for_questions')
+  if (kind === 'closed') {
+    expect(boot.installCandidate(f.upgrade).version).toBe('2.0.0')
+    expect(boot.installCandidate({ ...f.upgrade, ...f.candidate('3.0.0'), version: '3.0.0' }).version).toBe('3.0.0')
+  } else expect(() => boot.installCandidate(f.upgrade)).toThrow(/existing questions/)
+  expect(readFileSync(file)).toEqual(before)
 })
 
 it.each(['in_use', 'uncertain'] as const)('leaves the old command working when bootstrap process inspection is %s', status => {

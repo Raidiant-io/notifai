@@ -260,7 +260,7 @@ export class Installation {
       const external = this.options.externalWriters?.()
       if (external) pending(external)
       const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
-      const owners = () => retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'))
+      const owners = () => retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'), 'activation')
       const quiet = (): void => {
         const observed = owners()
         if (observed.status !== 'clear' || observed.unattributedPending ||
@@ -331,7 +331,7 @@ export class Installation {
     // legacy owners. An absent install record does not establish quiescence.
     const installationId = installed?.id ?? '00000000-0000-0000-0000-000000000000'
     const retention = new RuntimeRetention(this.root, installationId, this.access, this.options.bootIdentity)
-    const owners = retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'))
+    const owners = retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'), 'activation')
     if (owners.status === 'uncertain') throw new ContinuityPending(build, owners.reason ?? 'Runtime ownership is uncertain.')
     if (owners.unattributedPending || owners.sessions.some(owner => owner.pending && owner.references.length === 0 ||
         owner.references.some(reference => reference.installation_id !== installationId)) ||

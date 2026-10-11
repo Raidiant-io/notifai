@@ -108,6 +108,18 @@ it('refuses ordinary direct payload execution before any managed action', async 
   expect(configSet).not.toHaveBeenCalled()
 })
 
+it('admits explicit abandonment through a standalone launcher to the guarded installation operation', async () => {
+  const f = fixture(), update = vi.fn(async () => 0)
+  f.running(f.retired)
+  const args = ['update', '--abandon', '--json']
+  expect(await f.invoke(args, { update })).toMatchObject({ code: 0, admitted: ['installer'] })
+  expect(update).toHaveBeenCalledOnce()
+  expect(await f.invoke(args, { update }, { NOTIFAI_NATIVE_ENTRY: undefined })).toMatchObject({ code: 1, admitted: [] })
+  expect(update).toHaveBeenCalledOnce()
+  expect((await f.invoke(['update', '--abandon', '--rollback'], { update })).code).toBe(2)
+  expect(update).toHaveBeenCalledOnce()
+})
+
 it('retained question owners need the exact installation, build, harness and live session', async () => {
   const f = fixture(), session = 'retained-session'
   f.running(f.retired)
