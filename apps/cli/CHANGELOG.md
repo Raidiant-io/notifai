@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0-beta.20](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.19...v12.0.0-beta.20) (2026-10-11)
+
+### Fixes
+
+* Allow Windows repair enough time to verify a complete Node/npm installation, while preserving all trust checks and a bounded package-manager lifetime.
+* Create a linked Codex question form only when the owning app-server can receive its answer; otherwise keep the question in the ordinary reply flow.
+* Restore the Codex app-server connection from compiled native builds and allow for cold starts.
+
 ## [12.0.0-beta.19](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.17...v12.0.0-beta.19) (2026-10-11)
 
 ### Fixes

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:47160cc6e9af9bb10e25a003d35cf245922837016a1693afa418379cea3a056a",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms against dormant-work activation and standalone abandonment. Existing update guidance already requires preserving pending work and approvals, waiting for serving owners at the first quiet transition, authenticated recovery and refusing abandonment after committed activation. Activation now carries validated dormant records unchanged; it neither delivers nor acknowledges them and leaves uninstall conservative. Standalone update --abandon uses the same ownership and permanent-fence checks. No hook definition, trust remedy, question route, readiness claim or domain term changed; the shipped guidance remains accurate.",
+  "behavior_digest": "sha256:fe1480aedb698bed0e64f053c2c762576fdd07b1d84b83b80d187b41b2d32f69",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, shipped skill and references, harness setup, CLI readiness and domain terms against beta.19 plus the Windows verification deadline and Codex question corrections. Windows repair still requires the exact prepared operation and observed quiet window; the complete administrator-owned Node/npm signature, ACL and hash checks remain, with bounded time for verification and execution. Codex ask offers a linked native form only after the owning app-server transport responds; otherwise native_question_unavailable keeps the ordinary question route. The shipped native-questions reference names this prerequisite. The native runtime now uses its own bounded Unix WebSocket client and a cold-start preflight budget. Answer delivery, acknowledgements, trust, pending session state and beta.19 dormant activation invariants remain unchanged. This corrective release keeps the v1 continuity contract and does not include the separate v2 transition or desktop credential migration.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
