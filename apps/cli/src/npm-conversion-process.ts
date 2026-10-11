@@ -38,8 +38,11 @@ export function runNpmManager(input: {
 }): Promise<NpmManagerResult> {
   if (process.platform !== 'win32') throw new Error('Npm manager custody requires Windows')
   if (![input.launcher, input.executable, input.cwd].every(file => path.isAbsolute(file))) throw new Error('Invalid npm operation')
-  const timeout = input.timeoutMs ?? 120_000
-  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new Error('Invalid npm operation deadline')
+  // Admission revalidates the entire trusted toolchain (up to two minutes),
+  // then the observed reader population and package. Leave time for npm itself
+  // while bounding the suspended manager and its kill-on-close supervisor.
+  const timeout = input.timeoutMs ?? 300_000
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 300_000) throw new Error('Invalid npm operation deadline')
   return new Promise(resolve => {
     const result: NpmManagerResult = { manager: null, started: false, exit_code: null, stdout: '', stderr: '' }
     const child = spawn(input.launcher, ['--internal-npm-manager', input.executable, ...input.args], {

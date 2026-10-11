@@ -101,7 +101,9 @@ export function inspectWindowsNpmManager(node: string): WindowsNpmManager {
   const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand',
     Buffer.from(WINDOWS_NPM_MANAGER_CHECK, 'utf16le').toString('base64')], {
     env: { ...process.env, NOTIFAI_MANAGER_NODE: node }, windowsHide: true,
-    encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+    // A full administrator-owned npm tree took 58 seconds on a supported host.
+    // Keep every ACL/hash check and a finite bound, including on slower disks.
+    encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   })
   const value = JSON.parse(output) as WindowsNpmManager
   if (!value || !path.isAbsolute(value.node) || !path.isAbsolute(value.npm) ||
