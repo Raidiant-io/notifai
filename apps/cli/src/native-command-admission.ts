@@ -62,6 +62,11 @@ export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): Na
   }
   if (command.name() === 'install' && command.parent?.name() === 'notifai') return 'installer'
   if (command.name() === 'uninstall' && command.parent?.name() === 'notifai' && command.opts()['finish'] === true) return 'installer'
+  // A staged first upgrade cannot become active until old work is quiet. A
+  // newer authenticated installer must still be able to abandon that uncommitted
+  // transaction. The installation operation verifies ownership and refuses any
+  // committed activation or permanent bootstrap fence before changing files.
+  if (command.name() === 'update' && command.parent?.name() === 'notifai' && command.opts()['abandon'] === true) return 'installer'
   let reference: RuntimeBuildReference | null
   let installed: ReturnType<typeof nativeInstallationIdentity>
   try {
