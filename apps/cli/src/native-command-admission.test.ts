@@ -67,6 +67,26 @@ it('admits active commands but refuses the same ordinary command from a retired 
   expect(configSet).toHaveBeenCalledTimes(1)
 })
 
+it('keeps a historical v1 installation visible without admitting v2 ordinary or retained-owner writes', async () => {
+  const f = fixture(), target = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`
+  writeFileSync(path.join(f.home, '.notifai', 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai', id: f.id,
+    runtime: { target, contract: 'notifai-session-state-v1' } }), { mode: 0o600 })
+  const configSet = vi.fn(async () => 0), hookRun = vi.fn(async () => 0), install = vi.fn(async () => 0)
+  f.running(f.active)
+  expect(await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet })).toMatchObject({ code: 1, admitted: [] })
+  const session = 'historical-owner'
+  writeSessionState(session, f.env, { harness: 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.retired }] })
+  f.running(f.retired)
+  expect(await f.invoke(['hook', 'question-settlement', '--owner', 'notifai', '--harness', 'claude-code'], { hookRun },
+    { [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify({ session_id: session, cwd: f.home }) })).toMatchObject({ code: 1, admitted: [] })
+  expect(configSet).not.toHaveBeenCalled()
+  expect(hookRun).not.toHaveBeenCalled()
+  // The exact candidate's guarded lifecycle operation remains reachable.
+  expect(await f.invoke(['install', '--upgrade', '--version', '2.0.0', '--channel', 'stable', '--no-init', '--no-path', '--json'], { install }))
+    .toMatchObject({ code: 0, admitted: ['installer'] })
+  expect(install).toHaveBeenCalledOnce()
+})
+
 it('forwards a stable selection overtaken by activation before running the old command', async () => {
   const f = fixture(), configSet = vi.fn(async () => 0)
   f.running(f.retired)

@@ -16,3 +16,15 @@ export const LEGACY_BOOTSTRAP_INVENTORIES: readonly string[] = [
   '714ae06bfd61db669931a0cbb06d65a07f5adb2dcdc28647c1b7b33b62f13dfb', // 12.0.0-beta.13
   '88ce51863ade168d0356e9d7dde60890f54e28c360421c5ec158f0520354e9fc', // 12.0.0-beta.15
 ]
+
+/** Exact signed schema-2 v1 releases whose JS admission (ordinary commands,
+ * retained owners and core installer writes) requires runtime.contract v1.
+ * Publishing v2 permanently withdraws that authority. This is separate from
+ * schema-1 target withdrawal and never permits overlapping v1/v2 writers.
+ * Sources at the signed revisions were checked; signed OS execution remains
+ * required release evidence for this distinct quiet transition. */
+export const V1_BOOTSTRAP_INVENTORIES: readonly string[] = [
+  '7df658be3b14ab56b8da94054c4e8448b4ac199fac547aa3d4fb071577184f2d', // 12.0.0-beta.16
+  '2ce75b29b34a73ccc2468fbecd32b639f3406c9922be2424b5813f233375b3e1', // 12.0.0-beta.17
+  '65406f1d341c679925d52438ec8100a24cd9564911fae07b90a95d66509ae77c', // 12.0.0-beta.19
+]

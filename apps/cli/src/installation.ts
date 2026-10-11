@@ -15,8 +15,8 @@ import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
 import { RuntimeRetention, type RuntimeOwnerInspection } from './runtime-retention.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
-import { canShareLocalState, ContinuityPending, installedRuntime, LOCAL_CONTINUITY } from './local-continuity.js'
-import { LEGACY_BOOTSTRAP_INVENTORIES } from './legacy-native-bootstrap.js'
+import { canShareLocalState, ContinuityPending, HISTORICAL_LOCAL_CONTINUITY, installedRuntime, LOCAL_CONTINUITY, type InstalledLocalContinuity } from './local-continuity.js'
+import { LEGACY_BOOTSTRAP_INVENTORIES, V1_BOOTSTRAP_INVENTORIES } from './legacy-native-bootstrap.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
 export interface ActiveGeneration { schema: 1; active: string; previous: string | null; generation: number }
@@ -26,7 +26,7 @@ interface InstallRecord {
   owner: 'notifai'
   source: InstallSource
   target?: ReleaseTarget
-  runtime?: { target: ReleaseTarget; contract: typeof LOCAL_CONTINUITY }
+  runtime?: { target: ReleaseTarget; contract: InstalledLocalContinuity }
   channel: ReleaseChannel
   previousChannel: ReleaseChannel | null
   launcherBuild: string
@@ -84,7 +84,8 @@ export class Installation {
   constructor(private readonly options: { root: string; target: ReleaseTarget; distribution: Distribution;
     access?: InstallationAccess; probe?: (directory: string, inventory: ReleaseInventory) => void; observe?: (phase: Phase) => void;
     bootIdentity?: () => string | null; fileUse?: (launcher: string, files: readonly string[]) => NativeFileUse;
-    sessionsDirectory?: string; externalWriters?: () => string | null; legacyBootstrapInventories?: readonly string[] }) {
+    sessionsDirectory?: string; externalWriters?: () => string | null; legacyBootstrapInventories?: readonly string[];
+    v1BootstrapInventories?: readonly string[] }) {
     if (!path.isAbsolute(options.root)) throw new Error('Installation root must be absolute')
     this.access = options.access ?? installationAccess()
     this.root = path.resolve(options.root)
@@ -240,49 +241,66 @@ export class Installation {
     if (record?.['schema'] !== 2 || record['operation'] !== 'continuity-bootstrap') return null
     const transaction = this.transaction(this.readJson('transaction.json'))
     if (!buildId(record['build']) || record['build'] !== transaction.to.active ||
-        record['installation_id'] !== transaction.next.id || transaction.previous === null || transaction.previous.runtime !== undefined ||
-        transaction.next.runtime === undefined || transaction.kind !== 'activation') throw new Error('Invalid native bootstrap recovery')
+        record['installation_id'] !== transaction.next.id || !this.quietTransition(transaction.previous, transaction.next) ||
+        transaction.kind !== 'activation') throw new Error('Invalid native bootstrap recovery')
     return record['build']
+  }
+  private quietTransition(previous: InstallRecord | null, next: InstallRecord): boolean {
+    return previous !== null && previous.runtime?.contract !== LOCAL_CONTINUITY && next.runtime?.contract === LOCAL_CONTINUITY
   }
   private legacyRejectionProven(version: VerifiedVersion): boolean {
     return version.inventory.schema === 1 && (this.options.legacyBootstrapInventories ?? LEGACY_BOOTSTRAP_INVENTORIES)
       .includes(hash(readFileSync(path.join(version.directory, 'inventory.json'))))
   }
-  /** One short first-upgrade boundary, under installation.lock. Existing
-   * questions/owners defer it without waiting or stopping anything. Moving the
-   * target into runtime rejects old ordinary commands, retained entrypoints and core
-   * updater writes; harmless authenticated cache/staging/PATH work can finish.
+  private v1RejectionProven(version: VerifiedVersion): boolean {
+    return version.inventory.schema === 2 && version.inventory.local_continuity?.contract === HISTORICAL_LOCAL_CONTINUITY &&
+      (this.options.v1BootstrapInventories ?? V1_BOOTSTRAP_INVENTORIES)
+        .includes(hash(readFileSync(path.join(version.directory, 'inventory.json'))))
+  }
+  private rejectionProven(version: VerifiedVersion, installed: InstallRecord): boolean {
+    return installed.runtime !== undefined && this.legacyRejectionProven(version) ||
+      installed.runtime?.contract === LOCAL_CONTINUITY && this.v1RejectionProven(version)
+  }
+  /** One short cross-contract boundary, under installation.lock. Existing
+   * questions/owners defer it without waiting or stopping anything. Publishing
+   * the enforcing identity rejects old ordinary commands, retained entrypoints and
+   * core updater writes. All incompatible executable users must already be gone.
    * The historical binaries are retained unchanged. */
-  private bootstrapLegacy(transaction: Transaction, installed: InstallRecord): void {
+  private bootstrapContinuity(transaction: Transaction, installed: InstallRecord): void {
     const build = transaction.to.active
     const pending = (reason: string): never => { throw new ContinuityPending(build, reason) }
     try {
-      const external = this.options.externalWriters?.()
-      if (external) pending(external)
       const retention = new RuntimeRetention(this.root, installed.id, this.access, this.options.bootIdentity)
       const owners = () => retention.inspectOwners(this.options.sessionsDirectory ?? this.file('sessions'), 'activation')
       const quiet = (): void => {
+        const external = this.options.externalWriters?.()
+        if (external) pending(external)
+        if (this.pendingIntegrationOperations().length > 0) pending('A pending host plugin operation must finish before changing the local continuity contract.')
         const observed = owners()
         if (observed.status !== 'clear' || observed.unattributedPending ||
             observed.sessions.some(session => session.pending || session.references.some(ref => ref.installation_id !== installed.id)) ||
             observed.residents.some(resident => processIdentityLiveness(resident.identity) !== 'gone') ||
             observed.hosts.some(host => processIdentityLiveness(host) !== 'gone')) {
-          pending('The first native upgrade needs its existing questions and runtime owners to finish; their work is preserved.')
+          pending('This native transition needs its existing questions and runtime owners to finish; their work is preserved.')
         }
       }
       quiet()
       const oldFiles: string[] = []
+      const candidate = this.verifyVersion(build)
       const versions = this.file('versions')
       this.owned(versions, true)
       for (const existing of readdirSync(versions)) {
         if (/^\.staged-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(existing)) continue
         if (!buildId(existing)) pending('An unrecognized runtime directory needs inspection.')
         const version = this.verifyVersion(existing)
-        if (version.inventory.schema !== 1) continue
-        if (!this.legacyRejectionProven(version)) pending('This historical runtime has no proven writer rejection boundary.')
-        oldFiles.push(path.join(version.directory, `notifai-runtime${this.extension}`))
+        if (canShareLocalState(candidate.inventory, version.inventory)) continue
+        if (!this.rejectionProven(version, transaction.next)) pending('This historical runtime has no proven writer rejection boundary.')
+        oldFiles.push(path.join(version.directory, `notifai-runtime${this.extension}`), path.join(version.directory, `notifai${this.extension}`))
       }
       if (!oldFiles.length) pending('No authenticated historical native runtime establishes this bootstrap boundary.')
+      if (!canShareLocalState(candidate.inventory, this.verifyVersion(installed.launcherBuild).inventory)) {
+        oldFiles.push(this.file(`bin/notifai${this.extension}`))
+      }
       if (present(this.file('uninstall.json')) && this.bootstrapTarget() !== build) throw new Error('Existing uninstall must be recovered separately')
       this.save('uninstall.json', { schema: 2, operation: 'continuity-bootstrap', installation_id: installed.id, build })
       this.options.observe?.('bootstrap-closed')
@@ -300,7 +318,7 @@ export class Installation {
       // Before the permanent fence, a busy/uncertain result immediately restores
       // the working installation. After it, only exact transaction recovery may
       // reopen admission; restoring the legacy target could revive an obsolete updater.
-      if (this.readInstall()?.runtime === undefined && this.bootstrapTarget() === build) rmSync(this.file('uninstall.json'), { force: true })
+      if (this.readInstall()?.runtime?.contract !== LOCAL_CONTINUITY && this.bootstrapTarget() === build) rmSync(this.file('uninstall.json'), { force: true })
     }
   }
   /** Publish a prepared owned-file change only while the assessed runtime is
@@ -323,8 +341,8 @@ export class Installation {
    * Unknown lifetime evidence overestimates writers; it never grants clearance. */
   private assertContinuity(build: string, installed: InstallRecord | null): void {
     const candidate = this.verifyVersion(build)
-    if (candidate.inventory.schema !== 2) throw new ContinuityPending(build,
-      'This release cannot enforce local continuity; it may be retained but cannot become active.')
+    if (candidate.inventory.schema !== 2 || candidate.inventory.local_continuity?.contract !== LOCAL_CONTINUITY) throw new ContinuityPending(build,
+      'This release cannot enforce the current local continuity contract; it may be retained but cannot become active.')
     const external = this.options.externalWriters?.()
     if (external) throw new ContinuityPending(build, external)
     // First native installation also shares the existing state directory with
@@ -339,7 +357,8 @@ export class Installation {
       throw new ContinuityPending(build, 'An existing writer has no verified native generation.')
     }
     const builds = new Set(owners.sessions.flatMap(owner => owner.builds))
-    for (const setup of this.pendingIntegrationOperations()) builds.add(setup.build)
+    const setupBuilds = new Set(this.pendingIntegrationOperations().map(setup => setup.build))
+    for (const existing of setupBuilds) builds.add(existing)
     const liveBuilds = new Set<string>()
     for (const resident of owners.residents) {
       if (processIdentityLiveness(resident.identity) === 'gone') continue
@@ -365,7 +384,7 @@ export class Installation {
       // A completed bootstrap permanently withdrew legacy native command admission.
       // Preserve old references and files, without treating them as resumable
       // writers. An actually observed old resident still blocks on uncertainty.
-      if (installed?.runtime !== undefined && !liveBuilds.has(existing) && this.legacyRejectionProven(previous)) continue
+      if (installed && !liveBuilds.has(existing) && !setupBuilds.has(existing) && this.rejectionProven(previous, installed)) continue
       if (!canShareLocalState(candidate.inventory, previous.inventory)) throw new ContinuityPending(build,
         `Existing runtime ${previous.inventory.version} has an unknown or different local continuity contract.`)
     }
@@ -971,20 +990,47 @@ export class Installation {
       to.generation === (from?.generation ?? 0) + 1 && to.previous === (from?.active ?? null)
     if (!validGeneration || (from === null) !== (previous === null) ||
         (previous && previous.id !== next.id)) throw new Error('Installation transaction identity mismatch')
+    const candidate = this.verifyVersion(to.active)
+    const targetContract = candidate.inventory.local_continuity?.contract
+    if (previous && from) {
+      const prior = this.verifyVersion(from.active)
+      if (previous.runtime?.contract !== prior.inventory.local_continuity?.contract ||
+          (previous.runtime === undefined) !== (prior.inventory.schema === 1)) throw new Error('Installation transaction previous contract mismatch')
+      // Released v1 updaters can stage a signed v2 payload, but their plan
+      // writes the updater's compiled v1 contract. Only this exact audited
+      // pre-fence activation shape may be corrected to the signed target.
+      if (item.kind === 'activation' && targetContract === LOCAL_CONTINUITY &&
+          previous.runtime?.contract === HISTORICAL_LOCAL_CONTINUITY && next.runtime?.contract === HISTORICAL_LOCAL_CONTINUITY &&
+          next.source === previous.source && next.previousChannel === previous.channel &&
+          next.launcherBuild === to.active && !next.launcherUpdatePending && this.v1RejectionProven(prior)) {
+        next.runtime = { target: this.options.target, contract: LOCAL_CONTINUITY }
+      }
+    }
+    if (next.runtime?.contract !== targetContract || (next.runtime === undefined) !== (candidate.inventory.schema === 1)) {
+      throw new Error('Installation transaction target contract mismatch')
+    }
     return { schema: 1, kind: item.kind!, from, to, previous, next }
   }
   private finish(transaction: Transaction): void {
+    transaction = this.transaction(transaction)
     const current = this.readActive()
     if (!sameGeneration(current, transaction.from) && !sameGeneration(current, transaction.to)) throw new Error('Installation changed during transaction recovery')
     const installed = this.readInstall()
     if (installed && installed.id !== transaction.next.id) throw new Error('Installation owner changed during recovery')
+    if (installed && installed.runtime?.contract !== transaction.previous?.runtime?.contract &&
+        installed.runtime?.contract !== transaction.next.runtime?.contract) throw new Error('Installation contract changed during recovery')
     const next = this.verifyVersion(transaction.to.active)
     // Discovery can advance while an interrupted transaction is waiting. An
     // already committed generation stays usable; recovery never silently rolls
     // it back. A not-yet-committed withdrawn candidate cannot become active.
     if (!sameGeneration(current, transaction.to)) {
       this.assertNotWithdrawn(next.inventory.version)
-      if (installed && installed.runtime === undefined && transaction.next.runtime !== undefined) this.bootstrapLegacy(transaction, installed)
+      if (installed && this.quietTransition(installed, transaction.next)) {
+        // Bind an old-updater-created plan to its signed candidate before the
+        // launch barrier or permanent contract publication can be observed.
+        this.save('transaction.json', transaction)
+        this.bootstrapContinuity(transaction, installed)
+      }
       this.assertContinuity(transaction.to.active, this.readInstall())
     }
     this.checkStable(transaction.previous, transaction.next)
@@ -1110,18 +1156,23 @@ export class Installation {
     this.prepareRoot()
     this.mutate(() => {
       const current = this.readActive()
-      if ((current?.generation ?? 0) !== expectedGeneration) throw new Error('Installation changed; inspect before abandoning recovery')
       const value = this.readJson('transaction.json')
-      if (value === null) return
-      const transaction = this.transaction(value)
-      if (!sameGeneration(current, transaction.from) || sameGeneration(current, transaction.to)) {
-        throw new Error('This activation is committed; recover it before an explicit rollback')
+      if (value === null) {
+        if ((current?.generation ?? 0) !== expectedGeneration) throw new Error('Installation changed; inspect before abandoning recovery')
+        return
       }
+      const transaction = this.transaction(value)
       const installed = this.readInstall()
       if ((installed && installed.id !== transaction.next.id) || (!installed && transaction.previous)) {
         throw new Error('Installation owner changed during recovery')
       }
-      if (installed?.runtime && transaction.previous !== null && transaction.previous.runtime === undefined) throw new Error('Recover the exact pending native bootstrap; its admission fence cannot be abandoned')
+      if (installed?.runtime && transaction.previous !== null && installed.runtime.contract !== transaction.previous.runtime?.contract) {
+        throw new Error('Recover the exact pending native bootstrap; its admission fence cannot be abandoned')
+      }
+      if ((current?.generation ?? 0) !== expectedGeneration) throw new Error('Installation changed; inspect before abandoning recovery')
+      if (!sameGeneration(current, transaction.from) || sameGeneration(current, transaction.to)) {
+        throw new Error('This activation is committed; recover it before an explicit rollback')
+      }
       this.checkStable(transaction.previous, transaction.next)
       const stable = this.file(path.join('bin', `notifai${this.extension}`))
       if (transaction.previous) {
@@ -1134,8 +1185,9 @@ export class Installation {
         if (present(stable)) rmSync(stable)
         if (installed) rmSync(this.file('install.json'))
       }
+      if (this.bootstrapTarget() === transaction.to.active) rmSync(this.file('uninstall.json'))
       rmSync(this.file('transaction.json'))
-    })
+    }, true)
     return this.inspect()
   }
   /** Deterministic eligibility before an external package operation. This
@@ -1191,8 +1243,9 @@ export class Installation {
   private commit(from: ActiveGeneration | null, previous: InstallRecord | null, build: string, source: InstallSource, channel: ReleaseChannel): ActivationResult {
     // Historical readers remain authenticated, but can never become an active
     // updater again. Leave no recoverable downgrade transaction for them.
-    if (this.verifyVersion(build).inventory.schema !== 2) throw new ContinuityPending(build,
-      'This release cannot enforce local continuity; it may be retained but cannot become active.')
+    const candidate = this.verifyVersion(build)
+    if (candidate.inventory.schema !== 2 || candidate.inventory.local_continuity?.contract !== LOCAL_CONTINUITY) throw new ContinuityPending(build,
+      'This release cannot enforce the current local continuity contract; it may be retained but cannot become active.')
     const to: ActiveGeneration = { schema: 1, active: build, previous: from?.active ?? null, generation: (from?.generation ?? 0) + 1 }
     const next: InstallRecord = { schema: 1, id: previous?.id ?? randomUUID(), owner: 'notifai', source: previous?.source ?? source,
       runtime: { target: this.options.target, contract: LOCAL_CONTINUITY }, channel, previousChannel: previous?.channel ?? null, launcherBuild: build, launcherUpdatePending: false }
