@@ -161,6 +161,47 @@ describe('defaultCredentialStore', () => {
     expect(store.describe()).toBe('Secret Service (io.notifai.cli)')
   })
 
+  it('preserves the same-root headless credential after a desktop read', () => {
+    const { env } = sandbox('linux-headless-desktop-headless')
+    const { runner } = mockSecretTool()
+    const select = (available: boolean) => defaultCredentialStore(env, {
+      platform: 'linux', secretServiceAvailable: available, run: runner,
+    })
+    select(false).save(SAMPLE)
+    expect(select(true).load()).toEqual(SAMPLE)
+    select(true).save(OTHER)
+    expect(select(true).load()).toEqual(OTHER)
+    expect(select(false).load()).toEqual(OTHER)
+  })
+
+  it('keeps new secure credentials authoritative when a later invocation is headless', () => {
+    const { env } = sandbox('linux-desktop-headless-desktop')
+    const { runner, calls } = mockSecretTool()
+    const select = (available: boolean) => defaultCredentialStore(env, {
+      platform: 'linux', secretServiceAvailable: available, run: runner,
+    })
+    const earlyHeadless = select(false)
+    select(true).save(SAMPLE)
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    const authority = readFileSync(file, 'utf8')
+    expect(JSON.parse(authority)).toEqual({
+      format: 'notifai.linux-credential-authority.v1', authority: 'secret-service',
+    })
+    for (const value of Object.values(SAMPLE)) expect(authority).not.toContain(value)
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
+    const unavailable = select(false)
+    expect(unavailable).toBeInstanceOf(SecretServiceStore)
+    const before = calls.length
+    expect(() => unavailable.load()).toThrow(/Secret Service credential unavailable/)
+    expect(() => unavailable.save(OTHER)).toThrow(/Secret Service credential unavailable/)
+    expect(() => earlyHeadless.load()).toThrow(/Secret Service credential unavailable/)
+    expect(() => earlyHeadless.save(OTHER)).toThrow(/Secret Service owns this credential/)
+    expect(calls).toHaveLength(before)
+    expect(readFileSync(file, 'utf8')).toBe(authority)
+    expect(select(true).load()).toEqual(SAMPLE)
+    assertNoSecretInArgs(calls)
+  })
+
   it('uses the file store on macOS when Keychain is unavailable', () => {
     const { env } = sandbox('default-darwin-file')
     const store = defaultCredentialStore(env, { platform: 'darwin', keychainAvailable: false })
@@ -188,7 +229,9 @@ describe('FileStore', () => {
     store.save(OTHER)
     expect(store.load()).toEqual(OTHER)
     store.clear()
-    expect(existsSync(file)).toBe(false)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      format: 'notifai.linux-credential-authority.v1', authority: 'cleared',
+    })
     expect(store.load()).toBeNull()
   })
 
@@ -247,9 +290,18 @@ describe('FileStore', () => {
     expect(new FileStore(env).load()).toBeNull()
     expect(readFileSync(file, 'utf8')).toBe(future)
   })
+
+  it('keeps non-Linux clear as file removal', () => {
+    const { env } = sandbox('file-clear-darwin')
+    const store = new FileStore(env, { platform: 'darwin' })
+    store.save(SAMPLE)
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    store.clear()
+    expect(existsSync(file)).toBe(false)
+  })
 })
 
-function mockSecretTool(options: { failStore?: boolean } = {}): {
+function mockSecretTool(options: { failStore?: boolean; failLookup?: boolean; failClear?: boolean; failSearch?: boolean } = {}): {
   runner: ProcessRunner
   calls: RunCommandSpec[]
   vault: Map<string, string>
@@ -267,14 +319,19 @@ function mockSecretTool(options: { failStore?: boolean } = {}): {
         return { status: 0, stdout: Buffer.alloc(0) }
       }
       if (operation === 'lookup') {
+        if (options.failLookup) return { status: 1, stdout: Buffer.alloc(0) }
         const value = vault.get(key)
         return value === undefined
           ? { status: 1, stdout: Buffer.alloc(0) }
           : { status: 0, stdout: Buffer.from(value, 'utf8') }
       }
       if (operation === 'clear') {
-        vault.delete(key)
-        return { status: 0, stdout: Buffer.alloc(0) }
+        if (options.failClear) return { status: 1, stdout: Buffer.alloc(0) }
+        return { status: vault.delete(key) ? 0 : 1, stdout: Buffer.alloc(0) }
+      }
+      if (operation === 'search') {
+        if (options.failSearch) return { status: 1, stdout: Buffer.alloc(0) }
+        return { status: 0, stdout: Buffer.from(vault.has(key) ? '[item]\nattribute.service = io.notifai.cli\n' : '') }
       }
       return { status: 1, stdout: Buffer.alloc(0) }
     },
@@ -303,7 +360,10 @@ describe('SecretServiceStore', () => {
     const stored = calls.find((call) => call.args[0] === 'store')!
     expect(JSON.parse(stored.input.toString('utf8'))).toEqual({ format: 'notifai.machine-credential.v1', ...SAMPLE })
     assertNoSecretInArgs(calls)
-    expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
+    const authority = readFileSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'), 'utf8')
+    expect(JSON.parse(authority)).toEqual({ format: 'notifai.linux-credential-authority.v1', authority: 'cleared' })
+    expect(authority).not.toContain(SAMPLE.secret)
+    expect(authority).not.toContain(OTHER.secret)
   })
 
   it('fails closed with a remedy when the keyring refuses the write', () => {
@@ -313,7 +373,7 @@ describe('SecretServiceStore', () => {
     expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
   })
 
-  it('moves a plaintext credential into the service and removes the file', () => {
+  it('retains an existing plaintext authority without implicit migration', () => {
     const { env } = sandbox('secret-service-migrate')
     new FileStore(env, { platform: 'linux' }).save(SAMPLE)
     const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
@@ -321,24 +381,208 @@ describe('SecretServiceStore', () => {
     const { runner, vault } = mockSecretTool()
     const store = new SecretServiceStore(env, { run: runner })
     expect(store.load()).toEqual(SAMPLE)
-    expect(existsSync(file)).toBe(false)
-    expect(vault.size).toBe(1)
+    expect(existsSync(file)).toBe(true)
+    expect(vault.size).toBe(0)
     expect(store.load()).toEqual(SAMPLE)
+    store.save(OTHER)
+    expect(store.load()).toEqual(OTHER)
+    expect(new FileStore(env, { platform: 'linux' }).load()).toEqual(OTHER)
+    expect(vault.size).toBe(0)
+    expect(store.describe()).toContain('plaintext file')
   })
 
-  it('keeps the plaintext credential working while the service refuses it', () => {
+  it('keeps plaintext authority working without attempting a refused service write', () => {
     const { env } = sandbox('secret-service-migrate-refused')
     new FileStore(env, { platform: 'linux' }).save(SAMPLE)
-    const store = new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner })
+    const { runner, calls } = mockSecretTool({ failStore: true })
+    const store = new SecretServiceStore(env, { run: runner })
     expect(store.load()).toEqual(SAMPLE)
+    store.save(OTHER)
+    expect(store.load()).toEqual(OTHER)
+    expect(calls).toEqual([])
     expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(true)
   })
 
   it('clears a leftover plaintext file too', () => {
     const { env } = sandbox('secret-service-clear')
     new FileStore(env, { platform: 'linux' }).save(SAMPLE)
-    new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner }).clear()
-    expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
+    const store = new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner })
+    store.clear()
+    expect(store.load()).toBeNull()
+    expect(new FileStore(env, { platform: 'linux' }).load()).toBeNull()
+    expect(readFileSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'), 'utf8')).not.toContain(SAMPLE.secret)
+  })
+
+  it('does not resurrect a stale service credential after headless clear', () => {
+    const { env } = sandbox('secret-service-headless-clear')
+    const { runner, vault } = mockSecretTool()
+    const desktop = () => defaultCredentialStore(env, {
+      platform: 'linux', secretServiceAvailable: true, run: runner,
+    })
+    desktop().save(SAMPLE)
+    const fileOverride = () => defaultCredentialStore({ ...env, NOTIFAI_CREDENTIALS: 'file' }, {
+      platform: 'linux', secretServiceAvailable: false, run: runner,
+    })
+    fileOverride().save(OTHER)
+    expect(desktop().load()).toEqual(OTHER)
+    fileOverride().clear()
+    expect(vault.size).toBe(1)
+    expect(desktop().load()).toBeNull()
+  })
+
+  it('does not resurrect a service credential when clear is refused', () => {
+    const { env } = sandbox('secret-service-clear-refused')
+    const { runner, vault } = mockSecretTool({ failClear: true })
+    const store = () => new SecretServiceStore(env, { run: runner })
+    store().save(SAMPLE)
+    expect(() => store().clear()).toThrow(/clear failed; local access is cleared/)
+    expect(vault.size).toBe(1)
+    expect(store().load()).toBeNull()
+  })
+
+  it('can clear repeatedly when the service confirms no matching items remain', () => {
+    const { env } = sandbox('secret-service-repeat-clear')
+    const { runner, calls } = mockSecretTool()
+    const store = new SecretServiceStore(env, { run: runner })
+    store.save(SAMPLE)
+    store.clear()
+    expect(() => store.clear()).not.toThrow()
+    expect(store.load()).toBeNull()
+    expect(calls.at(-1)?.args).toEqual(['search', '--all', 'service', 'io.notifai.cli', 'account', 'machine'])
+  })
+
+  it('does not treat an unsuccessful absence check as successful removal', () => {
+    const { env } = sandbox('secret-service-clear-search-failed')
+    const { runner } = mockSecretTool({ failSearch: true })
+    const store = new SecretServiceStore(env, { run: runner })
+    expect(() => store.clear()).toThrow(/clear failed; local access is cleared/)
+    expect(store.load()).toBeNull()
+  })
+
+  it('preserves cleared authority when a later secure save is refused', () => {
+    const { env } = sandbox('secret-service-save-after-clear-refused')
+    const options = { failStore: false, failClear: true }
+    const { runner, vault } = mockSecretTool(options)
+    const store = () => new SecretServiceStore(env, { run: runner })
+    store().save(SAMPLE)
+    expect(() => store().clear()).toThrow(/clear failed/)
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    const cleared = readFileSync(file, 'utf8')
+    options.failStore = true
+    expect(() => store().save(OTHER)).toThrow(/credential save failed/)
+    expect(readFileSync(file, 'utf8')).toBe(cleared)
+    expect(vault.size).toBe(1)
+    expect(store().load()).toBeNull()
+    options.failStore = false
+    store().save(OTHER)
+    expect(store().load()).toEqual(OTHER)
+  })
+
+  it('reports an unavailable owned credential instead of allowing replacement through a missing load', () => {
+    const { env } = sandbox('secret-service-lookup-refused')
+    const options = { failLookup: false }
+    const { runner } = mockSecretTool(options)
+    const store = new SecretServiceStore(env, { run: runner })
+    store.save(SAMPLE)
+    options.failLookup = true
+    expect(() => store.load()).toThrow(/credential unavailable/)
+    options.failLookup = false
+    expect(store.load()).toEqual(SAMPLE)
+  })
+
+  it('records authority for an existing service item without copying its secret to disk', () => {
+    const { env } = sandbox('secret-service-existing-item')
+    const { runner, vault } = mockSecretTool()
+    vault.set(['service', 'io.notifai.cli', 'account', 'machine'].join('\0'), JSON.stringify(SAMPLE))
+    const desktop = defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: true, run: runner })
+    expect(desktop.load()).toEqual(SAMPLE)
+    const authority = readFileSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'), 'utf8')
+    expect(authority).not.toContain(SAMPLE.secret)
+    expect(() => defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: false, run: runner }).load())
+      .toThrow(/credential unavailable/)
+  })
+
+  it('leaves unknown, future, and ambiguous file authority untouched without consulting the service', () => {
+    const { env } = sandbox('secret-service-unknown-authority')
+    const { runner, calls, vault } = mockSecretTool()
+    vault.set(['service', 'io.notifai.cli', 'account', 'machine'].join('\0'), JSON.stringify(SAMPLE))
+    const file = path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json')
+    const cases = [
+      { format: 'notifai.linux-credential-authority.v2', authority: 'cleared' },
+      { format: 'notifai.linux-credential-authority.v1', authority: 'unknown' },
+      { format: 'notifai.linux-credential-authority.v1', authority: 'secret-service', ...OTHER },
+      { format: 'notifai.machine-credential.v1', authority: 'secret-service', ...OTHER },
+      { format: 'notifai.machine-credential.v2', ...OTHER },
+    ]
+    for (const value of cases) {
+      const bytes = `${JSON.stringify(value)}\n`
+      writeRaw(file, bytes)
+      const stores = [
+        new SecretServiceStore(env, { run: runner }),
+        defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: true, run: runner }),
+        defaultCredentialStore({ ...env, NOTIFAI_CREDENTIALS: 'file' }, { platform: 'linux', run: runner }),
+      ]
+      for (const store of stores) {
+        expect(store.load()).toBeNull()
+        expect(() => store.save(SAMPLE)).toThrow(/Unrecognized credential file/)
+        expect(() => store.clear()).toThrow(/Unrecognized credential file/)
+        expect(readFileSync(file, 'utf8')).toBe(bytes)
+      }
+    }
+    expect(calls).toEqual([])
+  })
+
+  it('fences stale service data on headless secure clear while reporting physical removal unavailable', () => {
+    const { env } = sandbox('secret-service-clear-unavailable')
+    const { runner, vault } = mockSecretTool()
+    defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: true, run: runner }).save(SAMPLE)
+    const headless = defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: false, run: runner })
+    expect(() => headless.clear()).toThrow(/credential unavailable/)
+    expect(vault.size).toBe(1)
+    const desktop = defaultCredentialStore(env, { platform: 'linux', secretServiceAvailable: true, run: runner })
+    expect(desktop.load()).toBeNull()
+    desktop.clear()
+    expect(vault.size).toBe(0)
+  })
+
+  it('preserves a headless file credential published while the service helper is saving', () => {
+    const { env } = sandbox('secret-service-concurrent-file')
+    const fileStore = new FileStore(env, { platform: 'linux' })
+    const service = mockSecretTool()
+    const runner: ProcessRunner = {
+      run(spec) {
+        const result = service.runner.run(spec)
+        if (spec.args[0] === 'store') fileStore.save(OTHER)
+        return result
+      },
+    }
+    const desktop = new SecretServiceStore(env, { run: runner })
+    expect(() => desktop.save(SAMPLE)).toThrow(/File credential remains authoritative/)
+    expect(desktop.load()).toEqual(OTHER)
+    expect(fileStore.load()).toEqual(OTHER)
+  })
+
+  it('preserves a clear marker published during secure save or lookup', () => {
+    for (const operation of ['store', 'lookup', 'owned-lookup']) {
+      const { env } = sandbox(`secret-service-concurrent-clear-${operation}`)
+      const fileStore = new FileStore(env, { platform: 'linux' })
+      const service = mockSecretTool()
+      if (operation !== 'store') {
+        service.vault.set(['service', 'io.notifai.cli', 'account', 'machine'].join('\0'), JSON.stringify(SAMPLE))
+      }
+      if (operation === 'owned-lookup') fileStore.recordLinuxAuthority('secret-service')
+      const runner: ProcessRunner = {
+        run(spec) {
+          const result = service.runner.run(spec)
+          if (spec.args[0] === (operation === 'store' ? 'store' : 'lookup')) fileStore.clear()
+          return result
+        },
+      }
+      const desktop = new SecretServiceStore(env, { run: runner })
+      expect(() => operation === 'store' ? desktop.save(SAMPLE) : desktop.load()).toThrow()
+      expect(fileStore.load()).toBeNull()
+      expect(desktop.load()).toBeNull()
+    }
   })
 })
 
