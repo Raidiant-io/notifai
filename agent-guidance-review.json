@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a83f7b33d382383cd9f17695713933d152c5037ab03d52012c17d17884ed0308",
+  "behavior_digest": "sha256:47160cc6e9af9bb10e25a003d35cf245922837016a1693afa418379cea3a056a",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. The Windows npm repair keeps the same explicit prepare/resume commands, exact operation confirmation, observed pause and recovery requirements. Only the census of its handshake-owned suspended manager changes: exact kernel identity is checked before loader-dependent inspection. No lifecycle callback, ordinary command or other reader receives an exemption; no guidance change is needed.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms against dormant-work activation and standalone abandonment. Existing update guidance already requires preserving pending work and approvals, waiting for serving owners at the first quiet transition, authenticated recovery and refusing abandonment after committed activation. Activation now carries validated dormant records unchanged; it neither delivers nor acknowledges them and leaves uninstall conservative. Standalone update --abandon uses the same ownership and permanent-fence checks. No hook definition, trust remedy, question route, readiness claim or domain term changed; the shipped guidance remains accurate.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
