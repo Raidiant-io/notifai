@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0-beta.18](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.17...v12.0.0-beta.18) (2026-10-11)
+
+### Fixes
+
+* Preserve understood dormant session records during native activation instead of letting old cleanup and ended-session work block updates indefinitely. Live owners, undelivered input and uncertain state still hold activation.
+* Allow a verified standalone installer to abandon an uncommitted first upgrade before the permanent writer fence, so a corrected candidate can replace it safely.
+
 ## [12.0.0-beta.17](https://github.com/Raidiant-io/notifai/compare/v12.0.0-beta.16...v12.0.0-beta.17) (2026-10-10)
 
 ### Fixes
