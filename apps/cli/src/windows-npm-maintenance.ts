@@ -26,7 +26,7 @@ export interface NpmMaintenanceScope {
   prefix: ObservedDirectory
   states: ObservedDirectory[]
 }
-export interface WindowsReader extends ProcessIdentity { executable: string }
+export interface WindowsReader extends ProcessIdentity { executable: string; reason: 'package' | 'application' | 'manager' }
 export interface WindowsReaderCensus { readers: WindowsReader[]; uncertain: boolean }
 
 const processIdentity = (value: ProcessIdentity) => value && Number.isSafeInteger(value.pid) && value.pid > 0 &&
@@ -78,7 +78,8 @@ export const npmMaintenanceDigest = (value: unknown): string => createHash('sha2
 
 /** A fresh observation inside an approved cooperative pause. This establishes
  * no exclusion against newly started programs, wrappers, embedded consumers or
- * shared remote storage. Those cases remain outside this direct-CLI repair. */
+ * shared remote storage. Those cases remain outside this direct-CLI repair.
+ * A runtime name alone never establishes that a process reads this package. */
 export function assertNpmMaintenanceQuiet(input: {
   scope: NpmMaintenanceScope
   census: WindowsReaderCensus
@@ -90,12 +91,13 @@ export function assertNpmMaintenanceQuiet(input: {
   if (!processIdentity(input.coordinator) || input.manager !== undefined && !processIdentity(input.manager)) throw new Error('Maintenance process identity is unavailable')
   if (input.census.uncertain || !Array.isArray(input.census.readers) || input.census.readers.some(p => !processIdentity(p))) throw new Error('Relevant process inspection is incomplete')
   for (const producer of input.scope.observation.producers) {
-    if (input.liveness(producer) !== 'gone') throw new Error('An assessed producer has not been proved stopped')
+    if (input.liveness(producer) !== 'gone') throw new Error(`The assessed application (PID ${producer.pid}) has not finished; defer this replacement until its work settles`)
   }
   const owned = [input.coordinator, ...(input.manager ? [input.manager] : [])]
-  if (input.census.readers.some(reader => !owned.some(identity => identity.pid === reader.pid &&
-      normalizeProcessStart(identity.start) === normalizeProcessStart(reader.start)))) {
-    throw new Error('A possible legacy reader or named producer is still running; maintain the approved pause before resuming')
+  const busy = input.census.readers.filter(reader => !owned.some(identity => identity.pid === reader.pid &&
+    normalizeProcessStart(identity.start) === normalizeProcessStart(reader.start)))
+  if (busy.length) {
+    throw new Error(`Affected Notifai processes are still running (${busy.map(reader => `${reader.reason}: PID ${reader.pid}`).join(', ')}); defer this replacement until their work finishes. Leave unrelated applications running`)
   }
   if (input.owners.length !== input.scope.states.length || input.owners.some(owner => owner.status !== 'clear' || owner.unattributedPending ||
       owner.sessions.some(session => session.pending) || [...owner.hosts, ...owner.residents.map(item => item.identity)].some(p => input.liveness(p) !== 'gone'))) {
@@ -115,16 +117,99 @@ foreach ($directory in @($inputScope.prefix) + @($inputScope.state_roots)) {
     throw 'Repair supports fixed local storage; shared or unestablished storage remains pending'
   }
 }
-$names = @('node.exe', 'bun.exe', 'deno.exe', 'notifai-runtime.exe') + @($inputScope.producers | ForEach-Object { [IO.Path]::GetFileName($_.executable) })
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class NotifaiReaderArguments {
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  static extern IntPtr CommandLineToArgvW(string line, out int count);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
+  static extern uint GetLongPathName(string input, StringBuilder output, uint size);
+  public static string[] Parse(string line) {
+    int count; IntPtr memory = CommandLineToArgvW(line, out count);
+    if (memory == IntPtr.Zero) throw new InvalidOperationException("Cannot inspect scoped process arguments");
+    try {
+      var result = new string[count];
+      for (int i=0; i<count; i++) result[i] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory, i * IntPtr.Size));
+      return result;
+    } finally { LocalFree(memory); }
+  }
+  public static string LongPath(string value) {
+    var buffer = new StringBuilder(32768);
+    uint count = GetLongPathName(value, buffer, (uint)buffer.Capacity);
+    return count > 0 && count < buffer.Capacity ? buffer.ToString() : value;
+  }
+}
+'@
+function Normalize-LocalPath([string]$value) {
+  if ($value.StartsWith('file:', [StringComparison]::OrdinalIgnoreCase)) {
+    try { $value = ([Uri]$value).LocalPath } catch { return '' }
+  }
+  if ($value.StartsWith('\\?\')) { $value = $value.Substring(4) }
+  if ($value -notmatch '^[a-zA-Z]:[\\/]') { return '' }
+  try { return [NotifaiReaderArguments]::LongPath([IO.Path]::GetFullPath($value)).TrimEnd('\').ToLowerInvariant() } catch { return '' }
+}
+$prefixes = @($inputScope.prefix, [IO.Path]::GetDirectoryName($inputScope.command)) | ForEach-Object { Normalize-LocalPath $_ } | Select-Object -Unique
+$packages = @($prefixes | ForEach-Object { $_ + '\node_modules\@raidiant\notifai' })
+$commands = @($prefixes | ForEach-Object { $_ + '\notifai'; $_ + '\notifai.cmd'; $_ + '\notifai.ps1' })
+function Test-PackagePath([string]$value) {
+  $candidate = Normalize-LocalPath $value
+  if (-not $candidate) { return $false }
+  if ($commands -contains $candidate) { return $true }
+  foreach ($package in $packages) {
+    if ($candidate -eq $package -or $candidate.StartsWith($package + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+function Test-DirectReader($row) {
+  if (Test-PackagePath $row.ExecutablePath) { return $true }
+  if ($row.Name -notin @('node.exe', 'bun.exe', 'deno.exe')) { return $false }
+  if (-not $row.CommandLine) { return $false }
+  $arguments = @([NotifaiReaderArguments]::Parse($row.CommandLine))
+  # The supported npm shims launch an absolute script. Inspect that entry and
+  # preloads, not application data after it. Opaque embedded imports are outside
+  # this direct-CLI assessment; scanning every interpreter cannot prove them safe.
+  $unknownOption = $false
+  for ($i = 1; $i -lt $arguments.Count; $i++) {
+    $argument = $arguments[$i]
+    if ($i -eq 1 -and $row.Name -in @('bun.exe', 'deno.exe') -and $argument -eq 'run') { continue }
+    if ($argument -eq '--') {
+      return $i + 1 -lt $arguments.Count -and (Test-PackagePath $arguments[$i + 1])
+    }
+    if ($argument -in @('-r', '--require', '--import', '--loader', '--experimental-loader')) {
+      $i++
+      if ($i -lt $arguments.Count -and (Test-PackagePath $arguments[$i])) { return $true }
+      continue
+    }
+    if ($argument -match '^--(?:require|import|loader|experimental-loader)=(.*)$') {
+      if (Test-PackagePath $Matches[1]) { return $true }
+      continue
+    }
+    if ($argument.StartsWith('-')) { $unknownOption = $true; continue }
+    if (Test-PackagePath $argument) { return $true }
+    # With an unknown runtime option, its arity is unknown: retain only explicit
+    # references to this package. Never widen uncertainty to unrelated runtimes.
+    if (-not $unknownOption) { return $false }
+  }
+  return $false
+}
 $rows = @(Get-CimInstance -ClassName Win32_Process)
 if ($rows.Count -gt 4096) { throw 'Process census exceeds its bound' }
 $readers = [Collections.Generic.List[object]]::new(); $uncertain = $false
 foreach ($row in $rows) {
-  if ($row.Name -notin $names) { continue }
+  $named = @($inputScope.producers | Where-Object {
+    ($_.pid -eq $row.ProcessId -and $row.CreationDate -and
+     [Math]::Abs($row.CreationDate.ToUniversalTime().ToFileTimeUtc() - [long]$_.start.Substring(17)) -le 10) -or
+    ([IO.Path]::GetFileName($_.executable) -notin @('node.exe', 'bun.exe', 'deno.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe') -and
+     (Normalize-LocalPath $_.executable) -eq (Normalize-LocalPath $row.ExecutablePath))
+  }).Count -gt 0
+  $manager = $inputScope.manager -and $row.ProcessId -eq $inputScope.manager.pid
+  if (-not $manager -and -not $named -and -not (Test-DirectReader $row)) { continue }
   try {
-    # Include possible readers across account boundaries. Codex sandbox users
-    # can cache this package without permission to write the User's state.
-    # A foreign or inaccessible possible reader defers this narrow repair.
+    # Inspect only processes tied to the assessed package/application. Inability
+    # to read an unrelated program is not a reason to stop it or its workload.
     $live = [Diagnostics.Process]::GetProcessById($row.ProcessId)
     $start = $live.StartTime.ToUniversalTime()
     if ([Math]::Abs(($start - $row.CreationDate.ToUniversalTime()).Ticks) -gt 10) { $uncertain = $true; continue }
@@ -135,7 +220,8 @@ foreach ($row in $rows) {
         ('windows-filetime:' + $start.ToFileTimeUtc()) -ceq $inputScope.manager.start) { continue }
     $executable = $live.MainModule.FileName
     if (-not $executable -or ($live.ProcessName + '.exe') -ine $row.Name) { $uncertain = $true; continue }
-    $readers.Add(@{pid=[int]$row.ProcessId; start=('windows-filetime:' + $start.ToFileTimeUtc()); executable=$executable})
+    $reason = if ($manager) { 'manager' } elseif ($named) { 'application' } else { 'package' }
+    $readers.Add(@{pid=[int]$row.ProcessId; start=('windows-filetime:' + $start.ToFileTimeUtc()); executable=$executable; reason=$reason})
   } catch {
     # A departed process is harmless; a still-present inaccessible process is
     # uncertainty, never an empty list that can authorize replacement.
@@ -155,6 +241,7 @@ export function inspectWindowsNpmReaders(scope: NpmMaintenanceScope, manager?: P
   })
   const result = JSON.parse(output) as WindowsReaderCensus
   if (!result || typeof result.uncertain !== 'boolean' || !Array.isArray(result.readers) || result.readers.length > 4096 ||
-      !result.readers.every(p => processIdentity(p) && typeof p.executable === 'string' && path.win32.isAbsolute(p.executable))) throw new Error('Invalid Windows process census')
+      !result.readers.every(p => processIdentity(p) && typeof p.executable === 'string' && path.win32.isAbsolute(p.executable) &&
+        ['package', 'application', 'manager'].includes(p.reason))) throw new Error('Invalid Windows process census')
   return result
 }
