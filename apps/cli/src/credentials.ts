@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
@@ -49,6 +50,13 @@ export interface CredentialStoreOptions {
 
 const SERVICE = 'io.notifai.cli'
 const CREDENTIAL_FORMAT = 'notifai.machine-credential.v1'
+const LINUX_AUTHORITY_FORMAT = 'notifai.linux-credential-authority.v1'
+type LinuxCredentialAuthority = 'secret-service' | 'cleared'
+type CredentialFileState =
+  | { kind: 'missing' }
+  | { kind: 'credential'; credential: MachineCredential }
+  | { kind: 'authority'; authority: LinuxCredentialAuthority }
+  | { kind: 'unrecognized' }
 const DPAPI_FORMAT = 'notifai.dpapi.current-user.v1'
 const DPAPI_ENTROPY = 'io.notifai.cli'
 // Inbox Windows PowerShell can have a slow first start on a newly provisioned
@@ -204,24 +212,83 @@ export class FileStore implements CredentialStore {
   }
 
   load(): MachineCredential | null {
+    const state = this.readState()
+    if (state.kind === 'authority' && state.authority === 'secret-service' &&
+        this.env['NOTIFAI_CREDENTIALS'] !== 'file') {
+      throw new Error('Secret Service credential unavailable; restore access to its session bus and keyring, then retry')
+    }
+    return state.kind === 'credential' ? state.credential : null
+  }
+
+  /** The same local file carries either a credential or non-secret Linux authority. */
+  readState(): CredentialFileState {
     const file = this.filePath()
-    if (!existsSync(file)) return null
+    if (!existsSync(file)) return { kind: 'missing' }
     try {
-      return parseCredentialJson(readFileSync(file, 'utf8'))
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as unknown
+      if (this.platform === 'linux' && raw !== null && typeof raw === 'object') {
+        const value = raw as Record<string, unknown>
+        if (value['format'] === LINUX_AUTHORITY_FORMAT) {
+          const authority = value['authority']
+          if ((authority === 'secret-service' || authority === 'cleared') &&
+              Object.keys(value).every((key) => key === 'format' || key === 'authority')) {
+            return { kind: 'authority', authority }
+          }
+          return { kind: 'unrecognized' }
+        }
+        if ('authority' in value) return { kind: 'unrecognized' }
+      }
+      const credential = parseCredential(raw)
+      return credential ? { kind: 'credential', credential } : { kind: 'unrecognized' }
     } catch {
-      return null
+      return { kind: 'unrecognized' }
     }
   }
 
   save(credential: MachineCredential): void {
-    atomicWriteFileSync(this.filePath(), `${JSON.stringify(serializeCredential(credential), null, 2)}\n`, {
+    const expectedContentsSha256 = this.contentsHash()
+    if (this.platform === 'linux') {
+      const state = this.readState()
+      if (state.kind === 'unrecognized') throw new Error('Unrecognized credential file; left untouched')
+      if (state.kind === 'authority' && state.authority === 'secret-service' &&
+          this.env['NOTIFAI_CREDENTIALS'] !== 'file') {
+        throw new Error('Secret Service owns this credential; restore access or explicitly set NOTIFAI_CREDENTIALS=file')
+      }
+    }
+    this.write(serializeCredential(credential), expectedContentsSha256)
+  }
+
+  /** Bind authority publication to the local file seen before a helper call. */
+  contentsHash(): string | null {
+    const file = this.filePath()
+    return existsSync(file) ? createHash('sha256').update(readFileSync(file)).digest('hex') : null
+  }
+
+  recordLinuxAuthority(authority: LinuxCredentialAuthority, expectedContentsSha256 = this.contentsHash()): void {
+    if (this.platform !== 'linux') throw new Error('Linux credential authority requires Linux')
+    const state = this.readState()
+    if (state.kind === 'unrecognized') throw new Error('Unrecognized credential file; left untouched')
+    if (authority === 'secret-service' && state.kind === 'credential') {
+      throw new Error('File credential remains authoritative; refusing implicit Secret Service migration')
+    }
+    this.write({ format: LINUX_AUTHORITY_FORMAT, authority }, expectedContentsSha256)
+  }
+
+  private write(value: Record<string, string>, expectedContentsSha256: string | null): void {
+    atomicWriteFileSync(this.filePath(), `${JSON.stringify(value, null, 2)}\n`, {
       mode: 0o600,
       preserveMode: false,
       requireCurrentUserOwner: true,
+      expectedContentsSha256,
     })
   }
 
   clear(): void {
+    if (this.platform === 'linux') {
+      // Absence would permit an older, inaccessible service item to reappear.
+      this.recordLinuxAuthority('cleared')
+      return
+    }
     rmSync(this.filePath(), { force: true })
   }
 
@@ -336,35 +403,53 @@ const SECRET_ATTRIBUTES = ['service', SERVICE, 'account', 'machine'] as const
  * secret from stdin rather than argv. The desktop Companion App keeps its own
  * session in the same service.
  *
- * A credential left in the plaintext file by an earlier CLI moves into the
- * service the first time it is read, and the file is removed.
+ * An existing file credential stays authoritative across desktop and headless
+ * invocations. New service credentials record only non-secret authority in
+ * that file; temporary loss of service access never selects a different store.
  */
 export class SecretServiceStore implements CredentialStore {
   private readonly run: ProcessRunner
   private readonly file: FileStore
+  private readonly available: boolean
 
   constructor(env: NodeJS.ProcessEnv = process.env, options: CredentialStoreOptions = {}) {
     this.run = options.run ?? defaultProcessRunner
     this.file = new FileStore(env, { platform: options.platform ?? 'linux' })
+    this.available = options.secretServiceAvailable ?? true
   }
 
   load(): MachineCredential | null {
+    const expectedContentsSha256 = this.file.contentsHash()
+    const state = this.file.readState()
+    if (state.kind === 'credential') return state.credential
+    if (state.kind === 'unrecognized' || (state.kind === 'authority' && state.authority === 'cleared')) return null
+    this.requireAvailable()
     const result = this.secretTool(['lookup', ...SECRET_ATTRIBUTES], Buffer.alloc(0))
     if (result.status === 0) {
       const stored = parseCredentialJson(result.stdout.toString('utf8').trim())
-      if (stored) return stored
+      if (stored) {
+        if (this.file.contentsHash() !== expectedContentsSha256) {
+          throw new Error('Credential authority changed during Secret Service lookup; retry')
+        }
+        if (state.kind === 'missing') this.file.recordLinuxAuthority('secret-service', expectedContentsSha256)
+        return stored
+      }
     }
-    const legacy = this.file.load()
-    if (legacy === null) return null
-    try {
-      this.save(legacy)
-    } catch {
-      // The service refused it; the file keeps working until it accepts.
+    if (state.kind === 'authority') {
+      throw new Error('Secret Service credential unavailable; restore the session bus and unlock the keyring, then retry')
     }
-    return legacy
+    return null
   }
 
   save(credential: MachineCredential): void {
+    const expectedContentsSha256 = this.file.contentsHash()
+    const state = this.file.readState()
+    if (state.kind === 'credential') {
+      this.file.save(credential)
+      return
+    }
+    if (state.kind === 'unrecognized') throw new Error('Unrecognized credential file; left untouched')
+    this.requireAvailable()
     const serialized = Buffer.from(JSON.stringify(serializeCredential(credential)), 'utf8')
     const result = this.secretTool(['store', '--label=Notifai machine credential', ...SECRET_ATTRIBUTES], serialized)
     if (result.status !== 0) {
@@ -372,16 +457,34 @@ export class SecretServiceStore implements CredentialStore {
         'Secret Service credential save failed; unlock the keyring and retry, or set NOTIFAI_CREDENTIALS=file',
       )
     }
-    this.file.clear()
+    this.file.recordLinuxAuthority('secret-service', expectedContentsSha256)
   }
 
   clear(): void {
-    this.secretTool(['clear', ...SECRET_ATTRIBUTES], Buffer.alloc(0))
+    // Fence stale service data first, including when the helper refuses clear.
     this.file.clear()
+    this.requireAvailable()
+    const result = this.secretTool(['clear', ...SECRET_ATTRIBUTES], Buffer.alloc(0))
+    if (result.status !== 0) {
+      // libsecret also reports false when no unlocked matches were removed.
+      // Search without unlocking so absent items are idempotent, while locked
+      // matches and service errors still require a later removal attempt.
+      const remaining = this.secretTool(['search', '--all', ...SECRET_ATTRIBUTES], Buffer.alloc(0))
+      if (remaining.status === 0 && remaining.stdout.toString('utf8').trim() === '') return
+      throw new Error('Secret Service credential clear failed; local access is cleared, but unlock the keyring and retry removal')
+    }
   }
 
   describe(): string {
+    const state = this.file.readState()
+    if (state.kind === 'credential') return this.file.describe()
     return `Secret Service (${SERVICE})`
+  }
+
+  private requireAvailable(): void {
+    if (!this.available) {
+      throw new Error('Secret Service credential unavailable; restore the session bus and secret-tool, then unlock the keyring and retry')
+    }
   }
 
   private secretTool(args: readonly string[], input: Buffer): RunCommandResult {
@@ -391,7 +494,8 @@ export class SecretServiceStore implements CredentialStore {
 
 /**
  * A session bus and `secret-tool` on PATH. Headless machines (servers, CI,
- * SSH-only boxes) have neither and keep the 0600 file.
+ * SSH-only boxes) have neither and use a 0600 file for new credentials.
+ * Existing Secret Service authority remains selected while its bus is absent.
  */
 export function secretServiceAvailable(env: NodeJS.ProcessEnv): boolean {
   const bus = env['DBUS_SESSION_BUS_ADDRESS']
@@ -482,7 +586,13 @@ export function defaultCredentialStore(
   if (platform === 'win32') return new WindowsDpapiStore(env, options)
   if (platform === 'linux') {
     const secretService = options.secretServiceAvailable ?? secretServiceAvailable(env)
-    return secretService ? new SecretServiceStore(env, options) : new FileStore(env, { platform })
+    const file = new FileStore(env, { platform })
+    const state = file.readState()
+    if (state.kind === 'credential' || state.kind === 'unrecognized') return file
+    const serviceAuthority = state.kind === 'authority' && state.authority === 'secret-service'
+    return secretService || serviceAuthority
+      ? new SecretServiceStore(env, { ...options, secretServiceAvailable: secretService })
+      : file
   }
   const keychain =
     options.keychainAvailable !== undefined
