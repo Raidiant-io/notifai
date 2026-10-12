@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:a28f71be4c9014dcabba8966f5547c6914b86ad97d3409589f270e56fd739318",
+  "behavior_digest": "sha256:258d7d1142a9071f92b8d3c64699bbb2f49899f9b7b67893e0f8c3e2b95930d9",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the combined native installation, scoped repair, grouped Claude question and sound guidance. Retained authenticated native/npm ownership and package-scoped maintenance, whole-registration picker binding with original acknowledgements, and the dedicated Update tone. The merged sound default changes no harness setup, trust, readiness or domain terms. Sound configuration choices and help now include Update consistently with the shipped catalog. Windows Codex now receives a shell-independent literal invocation, preserving the loaded integration revision. Reviewed its setup/recovery guidance: Codex retains ownership of changed-hook approvals; existing active sessions are allowed to finish. Other harness routing, notification behavior, domain terms and readiness boundaries are unchanged. The interpreter is pinned to the absolute Windows system path and launch failures remain failures. This closes command execution defects without changing user trust or setup ownership.",
+  "reason": "Reviewed lifecycle hook ownership, the shipped skill and update references, harness setup, CLI readiness and domain terms against the platform-scoped continuity change. Mac and Windows preserve the authenticated v1 contract and serving owners; Linux retains its credential-authority boundary and existing v2 installations retain their fence. Removed the blanket quiet-point advice from the update reference and CLI next steps. Pending questions, acknowledgements, native approvals and setup ownership remain unchanged. No agent pause or forced owner termination is instructed; staged recovery follows the specific authenticated diagnosis.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

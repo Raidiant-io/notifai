@@ -483,3 +483,22 @@ break.
 The native artifact and OS bootstrap lane is documented in
 [Standalone CLI distribution](STANDALONE.md). That document describes the
 mechanics; it does not authorize native or npm publication.
+
+
+## Shared local state during native updates
+
+The signed inventory binds the executable's primary local continuity contract
+and any supported predecessor contracts to exact native targets. Candidate
+self-check, release signing and archive assembly must agree on both. Historical
+inventories without this declaration grant no cross-contract compatibility.
+
+The v2 credential-authority change affects Linux. Updated Mac and Windows builds
+can continue serving an existing v1 installation: activation preserves that
+installation's contract and its live owners, pending questions, answers and
+acknowledgement debt. Fresh installations use v2; an installation already on v2
+never restores v1 admission. Linux still requires its actual incompatible
+writers to finish. No update stops an agent to establish compatibility.
+
+Changing this declaration requires evidence for the affected shared readers and
+writers, including retained-owner commands and interrupted activation recovery.
+A version number or a broad platform exemption does not establish compatibility.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash, generateKeyPairSync } from 'node:crypto'
 import { Distribution, RELEASE_TARGETS } from '../apps/cli/dist/release-distribution.js'
-import { LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
+import { LOCAL_CONTINUITY_CAPABILITIES, LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
 import { signReleaseInventory, signReleaseChannel } from './sign-release-records.mjs'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
@@ -17,7 +17,7 @@ function candidates(version = '1.0.0') {
     artifact: { target, filename: `notifai-${version}-${target.slice(4)}.${target.includes('windows') ? 'zip' : 'tar.gz'}`,
       bytes: 100, sha256: hash(target), runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64), materials: [material] },
     check_sha256: 'e'.repeat(64),
-    capabilities: { local_continuity: LOCAL_CONTINUITY },
+    capabilities: { local_continuity: LOCAL_CONTINUITY, local_continuity_compatible: LOCAL_CONTINUITY_CAPABILITIES.compatible },
   }))
 }
 const policy = { schema: 1, status: 'approved', runtime: 'bun-1.4.2',
@@ -31,6 +31,10 @@ test('complete matching release records round-trip through the shipped verifier;
   assert.equal(distribution.verifyInventory(signed).schema, 2)
   const fileOnly = candidates(); fileOnly[0].capabilities.local_continuity = 'notifai-session-state-v1'
   assert.throws(() => inventory('1.0.0', { candidates: fileOnly }), /continuity/)
+  const omitted = candidates(); delete omitted[0].capabilities.local_continuity_compatible
+  assert.throws(() => inventory('1.0.0', { candidates: omitted }), /compatibility/)
+  const unsafe = candidates(); unsafe[0].capabilities.local_continuity_compatible = { 'notifai-session-state-v1': ['bun-linux-x64'] }
+  assert.throws(() => inventory('1.0.0', { candidates: unsafe }), /compatibility/)
   const incompatible = candidates(); incompatible[0].capabilities.local_continuity = 'unreviewed'
   assert.throws(() => inventory('1.0.0', { candidates: incompatible }), /continuity/)
   assert.equal(inventory(), signed, 'Retries must produce exactly the same signed inventory')

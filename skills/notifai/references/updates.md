@@ -61,14 +61,15 @@ routes. `npm update` updates only that launcher, not the runtime. An adapter pin
 never changes an existing runtime version/channel; use native update/rollback.
 Removing an npm launcher leaves native hooks and runtime intact.
 
-The first upgrade from an older native installer needs a one-time quiet point.
-Its existing questions and runtime owners finish first; the candidate remains
-staged meanwhile. Use the exact recovery command it reports once those owners
-have finished. Arrange any necessary harness pause within the authorized scope;
-never discard pending work or force-kill its owner. Later compatible native
-updates retain serving owners normally. If this first transition is interrupted,
-resume its authenticated staged candidate. It is not an uninstall, and
-abandoning it after admission changed cannot restore the old installer.
+Native updates preserve serving owners whenever their signed local-state
+contracts are compatible. Mac and Windows retain the existing v1 contract
+through the Linux-specific v2 credential change; no quiet point is needed.
+An older installer without an enforcing runtime identity, or an incompatible
+Linux credential writer, can still leave a candidate staged. Follow its exact
+recovery diagnosis while preserving the owners and their pending work. Do not
+stop agents merely to clear an update check. An interrupted transition resumes
+through its authenticated candidate; abandoning it cannot undo an already
+published writer fence.
 
 Run the locally generated `update_command`. The updater verifies the selected
 installation and stable adapter, then invokes the new executable for its

@@ -17,10 +17,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 class Exit extends Error { constructor(readonly code: number) { super(`exit ${code}`) } }
-function fixture() {
+function fixture(target = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`) {
   const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-command-admission-')); roots.push(home)
   const root = path.join(home, '.notifai'), active = 'a'.repeat(64), retired = 'b'.repeat(64)
-  const target = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`
   const id = '12345678-1234-1234-1234-123456789012', extension = process.platform === 'win32' ? '.exe' : ''
   mkdirSync(path.join(root, 'bin'), { recursive: true, mode: 0o700 })
   for (const build of [active, retired]) {
@@ -67,20 +66,20 @@ it('admits active commands but refuses the same ordinary command from a retired 
   expect(configSet).toHaveBeenCalledTimes(1)
 })
 
-it('keeps a historical v1 installation visible without admitting v2 ordinary or retained-owner writes', async () => {
-  const f = fixture(), target = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`
+it.each(['bun-linux-x64', 'bun-darwin-arm64', 'bun-windows-x64'])('admits v1 ordinary and retained-owner writes only on compatible targets: %s', async target => {
+  const f = fixture(target), compatible = !target.includes('linux')
   writeFileSync(path.join(f.home, '.notifai', 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai', id: f.id,
     runtime: { target, contract: 'notifai-session-state-v1' } }), { mode: 0o600 })
   const configSet = vi.fn(async () => 0), hookRun = vi.fn(async () => 0), install = vi.fn(async () => 0)
   f.running(f.active)
-  expect(await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet })).toMatchObject({ code: 1, admitted: [] })
+  expect(await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet })).toMatchObject({ code: compatible ? 0 : 1, admitted: compatible ? ['managed'] : [] })
   const session = 'historical-owner'
   writeSessionState(session, f.env, { harness: 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.retired }] })
   f.running(f.retired)
   expect(await f.invoke(['hook', 'question-settlement', '--owner', 'notifai', '--harness', 'claude-code'], { hookRun },
-    { [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify({ session_id: session, cwd: f.home }) })).toMatchObject({ code: 1, admitted: [] })
-  expect(configSet).not.toHaveBeenCalled()
-  expect(hookRun).not.toHaveBeenCalled()
+    { [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify({ session_id: session, cwd: f.home }) })).toMatchObject({ code: compatible ? 0 : 1, admitted: compatible ? ['retained-owner'] : [] })
+  expect(configSet).toHaveBeenCalledTimes(compatible ? 1 : 0)
+  expect(hookRun).toHaveBeenCalledTimes(compatible ? 1 : 0)
   // The exact candidate's guarded lifecycle operation remains reachable.
   expect(await f.invoke(['install', '--upgrade', '--version', '2.0.0', '--channel', 'stable', '--no-init', '--no-path', '--json'], { install }))
     .toMatchObject({ code: 0, admitted: ['installer'] })

@@ -25,7 +25,7 @@ it.each([undefined, HISTORICAL_LOCAL_CONTINUITY, 'unknown', LOCAL_CONTINUITY])(
     const before = readFileSync(file), env = { HOME: home, USERPROFILE: home }
     Object.defineProperty(process, 'execPath', { value: path.join(directory, process.platform === 'win32' ? 'notifai-runtime.exe' : 'notifai-runtime') })
     vi.stubGlobal('NOTIFAI_COMPILED_BUILD', { sourceDirty: false, target })
-    if (contract === LOCAL_CONTINUITY) expect(currentRuntimeBuild(env)).toEqual({ installation_id: id, build })
+    if (contract === LOCAL_CONTINUITY || contract === HISTORICAL_LOCAL_CONTINUITY && process.platform !== 'linux') expect(currentRuntimeBuild(env)).toEqual({ installation_id: id, build })
     else {
       expect(() => currentRuntimeBuild(env)).toThrow(/does not belong/)
       const retain = vi.fn()

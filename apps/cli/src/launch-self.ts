@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { buildIdentity } from './distribution.js'
 import { accountHome } from './platform.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
-import { installedRuntime, LOCAL_CONTINUITY } from './local-continuity.js'
+import { acceptsLocalContract, installedRuntime, LOCAL_CONTINUITY_CAPABILITIES } from './local-continuity.js'
 import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
 
 /** A durable reference names local content, never an arbitrary executable path. */
@@ -33,7 +33,8 @@ export function currentRuntimeBuild(env: NodeJS.ProcessEnv = process.env): Runti
   const record = JSON.parse(readFileSync(path.join(root, 'install.json'), 'utf8')) as { id?: unknown; owner?: unknown; target?: unknown }
   const reference = { installation_id: record.id, build }
   const runtime = installedRuntime(record)
-  if (record.owner !== 'notifai' || runtime?.target !== identity.target || runtime.contract !== LOCAL_CONTINUITY || !validRuntimeBuildReference(reference)) {
+  if (record.owner !== 'notifai' || runtime?.target !== identity.target ||
+      !acceptsLocalContract(LOCAL_CONTINUITY_CAPABILITIES, runtime.contract, identity.target) || !validRuntimeBuildReference(reference)) {
     throw new Error('The running build does not belong to this installation')
   }
   return reference
