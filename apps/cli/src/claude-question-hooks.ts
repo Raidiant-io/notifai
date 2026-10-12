@@ -2,7 +2,7 @@
  * The Claude Code hooks that link a registered question to its picker.
  *
  * `PermissionRequest` runs while the picker is on screen. For a picker that
- * shows exactly one registered question set, this handler waits for the app
+ * shows exactly one or more complete registered question sets, this handler waits for the app
  * answer and returns it as the picker's own result; Claude Code then closes the
  * picker and the agent reads the answer as the tool's output. If the terminal
  * answers first Claude Code takes that answer and discards anything this
@@ -70,12 +70,18 @@ function withoutPicker(state: SessionState): SessionState {
   return next
 }
 
+/** The original registration plus any other whole registrations in this picker. */
+function pickerQuestionIds(state: SessionState): string[] {
+  const picker = state.claude_picker
+  return picker === undefined ? [] : [picker.question_id, ...(picker.additional_question_ids ?? [])]
+}
+
 /** Whether a live handler is waiting to return this session's app answer through a picker. */
 export function claudePickerHolds(state: SessionState): boolean {
   const picker = state.claude_picker
   if (picker === undefined || processIdentityLiveness(picker.waiter) === 'gone') return false
   const waiting = state.waiting_answers ?? []
-  return waiting.length > 0 && waiting.every((answer) => answer.pending.question_id === picker.question_id)
+  return waiting.length > 0 && waiting.every((answer) => pickerQuestionIds(state).includes(answer.pending.question_id ?? ''))
 }
 
 /** The picker was resolved or abandoned some other way: stop any handler still waiting on it. */
@@ -116,7 +122,7 @@ function pickerPresentation(input: {
   lease: DeliveryLease | null
   incarnation: string
   ownerKey: string
-  questionId: string
+  questionIds: string[]
   toolInput: unknown
   writer: ProcessIdentity
   service: ServiceIdentity
@@ -125,29 +131,42 @@ function pickerPresentation(input: {
   wall(): number
 }): NativeInputAnswers {
   const mine = (state: SessionState): boolean =>
-    state.claude_picker?.question_id === input.questionId && sameProcess(state.claude_picker.waiter, input.writer)
-  const answersFor = (answer: AnsweredPending, state: SessionState): Record<string, string> | null => {
-    const registration = registrationOf(state, input.questionId)
-    return registration === undefined || registration.owner_key !== input.ownerKey || !mine(state)
-      ? null
-      : claudePickerAnswers(registration, answer, input.service)
+    isDeepStrictEqual(pickerQuestionIds(state), input.questionIds) && sameProcess(state.claude_picker?.waiter, input.writer)
+  const answersFor = (answers: AnsweredPending[], state: SessionState): Record<string, string> | null => {
+    if (!mine(state) || answers.length !== input.questionIds.length) return null
+    const matches = matchClaudePicker(state, input.ownerKey, input.toolInput)
+    if (!isDeepStrictEqual(matches?.map(item => item.question_id), input.questionIds)) return null
+    const merged: Record<string, string> = {}
+    for (const questionId of input.questionIds) {
+      const registration = registrationOf(state, questionId)
+      const selected = answers.filter(answer => answer.pending.question_id === questionId)
+      if (registration === undefined || selected.length !== 1) return null
+      const part = claudePickerAnswers(registration, selected[0]!, input.service)
+      if (part === null || Object.keys(part).some(key => key in merged)) return null
+      Object.assign(merged, part)
+    }
+    return merged
   }
   return {
-    eligible: (answer, state) => answersFor(answer, state) !== null,
-    prepare: async (answer, state) => {
-      const answers = answersFor(answer, state)
+    eligible: answer => input.questionIds.includes(answer.pending.question_id ?? ''),
+    group: (_answer, state) => {
+      const answers = (state.waiting_answers ?? []).filter(answer => input.questionIds.includes(answer.pending.question_id ?? ''))
+      return answersFor(answers, state) === null ? null : answers
+    },
+    prepare: async () => null,
+    prepareGroup: async (selected, state) => {
+      const answers = answersFor(selected, state)
       if (answers === null) return null
-      const reply = answer.reply
-      const validate = (latest: SessionState) => ({
-        state: latest,
-        valid: isDeepStrictEqual(answersFor(answer, latest), answers),
-      })
+      const validate = (latest: SessionState) => ({ state: latest, valid: isDeepStrictEqual(answersFor(selected, latest), answers) })
       return {
         presentation: {
           kind: 'claude-question',
-          request_id: answer.pending.request_id!,
-          question_id: input.questionId,
-          replies: [{ reply_id: reply.reply_id, seq: reply.seq }],
+          request_id: selected[0]!.pending.request_id!,
+          question_id: selected[0]!.pending.question_id!,
+          replies: selected[0]!.replies.map(reply => ({ reply_id: reply.reply_id, seq: reply.seq })),
+          answers: selected.map(answer => ({ request_id: answer.pending.request_id!, question_id: answer.pending.question_id!,
+            replies: answer.replies.map(reply => ({ reply_id: reply.reply_id, seq: reply.seq })),
+          })),
           owner_key: input.ownerKey,
           incarnation: input.lease?.incarnation ?? input.incarnation,
           generation: input.lease?.generation ?? 0,
@@ -155,26 +174,23 @@ function pickerPresentation(input: {
           answers_sha256: createHash('sha256').update(JSON.stringify(answers)).digest('hex'),
         },
         validate,
-        write: async (mayWrite) => {
+        write: async mayWrite => {
           if (!input.serviceCurrent()) throw new CodexControlNotSent('The Approved Machine changed before the picker answer was returned')
           let valid = false
-          updateSessionState(input.sessionId, input.env, (latest) => {
+          updateSessionState(input.sessionId, input.env, latest => {
             valid = validate(latest).valid && mayWrite()
             if (!valid) return latest
-            // Kept until the tool result confirms Claude Code took this answer.
-            return {
-              ...latest,
-              claude_picker_presented: {
-                question_id: input.questionId,
-                request_id: answer.pending.request_id!,
-                answers,
-                context: answersContext([answer], pendingList(latest).length),
-                receipt: acknowledgementContext([answer]) + TRANSPORT_LIMIT,
-                at: input.wall(),
-              },
-            }
+            return { ...latest, claude_picker_presented: {
+              question_id: selected[0]!.pending.question_id!,
+              request_id: selected[0]!.pending.request_id!,
+              additional_request_ids: selected.slice(1).map(answer => answer.pending.request_id!),
+              answers,
+              context: answersContext(selected, pendingList(latest).length),
+              receipt: acknowledgementContext(selected) + TRANSPORT_LIMIT,
+              at: input.wall(),
+            } }
           })
-          if (!valid) throw new CodexControlNotSent('The picker closed before the answer was returned')
+          if (!valid) throw new CodexControlNotSent('The picker closed before the answers were returned')
           input.out(pickerDecision(input.toolInput, answers))
         },
         close: () => undefined,
@@ -209,26 +225,26 @@ export async function claudePermissionRequest(
   if (incarnation === null || writer === null || sessionHasEnded(sessionId, deps.env) ||
       incarnation.harness_process === undefined || processIdentityLiveness(incarnation.harness_process) !== 'alive') return 'not-bound'
   const now = deps.now ?? Date.now
-  let questionId: string | null = null
+  let questionIds: string[] | null = null
   let miss = null as ReturnType<typeof claudePickerMiss>
   updateSessionState(sessionId, deps.env, (state) => {
     const match = matchClaudePicker(state, incarnation.key, envelope.tool_input)
     if (match === null) miss = claudePickerMiss(state, incarnation.key, envelope.tool_input)
-    if (match === null || match.ordinary_only === true) return state
-    questionId = match.question_id
+    if (match === null || match.some(item => item.ordinary_only === true)) return state
+    questionIds = match.map(item => item.question_id)
     return {
-      ...observeClaudePicker(state, match.question_id, envelope.tool_use_id),
-      claude_picker: { question_id: match.question_id, opened_at: now(), waiter: writer },
+      ...match.reduce((next, item) => observeClaudePicker(next, item.question_id, envelope.tool_use_id), state),
+      claude_picker: { question_id: questionIds[0]!, additional_question_ids: questionIds.slice(1), opened_at: now(), waiter: writer },
     }
   })
-  if (questionId === null) {
+  if (questionIds === null) {
     // A picker resembling a live registration but not linked to it is the
     // failure an agent cannot see; the log is where it shows.
     if (miss !== null) logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', ...miss, stage: 'picker-unlinked' })
     return 'not-bound'
   }
-  const bound: string = questionId
-  logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_id: bound, stage: 'picker-waiting' })
+  const bound: string[] = questionIds
+  logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: bound, stage: 'picker-waiting' })
 
   const sleep = seams.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const monotonic = seams.monotonic ?? (() => performance.now())
@@ -237,11 +253,11 @@ export async function claudePermissionRequest(
   void seams.signalled?.then(() => { stopped = true })
   const release = (): void => {
     updateSessionState(sessionId, deps.env, (state) =>
-      state.claude_picker?.question_id === bound && sameProcess(state.claude_picker.waiter, writer) ? withoutPicker(state) : state)
+      isDeepStrictEqual(pickerQuestionIds(state), bound) && sameProcess(state.claude_picker?.waiter, writer) ? withoutPicker(state) : state)
   }
   const leave = (stage: string): 'left-to-terminal' => {
     release()
-    logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_id: bound, stage })
+    logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: bound, stage })
     return 'left-to-terminal'
   }
 
@@ -251,32 +267,29 @@ export async function claudePermissionRequest(
     if (sessionHasEnded(sessionId, deps.env) || !parentAlive()) return leave('session-ended')
     const state = readSessionState(sessionId, deps.env)
     // Another hook resolved the picker: the terminal answered, the turn moved on, or a newer picker opened.
-    if (state.claude_picker?.question_id !== bound || !sameProcess(state.claude_picker.waiter, writer)) {
-      logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_id: bound, stage: 'picker-resolved-elsewhere' })
+    if (!isDeepStrictEqual(pickerQuestionIds(state), bound) || !sameProcess(state.claude_picker?.waiter, writer)) {
+      logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: bound, stage: 'picker-resolved-elsewhere' })
       return 'left-to-terminal'
     }
-    const registration = registrationOf(state, bound)
-    if (registration === undefined || registration.terminated === true || registration.ordinary_only === true) return leave('question-closed')
-    const waiting = state.waiting_answers?.find((answer) => answer.pending.question_id === bound)
-    if (waiting === undefined) {
-      // An accepted answer leaves the pending list a moment before it is
-      // staged for presentation; in between it is neither, and still coming.
-      const accepted = state.accepted?.answers.some((answer) => answer.pending.question_id === bound) === true
-      if (accepted) {
+    const registrations = bound.map(id => registrationOf(state, id))
+    if (registrations.some(item => item === undefined || item.terminated === true || item.ordinary_only === true)) return leave('question-closed')
+    const waiting = bound.map(id => state.waiting_answers?.find(answer => answer.pending.question_id === id))
+    if (waiting.some(answer => answer === undefined)) {
+      const missing = bound.filter((_, i) => waiting[i] === undefined)
+      if (missing.some(id => !state.accepted?.answers.some(answer => answer.pending.question_id === id) &&
+          !pendingList(state).some(pending => pending.question_id === id))) return leave('question-settled')
+      if (missing.every(id => state.accepted?.answers.some(answer => answer.pending.question_id === id))) {
         stagedSince ??= monotonic()
         if (monotonic() - stagedSince >= CLAUDE_PICKER_HANDOVER_MS) return leave('handover-timed-out')
-      } else if (!pendingList(state).some((pending) => pending.question_id === bound)) {
-        return leave('question-settled')
       } else {
+        // A partial form is not a handoff timeout: other questions still await the User.
         stagedSince = null
       }
     } else {
       const credential = deps.store.load()
       const service = credential === null ? null : { base_url: credential.baseUrl, machine_id: credential.machineId }
-      // An answer the picker cannot carry belongs to the ordinary route at once.
-      if (credential === null || service === null || claudePickerAnswers(registration, waiting, service) === null) {
-        return leave('answer-needs-ordinary-route')
-      }
+      if (credential === null || service === null || waiting.some((answer, i) =>
+          claudePickerAnswers(registrations[i]!, answer!, service) === null)) return leave('answer-needs-ordinary-route')
       stagedSince ??= monotonic()
       const lease = readAttendantLease(sessionId, deps.env)
       if (lease === null || lease.incarnation === incarnation.incarnation) {
@@ -297,7 +310,7 @@ export async function claudePermissionRequest(
           nativeOnly: true,
           nativeAnswers: pickerPresentation({
             sessionId, env: deps.env, lease, incarnation: incarnation.incarnation, ownerKey: incarnation.key,
-            questionId: bound, toolInput: envelope.tool_input,
+            questionIds: bound, toolInput: envelope.tool_input,
             writer, service, serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential),
             out: (line) => { written = true; deps.io.out(line) }, wall: now,
           }),
@@ -313,7 +326,7 @@ export async function claudePermissionRequest(
           write: () => undefined,
         })
         if (drained && written) {
-          logger.info('hook.gate', { hook: 'permission-request', reason: 'answered', question_id: bound, stage: 'picker-answered' })
+          logger.info('hook.gate', { hook: 'permission-request', reason: 'answered', question_ids: bound, stage: 'picker-answered' })
           return 'answered'
         }
       }
@@ -364,7 +377,7 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
         Object.entries(presented.answers).every(([title, value]) => (given as Record<string, unknown>)[title] === value)
       if (taken) {
         stage = 'app-answer-confirmed'
-        context = `Notifai — that answer came from the user's device, for request ${presented.request_id}.${presented.receipt}`
+        context = `Notifai — that answer came from the user's device, for request${presented.additional_request_ids?.length ? 's' : ''} ${[presented.request_id, ...(presented.additional_request_ids ?? [])].join(', ')}.${presented.receipt}`
       } else {
         // Claude Code took the terminal's answer instead; the device answer is still the User's.
         stage = 'app-answer-beside-terminal'
@@ -372,17 +385,19 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
       }
       return next
     }
-    const registration = matchClaudePicker(next, incarnation.key, envelope.tool_input)
-    if (registration === null) return next
+    const registrations = matchClaudePicker(next, incarnation.key, envelope.tool_input)
+    if (registrations === null) return next
     stage = 'terminal-answer'
-    const answers = claudeTerminalAnswers(registration, envelope.tool_response)
-    const typed = answers === null || answers.some((answer) => answer.text !== undefined)
-    const reported = typed ? `'<actual answers JSON>'` : `'${JSON.stringify(answers)}'`
-    context = `Notifai — the user answered registered question ${registration.question_id} in the terminal picker. ` +
-      'Before any work that depends on it, record that answer so their devices stop asking: ' +
-      `\`notifai acknowledge ${registration.question_id} --operation-id native-1 --native-answers ${reported} --text <text>\` ` +
-      'with text saying what concrete work the answer sets in motion.' +
-      (typed ? ' Fill in the answers you actually read, using the registered question and choice ids, or the typed text.' : '')
+    context = registrations.map(registration => {
+      const answers = claudeTerminalAnswers(registration, envelope.tool_response)
+      const typed = answers === null || answers.some((answer) => answer.text !== undefined)
+      const reported = typed ? `'<actual answers JSON>'` : `'${JSON.stringify(answers)}'`
+      return `Notifai — the user answered registered question ${registration.question_id} in the terminal picker. ` +
+        'Before any work that depends on it, record that answer so their devices stop asking: ' +
+        `\`notifai acknowledge ${registration.question_id} --operation-id native-1 --native-answers ${reported} --text <text>\` ` +
+        'with text saying what concrete work the answer sets in motion.' +
+        (typed ? ' Fill in the answers you actually read, using the registered question and choice ids, or the typed text.' : '')
+    }).join('\n\n')
     return next
   })
   logger.info('hook.gate', { hook: 'post-tool-use', reason: 'proceeding', stage })

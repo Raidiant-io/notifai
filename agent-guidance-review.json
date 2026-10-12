@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:57c24495a07d6de7ba3decda7642ef5ea9d498f95cf43cdf3ac0ef3d8bafaa6a",
+  "behavior_digest": "sha256:2d238ba5ef5328698145444a358b567355903031428e12dcf08968a41a830383",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle guidance, shipped skill and references, harness setup, CLI readiness, README and domain terms against the desktop stream contract (#281) and one sign-in per machine (#282). #281 adds windows and linux platforms, the stream provider and the companion changes feed, and refuses --level, --thread-id and --data for a desktop --platform; the skill names no platform values and already reserves --level, --sound and --device for the User, hooks now treat any healthy answer-capable Device Installation as answerable (internal routing), and the README states the desktop Companion App is unshipped. #282 adds logout --revoke, which harness-setup.md now documents; auth status --json naming a pending approval, which keeps its documented meaning; and auth adopt, which is for a Notifai app on the same computer and stays out of agent guidance because agents never handle credentials.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Claude pickers now bind a unique complete set of whole registrations regardless of batching or order, wait for every member, and claim and present the group atomically while retaining each original acknowledgement. The Claude reference now describes grouped independent questions and separately arriving replies. Ambiguous content remains unbound; installation, harness trust, notification policy and domain terms are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
