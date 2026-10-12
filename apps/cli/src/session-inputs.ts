@@ -305,6 +305,9 @@ export interface PreparedInputAnswer {
 
 export interface NativeInputAnswers {
   eligible(answer: AnsweredPending, state: SessionState): boolean
+  /** An indivisible native form: all members must be ready and claimed before any output. */
+  group?(answer: AnsweredPending, state: SessionState): AnsweredPending[] | null
+  prepareGroup?(answers: AnsweredPending[], state: SessionState, deadline: number): Promise<PreparedInputAnswer | null>
   /** No answer bytes. Null chooses ordinary presentation of the same prefix. */
   prepare(answer: AnsweredPending, state: SessionState, deadline: number): Promise<PreparedInputAnswer | null>
 }
@@ -322,9 +325,9 @@ async function drainSessionInputsOnce(input: {
   write(text: string): void
   nativeAnswers?: NativeInputAnswers
   /**
-   * Present exactly one native-eligible answer or nothing. For a writer whose
+   * Present one native-eligible answer or one complete native group, or nothing. For a writer whose
    * only output is the native form's own result, so an ordinary prefix must
-   * never be written through it. That answer is taken wherever it stands:
+   * never be written through it. Members are taken wherever they stand:
    * answers to independent questions carry no order between them.
    */
   nativeOnly?: boolean
@@ -336,8 +339,13 @@ async function drainSessionInputsOnce(input: {
     answer.delivery_claim === true && input.nativeAnswers!.eligible(answer, initial))
   if (input.nativeOnly === true && eligibleAt < 0) return false
   const nativeAt = input.nativeOnly === true ? 0 : eligibleAt
+  const nativeGroup = input.nativeOnly === true && input.nativeAnswers?.group !== undefined
+    ? input.nativeAnswers.group(batch.answers[eligibleAt]!, initial) : null
+  if (input.nativeOnly === true && input.nativeAnswers?.group !== undefined &&
+      (nativeGroup === null || nativeGroup.length === 0 || new Set(nativeGroup.map(a => a.pending.request_id)).size !== nativeGroup.length ||
+       nativeGroup.some(a => !batch.answers.some(b => isDeepStrictEqual(a, b))))) return false
   const answers = input.nativeOnly === true
-    ? [batch.answers[eligibleAt]!]
+    ? nativeGroup ?? [batch.answers[eligibleAt]!]
     : nativeAt < 0 ? batch.answers : batch.answers.slice(0, nativeAt === 0 ? 1 : nativeAt)
   const messages = nativeAt < 0 ? batch.messages : []
   if (answers.length + messages.length === 0 || !input.mayWrite()) return false
@@ -356,7 +364,7 @@ async function drainSessionInputsOnce(input: {
   const handOff = await beginHandOff(deps, {
     lease, lockWaitMs: 0, stopAtRefusal: true, mayWrite: input.mayWrite,
     mayClaim: () => {
-      claimUntil ??= deps.monotonic() + 750
+      claimUntil ??= deps.monotonic() + (nativeGroup === null ? 750 : 1_500)
       return deps.monotonic() < claimUntil
     },
     subjects: [
@@ -386,6 +394,10 @@ async function drainSessionInputsOnce(input: {
   const readyAnswers = answers.filter((answer) =>
     samePendingAnswer(current, answer) &&
     (answer.delivery_claim !== true || ids.has(answer.pending.request_id!)))
+  if (nativeGroup !== null && readyAnswers.length !== answers.length) {
+    await handOff.finish('not-written')
+    return false
+  }
   const readyMessages = messages.filter((message) => ids.has(message.message_id))
   if (readyAnswers.length + readyMessages.length === 0 || !input.mayWrite() || !handOff.writable()) {
     await handOff.finish('not-written')
@@ -414,7 +426,9 @@ async function drainSessionInputsOnce(input: {
     }
   }
   try {
-    if (nativeAt === 0 && readyAnswers.length === 1 && input.nativeAnswers !== undefined) {
+    if (nativeGroup !== null && input.nativeAnswers?.prepareGroup !== undefined) {
+      prepared = await input.nativeAnswers.prepareGroup(readyAnswers, current, deps.monotonic() + handOff.remainingMs())
+    } else if (nativeAt === 0 && readyAnswers.length === 1 && input.nativeAnswers !== undefined) {
       prepared = await input.nativeAnswers.prepare(readyAnswers[0]!, current, deps.monotonic() + handOff.remainingMs())
     }
     if (input.nativeOnly === true && prepared === null) {
