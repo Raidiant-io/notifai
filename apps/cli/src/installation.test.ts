@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensurePrivateDirectory } from './atomic-file.js'
+import { LOCAL_CONTINUITY_CAPABILITIES } from './local-continuity.js'
 import { activeBytes, Installation } from './installation.js'
 import { nativeUninstallCommand } from './commands-native-uninstall.js'
 import { nativeInstallCommand, nativeUpdateCommand } from './commands-native-installation.js'
@@ -32,12 +33,12 @@ function fixture(fetcher?: typeof fetch, target: 'bun-linux-x64' | 'bun-windows-
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
   const extension = target.startsWith('bun-windows-') ? '.exe' : ''
   const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
-  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v2', schema: 1 | 2 = 2) => {
+  const candidate = (version: string, archive?: Buffer, continuity = 'notifai-session-state-v2', schema: 1 | 2 = 2, compatible?: Readonly<Record<string, readonly string[]>>) => {
     const directory = path.join(root, version); mkdirSync(directory)
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
     writeFileSync(path.join(directory, `notifai-runtime${extension}`), runtime)
     writeFileSync(path.join(directory, `notifai${extension}`), launcher)
-    const payload = Buffer.from(JSON.stringify({ schema, ...(schema === 2 ? { local_continuity: { contract: continuity } } : {}), version, source_revision: 'a'.repeat(40),
+    const payload = Buffer.from(JSON.stringify({ schema, ...(schema === 2 ? { local_continuity: { contract: continuity, ...(compatible ? { compatible } : {}) } } : {}), version, source_revision: 'a'.repeat(40),
       store_schema: schema, launcher_schema: 1, artifacts: [{ target, filename: `notifai-${version}-${target.slice(4)}.${extension ? 'zip' : 'tar.gz'}`,
         bytes: archive?.length ?? 100, sha256: digest(archive ?? version), runtime_sha256: digest(runtime), materials: [], launcher_sha256: digest(launcher) }] }))
     const signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
@@ -73,7 +74,7 @@ function legacyFixture() {
   return { ...f, options, old, build, id, upgrade }
 }
 
-function v1Fixture(target: 'bun-linux-x64' | 'bun-windows-x64' | 'bun-darwin-arm64' = 'bun-linux-x64') {
+function v1Fixture(target: 'bun-linux-x64' | 'bun-windows-x64' | 'bun-darwin-arm64' = 'bun-linux-x64', compatible?: Readonly<Record<string, readonly string[]>>) {
   const f = fixture(undefined, target), old = f.candidate('1.0.0', undefined, 'notifai-session-state-v1')
   const build = f.installation.stage(old), id = '55555555-5555-4555-8555-555555555555'
   const extension = target.startsWith('bun-windows-') ? '.exe' : ''
@@ -87,12 +88,65 @@ function v1Fixture(target: 'bun-linux-x64' | 'bun-windows-x64' | 'bun-darwin-arm
     launcherBuild: build, launcherUpdatePending: false }), { mode: 0o600 })
   writeFileSync(path.join(options.root, 'active.json'), activeBytes({ schema: 1, active: build, previous: null, generation: 1 }), { mode: 0o600 })
   rmSync(path.join(options.root, 'staged-runtimes', `${build}.json`))
-  const candidate = f.candidate('2.0.0')
+  const candidate = f.candidate('2.0.0', undefined, undefined, 2, compatible)
   const upgrade = { ...candidate, source: 'manual' as const, upgrade: true, version: '2.0.0', channel: 'stable' as const }
   return { ...f, options, old, build, id, extension, upgrade }
 }
 
 describe('owned runtime-v1 to v2 quiet transition', () => {
+  it.each(['bun-darwin-arm64', 'bun-windows-x64'] as const)('keeps an unaffected %s owner serving pending work during activation', target => {
+    const f = v1Fixture(target, LOCAL_CONTINUITY_CAPABILITIES.compatible), env = { XDG_STATE_HOME: path.join(f.root, 'state') }, session = 'serving-v1-owner'
+    writeSessionState(session, env, { harness: 'codex', runtime_builds: [{ installation_id: f.id, build: f.build }],
+      pending: [{ request_id: 'req_waiting', question: 'Keep my question', asked_at: Date.now() }],
+      acknowledgement_due: [{ request_id: 'req_answered', recorded_at: Date.now() }],
+      message_acknowledgement_due: [{ message_id: 'sm_waiting', recorded_at: Date.now(), text_required: true, queued_context: 'Keep my Note' }] })
+    const state = sessionStatePath(session, env), sessionsDirectory = path.dirname(state)
+    const claim = path.join(sessionsDirectory, 'serving.attendant')
+    const token = acquireClaimFile(claim, { runtime_build: { installation_id: f.id, build: f.build } })!
+    const before = readFileSync(state), claimBefore = readFileSync(claim)
+    const fileUse = vi.fn(() => ({ status: 'in_use' as const, processes: [] }))
+    try {
+      const installation = new Installation({ ...f.options, sessionsDirectory, fileUse })
+      expect(installation.installCandidate(f.upgrade).version).toBe('2.0.0')
+      expect(readFileSync(state)).toEqual(before)
+      expect(readFileSync(claim)).toEqual(claimBefore)
+      expect(fileUse).not.toHaveBeenCalled()
+      expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).runtime.contract).toBe('notifai-session-state-v1')
+      expect(installation.inspect().pending).toBe(false)
+    } finally { releaseClaimFile(claim, token) }
+  })
+
+  it('does not clear the Linux boundary when the release declares only Mac and Windows compatibility', () => {
+    const f = v1Fixture('bun-linux-x64', LOCAL_CONTINUITY_CAPABILITIES.compatible)
+    const fileUse = vi.fn(() => ({ status: 'in_use' as const, processes: [] }))
+    const installation = new Installation({ ...f.options, fileUse })
+    expect(() => installation.installCandidate(f.upgrade)).toThrow(/old native process/)
+    expect(fileUse).toHaveBeenCalledOnce()
+    expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).runtime.contract).toBe('notifai-session-state-v1')
+  })
+
+  it('never restores v1 admission in an installation already fenced to v2', () => {
+    const f = fixture(undefined, 'bun-darwin-arm64')
+    f.installation.installCandidate({ ...f.candidate('1.0.0'), source: 'manual', channel: 'stable' })
+    f.installation.installCandidate({ ...f.candidate('2.0.0', undefined, undefined, 2, LOCAL_CONTINUITY_CAPABILITIES.compatible),
+      source: 'manual', channel: 'stable', upgrade: true, version: '2.0.0' })
+    expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).runtime.contract).toBe('notifai-session-state-v2')
+  })
+
+  it.each(['prepared', 'launcher', 'metadata', 'activated'] as const)('recovers compatible activation after %s without changing the shared contract', phase => {
+    const f = v1Fixture('bun-darwin-arm64', LOCAL_CONTINUITY_CAPABILITIES.compatible)
+    const interrupted = new Installation({ ...f.options, observe: current => { if (current === phase) throw new Error('interrupted') } })
+    expect(() => interrupted.installCandidate(f.upgrade)).toThrow('interrupted')
+    const installation = new Installation(f.options)
+    installation.recover()
+    expect(installation.inspect().pending).toBe(false)
+    expect(JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).runtime.contract).toBe('notifai-session-state-v1')
+    // A subsequent update validates the retained contract against the prior
+    // signed declaration, rather than incorrectly requiring its primary v2.
+    const next = f.candidate('3.0.0', undefined, undefined, 2, LOCAL_CONTINUITY_CAPABILITIES.compatible)
+    expect(installation.installCandidate({ ...f.upgrade, ...next, version: '3.0.0' }).version).toBe('3.0.0')
+  })
+
   it('returns a finite public installer result with the exact staged recovery while an old process is live', async () => {
     const f = v1Fixture(), inventory = path.join(f.upgrade.directory, 'inventory.json')
     writeFileSync(inventory, f.upgrade.signedInventory)

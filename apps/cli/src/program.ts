@@ -57,7 +57,7 @@ import { nativeInstallCommand, type NativeInstallFlags } from './commands-native
 import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 import { installedChangelog } from './update-handoff.js'
-import { LOCAL_CONTINUITY } from './local-continuity.js'
+import { LOCAL_CONTINUITY, LOCAL_CONTINUITY_CAPABILITIES } from './local-continuity.js'
 import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
 
 /**
@@ -237,7 +237,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
       const result = { ok: identity !== null && skill.ok && changelog.available && processVerified, build: identity, processVerified,
         changelog,
-        capabilities: { npm_adapter_routes: 1, local_continuity: LOCAL_CONTINUITY },
+        capabilities: { npm_adapter_routes: 1, local_continuity: LOCAL_CONTINUITY, local_continuity_compatible: LOCAL_CONTINUITY_CAPABILITIES.compatible },
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)

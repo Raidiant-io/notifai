@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from 'node:fs'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { captureRemovalPlan, executableMember, removalPlan, removePlannedFiles, verifyRemovalPlan, type RemovalPlan } from './installation-removal.js'
 import { inspectNativeFileUse, type NativeFileUse } from './native-file-use.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
@@ -15,7 +16,7 @@ import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
 import { RuntimeRetention, type RuntimeOwnerInspection } from './runtime-retention.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
-import { canShareLocalState, ContinuityPending, HISTORICAL_LOCAL_CONTINUITY, installedRuntime, LOCAL_CONTINUITY, type InstalledLocalContinuity } from './local-continuity.js'
+import { acceptsLocalContract, canShareLocalState, ContinuityPending, HISTORICAL_LOCAL_CONTINUITY, installedRuntime, LOCAL_CONTINUITY, type InstalledLocalContinuity } from './local-continuity.js'
 import { LEGACY_BOOTSTRAP_INVENTORIES, V1_BOOTSTRAP_INVENTORIES } from './legacy-native-bootstrap.js'
 
 export type InstallSource = 'shell' | 'powershell' | 'npm' | 'manual'
@@ -94,10 +95,11 @@ export class Installation {
       const launcher = path.join(directory, `notifai${this.extension}`)
       const output = execFileSync(launcher, ['self-check', '--json'], { encoding: 'utf8', timeout: 20_000,
         windowsHide: true, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
-      const result = JSON.parse(output) as { ok?: boolean; capabilities?: { local_continuity?: string }; build?: { version?: string; sourceRevision?: string; sourceDirty?: boolean; target?: string } }
+      const result = JSON.parse(output) as { ok?: boolean; capabilities?: { local_continuity?: string; local_continuity_compatible?: unknown }; build?: { version?: string; sourceRevision?: string; sourceDirty?: boolean; target?: string } }
       if (result.ok !== true || result.build?.version !== inventory.version || result.build.sourceRevision !== inventory.source_revision ||
           result.build.sourceDirty !== false || result.build.target !== options.target) throw new Error('Candidate self-check did not establish the signed build identity')
-      if (inventory.schema === 2 && result.capabilities?.local_continuity !== inventory.local_continuity?.contract) {
+      if (inventory.schema === 2 && (result.capabilities?.local_continuity !== inventory.local_continuity?.contract ||
+          !isDeepStrictEqual(result.capabilities?.local_continuity_compatible ?? {}, { ...inventory.local_continuity?.compatible }))) {
         throw new Error('Candidate does not implement its signed local continuity contract')
       }
     })
@@ -293,12 +295,12 @@ export class Installation {
         if (/^\.staged-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(existing)) continue
         if (!buildId(existing)) pending('An unrecognized runtime directory needs inspection.')
         const version = this.verifyVersion(existing)
-        if (canShareLocalState(candidate.inventory, version.inventory)) continue
+        if (canShareLocalState(candidate.inventory, version.inventory, this.options.target)) continue
         if (!this.rejectionProven(version, transaction.next)) pending('This historical runtime has no proven writer rejection boundary.')
         oldFiles.push(path.join(version.directory, `notifai-runtime${this.extension}`), path.join(version.directory, `notifai${this.extension}`))
       }
       if (!oldFiles.length) pending('No authenticated historical native runtime establishes this bootstrap boundary.')
-      if (!canShareLocalState(candidate.inventory, this.verifyVersion(installed.launcherBuild).inventory)) {
+      if (!canShareLocalState(candidate.inventory, this.verifyVersion(installed.launcherBuild).inventory, this.options.target)) {
         oldFiles.push(this.file(`bin/notifai${this.extension}`))
       }
       if (present(this.file('uninstall.json')) && this.bootstrapTarget() !== build) throw new Error('Existing uninstall must be recovered separately')
@@ -385,7 +387,7 @@ export class Installation {
       // Preserve old references and files, without treating them as resumable
       // writers. An actually observed old resident still blocks on uncertainty.
       if (installed && !liveBuilds.has(existing) && !setupBuilds.has(existing) && this.rejectionProven(previous, installed)) continue
-      if (!canShareLocalState(candidate.inventory, previous.inventory)) throw new ContinuityPending(build,
+      if (!canShareLocalState(candidate.inventory, previous.inventory, this.options.target)) throw new ContinuityPending(build,
         `Existing runtime ${previous.inventory.version} has an unknown or different local continuity contract.`)
     }
   }
@@ -991,10 +993,11 @@ export class Installation {
     if (!validGeneration || (from === null) !== (previous === null) ||
         (previous && previous.id !== next.id)) throw new Error('Installation transaction identity mismatch')
     const candidate = this.verifyVersion(to.active)
-    const targetContract = candidate.inventory.local_continuity?.contract
+    const targetContract = previous?.runtime && acceptsLocalContract(candidate.inventory.local_continuity, previous.runtime.contract, this.options.target)
+      ? previous.runtime.contract : candidate.inventory.local_continuity?.contract
     if (previous && from) {
       const prior = this.verifyVersion(from.active)
-      if (previous.runtime?.contract !== prior.inventory.local_continuity?.contract ||
+      if ((previous.runtime && !acceptsLocalContract(prior.inventory.local_continuity, previous.runtime.contract, this.options.target)) ||
           (previous.runtime === undefined) !== (prior.inventory.schema === 1)) throw new Error('Installation transaction previous contract mismatch')
       // Released v1 updaters can stage a signed v2 payload, but their plan
       // writes the updater's compiled v1 contract. Only this exact audited
@@ -1248,7 +1251,9 @@ export class Installation {
       'This release cannot enforce the current local continuity contract; it may be retained but cannot become active.')
     const to: ActiveGeneration = { schema: 1, active: build, previous: from?.active ?? null, generation: (from?.generation ?? 0) + 1 }
     const next: InstallRecord = { schema: 1, id: previous?.id ?? randomUUID(), owner: 'notifai', source: previous?.source ?? source,
-      runtime: { target: this.options.target, contract: LOCAL_CONTINUITY }, channel, previousChannel: previous?.channel ?? null, launcherBuild: build, launcherUpdatePending: false }
+      runtime: { target: this.options.target, contract: previous?.runtime &&
+        acceptsLocalContract(candidate.inventory.local_continuity, previous.runtime.contract, this.options.target)
+        ? previous.runtime.contract : LOCAL_CONTINUITY }, channel, previousChannel: previous?.channel ?? null, launcherBuild: build, launcherUpdatePending: false }
     const transaction: Transaction = { schema: 1, kind: 'activation', from, to, previous, next }
     this.save('transaction.json', transaction)
     this.options.observe?.('prepared')

@@ -5,7 +5,7 @@ import { createHash, createPublicKey, sign } from 'node:crypto'
 import { Distribution, RELEASE_TARGETS, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
 import { parseNpmAdapterManifest, NPM_ADAPTER_MANIFEST } from '../apps/cli/dist/npm-adapter-contract.js'
 import { compareReleasePrecedence } from '../apps/cli/dist/version.js'
-import { LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
+import { LOCAL_CONTINUITY_CAPABILITIES, LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 export function validateReleaseSigner({ keyId, privateKey, trustedKeys }) {
@@ -59,13 +59,14 @@ export function signReleaseInventory({ version, sourceRevision, candidates, mate
     assert.equal(build.sourceDigest, sourceDigest, 'Candidate source trees differ')
     assert.ok(/^[a-f0-9]{64}$/.test(candidate.check_sha256), 'Candidate executable check identity is missing')
     assert.equal(candidate.capabilities?.local_continuity, LOCAL_CONTINUITY, 'Candidate local continuity differs from the reviewed contract')
+    assert.deepEqual(candidate.capabilities?.local_continuity_compatible, LOCAL_CONTINUITY_CAPABILITIES.compatible, 'Candidate continuity compatibility differs from the reviewed contract')
     const materials = sortedMaterials(artifact.materials)
     assert.ok(materials.length > 0 && !materials.some(item => item.path === 'CANDIDATE-MATERIALS.txt'), 'Candidate materials cannot be published')
     assert.deepEqual(materials, sortedMaterials([...materialsPolicy.targets[build.target], ...adapterMaterials]), 'Candidate materials differ from reviewed publication materials')
     byTarget.set(build.target, { ...artifact, materials })
   }
   const bytes = signer(signing)('inventory', { schema: 2, version, source_revision: sourceRevision,
-    local_continuity: { contract: LOCAL_CONTINUITY },
+    local_continuity: LOCAL_CONTINUITY_CAPABILITIES,
     store_schema: 2, launcher_schema: 1, artifacts: RELEASE_TARGETS.map(target => byTarget.get(target)) })
   new Distribution(signing.trustedKeys).verifyInventory(bytes)
   return bytes
