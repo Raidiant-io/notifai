@@ -332,3 +332,24 @@ test('release test and script selectors exist and minimum Node executes the gene
   assert.equal(publishWorkflow.jobs['adapter-acceptance'].needs, 'npm')
   assert.equal(publishWorkflow.jobs['adapter-acceptance'].strategy.matrix.include.length, 6)
 })
+
+test('a deliberately retired package needs no release, while active package bumps still do', () => {
+  const cli = { component: 'notifai', 'include-component-in-tag': false }
+  const retired = { component: 'installer' }
+  const input = {
+    before: { 'apps/cli': '11.8.0', 'packages/installer': '1.0.0' },
+    after: { 'apps/cli': '11.8.0' },
+    beforeConfig: { packages: { 'apps/cli': cli, 'packages/installer': retired } },
+    config: { packages: { 'apps/cli': cli } },
+    existingPackagePaths: ['apps/cli'],
+    outputs: { releasesCreated: false }, sha: 'a'.repeat(40),
+  }
+  assert.deepEqual(verifyReleasePleaseOutput(input), [])
+  assert.throws(() => verifyReleasePleaseOutput({ ...input,
+    existingPackagePaths: ['apps/cli', 'packages/installer'],
+  }), /manifest removed/)
+  assert.throws(() => verifyReleasePleaseOutput({ ...input, config: input.beforeConfig }), /manifest removed/)
+  assert.throws(() => verifyReleasePleaseOutput({ ...input,
+    after: { 'apps/cli': '12.0.0' },
+  }), /reported no release/)
+})
