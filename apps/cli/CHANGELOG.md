@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.0.0](https://github.com/Raidiant-io/notifai/compare/v11.8.0...v12.0.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** unify native and npm installation
+
+### Features
+
+* **cli:** link a Claude Code picker by its questions, not a copied marker ([#278](https://github.com/Raidiant-io/notifai/issues/278)) ([449a4eb](https://github.com/Raidiant-io/notifai/commit/449a4ebe9de2284b808531675ee9f44f9f6978f1))
+* **cli:** share one sign-in per machine with desktop apps ([#282](https://github.com/Raidiant-io/notifai/issues/282)) ([32863ba](https://github.com/Raidiant-io/notifai/commit/32863ba132261f706726664fd4796134a4d38eb6))
+* **cli:** unify native and npm installation ([2ea7ef7](https://github.com/Raidiant-io/notifai/commit/2ea7ef735b75deee1deda7e08672ad0c757d0d0c))
+* **protocol:** add desktop platforms, the stream provider and the changes feed ([#281](https://github.com/Raidiant-io/notifai/issues/281)) ([4b2bf51](https://github.com/Raidiant-io/notifai/commit/4b2bf51ecf5c120e5fa12141736f0df649f9fea5))
+* **sounds:** add a bundled Update tone ([#289](https://github.com/Raidiant-io/notifai/issues/289)) ([31a7e5d](https://github.com/Raidiant-io/notifai/commit/31a7e5d103b318d7b8b10d1d29bd8c7964172dfe))
+
+
+### Bug Fixes
+
+* **auth:** preserve Linux credential authority across sessions ([#285](https://github.com/Raidiant-io/notifai/issues/285)) ([ce1ec66](https://github.com/Raidiant-io/notifai/commit/ce1ec66ea6f6078132b474a5b708107438d9017c))
+* **cli:** link grouped Claude questions across registrations ([#288](https://github.com/Raidiant-io/notifai/issues/288)) ([b2e1bc4](https://github.com/Raidiant-io/notifai/commit/b2e1bc46d68c25dbf7a79bc67f88898d66ec720b))
+* **cli:** preserve activity verification through long Codex turns ([#276](https://github.com/Raidiant-io/notifai/issues/276)) ([151ba68](https://github.com/Raidiant-io/notifai/commit/151ba687effee47ccef65f3800502ea896cd76dc))
+* **cli:** stop reporting an acknowledgement as still required after recording it ([#277](https://github.com/Raidiant-io/notifai/issues/277)) ([0c4b363](https://github.com/Raidiant-io/notifai/commit/0c4b36358c9ff0616732043611aeebdcfd6cf4dd))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.2.2 to 8.3.0
+
 ## [11.8.0](https://github.com/Raidiant-io/notifai/compare/v11.7.1...v11.8.0) (2026-10-08)
 
 

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.3.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.2.2...protocol-v8.3.0) (2026-10-12)
+
+
+### Features
+
+* **protocol:** add desktop platforms, the stream provider and the changes feed ([#281](https://github.com/Raidiant-io/notifai/issues/281)) ([4b2bf51](https://github.com/Raidiant-io/notifai/commit/4b2bf51ecf5c120e5fa12141736f0df649f9fea5))
+* **sounds:** add a bundled Update tone ([#289](https://github.com/Raidiant-io/notifai/issues/289)) ([31a7e5d](https://github.com/Raidiant-io/notifai/commit/31a7e5d103b318d7b8b10d1d29bd8c7964172dfe))
+
 ## [8.2.2](https://github.com/Raidiant-io/notifai/compare/protocol-v8.2.1...protocol-v8.2.2) (2026-10-08)
 
 ## [8.2.1](https://github.com/Raidiant-io/notifai/compare/protocol-v8.2.0...protocol-v8.2.1) (2026-10-04)
