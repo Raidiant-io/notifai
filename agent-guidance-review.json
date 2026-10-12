@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f1f5835dc2c85fc2f3d76d6a01b20267dae7561f77796bcc9ef498bc17ac48dc",
+  "behavior_digest": "sha256:5e4e24e7f7a40500fd94976407cf870c74e33963b5faebe4ae50ce30f7baee2f",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Claude pickers now bind a unique complete set of whole registrations regardless of batching or order, wait for every member, and claim and present the group atomically while retaining each original acknowledgement. The Claude reference now describes grouped independent questions and separately arriving replies. Ambiguous content remains unbound; installation, harness trust, notification policy and domain terms are unchanged.",
+  "reason": "Reviewed the combined native installation, scoped repair, grouped Claude question and sound guidance. Retained authenticated native/npm ownership and package-scoped maintenance, whole-registration picker binding with original acknowledgements, and the dedicated Update tone. The merged sound default changes no harness setup, trust, readiness or domain terms.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

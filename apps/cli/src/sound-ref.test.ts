@@ -4,7 +4,7 @@ import { isCliSoundRef, unknownSoundMessage } from './sound-ref.js'
 
 describe('isCliSoundRef', () => {
   it('accepts shipped names and the silent spelling', () => {
-    for (const ref of ['default', 'done', 'attention', 'alert', 'none']) {
+    for (const ref of ['default', 'update', 'done', 'attention', 'alert', 'none']) {
       expect(isCliSoundRef(ref), ref).toBe(true)
     }
   })
