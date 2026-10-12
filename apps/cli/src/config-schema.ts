@@ -122,6 +122,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     choices: CLI_SOUNDS,
     choiceHints: {
       default: 'Device default',
+      update: 'the ordinary news tone',
       done: 'the completion chime',
       attention: 'a distinct attention tone',
       alert: 'the most insistent tone',
@@ -129,7 +130,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     },
     summary: 'Set the sound notifications from here use',
     detail:
-      'Setting this pins one sound for every notification sent from here, whatever kind it is. Shipped names are `default` (Device default), `done`, `attention`, `alert`, and `none`; an Account custom sound name or id from `notifai sounds` is accepted too.\n\nLeave it unset and each notification arrives with the sound its kind implies: the completion chime when work finished, the most insistent tone when it failed, a distinct attention tone for a question or blocked work, and Device default for ordinary news. A common explicit preference is `none`, to make a noisy project completely silent.',
+      'Setting this pins one sound for every notification sent from here, whatever kind it is. Shipped names are `default` (Device default), `update`, `done`, `attention`, `alert`, and `none`; an Account custom sound name or id from `notifai sounds` is accepted too.\n\nLeave it unset and each notification arrives with the sound its kind implies: the completion chime when work finished, the most insistent tone when it failed, a distinct attention tone for a question or blocked work, and the update tone for ordinary news. A common explicit preference is `none`, to make a noisy project completely silent.',
     unsetMeans: 'not set; each kind brings its own sound',
   },
   interruption_level: {

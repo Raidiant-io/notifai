@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5e4e24e7f7a40500fd94976407cf870c74e33963b5faebe4ae50ce30f7baee2f",
+  "behavior_digest": "sha256:03f0d24fb067435739d794bf82e2fabcc41368ec6735ac882ea3ebbe1098d533",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the combined native installation, scoped repair, grouped Claude question and sound guidance. Retained authenticated native/npm ownership and package-scoped maintenance, whole-registration picker binding with original acknowledgements, and the dedicated Update tone. The merged sound default changes no harness setup, trust, readiness or domain terms.",
+  "reason": "Reviewed the combined native installation, scoped repair, grouped Claude question and sound guidance. Retained authenticated native/npm ownership and package-scoped maintenance, whole-registration picker binding with original acknowledgements, and the dedicated Update tone. The merged sound default changes no harness setup, trust, readiness or domain terms. Sound configuration choices and help now include Update consistently with the shipped catalog.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
