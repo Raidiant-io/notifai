@@ -1464,6 +1464,21 @@ describe('notification kind', () => {
     )
   })
 
+  it('uses the bundled Update tone while preserving an explicit Device default', () => {
+    const envelope = (sound?: 'default' | 'update') => buildApnsEnvelope(
+      draft({ kind: 'update', platform: { ios: sound ? { sound } : {} } }),
+      { requestId: 'req_update', deliveryId: 'del_update' }, null,
+    ).payload['aps'] as Record<string, unknown>
+    expect(envelope()['sound']).toBe('update.caf')
+    expect(envelope('update')['sound']).toBe('update.caf')
+    expect(envelope('default')['sound']).toBe('default')
+    const fcm = JSON.parse(buildFcmDataEnvelope(draft({ kind: 'update' }), {
+      requestId: 'req_update', deliveryId: 'del_update',
+    }).data.notifai) as Record<string, unknown>
+    expect(fcm['sound']).toBe('update')
+    expect(fcm['sound_fallback']).toBe('update')
+  })
+
   it('carries failed and blocked as closed semantic kinds', () => {
     expect(validateDraft(draft({ kind: 'failed' })).ok).toBe(true)
     expect(validateDraft(draft({ kind: 'blocked' })).ok).toBe(true)

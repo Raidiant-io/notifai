@@ -27,6 +27,7 @@ export function unknownSoundMessage(sound: string): string {
 /** Shipped names plus the CLI silent spelling, with User-facing labels. */
 export const SHIPPED_SOUND_LISTING = [
   { ref: 'default', name: 'Device default' },
+  { ref: 'update', name: 'update tone' },
   { ref: 'done', name: 'completion chime' },
   { ref: 'attention', name: 'attention tone' },
   { ref: 'alert', name: 'most insistent tone' },

@@ -215,7 +215,7 @@ export const ReplyRequest = Type.Object(
 )
 
 /** Product-owned semantic sound names shared by current Companion Apps. */
-export const SEMANTIC_SOUNDS = ['default', 'done', 'attention', 'alert'] as const
+export const SEMANTIC_SOUNDS = ['default', 'update', 'done', 'attention', 'alert'] as const
 /** Semantic sound names shipped by the iOS Companion App. */
 export const IOS_SOUNDS = SEMANTIC_SOUNDS
 /** Semantic sound names shipped by the desktop Companion App. */
@@ -393,7 +393,7 @@ export function effectiveKind(draft: NotificationDraftT): NotificationKind {
  * that is true.
  */
 export const DEFAULT_SOUND_BY_KIND: Readonly<Record<NotificationKind, IosSound>> = {
-  update: 'default',
+  update: 'update',
   question: 'attention',
   done: 'done',
   failed: 'alert',
