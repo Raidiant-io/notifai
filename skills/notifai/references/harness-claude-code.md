@@ -36,9 +36,11 @@ still delivered, at the Agent Session's next turn rather than on its own.
 
 When `ask` returns `native_question` with tool `AskUserQuestion`, you may ask
 the same question in Claude Code's picker: the same question text and option
-labels, with `multiSelect` matching `multi`. Notifai recognises the picker by
-that content while the question is open, so there is nothing to copy beyond
-what you already wrote. Header and option descriptions are yours to write. A
+labels, with `multiSelect` matching `multi`. Notifai matches the picker by its exact question text, options and selection
+mode. A picker can combine several independently registered questions or one
+registered form; grouping and order do not matter when every question has one
+unambiguous registration. Device replies may arrive separately: the picker
+returns the complete set, and each original request still needs acknowledgement. Header and option descriptions are yours to write. A
 picker that changes a question or an option, or adds an unregistered question,
 is not linked; its result then names the question still asking on the User's
 devices, so you can retire it with `close`.

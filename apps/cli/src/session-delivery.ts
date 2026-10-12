@@ -85,6 +85,7 @@ export interface ClaudeQuestionPresentation {
   request_id: string
   question_id: string
   replies: Array<{ reply_id: string; seq: number }>
+  answers?: Array<{ request_id: string; question_id: string; replies: Array<{ reply_id: string; seq: number }> }>
   owner_key: string
   incarnation: string
   generation: number

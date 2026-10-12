@@ -125,20 +125,36 @@ function liveRegistrations(state: SessionState, ownerKey: string): CodexQuestion
     isClaudeRegistration(registration) && registration.owner_key === ownerKey && registration.terminated !== true)
 }
 
-/**
- * The one live registration of this session that the picker asks, exactly.
- * Similar wording never binds, a picker that mixes in another question is
- * left alone, and two live registrations with the same content bind neither.
- */
-export function matchClaudePicker(
+/** A unique complete cover of the picker by whole registrations, regardless of grouping. */
+function pickerCovers(
   state: SessionState,
   ownerKey: string,
   toolInput: unknown,
-): CodexQuestionRegistration | null {
+): CodexQuestionRegistration[][] {
   const picker = pickerQuestions(toolInput)
-  if (picker === null) return null
-  const matches = liveRegistrations(state, ownerKey).filter((registration) => showsRegistration(picker, registration))
-  return matches.length === 1 ? matches[0]! : null
+  if (picker === null || picker.length > PICKER_MAX_QUESTIONS ||
+      new Set(picker.map(question => question.question)).size !== picker.length) return []
+  const candidates = liveRegistrations(state, ownerKey).filter(registration => {
+    const subset = picker.filter(question => registration.questions.some(binding => nativeQuestionTitle(binding) === question.question))
+    return showsRegistration(subset, registration)
+  })
+  const covers: CodexQuestionRegistration[][] = []
+  const visit = (remaining: readonly PickerQuestion[], chosen: CodexQuestionRegistration[]): void => {
+    if (covers.length > 1) return
+    if (remaining.length === 0) { covers.push(chosen); return }
+    for (const candidate of candidates) {
+      const titles = new Set(candidate.questions.map(nativeQuestionTitle))
+      if (!titles.has(remaining[0]!.question) || ![...titles].every(title => remaining.some(question => question.question === title))) continue
+      visit(remaining.filter(question => !titles.has(question.question)), [...chosen, candidate])
+    }
+  }
+  visit(picker, [])
+  return covers
+}
+
+export function matchClaudePicker(state: SessionState, ownerKey: string, toolInput: unknown): CodexQuestionRegistration[] | null {
+  const covers = pickerCovers(state, ownerKey, toolInput)
+  return covers.length === 1 ? covers[0]! : null
 }
 
 /**
@@ -153,9 +169,9 @@ export function claudePickerMiss(
   const picker = pickerQuestions(toolInput)
   if (picker === null) return null
   const live = liveRegistrations(state, ownerKey)
-  const exact = live.filter((registration) => showsRegistration(picker, registration))
-  if (exact.length === 1) return null
-  if (exact.length > 1) return { question_ids: exact.map((registration) => registration.question_id), mismatch: 'duplicate-registration' }
+  const covers = pickerCovers(state, ownerKey, toolInput)
+  if (covers.length === 1) return null
+  if (covers.length > 1) return { question_ids: [...new Set(covers.flat().map(registration => registration.question_id))], mismatch: 'duplicate-registration' }
   const near = live.filter((registration) => registration.questions.some((binding) =>
     picker.some((question) => question.question === nativeQuestionTitle(binding))))
   return near.length === 0 ? null : { question_ids: near.map((registration) => registration.question_id), mismatch: 'different-content' }

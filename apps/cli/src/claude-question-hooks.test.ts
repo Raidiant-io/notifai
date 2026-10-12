@@ -125,6 +125,33 @@ function setup(questions: QuestionT[] = [ENVIRONMENT]) {
   return { root, env, deps, output, claims, reports, incarnation, pending, registration, toolInput, envelope, stage, logger, state, decision }
 }
 
+function groupedSetup(questions = [ENVIRONMENT, CHECKS]) {
+  const h = setup(questions)
+  const input = h.toolInput()
+  const registrations = h.registration().questions.map((question, i) => ({
+    ...h.registration(), question_id: `q_group_${i}`, confirmed_request_id: `req_group_${i}`, questions: [question],
+  }))
+  const pending = registrations.map(registration => ({ ...h.pending,
+    question_id: registration.question_id, request_id: registration.confirmed_request_id,
+    questions: registration.questions.map(binding => binding.question),
+  }))
+  updateSessionState(SESSION, h.env, state => ({ ...state, pending, codex_question_bindings: registrations }))
+  const stage = (index: number) => {
+    const item = pending[index]!
+    const reply = { reply_id: `reply_${index}`, seq: index + 1, delivery_id: 'del_test', device_id: 'dev_test',
+      device_name: 'Test', text: item.questions[0]!.choices![index === 1 ? 1 : 0]!.label, source: null, created_at: new Date().toISOString(),
+      answers: [{ question_id: item.questions[0]!.id, choice_ids: [item.questions[0]!.choices![index === 1 ? 1 : 0]!.id] }],
+    }
+    const answer = { pending: item, reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true as const } as unknown as AnsweredPending
+    updateSessionState(SESSION, h.env, state => ({ ...state,
+      pending: (state.pending ?? []).filter(p => p.question_id !== item.question_id),
+      waiting_answers: [...(state.waiting_answers ?? []), answer],
+      acknowledgement_due: [...(state.acknowledgement_due ?? []), { request_id: item.request_id, recorded_at: Date.now(), text_required: true }],
+    }))
+  }
+  return { ...h, input, stageGroup: stage }
+}
+
 describe('Claude Code picker bindings', () => {
   it('links only what the picker can show exactly as registered', () => {
     expect(claudePickerShape([ENVIRONMENT])).toBe(true)
@@ -155,11 +182,11 @@ describe('Claude Code picker bindings', () => {
   it('binds a picker only when it shows exactly the registered questions', () => {
     const h = setup([ENVIRONMENT, CHECKS])
     const key = h.incarnation.key
-    expect(matchClaudePicker(h.state(), key, h.toolInput())?.question_id).toBe('q_bound')
+    expect(matchClaudePicker(h.state(), key, h.toolInput())?.[0]?.question_id).toBe('q_bound')
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => {
       q.reverse()
       for (const question of q) (question['options'] as unknown[]).reverse()
-    }))?.question_id).toBe('q_bound')
+    }))?.[0]?.question_id).toBe('q_bound')
     expect(matchClaudePicker(h.state(), 'another-owner', h.toolInput())).toBeNull()
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q[0]!['question'] = 'Which environment now?' }))).toBeNull()
     expect(matchClaudePicker(h.state(), key, h.toolInput((q) => { q[1]!['question'] = 'Which environment?' }))).toBeNull()
@@ -240,7 +267,7 @@ describe('Claude Code picker hooks', () => {
     expect(h.decision().hookSpecificOutput.decision.updatedInput.questions).toEqual(h.toolInput().questions)
     expect(h.claims).toEqual(['req_bound'])
     expect(h.reports).toEqual(['handed_off'])
-    expect(readDeliveryJournal(SESSION, h.env).at(-1)).toMatchObject({ stage: 'written', presentation: { kind: 'claude-question', request_id: 'req_bound' } })
+    expect(readDeliveryJournal(SESSION, h.env).at(-1)).toMatchObject({ stage: 'written', presentation: { kind: 'claude-question', answers: [{ request_id: 'req_bound' }] } })
     expect(h.state().waiting_answers).toEqual([])
     expect(h.state().claude_picker_presented).toMatchObject({ request_id: 'req_bound', answers: { [title]: 'Staging' } })
 
@@ -477,4 +504,120 @@ describe('Claude Code picker hook entry points', () => {
     expect(context).toContain('notifai acknowledge req_bound --text')
     expect(h.state().claude_picker_presented).toBeUndefined()
   })
+})
+
+describe('Claude picker across independently registered questions', () => {
+  it('waits for separate replies then returns one picker result with every acknowledgement', async () => {
+    const h = groupedSetup()
+    h.stageGroup(1)
+    let sleeps = 0
+    const result = await claudePermissionRequest(h.deps, h.envelope({ tool_input: h.input }), h.logger, {
+      sleep: async () => {
+        if (++sleeps > 3) throw new Error('combined picker did not finish')
+        expect(h.output).toEqual([])
+        expect(claudePickerHolds(h.state())).toBe(true)
+        expect(h.state().waiting_answers).toHaveLength(1)
+        h.stageGroup(0)
+      },
+    })
+    expect(result).toBe('answered')
+    expect(h.output).toHaveLength(1)
+    expect(h.decision().hookSpecificOutput.decision.updatedInput.answers).toEqual({
+      'Which environment?': 'Staging', 'Which checks?': 'Tests',
+    })
+    expect(h.claims.sort()).toEqual(['req_group_0', 'req_group_1'])
+    expect(h.state().waiting_answers).toEqual([])
+    expect(h.state().acknowledgement_due).toHaveLength(2)
+    h.output.length = 0
+    claudePostToolUse(h.deps, h.envelope({ tool_input: h.input, tool_response: {
+      answers: { 'Which environment?': 'Staging', 'Which checks?': 'Tests' },
+    } }), h.logger)
+    expect(h.output.join('')).toContain('req_group_0')
+    expect(h.output.join('')).toContain('req_group_1')
+  })
+
+  it('maps terminal answers back to every original registration', () => {
+    const h = groupedSetup()
+    claudePostToolUse(h.deps, h.envelope({ tool_input: h.input, tool_response: {
+      answers: { 'Which environment?': 'Production', 'Which checks?': 'Lint, Tests' },
+    } }), h.logger)
+    expect(h.output.join('')).toContain('notifai acknowledge q_group_0')
+    expect(h.output.join('')).toContain('notifai acknowledge q_group_1')
+    expect(h.output.join('')).not.toContain('not linked')
+  })
+  it('supports four independently registered questions in a reordered picker', async () => {
+    const h = groupedSetup([ENVIRONMENT, CHECKS, { ...ENVIRONMENT, id: 'q3', text: 'Which backup?' },
+      { ...ENVIRONMENT, id: 'q4', text: 'Which fallback?' }])
+    h.input.questions.reverse()
+    for (const i of [3, 1, 0, 2]) h.stageGroup(i)
+    expect(await claudePermissionRequest(h.deps, h.envelope({ tool_input: h.input }), h.logger)).toBe('answered')
+    expect(h.decision().hookSpecificOutput.decision.updatedInput.answers).toEqual({
+      'Which environment?': 'Staging', 'Which checks?': 'Tests', 'Which backup?': 'Staging', 'Which fallback?': 'Staging',
+    })
+    expect(h.claims).toHaveLength(4)
+    expect(h.state().acknowledgement_due).toHaveLength(4)
+  })
+
+  it('refuses ambiguous covers rather than choosing a registration or losing a reply', () => {
+    const h = groupedSetup()
+    updateSessionState(SESSION, h.env, state => reserveClaudeQuestion(state,
+      { ...h.pending, question_id: 'q_whole', request_id: 'req_whole' },
+      { owner_key: h.incarnation.key, turn_id: CLAUDE_PICKER_TURN, service: SERVICE }))
+    expect(matchClaudePicker(h.state(), h.incarnation.key, h.input)).toBeNull()
+    expect(claudePickerMiss(h.state(), h.incarnation.key, h.input)?.mismatch).toBe('duplicate-registration')
+  })
+
+  it('preserves a partial reply when the combined picker is dismissed', async () => {
+    const h = groupedSetup()
+    h.stageGroup(1)
+    expect(await claudePermissionRequest(h.deps, h.envelope({ tool_input: h.input }), h.logger, {
+      sleep: async () => closeClaudePicker(SESSION, h.env),
+    })).toBe('left-to-terminal')
+    expect(h.output).toEqual([])
+    expect(h.claims).toEqual([])
+    expect(h.state().waiting_answers).toHaveLength(1)
+    expect(h.state().acknowledgement_due).toHaveLength(1)
+  })
+
+  it('writes nothing if one member cannot be claimed and preserves the other answer', async () => {
+    const h = groupedSetup()
+    h.stageGroup(0)
+    h.stageGroup(1)
+    const api = h.deps.clientFactory!('', '')
+    h.deps.clientFactory = () => ({ ...api, claimDeliveryAttempt: async (session, body) => {
+      if (body.subject.type === 'answer' && body.subject.request_id === 'req_group_1') {
+        throw new ApiCallError(409, 'claim_refused', 'settled', null, { reason: 'not_claimable' })
+      }
+      return api.claimDeliveryAttempt(session, body)
+    } }) as ApiClient
+    expect(await claudePermissionRequest(h.deps, h.envelope({ tool_input: h.input }), h.logger, {
+      sleep: async () => closeClaudePicker(SESSION, h.env),
+    })).toBe('left-to-terminal')
+    expect(h.output).toEqual([])
+    expect(h.state().waiting_answers?.map(answer => answer.pending.request_id)).toContain('req_group_0')
+    expect(h.reports).not.toContain('handed_off')
+  })
+
+  it('does not consume an old grouped revision when an answer changes during claims', async () => {
+    const h = groupedSetup()
+    h.stageGroup(0)
+    h.stageGroup(1)
+    const api = h.deps.clientFactory!('', '')
+    h.deps.clientFactory = () => ({ ...api, claimDeliveryAttempt: async (session, body) => {
+      if (body.subject.type === 'answer' && body.subject.request_id === 'req_group_1') {
+        updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: state.waiting_answers!.map(answer =>
+          answer.pending.request_id === 'req_group_0'
+            ? { ...answer, reply: { ...answer.reply, text: 'Changed answer' } } : answer) }))
+      }
+      return api.claimDeliveryAttempt(session, body)
+    } }) as ApiClient
+    expect(await claudePermissionRequest(h.deps, h.envelope({ tool_input: h.input }), h.logger, {
+      sleep: async () => closeClaudePicker(SESSION, h.env),
+    })).toBe('left-to-terminal')
+    expect(h.output).toEqual([])
+    expect(h.state().waiting_answers).toHaveLength(2)
+    expect(h.state().acknowledgement_due).toHaveLength(2)
+    expect(h.reports).not.toContain('handed_off')
+  })
+
 })

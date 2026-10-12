@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:2a0ec3c0ac64d4691968056c685e0d0e0ece546c4f325a6770faf309f8b5ce95",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms after the Windows command identity correction. Diagnostics now verify the OS-resolved physical npm command and its actual signed package, shim bytes and directory ACLs; an unrelated logical parent in a packaged application no longer creates a false competing-installation gap. Linked commands, changed payloads and unverifiable physical ownership remain rejected. This fulfills the existing installation and update guidance on affected-application proof without changing setup choices, native trust, callback requirements, notification wording or channel policy. The prior scoped-maintenance guidance remains unchanged.",
+  "behavior_digest": "sha256:f1f5835dc2c85fc2f3d76d6a01b20267dae7561f77796bcc9ef498bc17ac48dc",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms. Claude pickers now bind a unique complete set of whole registrations regardless of batching or order, wait for every member, and claim and present the group atomically while retaining each original acknowledgement. The Claude reference now describes grouped independent questions and separately arriving replies. Ambiguous content remains unbound; installation, harness trust, notification policy and domain terms are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
