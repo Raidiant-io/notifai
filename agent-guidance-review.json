@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:03f0d24fb067435739d794bf82e2fabcc41368ec6735ac882ea3ebbe1098d533",
+  "behavior_digest": "sha256:eb61f3bdf92ece14ee866091b833cc09c9dc1aa75a83a4ad0c5e83b7bb15ce9e",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the combined native installation, scoped repair, grouped Claude question and sound guidance. Retained authenticated native/npm ownership and package-scoped maintenance, whole-registration picker binding with original acknowledgements, and the dedicated Update tone. The merged sound default changes no harness setup, trust, readiness or domain terms. Sound configuration choices and help now include Update consistently with the shipped catalog.",
+  "reason": "Reviewed the combined native installation, scoped repair, grouped Claude question and sound guidance. Retained authenticated native/npm ownership and package-scoped maintenance, whole-registration picker binding with original acknowledgements, and the dedicated Update tone. The merged sound default changes no harness setup, trust, readiness or domain terms. Sound configuration choices and help now include Update consistently with the shipped catalog. Windows Codex now receives a shell-independent literal invocation, preserving the loaded integration revision. Reviewed its setup/recovery guidance: Codex retains ownership of changed-hook approvals; existing active sessions are allowed to finish. Other harness routing, notification behavior, domain terms and readiness boundaries are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

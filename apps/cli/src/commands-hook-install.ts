@@ -453,7 +453,7 @@ function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { comm
   if (!Array.isArray(groups)) return []
   return groups
     .flatMap((group) => group.hooks ?? [])
-    .filter((handler) => !HOOK_EVENT_COMMAND_RE.test(handler.command))
+    .filter((handler) => handlerEvent(handler.command) === null)
 }
 
 /**

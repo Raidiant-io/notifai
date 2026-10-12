@@ -49,3 +49,13 @@ claimed immediately before presentation; uncertain writes are never replayed.
 Verified queue control can remove a stale wake owned by Notifai; unavailable
 control leaves the harmless wake in place and preserves human prompts.
 Keep the original question and request identities when investigating a delay.
+
+## Windows command execution
+
+Codex runs hooks through the session's selected shell. Notifai generates one
+PowerShell encoded invocation that works when that outer shell is PowerShell
+or cmd.exe and preserves literal paths and hook input. Reinstall with the
+current CLI to replace an older bare quoted command. Codex owns approval of
+the changed definition: use its `/hooks` review when requested; Notifai does
+not copy or grant hook trust. Active sessions may retain their loaded hooks;
+leave ongoing work running and verify the new definition in a fresh session.

@@ -1837,14 +1837,34 @@ describe('Windows hook commands and discovery', () => {
     )
   })
 
-  it('emits a Windows-safe command with no POSIX single quotes', () => {
+  it('encodes a literal Windows Codex invocation for either selected shell', () => {
     const command = hookCommand(winAdapter, 'stop', 'codex', winOpts)
-    expect(command).toBe(
-      `"${winNode}" "${winAdapter}" hook stop --owner notifai --harness codex`,
+    const prefix = 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand '
+    expect(command.startsWith(prefix)).toBe(true)
+    expect(Buffer.from(command.slice(prefix.length), 'base64').toString('utf16le')).toBe(
+      `& '${winNode}' '${winAdapter}' hook stop --owner notifai --harness codex; exit $LASTEXITCODE`,
     )
-    expect(command).not.toContain("'")
-    expect(quoteWindowsArg('C:\\ends\\with\\')).toBe('"C:\\ends\\with\\\\"')
-    expect(quoteWindowsArg('say "hi"')).toBe('"say \\"hi\\""')
+    expect(handlerEvent(command)).toBe('stop')
+    const native = hookCommand("C:\\Users\\O'Brien & Co\\notifai.exe", 'session-start', 'codex', { platform: 'win32' })
+    expect(Buffer.from(native.slice(prefix.length), 'base64').toString('utf16le')).toContain("O''Brien & Co")
+  })
+
+  it('replaces old Windows Codex hooks once and preserves foreign encoded scripts', () => {
+    const foreign = 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' +
+      Buffer.from("Write-Output 'hook stop --owner notifai'", 'utf16le').toString('base64')
+    const old = { hooks: { Stop: [{ hooks: [
+      { type: 'command' as const, command: `"${winAdapter}" hook stop --owner notifai --harness codex` },
+      { type: 'command' as const, command: foreign },
+    ] }] } }
+    const desired = buildHookConfig({ adapterPath: winAdapter, harness: 'codex', ...winOpts })
+    const merged = mergeHooks(old, desired, winAdapter).document
+    expect(mergeHooks(merged, desired, winAdapter).document).toEqual(merged)
+    const commands = Object.values(merged.hooks ?? {}).flatMap(groups => groups.flatMap(group => group.hooks.map(hook => hook.command)))
+    expect(commands).toContain(foreign)
+    expect(commands).not.toContain(old.hooks.Stop[0]!.hooks[0]!.command)
+    expect(commands.filter(command => handlerEvent(command) === 'stop')).toHaveLength(1)
+    expect(handlerEvent(foreign)).toBeNull()
+    expect(removeHooks(merged, winAdapter).document.hooks?.Stop?.[0]?.hooks).toEqual([{ type: 'command', command: foreign }])
   })
 
   it('round-trips the Windows command through JSON and TOML documents', () => {

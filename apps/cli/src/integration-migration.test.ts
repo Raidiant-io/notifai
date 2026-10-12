@@ -1,3 +1,4 @@
+import { handlerEvent } from './install-hooks.js'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -195,7 +196,10 @@ it.each(['darwin', 'win32', 'linux'] as const)('repairs owned %s hooks beside un
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
     changed: ['codex-hooks'], pending_actions: [], diagnostics: expect.arrayContaining([expect.stringContaining('skill-unmanaged')]) })
-  expect(readFileSync(f.installation.file, 'utf8')).toContain(platform === 'win32' ? 'session-start' : 'post-tool-use')
+  const installed = JSON.parse(readFileSync(f.installation.file, 'utf8')) as { hooks: Record<string, { hooks: { command: string }[] }[]> }
+  const events = Object.values(installed.hooks).flatMap(groups => groups.flatMap(group => group.hooks.map(hook => handlerEvent(hook.command))))
+  expect(events).toContain(platform === 'win32' ? 'session-start' : 'post-tool-use')
+  expect(sourceIntegrationRevision(readFileSync(f.installation.file, 'utf8'))).toMatch(/^[a-f0-9]{64}$/)
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
   expect(readFileSync(path.join(skill, 'SKILL.md'))).toEqual(guidance)
   expect(add).not.toHaveBeenCalled()

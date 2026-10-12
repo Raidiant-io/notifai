@@ -1,3 +1,4 @@
+import { decodeWindowsCodexCommand, encodeWindowsCodexCommand, windowsCodexCommandsInSource } from './windows-codex-command.js'
 /** A loaded definition carries its revision literally. Reading the current
  * definition from disk inside a callback would falsely prove a host reload. */
 import { createHash } from 'node:crypto'
@@ -15,7 +16,11 @@ export function stampHookDefinition<T extends object>(definition: T, scope = '')
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return
     for (const [key, item] of Object.entries(value)) {
-      if (key === 'command' && typeof item === 'string') (value as Record<string, unknown>)[key] = `${item} --integration-revision ${revision}`
+      if (key === 'command' && typeof item === 'string') {
+        const decoded = decodeWindowsCodexCommand(item)
+        const stamped = `${decoded ?? item} --integration-revision ${revision}`
+        ;(value as Record<string, unknown>)[key] = decoded === null ? stamped : encodeWindowsCodexCommand(stamped)
+      }
       else visit(item)
     }
   }
@@ -23,6 +28,7 @@ export function stampHookDefinition<T extends object>(definition: T, scope = '')
   return definition
 }
 export function sourceIntegrationRevision(source: string): string | null {
+  source += `\n${windowsCodexCommandsInSource(source).join("\n")}`
   const revisions = new Set([...source.matchAll(/(?:--integration-revision\s+|NOTIFAI_INTEGRATION_REVISION = ")([a-f0-9]{64})/g)].map(match => match[1]!))
   return revisions.size === 1 ? [...revisions][0]! : null
 }
