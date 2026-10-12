@@ -1839,10 +1839,10 @@ describe('Windows hook commands and discovery', () => {
 
   it('encodes a literal Windows Codex invocation for either selected shell', () => {
     const command = hookCommand(winAdapter, 'stop', 'codex', winOpts)
-    const prefix = 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand '
+    const prefix = path.win32.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') + ' -NoLogo -NoProfile -NonInteractive -EncodedCommand '
     expect(command.startsWith(prefix)).toBe(true)
     expect(Buffer.from(command.slice(prefix.length), 'base64').toString('utf16le')).toBe(
-      `& '${winNode}' '${winAdapter}' hook stop --owner notifai --harness codex; exit $LASTEXITCODE`,
+      `$ErrorActionPreference = 'Stop'; & '${winNode}' '${winAdapter}' hook stop --owner notifai --harness codex; exit $LASTEXITCODE`,
     )
     expect(handlerEvent(command)).toBe('stop')
     const native = hookCommand("C:\\Users\\O'Brien & Co\\notifai.exe", 'session-start', 'codex', { platform: 'win32' })
