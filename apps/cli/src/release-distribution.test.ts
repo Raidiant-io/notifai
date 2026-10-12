@@ -33,6 +33,21 @@ function setup(options: { inventory?: ReleaseInventory; sequence?: number; chann
 }
 
 describe('verified release distribution', () => {
+  it('acquires a carried exact inventory without mutable channel selection', async () => {
+    const { distribution, urls } = setup()
+    const options = { signedInventory: signed('inventory', inventory), version: inventory.version,
+      sourceRevision: inventory.source_revision, target: 'bun-windows-x64' as const }
+    const release = distribution.resolveExactRelease(options)
+    expect(urls).toEqual([])
+    expect(await distribution.downloadArtifact(release)).toEqual(artifact)
+    expect(urls).toEqual(['https://github.com/Raidiant-io/notifai/releases/download/v12.0.0/notifai-12.0.0-windows-x64.zip'])
+    expect(() => distribution.resolveExactRelease({ ...options, version: '11.0.0' })).toThrow(/identity/)
+    expect(() => distribution.resolveExactRelease({ ...options, sourceRevision: 'b'.repeat(40) })).toThrow(/identity/)
+    expect(() => distribution.resolveExactRelease({ ...options, signedInventory: options.signedInventory.replace('fixture', 'unknown') })).toThrow(/key/)
+    expect(() => distribution.resolveExactRelease({ ...options, target: 'bun-linux-arm64' })).toThrow(/target/)
+    const redirected = setup({ redirect: true }).distribution.resolveExactRelease(options)
+    await expect(setup({ redirect: true }).distribution.downloadArtifact(redirected)).rejects.toThrow(/origin/)
+  })
   it('resolves one signed target through fixed origins and verifies the downloaded bytes', async () => {
     const { distribution, urls } = setup()
     const release = await distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })

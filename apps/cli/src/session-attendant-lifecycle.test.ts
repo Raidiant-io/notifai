@@ -2,7 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import os from 'node:os'
 import path from 'node:path'
 import type { AttendanceRequestT, AttendanceResponse } from '@raidiant/notifai-protocol'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as runtimeLaunch from './launch-self.js'
 import type { ApiClient } from './client.js'
 import { attendHook, attendantGates } from './commands-hook-attend.js'
 import { hookRunCommand } from './commands-hook-run.js'
@@ -580,7 +581,34 @@ describe('notifai hook attend', () => {
     expect(JSON.parse(readFileSync(claim, 'utf8'))).toMatchObject({ token: 'someone-else' })
   })
 
-  it('hands a Claude Code session over to the installed runtime at its next root hook, keeping its pending work', async () => {
+  it.each(['compatible', 'foreign', 'missing'] as const)('preserves an existing %s native owner without a blanket update handoff', async kind => {
+    const { env, root } = isolatedEnv(), service = fakeAttendance()
+    const previous = { ...attendDeps(env, root, { clientFactory: () => service.client }), runningVersion: '1.0.0' }
+    recordSessionNotified('sess-a', env, Date.now())
+    const running = hookRunCommand(previous, 'attend', stdin({ session_id: 'sess-a', cwd: root,
+      hook_event_name: 'SessionStart', source: 'startup' }), 'claude-code')
+    await until(() => service.calls.length >= 2, 'native owner attending')
+    const claim = attendantClaimPath('sess-a', env)
+    const reference = { installation_id: '11111111-1111-4111-8111-111111111111', build: 'a'.repeat(64) }
+    writeFileSync(claim, JSON.stringify({ ...readClaimFile(claim), pid: process.ppid, start: processStartTime(process.ppid),
+      runtime_revision: 'previous-source-digest', ...(kind === 'missing' ? {} : { runtime_build: { ...reference,
+        installation_id: kind === 'foreign' ? '22222222-2222-4222-8222-222222222222' : reference.installation_id } }) }))
+    const before = readFileSync(claim, 'utf8')
+    const current = vi.spyOn(runtimeLaunch, 'currentRuntimeBuild').mockReturnValue({ ...reference, build: 'b'.repeat(64) })
+    try {
+      const installed = { ...attendDeps(env, root, { clientFactory: () => service.client }), runningVersion: '2.0.0' }
+      await hookRunCommand(installed, 'attend', stdin({ session_id: 'sess-a', cwd: root,
+        hook_event_name: 'UserPromptSubmit' }), 'claude-code')
+      expect(readFileSync(claim, 'utf8')).toBe(before)
+      expect(previous.exits).toEqual([])
+    } finally {
+      current.mockRestore()
+      markSessionEnded('sess-a', env, Date.now() + 1)
+      await running
+    }
+  })
+
+  it('hands a development Claude Code session over to the installed runtime at its next root hook, keeping its pending work', async () => {
     const { env, root } = isolatedEnv()
     const service = fakeAttendance()
     const previous = { ...attendDeps(env, root, { clientFactory: () => service.client }), runningVersion: '1.0.0' }

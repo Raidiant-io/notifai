@@ -16,12 +16,15 @@ const MAX_ENTRIES = 130
 interface Entry { name: string; size: number }
 type Consume = (entry: Entry, chunks: AsyncIterable<Uint8Array>) => Promise<void>
 
-async function tarEntries(bytes: Uint8Array, consume: Consume): Promise<void> {
+/** Reads untrusted tar data without writing paths. Tar metadata is normalized by
+ * tar-stream; callers must not forward these source bytes to a different parser
+ * unless the compressed archive itself has independent release authority. */
+export async function tarEntries(bytes: Uint8Array, consume: Consume, maxExpanded = MAX_EXPANDED): Promise<void> {
   const reader = extract()
   let expanded = 0
   const limit = new Transform({ transform(chunk: Buffer, _encoding, done) {
     expanded += chunk.length
-    done(expanded > MAX_EXPANDED ? new Error('Archive expanded size exceeds its limit') : null, chunk)
+    done(expanded > maxExpanded ? new Error('Archive expanded size exceeds its limit') : null, chunk)
   } })
   const pumping = pipeline(Readable.from([bytes]), createGunzip(), limit, reader as unknown as Writable,
     { signal: AbortSignal.timeout(120_000) })

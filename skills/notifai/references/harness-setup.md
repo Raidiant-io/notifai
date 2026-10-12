@@ -76,11 +76,11 @@ ambiguous. Existing edits and unowned skills are preserved and reported.
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
 
-Installed definitions call one stable user-level adapter at
-`~/.notifai/bin/hook-adapter`. `hooks install` atomically retargets that adapter
-to the current CLI while leaving definition bytes unchanged across Node/NVM,
-package-manager, CLI-version, checkout, XDG directory, and Notifai preference
-changes. Codex and Claude Code Stop run asynchronously on every platform. Both declare a timeout
+Installed definitions call the stable native command at
+`~/.notifai/bin/notifai` on macOS/Linux or `$HOME\.notifai\bin\notifai.exe`
+on Windows. Native updates switch the active runtime behind that path while
+preserving hook definitions. npm launchers and NPX caches are never hook targets.
+Codex and Claude Code Stop run asynchronously on every platform. Both declare a timeout
 above the longest answer window so their waiters can own the complete window;
 prompt-submit and session-end retain fixed short limits on both.
 Codex SessionStart stays within the harness's built-in inline-context budget;
@@ -177,8 +177,10 @@ the second question back would only delay it.
 
 ## Bounded recovery
 
-Follow the exact `notifai doctor` diagnostic. Common recovery is one repair,
-one fresh activation, and one new doctor check. Stop if the current pointer
+Follow the exact `notifai doctor` diagnostic. Repair the affected owned scope,
+verify the capability it changed, and recheck once. Preserve healthy compatible
+owners. A changed definition may need reload or approval; unchanged files do
+not require a fresh session. Stop if the current pointer
 belongs to another active session or if the hook still has not fired; ask the
 user or coordinator instead of retrying indefinitely.
 

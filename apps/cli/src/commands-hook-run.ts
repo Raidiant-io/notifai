@@ -1,3 +1,4 @@
+import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { agentUpdateNotice } from './agent-update-notice.js'
 import { integrationFaultNotice } from './integration-health.js'
@@ -119,6 +120,7 @@ export async function hookRunCommand(
   event: string,
   readStdin: () => Promise<string>,
   harness?: HookHarness,
+  integrationRevision?: string,
 ): Promise<number> {
   if (
     !(HOOK_EVENTS as readonly string[]).includes(event) &&
@@ -242,6 +244,12 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  const observeIntegration = (): void => {
+    if (harness === undefined || envelope.session_id === undefined || envelope.agent_id !== undefined ||
+        envelope.agent_type !== undefined || !['session-start', 'user-prompt-submit', 'stop'].includes(event)) return
+    try { observeLoadedIntegration(envelope.session_id, harness, integrationRevision, deps.env) }
+    catch { /* Observation failure never disrupts existing question delivery. */ }
+  }
   // Claude Code reports the User's own session title on these two events. A
   // subagent's callback names the child, never the session.
   if (harness === 'claude-code' && (event === 'session-start' || event === 'user-prompt-submit') &&
@@ -518,7 +526,7 @@ export async function hookRunCommand(
           if (envelope.openclaw_session_id !== undefined &&
               generation.sessionId !== envelope.openclaw_session_id) return 'stale-prompt-ignored'
           writeOpenclawGeneration(sessionKey, deps.env, generation)
-          if (generation.activated) return 'already-activated'
+          if (generation.activated) { observeIntegration(); return 'already-activated' }
           const previous = readSessionIncarnation(sessionKey, deps.env)
           if (previous !== null && previous.openclaw_generation !== generation.id) {
             // A new sessionId or resumed generation is authoritative even if
@@ -534,6 +542,7 @@ export async function hookRunCommand(
             sessionKey, deps.env, harness, cwd, undefined, lifecycleStamp(now()), generation.id,
           )
           writeOpenclawGeneration(sessionKey, deps.env, { ...generation, activated: true })
+          observeIntegration()
           deps.io.out(output)
           return 'context-added'
         })
@@ -562,6 +571,7 @@ export async function hookRunCommand(
             )
           : undefined
         recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint, invokedAt)
+        observeIntegration()
         if (harness === 'codex') {
           // Pending state is the durable handoff debt if the prior process
           // died after queue commit but before starting its successor.
@@ -591,6 +601,7 @@ export async function hookRunCommand(
   // before the turn and one turn at a time: the Session Attendant reads the
   // thread's activity from starts recorded in that order.
   if (event === 'user-prompt-submit' && harness === 'codex') recordCodexTurnStart(envelope, deps.env)
+  if (event === 'user-prompt-submit' || event === 'stop') observeIntegration()
 
   // Cursor has a confirmed host bug in which sessionStart.additional_context
   // is accepted but never reaches the model. A native Stop follow-up is the

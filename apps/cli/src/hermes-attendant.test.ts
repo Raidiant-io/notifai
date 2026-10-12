@@ -1,11 +1,13 @@
 import { PassThrough } from 'node:stream'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, it } from 'vitest'
 import { HermesWriterBridge, hermesAnswerRoute } from './hermes-attendant.js'
 import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import { attendantClaimPath, hermesQuestionRouteReady, writeAttendantStatus } from './session-attendant-state.js'
+import { hermesPluginCurrent, hermesPluginDir, hermesPluginSource, refreshHermesPlugin, retainedHermesPlugin } from './hermes-plugin.js'
+import { hookAdapterPath } from './hook-adapter.js'
 
 it('requires a current exact Hermes session and confirms one fenced injection', async () => {
   const input = new PassThrough()
@@ -109,4 +111,72 @@ it('commits a claimed answer only when the exact plugin confirms injection', asy
   expect((await delivery).acknowledgement).toBe('delivered')
   expect(commits).toBe(1)
   bridge.close()
+})
+
+function installedPlugin() {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-continuity-'))
+  const env = { HOME: root, HERMES_HOME: path.join(root, 'hermes') }, directory = hermesPluginDir(env)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const module = path.join(directory, '__init__.py'), manifest = path.join(directory, 'plugin.yaml')
+  writeFileSync(module, hermesPluginSource(hookAdapterPath(root), undefined, module), { mode: 0o600 })
+  writeFileSync(manifest, 'name: notifai\n', { mode: 0o600 })
+  return { root, env, directory, module, manifest }
+}
+
+it.skipIf(process.platform === 'win32')('delivers the original owed answer across owned Hermes module publication', async () => {
+  const { root, env, manifest } = installedPlugin()
+  const input = new PassThrough(), output = new PassThrough(), bridge = new HermesWriterBridge(input, output)
+  try {
+    input.write(`${JSON.stringify({ type: 'hello', session_id: 'original', cwd: root, pid: process.ppid })}\n`)
+    input.write(`${JSON.stringify({ type: 'state', session_id: 'original', activity: 'idle' })}\n`)
+    await bridge.hello()
+    const owned = retainedHermesPlugin(root, env)
+    expect(owned()).toBe(true)
+    const before = readFileSync(manifest, 'utf8'), route = hermesAnswerRoute(bridge, 'original')
+    let commits = 0
+    refreshHermesPlugin('/new/stable/command', env)
+    expect(hermesPluginCurrent(root, env)).toBe(false) // development retains exact-source gating
+    expect(owned()).toBe(true)
+    expect(readFileSync(manifest, 'utf8')).toBe(before)
+    const outbound = new Promise<{ id: number; session_id: string; text: string }>(resolve =>
+      output.once('data', chunk => resolve(JSON.parse(String(chunk)))))
+    const delivery = route.deliver({ context: 'original answer', answers: 1, remaining: 0, request_ids: ['req_original'],
+      journal_recorded_at: 1, commitDelivery: () => { commits++; return true },
+      writeGuard: { writable: owned, remainingMs: () => 5_000 } })
+    const frame = await outbound
+    expect(frame).toMatchObject({ session_id: 'original', text: 'original answer' })
+    input.write(`${JSON.stringify({ type: 'result', id: frame.id, accepted: true })}\n`)
+    expect((await delivery).acknowledgement).toBe('delivered')
+    expect(commits).toBe(1)
+  } finally { bridge.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
+it.skipIf(process.platform === 'win32').each(['directory', 'manifest', 'module', 'permissions', 'symlink', 'marker'])(
+  'revokes loaded Hermes ownership on %s replacement or loss', change => {
+    const { root, env, directory, module, manifest } = installedPlugin()
+    try {
+      const owned = retainedHermesPlugin(root, env)
+      expect(owned()).toBe(true)
+      if (change === 'directory') {
+        renameSync(directory, `${directory}.old`); mkdirSync(directory)
+        writeFileSync(module, readFileSync(path.join(`${directory}.old`, '__init__.py')))
+        writeFileSync(manifest, 'name: notifai\n')
+      } else if (change === 'manifest') {
+        renameSync(manifest, `${manifest}.old`); writeFileSync(manifest, 'name: notifai\n')
+      } else if (change === 'permissions') chmodSync(module, 0o666)
+      else if (change === 'marker') writeFileSync(module, '# foreign\n')
+      else {
+        renameSync(module, `${module}.old`)
+        if (change === 'symlink') symlinkSync(`${module}.old`, module)
+      }
+      expect(owned()).toBe(false)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+it.skipIf(process.platform === 'win32')('rejects a different Hermes definition at initial native bridge admission', () => {
+  const { root, env } = installedPlugin()
+  try {
+    refreshHermesPlugin('/different/command', env)
+    expect(retainedHermesPlugin(root, env)()).toBe(false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

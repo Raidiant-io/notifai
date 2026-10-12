@@ -1,12 +1,66 @@
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, expect, it } from 'vitest'
-import { hermesPluginDir, hermesPluginSource, installHermesPlugin, preflightHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import { hermesPluginDir, hermesPluginSource, installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
+import type { IntegrationPublication } from './native-installation.js'
 
 const roots: string[] = []
 afterAll(() => roots.forEach(root => rmSync(root, { recursive: true, force: true })))
+
+it.skipIf(process.platform === 'win32')('uses one scoped host operation for setup, enable and removal, retaining interrupted source', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-host-contract-')); roots.push(root)
+  const bin = path.join(root, 'bin'); mkdirSync(bin)
+  // This host fixture tests the CLI boundary, not Hermes activation semantics.
+  const host = path.join(bin, 'hermes')
+  writeFileSync(host, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), url = require('node:url');
+const args = process.argv.slice(2), target = path.join(process.env.HERMES_HOME, 'plugins', 'notifai');
+if (args[0] === '--version') console.log('Hermes Agent v0.21.5');
+else if (args[1] === 'list') { if (fs.existsSync(target)) console.log('enabled local 1.0.0 notifai'); }
+else if (args[1] === 'install') {
+  if (process.env.NOTIFAI_TEST_HOST_FAIL) process.exit(1);
+  if (args.includes('--force')) process.exit(2);
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of ['__init__.py', 'plugin.yaml']) fs.copyFileSync(path.join(url.fileURLToPath(args[2]), name), path.join(target, name));
+} else if (args[1] === 'remove') fs.rmSync(target, { recursive: true, force: true });
+`, { mode: 0o700 })
+  const env = { HOME: root, HERMES_HOME: path.join(root, 'hermes'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }
+  const operations: string[] = [], sources: string[] = []
+  const publish: IntegrationPublication = action => action()
+  publish.host = (input, action) => {
+    operations.push(input.operation)
+    if (input.source) sources.push(input.source)
+    return action()
+  }
+  const installed = installHermesPlugin('/stable/adapter', env, undefined, publish)
+  expect(operations).toEqual(['install'])
+  expect(existsSync(sources[0]!)).toBe(false)
+  const manifest = readFileSync(path.join(installed, 'plugin.yaml'), 'utf8')
+  installHermesPlugin('/new/adapter', env, undefined, publish)
+  expect(operations).toEqual(['install', 'enable'])
+  expect(readFileSync(path.join(installed, 'plugin.yaml'), 'utf8')).toBe(manifest)
+  expect(uninstallHermesPlugin(env, publish)).toBe(true)
+  expect(operations).toEqual(['install', 'enable', 'remove'])
+  expect(() => installHermesPlugin('/stable/adapter', { ...env, NOTIFAI_TEST_HOST_FAIL: '1' }, undefined, publish)).toThrow(/Hermes/)
+  const retained = sources.at(-1)!; roots.push(retained)
+  expect(existsSync(path.join(retained, '__init__.py'))).toBe(true)
+})
+
+it('refreshes an owned Hermes module without invoking the host or changing its enablement', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-refresh-')); roots.push(root)
+  const env = { HOME: root, HERMES_HOME: path.join(root, 'hermes'), PATH: '' }, dir = hermesPluginDir(env)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, '__init__.py'), hermesPluginSource('/old/adapter'))
+  writeFileSync(path.join(dir, 'plugin.yaml'), 'name: notifai\n')
+  const settings = path.join(env.HERMES_HOME, 'config.yaml'), contents = 'plugins:\n  notifai:\n    enabled: false\n'
+  writeFileSync(settings, contents)
+  expect(refreshHermesPlugin('/new/adapter', env)).toBe(dir)
+  expect(readFileSync(path.join(dir, '__init__.py'), 'utf8')).toBe(hermesPluginSource('/new/adapter', undefined, path.join(dir, '__init__.py')))
+  expect(readFileSync(settings, 'utf8')).toBe(contents)
+  expect(readFileSync(path.join(dir, 'plugin.yaml'), 'utf8')).toBe('name: notifai\n')
+})
 
 it('leaves a foreign Hermes plugin with the same name untouched', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-foreign-'))

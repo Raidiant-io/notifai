@@ -7,10 +7,37 @@ guesses or sits blocked in a terminal nobody is watching. `notifai` gives
 it a way to tell you something finished, and a way to ask you a question
 and get your answer back as a banner on your phone.
 
-Install the native CLI using the [OS installation instructions](../../skills/notifai/references/installation.md),
-then run `notifai init`. No Node or npm is needed. Select beta explicitly
-while native distribution is beta-only. An existing native installation owns
-its updates through `notifai update`; the historical npm runtime is frozen.
+Use the native installer for your computer; it installs Notifai and starts setup.
+No Node.js or npm needed.
+
+```sh
+# macOS / Linux / WSL
+curl -fsSL https://notifai.sh/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+irm https://notifai.sh/install.ps1 | iex
+```
+
+Setup defaults to QR approval with your signed-in Companion App; notification
+and browser approval are selectable alternatives. Run `notifai init` to resume.
+See [installation and migration](../../skills/notifai/references/installation.md) for agent-safe script inspection,
+platform prerequisites, channel selection and legacy npm migration.
+
+Optional Node/npm launcher, once its replacement package and matching native
+release are verified as published:
+
+```sh
+npx --yes @raidiant/notifai@latest init
+# Or: npm install -g @raidiant/notifai, then notifai init
+```
+
+Requires Node.js 20.12 or newer for this launcher. Notifai installs its own native
+runtime. Use `notifai update` for runtime updates. npm updates/removes only the
+launcher; `notifai uninstall` removes the runtime after its safety checks.
+Existing native versions and channels survive launcher changes. `@version`
+selects launcher code, not a command to replace an existing runtime.
 
 Run `notifai doctor` or `notifai update --check --json` to check for a newer
 CLI and inspect release notes, guidance, and session requirements. Enabled
@@ -111,11 +138,11 @@ guidance; load the Notifai skill directly. Exact Source Context comes from
 
 Every harness definition calls one stable user-level adapter under the account
 home (`~/.notifai/bin/hook-adapter` on macOS/Linux and the corresponding user
-profile path on Windows). Node, package manager, CLI version, checkout,
-configuration directories, and notification preferences are resolved behind
-it, so upgrades and configuration changes do not rewrite trusted hook
-definitions. Windows invokes its JavaScript adapter through the registered Node
-executable; macOS/Linux retain the POSIX adapter and its stable command bytes.
+profile path on Windows). The adapter resolves the stable native command; npm
+prefixes, NPX caches and repository paths do not own hook execution. Runtime
+updates use retained native generations and preserve the managed definition's
+identity where possible. Legacy Node-based hook migration follows the native
+installer's explicit ownership and pending-work checks.
 Codex SessionStart guidance stays within Codex's built-in inline-context budget,
 so its stable definition does not need an output-limit override that would
 create a different approval identity.

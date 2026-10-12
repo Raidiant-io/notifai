@@ -10,6 +10,7 @@ import path from 'node:path'
 import { Distribution, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
 import { extractReleaseArchive } from '../apps/cli/dist/release-archive.js'
 import { Installation } from '../apps/cli/dist/installation.js'
+import { LOCAL_CONTINUITY } from '../apps/cli/dist/local-continuity.js'
 import { installationAccess } from '../apps/cli/dist/installation-access.js'
 import { repositoryRoot } from './cross-platform.mjs'
 
@@ -21,8 +22,8 @@ const nativeTarget = `bun-${process.platform === 'win32' ? 'windows' : process.p
 assert.equal(metadata.build.target, nativeTarget, 'Archive verification requires its native target')
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
 const distribution = new Distribution({ 'ci-only': publicKey.export({ type: 'spki', format: 'pem' }).toString() })
-const payload = Buffer.from(JSON.stringify({ schema: 1, version: metadata.build.version, source_revision: metadata.build.sourceRevision,
-  store_schema: 1, launcher_schema: 1, artifacts: [metadata.artifact] }))
+const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: LOCAL_CONTINUITY }, version: metadata.build.version, source_revision: metadata.build.sourceRevision,
+  store_schema: 2, launcher_schema: 1, artifacts: [metadata.artifact] }))
 const signedInventory = JSON.stringify({ key_id: 'ci-only', payload: payload.toString('base64'),
   signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })
 distribution.verifyInventory(signedInventory) // Validate the filename/size before reading a path from metadata.
@@ -50,7 +51,7 @@ try {
   const installation = new Installation({ root: path.join(home, '.notifai'), target: nativeTarget, distribution,
     access: installationAccess(path.join(extracted, `notifai${extension}`)) })
   const candidate = { directory: extracted, signedInventory, channel: metadata.build.version.includes('-') ? 'beta' : 'stable' }
-  assert.deepEqual(installation.recoverUninstallForInstall(candidate, path.join(root, 'sessions')), { status: 'unchanged' })
+  assert.equal(installation.inspect().uninstall_pending, false, 'Fresh installation must have no pending uninstall')
   const installed = installation.installCandidate({ ...candidate, source: 'manual' }) // Real candidate self-check; no probe mock.
   assert.equal(installed.reused, false)
   assert.equal(installed.version, metadata.build.version)

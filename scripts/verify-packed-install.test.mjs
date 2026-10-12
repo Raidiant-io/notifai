@@ -1,93 +1,76 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { generateKeyPairSync, sign } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import process from 'node:process'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { protocolPinFailure } from './verify-packed-install.mjs'
-
-const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'verify-packed-install.mjs')
-
-/** Build a registry-shaped tarball (`package/package.json`) from a manifest. */
-function fixtureTarball(directory, filename, manifest) {
-  const staging = path.join(directory, `${filename}-staging`, 'package')
-  mkdirSync(staging, { recursive: true })
-  writeFileSync(path.join(staging, 'package.json'), JSON.stringify(manifest, null, 2))
-  const tarball = path.join(directory, filename)
-  execFileSync('tar', ['czf', tarball, 'package'], { cwd: path.dirname(staging) })
-  return tarball
+import { releaseSigningMessage, RELEASE_TARGETS } from '../apps/cli/dist/release-distribution.js'
+import { adapterPackageManifest, generateAdapterManifest, hash } from './npm-adapter-artifact.mjs'
+import { requireOwnedHostedAccount, verifyWindowsShims } from './verify-packed-install.mjs'
+import { verifyPackedAdapter } from './verify-packed-npm-adapter.mjs'
+import { commandInvocation } from './cross-platform.mjs'
+import { requireStatus, runExternal } from './run-external.mjs'
+function fixture(t) {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-proof-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const directory = path.join(root, 'package'), sourceRevision = 'a'.repeat(40)
+  mkdirSync(path.join(directory, 'bin'), { recursive: true })
+  const source = JSON.parse(readFileSync(new URL('../apps/cli/package.json', import.meta.url), 'utf8'))
+  writeFileSync(path.join(directory, 'package.json'), JSON.stringify(adapterPackageManifest(source)))
+  writeFileSync(path.join(directory, 'bin/notifai.mjs'), '#!/usr/bin/env node\nconsole.log("fixture adapter");\n', { mode: 0o755 })
+  const manifest = generateAdapterManifest(directory, source.version, sourceRevision)
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const keys = { fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }
+  const inventory = { schema: 1, version: source.version, source_revision: sourceRevision, store_schema: 1, launcher_schema: 1,
+    artifacts: RELEASE_TARGETS.map(target => ({ target, filename: `notifai-${source.version}-${target.slice(4)}.${target.includes('windows') ? 'zip' : 'tar.gz'}`,
+      bytes: 1, sha256: 'b'.repeat(64), runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64),
+      materials: [{ path: 'npm-adapter-files.json', bytes: Buffer.byteLength(manifest), sha256: hash(manifest) }] })) }
+  const save = value => { const payload = Buffer.from(JSON.stringify(value)); writeFileSync(path.join(directory, 'inventory.json'), JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
+    signature: sign(null, releaseSigningMessage('inventory', payload), privateKey).toString('base64') })) }
+  const pack = () => { const tarball = path.join(root, 'adapter.tgz'); execFileSync('tar', ['czf', 'adapter.tgz', 'package'], { cwd: root }); return tarball }
+  save(inventory)
+  return { directory, sourceRevision, version: source.version, keys, inventory, save, pack }
 }
-
-test('the gate fails a packed CLI whose manifest pins a stale protocol version', () => {
-  const fixture = mkdtempSync(path.join(os.tmpdir(), 'notifai-packed-fixture-'))
-  try {
-    const protocolTarball = fixtureTarball(fixture, 'protocol.tgz', {
-      name: '@raidiant/notifai-protocol',
-      version: '0.6.0',
-    })
-    const cliTarball = fixtureTarball(fixture, 'cli.tgz', {
-      name: '@raidiant/notifai',
-      version: '9.9.9',
-      bin: { notifai: 'dist/main.js' },
-      // The defect class this gate exists for: the CLI ships pinned to a
-      // protocol version other than the one packed beside it.
-      dependencies: { '@raidiant/notifai-protocol': '0.5.0' },
-    })
-
-    const run = spawnSync(
-      process.execPath,
-      [script, '--cli-tarball', cliTarball, '--protocol-tarball', protocolTarball],
-      { encoding: 'utf8' },
-    )
-
-    assert.equal(run.status, 1, `expected the gate to fail, got status ${run.status}\n${run.stdout}${run.stderr}`)
-    assert.match(run.stderr, /Packed install verification FAILED/)
-    assert.match(run.stderr, /@raidiant\/notifai-protocol@0\.5\.0/)
-    assert.match(run.stderr, /the protocol packed beside it is 0\.6\.0/)
-  } finally {
-    rmSync(fixture, { recursive: true, force: true })
-  }
+test('exact packed artifact binds adapter bytes to every signed native target and exact source', t => {
+  const f = fixture(t)
+  const verify = () => verifyPackedAdapter({ ...f, tarball: f.pack() })
+  assert.equal(verify().source_revision, f.sourceRevision)
+  writeFileSync(path.join(f.directory, 'bin/notifai.mjs'), 'modified payload')
+  assert.throws(verify, /integrity/)
+})
+test('same version cannot admit foreign native source or missing manifest material', t => {
+  const f = fixture(t)
+  f.save({ ...f.inventory, source_revision: 'f'.repeat(40) })
+  assert.throws(() => verifyPackedAdapter({ ...f, tarball: f.pack() }), /identity|source|authenticated/)
+  f.save({ ...f.inventory, artifacts: f.inventory.artifacts.map(a => ({ ...a, materials: [] })) })
+  assert.throws(() => verifyPackedAdapter({ ...f, tarball: f.pack() }), /material|authenticate/)
+})
+test('missing envelope and unmeasured npm files fail before adapter execution', t => {
+  const f = fixture(t)
+  writeFileSync(path.join(f.directory, 'foreign.js'), 'unmeasured code')
+  assert.throws(() => verifyPackedAdapter({ ...f, tarball: f.pack() }), /integrity/)
+  rmSync(path.join(f.directory, 'foreign.js'))
+  rmSync(path.join(f.directory, 'inventory.json'))
+  assert.throws(() => verifyPackedAdapter({ ...f, tarball: f.pack() }))
 })
 
-test('a pin equal to the packed protocol version passes the pin check', () => {
-  const failure = protocolPinFailure(
-    { name: '@raidiant/notifai', version: '9.9.9', dependencies: { '@raidiant/notifai-protocol': '0.6.0' } },
-    '0.6.0',
-  )
-  assert.equal(failure, null)
+test('real installation acceptance refuses local execution and a synthetic account home', () => {
+  const account = path.resolve(os.tmpdir(), 'owned-account')
+  assert.throws(() => requireOwnedHostedAccount({}, account), /disposable first-party/)
+  assert.throws(() => requireOwnedHostedAccount({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', GITHUB_REPOSITORY: 'Raidiant-io/notifai', HOME: account + '-fixture' }, account), /actual OS account/)
+  assert.equal(requireOwnedHostedAccount({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', GITHUB_REPOSITORY: 'Raidiant-io/notifai', HOME: account }, account), account)
 })
 
-test('a covering range is still a failure — resolution must not go to the registry', () => {
-  const failure = protocolPinFailure(
-    { name: '@raidiant/notifai', version: '9.9.9', dependencies: { '@raidiant/notifai-protocol': '^0.6.0' } },
-    '0.6.0',
-  )
-  assert.match(String(failure), /must be exactly 0\.6\.0/)
-})
-
-test('a missing protocol dependency is a failure', () => {
-  const failure = protocolPinFailure({ name: '@raidiant/notifai', version: '9.9.9', dependencies: {} }, '0.6.0')
-  assert.match(String(failure), /declares no @raidiant\/notifai-protocol dependency/)
-})
-
-test('the packed-install script never spawns the third-party skills installer', () => {
-  const source = readFileSync(script, 'utf8')
-  assert.doesNotMatch(source, /nativeSkills\.add/u)
-  assert.doesNotMatch(source, /skillsAddArgv/u)
-  assert.doesNotMatch(source, /npxLaunch/u)
-  assert.match(source, /phase: 'packed-npm-install'/u)
-  assert.match(source, /shippedSkillBundle/u)
-})
-
-test('the packed gate rejects a release that omitted its changelog before installation', () => {
-  const fixture = mkdtempSync(path.join(os.tmpdir(), 'notifai-missing-changelog-'))
-  try {
-    const protocolTarball = fixtureTarball(fixture, 'protocol.tgz', { name: '@raidiant/notifai-protocol', version: '7.0.2' })
-    const cliTarball = fixtureTarball(fixture, 'cli.tgz', { name: '@raidiant/notifai', version: '11.1.1', dependencies: { '@raidiant/notifai-protocol': '7.0.2' } })
-    const run = spawnSync(process.execPath, [script, '--cli-tarball', cliTarball, '--protocol-tarball', protocolTarball], { encoding: 'utf8' })
-    assert.equal(run.status, 1)
-    assert.match(run.stderr, /packed CHANGELOG.md is missing/)
-  } finally { rmSync(fixture, { recursive: true, force: true }) }
+test('actual npm shims launch through Windows shells from a Unicode path', { skip: process.platform !== 'win32' }, t => {
+  // This is shell-startup evidence only. The fixture has no native installer,
+  // credentials or Account state; release acceptance uses the signed product.
+  const f = fixture(t)
+  const installDir = path.join(path.dirname(f.directory), 'npm shims Ω')
+  mkdirSync(installDir)
+  writeFileSync(path.join(installDir, 'package.json'), JSON.stringify({ private: true }))
+  const install = commandInvocation('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', f.pack()])
+  requireStatus(runExternal(install.file, install.args, { ...install.options, cwd: installDir,
+    timeoutMs: 120_000, phase: 'windows-shim-fixture-install' }))
+  verifyWindowsShims(installDir, /fixture adapter/, process.env)
 })

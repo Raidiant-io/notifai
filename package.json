@@ -7,7 +7,7 @@
     "node": ">=20.12.0"
   },
   "scripts": {
-    "build": "pnpm --filter @raidiant/notifai-protocol build && pnpm --filter @raidiant/notifai build && pnpm --filter @raidiant/notifai-install build",
+    "build": "pnpm --filter @raidiant/notifai-protocol build && pnpm --filter @raidiant/notifai build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
@@ -21,12 +21,15 @@
     "check:secrets": "node scripts/check-secrets.mjs --mode controls && node scripts/check-secrets.mjs --mode tree && node scripts/check-secrets.mjs --mode full",
     "check:agent-guidance": "node scripts/check-agent-guidance.mjs",
     "check:agent-guidance:test": "node --test scripts/check-agent-guidance.test.mjs",
-    "check:published": "node scripts/verify-published.mjs"
+    "check:published": "node scripts/verify-published.mjs",
+    "build:npm-adapter": "pnpm run build && node scripts/build-npm-adapter.mjs",
+    "test:npm-adapter": "pnpm run build && node --test apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs scripts/npm-adapter-artifact.test.mjs scripts/build-npm-adapter.test.mjs"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.2",
     "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
     "eslint": "^9.30.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.35.0",

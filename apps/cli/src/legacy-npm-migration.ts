@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { inspectCliInstallations, type CliPathEntry } from './cli-bin.js'
+import { inspectCliInstallations, type CliPathEntry, type CliBinReadinessOptions } from './cli-bin.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
 
 export interface LegacyNpmMigration {
@@ -9,15 +9,15 @@ export interface LegacyNpmMigration {
   artifact: string
   version: string
   command_paths: string[]
-  cleanup: { package_manager: 'npm'; args: string[]; requires: string }
+  repair: { package_manager: 'npm'; status: 'assessment_required'; owner: 'agent'; requires: string }
 }
 
 /** Read-only identification of one exact npm-global layout. This is never
  * process-absence evidence and never authorizes deleting the old package. */
-export function legacyNpmMigration(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, stable: string):
+export function legacyNpmMigration(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, stable: string, options: CliBinReadinessOptions = {}):
   { collisions: CliPathEntry[]; migration: LegacyNpmMigration | null } {
-  const collisions = inspectCliInstallations(env, platform).entries.filter(entry =>
-    !sameLocalPath(canonicalPath(entry.command_path), canonicalPath(stable), platform))
+  const collisions = inspectCliInstallations(env, platform, options).entries.filter(entry =>
+    entry.kind !== 'npm-adapter' && !sameLocalPath(canonicalPath(entry.command_path), canonicalPath(stable), platform))
   const known = collisions.filter(entry => entry.install_prefix !== null && entry.artifact_path !== null)
   if (!known.length) return { collisions, migration: null }
   const first = known[0]!, prefix = first.install_prefix!, artifact = first.artifact_path!
@@ -38,8 +38,7 @@ export function legacyNpmMigration(env: NodeJS.ProcessEnv, platform: NodeJS.Plat
     const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
     if (manifest.name !== '@raidiant/notifai' || manifest.bin?.notifai !== 'dist/main.js' || typeof manifest.version !== 'string') throw new Error('Unrecognized npm package')
     return { collisions, migration: { status: 'migration_pending_legacy_owners', prefix, artifact, version: manifest.version,
-      command_paths: collisions.map(entry => entry.command_path), cleanup: { package_manager: 'npm',
-        args: ['uninstall', '--global', '--prefix', prefix, '@raidiant/notifai'],
-        requires: 'Finish outstanding questions, answers and acknowledgements, then stop every harness and other program using the old CLI. Use the npm installation that owns this prefix. Native setup never deletes legacy package files.' } } }
+      command_paths: collisions.map(entry => entry.command_path), repair: { package_manager: 'npm', status: 'assessment_required', owner: 'agent',
+        requires: 'Establish the affected application command and state root, verify the complete old package and a trusted compatible npm, and preserve a full backup. Replace through npm with the selected signed launcher only during an observed approved pause of its producers, after pending work drains. Keep the existing command location; do not uninstall first. Unknown ownership or readers stay pending.' } } }
   } catch { return { collisions, migration: null } }
 }

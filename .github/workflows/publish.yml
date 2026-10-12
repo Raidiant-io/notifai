@@ -7,6 +7,15 @@ on:
         description: Exact tagged commit SHA that this run must publish
         required: true
         type: string
+      candidate_run_id:
+        description: Successful exact-source npm candidate publication and all-target acceptance run, required for CLI promotion
+        required: false
+        type: string
+      mode:
+        description: Stage exact candidate bytes or explicitly promote verified npm discovery
+        type: choice
+        options: [candidate, promote]
+        default: candidate
 
 permissions:
   contents: read
@@ -35,7 +44,7 @@ jobs:
             exit 1
           fi
           case "$GITHUB_REF" in
-            refs/tags/installer-v*|refs/tags/protocol-v*) ;;
+            refs/tags/v*|refs/tags/protocol-v*) ;;
             *)
               echo "publish.yml accepts only release tags" >&2
               exit 1
@@ -58,6 +67,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/require-ci-evidence.mjs --expected-sha "${{ inputs.expected_sha }}"
+
+      - name: Require retained npm/native acceptance before CLI promotion
+        if: inputs.mode == 'promote' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+        run: node scripts/require-native-evidence.mjs --kind npm --expected-sha "$EXPECTED_SHA" --run-id "$CANDIDATE_RUN"
 
   npm:
     needs: dispatch-integrity
@@ -85,8 +102,11 @@ jobs:
           node-version: '24'
           cache: pnpm
 
+      - name: Install the pinned OIDC publication and dist-tag client
+        run: npm install --global npm@11.21.0 --ignore-scripts --no-audit --no-fund
+
       - name: Require an npm CLI with trusted-publishing support
-        run: node scripts/check-npm-trusted-publishing.mjs
+        run: node scripts/check-npm-trusted-publishing.mjs --dist-tags
 
       - run: pnpm install --frozen-lockfile
 
@@ -104,6 +124,11 @@ jobs:
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
+      - name: Build the exact source verification modules
+        run: |
+          pnpm --filter @raidiant/notifai-protocol build
+          pnpm --filter @raidiant/notifai build
+
       - name: Verify release-specific artifact tooling
         run: |
           node --test \
@@ -113,38 +138,51 @@ jobs:
 
       - name: Plan idempotent package publication
         id: plan
+        env:
+          PUBLICATION_MODE: ${{ inputs.mode }}
         run: node scripts/plan-publish.mjs
 
-      - name: Pack once and verify the exact npm artifact
+      - name: Pack once or retain the already-published candidate
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+          PACKAGE_DIRECTORY: ${{ steps.plan.outputs.package_directory }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          MODE: ${{ inputs.mode }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           artifact_root="$RUNNER_TEMP/notifai-npm-artifact"
           mkdir -p "$artifact_root"
-          pnpm --filter "$PACKAGE_NAME" pack --pack-destination "$artifact_root"
+          if [ "$MODE" = promote ]; then
+            node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-sha "$EXPECTED_SHA" --artifact-output "$artifact_root/candidate.tgz"
+          elif [ "$PACKAGE_NAME" = '@raidiant/notifai' ]; then
+            node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+            node scripts/bind-npm-release.mjs "$VERSION" "$EXPECTED_SHA"
+            npm pack "./$PACKAGE_DIRECTORY" --ignore-scripts --pack-destination "$artifact_root"
+          else
+            pnpm --filter "$PACKAGE_NAME" pack --pack-destination "$artifact_root"
+          fi
           mapfile -t artifacts < <(find "$artifact_root" -maxdepth 1 -type f -name '*.tgz' -print)
           test "${#artifacts[@]}" -eq 1
           tarball="${artifacts[0]}"
           echo "NPM_TARBALL=$tarball" >> "$GITHUB_ENV"
           node scripts/check-packed-boundary.mjs --tarball "$tarball" --gitleaks
-          if [ "$PACKAGE_NAME" = '@raidiant/notifai-install' ]; then
-            node scripts/verify-packed-npm-installer.mjs "$tarball"
+          if [ "$PACKAGE_NAME" = '@raidiant/notifai' ]; then
+            node scripts/verify-packed-npm-adapter.mjs "$tarball" "$EXPECTED_SHA" "$VERSION"
+            node scripts/verify-packed-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account
+            node scripts/verify-packed-skill-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account
           fi
-
-      - name: Require a usable signed default for the npm installer
-        if: steps.plan.outputs.package_name == '@raidiant/notifai-install'
-        run: node scripts/check-npm-bootstrap-release.mjs
 
       - name: Verify an existing package before declaring a retry successful
         if: steps.plan.outputs.publish == 'false'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
-        run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL"
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL" --expected-sha "$EXPECTED_SHA"
 
       - name: Record npm distribution tags before publication
-        if: steps.plan.outputs.publish == 'true'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
         run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
@@ -167,10 +205,99 @@ jobs:
         if: steps.plan.outputs.publish == 'true'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
-        run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL"
+        run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL" --expected-sha "${{ inputs.expected_sha }}"
 
-      - name: Verify npm distribution
-        if: steps.plan.outputs.publish == 'true'
+      - name: Admit both immutable distributions before promotion
+        if: inputs.mode == 'promote' && steps.plan.outputs.package_name == '@raidiant/notifai'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/require-unified-publication.mjs "${{ steps.plan.outputs.version }}" "${{ inputs.expected_sha }}"
+
+      - name: Promote only the already-verified npm version
+        if: inputs.mode == 'promote'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
+        run: npm dist-tag add "$PACKAGE_NAME@$VERSION" "$NPM_DIST_TAG"
+
+      - name: Retain exact npm candidate bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-candidate-${{ steps.plan.outputs.version }}-${{ inputs.expected_sha }}
+          path: ${{ env.NPM_TARBALL }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Verify npm distribution
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+          NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
         run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
+
+  adapter-acceptance:
+    name: npm adapter (${{ matrix.target }})
+    needs: npm
+    if: inputs.mode == 'candidate' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: bun-darwin-arm64
+            arch: arm64
+          - runner: macos-15-intel
+            target: bun-darwin-x64
+            arch: x64
+          - runner: ubuntu-24.04
+            target: bun-linux-x64
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            arch: arm64
+          - runner: windows-2025
+            target: bun-windows-x64
+            arch: x64
+          - runner: windows-11-arm
+            target: bun-windows-arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.arch }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - run: pnpm --filter @raidiant/notifai build
+      - name: Acquire exact registry bytes and exercise the distributed native product
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/registry-candidate.tgz"
+          node scripts/verify-published.mjs @raidiant/notifai --expected-sha "$EXPECTED_SHA" --artifact-output "$tarball"
+          node scripts/verify-packed-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-acceptance.json"
+          node scripts/verify-packed-skill-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-skill-acceptance.json"
+      - name: Retain exact OS acceptance receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-native-acceptance-${{ matrix.target }}-${{ inputs.expected_sha }}
+          path: |
+            ${{ runner.temp }}/npm-native-acceptance.json
+            ${{ runner.temp }}/npm-native-skill-acceptance.json
+          if-no-files-found: error
+          retention-days: 90

@@ -1,3 +1,5 @@
+import { encodeWindowsCodexCommand, decodeWindowsCodexCommand } from './windows-codex-command.js'
+import { stampHookDefinition } from './integration-revision.js'
 import {
   existsSync,
   lstatSync,
@@ -113,18 +115,29 @@ export function hookCommand(
   harness?: HookInstallableHarness,
   options: HookCommandOptions = {},
 ): string {
-  return (
-    `${hookCommandPrefix(adapterPath, options)}hook ${event} ${OWNER_MARKER}` +
+  const command = `${hookCommandPrefix(adapterPath, options, harness)}hook ${event} ${OWNER_MARKER}` +
     (harness === undefined ? '' : ` --harness ${harness}`)
-  )
+  if (harness === 'codex' && hookHostPlatform(options.platform) === 'win32') {
+    // Codex uses the selected session shell, normally PowerShell on Windows.
+    // Encode a literal invocation so cmd and PowerShell cannot reinterpret a
+    // path's spaces, dollars, apostrophes or command syntax on the way in.
+    return encodeWindowsCodexCommand(command)
+  }
+  return command
 }
 
 /** The leading argv that every Notifai handler must start with. */
 export function hookCommandPrefix(
   adapterPath: string,
   options: HookCommandOptions = {},
+  harness?: HookInstallableHarness,
 ): string {
   const host = hookHostPlatform(options.platform)
+  if (host === 'win32' && harness === 'codex') {
+    const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`
+    return options.nodePath === undefined ? `& ${literal(adapterPath)} `
+      : `& ${literal(options.nodePath)} ${literal(adapterPath)} `
+  }
   if (host === 'win32') {
     return options.nodePath === undefined ? `${quoteWindowsArg(adapterPath)} `
       : `${quoteWindowsArg(options.nodePath)} ${quoteWindowsArg(adapterPath)} `
@@ -184,6 +197,7 @@ export function quoteWindowsArg(value: string): string {
 }
 
 export interface BuildOptions {
+  integrationScope?: string
   /** Stable user-level executable installed by the hook adapter module. */
   adapterPath: string
   /** The installed adapter stamps its exact harness into project pointers. */
@@ -322,7 +336,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       else group.hooks.push(attend)
     }
   }
-  return hooks
+  return stampHookDefinition(hooks, options.integrationScope ?? '')
 }
 
 export interface CursorHookHandler {
@@ -353,7 +367,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
     if ('cursorLoopLimit' in row) handler.loop_limit = row.cursorLoopLimit
     hooks[row.cursor] = [...(hooks[row.cursor] ?? []), handler]
   }
-  return hooks
+  return stampHookDefinition(hooks, options.integrationScope ?? '')
 }
 
 /**
@@ -905,6 +919,7 @@ function readCursorSettings(file: string): CursorSettingsDocument {
 }
 
 function isOurCommand(command: string, scriptPath: string): boolean {
+  command = (decodeWindowsCodexCommand(command) ?? command)
   if (command.includes(OWNER_MARKER)) return true
   return (
     command.includes(`${scriptPath}' hook `) ||
@@ -1154,7 +1169,8 @@ function prepareFileWrite(file: string, previous: string | null, next: string | 
     if (current !== previous) throw new Error(`Configuration changed while preparing ${file}; retry.`)
     if (current === next) return
     if (next === null) rmSync(file, { force: true })
-    else atomicWriteFileSync(file, next, { requireCurrentUserOwner: true })
+    else atomicWriteFileSync(file, next, { requireCurrentUserOwner: true,
+      expectedContentsSha256: previous === null ? null : createHash('sha256').update(previous).digest('hex') })
   }
 }
 
@@ -1558,7 +1574,7 @@ export function codexRoutingTrustProblems(
  * evidence that it has (and is itself worth reporting).
  */
 function isNotifaiCommand(command: string): boolean {
-  return HOOK_EVENT_COMMAND_RE.test(command)
+  return HOOK_EVENT_COMMAND_RE.test((decodeWindowsCodexCommand(command) ?? command))
 }
 
 /**
@@ -1873,13 +1889,13 @@ function harnessMarkerProblems(
   options: HookCommandOptions = {},
 ): string[] {
   const problems: string[] = []
-  if (!handlers.every((handler) => handler.command.includes(`--harness ${harness}`))) {
+  if (!handlers.every((handler) => (decodeWindowsCodexCommand(handler.command) ?? handler.command).includes(`--harness ${harness}`))) {
     problems.push(
       `installed commands do not stamp the ${harness} routing identity; rerun \`notifai hooks install --harness ${harness}\``,
     )
   }
-  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome, options.platform), options)}hook `
-  if (!handlers.every((handler) => handler.command.startsWith(expected))) {
+  const expected = `${hookCommandPrefix(hookAdapterPath(adapterHome, options.platform), options, harness)}hook `
+  if (!handlers.every((handler) => (decodeWindowsCodexCommand(handler.command) ?? handler.command).startsWith(expected))) {
     problems.push(
       'installed commands still name a mutable CLI or runtime path; rerun `notifai hooks install` to migrate to the stable adapter',
     )
@@ -1937,7 +1953,7 @@ function locateHandlers(document: SettingsDocument): InstalledHandler[] {
 
 /** The hook event a handler's command actually invokes, e.g. `stop`. */
 export function handlerEvent(command: string): string | null {
-  return / hook ([a-z-]+)/.exec(command)?.[1] ?? null
+  return / hook ([a-z-]+)/.exec((decodeWindowsCodexCommand(command) ?? command))?.[1] ?? null
 }
 
 function readOwnedRegularFile(file: string): string {

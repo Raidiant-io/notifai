@@ -6,7 +6,9 @@ import { installationAccess, type InstallationAccess } from './installation-acce
 import { withFileLock } from './file-lock.js'
 import { canonicalPath } from './local-path.js'
 import { sanitizeSessionId } from './config.js'
-import type { ProcessIdentity } from './process-identity.js'
+import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { LIFECYCLE_END_STATES } from '@raidiant/notifai-protocol'
+import { validRuntimeBuildReference, type RuntimeBuildReference } from './launch-self.js'
 import { inspectOpenclawHosts } from './openclaw-host-state.js'
 
 export interface RuntimeOwnerInspection {
@@ -14,13 +16,71 @@ export interface RuntimeOwnerInspection {
   reason?: string
   stateRoots: string[]
   hosts: ProcessIdentity[]
-  residents: Array<{ file: string; identity: ProcessIdentity }>
-  sessions: Array<{ file: string; sessionId: string; builds: string[]; digest: string }>
+  residents: Array<{ file: string; identity: ProcessIdentity; runtime: RuntimeBuildReference | null }>
+  sessions: Array<{ file: string; sessionId: string; builds: string[]; references: RuntimeBuildReference[]; pending: boolean; digest: string }>
+  unattributedPending: boolean
 }
 
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)
 function present(file: string): boolean {
   try { lstatSync(file); return true } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error }
+}
+
+/** These records contain no answer to deliver. Bootstrap leaves them byte-for-
+ * byte intact for the next runtime's idempotent retirement drain. Uninstall
+ * cannot defer them because it would remove that runtime. */
+function deferredRetirement(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record['request_id'] === 'string' && /^req_[A-Za-z0-9_-]+$/.test(record['request_id']) &&
+    (record['question_id'] === undefined || typeof record['question_id'] === 'string' && /^q_[A-Za-z0-9_-]+$/.test(record['question_id'])) &&
+    typeof record['collapse_key'] === 'string' && typeof record['question'] === 'string' &&
+    Array.isArray(record['device_ids']) && record['device_ids'].every(id => typeof id === 'string') &&
+    LIFECYCLE_END_STATES.some(state => state === record['state'])
+}
+
+function goneProcess(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const writer = value as ProcessIdentity
+  return Number.isSafeInteger(writer.pid) && writer.pid > 0 && typeof writer.start === 'string' &&
+    writer.start.length > 0 && writer.start.length <= 128 && processIdentityLiveness(writer) === 'gone'
+}
+
+function abandonedWake(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const wake = value as Record<string, unknown>
+  return typeof wake['incarnation'] === 'string' && wake['incarnation'].length > 0 &&
+    typeof wake['token'] === 'string' && wake['token'].length > 0 && typeof wake['queued'] === 'boolean' &&
+    goneProcess(wake['writer'])
+}
+
+function knownReply(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const reply = value as Record<string, unknown>
+  return typeof reply['reply_id'] === 'string' && /^rpl_[A-Za-z0-9_-]+$/.test(reply['reply_id']) &&
+    Number.isSafeInteger(reply['seq']) && (reply['seq'] as number) > 0 && typeof reply['text'] === 'string' &&
+    Array.isArray(reply['answers']) && reply['answers'].every(answer => answer !== null && typeof answer === 'object' &&
+      typeof answer.question_id === 'string' && Array.isArray(answer.choice_ids) && answer.choice_ids.every((id: unknown) => typeof id === 'string') &&
+      (answer.text === null || typeof answer.text === 'string')) &&
+    typeof reply['created_at'] === 'string' && Number.isFinite(Date.parse(reply['created_at']))
+}
+
+function knownRequestDebt(field: string, value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  if (field === 'acknowledgement_due') return typeof item['request_id'] === 'string' && /^req_[A-Za-z0-9_-]+$/.test(item['request_id']) &&
+    Number.isFinite(item['recorded_at']) && (item['text_required'] === undefined || typeof item['text_required'] === 'boolean')
+  if (!['waiting_answers', 'delivered_answers'].includes(field)) return false
+  const pending = item['pending'] as Record<string, unknown> | undefined
+  return !!pending && typeof pending['request_id'] === 'string' && /^req_[A-Za-z0-9_-]+$/.test(pending['request_id']) &&
+    typeof pending['question'] === 'string' && Number.isFinite(pending['asked_at']) && knownReply(item['reply']) &&
+    Array.isArray(item['replies']) && item['replies'].length > 0 && item['replies'].every(knownReply)
+}
+
+function knownStamp(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const stamp = value as Record<string, unknown>
+  return Number.isFinite(stamp['wall']) && typeof stamp['mono'] === 'string' && /^\d{1,30}$/.test(stamp['mono'])
 }
 
 /** Linux documents this per-kernel-boot UUID. Other platforms retain builds
@@ -86,6 +146,33 @@ export class RuntimeRetention {
   }
   private ownedRecord(record: Record<string, unknown> | null): record is Record<string, unknown> {
     return record?.['schema'] === 1 && record['installation_id'] === this.installationId
+  }
+  /** Dormant debt belongs to its original session, not the update.
+   * Carry understood records unchanged; neither their age nor a remote 404
+   * settles them. A live or unprovable harness lifetime cannot use this exception.
+   * All independent residents, input sidecars and delivery claims still count. */
+  private dormantDebt(file: string, state: Record<string, unknown>, field: string, records: unknown[]): boolean {
+    if (!['codex', 'claude-code'].includes(String(state['harness']))) return false
+    const messages = field === 'message_acknowledgement_due'
+    if (!(messages ? records.every(value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+      const message = value as Record<string, unknown>
+      return typeof message['message_id'] === 'string' && /^sm_[A-Za-z0-9_-]+$/.test(message['message_id']) &&
+        Number.isFinite(message['recorded_at']) && typeof message['text_required'] === 'boolean' &&
+        (message['queued_context'] === undefined || typeof message['queued_context'] === 'string') &&
+        message['openclaw_generation'] === undefined
+    }) : records.every(value => knownRequestDebt(field, value)))) return false
+    const incarnation = this.read(`${file.slice(0, -5)}.incarnation.json`)
+    const gone = typeof incarnation?.['key'] === 'string' && incarnation['key'].length > 0 &&
+      typeof incarnation['incarnation'] === 'string' && /^inc_[A-Za-z0-9_-]{10,64}$/.test(incarnation['incarnation']) &&
+      knownStamp(incarnation['start']) &&
+      goneProcess(incarnation['harness_process'])
+    if (!gone || messages) return gone
+    // Waiting answers may still need a foreground handoff. Only an exact
+    // ended incarnation makes those records dormant; process absence alone
+    // does not retire a question or promise delivery to a resumed session.
+    const ended = this.read(`${file.slice(0, -5)}.ended`)
+    return ended?.['ends'] === incarnation!['key'] && knownStamp(ended?.['stamp'])
   }
   private currentBoot(): string | null {
     const value = this.boot()
@@ -191,15 +278,16 @@ export class RuntimeRetention {
       }, { waitMs: 5_000, strictRelease: true })
     }
   }
-  /** Uninstall preflight across the current state root and every indexed root.
+  /** Work inventory across the current state root and every indexed root.
    * Include unindexed siblings: legacy work in a discovered root still counts.
    * This is a work inventory, never process-absence or deletion authority. The
    * uninstall coordinator must close launch admission and recheck before edits. */
-  inspectOwners(currentSessions: string): RuntimeOwnerInspection {
+  inspectOwners(currentSessions: string, purpose: 'uninstall' | 'activation' = 'uninstall'): RuntimeOwnerInspection {
     const sessions: RuntimeOwnerInspection['sessions'] = []
     const hosts: ProcessIdentity[] = []
     const stateRoots: string[] = []
     const residents: RuntimeOwnerInspection['residents'] = []
+    let unattributedPending = false
     try {
       if (!path.isAbsolute(currentSessions)) throw new Error('Invalid session directory')
       const directories = new Set([canonicalPath(currentSessions)])
@@ -224,12 +312,16 @@ export class RuntimeRetention {
       const hostState = inspectOpenclawHosts(this.root, this.installationId, this.access)
       hosts.push(...hostState.hosts)
       let pending = hostState.pending
+      if (hostState.pending) unattributedPending = true
       for (const directory of [...directories].sort()) {
         const retireFile = path.join(path.dirname(directory), 'retire-queue.json')
         if (present(retireFile)) withFileLock(`${retireFile}.lock`, () => {
           const queue = this.readValue(retireFile, 16 * 1024 * 1024)
           if (!Array.isArray(queue)) throw new Error('Uncertain retirement queue')
-          if (queue.length > 0) pending = true
+          if (queue.length > 0 && !(purpose === 'activation' && queue.every(entry =>
+            deferredRetirement(entry) && Number.isFinite(entry.enqueued_at)))) {
+            pending = true; unattributedPending = true
+          }
         })
         if (!present(directory)) continue
         const stat = lstatSync(directory)
@@ -252,7 +344,10 @@ export class RuntimeRetention {
             throw new Error('Uncertain resident process identity')
           }
           if (present(file + '.guard')) throw new Error('Resident claim changed during inventory')
-          residents.push({ file, identity: { pid: claim['pid'] as number, start: claim['start'] } })
+          const runtime = claim['runtime_build']
+          if (runtime !== undefined && !validRuntimeBuildReference(runtime)) throw new Error('Uncertain resident runtime')
+          residents.push({ file, identity: { pid: claim['pid'] as number, start: claim['start'] },
+            runtime: validRuntimeBuildReference(runtime) ? runtime : null })
         }
         const names = new Set(entries.flatMap(name => {
           const matched = /^([A-Za-z0-9_-]+)(?:\.json|\.inputs\.json|\.deliveries)$/.exec(name)
@@ -262,29 +357,33 @@ export class RuntimeRetention {
           const file = path.join(directory, name)
           withFileLock(`${file}.lock`, () => {
             const state = this.read(file, 16 * 1024 * 1024)
-            if (this.pendingSidecars(file, state !== null)) pending = true
-            if (state === null) return
+            let sessionPending = this.pendingSidecars(file, state !== null)
+            if (state === null) {
+              if (sessionPending) { pending = true; unattributedPending = true }
+              return
+            }
             this.checkState(file, false)
             const sessionId = state['session_id']
             if (typeof sessionId !== 'string' || `${sanitizeSessionId(sessionId)}.json` !== name) throw new Error('Uncertain session identity')
             const references = state['runtime_builds'] ?? []
             if (!Array.isArray(references) || references.some(item => !item || !uuid(item.installation_id) ||
                 typeof item.build !== 'string' || !/^[a-f0-9]{64}$/.test(item.build))) throw new Error('Uncertain runtime references')
-            sessions.push({ file, sessionId, digest: createHash('sha256').update(readFileSync(file)).digest('hex'), builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build) })
             for (const field of ['pending', 'retiring', 'waiting_answers', 'delivered_answers', 'acknowledgement_due',
               'message_acknowledgement_due', 'openclaw_foreground_replies']) {
               const value = state[field]
               if (value !== undefined && !Array.isArray(value)) throw new Error('Uncertain pending work')
-              if (Array.isArray(value) && value.length > 0) pending = true
+              if (Array.isArray(value) && value.length > 0 && !(purpose === 'activation' &&
+                  (field === 'retiring' && value.every(deferredRetirement) ||
+                   this.dormantDebt(file, state, field, value)))) sessionPending = true
             }
-            if (state['accepted'] !== undefined) pending = true
+            if (state['accepted'] !== undefined) sessionPending = true
             const native = state['native_answer_operations']
             if (native !== undefined && (!Array.isArray(native) || native.some(item => item === null || typeof item !== 'object'))) {
               throw new Error('Uncertain native answer state')
             }
             if (Array.isArray(native)) for (const item of native) {
               const acknowledgement = item.acknowledgement
-              if (acknowledgement === undefined) { pending = true; continue }
+              if (acknowledgement === undefined) { sessionPending = true; continue }
               if (!acknowledgement || typeof acknowledgement !== 'object' ||
                   typeof acknowledgement.text !== 'string' || typeof acknowledgement.created_at !== 'string' ||
                   !Number.isFinite(Date.parse(acknowledgement.created_at)) ||
@@ -292,20 +391,28 @@ export class RuntimeRetention {
                   typeof item.report.reply_id !== 'string' || !/^rpl_[A-Za-z0-9_-]+$/.test(item.report.reply_id) ||
                   typeof item.request_id !== 'string' || !/^req_[A-Za-z0-9_-]+$/.test(item.request_id)) throw new Error('Uncertain native acknowledgement')
             }
-            if (state['input_wake'] !== undefined) pending = true
+            // A dead writer's content-free wake cannot keep a quiet upgrade
+            // pending forever. Input caches, delivery journals and serving
+            // answer/acknowledgement debt above remain independent barriers.
+            if (state['input_wake'] !== undefined && !(purpose === 'activation' &&
+                abandonedWake(state['input_wake']))) sessionPending = true
             const wakes = state['input_wake_attempts']
             if (wakes !== undefined && !Array.isArray(wakes)) throw new Error('Uncertain input wakes')
             if (Array.isArray(wakes)) for (const wake of wakes) {
               if (!wake || !['prepared', 'sending', 'accepted', 'unknown', 'consumed', 'cancelled'].includes(wake.phase)) {
                 throw new Error('Uncertain input wake')
               }
-              if (!['consumed', 'cancelled'].includes(wake.phase)) pending = true
+              if (!['consumed', 'cancelled'].includes(wake.phase)) sessionPending = true
             }
+            sessions.push({ file, sessionId, digest: createHash('sha256').update(readFileSync(file)).digest('hex'),
+              builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build),
+              references, pending: sessionPending })
+            if (sessionPending) pending = true
           })
         }
       }
-      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents, stateRoots }
-    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, stateRoots, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
+      return { status: pending ? 'waiting_for_questions' : 'clear', sessions, hosts, residents, stateRoots, unattributedPending }
+    } catch (error) { return { status: 'uncertain', sessions, hosts, residents, stateRoots, unattributedPending, reason: error instanceof Error ? error.message : 'Owner inventory failed' } }
   }
   /** A reason means retain. Malformed, unreadable or missing evidence cannot
    * turn into deletion authority. Called under installation.lock only. */

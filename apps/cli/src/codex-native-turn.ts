@@ -6,6 +6,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { configHome } from './install-hooks.js'
+import { newJsonRecord, traverseJsonByte, validJsonRecord, type JsonRecordState } from './bounded-json-record.js'
 
 export interface NativeTurnSnapshot {
   file: string
@@ -42,8 +43,9 @@ interface ActivityCheckpoint {
   prefixBytes: number
   prefixHash: string
   boundaryHash: string
-  /** An oversized record needs a later, fully observed start to reestablish activity. */
+  /** Legacy cursors resume sequentially at through, a proven record boundary. */
   seekTail?: boolean
+  traversal?: { start: number; boundaryHash: string; prefixBytes: number; prefixHash: string; state: JsonRecordState; hash: string }
   latest?: NativeTurnSnapshot['latest']
   marker?: { offset: number; bytes: number; hash: string }
   positions: Array<[string, number]>
@@ -76,6 +78,16 @@ function readCheckpoint(file: string): ActivityCheckpoint | undefined {
         value.marker.bytes === 0 || value.marker.bytes > HEADER_BYTES ||
         value.marker.offset + value.marker.bytes > value.through ||
         !/^[a-f0-9]{64}$/.test(value.marker.hash))) return undefined
+    if (value.traversal !== undefined) {
+      const t = value.traversal
+      if (t === null || !offset(t.start) || t.start >= value.through || value.seekTail === true ||
+          (value.marker !== undefined && value.marker.offset + value.marker.bytes > t.start) ||
+          !offset(t.prefixBytes) || t.prefixBytes !== Math.min(HEADER_BYTES, value.through - t.start) ||
+          !/^[a-f0-9]{64}$/.test(t.prefixHash) ||
+          !validJsonRecord(t.state) || !/^[a-f0-9]{64}$/.test(t.boundaryHash) ||
+          t.hash !== digest(Buffer.from(JSON.stringify({ start: t.start, boundaryHash: t.boundaryHash,
+            prefixBytes: t.prefixBytes, prefixHash: t.prefixHash, state: t.state })))) return undefined
+    }
     return value
   } catch { return undefined }
 }
@@ -183,27 +195,88 @@ function readNativeTranscript(
         (checkpoint.observedSize === stat.size && checkpoint.mtimeMs !== stat.mtimeMs) ||
         digest(read(0, checkpoint.prefixBytes)) !== checkpoint.prefixHash ||
         digest(read(Math.max(0, checkpoint.through - HEADER_BYTES), Math.min(HEADER_BYTES, checkpoint.through))) !== checkpoint.boundaryHash ||
+        (checkpoint.traversal !== undefined && digest(read(Math.max(0, checkpoint.traversal.start - HEADER_BYTES),
+          Math.min(HEADER_BYTES, checkpoint.traversal.start))) !== checkpoint.traversal.boundaryHash) ||
+        (checkpoint.traversal !== undefined && digest(read(checkpoint.traversal.start,
+          checkpoint.traversal.prefixBytes)) !== checkpoint.traversal.prefixHash) ||
         (checkpoint.marker !== undefined && digest(read(checkpoint.marker.offset, checkpoint.marker.bytes)) !== checkpoint.marker.hash))) {
       checkpoint = undefined
     }
-    // Activity advances through complete records in bounded chunks. A cold
-    // reader catches up across probes; it never carries activity over an
-    // unobserved gap or mistakes its budget for the end of the current turn.
-    // After an oversized record, only a fresh start in the tail can restore it.
+    if (checkpointFile !== undefined) {
+      // Activity never seeks across unseen bytes. Unlike the question reader,
+      // it can pause anywhere in a JSON record and retain only bounded grammar
+      // state. A legacy seekTail checkpoint is already at a record boundary.
+      const at = checkpoint?.through ?? 0
+      const count = Math.min(TAIL_BYTES, stat.size - at)
+      const bytes = read(at, count)
+      if (bytes.length !== count) return null
+      let start = checkpoint?.traversal?.start ?? at
+      let state = checkpoint?.traversal?.state ?? newJsonRecord()
+      let latest = checkpoint?.latest === undefined ? undefined : { ...checkpoint.latest }
+      let marker = checkpoint?.marker
+      const positions = new Map<string, number>(checkpoint?.positions)
+      for (let i = 0; i < bytes.length; i++) {
+        if (!traverseJsonByte(state, bytes[i]!)) continue
+        const through = at + i + 1
+        if (state.type === 'event_msg' && ['task_started', 'task_complete', 'turn_aborted'].includes(state.payloadType ?? '')) {
+          // Lifecycle evidence is deliberately small, independently parseable,
+          // and retained as a hash-checked marker, never as scanner guesses.
+          if (through - start > HEADER_BYTES) return null
+          const line = read(start, through - start)
+          if (line.length !== through - start) return null
+          const record = JSON.parse(line.toString('utf8')) as { payload?: { type?: string; turn_id?: string } }
+          const event = record.payload
+          if (event?.type === 'task_started' && typeof event.turn_id === 'string') {
+            latest = { id: event.turn_id, offset: start, ended: false }
+            marker = { offset: start, bytes: line.length, hash: digest(line) }
+            positions.set(event.turn_id, start)
+            if (positions.size > 32) positions.delete(positions.keys().next().value!)
+          } else if (latest !== undefined && event?.turn_id === latest.id &&
+              ['task_complete', 'turn_aborted'].includes(event.type ?? '')) {
+            latest.ended = true
+            latest.outcome = event.type === 'turn_aborted' ? 'aborted' : 'completed'
+            marker = { offset: start, bytes: line.length, hash: digest(line) }
+          }
+        }
+        start = through
+        state = newJsonRecord()
+      }
+      const after = fstatSync(fd)
+      const current = lstatSync(canonical)
+      if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || current.isSymbolicLink() ||
+          current.dev !== stat.dev || current.ino !== stat.ino) return null
+      const through = at + bytes.length
+      if (checkpoint === undefined || through > checkpoint.through || checkpoint.seekTail === true) {
+        const prefixBytes = Math.min(HEADER_BYTES, through)
+        const traversal = start === through ? undefined : {
+          start, boundaryHash: digest(read(Math.max(0, start - HEADER_BYTES), Math.min(HEADER_BYTES, start))),
+          prefixBytes: Math.min(HEADER_BYTES, through - start),
+          prefixHash: digest(read(start, Math.min(HEADER_BYTES, through - start))), state,
+        }
+        const next: ActivityCheckpoint = {
+          schema: 1, sessionId, file: canonical, identity, through, observedSize: stat.size, mtimeMs: stat.mtimeMs,
+          prefixBytes, prefixHash: digest(read(0, prefixBytes)),
+          boundaryHash: digest(read(Math.max(0, through - HEADER_BYTES), Math.min(HEADER_BYTES, through))),
+          ...(traversal === undefined ? {} : { traversal: { ...traversal, hash: digest(Buffer.from(JSON.stringify(traversal))) } }),
+          ...(latest === undefined ? {} : { latest }), ...(marker === undefined ? {} : { marker }), positions: [...positions],
+        }
+        atomicWriteFileSync(checkpointFile, `${JSON.stringify(next)}\n`)
+      }
+      if (latest === undefined || through !== stat.size || start !== through) return null
+      return { file: canonical, identity, size: stat.size, latest, positions }
+    }
     // Question binding deliberately retains its full bounded-tail semantics.
-    const tail = checkpointFile === undefined || checkpoint?.seekTail === true
-    const at = tail ? Math.max(0, stat.size - TAIL_BYTES) : checkpoint?.through ?? 0
+    const at = Math.max(0, stat.size - TAIL_BYTES)
     const count = Math.min(TAIL_BYTES, stat.size - at)
     const bytes = read(at, count)
     if (bytes.length !== count) return null
     // A trailing partial record may be a newer start: do not report an older one.
-    if (tail && bytes.at(-1) !== 10) return null
-    const limit = tail ? bytes.length : bytes.lastIndexOf(10) + 1
-    let offset = !tail || at === 0 ? 0 : bytes.indexOf(10) + 1
-    if (tail && at > 0 && offset === 0) return null
-    let latest: NativeTurnSnapshot['latest'] | undefined = tail ? undefined : checkpoint?.latest
-    let marker = tail ? undefined : checkpoint?.marker
-    const positions = new Map<string, number>(checkpoint?.positions)
+    if (bytes.at(-1) !== 10) return null
+    const limit = bytes.length
+    let offset = at === 0 ? 0 : bytes.indexOf(10) + 1
+    if (at > 0 && offset === 0) return null
+    let latest: NativeTurnSnapshot['latest'] | undefined
+    const positions = new Map<string, number>()
     const questions: NativeQuestionEmission[] = []
     const questionCalls = new Set<string>()
     const outputs = new Map<string, boolean>()
@@ -216,17 +289,12 @@ function readNativeTranscript(
         const record = JSON.parse(line) as { type?: string; payload?: { type?: string; turn_id?: string } }
         const event = record.type === 'event_msg' ? record.payload : undefined
         if (event?.type === 'task_started' && typeof event.turn_id === 'string') {
-          if (checkpointFile !== undefined && end + 1 - offset > HEADER_BYTES) return null
           latest = { id: event.turn_id, offset: at + offset, ended: false }
-          marker = { offset: at + offset, bytes: end + 1 - offset, hash: digest(bytes.subarray(offset, end + 1)) }
           positions.set(event.turn_id, at + offset)
-          if (checkpointFile !== undefined && positions.size > 32) positions.delete(positions.keys().next().value!)
         } else if (latest !== undefined && event?.turn_id === latest.id &&
             ['task_complete', 'turn_aborted'].includes(event.type ?? '')) {
-          if (checkpointFile !== undefined && end + 1 - offset > HEADER_BYTES) return null
           latest.ended = true
           latest.outcome = event.type === 'turn_aborted' ? 'aborted' : 'completed'
-          marker = { offset: at + offset, bytes: end + 1 - offset, hash: digest(bytes.subarray(offset, end + 1)) }
         }
       }
       if (includeQuestions && line.includes('"response_item"')) {
@@ -258,20 +326,6 @@ function readNativeTranscript(
     const current = lstatSync(canonical)
     if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || current.isSymbolicLink() ||
         current.dev !== stat.dev || current.ino !== stat.ino) return null
-    if (checkpoint?.seekTail === true && (latest === undefined || latest.offset < checkpoint.through)) return null
-    const seekTail = !tail && offset === 0 && count === TAIL_BYTES
-    if (checkpointFile !== undefined && (checkpoint === undefined || seekTail || at + offset > checkpoint.through)) {
-      const through = at + offset
-      const prefixBytes = Math.min(HEADER_BYTES, through)
-      const next: ActivityCheckpoint = {
-        schema: 1, sessionId, file: canonical, identity, through, observedSize: stat.size, mtimeMs: stat.mtimeMs,
-        prefixBytes, prefixHash: digest(read(0, prefixBytes)),
-        boundaryHash: digest(read(Math.max(0, through - HEADER_BYTES), Math.min(HEADER_BYTES, through))),
-        ...(seekTail ? { seekTail: true } : {}),
-        ...(latest === undefined ? {} : { latest }), ...(marker === undefined ? {} : { marker }), positions: [...positions],
-      }
-      atomicWriteFileSync(checkpointFile, `${JSON.stringify(next)}\n`)
-    }
     if (latest === undefined || at + offset !== stat.size) return null
     return { file: canonical, identity: `${stat.dev}:${stat.ino}`, size: stat.size, latest, positions,
       ...(includeQuestions ? { questions: questions.map(question => ({ ...question, accepted: outputs.get(question.call_id) === true })) } : {}) }

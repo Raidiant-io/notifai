@@ -18,7 +18,7 @@ function fixture() {
   const destination = path.join(root, 'installed')
   cpSync(bundle.bundle.skillRoot, destination, { recursive: true })
   writeFileSync(path.join(destination, 'SKILL.md'), 'stale guidance')
-  const installed: NativeSkill = { name: 'notifai', scope: 'global', path: destination, source: null,
+  const installed: NativeSkill = { name: 'notifai', owned: true, scope: 'global', path: destination, source: null,
     sourceType: null, sourceUrl: null, ref: 'old' }
   const add = vi.fn(async () => { cpSync(bundle.bundle.skillRoot, destination, { recursive: true }); return 0 })
   const out: string[] = []

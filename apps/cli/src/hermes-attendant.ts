@@ -12,7 +12,8 @@ import type { AttendanceMessage } from '@raidiant/notifai-protocol'
 import { log, makeClient, type CommandDeps } from './commands-core.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig } from './config.js'
-import { hermesPluginCurrent } from './hermes-plugin.js'
+import { hermesPluginCurrent, retainedHermesPlugin } from './hermes-plugin.js'
+import { currentRuntimeBuild } from './launch-self.js'
 import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import {
   beginSessionIncarnation, lifecycleStamp, readSessionIncarnation,
@@ -176,7 +177,7 @@ export function hermesAnswerRoute(bridge: HermesWriterBridge, sessionId: string)
   }
 }
 
-function hermesGates(deps: CommandDeps, cwd: string, sessionId: string): GateResult {
+function hermesGates(deps: CommandDeps, cwd: string, sessionId: string, pluginOwned: () => boolean): GateResult {
   if (nativeUninstallPending(deps.env)) return { ok: false, reason: 'uninstall-in-progress' }
   try {
     const config = loadConfig({ cwd, env: deps.env, sessionId })
@@ -186,7 +187,7 @@ function hermesGates(deps: CommandDeps, cwd: string, sessionId: string): GateRes
   } catch {
     return { ok: false, reason: 'enablement-unavailable' }
   }
-  if (!hermesPluginCurrent(deps.hookAdapterHome, deps.env)) {
+  if (!pluginOwned()) {
     return { ok: false, reason: 'hermes-plugin-removed-or-replaced' }
   }
   return { ok: true }
@@ -203,7 +204,10 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
   }
 
   const { session_id: sessionId, cwd } = hello
-  const gate = () => hermesGates(deps, cwd, sessionId)
+  const pluginOwned = currentRuntimeBuild(deps.env) === null
+    ? () => hermesPluginCurrent(deps.hookAdapterHome, deps.env)
+    : retainedHermesPlugin(deps.hookAdapterHome, deps.env)
+  const gate = () => hermesGates(deps, cwd, sessionId, pluginOwned)
   if (!gate().ok) {
     bridge.close()
     return 0

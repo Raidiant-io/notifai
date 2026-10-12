@@ -9,7 +9,7 @@ import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionIn
  * never delays: the harness does not wait for an async handler), and on
  * UserPromptSubmit and Stop to re-arm a session whose attendant died.
  */
-import { currentRuntimeBuild } from './launch-self.js'
+import { currentRuntimeBuild, validRuntimeBuildReference } from './launch-self.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
 import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { existsSync, readFileSync, realpathSync, readdirSync } from 'node:fs'
@@ -232,13 +232,17 @@ export async function attendHook(
       holder?.['incarnation'] === current.incarnation &&
       claimHolderMayRun(holder)
     ) {
-      // An authenticated native event can hand the resident writer over to
-      // installed code. The old owner exits through claim-lost, not SessionEnd.
-      // Without this a session open across an update keeps its old writer,
-      // and that writer's behavior, until the harness itself restarts.
+      // Native activation already proves overlap with every retained native
+      // generation. Its healthy owner keeps the work it admitted. The revision
+      // is a source digest, not a compatibility protocol. Development runtimes
+      // have no signed activation invariant, so retain their exact-code check.
+      const reference = currentRuntimeBuild(deps.env), retained = holder['runtime_build']
+      const compatibleNative = reference !== null && validRuntimeBuildReference(retained) &&
+        retained.installation_id === reference.installation_id
+      if (reference !== null && !compatibleNative) return end('owner-present', { reason: 'unverified-native-owner', same_incarnation: true })
       const upgrade = (harness === 'codex' ? ownsNative(current.key) : ownsClaudeSession(current.key)) &&
-        runningVersion !== null && (holder['runtime_version'] !== runningVersion ||
-          holder['runtime_revision'] !== attendantRuntimeRevision) && holder['pid'] !== process.pid &&
+        runningVersion !== null && (holder['handoff'] === true || !compatibleNative &&
+          (holder['runtime_version'] !== runningVersion || holder['runtime_revision'] !== attendantRuntimeRevision)) && holder['pid'] !== process.pid &&
         (seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness, runningVersion)))().ok &&
         (holder['handoff'] === true || (typeof holder['token'] === 'string' &&
           requestClaimHandoff(claimFile, holder['token'], current.incarnation)))

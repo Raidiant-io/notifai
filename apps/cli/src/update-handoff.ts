@@ -4,8 +4,12 @@ import { fileURLToPath } from 'node:url'
 import { compareReleasePrecedence, isSemVer } from './version.js'
 import type { SourceContextHarness } from './harnesses.js'
 import type { ReadinessState } from './readiness.js'
+import { buildIdentity } from './distribution.js'
 
-const PACKAGE_ROOT = fileURLToPath(new URL('../', import.meta.url))
+// Compiled modules share Bun's entrypoint URL; assets live beside that entry,
+// rather than one directory above it as they do beside source/dist modules.
+const PACKAGE_ROOT = buildIdentity() === null ? fileURLToPath(new URL('../', import.meta.url))
+  : path.dirname(fileURLToPath(import.meta.url))
 const CHANGELOG_LIMIT = 16_000
 
 export function releaseNotesUrl(version: string | null): string | null {

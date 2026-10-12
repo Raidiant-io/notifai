@@ -7,7 +7,7 @@ import { accountHome, configHome, stateHome } from './platform.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
 import { SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
 import { openclawConfigPath, openclawStateDir, parseOpenclawConfig } from './openclaw-plugin.js'
-import { createSkillManifest, verifySkillBundle, type VerifiedSkillBundle } from './skill-integrity.js'
+import { createSkillManifest, verifySkillBundle, type SkillInspectionBudget, type VerifiedSkillBundle } from './skill-integrity.js'
 
 type Scope = 'project' | 'global'
 export interface SkillPlacement { path: string; digest: string; version: string }
@@ -28,7 +28,10 @@ export interface SkillInspection {
   agents: SourceContextHarness[]
   placements: SkillPlacement[]
   pending: boolean
+  /** Validated receipt destination for an interrupted first placement or replacement. */
+  pendingPlacement?: SkillPlacement
   conflicts: string[]
+  inspectionIncomplete?: boolean
 }
 export interface SkillReconciliation extends SkillInspection { ok: boolean }
 
@@ -44,9 +47,18 @@ function owned(file: string): void {
     throw new Error(`Unowned or linked skill path: ${file}`)
   }
 }
-function skillTreeDigest(file: string): string | null {
-  try { return createSkillManifest(file, '', { maxFiles: 100, maxBytes: 2 * 1024 * 1024, deadlineAt: Date.now() + 1_000 }).digest }
-  catch { return null }
+function skillTreeDigest(file: string, budget?: SkillInspectionBudget): string | null {
+  try { return createSkillManifest(file, '', { maxFiles: Math.min(100, budget?.maxFiles ?? 100),
+    maxBytes: Math.min(2 * 1024 * 1024, budget?.maxBytes ?? 2 * 1024 * 1024),
+    deadlineAt: Math.min(Date.now() + 1_000, budget?.deadlineAt ?? Infinity) }).digest }
+  catch (error) {
+    if (budget !== undefined && /inspection (budget exhausted|size exceeded)/.test(String(error))) throw error
+    return null
+  }
+}
+
+function checkInspectionBudget(budget?: SkillInspectionBudget): void {
+  if (budget !== undefined && Date.now() >= budget.deadlineAt) throw new Error('local skill inspection budget exhausted')
 }
 
 /** One bundled skill, explicit placements, and a small recoverable replacement.
@@ -129,12 +141,14 @@ export class SkillInstallation {
     return [...new Set(agents.map(agent => this.directory(scope, agent).destination))]
   }
 
-  private guard(scope: Scope, agents: readonly SourceContextHarness[], destination: string): void {
+  private guard(scope: Scope, agents: readonly SourceContextHarness[], destination: string, budget?: SkillInspectionBudget): void {
+    checkInspectionBudget(budget)
     const selected = agents.map(agent => this.directory(scope, agent)).find(item => sameLocalPath(item.destination, destination))
     if (!selected) throw new Error(`Skill receipt names an unexpected destination: ${destination}`)
     let current = selected.anchor
     if (present(current)) owned(current)
     for (const component of path.relative(selected.anchor, destination).split(path.sep)) {
+      checkInspectionBudget(budget)
       current = path.join(current, component)
       if (present(current)) owned(current)
     }
@@ -149,7 +163,8 @@ export class SkillInstallation {
     return { schema: 1, scope, project: scope === 'project' ? this.cwd : null, agents: [], placements: [] }
   }
 
-  private read(scope: Scope): SkillState {
+  private read(scope: Scope, budget?: SkillInspectionBudget): SkillState {
+    checkInspectionBudget(budget)
     const file = this.statePath(scope)
     if (!present(file)) return this.empty(scope)
     owned(file)
@@ -165,7 +180,7 @@ export class SkillInstallation {
       if (!item || typeof item.path !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(item.digest) || typeof item.version !== 'string') {
         throw new Error('Invalid owned skill placement')
       }
-      this.guard(scope, state.agents, item.path)
+      this.guard(scope, state.agents, item.path, budget)
     }
     if (state.pending && (!/^[a-f0-9]{24}$/.test(state.pending.token) ||
       (state.pending.previous && state.pending.previous.path !== state.pending.placement.path))) throw new Error('Invalid pending skill replacement')
@@ -176,12 +191,14 @@ export class SkillInstallation {
     atomicWriteFileSync(this.statePath(state.scope), `${JSON.stringify(state)}\n`, { requireCurrentUserOwner: true })
   }
 
-  inspect(scope: Scope): SkillInspection {
+  inspect(scope: Scope, budget?: SkillInspectionBudget): SkillInspection {
     try {
-      const state = this.read(scope)
+      const state = this.read(scope, budget)
       return { agents: [...state.agents], placements: [...state.placements], pending: state.pending !== undefined,
-        conflicts: state.placements.filter(item => skillTreeDigest(item.path) !== item.digest).map(item => item.path) }
-    } catch (error) { return { agents: [], placements: [], pending: false, conflicts: [String(error)] } }
+        ...(state.pending === undefined ? {} : { pendingPlacement: { ...state.pending.placement } }),
+        conflicts: state.placements.filter(item => skillTreeDigest(item.path, budget) !== item.digest).map(item => item.path) }
+    } catch (error) { return { agents: [], placements: [], pending: false, conflicts: [String(error)],
+      ...(budget !== undefined && /inspection (budget exhausted|size exceeded)/.test(String(error)) ? { inspectionIncomplete: true } : {}) } }
   }
 
   private temporary(pending: PendingPlacement, suffix: 'new' | 'old'): string {

@@ -20,6 +20,13 @@ class ExitSentinel extends Error {
   }
 }
 
+it('self-check advertises npm route capability without loading credentials or mutating installation state', async () => {
+  const deps = makeDeps()
+  deps.store.load = () => { throw new Error('self-check must not access credentials') }
+  const result = await parse(['self-check', '--json'], {}, deps)
+  expect(JSON.parse(result.deps.outLines.join('\n'))).toMatchObject({ capabilities: { npm_adapter_routes: 1 } })
+})
+
 function makeDeps(): CommandDeps & { outLines: string[]; errLines: string[] } {
   const outLines: string[] = []
   const errLines: string[] = []

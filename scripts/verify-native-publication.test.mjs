@@ -91,3 +91,12 @@ test('historical native entries may be superseded but still require signatures a
   const withdrawn = fixture(); withdrawn.channel.withdrawn_versions.push(version)
   assert.throws(() => withdrawn.verify({ requireCurrent: false }), /withdrawn/u)
 })
+
+test('immutable candidate admission does not require or read mutable channel pointers', () => {
+  const f = fixture()
+  f.state.channelBytes = 'unavailable during candidate publication'
+  const evidence = f.verify({ requireChannel: false })
+  assert.equal(evidence.version, version)
+  assert.equal(evidence.source_revision, tagSha)
+  assert.equal(evidence.inventory_sha256, f.channel.inventory_sha256)
+})

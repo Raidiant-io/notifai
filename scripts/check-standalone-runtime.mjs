@@ -54,7 +54,13 @@ function worker(file, args) {
     })
   })
 }
+let checkFailure
 try {
+  // Verify the supplied production artifact, not only the separately compiled
+  // storage/process fixture below. Its changelog must survive packaging.
+  execFileSync(process.execPath, [path.join(repositoryRoot, 'scripts/check-standalone-changelog.mjs'),
+    '--runtime', path.join(path.dirname(path.resolve(values.launcher)), `notifai-runtime${extension}`)],
+  { cwd: repositoryRoot, stdio: 'inherit', timeout: 30_000 })
   copyFileSync(path.resolve(values.launcher), launcher)
   execFileSync(values.bun, ['build', '--compile', '--no-compile-autoload-dotenv',
     '--no-compile-autoload-bunfig', '--no-compile-autoload-package-json', '--no-compile-autoload-tsconfig',
@@ -135,8 +141,8 @@ try {
     const launcherBytes = windows ? Buffer.concat([readFileSync(launcher), Buffer.from(`fixture ${version}`)]) : readFileSync(launcher)
     writeFileSync(path.join(directory, `notifai${extension}`), launcherBytes, { mode: 0o700 })
     const digest = bytes => createHash('sha256').update(bytes).digest('hex')
-    const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: 'a'.repeat(40),
-      store_schema: 1, launcher_schema: 1, artifacts: [{ target,
+    const payload = Buffer.from(JSON.stringify({ schema: 2, local_continuity: { contract: 'notifai-session-state-v2' }, version, source_revision: 'a'.repeat(40),
+      store_schema: 2, launcher_schema: 1, artifacts: [{ target,
         filename: `notifai-${version}-${windows ? 'windows' : process.platform}-${process.arch}.${windows ? 'zip' : 'tar.gz'}`,
         bytes: 100, sha256: digest(version), runtime_sha256: digest(readFileSync(runtime)), materials: [], launcher_sha256: digest(launcherBytes) }] }))
     inventories.push(JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
@@ -310,9 +316,12 @@ try {
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, 'shared.json'), 'utf8')),
     { count: 200, future_field: 'preserve-me' })
   if (windows) {
+    // This script also inspects the real OS profile, so it must inherit the
+    // actual account environment, not the runtime probe's redirected HOME.
+    // Only its temporary fixture files belong beneath this owned test root.
     execFileSync(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', path.join(repositoryRoot, 'scripts/check-windows-installation-access.ps1'),
-        '-Launcher', launcher], { cwd: root, env, stdio: 'inherit', timeout: 60_000 })
+        '-Launcher', launcher], { cwd: root, env: { ...process.env, TEMP: root, TMP: root }, stdio: 'inherit', timeout: 60_000 })
     const permissions = path.join(root, 'permissions')
     privateDirectory(permissions)
     const icacls = path.join(process.env.SystemRoot, 'System32', 'icacls.exe')
@@ -359,4 +368,13 @@ try {
   process.stdout.write(`${JSON.stringify({ ok: true, platform: process.platform, arch: process.arch,
     checks: ['os-account-home-independent-of-environment', 'native-harness-command-without-node', 'immutable-detached-owner-across-update', 'uninstall-launch-barrier', 'native-executable-users', 'uninstall-removal-admission', 'finite-runtime-removal', ...(windows ? ['windows-temporary-finalizer'] : []), 'openclaw-native-process-readiness', 'openclaw-host-pending-work', 'bounded-signed-archive-extraction', 'installation-activation-recovery-rollback', 'retired-generation-cleanup-injected-boots', 'kernel-process-identity', 'bundled-skill-ownership', 'signed-inventory-integrity', 'argv-stdin-stderr-exit', 'atomic-active-generation', 'mixed-node-bun-lock-and-atomic-write',
       ...(windows ? ['restart-manager-runtime-owners', 'existing-directory-acl-migration-without-child-changes', 'installation-owner-and-acl', 'dpapi-roundtrip-and-clear', 'detached-owner-survival', 'foreground-tree-termination'] : [])] })}\n`)
-} finally { rmSync(root, { recursive: true, force: true }) }
+} catch (error) {
+  checkFailure = error
+  throw error
+} finally {
+  try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
+  catch (error) {
+    if (!checkFailure) throw error
+    console.error('Native runtime fixture cleanup also failed:', error)
+  }
+}

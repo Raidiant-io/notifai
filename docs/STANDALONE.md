@@ -34,10 +34,10 @@ official publication admission. Build the runtime for the chosen target first;
 cross-compiling the application cannot build JavaScriptCore for that target.
 
 The builder regenerates the protocol output and exact CLI skill bundle before
-compilation. It embeds release identity and the skill, disables configuration
-autoload, and writes a build receipt beside the executable. `self-check --json`
-verifies build identity, process identity and skill integrity without service access or persistent
-account/logging writes. It does not verify an OS signature or prove installation,
+compilation. It embeds release identity, the skill and the canonical changelog,
+disables configuration autoload, and writes a build receipt beside the executable.
+`self-check --json` verifies build identity, process identity, skill integrity and
+changelog availability without service access or persistent account/logging writes. It does not verify an OS signature or prove installation,
 credentials, notification delivery, resident ownership, or update behavior.
 
 ## Launch boundary
@@ -521,8 +521,9 @@ Environment protections and release metadata branch permissions must also be
 verified. These workflows do not provision credentials, certify material
 completeness, or authorize publication. Release-please creates the native CLI tag and a draft release, then dispatches
 finalization using the successful full CI run ID. Native publication and channel
-promotion remain explicit operations. npm publication accepts only protocol and
-installer tags; it cannot publish the Node-based CLI package.
+promotion remain explicit operations. The generated same-name npm adapter and
+native artifacts share the CLI release version/source; publication tooling owns
+their staged verification and promotion.
 
 Apple's documented raw-code check is `codesign -vvvv -R=notarized
 --check-notarization`. `spctl` execution assessment targets app bundles and can
@@ -536,33 +537,47 @@ Sources: [Apple DTS testing guide](https://developer.apple.com/forums/thread/130
 [Bun 1.4.2 signing guide](https://github.com/oven-sh/bun/blob/bun-v1.4.2/docs/guides/runtime/codesign-macos-executable.mdx),
 [Apple notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
 
-## Optional npm bootstrap
+## Optional existing-name npm launcher
 
-The separate `@raidiant/notifai-install` package exposes `notifai-install` and has
-no install lifecycle scripts. Installing the package alone never installs or
-updates the runtime. Explicit invocation resolves the OS account's owned
-installation first. A fresh installation verifies Ed25519 release metadata,
-archive digests and admitted members before executing the native installer;
-macOS also requires Apple's raw-code notarization check. The native CLI owns
-PATH, initialization, runtime updates and rollback for every bootstrap route.
+The generated `@raidiant/notifai` package exposes `notifai` as a small acquisition
+and launch adapter, not a second Node product. There are no install lifecycle
+scripts. Merely installing the package never installs or updates the runtime.
+Explicit `init` or `install` authenticates the exact signed native release bound
+to the adapter version/source, verifies the archive and admitted members, and
+invokes the native installer. Fresh beta adapters acquire their matching beta
+runtime; an existing installation retains its version and saved channel until
+explicit native update or rollback.
 
-Node 20.12 or later is required only to run this optional bootstrap. The installed
-CLI does not need Node. `npm update` updates the bootstrap package; `notifai update`
-updates the runtime. Removing the bootstrap package leaves the runtime intact.
-The bootstrap's version is independent of the runtime version, and `--version`
-selects an exact runtime version. A prerelease needs `--channel beta` explicitly.
+Node.js 20.12 or newer is required only for this optional launcher. Runtime,
+updates, retained generations, hooks and removal belong to the same native
+Installation used by shell and PowerShell routes. `npm update` changes only the
+launcher; `npm uninstall -g @raidiant/notifai` leaves the runtime intact.
+`notifai uninstall` reports any remaining npm launcher and its exact cleanup
+command. Pending transactions or unresolved owners block acquisition/removal.
 
-Candidate CI verifies the packed bootstrap on all six native runners and checks
-the minimum Node version on Linux x64. Publication refuses an empty embedded trust
-map and requires a resolvable signed stable default on all supported targets.
-`installer-v*` tags use the protected `npm-release` environment and package-specific
-npm trusted publishing. First configure that package's publisher; do not reuse
-an npm token or assume another package's trust configuration covers it.
+Help, version, doctor and ordinary product commands never acquire missing native
+files. Doctor reports adapter and runtime identity separately; equal versions
+are not artifact proof. `@version` selects adapter code, not an existing runtime.
+Windows npm inspection accepts inherited ACLs with no writers beyond the current
+User, SYSTEM and Administrators, without modifying those ACLs. Objects must be
+owned by the current User, or by Administrators when that is the inspecting
+process token's default owner (as with elevated npm). Reparse points and foreign
+owners remain rejected. Managed native directories keep their separate protected
+ACL and exact User ownership requirements.
+The account home is checked separately against Windows' actual profile lookup:
+its owner may also be SYSTEM or Administrators, with the same reparse and
+foreign-writer rejection. That read-only exception applies only to the exact OS
+profile directory, never npm package contents or managed installation paths.
+
+Hooks and resident work use the stable native command, never npm/NPX cache paths.
+Do not advertise these candidate npm instructions until both the replacement
+registry package and its matching native release have been verified.
 
 ## Moving from the npm CLI
 
-The legacy `@raidiant/notifai` runtime package is separate from the optional
-`@raidiant/notifai-install` bootstrap. An installer normally refuses another
+The legacy Node-based `@raidiant/notifai` application is distinguished from the
+new same-name native launcher by its artifact contract, not the package name.
+An installer normally refuses another
 `notifai` command on PATH. For one identified npm-global package, explicitly use
 `--migrate-npm` (`-MigrateNpm` in PowerShell) to stage and authenticate the native
 runtime while retaining the exact old package and shims. Multiple prefixes,
@@ -570,8 +585,9 @@ unknown shims and unrecognized package manifests require manual resolution.
 
 This step reports `migration_pending_legacy_owners`, the exact prefix and npm
 arguments, and exits nonzero. It does not run setup or claim the migration is
-complete. Finish outstanding questions, answers and acknowledgements; stop the
-harnesses and other programs using the old CLI; then use that prefix's npm to
+complete. Finish outstanding questions, answers and acknowledgements; resolve the
+reported legacy owners without killing harnesses or faking acknowledgement; then
+use that prefix's npm to
 remove the legacy runtime package. Rerun the native installer to finish setup.
 Older packages cannot prove all their resident owners are gone, so Notifai never
 automatically removes them. An absent claim or an idle-looking process is not
@@ -583,3 +599,13 @@ exact paths. Move those entries to a User-chosen backup before choosing new
 bundled placements; the installer never guesses that an unrecorded directory is
 safe to overwrite. Removing an npm package does not authorize erasing skills,
 configuration, credentials or session history.
+
+### Older native runtime with a new global launcher
+
+Update the existing native runtime through its current native command before
+adding a global npm launcher. If installed in the opposite order, the adapter
+reports the exact verified prefix: remove only that new launcher, update the
+native command by absolute path, then reinstall the launcher. NPX's verified
+isolated command directory can be excluded for its child without dropping a
+global directory containing other programs. Never treat a new verified adapter
+as legacy Node migration or silently change the native version/channel.

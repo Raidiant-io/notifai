@@ -60,10 +60,11 @@ const TOP_LEVEL_ALLOWLIST = new Set([
   'release-please-config.json',
   '.release-please-manifest.json',
   'node_modules',
+  'dist', // Generated npm adapter; exact tarballs have a separate boundary gate.
 ])
 
 const APPS_ALLOWLIST = new Set(['cli'])
-const PACKAGES_ALLOWLIST = new Set(['protocol', 'installer'])
+const PACKAGES_ALLOWLIST = new Set(['protocol'])
 
 /** File names or extensions that mark material the public repo must not hold. */
 const FORBIDDEN_FILE_PATTERNS = [

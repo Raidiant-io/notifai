@@ -95,12 +95,27 @@ try {
   Assert-Bootstrap ((Get-NotifaiInstalledCommand) -ceq $installed) 'Owned command was not selected'
   Invoke-NotifaiBootstrap
   Assert-Bootstrap ($script:launches -eq 2) 'Existing installation was not resumed offline'
+  $Upgrade = $true
+  Expect-Rejection { Invoke-NotifaiBootstrap }
+  Assert-Bootstrap ($script:launches -eq 2) 'Unpinned upgrade reached the existing updater'
+  $Version = '1.0.0'; $Channel = 'stable'
+  # Restore admitted archive bytes, then prove upgrade bypasses the old command.
+  $stream = [IO.File]::OpenWrite($archive)
+  try { $stream.SetLength($size) } finally { $stream.Dispose() }
+  $script:upgradeLauncher = $null
+  function Invoke-NotifaiCandidate([string]$Launcher, [string[]]$NativeArgs) {
+    $script:launches++
+    $script:upgradeLauncher = $Launcher
+    Assert-Bootstrap ($NativeArgs -ccontains '--upgrade' -and $NativeArgs -ccontains '--version' -and $NativeArgs -ccontains '--channel') 'Pinned upgrade arguments were lost'
+  }
+  Invoke-NotifaiBootstrap
+  Assert-Bootstrap ($script:launches -eq 3 -and $script:upgradeLauncher -cne $installed) 'Upgrade delegated to the old installed updater'
   # Exercise a writable foreign principal without asking Set-Acl to rewrite
   # unrelated owner/audit sections or requiring SeSecurityPrivilege.
   & "$env:SystemRoot/System32/icacls.exe" $bin '/grant' '*S-1-1-0:(W)' | Out-Null
   Assert-Bootstrap ($LASTEXITCODE -eq 0) 'Could not establish unsafe PATH fixture'
   Expect-Rejection { Invoke-NotifaiBootstrap }
-  Assert-Bootstrap ($script:launches -eq 2) 'Unsafe owned-command path reached execution'
+  Assert-Bootstrap ($script:launches -eq 3) 'Unsafe owned-command path reached execution'
 
   Write-Output "PowerShell bootstrap checks passed ($target; no live downloads or installation)."
 } finally { [IO.Directory]::Delete($root, $true) }

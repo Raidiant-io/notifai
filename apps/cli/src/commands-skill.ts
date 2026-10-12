@@ -1,4 +1,4 @@
-import { staleHarnessSkillCopies, type HarnessSkillCopy, type NativeSkill, type SkillScope } from './native-skills.js'
+import { skillInventoryIssue, staleHarnessSkillCopies, type HarnessSkillCopy, type NativeSkill, type SkillScope } from './native-skills.js'
 import { fileURLToPath } from 'node:url'
 import { type ReadinessState } from './readiness.js'
 import { packageVersion } from './release.js'
@@ -26,7 +26,8 @@ function developmentSkillMismatch(skill: NativeSkill): { checkout: string; insta
 export function installedSkillMatchesPackage(skill: NativeSkill): boolean {
   const expectedDigest = expectedSkillDigest()
   return (
-    skill.name === 'notifai' && skill.owned !== false && skill.pending !== true &&
+    skill.name === 'notifai' && skill.owned === true && skill.pending !== true &&
+    (skill.condition === undefined || skill.condition === 'managed-current') &&
     expectedDigest !== null &&
     (skill.placements ?? [{ path: skill.path }]).every(item => skillTreeDigest(item.path) === expectedDigest)
   )
@@ -52,7 +53,7 @@ export interface ScopedNotifaiSkills {
 }
 
 /**
- * Installer-managed notifai skills in both scopes. Duplicate detection has to
+ * Owned and unmanaged notifai guidance in both scopes. Duplicate detection has to
  * see the pair; a selected-scope filter would hide the copy the harness still
  * lists.
  */
@@ -121,7 +122,14 @@ export async function skillReadiness(
   selectedScope?: SkillScope,
   selectedHarnesses?: readonly string[],
 ): Promise<ReadinessState> {
-  const { installed, errors } = await listScopedNotifaiSkills(deps)
+  const inventory = await listScopedNotifaiSkills(deps)
+  const { installed, errors } = inventory
+  const issue = skillInventoryIssue(inventory)
+  if (issue !== null && issue.code !== 'skill-scope-ambiguous') return {
+    id: 'skill', title: 'Agent guidance skill', status: 'gap', detail: issue.detail,
+    technical: { resolution: issue.resolution, copies: installed.map(skill => ({ scope: skill.scope, path: skill.path, owned: skill.owned, condition: skill.condition })), errors },
+    remedy: { by: 'user-here', summary: issue.remedy, command: 'notifai doctor --json' },
+  }
   if (installed.length > 1) return duplicateSkillState(installed, selectedScope)
 
   const candidate = installed[0]
@@ -154,7 +162,7 @@ export async function skillReadiness(
         },
       }
     }
-    const mismatch = developmentSkillMismatch(candidate)
+    const mismatch = candidate.condition === undefined ? developmentSkillMismatch(candidate) : null
     if (mismatch !== null) {
       return {
         id: 'skill',

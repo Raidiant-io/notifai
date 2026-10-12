@@ -102,12 +102,13 @@ export function resetPublishedCliDistTagsForTest(): void {
 
 
 /** Availability follows the installed runtime's distribution owner. Native
- * discovery authenticates metadata and persists its anti-replay sequence; it
+ * discovery authenticates metadata; diagnostic callers preserve saved state. It
  * never downloads executables or changes wiring. */
 export async function discoverCliUpdate(options: {
   env: NodeJS.ProcessEnv; fetchImpl?: typeof fetch | undefined; current?: string | null; useCache?: boolean;
   /** Isolated test seam; production uses the fixed account-owned installation. */
   installation?: Installation
+  readOnly?: boolean
 }): Promise<{ channel: 'stable' | 'beta' | null; target: string | null; newer: string | null;
   available: boolean | null; tags: CliDistTags | null; error: string | null }> {
   if (buildIdentity() === null && !options.installation) {
@@ -125,7 +126,7 @@ export async function discoverCliUpdate(options: {
     channel = before.channel
     if (!channel) throw new Error('Installed release channel is unavailable')
     const active = installation.activeRelease(before.active?.generation)
-    const release = await installation.resolveRelease(channel)
+    const release = await installation.resolveRelease(channel, undefined, { readOnly: options.readOnly === true })
     const newer = compareReleasePrecedence(release.inventory.version, active.version) === 'after' ? release.inventory.version : null
     return { channel, tags: null, target: release.inventory.version, newer, available: newer !== null, error: null }
   } catch (error) {

@@ -1,4 +1,6 @@
+import type { connectCodexAnswerControl } from './codex-answer-control.js'
 import type { connectCodexQueue } from './codex-queue-control.js'
+import type { ReadCodexDaemonVersion } from './codex-shared-server-health.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
   SHIPPED_CLI_CAPABILITIES,
@@ -70,6 +72,8 @@ export interface CommandSpinner {
 }
 
 export interface CommandDeps {
+  /** Ephemeral, untrusted npm invocation locator; never forwarded or persisted. */
+  invokingNpmAdapterArtifact?: string
   io: CommandIo
   store: CredentialStore
   env: NodeJS.ProcessEnv
@@ -98,6 +102,10 @@ export interface CommandDeps {
   /** Test seams for the Codex thread-writer probe and cold resume. */
   codexWake?: CodexWakeAdapters
   codexQueueControl?: typeof connectCodexQueue
+  /** Test seam for the ask-time native answer transport preflight. */
+  codexAnswerControl?: typeof connectCodexAnswerControl
+  /** Test seam for doctor's shared Codex app-server report. */
+  codexDaemonVersion?: ReadCodexDaemonVersion
   codexSourcePid?: number
   /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void

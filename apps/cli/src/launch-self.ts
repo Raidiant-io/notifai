@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { buildIdentity } from './distribution.js'
 import { accountHome } from './platform.js'
 import { canonicalPath, sameLocalPath } from './local-path.js'
+import { installedRuntime, LOCAL_CONTINUITY } from './local-continuity.js'
 import { assertNativeLaunchAllowed } from './native-uninstall-barrier.js'
 
 /** A durable reference names local content, never an arbitrary executable path. */
@@ -31,7 +32,8 @@ export function currentRuntimeBuild(env: NodeJS.ProcessEnv = process.env): Runti
       path.basename(executable).toLowerCase() !== `notifai-runtime${extension}`) throw new Error('Install Notifai before starting resident work')
   const record = JSON.parse(readFileSync(path.join(root, 'install.json'), 'utf8')) as { id?: unknown; owner?: unknown; target?: unknown }
   const reference = { installation_id: record.id, build }
-  if (record.owner !== 'notifai' || record.target !== identity.target || !validRuntimeBuildReference(reference)) {
+  const runtime = installedRuntime(record)
+  if (record.owner !== 'notifai' || runtime?.target !== identity.target || runtime.contract !== LOCAL_CONTINUITY || !validRuntimeBuildReference(reference)) {
     throw new Error('The running build does not belong to this installation')
   }
   return reference

@@ -10,19 +10,28 @@ export const nativeTargets = ['bun-darwin-arm64', 'bun-darwin-x64', 'bun-linux-a
 const repository = 'Raidiant-io/notifai'
 
 export function validateNativeEvidence({ run, jobs, artifacts, expectedSha, kind }) {
-  assert.ok(['candidate', 'final'].includes(kind), 'Unknown native evidence kind')
+  assert.ok(['candidate', 'final', 'assembled', 'npm'].includes(kind), 'Unknown native evidence kind')
   assert.ok(/^[a-f0-9]{40}$/.test(expectedSha), 'Exact source SHA is required')
   assert.ok(run?.head_sha === expectedSha && run.status === 'completed' && run.conclusion === 'success' &&
     run.event === 'workflow_dispatch' && run.head_repository?.full_name === repository &&
-    run.path === `.github/workflows/${kind === 'candidate' ? 'ci' : 'prepare-native-release'}.yml`,
+    run.path === `.github/workflows/${kind === 'candidate' ? 'ci' : kind === 'final' ? 'prepare-native-release' : kind === 'assembled' ? 'publish-native-release' : 'publish'}.yml`,
   'A successful exact-source first-party workflow run is required')
   if (kind === 'candidate') validateCiEvidence({ run, jobs, expectedSha })
   const names = new Set()
   for (const job of jobs) { assert.ok(!names.has(job.name), 'Duplicate native job evidence'); names.add(job.name) }
+  if (kind === 'assembled') {
+    assert.equal(jobs.find(job => job.name === 'publish')?.conclusion, 'success', 'Missing successful protected assembly evidence')
+    const matches = artifacts.filter(artifact => artifact.name === `native-release-bundle-${expectedSha}`)
+    assert.ok(matches.length === 1 && matches[0].expired === false && Number.isSafeInteger(matches[0].id) &&
+      matches[0].size_in_bytes > 0 && matches[0].size_in_bytes <= 2 * 1024 * 1024 * 1024 &&
+      /^sha256:[a-f0-9]{64}$/.test(matches[0].digest), 'Missing immutable retained signed bundle')
+    return run
+  }
+  if (kind === 'npm') assert.equal(jobs.find(job => job.name === 'npm')?.conclusion, 'success', 'Missing successful npm candidate publication')
   for (const target of nativeTargets) {
-    const name = kind === 'candidate' ? `standalone / standalone (${target})` : `finalize (${target})`
+    const name = kind === 'candidate' ? `standalone / standalone (${target})` : kind === 'npm' ? `npm adapter (${target})` : `finalize (${target})`
     assert.equal(jobs.find(job => job.name === name)?.conclusion, 'success', `Missing successful native evidence: ${name}`)
-    const namePrefix = kind === 'candidate' ? 'standalone' : 'native-final'
+    const namePrefix = kind === 'candidate' ? 'standalone' : kind === 'npm' ? 'npm-native-acceptance' : 'native-final'
     const matches = artifacts.filter(artifact => artifact.name === `${namePrefix}-${target}-${expectedSha}`)
     assert.ok(matches.length === 1 && matches[0].expired === false && Number.isSafeInteger(matches[0].id) &&
       Number.isSafeInteger(matches[0].size_in_bytes) && matches[0].size_in_bytes > 0 && matches[0].size_in_bytes <= 1024 * 1024 * 1024 &&
@@ -32,7 +41,7 @@ export function validateNativeEvidence({ run, jobs, artifacts, expectedSha, kind
 }
 
 export async function requireNativeEvidence({ expectedSha, runId, kind, token, fetcher = fetch }) {
-  assert.ok(token && ['candidate', 'final'].includes(kind), 'Authenticated native evidence kind is required')
+  assert.ok(token && ['candidate', 'final', 'assembled', 'npm'].includes(kind), 'Authenticated native evidence kind is required')
   if (!runId && kind === 'candidate') runId = (await requireCiEvidence({ repository, expectedSha, token, fetcher })).id
   assert.ok(/^[1-9][0-9]*$/.test(String(runId)), 'Exact retained workflow run ID is required')
   const get = async suffix => {

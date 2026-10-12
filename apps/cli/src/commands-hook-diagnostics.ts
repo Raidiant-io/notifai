@@ -158,33 +158,33 @@ export function hookActivationAdvice(installations: Installation[]): string {
   const harnesses = new Set(installations.map((installation) => installation.harness))
   const advice: string[] = []
   if (harnesses.has('claude-code')) {
-    advice.push('Claude Code: start one fresh session, send one prompt, then run `notifai doctor`')
+    advice.push('Claude Code: observe a natural callback from the installed definition; if this session still holds the old hooks, arrange a fresh session after preserving its pending work, then recheck `notifai doctor`')
   }
   if (harnesses.has('cursor')) {
     advice.push(
-      'Cursor: start one fresh conversation, send one prompt, finish its first turn, then run `notifai doctor`',
+      'Cursor: verify the installed hooks in the affected conversation; first-time activation needs a prompt and its first completed or errored turn, then recheck `notifai doctor`',
     )
   }
   if (harnesses.has('codex')) {
     advice.push(
-      'Codex: start one fresh session, send one prompt, then run `notifai doctor`; the separate Codex hook trust check says explicitly if `/hooks` needs your attention',
+      'Codex: follow the specific trust or stale-Stop diagnosis and verify actual callbacks; preserve healthy owners and existing approvals, and use `/hooks` only when the trust or reload diagnosis requires it',
     )
   }
   if (harnesses.has('opencode')) {
     advice.push(
-      'OpenCode: restart it, then send one prompt; plugins load at startup, but non-blocking question continuation is intentionally unsupported',
+      'OpenCode: plugins load at startup; if changed module loading remains unverified, arrange a restart and observe a natural prompt callback; non-blocking question continuation is intentionally unsupported',
     )
   }
   if (harnesses.has('openclaw')) {
     advice.push(
-      'OpenClaw: restart the Gateway, then send one prompt; the loaded plugin owns Question Routing through its Gateway service',
+      'OpenClaw: the loaded Gateway plugin owns Question Routing; preserve its current routes and arrange a Gateway reload only if the changed module still needs loading, then verify a natural prompt in the current generation',
     )
   }
   if (harnesses.has('hermes')) {
-    advice.push('Hermes: start a fresh local classic CLI Agent Session; its native prompt section activates only when this Project is enabled')
+    advice.push('Hermes: preserve the attached classic CLI bridge; if changed module loading remains unverified, arrange a new activation after preserving pending work; its native prompt section requires this Project to be enabled')
   }
   if (harnesses.has('grok')) {
-    advice.push('Grok: start one fresh Agent Session and send one prompt; hooks observe lifecycle events, while model-visible hook activation is unsupported, so load the Notifai skill directly')
+    advice.push('Grok: observe the installed SessionStart hook on a natural activation; model-visible hook activation is unsupported, so load the Notifai skill directly')
   }
   return `${advice.join('. ')}.`
 }
