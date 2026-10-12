@@ -61,6 +61,7 @@ describe('soundsCommand', () => {
 
     expect(await soundsCommand(makeDeps(io, client), {})).toBe(EXIT.ok)
     expect(io.outLines[0]).toBe('default  Device default')
+    expect(io.outLines).toContain('update  update tone')
     expect(io.outLines).toContain('done  completion chime')
     expect(io.outLines).toContain('none  silent')
     expect(io.outLines.at(-1)).toBe('snd_kitchen  Kitchen timer  2.4s')

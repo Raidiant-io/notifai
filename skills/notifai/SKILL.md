@@ -100,7 +100,7 @@ cwd or config from inventing a Project.
 
 | kind | what it means | how it arrives |
 | --- | --- | --- |
-| `update` | ordinary news | Device default |
+| `update` | ordinary news | update tone |
 | `done` | work finished successfully | completion chime |
 | `failed` | work reached a terminal failure | most insistent tone |
 | `blocked` | no User reply would resume the work | attention tone |
