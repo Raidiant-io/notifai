@@ -44,7 +44,7 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0
       '@raidiant/notifai-protocol':
-        specifier: 8.2.2
+        specifier: 8.3.0
         version: link:../../packages/protocol
       '@zip.js/zip.js':
         specifier: 2.23.0
