@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.1.0-beta.2](https://github.com/Raidiant-io/notifai/compare/v12.0.1...v12.1.0-beta.2) (2026-10-13)
+
+### Features
+
+* Show detected harnesses in setup results.
+
+### Bug Fixes
+
+* Recover session delivery when this machine signs in again, preserving queued input and active agents.
+* Suppress repeated wakes while input delivery is refused, and resume after fresh attendance.
+* Preserve the session's Project when sending from a temporary directory; directories outside Git no longer become inferred Projects.
+* Read back Keychain credentials with non-ASCII machine names.
+* Recognize the desktop app as a Companion App during setup.
+
 ## [12.0.1](https://github.com/Raidiant-io/notifai/compare/v12.0.0...v12.0.1) (2026-10-12)
 
 
