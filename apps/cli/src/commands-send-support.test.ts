@@ -1,9 +1,14 @@
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import os from 'node:os'
+import path from 'node:path'
+import { recordSessionStart } from './hook-session-state.js'
 import { NOTIFICATION_IMAGE_MAX_BYTES } from '@raidiant/notifai-protocol'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EXIT, type CommandDeps, type CommandIo } from './commands-core.js'
-import { readCappedBytes, uploadImage } from './commands-send-support.js'
+import { readCappedBytes, uploadImage, resolveDraftInvocation } from './commands-send-support.js'
 import type { ApiClient } from './client.js'
 
 let server: Server | undefined
@@ -153,4 +158,19 @@ describe('uploadImage remote fetch', () => {
       await new Promise<void>((resolve) => redirector.close(() => resolve()))
     }
   })
+})
+
+it('keeps the exact session Project when a tool sends from a scratch directory', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-project-context-'))
+  try {
+    const repo = path.join(root, 'example-project')
+    const scratch = path.join(root, 'scratch-assets')
+    mkdirSync(repo); mkdirSync(scratch)
+    execFileSync('git', ['init', '--quiet', repo])
+    const env = { XDG_STATE_HOME: path.join(root, 'state') }
+    recordSessionStart('session-context', env, 'claude-code', repo)
+    const result = resolveDraftInvocation({ cwd: scratch, env, io: io() } as CommandDeps, {},
+      { harness: 'claude-code', label: 'Claude Code', sessionId: 'session-context' })
+    expect(result).toMatchObject({ ok: true, invocation: { inferredProject: 'example-project' } })
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

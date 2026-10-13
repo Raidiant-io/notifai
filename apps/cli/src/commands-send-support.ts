@@ -5,6 +5,7 @@ import path from 'node:path'
 import { isRetryableReplyPollError, type ApiClient } from './client.js'
 import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
+import { readSessionState } from './hook-session-state.js'
 import { readHarnessSessionTitle } from './harness-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
 import { EXIT, reportError, type CommandDeps } from './commands-core.js'
@@ -29,7 +30,9 @@ export function resolveDraftInvocation(
   flags: Pick<SendFlags, 'sessionId' | 'sessionLabel'>,
   active: ActiveHarnessSession | null,
 ): { ok: true; invocation: DraftInvocation } | { ok: false; error: string } {
-  const inferred = inferInvocationContext(deps.cwd)
+  const session = active?.sessionId === undefined ? undefined : readSessionState(active.sessionId, deps.env)
+  const cwd = session?.harness === active?.harness ? session?.activation_cwd ?? deps.cwd : deps.cwd
+  const inferred = inferInvocationContext(cwd)
   const sessionTitle = managedSessionTitle(deps, active)
   const source = buildSourceContext({
     env: deps.env,

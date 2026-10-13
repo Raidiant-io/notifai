@@ -632,7 +632,7 @@ describe('KeychainStore', () => {
   })
 
   it('reads a credential back whether `security` prints it as text or, for a non-ASCII machine name, as hex', () => {
-    const named = { ...SAMPLE, machineName: 'Rafael’s MacBook Pro' }
+    const named = { ...SAMPLE, machineName: 'Example’s MacBook Pro' }
     for (const printed of [
       JSON.stringify({ format: 'notifai.machine-credential.v1', ...SAMPLE }),
       Buffer.from(JSON.stringify({ format: 'notifai.machine-credential.v1', ...named }), 'utf8').toString('hex'),

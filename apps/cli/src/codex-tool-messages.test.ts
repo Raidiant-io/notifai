@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
 import { observeCodexQuestions } from './codex-question-bindings.js'
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
@@ -54,6 +55,7 @@ function installTrustedHooks(env: NodeJS.ProcessEnv): void {
 function setup() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-tool-notes-'))
   roots.push(root)
+  execFileSync('git', ['init', '--quiet', root])
   const owner = currentProcessIdentity()!
   const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'), CODEX_HOME: path.join(root, 'codex'), NOTIFAI_HOOK_SOURCE_PID: String(owner.pid) }
   installHookAdapter({ execPath: process.execPath, scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)) }, root)
@@ -1146,4 +1148,45 @@ it('rechecks in-process authorization after an awaited recovery lookup', async (
   await h.schedule({ ...h.control, find: async () => { authorized = false; return 'absent' } }, { mayWrite: () => authorized })
   expect(h.adds()).toBe(0)
   expect(h.wakes().some(a => a.phase === 'cancelled')).toBe(true)
+})
+
+it('does not repeatedly wake an observed input while its delivery lease is fenced', async () => {
+  const h = setup()
+  h.stage([note('sm_fenced')])
+  const wakes: string[] = []
+  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true })
+  await wake()
+  observeSessionInputWake(SESSION, h.env, wakes[0])
+  vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValue(
+    new ApiCallError(409, 'claim_refused', 'lease refused', null, { reason: 'generation_fenced' }))
+  expect(await drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
+    write: text => h.output.push(text) })).toBe(false)
+  await wake()
+  expect(h.output).toEqual([])
+  expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
+  expect(wakes).toHaveLength(1)
+})
+
+it.each([1, 2])('rearms a refused wake after fresh attendance at generation %i', async generation => {
+  const h = setup()
+  h.stage([note('sm_first')])
+  const wakes: string[] = []
+  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true })
+  await wake()
+  observeSessionInputWake(SESSION, h.env, wakes[0])
+  vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValueOnce(
+    new ApiCallError(409, 'claim_refused', 'lease refused', null, { reason: 'generation_fenced' }))
+  const drain = (lease = h.lease) => drainSessionInputs({ sequencer: h.sequencer, lease, mayWrite: () => true,
+    write: text => h.output.push(text) })
+  expect(await drain()).toBe(false)
+  await wake()
+  expect(wakes).toHaveLength(1)
+  const recovered = { ...h.lease, generation }
+  writeAttendantStatus(SESSION, h.env, { ...recovered, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
+  stageSessionMessages(SESSION, h.env, recovered, [note('sm_first')])
+  await wake()
+  expect(wakes).toHaveLength(2)
+  expect(await drain(recovered)).toBe(true)
+  expect(h.output).toHaveLength(1)
+  expect(hasSessionInputs(SESSION, h.env, recovered)).toBe(false)
 })

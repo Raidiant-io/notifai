@@ -112,9 +112,9 @@ describe('inferInvocationContext', () => {
     expect(context).toEqual({ project: 'notifai', branch: 'topic', worktree: 'topic' })
   })
 
-  it('falls back to the cwd basename outside Git', () => {
+  it('does not invent a Project from a directory outside Git', () => {
     expect(inferInvocationContext('/tmp/My Scratch/', fixtureGit({}))).toEqual({
-      project: 'my-scratch',
+      project: null,
     })
   })
 

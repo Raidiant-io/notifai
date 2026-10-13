@@ -513,7 +513,7 @@ function serializeCredential(credential: MachineCredential): Record<string, stri
 /**
  * `security -w` prints a password that is not plain ASCII as hex instead of
  * text. A credential is JSON, so it never starts with a hex digit; a
- * non-ASCII machine name such as "Rafael’s MacBook" comes back hex-encoded.
+ * non-ASCII machine name such as "Example’s MacBook" comes back hex-encoded.
  */
 function keychainPassword(printed: string): string {
   return /^(?:[0-9a-f]{2})+$/i.test(printed) ? Buffer.from(printed, 'hex').toString('utf8') : printed

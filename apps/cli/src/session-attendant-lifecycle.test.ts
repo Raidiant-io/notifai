@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -59,6 +60,7 @@ const HARNESS = { pid: 4242, start: 'Fri Sep 25 11:12:08 2026' }
 
 function isolatedEnv(): { env: NodeJS.ProcessEnv; root: string } {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-attendant-'))
+  execFileSync('git', ['init', '--quiet', root])
   return {
     root,
     env: {
@@ -1466,4 +1468,29 @@ describe('attendant gates', () => {
       reason: 'cli-downgraded',
     })
   })
+})
+
+it('reloads changed credentials in a resident hook and keeps serving the same session', async () => {
+  const { env, root } = isolatedEnv()
+  const old = fakeAttendance(), next = fakeAttendance()
+  let machine = 'mac_first'
+  const deps = attendDeps(env, root, {
+    clientFactory: (_base, authorization) => authorization.includes('mac_first') ? old.client : next.client,
+  })
+  deps.store.load = () => ({ machineId: machine, secret: 'test-secret', baseUrl: 'https://test.notifai.invalid', machineName: 'test' })
+  recordSessionNotified('sess-a', env, Date.now())
+  const running = hookRunCommand(deps, 'attend', stdin({ session_id: 'sess-a', cwd: root,
+    hook_event_name: 'SessionStart', source: 'startup' }), 'claude-code')
+  try {
+    await until(() => old.calls.length >= 2, 'original attendance')
+    machine = 'mac_replacement'
+    await until(() => next.calls.length >= 2, 'attendance with current credentials')
+    expect(old.calls.some(call => call.state === 'withdrawn')).toBe(true)
+    expect(old.calls.some(call => call.state === 'ended')).toBe(false)
+    expect(next.calls[0]?.generation).toBeUndefined()
+    expect(deps.exits).toEqual([])
+  } finally {
+    markSessionEnded('sess-a', env, Date.now() + 1)
+    await running
+  }
 })

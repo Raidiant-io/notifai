@@ -165,6 +165,7 @@ function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initia
     ...initial,
   } as Harness
   let rotations = 0
+  const client = service.client()
   harness.result = runSessionAttendant({
     sessionId: 'session-1',
     incarnation: 'inc_aaaaaaaaaaaa',
@@ -179,7 +180,7 @@ function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initia
     claimHeld: () => harness.claimHeld,
     notified: () => harness.notified,
     gates: () => harness.gate,
-    client: () => service.client(),
+    client: () => client,
     serverSupportsAttendance: async (client) =>
       (await client.compatibility()).server_capabilities.includes('session_attendance'),
     acceptsMessages: false,
@@ -683,4 +684,35 @@ describe('Session Attendant', () => {
     expect(await h.result).toEqual({ reason: 'claim-lost', reported: null })
     expect(h.service.exchanges.every((exchange) => exchange.body.state === 'running')).toBe(true)
   })
+})
+
+it('releases the old credential lease and reacquires after the Machine changes without ending the harness', async () => {
+  const old = new FakeService(), next = new FakeService()
+  const oldClient = old.client(), newClient = next.client()
+  let current = oldClient
+  let handle: AttendantHandle | null = null
+  const h = startAttendant({ client: () => current, acceptsMessages: true,
+    onMessages: async (_messages, owner) => { handle = owner; return 'done' } })
+  await flush()
+  old.last().respond(old.attending(2))
+  await flush()
+  expect(handle!.mayWrite()).toBe(true)
+  current = newClient
+  expect(handle!.mayWrite()).toBe(false)
+  await h.clock.advance(2_000)
+  expect(old.last().body).toMatchObject({ state: 'withdrawn', generation: 2 })
+  old.last().respond({ status: 'withdrawn' })
+  await flush()
+  expect(next.last().body).toMatchObject({ state: 'running' })
+  expect(next.last().body.generation).toBeUndefined()
+  expect(next.last().body.message_cursor).toBeUndefined()
+  next.last().respond(next.attending(3))
+  await flush()
+  expect(handle!.mayWrite()).toBe(true)
+  expect(handle!.generation()).toBe(3)
+  h.signal()
+  await flush()
+  next.last().respond({ status: 'withdrawn' })
+  await h.result
+  expect(old.exchanges.some(e => e.body.state === 'ended')).toBe(false)
 })
