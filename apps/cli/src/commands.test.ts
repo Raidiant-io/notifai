@@ -7128,7 +7128,7 @@ describe('init', () => {
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
-  it('ignores a dormant Mac installation while waiting for an active Companion, then proves the iPhone receipt', async () => {
+  it('waits for a Companion App to register, then proves the iPhone receipt', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-bridge-'))
     const io = new InteractiveIo()
     let now = 0
@@ -7138,7 +7138,7 @@ describe('init', () => {
     const client = {
       health: async () => true,
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({ devices: deviceReady ? [readyIphone] : [readyMac] }),
+      listDevices: async () => ({ devices: deviceReady ? [readyIphone] : [] }),
       accessStatus: async () => ({
         status: 'active',
         reason: 'alpha_grant',
@@ -7872,20 +7872,23 @@ describe('init', () => {
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
-  it('does not treat a macOS-only installation as active-release readiness', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-macos-proof-'))
+  it('counts the desktop app as a Companion App for readiness and setup proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-desktop-proof-'))
     const io = new CapturedIo()
-    let submitCalls = 0
+    let submitted: SubmitNotificationRequestT | null = null
     const client = {
       health: async () => true,
-      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({
-        devices: [readyMac],
-      }),
-      submit: async () => {
-        submitCalls += 1
-        return setupReceipt()
+      listDevices: async () => ({ devices: [readyMac] }),
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted = body
+        return setupReceipt('req_mac_setup', readyMac)
       },
+      evidence: async (requestId: string) =>
+        setupEvidence(
+          requestId,
+          { state: 'observed', observed_at: '2026-08-05T18:00:02.000Z', latency_ms: 1_000 },
+          readyMac,
+        ),
     } as unknown as ApiClient
     const deps = {
       ...makeDeps(io, client),
@@ -7893,31 +7896,16 @@ describe('init', () => {
       env: isolatedEnv(cwd),
     }
 
-    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
-    expect(submitCalls).toBe(0)
-    const out = io.outLines.join('\n')
-    expect(out).toContain('Next: Your devices')
-    expect(out).toContain('no active Companion App registered yet')
-    expect(out).not.toContain('All set.')
-    expect(out).not.toMatch(/Companion Receipt observed/i)
-
-    // A human doctor must render the same active-Companion readiness failure.
-    const doctorIo = new PlainInteractiveIo()
-    expect(
-      await doctorCommand(
-        {
-          ...makeDeps(doctorIo, client),
-          cwd,
-          env: isolatedEnv(cwd),
-        },
-        {},
-      ),
-    ).toBe(EXIT.failed)
-    const doctorOut = doctorIo.outLines.join('\n')
-    expect(doctorOut).toMatch(/FAIL\s+Your devices: no active Companion App registered yet/)
-    expect(doctorOut).toContain(
-      'Delivery proof: not checked — no iPhone or Android Companion App is ready',
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(submitted?.draft.targets).toEqual({ mode: 'selected', device_ids: [readyMac.device_id] })
+    expect(io.outLines.join('\n')).toContain(
+      "Companion Receipt (the app's delivery confirmation) observed from Mac.",
     )
+    expect(io.outLines.join('\n')).toContain('All set.')
+
+    const doctorIo = new PlainInteractiveIo()
+    await doctorCommand({ ...makeDeps(doctorIo, client), cwd, env: isolatedEnv(cwd) }, {})
+    expect(doctorIo.outLines.join('\n')).toContain('Your devices: Mac (macos) ready to receive')
   })
 
   it('says access is already requested rather than asking for it again', async () => {

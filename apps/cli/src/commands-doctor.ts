@@ -675,10 +675,7 @@ export async function assessReadiness(
       : { id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — Account access is unresolved' })
   } else {
     const devices = accountDevices
-    const companionDevices = devices.filter(
-      (device) => device.platform === 'ios' || device.platform === 'android',
-    )
-    const ready = readyCompanionDevices(companionDevices)
+    const ready = readyCompanionDevices(devices)
     states.push(
       ready.length > 0
         ? {
@@ -698,16 +695,16 @@ export async function assessReadiness(
             // permission prompt. The live bridge is /support on the
             // dashboard origin — not a placeholder, and not typed by hand.
             detail:
-              companionDevices.length === 0
+              devices.length === 0
                 ? 'no active Companion App registered yet'
-                : `${companionDevices.map((d) => `${d.display_name} (${d.platform}, ${d.permission_status})`).join(', ')} — registered but not able to receive`,
+                : `${devices.map((d) => `${d.display_name} (${d.platform}, ${d.permission_status})`).join(', ')} — registered but not able to receive`,
             // The pieces an agent's fixed wording needs, separately from the
             // sentence a human reads: where the install steps are, which
             // email the app must sign in with, and what is registered so far.
             technical: {
               companion_setup_url: setupCompanionUrl(baseUrl),
               account_email: accountEmail,
-              devices: companionDevices.map((d) => ({
+              devices: devices.map((d) => ({
                 display_name: d.display_name,
                 platform: d.platform,
                 permission_status: d.permission_status,
@@ -719,7 +716,7 @@ export async function assessReadiness(
               summary: deviceInstallRemedy({
                 baseUrl,
                 email: accountEmail,
-                devices: companionDevices,
+                devices: devices,
               }),
             },
           },
@@ -775,7 +772,7 @@ async function setupProofState(
       id: 'proof',
       title: 'Delivery proof',
       status: 'unknown',
-      detail: 'not checked — no iPhone or Android Companion App is ready',
+      detail: 'not checked — no Companion App is ready',
     }
   }
 

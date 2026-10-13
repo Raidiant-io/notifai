@@ -172,9 +172,7 @@ export function deviceCanReceive(device: RoutableDevice): boolean {
   )
 }
 
+/** Every Companion App counts: the phones and the desktop app alike. */
 export function readyCompanionDevices(devices: readonly RoutableDevice[]): RoutableDevice[] {
-  return devices.filter(
-    (device) =>
-      (device.platform === 'ios' || device.platform === 'android') && deviceCanReceive(device),
-  )
+  return devices.filter(deviceCanReceive)
 }

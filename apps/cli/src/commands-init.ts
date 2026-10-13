@@ -321,9 +321,7 @@ function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
 async function registeredCompanions(client: ApiClient): Promise<number> {
   try {
     const response = await client.listDevices()
-    return response.devices.filter(
-      (device) => device.platform === 'ios' || device.platform === 'android',
-    ).length
+    return response.devices.length
   } catch {
     // Unreachable here means unreachable for the wait that follows; ask, so a
     // User with nothing installed still gets the platform-specific steps.
@@ -411,16 +409,13 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
     while (now() < deadline) {
       try {
         const response = await authed.client.listDevices()
-        const companionDevices = response.devices.filter(
-          (device) => device.platform === 'ios' || device.platform === 'android',
-        )
-        lastDevices = companionDevices
-        const ready = readyCompanionDevices(companionDevices)[0]
+        lastDevices = response.devices
+        const ready = readyCompanionDevices(response.devices)[0]
         if (ready) {
           spinner?.stop(`${ready.display_name} is ready to receive`)
           return 'closed'
         }
-        spinner?.message(deviceBridgeMessage(companionDevices))
+        spinner?.message(deviceBridgeMessage(response.devices))
       } catch (err) {
         if (!(err instanceof NetworkError)) {
           spinner?.error('Could not check companion readiness')
@@ -561,7 +556,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     ? candidates.find((device) => device.device_id === existing.device_id)
     : undefined) ?? candidates[0]
   if (!target) {
-    deps.io.err('Setup proof needs a receipt-capable iPhone or Android Companion App.')
+    deps.io.err('Setup proof needs a Companion App that can receive notifications.')
     return 'pending'
   }
 
