@@ -354,6 +354,7 @@ const NOW = 1_800_000_000_000
 
 function harness(replies: ReplyView[] = []): Harness {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-'))
+  execFileSync('git', ['init', '-q', root])
   const home = path.join(root, 'home')
   const env: NodeJS.ProcessEnv = {
     HOME: home,
@@ -3815,6 +3816,7 @@ describe('session-start hook', () => {
     expect(await start('first')).toContain('A newer Notifai is available.')
     expect(await start('second')).not.toContain('A newer Notifai is available.')
     const other = mkdtempSync(path.join(os.tmpdir(), 'notifai-other-project-'))
+    execFileSync('git', ['init', '-q', other])
     const binding = projectBinding(other, h.env)
     if (binding === null) throw new Error('missing binding')
     enableProject(binding)
