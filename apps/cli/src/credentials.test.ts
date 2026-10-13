@@ -631,6 +631,29 @@ describe('KeychainStore', () => {
     assertNoSecretInArgs(calls)
   })
 
+  it('reads a credential back whether `security` prints it as text or, for a non-ASCII machine name, as hex', () => {
+    const named = { ...SAMPLE, machineName: 'Rafael’s MacBook Pro' }
+    for (const printed of [
+      JSON.stringify({ format: 'notifai.machine-credential.v1', ...SAMPLE }),
+      Buffer.from(JSON.stringify({ format: 'notifai.machine-credential.v1', ...named }), 'utf8').toString('hex'),
+    ]) {
+      const calls: RunCommandSpec[] = []
+      const runner: ProcessRunner = {
+        run(spec) {
+          calls.push(spec)
+          return { status: 0, stdout: Buffer.from(`${printed}\n`, 'utf8') }
+        },
+      }
+      expect(new KeychainStore({ run: runner }).load()).toEqual(printed.startsWith('{') ? SAMPLE : named)
+      expect(calls[0]?.args).toEqual(['find-generic-password', '-s', 'io.notifai.cli', '-a', 'machine', '-w'])
+    }
+  })
+
+  it('treats a missing Keychain item as signed out', () => {
+    const runner: ProcessRunner = { run: () => ({ status: 44, stdout: Buffer.alloc(0) }) }
+    expect(new KeychainStore({ run: runner }).load()).toBeNull()
+  })
+
   it('fails closed when the Keychain helper rejects the write', () => {
     const runner: ProcessRunner = {
       run() {
