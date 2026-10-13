@@ -66,10 +66,17 @@ Choose an unused `X.Y.Z-beta.N`, advance the affected package manifests and
 changelogs, sync README markers, and regenerate the lockfile. A CLI contract
 change also advances and pins protocol; unrelated protocol source stays fixed.
 
-With authorization for this cut, create the exact CLI tag `vX.Y.Z-beta.N` and a
-**draft** GitHub prerelease. Run `ci.yml` at the exact SHA and retain its run ID.
-Dispatch `prepare-native-release.yml` at that tag with `expected_sha` and
-`candidate_run_id`. Each target generates the same npm payload/file manifest,
+Push the candidate branch and dispatch full `ci.yml` on that branch with its
+exact `expected_sha`. Keep the version untagged while any source, guidance,
+packaging or native-target check fails; correct the same candidate and validate
+its new SHA. A failed preflight does not consume a beta number.
+
+After the complete run succeeds, retain its run ID, verify the branch still
+resolves to that SHA, and create the exact CLI tag `vX.Y.Z-beta.N` there with a
+**draft** GitHub prerelease. Dispatch `prepare-native-release.yml` at that tag
+with the same `expected_sha` and successful `candidate_run_id`. The admission
+check accepts the exact-source branch run; do not repeat CI solely for the new
+tag. Each target generates the same npm payload/file manifest,
 adds it and the npm shim attribution as native release materials, then finalizes
 and verifies native artifacts on their own OS.
 
