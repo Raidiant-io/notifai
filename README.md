@@ -241,8 +241,11 @@ The CLI binary builds to `apps/cli/dist/main.js`.
 
 The Notifai agent guidance skill lives in `skills/notifai/` and is never
 installed by default. `notifai init` coordinates sign-in, optional harness
-hooks, and device readiness. Project identity is inferred from Git or the
-current directory and ordinary setup writes nothing into the repository.
+hooks, and device readiness. Project identity is inferred from the Agent
+Session's activation checkout when available, otherwise from Git at the current
+directory. A directory outside Git does not create an inferred Project; explicit
+configuration and Project overrides still apply. Ordinary setup writes nothing
+into the repository.
 Machine settings live in the user's configuration directory; personal Project
 Overrides live there too and are shared across linked worktrees. A repository
 `.notifai/config.toml` is only an explicit, tracked shared override and is

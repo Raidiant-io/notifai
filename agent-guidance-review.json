@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:258d7d1142a9071f92b8d3c64699bbb2f49899f9b7b67893e0f8c3e2b95930d9",
+  "behavior_digest": "sha256:267020aba9e845977c362ac8584332bf4b039149a2c9dadbd005ab5af63a90c3",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hook ownership, the shipped skill and update references, harness setup, CLI readiness and domain terms against the platform-scoped continuity change. Mac and Windows preserve the authenticated v1 contract and serving owners; Linux retains its credential-authority boundary and existing v2 installations retain their fence. Removed the blanket quiet-point advice from the update reference and CLI next steps. Pending questions, acknowledgements, native approvals and setup ownership remain unchanged. No agent pause or forced owner termination is instructed; staged recovery follows the specific authenticated diagnosis.",
+  "reason": "Reviewed lifecycle hooks, skill and update recovery, harness setup, CLI readiness and domain terms for credential refresh and session Project inference. Automatic lease recovery preserves queued input and needs no new agent instruction or account reset. The README now describes activation-checkout and Git inference, including no inferred Project outside Git; explicit overrides remain authoritative. Existing skill instructions already delegate identity and recovery to the CLI. Readiness now lists detected harnesses and accepts a supported desktop Companion App; supported capability checks and user-owned installation choices remain unchanged. Keychain Unicode decoding changes no setup or trust guidance.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
