@@ -144,18 +144,14 @@ export class KeychainStore implements CredentialStore {
   }
 
   load(): MachineCredential | null {
-    try {
-      const raw = execFileSync(
-        'security',
-        ['find-generic-password', '-s', SERVICE, '-a', 'machine', '-w'],
-        { stdio: ['ignore', 'pipe', 'ignore'] },
-      )
-        .toString()
-        .trim()
-      return parseCredentialJson(raw)
-    } catch {
-      return null
-    }
+    const result = this.run.run({
+      command: 'security',
+      args: ['find-generic-password', '-s', SERVICE, '-a', 'machine', '-w'],
+      input: Buffer.alloc(0),
+      timeoutMs: KEYCHAIN_TIMEOUT_MS,
+    })
+    if (result.status !== 0) return null
+    return parseCredentialJson(keychainPassword(result.stdout.toString('utf8').trim()))
   }
 
   save(credential: MachineCredential): void {
@@ -512,6 +508,15 @@ export function secretServiceAvailable(env: NodeJS.ProcessEnv): boolean {
 
 function serializeCredential(credential: MachineCredential): Record<string, string> {
   return { format: CREDENTIAL_FORMAT, ...credential }
+}
+
+/**
+ * `security -w` prints a password that is not plain ASCII as hex instead of
+ * text. A credential is JSON, so it never starts with a hex digit; a
+ * non-ASCII machine name such as "Rafael’s MacBook" comes back hex-encoded.
+ */
+function keychainPassword(printed: string): string {
+  return /^(?:[0-9a-f]{2})+$/i.test(printed) ? Buffer.from(printed, 'hex').toString('utf8') : printed
 }
 
 function parseCredentialJson(raw: string): MachineCredential | null {
