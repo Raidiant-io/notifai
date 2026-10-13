@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,6 +14,7 @@ describe('generated activation through the real isolated CLI', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-activation-boundary-'))
     const cwd = path.join(root, 'project')
     mkdirSync(cwd)
+    execFileSync('git', ['init', '-q', cwd])
     const adapter = installHookAdapter({
       execPath: process.execPath,
       scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)),
@@ -53,6 +55,7 @@ describe('generated activation through the real isolated CLI', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-activation-'))
     const cwd = path.join(root, 'project')
     mkdirSync(cwd)
+    execFileSync('git', ['init', '-q', cwd])
     const adapter = installHookAdapter({
       execPath: process.execPath,
       scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)),

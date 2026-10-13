@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
@@ -34,6 +34,7 @@ function isolated(): { root: string; homeDir: string } {
 describe('stable hook adapter', () => {
   it('keeps the installed adapter silent until the Project is enabled', () => {
     const { root, homeDir } = isolated()
+    execFileSync('git', ['init', '-q', root])
     const env = {
       ...process.env,
       HOME: homeDir,

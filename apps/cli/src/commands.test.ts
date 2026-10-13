@@ -5513,6 +5513,7 @@ describe('interactive command UX', () => {
 
   it('renders doctor checks through the styled seam for humans', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-style-'))
+    execFileSync('git', ['init', '-q', cwd])
     const io = new InteractiveIo()
     const client = {
       health: async () => true,
