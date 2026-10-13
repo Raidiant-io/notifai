@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.1.0](https://github.com/Raidiant-io/notifai/compare/v12.0.1...v12.1.0) (2026-10-13)
+
+
+### Features
+
+* **cli:** expose detected harnesses to setup surfaces ([#284](https://github.com/Raidiant-io/notifai/issues/284)) ([4e4a2a9](https://github.com/Raidiant-io/notifai/commit/4e4a2a9f9c57faf02482c663c64a042233448894))
+
+
+### Bug Fixes
+
+* **cli:** count the desktop app as a Companion App ([#295](https://github.com/Raidiant-io/notifai/issues/295)) ([cbe5591](https://github.com/Raidiant-io/notifai/commit/cbe55911e6ae84e27f2cef5b26bdb630908abc69))
+* **cli:** read back a Keychain credential whose machine name is not ASCII ([#294](https://github.com/Raidiant-io/notifai/issues/294)) ([4e2f7bb](https://github.com/Raidiant-io/notifai/commit/4e2f7bb9f50d8f0b66bd3726b7228799bef03d40))
+* **cli:** recover session delivery and preserve Project context ([#296](https://github.com/Raidiant-io/notifai/issues/296)) ([5fc5d42](https://github.com/Raidiant-io/notifai/commit/5fc5d42ee82a3173f440816c71d94fcec233be9c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.3.1 to 8.3.2
+
 ## [12.0.1](https://github.com/Raidiant-io/notifai/compare/v12.0.0...v12.0.1) (2026-10-12)
 
 
