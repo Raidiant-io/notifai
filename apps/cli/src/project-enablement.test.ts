@@ -17,6 +17,7 @@ function git(cwd: string, ...args: string[]): void {
 describe('Project enablement', () => {
   it('is disabled by default and changes only through its User-owned marker', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-'))
+    git(root, 'init')
     const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
     const binding = projectBinding(root, env)
     expect(binding).not.toBeNull()
@@ -37,12 +38,12 @@ describe('Project enablement', () => {
     writeFileSync(path.join(project, '.notifai', 'config.toml'), 'project = "workspace"\n')
     const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
 
-    const atRoot = projectBinding(project, env)
+    const atRoot = projectBinding(project, env, 'workspace')
     expect(atRoot).not.toBeNull()
     enableProject(atRoot!, new Date('2026-09-02T00:00:00.000Z'))
 
     // The hook fires wherever the agent happens to be standing.
-    expect(projectEnabled(projectBinding(nested, env))).toBe(true)
+    expect(projectEnabled(projectBinding(nested, env, 'workspace'))).toBe(true)
   })
 
   it('does not extend that decision to an unrelated directory', () => {
@@ -54,7 +55,7 @@ describe('Project enablement', () => {
     writeFileSync(path.join(project, '.notifai', 'config.toml'), 'project = "workspace"\n')
     const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
 
-    enableProject(projectBinding(project, env)!, new Date('2026-09-02T00:00:00.000Z'))
+    enableProject(projectBinding(project, env, 'workspace')!, new Date('2026-09-02T00:00:00.000Z'))
 
     expect(projectEnabled(projectBinding(unrelated, env))).toBe(false)
   })

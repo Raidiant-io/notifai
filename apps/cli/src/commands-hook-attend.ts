@@ -20,6 +20,7 @@ import { EXIT, makeClient, type CommandDeps } from './commands-core.js'
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { loadConfig } from './config.js'
 import type { ApiClient } from './client.js'
+import type { MachineCredential } from './credentials.js'
 import { inspectHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
 import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
 import {
@@ -368,10 +369,14 @@ export async function attendHook(
           })
         : claudeAttendanceProbe({ sessionId, harness: harnessProcess, endedByHook, adapters: probeAdapters })
 
-  let client: ApiClient | null | undefined
+  let client: ApiClient | null = null
+  let connectedCredential: MachineCredential | null = null
   const connect = (): ApiClient | null => {
-    if (client !== undefined) return client
     const credential = deps.store.load()
+    if (credential?.machineId === connectedCredential?.machineId &&
+        credential?.baseUrl === connectedCredential?.baseUrl &&
+        credential?.secret === connectedCredential?.secret) return client
+    connectedCredential = credential
     client = credential
       ? makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
       : null

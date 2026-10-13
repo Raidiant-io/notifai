@@ -24,6 +24,7 @@ import type { EscalationDeliveryRoute, HookContext } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { currentProcessIdentity, processStartTime } from './process-identity.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import type { MachineCredential } from './credentials.js'
 import { runSessionAttendant, systemAttendantClock, type AttendantHandle, type GateResult, type HarnessProbe } from './session-attendant.js'
 import { attendantClaimPath, attendantStatusPath, readAttendantLease, writeAttendantStatus } from './session-attendant-state.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
@@ -236,12 +237,16 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
     bridge.close()
     return 0
   }
-  let client: ApiClient | null | undefined
+  let client: ApiClient | null = null
+  let connectedCredential: MachineCredential | null = null
   let serviceIdentity: HookContext['service_identity']
   const connect = (): ApiClient | null => {
-    if (client !== undefined) return client
     const credential = deps.store.load()
-    if (credential !== null) serviceIdentity = { base_url: credential.baseUrl, machine_id: credential.machineId }
+    if (credential?.machineId === connectedCredential?.machineId &&
+        credential?.baseUrl === connectedCredential?.baseUrl &&
+        credential?.secret === connectedCredential?.secret) return client
+    connectedCredential = credential
+    serviceIdentity = credential === null ? undefined : { base_url: credential.baseUrl, machine_id: credential.machineId }
     client = credential
       ? makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
       : null

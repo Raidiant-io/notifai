@@ -99,7 +99,7 @@ export interface SessionState {
   }
   /** Harness that owns this exact lifecycle state. */
   harness?: HookHarness
-  /** Checkout whose hook definition activated this session; lifecycle diagnostics only. */
+  /** Checkout whose hook definition activated this session; canonical session context. */
   activation_cwd?: string
   /** Codex Stop definition observed when this exact Agent Session activated. */
   codex_stop_definition_fingerprint?: string
@@ -182,6 +182,8 @@ export interface SessionState {
     /** This wake already replaced one the harness accepted but never presented. */
     replacement?: boolean
   }
+  /** Refused delivery waits for fresh attendance before scheduling another wake. */
+  input_delivery_fenced?: { incarnation: string; generation: number }
   /** Exact Codex wake ownership, including detached reconciliation records. */
   input_wake_attempts?: InputWakeAttempt[]
   input_wake_recovery?: { incarnation: string; inputIds: string[] }

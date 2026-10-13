@@ -114,7 +114,7 @@ export interface SessionAttendantOptions {
   notified(): boolean
   /** Project Enablement and the installed CLI/hook contract. */
   gates(): GateResult
-  /** Authenticated client, or null when this machine is not paired. */
+  /** Authenticated client, stable until its credential changes; null when unpaired. */
   client(): ApiClient | null
   /** Whether the service advertises Session Attendance. */
   serverSupportsAttendance(client: ApiClient): Promise<boolean>
@@ -175,6 +175,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
 
   let incarnation = options.incarnation
   let generation: number | null = null
+  let leaseClient: ApiClient | null = null
   let cursor: string | undefined
   /** Monotonic time after which the lease may have lapsed at the service. */
   let leaseEndsAt: number | null = null
@@ -314,6 +315,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       }
       return (
         generation !== null &&
+        leaseClient !== null && options.client() === leaseClient &&
         leaseEndsAt !== null &&
         clock.monotonic() < leaseEndsAt - ATTENDANT_WRITE_MARGIN_MS
       )
@@ -327,6 +329,11 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   const tick = (): void => {
     refresh()
     if (exit !== null) return
+    if (leaseClient !== null && options.client() !== leaseClient) {
+      loseLease('credential-changed')
+      abortExchange()
+      nudge()
+    }
     if (options.publishProbeStatus) writeStatus()
     try {
       options.onProbe?.(probe)
@@ -405,10 +412,34 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       break
     }
     const client = options.client()
+    if (leaseClient !== null && client !== leaseClient) {
+      // Release only the old credential's own lease. Pending input survives a
+      // withdrawal, and a fresh acquisition cannot borrow its generation/cursor.
+      const previous = leaseClient
+      const previousGeneration = generation
+      loseLease('credential-changed')
+      generation = null
+      cursor = undefined
+      serverChecked = false
+      rotated = false
+      leaseClient = null
+      setPhase('acquiring', 'credential-changed')
+      if (previousGeneration !== null) {
+        const bound = new AbortController()
+        const timer = setTimeout(() => bound.abort(), ATTENDANT_FINAL_REPORT_MS)
+        try {
+          await previous.attend(options.sessionId, { incarnation, generation: previousGeneration, state: 'withdrawn' },
+            { waitSeconds: 0, signal: bound.signal })
+        } catch { /* An unreachable old service loses the lease at its deadline. */ }
+        finally { clearTimeout(timer) }
+      }
+      continue
+    }
     if (client === null) {
       stop('gate:not-paired')
       break
     }
+    leaseClient = client
     if (!serverChecked) {
       // Discovery is an exchange like any other: a stop, an uncertain probe,
       // or an activity change cuts it, and whatever it answers, every check
@@ -462,7 +493,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     } catch (err) {
       exchange = null
       if (exit !== null) break
-      if (current.signal.aborted) continue
+      if (current.signal.aborted || options.client() !== client) continue
       if (err instanceof ApiCallError) {
         if (err.status === 401 || err.status === 403) {
           stop('unauthorized')
@@ -487,6 +518,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     exchange = null
     backoff = 1_000
     if (exit !== null) break
+    if (options.client() !== client) continue
 
     if (response.status === 'attending') {
       const acquired = generation !== response.generation
@@ -560,7 +592,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   let reported: AttendantResult['reported'] = null
   const final = finalReport(reason)
   if (networkStarted && final !== null && (final === 'ended' || generation !== null)) {
-    const client = safeClient(options)
+    const client = leaseClient ?? safeClient(options)
     if (client !== null) {
       reported = final
       const bound = new AbortController()

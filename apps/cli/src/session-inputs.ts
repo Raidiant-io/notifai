@@ -66,9 +66,13 @@ export async function wakeSessionInputs(
   if (writer === null || sessionHasEnded(sessionId, env)) return
   const now = options.now ?? Date.now
   const token = randomUUID()
+  const lease = readAttendantLease(sessionId, env)
   let elected = false
   let replacement = false
   updateSessionState(sessionId, env, (state) => {
+    // A refused lease needs fresh attendance, not another prompt to the agent.
+    if (lease !== null && state.input_delivery_fenced?.incarnation === lease.incarnation &&
+        state.input_delivery_fenced.generation === lease.generation) return state
     if (state.input_wake?.incarnation === incarnation) {
       const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
       if (!lost && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
@@ -175,7 +179,11 @@ function messagesPath(sessionId: string, env: NodeJS.ProcessEnv): string {
 export function stageSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease, messages: readonly AttendanceMessage[]): void {
   updateSessionState(sessionId, env, state => {
     atomicWriteFileSync(messagesPath(sessionId, env), JSON.stringify({ session_id: sessionId, ...lease, messages }))
-    return state
+    // The resident stages only after a fresh authenticated attendance exchange.
+    // This also rearms a temporarily expired lease renewed at the same generation.
+    const next = { ...state }
+    delete next.input_delivery_fenced
+    return next
   })
 }
 
@@ -377,6 +385,9 @@ async function drainSessionInputsOnce(input: {
     },
   })
   if (handOff === null) return false
+  if (lease !== null && handOff.refused.some(entry => entry.reason === 'generation_fenced')) {
+    updateSessionState(deps.sessionId, deps.env, state => ({ ...state, input_delivery_fenced: lease }))
+  }
   const terminal = new Set(handOff.refused.filter((entry) => entry.reason === 'not_claimable' || entry.reason === 'not_found')
     .flatMap((entry) => entry.subject.type === 'answer' ? [entry.subject.request_id] : []))
   if (terminal.size > 0) updateSessionState(deps.sessionId, deps.env, (latest) => ({

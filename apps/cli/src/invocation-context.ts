@@ -74,8 +74,8 @@ export function truncateContext(value: string, maxLength: number): string {
 /**
  * Infer stable Project identity plus branch/worktree display context.
  *
- * Linked worktrees share the parent of Git's common directory, while a non-Git
- * directory falls back to its own basename. Only basenames and branch names are
+ * Linked worktrees share the parent of Git's common directory. A non-Git
+ * directory has no inferred Project. Only basenames and branch names are
  * returned; no absolute path can leave this function.
  */
 export function inferInvocationContext(
@@ -84,7 +84,7 @@ export function inferInvocationContext(
 ): InvocationContext {
   const commonRaw = git(cwd, ['rev-parse', '--git-common-dir'])
   if (commonRaw === null || commonRaw === '') {
-    return { project: projectSlugFrom(portableBasename(cwd)) }
+    return { project: null }
   }
 
   const commonDir = resolveGitPath(cwd, commonRaw)

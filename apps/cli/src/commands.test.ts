@@ -579,6 +579,7 @@ function claimedReplyResponse(replies: ReplyView[] = []) {
 describe('command contracts', () => {
   it('durably enables a valid in-Project send before missing authentication stops it', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-explicit-enable-'))
+    execFileSync('git', ['init', '--quiet', cwd])
     const io = new CapturedIo()
     const env = isolatedEnv(cwd)
     const deps = {
@@ -1012,6 +1013,7 @@ describe('command contracts', () => {
 
   it('infers Project and exact Claude Source Context without printing the opaque id', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'Notifai Project '))
+    execFileSync('git', ['init', '--quiet', cwd])
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | undefined
     const client = {
@@ -6195,6 +6197,7 @@ describe('init', () => {
 
   it('accepts inferred Project identity when no scope was passed, and writes nothing', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-agent-'))
+    execFileSync('git', ['init', '--quiet', cwd])
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
