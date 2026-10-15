@@ -112,6 +112,8 @@ export interface AttendantSeams {
   waitSeconds?: number
   /** How long a new start waits for a superseded attendant to step aside. */
   supersededOwnerWaitMs?: number
+  /** How long a starting Claude Code attendant waits for its inbox to be published. */
+  inboxSettleMs?: number
   /** Replace the Project Enablement and installed-contract gates. */
   gates?: () => GateResult
   /** Observe the finished attendant. */
@@ -387,7 +389,7 @@ export async function attendHook(
   // accepted and still has not shown after this long idle is not coming.
   let idleSince: number | null = null
   const settledIdle = (): boolean => idleSince !== null && clock.monotonic() - idleSince >= IDLE_BEFORE_WAKE_REPLACEMENT_MS
-  const messages = sessionMessageWriter({
+  const messages = await sessionMessageWriter({
     deps,
     harness: harness!,
     sessionId,
@@ -399,6 +401,7 @@ export async function attendHook(
     mayWake: codexWakeNeeded ?? (() => true),
     settledIdle,
     unknownAllowed: codexActivity?.unknownAllowed ?? (() => false),
+    inboxSettleMs: seams.inboxSettleMs ?? CLAUDE_INBOX_SETTLE_MS,
   })
   let wakeCleanup: Promise<void> | null = null
   const signals = seams.signalled === undefined ? terminationSignal() : null
@@ -491,6 +494,10 @@ type SessionMessageWriter = (
 /** Idle time after which an accepted but unshown Claude wake is treated as lost. */
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 
+/** How long a starting attendant waits for Claude Code to publish its inbox. */
+const CLAUDE_INBOX_SETTLE_MS = 20_000
+const CLAUDE_INBOX_SETTLE_POLL_MS = 250
+
 /**
  * The attendant's Session Message writer, or null when this session cannot
  * take a message in place: for Claude Code no inbox socket (`--bare`, an older
@@ -498,7 +505,7 @@ const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
  * either no provable writer identity. Null keeps the attendant presence-only,
  * and the service accepts no notes for the session.
  */
-function sessionMessageWriter(input: {
+async function sessionMessageWriter(input: {
   deps: CommandDeps
   harness: HookHarness
   sessionId: string
@@ -511,7 +518,8 @@ function sessionMessageWriter(input: {
   /** Whether the session has been idle long enough to have shown an accepted wake. */
   settledIdle: () => boolean
   unknownAllowed: () => boolean
-}): SessionMessageWriter | null {
+  inboxSettleMs: number
+}): Promise<SessionMessageWriter | null> {
   const { deps, sessionId, harnessPid, writer, clock, logger } = input
   if (writer === null) return null
   const sequencerFor = (client: ApiClient): SequencerDeps => ({
@@ -541,12 +549,21 @@ function sessionMessageWriter(input: {
   }
   if (input.harness !== 'claude-code') return null
   const adapters: ClaudeWakeAdapters = deps.claudeWake ?? systemClaudeWakeAdapters(deps.env)
-  const inbox = inspectClaudeInbox({
+  const inspect = () => inspectClaudeInbox({
     pid: harnessPid,
     platform: deps.hookPlatform ?? process.platform,
     readDescriptor: adapters.readDescriptor,
     socketExists: existsSync,
   })
+  // The attendant starts from SessionStart, which can run before Claude Code
+  // has published its descriptor and socket. Deciding from that first read
+  // left the whole session presence-only, so wait out a settling inbox.
+  let inbox = inspect()
+  const settleUntil = clock.monotonic() + input.inboxSettleMs
+  while (inbox.state !== 'ready' && inbox.settling && clock.monotonic() < settleUntil) {
+    await clock.sleep(CLAUDE_INBOX_SETTLE_POLL_MS, new AbortController().signal).catch(() => undefined)
+    inbox = inspect()
+  }
   if (inbox.state !== 'ready') {
     logger.info('attendant.state', { messages: 'unavailable', reason: inbox.reason })
     return null
