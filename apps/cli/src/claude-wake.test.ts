@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -186,6 +186,13 @@ describe('Claude inbox release floor', () => {
       state: 'unavailable',
       reason: 'Claude Code 2.1.233 is older than 2.1.234, which is where the inbox socket starts on win32',
     })
+  })
+  it('reads the descriptor from CLAUDE_CONFIG_DIR when the harness relocates its config', () => {
+    const configDir = mkdtempSync(path.join(os.tmpdir(), 'nf-claude-config-'))
+    mkdirSync(path.join(configDir, 'sessions'))
+    writeFileSync(path.join(configDir, 'sessions', '12345.json'), JSON.stringify(descriptor()))
+    const system = systemClaudeWakeAdapters({ CLAUDE_CONFIG_DIR: configDir })
+    expect(system.readDescriptor(12345)).toEqual(descriptor())
   })
 })
 

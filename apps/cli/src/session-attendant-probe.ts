@@ -6,9 +6,8 @@
  * exact Agent Session? Anything short of proof is `uncertain`, never `running`.
  */
 import { readFileSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { parseDescriptor } from './claude-wake.js'
+import { claudeDescriptorDir, parseDescriptor } from './claude-wake.js'
 import type { HookHarness } from './hook-types.js'
 import {
   normalizeProcessStart,
@@ -102,11 +101,6 @@ export interface ClaudeProbeAdapters {
   readStart(pid: number): string | null
   /** This process's current parent; the kernel updates it when the parent exits. */
   parentPid(): number
-}
-
-export function claudeDescriptorDir(env: NodeJS.ProcessEnv): string {
-  const configured = env['CLAUDE_CONFIG_DIR']
-  return path.join(configured && path.isAbsolute(configured) ? configured : path.join(os.homedir(), '.claude'), 'sessions')
 }
 
 /** How long one Windows start-time read stands in for the next. */

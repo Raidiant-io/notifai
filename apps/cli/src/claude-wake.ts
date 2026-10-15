@@ -128,6 +128,16 @@ function parseAgent(value: unknown): ClaudeAgentObservation | null {
   }
 }
 
+/**
+ * Where Claude Code publishes session descriptors. `CLAUDE_CONFIG_DIR`
+ * replaces `~/.claude` (Orca profiles set it), so a reader that ignores it
+ * finds no descriptor and no inbox socket for those sessions.
+ */
+export function claudeDescriptorDir(env: NodeJS.ProcessEnv): string {
+  const configured = env['CLAUDE_CONFIG_DIR']
+  return path.join(configured && path.isAbsolute(configured) ? configured : path.join(os.homedir(), '.claude'), 'sessions')
+}
+
 /** A Claude Code session descriptor, or null when it has an unknown shape. */
 export function parseDescriptor(value: unknown): ClaudeSessionDescriptor | null {
   if (!isRecord(value)) return null
@@ -447,7 +457,7 @@ export function systemClaudeWakeAdapters(
       return JSON.parse(output) as unknown
     },
     readDescriptor(pid) {
-      const file = path.join(os.homedir(), '.claude', 'sessions', `${pid}.json`)
+      const file = path.join(claudeDescriptorDir(env), `${pid}.json`)
       return JSON.parse(readFileSync(file, 'utf8')) as unknown
     },
     sendSocket(socketPath, line, guard) {
