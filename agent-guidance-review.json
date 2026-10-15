@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:267020aba9e845977c362ac8584332bf4b039149a2c9dadbd005ab5af63a90c3",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, skill and update recovery, harness setup, CLI readiness and domain terms for credential refresh and session Project inference. Automatic lease recovery preserves queued input and needs no new agent instruction or account reset. The README now describes activation-checkout and Git inference, including no inferred Project outside Git; explicit overrides remain authoritative. Existing skill instructions already delegate identity and recovery to the CLI. Readiness now lists detected harnesses and accepts a supported desktop Companion App; supported capability checks and user-owned installation choices remain unchanged. Keychain Unicode decoding changes no setup or trust guidance.",
+  "behavior_digest": "sha256:ed7424336944f3a2a1e3e48caa2dbb77f466edf7f9157e08538d271f43f34426",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms for the Claude session descriptor fix. Answer delivery now reads descriptors from CLAUDE_CONFIG_DIR when Claude Code relocates its configuration, which is the behavior the README and skill already describe: Claude Code sessions wake through their inbox socket, and sessions without one keep presence only. No agent instruction, setup step, readiness wording or term changes.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
