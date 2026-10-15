@@ -250,7 +250,11 @@ export async function observeClaudeSession(
 
 export type ClaudeInboxReadiness =
   | { state: 'ready'; socketPath: string; version: string }
-  | { state: 'unavailable'; reason: string }
+  /**
+   * `settling` is true when Claude Code may still be publishing the session:
+   * it writes the descriptor and binds the socket after its first hooks run.
+   */
+  | { state: 'unavailable'; reason: string; settling: boolean }
 
 /**
  * Whether an answer could reach this exact Claude session over its inbox
@@ -277,6 +281,7 @@ export function inspectClaudeInbox(options: {
     return {
       state: 'unavailable',
       reason: `Claude Code publishes no inbox socket on ${options.platform}; it exists on macOS, Linux and Windows only`,
+      settling: false,
     }
   }
   let raw: unknown
@@ -286,6 +291,7 @@ export function inspectClaudeInbox(options: {
     return {
       state: 'unavailable',
       reason: `no session descriptor for pid ${options.pid} (${err instanceof Error ? err.message : String(err)}); a session started with \`--bare\` binds no inbox socket`,
+      settling: true,
     }
   }
   const descriptor = parseDescriptor(raw)
@@ -293,12 +299,14 @@ export function inspectClaudeInbox(options: {
     return {
       state: 'unavailable',
       reason: `the session descriptor for pid ${options.pid} has an unknown shape`,
+      settling: true,
     }
   }
   if (descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL) {
     return {
       state: 'unavailable',
       reason: `this session speaks inbox protocol ${descriptor.peerProtocol}, and only ${CLAUDE_PEER_PROTOCOL} is known; refusing to guess at an undocumented wire format`,
+      settling: false,
     }
   }
   const minimum = claudeMinInboxVersion(options.platform)
@@ -307,12 +315,14 @@ export function inspectClaudeInbox(options: {
     return {
       state: 'unavailable',
       reason: `the Claude Code version ${descriptor.version} is not a recognised release number`,
+      settling: false,
     }
   }
   if (versionComparison === 'before') {
     return {
       state: 'unavailable',
       reason: `Claude Code ${descriptor.version} is older than ${minimum}, which is where the inbox socket starts on ${options.platform}`,
+      settling: false,
     }
   }
   // A named pipe cannot be examined without opening it, and opening it is a
@@ -321,6 +331,7 @@ export function inspectClaudeInbox(options: {
     return {
       state: 'unavailable',
       reason: `the descriptor names ${descriptor.messagingSocketPath}, but no socket exists there`,
+      settling: true,
     }
   }
   return {

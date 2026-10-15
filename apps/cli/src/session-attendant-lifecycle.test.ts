@@ -371,6 +371,7 @@ function attendDeps(env: NodeJS.ProcessEnv, cwd: string, extra: Partial<CommandD
       gates: () => ({ ok: true }),
       probeIntervalMs: 10,
       supersededOwnerWaitMs: 50,
+      inboxSettleMs: 50,
       onExit: (result) => exits.push(result),
     },
     ...extra,
@@ -559,6 +560,49 @@ describe('notifai hook attend', () => {
     const running = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
     await until(() => service.calls.length >= 1, 'attendance exchange')
     expect(service.calls[0]).toMatchObject({ accepts_messages: false })
+    markSessionEnded('sess-a', env, Date.now() + 1)
+    await running
+  })
+
+  it('waits for Claude Code to publish its inbox after SessionStart before deciding to accept notes', async () => {
+    const { env, root } = isolatedEnv()
+    const socket = path.join(root, 'inbox.sock')
+    writeFileSync(socket, '')
+    const descriptor = {
+      pid: HARNESS.pid,
+      sessionId: 'sess-a',
+      cwd: root,
+      startedAt: 1,
+      procStart: HARNESS.start,
+      version: '2.1.282',
+      peerProtocol: 1,
+      messagingSocketPath: socket,
+      status: 'idle',
+    }
+    // SessionStart runs first: no descriptor, then one still being written.
+    const published = [
+      () => { throw new Error('ENOENT: no such file or directory') },
+      () => ({ pid: HARNESS.pid, sessionId: 'sess-a' }),
+    ]
+    const service = fakeAttendance()
+    const base = attendDeps(env, root)
+    const deps = attendDeps(env, root, {
+      clientFactory: () => service.client,
+      attendant: { ...base.attendant!, inboxSettleMs: 5_000 },
+      claudeWake: {
+        listAgents: async () => [],
+        readDescriptor: () => (published.shift() ?? (() => descriptor))(),
+        sendSocket: async () => {},
+        resume: async () => {},
+        sleep: async () => {},
+      },
+    })
+    recordSessionNotified('sess-a', env, Date.now())
+    const envelope = { session_id: 'sess-a', cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
+    const running = hookRunCommand(deps, 'attend', stdin(envelope), 'claude-code')
+    await until(() => service.calls.length >= 1, 'attendance exchange')
+    expect(published).toHaveLength(0)
+    expect(service.calls[0]).toMatchObject({ accepts_messages: true })
     markSessionEnded('sess-a', env, Date.now() + 1)
     await running
   })

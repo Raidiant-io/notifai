@@ -171,6 +171,7 @@ describe('Claude inbox release floor', () => {
     ).toEqual({
       state: 'unavailable',
       reason: 'the Claude Code version 2.next.224 is not a recognised release number',
+      settling: false,
     })
   })
   it('accepts a Windows named pipe from 2.1.234 without looking for it on disk', () => {
@@ -185,6 +186,7 @@ describe('Claude inbox release floor', () => {
     expect(inspect('2.1.233')).toEqual({
       state: 'unavailable',
       reason: 'Claude Code 2.1.233 is older than 2.1.234, which is where the inbox socket starts on win32',
+      settling: false,
     })
   })
   it('reads the descriptor from CLAUDE_CONFIG_DIR when the harness relocates its config', () => {
