@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.1.1](https://github.com/Raidiant-io/notifai/compare/v12.1.0...v12.1.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **cli:** find Claude session descriptors under CLAUDE_CONFIG_DIR ([#301](https://github.com/Raidiant-io/notifai/issues/301)) ([1ea5293](https://github.com/Raidiant-io/notifai/commit/1ea5293a109d2fd35c2a8851944e8e1fa31a1e19))
+* **cli:** wait for Claude Code to publish its inbox before attending ([#303](https://github.com/Raidiant-io/notifai/issues/303)) ([e4da9da](https://github.com/Raidiant-io/notifai/commit/e4da9da321c8f72803ae5e1b54da52f54642c17c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.3.2 to 8.3.3
+
 ## [12.1.0](https://github.com/Raidiant-io/notifai/compare/v12.0.1...v12.1.0) (2026-10-13)
 
 
