@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.1.1-beta.1](https://github.com/Raidiant-io/notifai/compare/v12.1.0...v12.1.1-beta.1) (2026-10-15)
+
+### Bug Fixes
+
+* Wake idle Claude Code sessions with answers from your devices when `CLAUDE_CONFIG_DIR` relocates Claude's configuration.
+
 ## [12.1.0](https://github.com/Raidiant-io/notifai/compare/v12.0.1...v12.1.0) (2026-10-13)
 
 
