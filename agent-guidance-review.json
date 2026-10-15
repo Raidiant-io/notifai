@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ed7424336944f3a2a1e3e48caa2dbb77f466edf7f9157e08538d271f43f34426",
+  "behavior_digest": "sha256:cc1e716f5a3ce6afd9efd7082f11e217fb35e878bde4a3ddd4b48db2c439fc48",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms for the Claude session descriptor fix. Answer delivery now reads descriptors from CLAUDE_CONFIG_DIR when Claude Code relocates its configuration, which is the behavior the README and skill already describe: Claude Code sessions wake through their inbox socket, and sessions without one keep presence only. No agent instruction, setup step, readiness wording or term changes.",
+  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms for two Claude inbox fixes: answer delivery reads session descriptors from CLAUDE_CONFIG_DIR, and the Session Attendant waits briefly at startup for Claude Code to publish its descriptor and socket instead of staying presence-only. Both make delivery match what the README and skill already describe: Claude Code sessions wake through their inbox socket, and sessions without one keep presence only. No agent instruction, setup step, readiness wording or term changes.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
