@@ -48,3 +48,17 @@ export interface CompanionReadsResponse {
   /** Requests that became read with this call; already-read ones are not counted. */
   marked: number
 }
+
+/** Read-only reconciliation for retained rows, independent of the history cursor.
+ * `POST /api/v1/companion/read-state` (user auth), at most 200 request IDs.
+ * Only visible, retained requests with a read mark are returned. No revisions
+ * or read marks are created, and omitted IDs must not be marked unread.
+ */
+export interface CompanionReadStateRequest {
+  device_id: string
+  request_ids: string[]
+}
+
+export interface CompanionReadStateResponse {
+  reads: { request_id: string; read_at: string }[]
+}
