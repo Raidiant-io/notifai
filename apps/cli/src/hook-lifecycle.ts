@@ -10,7 +10,12 @@ import type {
   SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
-import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import {
+  confirmNativeAnswerTarget,
+  hasSettledNativeAnswer,
+  questionsAwaitingAnswer,
+  recordConfirmedNativeAnswerTarget,
+} from './native-answer-operation.js'
 import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
@@ -156,6 +161,15 @@ const MAX_STORED_QUESTION_CHARS = 2000
  */
 const REPLY_POLL_SECONDS = 5
 
+/**
+ * How often a natively answered question is checked for a device correction.
+ * The User already answered; a correction is rare and may wait a minute.
+ */
+export const CORRECTION_POLL_MS = 60_000
+
+/** Longest rest between interruption checks while only corrections are watched. */
+const CORRECTION_IDLE_SLICE_MS = 5_000
+
 /** Avoid hot-looping while a live observer cooperatively yields its claim. */
 const CLAIM_HANDOFF_POLL_MS = 1_000
 
@@ -283,12 +297,18 @@ function canSubmitCompleteWindow(
  * everything found in that round, and whatever was not answered stays
  * registered. A question whose polling is permanently rejected drops out of
  * the round rather than failing the whole wait.
+ *
+ * A question the Agent already answered natively is only watched for a device
+ * correction: an immediate check at most every CORRECTION_POLL_MS, never a long
+ * poll, so it holds none of the server's shared long-poll capacity. The set is
+ * reread every round because the native answer usually lands mid-wait.
  */
 async function waitForAnyReply(
   ctx: HookContext,
   requestIds: string[],
   timeoutSeconds: number,
   interruption?: () => 'ownership-ended' | 'new-question' | null,
+  correctionOnly: () => ReadonlySet<string> = () => new Set(),
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
@@ -299,6 +319,7 @@ async function waitForAnyReply(
   let degraded = false
   let firstPoll = true
   const permanentFailures = new Map<string, string>()
+  const lastCorrectionPollAt = new Map<string, number>()
 
   if (timeoutSeconds <= 0 || deadline <= ctx.now()) {
     return { byRequest: new Map(), degraded: false, permanentFailures, interrupted: null }
@@ -315,12 +336,25 @@ async function waitForAnyReply(
     }
     firstPoll = false
     const pollSeconds = Math.min(REPLY_POLL_SECONDS, Math.max(0, Math.ceil(remainingMs / 1000)))
+    const corrections = correctionOnly()
+    const nextCorrectionAt = (requestId: string): number =>
+      (lastCorrectionPollAt.get(requestId) ?? -Infinity) + CORRECTION_POLL_MS
+    const polling = requestIds.filter((requestId) => !permanentFailures.has(requestId))
+    const due = polling.filter((requestId) => !corrections.has(requestId) || nextCorrectionAt(requestId) <= ctx.now())
+    if (due.length === 0) {
+      // Only correction watches remain and none is due: rest, but stay
+      // responsive to SessionEnd and newly registered questions.
+      const nextDue = Math.min(...polling.map(nextCorrectionAt))
+      await ctx.sleep(Math.max(0, Math.min(nextDue - ctx.now(), deadline - ctx.now(), CORRECTION_IDLE_SLICE_MS)))
+      continue
+    }
     const results = await Promise.all(
-      requestIds
-        .filter((requestId) => !permanentFailures.has(requestId))
+      due
         .map(async (requestId) => {
+          const correction = corrections.has(requestId)
+          if (correction) lastCorrectionPollAt.set(requestId, ctx.now())
           try {
-            return { requestId, ...(await ctx.waitForFirstReply(requestId, pollSeconds)) }
+            return { requestId, ...(await ctx.waitForFirstReply(requestId, correction ? 0 : pollSeconds)) }
           } catch (err) {
             if (isRetryableReplyPollError(err)) {
               return { requestId, replies: [] as ReplyView[], degraded: true }
@@ -579,13 +613,16 @@ async function pollPendingReplies(
   ctx: HookContext,
   live: PendingQuestion[],
   timeoutSeconds: number,
+  state: SessionState,
 ): Promise<{
   answered: AnsweredPending[]
   transientTrouble: boolean
   permanentFailures: Map<string, string>
 }> {
   const polls = await Promise.all(
-    live.map((entry) => pollPendingReply(ctx, entry, timeoutSeconds)),
+    // A natively answered question is only checked for a correction: no wait.
+    live.map((entry) =>
+      pollPendingReply(ctx, entry, hasSettledNativeAnswer(state, entry.question_id) ? 0 : timeoutSeconds)),
   )
   const answered: AnsweredPending[] = []
   let transientTrouble = false
@@ -770,6 +807,7 @@ async function answerPrompt(
       ctx,
       live,
       LATE_PROMPT_POLL_SECONDS,
+      state,
     )
     const finalized = await finalizePendings(
       ctx,
@@ -889,7 +927,7 @@ async function answerPrompt(
       ctx.harness,
       withReminder(
         reminder,
-        prepareOrdinaryAnswersContext(ctx, sessionId, [...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
+        prepareOrdinaryAnswersContext(ctx, sessionId, [...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], questionsAwaitingAnswer(updated).length),
       ),
     )
     if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
@@ -921,7 +959,7 @@ async function answerPrompt(
   }
   const delivered = readSessionState(sessionId, ctx.env).delivered_answers ?? []
   const stdout = delivered.length > 0
-    ? userPromptContextOutput(ctx.harness, withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, delivered, pendingList(updated).length)))
+    ? userPromptContextOutput(ctx.harness, withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, delivered, questionsAwaitingAnswer(updated).length)))
     : undefined
   return {
     notes,
@@ -942,6 +980,18 @@ function prepareOrdinaryAnswersContext(ctx: HookContext, sessionId: string, answ
     updateSessionState(sessionId, ctx.env, state => markCodexOrdinaryPresentation(state, ids))
   }
   return answersContext(answers, remaining)
+}
+
+function settledNativeRequestIds(state: SessionState): Set<string> {
+  return new Set(pendingList(state).flatMap((entry) =>
+    entry.request_id !== undefined && hasSettledNativeAnswer(state, entry.question_id) ? [entry.request_id] : []))
+}
+
+/** The "still waiting" count beside delivered answers: registered questions
+ * with neither a delivered answer nor a reported native one. */
+function stillAwaitingAnswer(state: SessionState, answered: AnsweredPending[]): number {
+  return questionsAwaitingAnswer(state)
+    .filter((entry) => !answered.some(({ pending }) => isSamePending(pending, entry))).length
 }
 
 function needsQuestionSettlement(state: SessionState, harness: HookContext['harness']): boolean {
@@ -1649,6 +1699,7 @@ async function handleClaimedStop(
       ctx,
       live,
       LATE_STOP_POLL_SECONDS,
+      readSessionState(sessionId, ctx.env),
     )
     const permanentFailure = permanentReplyFailureNote(permanentFailures)
     if (permanentFailure !== null) notes.push(permanentFailure)
@@ -2128,10 +2179,7 @@ async function escalate(
     )
   }
   if (staleAnswers.length > 0) {
-    const remaining = Math.max(
-      0,
-      pendingList(readSessionState(sessionId, ctx.env)).length - staleAnswers.length,
-    )
+    const remaining = stillAwaitingAnswer(readSessionState(sessionId, ctx.env), staleAnswers)
     const accepted = stageAcceptedAnswers(ctx, sessionId, staleAnswers, remaining)
     for (const answer of staleAnswers) reportAnswer(ctx, notes, answer, true)
     return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
@@ -2183,6 +2231,7 @@ async function escalate(
           [...knownRequestIds],
           attemptedLocal,
         ),
+      () => settledNativeRequestIds(readSessionState(sessionId, ctx.env)),
     )
     if (waited.interrupted === 'new-question') {
       // Native observers can renew their process ceiling for a later question.
@@ -2256,10 +2305,7 @@ async function escalate(
       )
     }
     if (finalAnswers.length > 0) {
-      const remaining = Math.max(
-        0,
-        pendingList(readSessionState(sessionId, ctx.env)).length - finalAnswers.length,
-      )
+      const remaining = stillAwaitingAnswer(readSessionState(sessionId, ctx.env), finalAnswers)
       const accepted = stageAcceptedAnswers(ctx, sessionId, finalAnswers, remaining)
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
       return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
@@ -2324,10 +2370,7 @@ async function escalate(
     ctx,
     sessionId,
     answered,
-    Math.max(
-      0,
-      pendingList(readSessionState(sessionId, ctx.env)).length - answered.length,
-    ),
+    stillAwaitingAnswer(readSessionState(sessionId, ctx.env), answered),
   )
   for (const answer of answered) reportAnswer(ctx, notes, answer, false)
   return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
