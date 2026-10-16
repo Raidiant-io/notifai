@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3dfa04f0491cfd67756c22546276b61889fa71732d05df91c971856229e7b206",
+  "behavior_digest": "sha256:38f5a9df0660eff4c9d6e2ca4243a7591d88ceea1ee51b49088c2d443b1175a8",
   "outcome": "guidance-updated",
-  "reason": "Reviewed Grok native lifecycle, question routing, setup, CLI readiness and domain terms. The Grok guide describes tool-result activation, child Stop gates, long-answer retrieval, Cursor import recovery and conditional shared-leader Notes and Answer Edits. Preserved current main: distinct acknowledged answers can continue a conversation without an aggregate cap, per-answer retry and acknowledgement guards remain, and ask describes background submission as scheduled rather than confirmed. Preserved Android Play onboarding and native-answer settlement guidance; domain terms are unchanged.",
+  "reason": "Reviewed Grok native lifecycle, question routing, setup, CLI readiness and domain terms. The Grok guide describes tool-result activation, child Stop gates, long-answer retrieval, Cursor import recovery and conditional shared-leader Notes and Answer Edits. Preserved current main: distinct acknowledged answers can continue a conversation without an aggregate cap, per-answer retry and acknowledgement guards remain, and ask describes background submission as scheduled rather than confirmed. Preserved Android Play onboarding and native-answer settlement guidance; domain terms are unchanged. Doctor now describes held-Stop answers and conditional shared-leader messages separately and reports the active Grok attendant.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

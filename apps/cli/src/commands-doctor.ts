@@ -1829,7 +1829,7 @@ function wakeRouteCheck(
       ok: false,
       reportOnly: true,
       technical: { direct_wake_optional: true },
-      detail: 'Grok has no out-of-band wake route; its held Stop returns the answer to this same Agent Session within the complete answer window',
+      detail: 'Grok questions return through the held Stop within the complete answer window. Shared-leader sessions can also receive Session Notes and Answer Edits through interjection',
     }
   }
   return null
@@ -1861,7 +1861,7 @@ function sessionAttendantCheck(
       : reports.find((report) => report.session_id === active.sessionId)
   const attended =
     (active?.harness === 'claude-code' || active?.harness === 'codex' ||
-      active?.harness === 'hermes' || active?.harness === 'openclaw') &&
+      active?.harness === 'hermes' || active?.harness === 'openclaw' || active?.harness === 'grok') &&
     attendantSupport(active.harness, deps.hookPlatform ?? process.platform).supported
   if (reports.length === 0 && !attended) return null
   const parts: string[] = []
@@ -1870,6 +1870,8 @@ function sessionAttendantCheck(
       own === undefined
         ? active.harness === 'openclaw'
           ? 'this OpenClaw session has no attendant yet (the local Gateway service starts one after its first prompt)'
+          : active.harness === 'grok'
+            ? 'this Grok session has no attendant; Notes and Answer Edits require a live shared-leader session (`grok --leader`), while questions still use the held Stop'
           : `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
         : own.alive
           ? `this session: ${describe(own)}`
