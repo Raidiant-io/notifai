@@ -6,7 +6,7 @@ authorization and deferrals, and exact-session tool-boundary Note evidence.
 An optional newer release is separate from a fault in installed integration.
 
 When something did not happen and you cannot see why — especially after `ask`,
-which starts background submission immediately — inspect the local log.
+which schedules background submission — inspect the local log.
 Local registration alone proves neither submission nor Provider Acceptance:
 
 ```bash
@@ -22,10 +22,14 @@ hook never ran.
 `hook.gate` records carry a fixed `reason` — `notifications-off`,
 `claimed-elsewhere`, `no-question`, `no-session`, `answered`,
 `acknowledgement-required`, `acknowledgement-abandoned`, `harness-cannot-continue`,
-`continuation-limit`, `delivery-limit`, `proceeding` —
+`delivery-limit`, `proceeding` —
 so filter on that, never on the wording of a message. `notifications-off` is
 the one the user deliberately never sees, which is why it is worth ruling out
 before concluding anything is broken.
+
+There is no limit on successive answered questions. A `delivery-limit` gate
+bounds repeated delivery attempts for the same answer, not the number of
+decisions the User can make in a conversation.
 
 When sign-in looks fine but nothing sends, `notifai auth status --json` and
 `notifai auth access --json` separate a pairing problem from an account without

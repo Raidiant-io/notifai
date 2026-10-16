@@ -27,7 +27,7 @@ import type { WriteGuard } from './wake-support.js'
  * and Codex can continue directly from a turn-end answer. Harnesses without a
  * proven exact-session continuation fail closed at question admission.
  *
- * Submission starts at registration. Native observers and held Stop routes
+ * Registration schedules background submission. Native observers and held Stop routes
  * own answer delivery separately; neither infers notification preference from
  * keyboard presence.
  */
@@ -140,15 +140,6 @@ export interface SessionState {
    */
   retiring?: RetiringQuestion[]
   /**
-   * Tracks bounded Stop continuations so a follow-up ask is delivered once.
-   * `count` is how many answer generations have run consecutively without the
-   * user taking a turn themselves; their next prompt starts it over.
-   */
-  continuation?: {
-    answered_at: number
-    count: number
-  }
-  /**
    * A phone answer durably captured but not yet acknowledged. It stays here
    * until a delivery is acknowledged — by the route's own write, or by the
    * successor Stop of a blocking continuation — so a crash before the answer
@@ -257,7 +248,7 @@ export interface AcceptedAnswerDelivery {
   delivered_route?: string
   /**
    * How many times this answer has been handed to any route. The route-agnostic
-   * loop backstop: bounded by `MAX_CONTINUATION_COUNT` in one place every route
+   * loop backstop: bounded by `MAX_ANSWER_DELIVERY_ATTEMPTS` in one place every route
    * passes through.
    */
   delivery_attempts?: number

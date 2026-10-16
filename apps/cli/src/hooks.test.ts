@@ -45,6 +45,7 @@ import {
   closeCommand,
   hookRunCommand,
   repliesCommand,
+  receiveCommand,
   sendCommand,
   type CommandDeps,
   type CommandIo,
@@ -62,7 +63,7 @@ import {
   runEscalationWaiter,
   submitSessionQuestions,
   CORRECTION_POLL_MS,
-  MAX_CONTINUATION_COUNT,
+  MAX_ANSWER_DELIVERY_ATTEMPTS,
   MAX_HELD_DELIVERIES,
   registerQuestion as persistQuestion,
 } from './hook-lifecycle.js'
@@ -1238,28 +1239,6 @@ describe('what the hook leaves behind', () => {
     return readLogRecords(h.env, { event: ['hook.gate'], limit: 50 }).records
   }
 
-  it('records why a question was held, in a name a filter can match', async () => {
-    const h = harness([])
-    writeSessionState('held', h.env, { accepted: undefined })
-    registerQuestion('held', h.env, { question: 'Ship it?' }, NOW)
-    // The shared admission policy bounds unanswered continuation chains.
-    writeSessionState('held', h.env, {
-      ...readSessionState('held', h.env),
-      continuation: { answered_at: NOW + 1000, count: MAX_CONTINUATION_COUNT },
-    })
-
-    await hookRunCommand(
-      recording(h),
-      'stop',
-      stdin({ session_id: 'held', cwd: h.deps.cwd, stop_hook_active: true }),
-    )
-
-    const held = gates(h).find((record) => record.data?.['reason'] === 'continuation-limit')
-    expect(held).toBeDefined()
-    expect(held!.data).toMatchObject({ verdict: 'held' })
-    expect(h.recorder.submitted).toHaveLength(0)
-  })
-
   it('records the switch being off, which the user is deliberately never told', async () => {
     // Silent to the user by design, so from outside "you turned it off" and "a
     // bug ate my question" look identical. This is what tells them apart.
@@ -1636,57 +1615,23 @@ describe('nagging guards', () => {
     expect(h.io.outLines.join('\n')).toContain('Yes')
   })
 
-  it('delivers a new question registered during an answer continuation', async () => {
-    const h = harness([reply({ text: 'First answer' })])
-    writeSessionState('n3', h.env, { last_prompt_at: AWAY })
-    registerQuestion('n3', h.env, { question: 'First question?' }, NOW)
+  it('keeps delivering acknowledged phone conversations without a terminal prompt', async () => {
+    const h = harness([reply({ text: 'Continue remotely' })])
+    writeSessionState('remote-conversation', h.env, { last_prompt_at: AWAY })
 
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3' }))
-    h.recorder.acknowledged ??= new Set()
-    h.recorder.acknowledged.add(h.recorder.receipts[0]!)
-    await h.deps.sleep?.(1)
-    registerQuestion('n3', h.env, { question: 'Follow-up question?' }, (h.deps.now?.() ?? NOW))
-    h.io.outLines = []
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n3', stop_hook_active: true }))
-
-    const questions = h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))
-    expect(questions.map((entry) => entry.draft.presentation.summary)).toEqual([
-      'First question?',
-      'Follow-up question?',
-    ])
-    expect(h.io.outLines.join('\n')).toContain('First answer')
-  })
-
-  it('stops chained questions at the consecutive continuation cap', async () => {
-    const h = harness([])
-    writeSessionState('n4', h.env, {
-      last_prompt_at: AWAY,
-      continuation: { answered_at: NOW - 1, count: 3 },
-    })
-    registerQuestion('n4', h.env, { question: 'One more?' }, NOW)
-
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'n4', stop_hook_active: true }))
-
-    expect(h.recorder.submitted).toEqual([])
-    expect(readSessionState('n4', h.env).pending?.[0]?.question).toBe('One more?')
-    expect(h.io.errLines.join('\n')).toContain('continuation limit (3) reached')
-  })
-
-  it('starts the consecutive continuation count over when the user takes a turn', async () => {
-    // The cap bounds an agent running on its own. A human at the keyboard is
-    // the end of that chain, not another link in it.
-    const h = harness([])
-    writeSessionState('n5', h.env, {
-      continuation: { answered_at: NOW - 1, count: MAX_CONTINUATION_COUNT },
-    })
-
-    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'n5' }))
-
-    expect(readSessionState('n5', h.env).continuation).toEqual({
-      answered_at: NOW - 1,
-      count: 0,
-    })
+    for (let turn = 1; turn <= 6; turn += 1) {
+      registerQuestion('remote-conversation', h.env, { question: `Decision ${turn}?` }, h.deps.now?.() ?? NOW)
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'remote-conversation', stop_hook_active: turn > 1 }))
+      expect(h.recorder.submitted.filter(isQuestionSubmit).map(entry => entry.draft.presentation.summary))
+        .toEqual(Array.from({ length: turn }, (_, index) => `Decision ${index + 1}?`))
+      expect(h.io.outLines.join('\n')).toContain('Continue remotely')
+      expect(await acknowledgeCommand({ ...h.deps, io: new CapturedIo() }, h.recorder.receipts.at(-1)!, {
+        text: `Acting on decision ${turn}.`,
+      })).toBe(EXIT.ok)
+      h.advanceClock(1)
+    }
+    expect(readSessionState('remote-conversation', h.env).last_prompt_at).toBe(AWAY)
   })
 })
 
@@ -2882,10 +2827,10 @@ describe('several questions in flight', () => {
     expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
   })
 
-  it('does not spend the continuation retry cap on distinct staggered siblings', async () => {
+  it('does not spend the answer delivery retry cap on distinct staggered siblings', async () => {
     const h = harness([])
     const sessionId = '11111111-2222-4333-8444-555555555555'
-    const count = MAX_CONTINUATION_COUNT + 1
+    const count = MAX_ANSWER_DELIVERY_ATTEMPTS + 1
     const byRequest = new Map([['req_hook_1', [reply({ text: 'Decision 1' })]]])
     repliesByRequest(h, byRequest)
     const queued: string[] = []
@@ -6053,6 +5998,33 @@ describe('question registration racing a Stop submission', () => {
 })
 
 describe('Claude Code Stop wake route', () => {
+  it('keeps submitting and receiving acknowledged questions across six socket-woken turns', async () => {
+    const h = harness([reply({ text: 'Continue remotely' })])
+    h.env['CLAUDECODE'] = '1'
+    h.env['CLAUDE_CODE_SESSION_ID'] = 'claude-route'
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { harness: 'claude-code', last_prompt_at: AWAY })
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+    const envelope = { session_id: 'claude-route', cwd: h.deps.cwd, stop_hook_active: false }
+    for (let turn = 1; turn <= 6; turn++) {
+      registerQuestion('claude-route', h.env, { question: `Socket decision ${turn}?` }, h.deps.now!())
+      await hookRunCommand(deps, 'question-submission', stdin(envelope), 'claude-code')
+      expect(h.recorder.submitted.filter(isQuestionSubmit).map(entry => entry.draft.presentation.summary))
+        .toEqual(Array.from({ length: turn }, (_, index) => `Socket decision ${index + 1}?`))
+      await hookRunCommand(deps, 'stop', stdin(envelope), 'claude-code')
+      h.io.outLines = []
+      expect(await receiveCommand(deps)).toBe(EXIT.ok)
+      expect(h.io.outLines.join('\n')).toContain('Continue remotely')
+      expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts.at(-1)!, {
+        text: `Acting on socket decision ${turn}.`,
+      })).toBe(EXIT.ok)
+      h.advanceClock(1)
+    }
+    expect(wake.sent).toHaveLength(6)
+    expect(readSessionState('claude-route', h.env).last_prompt_at).toBe(AWAY)
+  })
+
   function claudeWake(status: 'idle' | 'busy' = 'idle'): ClaudeWakeAdapters & {
     sent: string[]
     resumed: string[]
@@ -6511,40 +6483,6 @@ describe('Claude Code Stop wake route', () => {
     ).toHaveLength(0)
   })
 
-  it('applies the continuation cap to a woken turn that never sets stop_hook_active', async () => {
-    // The chained loop the cap exists for, on a route that starts new turns.
-    // Keyed to stop_hook_active the cap could never fire here at all.
-    const h = harness([])
-    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
-    writeSessionState('claude-route', h.env, {
-      last_prompt_at: AWAY,
-      continuation: { answered_at: NOW - 2000, count: MAX_CONTINUATION_COUNT - 1 },
-    })
-    journaledAnswer(h, { recordedAt: NOW - 1000, deliveredAt: NOW - 900 })
-    // The woken turn asked a genuinely new question before it ended.
-    registerQuestion('claude-route', h.env, { question: 'And after that?' }, NOW)
-    const wake = claudeWake()
-
-    await hookRunCommand(
-      { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 },
-      'stop',
-      stdin({
-        session_id: 'claude-route',
-        cwd: '/tmp/claude-route',
-        stop_hook_active: false,
-      }),
-      'claude-code',
-    )
-
-    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toEqual(
-      [],
-    )
-    expect(readSessionState('claude-route', h.env).pending?.[0]?.question).toBe('And after that?')
-    expect(h.io.errLines.join('\n')).toContain(
-      `continuation limit (${MAX_CONTINUATION_COUNT}) reached`,
-    )
-  })
-
   it('uses the accepted journal as the loop guard after a socket wake fires Stop again', async () => {
     const h = harness([])
     writeSessionState('claude-route', h.env, {
@@ -6881,6 +6819,40 @@ describe('Claude Code Stop wake route', () => {
 describe('Codex Stop wake route', () => {
   const CODEX_THREAD = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 
+  it('submits and receives six remote decisions even with a previously exhausted conversation counter', async () => {
+    const h = harness([reply({ text: 'Continue remotely' })])
+    h.env['CODEX_THREAD_ID'] = CODEX_THREAD
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(CODEX_THREAD, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    // An existing installation may already have persisted the old cap. An
+    // update must recover that session without requiring a terminal prompt.
+    const stateFile = sessionStatePath(CODEX_THREAD, h.env)
+    writeFileSync(stateFile, JSON.stringify({
+      ...JSON.parse(readFileSync(stateFile, 'utf8')),
+      continuation: { count: 3, answered_at: NOW },
+    }))
+    const wake = codexWake()
+    const deps = { ...h.deps, codexWake: wake, codexSourcePid: 12345 }
+    const envelope = { session_id: CODEX_THREAD, cwd: h.deps.cwd }
+
+    for (let turn = 1; turn <= 6; turn++) {
+      registerQuestion(CODEX_THREAD, h.env, { question: `Remote decision ${turn}?` }, h.deps.now!())
+      await hookRunCommand(deps, 'question-submission', stdin(envelope), 'codex')
+      expect(h.recorder.submitted.filter(isQuestionSubmit).map(entry => entry.draft.presentation.summary))
+        .toEqual(Array.from({ length: turn }, (_, index) => `Remote decision ${index + 1}?`))
+      await codexStopAndSettle(deps, envelope)
+      h.io.outLines = []
+      expect(await receiveCommand(deps)).toBe(EXIT.ok)
+      expect(h.io.outLines.join('\n')).toContain('Continue remotely')
+      expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts.at(-1)!, {
+        text: `Acting on remote decision ${turn}.`,
+      })).toBe(EXIT.ok)
+      h.advanceClock(1)
+    }
+    expect(wake.queued).toHaveLength(6)
+    expect(readSessionState(CODEX_THREAD, h.env).last_prompt_at).toBe(AWAY)
+  })
+
   function codexWake(
     options: { fail?: Error } = {},
   ): CodexWakeAdapters & { queued: string[]; threads: string[] } {
@@ -7191,7 +7163,6 @@ describe('Codex Stop wake route', () => {
       'grok',
     )
     expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
-    expect(readSessionState(sessionId, h.env).continuation?.count).toBe(1)
     const acknowledgement = JSON.parse(h.io.outLines[1] ?? '{}') as { decision?: string; reason?: string }
     expect(acknowledgement.decision).toBe('block')
     expect(acknowledgement.reason).toContain('notifai acknowledge')
@@ -7743,7 +7714,7 @@ describe('escalation waiter delivery seam', () => {
   })
 
   it('does not spend the delivery cap on turns where nothing was handed over', async () => {
-    // The bug: holds counted against MAX_CONTINUATION_COUNT, so three turns
+    // The bug: holds counted against MAX_ANSWER_DELIVERY_ATTEMPTS, so three turns
     // where a liveness probe could not reach a busy session were enough to
     // settle an answer the user had already given, unread.
     const h = harness([])
@@ -7753,7 +7724,7 @@ describe('escalation waiter delivery seam', () => {
     let handedOver = 0
     let pass = 0
 
-    for (; pass < MAX_CONTINUATION_COUNT + 2; pass += 1) {
+    for (; pass < MAX_ANSWER_DELIVERY_ATTEMPTS + 2; pass += 1) {
       await runEscalationWaiter(context, {
         sessionId,
         envelope: { session_id: sessionId, stop_hook_active: false },
@@ -7784,7 +7755,7 @@ describe('escalation waiter delivery seam', () => {
     expect(handedOver).toBe(1)
   })
 
-  it('bounds deliveries by the continuation cap on every route', async () => {
+  it('bounds repeated deliveries of the same answer on every route', async () => {
     // A route that never acknowledges must still stop. The cap lives where all
     // routes pass, so no future route can be the one it does not cover.
     for (const kind of ['inbox-socket', 'hook-continuation'] as const) {
@@ -7853,7 +7824,7 @@ describe('escalation waiter delivery seam', () => {
 describe('session state across a prompt', () => {
   it('carries known and future session state across a typed prompt', async () => {
     // The prompt transition deliberately changes pending/retiring state and the
-    // continuation count, but fields introduced by a newer CLI remain opaque.
+    // question state, but fields introduced by a newer CLI remain opaque.
     const h = harness([])
     const before = {
       last_prompt_at: AWAY,
@@ -7867,7 +7838,6 @@ describe('session state across a prompt', () => {
           state: 'expired' as const,
         },
       ],
-      continuation: { answered_at: NOW - 2_000, count: 2 },
       acknowledgement_due: [{ request_id: 'req_carry_ack', recorded_at: NOW }],
       acknowledgement_blocks: 2,
     }
@@ -7898,8 +7868,6 @@ describe('session state across a prompt', () => {
       ),
     ) as Record<string, unknown>
     expect(persisted['future_session_key']).toEqual(futureSessionValue)
-    // The one field a prompt resets rather than carries.
-    expect(after.continuation?.count).toBe(0)
     expect(after.acknowledgement_blocks).toBe(2)
   })
 })

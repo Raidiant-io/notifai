@@ -487,9 +487,6 @@ async function drainSessionInputsOnce(input: {
     outputAttempted = true
     if (prepared === null) input.write(text)
     else await prepared.write(() => input.mayWrite() && handOff.writable())
-    if (readyAnswers.length > 0) updateSessionState(deps.sessionId, deps.env, (latest) => ({
-      ...latest, continuation: { answered_at: deps.wall(), count: (latest.continuation?.count ?? 0) + 1 },
-    }))
     await handOff.finish('written')
     deps.log?.info('delivery.handoff', {
       route: prepared === null ? 'input-drain' : 'native-answer', stage: 'presented', answers: readyAnswers.length, messages: readyMessages.length,

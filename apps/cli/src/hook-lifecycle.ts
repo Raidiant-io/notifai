@@ -453,21 +453,14 @@ const LATE_STOP_POLL_SECONDS = 4
 
 const LATE_PROMPT_POLL_SECONDS = 3
 
-/**
- * The one bound on answer deliveries, for every route.
- *
- * It caps two things that both used to be able to run away: how many times a
- * single accepted answer may be handed to a route before the journal gives up
- * on it, and how many answer-driven continuation generations one chain may
- * produce.
- */
-export const MAX_CONTINUATION_COUNT = 3
+/** Maximum delivery attempts for the same accepted answer, independent of conversation length. */
+export const MAX_ANSWER_DELIVERY_ATTEMPTS = 3
 
 /**
  * How many turns an answer may be *held* before it is settled unread.
  *
  * A hold is not a delivery: the route reported that it handed nothing over, so
- * the agent has not seen the answer and the wake-loop the continuation cap
+ * the agent has not seen the answer and the wake-loop the delivery cap
  * exists to stop has not happened. Counting holds against that cap meant three
  * turns where a liveness probe could not reach a busy session were enough to
  * discard an answer the user had already given.
@@ -895,14 +888,6 @@ async function answerPrompt(
     if (retiring.length > 0) next.retiring = retiring
     else delete next.retiring
 
-    // The user typed, so whatever chain of answer-driven continuations was
-    // running, a human has taken the turn and the consecutive count starts
-    // over. Only a real prompt reaches here: the journal branch above returns
-    // first, and a wake route's injected message always arrives while its own
-    // answer is still journaled, so it can never pass for the user's presence.
-    if (current.continuation !== undefined) {
-      next.continuation = { ...current.continuation, count: 0 }
-    }
     return matchedNow.reduce(
       (remembered, entry) => rememberQuestionState(
         remembered,
@@ -1322,11 +1307,11 @@ async function deliverAcceptedAnswers(
     return { notes }
   }
   const attempt = (accepted.delivery_attempts ?? 0) + 1
-  if (attempt > MAX_CONTINUATION_COUNT) {
+  if (attempt > MAX_ANSWER_DELIVERY_ATTEMPTS) {
     gate(ctx, 'held', 'delivery-limit', {
       route: route.kind,
       attempts: accepted.delivery_attempts ?? 0,
-      limit: MAX_CONTINUATION_COUNT,
+      limit: MAX_ANSWER_DELIVERY_ATTEMPTS,
       request_ids: requestIds,
     })
     // Settle rather than journal for ever. The answer has been offered as often
@@ -1334,7 +1319,7 @@ async function deliverAcceptedAnswers(
     // those turns, and the questions it answered still deserve retirement.
     settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
     notes.push(
-      `the user's answer reached the ${route.kind} route ${MAX_CONTINUATION_COUNT} times without being acknowledged; not delivering it again`,
+      `the user's answer reached the ${route.kind} route ${MAX_ANSWER_DELIVERY_ATTEMPTS} times without being acknowledged; not delivering it again`,
     )
     return { notes }
   }
@@ -1834,11 +1819,6 @@ export async function submitSessionQuestions(
     const ceilingAt = hardDeadlineAt
     const state = readSessionState(sessionId, ctx.env)
     const pending = pendingList(state)
-    if (state.continuation !== undefined && state.continuation.count >= MAX_CONTINUATION_COUNT) {
-      gate(ctx, 'held', 'continuation-limit', { count: state.continuation.count, limit: MAX_CONTINUATION_COUNT })
-      notes.push(`answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`)
-      return []
-    }
     if (pending.length > 0 && pending.every((entry) => entry.request_id === undefined)) {
       await awaitTerminalFirstWindow(ctx, Math.min(...pending.map((entry) => entry.asked_at ?? ctx.now())), ceilingAt)
     }
