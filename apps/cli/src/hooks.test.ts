@@ -7452,6 +7452,46 @@ describe('escalation waiter delivery seam', () => {
     }
   }
 
+  it.each(['unselected', 'refused'] as const)('holds a Grok answer batch when one answer is %s for delivery', async missing => {
+    const h = harness([reply({ text: 'Still awaiting acknowledgement' })])
+    const sessionId = 'grok-batch-claims'
+    writeSessionState(sessionId, h.env, {
+      harness: 'grok',
+      accepted: { remaining: 0, recorded_at: NOW, answers: ['first', 'second'].map((name, index) => {
+        const answer = reply({ text: name, seq: index + 1 })
+        return { pending: { question: name, request_id: `req_${name}`, collapse_key: `collapse_${name}`, device_ids: ['dev_iphone'] }, reply: answer, replies: [answer],
+          agent_acknowledgement_required: true,
+          ...(missing === 'unselected' && index === 1 ? {} : { delivery_claim: true as const }) }
+      }) },
+      acknowledgement_due: ['first', 'second'].map(name => ({ request_id: `req_${name}`, recorded_at: NOW, text_required: true })),
+    })
+    const context = { ...waiterContext(h), harness: 'grok' as const,
+      answerClaims: { lease: () => ({ incarnation: 'inc_grok', generation: 1 }),
+        writer: { pid: process.pid, start: 'test-writer' }, monotonic: () => performance.now() } }
+    const reports: string[] = []
+    context.client.claimDeliveryAttempt = async (_session, body) => {
+      if (body.subject.type === 'answer' && body.subject.request_id === 'req_second') {
+        throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'not_claimable' })
+      }
+      return { attempt_id: 'att_first', claim_remaining_ms: 30_000 }
+    }
+    context.client.reportDeliveryAttempt = async (id, body) => {
+      reports.push(body.outcome)
+      return { attempt_id: id, outcome: body.outcome, replayed: false }
+    }
+    let offered = false
+    await runEscalationWaiter(context, { sessionId, envelope: { session_id: sessionId },
+      route: { kind: 'session-queue', deliver: async event => {
+        offered = true
+        expect(event.writeGuard).toBeUndefined()
+        return { acknowledgement: 'held', notes: [] }
+      } },
+    })
+    expect(offered).toBe(true)
+    expect(reports).toEqual(['released'])
+    expect(readSessionState(sessionId, h.env).accepted?.answers).toHaveLength(2)
+  })
+
   it.each([
     ['codex', 'darwin', 1], ['claude-code', 'darwin', 1],
     ['claude-code', 'win32', 1], ['grok', 'darwin', 0],

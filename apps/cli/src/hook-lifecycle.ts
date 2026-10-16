@@ -1649,7 +1649,10 @@ async function claimAnswerHandOff(
       handOff.claimed.length === 0 &&
       handOff.refused.every((refusal) => refusal.reason === 'generation_fenced')
     if (!fenced || round >= ANSWER_CLAIM_ROUNDS) {
-      if (ctx.harness === 'hermes' && handOff.claimed.length !== subjects.length) {
+      // Grok sends one interjection for the complete batch. A partial claim
+      // cannot authorize the other answers included in that same write.
+      if ((ctx.harness === 'hermes' && handOff.claimed.length !== subjects.length) ||
+          (ctx.harness === 'grok' && handOff.claimed.length !== answered.length)) {
         await handOff.finish('not-written')
         return null
       }
