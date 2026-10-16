@@ -117,8 +117,8 @@ send a duplicate.
 
 The CLI and managed hook adapters support macOS, Linux, and Windows. iPhone
 and Android Companion Apps are both active: Android is distributed as a
-directly downloadable signed APK (no Google Play listing yet), with a separate
-invitation-only Firebase App Distribution test lane. Native desktop Companion
+directly downloadable signed APK, with Google Play closed Alpha for invited
+testers. Native desktop Companion
 Apps are not shipped.
 
 ```sh
