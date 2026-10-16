@@ -3380,6 +3380,71 @@ describe('several questions in flight', () => {
     expect(output.reason).not.toContain('still waiting')
   })
 
+  it.each(['held', 'rate-limited', 'empty'] as const)('bounds request traffic while an unanswered question is %s', async (mode) => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-666666666666'
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const polls: number[] = []
+    const factory = h.deps.clientFactory!
+    h.recorder.replyExpiresAt = new Date(NOW + 60_000).toISOString()
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+      clientFactory: () => {
+        const client = factory()
+        return { ...client, replies: async (requestId, options) => {
+          polls.push(options.waitSeconds)
+          h.advanceClock(mode === 'held' ? options.waitSeconds * 1000 : 66)
+          if (mode === 'rate-limited') throw new ApiCallError(429, 'rate_limited', 'Too many concurrent waits')
+          return client.replies(requestId, options)
+        } } as ApiClient
+      },
+    }
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Deploy where?' }, NOW)
+    await hookRunCommand(deps, 'question-submission', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(successors).toHaveLength(1)
+
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+
+    // One minute waiting must not generate dozens of requests, including when
+    // the service refuses a wait immediately because its capacity is full.
+    // Early snapshots need one final read per hold to prove silence rather
+    // than hiding an answer or an outage that occurred during the local rest.
+    expect(polls.length).toBeLessThanOrEqual(mode === 'empty' ? 8 : 5)
+    if (mode === 'held') expect(polls).toContain(25)
+  })
+
+  it('stops polling when the last owned question is retired during a wait', async () => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-666666666666'
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const factory = h.deps.clientFactory!
+    let polls = 0
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+      clientFactory: () => {
+        const client = factory()
+        return { ...client, replies: async (requestId, options) => {
+          polls++
+          h.advanceClock(options.waitSeconds * 1000)
+          const entry = readSessionState(sessionId, h.env).pending?.[0]
+          if (entry !== undefined && polls >= 2) dropPendingQuestion(sessionId, h.env, entry)
+          return client.replies(requestId, options)
+        } } as ApiClient
+      },
+    }
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Deploy where?' }, NOW)
+    await hookRunCommand(deps, 'question-submission', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+
+    expect(polls).toBeLessThanOrEqual(3)
+    expect(h.deps.now!() - NOW).toBeLessThanOrEqual(55_000)
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+  })
+
   it('watches a natively answered question only for a correction, without long polls', async () => {
     const h = harness([])
     const sessionId = '11111111-2222-4333-8444-666666666666'
@@ -7432,6 +7497,38 @@ describe('escalation waiter delivery seam', () => {
     releaseQuestionPush('waiter-race-lifetime', h.env)
   })
 
+  it('does not delay an available answer behind a full hold on another question', async () => {
+    const h = harness([])
+    const sessionId = 'waiter-answer-latency'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, pending: [
+      { question: 'First?', request_id: 'req_first', reply_deadline_at: NOW + 60_000, owner_deadline_at: NOW + 120_000 },
+      { question: 'Second?', request_id: 'req_second', reply_deadline_at: NOW + 60_000, owner_deadline_at: NOW + 120_000 },
+    ] })
+    const context = waiterContext(h)
+    const polls = new Map<string, number>()
+    let answerReadyAt = NOW
+    let deliveredAt: number | undefined
+    context.waitForFirstReply = async (requestId, timeoutSeconds) => {
+      const count = (polls.get(requestId) ?? 0) + 1
+      polls.set(requestId, count)
+      if (count === 1) return { replies: [], timedOut: true }
+      if (requestId === 'req_first') {
+        answerReadyAt = context.now()
+        return { replies: [reply({ text: 'First answer' })], timedOut: false }
+      }
+      h.advanceClock(timeoutSeconds * 1000)
+      return { replies: [], timedOut: true }
+    }
+    await runEscalationWaiter(context, { sessionId, envelope: { session_id: sessionId },
+      route: { kind: 'hook-continuation', deliver: async () => {
+        deliveredAt = context.now()
+        return { acknowledgement: 'stdout', stdout: 'First answer' }
+      } }, processDeadlineAt: NOW + 120_000,
+    })
+    expect(deliveredAt).toBeDefined()
+    expect(deliveredAt! - answerReadyAt).toBeLessThanOrEqual(5_000)
+  })
+
   it('keeps an unrelated answer when another owned question is retired mid-poll', async () => {
     const h = harness([])
     const first: PendingQuestion = {
@@ -7472,8 +7569,8 @@ describe('escalation waiter delivery seam', () => {
       longPolls += 1
       await heldLongPolls
       return {
-        replies: requestId === second.request_id ? [reply({ text: 'Second answer' })] : [],
-        timedOut: requestId !== second.request_id,
+        replies: requestId === second.request_id && count >= 3 ? [reply({ text: 'Second answer' })] : [],
+        timedOut: requestId !== second.request_id || count < 3,
       }
     }
     const deliveries: string[] = []
@@ -7498,6 +7595,7 @@ describe('escalation waiter delivery seam', () => {
     expect(deliveries).toHaveLength(1)
     expect(deliveries[0]).toContain('Second answer')
     expect(deliveries[0]).not.toContain('First?')
+    expect(polls.get(first.request_id!)).toBe(2)
   })
 
   /** One accepted answer on the journal, whatever route is about to own it. */

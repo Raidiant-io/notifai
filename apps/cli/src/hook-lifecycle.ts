@@ -156,10 +156,12 @@ async function awaitTerminalFirstWindow(
 const MAX_STORED_QUESTION_CHARS = 2000
 
 /**
- * One round of the waiter's reply poll. Short enough that several questions
- * still share one wall clock, long enough not to hammer the server.
+ * One unanswered question uses the server's full hold window. Concurrent
+ * questions retain the bounded collection interval so one unanswered peer
+ * cannot hold an already available answer behind its full network wait.
  */
-const REPLY_POLL_SECONDS = 5
+const REPLY_POLL_SECONDS = 25
+const CONCURRENT_REPLY_POLL_SECONDS = 5
 
 /**
  * How often a natively answered question is checked for a device correction.
@@ -309,6 +311,7 @@ async function waitForAnyReply(
   timeoutSeconds: number,
   interruption?: () => 'ownership-ended' | 'new-question' | null,
   correctionOnly: () => ReadonlySet<string> = () => new Set(),
+  liveRequests: () => ReadonlySet<string> = () => new Set(requestIds),
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
@@ -335,11 +338,17 @@ async function waitForAnyReply(
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
     }
     firstPoll = false
-    const pollSeconds = Math.min(REPLY_POLL_SECONDS, Math.max(0, Math.ceil(remainingMs / 1000)))
     const corrections = correctionOnly()
     const nextCorrectionAt = (requestId: string): number =>
       (lastCorrectionPollAt.get(requestId) ?? -Infinity) + CORRECTION_POLL_MS
-    const polling = requestIds.filter((requestId) => !permanentFailures.has(requestId))
+    const live = liveRequests()
+    const polling = requestIds.filter((requestId) => live.has(requestId) && !permanentFailures.has(requestId))
+    if (polling.length === 0) {
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
+    }
+    const holdSeconds = polling.filter((requestId) => !corrections.has(requestId)).length > 1
+      ? CONCURRENT_REPLY_POLL_SECONDS : REPLY_POLL_SECONDS
+    const pollSeconds = Math.min(holdSeconds, Math.max(0, Math.ceil(remainingMs / 1000)))
     const due = polling.filter((requestId) => !corrections.has(requestId) || nextCorrectionAt(requestId) <= ctx.now())
     if (due.length === 0) {
       // Only correction watches remain and none is due: rest, but stay
@@ -409,16 +418,21 @@ function waiterInterruption(
   if (sessionHasEnded(sessionId, env)) return 'ownership-ended'
   const pending = pendingList(readSessionState(sessionId, env))
   const owned = new Set(requestIds)
+  if (pending.some((entry) => entry.request_id !== undefined
+    ? !owned.has(entry.request_id)
+    : !attemptedLocal.has(entry.question_id ?? entry.question))) return 'new-question'
+  if (!pending.some((entry) => {
+    const requestId = entry.request_id ?? entry.submission?.request_id
+    return requestId !== undefined && owned.has(requestId)
+  })) {
+    // A terminal-side close removes the durable ownership while a request is
+    // in flight. Do not keep polling its stale snapshot until server expiry.
+    return 'ownership-ended'
+  }
   // One question can be retired from the terminal while this observer owns
   // several. That is a per-question change, not whole-session cancellation;
   // the caller filters the changed set after each poll and keeps the rest.
-  return pending.some(
-    (entry) =>
-      entry.request_id !== undefined ? !owned.has(entry.request_id) :
-        !attemptedLocal.has(entry.question_id ?? entry.question),
-  )
-    ? 'new-question'
-    : null
+  return null
 }
 
 /** A non-retryable replies fault, with enough server identity to act on it. */
@@ -2212,6 +2226,10 @@ async function escalate(
           attemptedLocal,
         ),
       () => settledNativeRequestIds(readSessionState(sessionId, ctx.env)),
+      () => new Set(pendingList(readSessionState(sessionId, ctx.env)).flatMap((entry) => {
+        const requestId = entry.request_id ?? entry.submission?.request_id
+        return requestId === undefined ? [] : [requestId]
+      })),
     )
     if (waited.interrupted === 'new-question') {
       // Native observers can renew their process ceiling for a later question.
