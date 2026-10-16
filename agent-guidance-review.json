@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:cc1e716f5a3ce6afd9efd7082f11e217fb35e878bde4a3ddd4b48db2c439fc48",
-  "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms for two Claude inbox fixes: answer delivery reads session descriptors from CLAUDE_CONFIG_DIR, and the Session Attendant waits briefly at startup for Claude Code to publish its descriptor and socket instead of staying presence-only. Both make delivery match what the README and skill already describe: Claude Code sessions wake through their inbox socket, and sessions without one keep presence only. No agent instruction, setup step, readiness wording or term changes.",
+  "behavior_digest": "sha256:db94102d7dbe18ff1fca19121f67b85c1a762cdf26daeeaaf39248719f89125f",
+  "outcome": "guidance-updated",
+  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Removed the aggregate answer-driven conversation cap while preserving per-answer delivery retries, acknowledgement obligations and exact-session admission. Ask now reports background submission as scheduled rather than starting; skill and diagnostics distinguish registration from service acceptance and remove the obsolete continuation-limit gate. Setup and readiness contracts and domain terms are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

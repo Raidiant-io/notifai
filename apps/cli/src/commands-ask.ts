@@ -440,7 +440,7 @@ function persistRegisteredQuestion(
     ...(nativeUnavailable === undefined ? {} : { native_unavailable: nativeUnavailable }),
   })
   const harness = readSessionState(sessionId, deps.env).harness
-  let submission: 'starting' | 'launch-failed' = 'starting'
+  let submission: 'scheduled' | 'launch-failed' = 'scheduled'
   try {
     if (harness === undefined) throw new Error('The admitted Agent Session lost its harness identity')
     ;(deps.spawnQuestionSettlement ?? spawnQuestionSettlement)({
@@ -451,8 +451,8 @@ function persistRegisteredQuestion(
     log(deps).error('cli.error', { kind: 'question_submission_launch', session: sessionId, question_id: questionId, outcome: submission,
       message: err instanceof Error ? err.message : String(err) })
   }
-  const nextStep = submission === 'starting'
-    ? 'Submission starts without ending this turn. Continue independent work while Question Routing owns the answer return path.'
+  const nextStep = submission === 'scheduled'
+    ? 'Background submission is scheduled; this registration does not confirm submission or delivery. Inspect status to verify submission. Continue independent work while Question Routing owns the answer return path.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)

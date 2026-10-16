@@ -8829,6 +8829,7 @@ describe('asking before the hooks have ever run', () => {
       submitted: false,
       request_id: null,
       provider_acceptance: 'not_available',
+      submission: 'scheduled',
       status: `notifai status ${registered.question_id as string}`,
       close: `notifai close ${registered.question_id as string}`,
     })
@@ -9672,7 +9673,7 @@ describe('asking before the hooks have ever run', () => {
     expect(io.errLines.join(' ')).toMatch(/Several harness sessions could own this shell/i)
   })
 
-  it('makes one work-resumption commitment per offered answer part of the asking turn', () => {
+  it.each([false, true])('makes work commitments without claiming submission when launch failure is %s', (launchFails) => {
     const cwd = scratchDir('notifai-ask-commitment-')
     const io = new CapturedIo()
     const env = {
@@ -9684,7 +9685,10 @@ describe('asking before the hooks have ever run', () => {
     }
     const launches: unknown[] = []
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42,
-      spawnQuestionSettlement: (launch: unknown) => { launches.push(launch) } }
+      spawnQuestionSettlement: (launch: unknown) => {
+        launches.push(launch)
+        if (launchFails) throw new Error('background process unavailable')
+      } }
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
@@ -9703,7 +9707,18 @@ describe('asking before the hooks have ever run', () => {
 
     expect(launches).toEqual([{ envelope: { session_id: 'codex-commitment-thread', cwd }, harness: 'codex', purpose: 'submission' }])
     const said = io.outLines.join('\n')
-    expect(said).toContain('Submission starts without ending this turn')
+    if (launchFails) {
+      expect(said).toContain('Background startup failed')
+      expect(said).toContain('Keep this registration')
+      expect(said).not.toContain('Background submission is scheduled')
+    } else {
+      expect(said).toContain('Background submission is scheduled')
+      expect(said).toContain('does not confirm submission or delivery')
+    }
+    expect(readSessionState('codex-commitment-thread', env).pending).toEqual([
+      expect.objectContaining({ question: 'Which environment should I deploy to?' }),
+    ])
+    expect(readSessionState('codex-commitment-thread', env).pending?.[0]?.request_id).toBeUndefined()
     for (const answer of ['Staging', 'Production', 'Cancel']) {
       expect(said).toContain(`If the answer is "${answer}"`)
     }
