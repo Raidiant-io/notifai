@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:9874d2da3eb74e934f1138f30c0ae7bc74303c2023370e77605283b55ef71dfb",
+  "behavior_digest": "sha256:787d7946e52c2802f46402413340f28af2308689f9879a0bb6c8cd3f65814e51",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms against a README-only change. The README now opens with the product summary and the paste-to-agent setup line, which points agents at the existing https://app.notifai.sh/setup.md instructions, and its Companion App and subscription sections describe current availability. No command, flag, hook, skill text, setup procedure, readiness remedy, trust boundary or domain term changed; no agent action or guidance update is needed.",
+  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms against a README-only change: the Subscription section now links the pricing page for prices and trial length instead of restating them. No command, flag, hook, skill text, setup procedure, readiness remedy, trust boundary or domain term changed; no agent action or guidance update is needed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
