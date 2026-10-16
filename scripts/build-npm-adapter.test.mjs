@@ -29,6 +29,12 @@ test('the staged adapter is deterministic, dependency-free and packs exactly its
   const manifest = JSON.parse(first.manifest), pkg = JSON.parse(readFileSync(path.join(first.directory, 'package.json')))
   assert.equal(pkg.scripts, undefined); assert.equal(pkg.dependencies, undefined)
   assert.equal(pkg.bin.notifai, 'bin/notifai.mjs')
+  // npm search and the package page read these fields and the README.
+  const source = JSON.parse(readFileSync(new URL('../apps/cli/package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.description, source.description); assert.deepEqual(pkg.keywords, source.keywords)
+  assert.equal(pkg.homepage, source.homepage)
+  assert.equal(readFileSync(path.join(first.directory, 'README.md'), 'utf8'),
+    readFileSync(new URL('../apps/cli/README.md', import.meta.url), 'utf8'))
   assert.ok(!manifest.files.some(file => file.path.startsWith('dist/') || file.path.startsWith('node_modules/')))
   assert.match(readFileSync(path.join(first.directory, 'THIRD_PARTY_NOTICES'), 'utf8'), /@zip.js\/zip.js@2.23.0/)
   execFileSync(process.execPath, ['--check', path.join(first.directory, pkg.bin.notifai)], { timeout: 10_000 })

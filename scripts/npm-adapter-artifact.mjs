@@ -9,9 +9,9 @@ export const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 /** Generated package metadata is deliberately separate from the source workspace. */
 export function adapterPackageManifest(source) {
   return { name: NPM_ADAPTER_PACKAGE, version: source.version, type: 'module',
-    description: 'Launch the independently managed native Notifai CLI',
+    description: source.description, keywords: source.keywords,
     bin: { notifai: NPM_ADAPTER_BIN }, files: ['bin', 'data', 'package.json', NPM_ADAPTER_MANIFEST,
-      NPM_ADAPTER_INVENTORY, 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'CHANGELOG.md'],
+      NPM_ADAPTER_INVENTORY, 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'CHANGELOG.md', 'README.md'],
     engines: source.engines, license: source.license, author: source.author,
     homepage: source.homepage, bugs: source.bugs, repository: source.repository,
     publishConfig: source.publishConfig }
