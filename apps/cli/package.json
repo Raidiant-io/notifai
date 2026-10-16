@@ -2,7 +2,7 @@
   "name": "@raidiant/notifai",
   "version": "12.1.1",
   "type": "module",
-  "description": "Send native device notifications from agents and local programs",
+  "description": "Notifications and questions from your coding agents to your phone. Your answer goes back to the exact session that asked. Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes and Grok.",
   "bin": {
     "notifai": "dist/main.js"
   },
@@ -44,7 +44,7 @@
   },
   "license": "Apache-2.0",
   "author": "Rafael Vidaurre",
-  "homepage": "https://github.com/Raidiant-io/notifai#readme",
+  "homepage": "https://notifai.sh",
   "bugs": {
     "url": "https://github.com/Raidiant-io/notifai/issues"
   },
@@ -57,15 +57,25 @@
     "directory": "apps/cli"
   },
   "keywords": [
+    "claude-code",
+    "codex",
+    "cursor",
+    "opencode",
+    "openclaw",
+    "hermes",
+    "grok",
+    "coding-agent",
+    "ai-agents",
+    "agentic-coding",
+    "agent-skills",
+    "claude-code-hooks",
     "notifications",
-    "cli",
-    "agents",
-    "apns",
-    "fcm",
+    "push-notifications",
+    "mobile-notifications",
+    "phone",
+    "ios",
     "android",
-    "push",
-    "ai",
-    "claude",
-    "codex"
+    "cli",
+    "developer-tools"
   ]
 }

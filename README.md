@@ -1,9 +1,31 @@
-# Notifai
+# Notifai for Claude Code, Codex & more
+
+Your agents can reach you, and you can answer from your phone. The answer goes
+back to the exact Agent Session that asked, in whichever harness it runs:
+Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok.
+
+Know which one needs you. Notifications name the Project and Agent Session
+they come from, so several agents at once never blur into one generic bell.
+
+Your agent sets it up. Paste this into any agent:
+
+```text
+Set up Notifai: https://app.notifai.sh/setup.md
+```
+
+Prefer to do it yourself? Run the [native installer](#using-it)
+(`curl -fsSL https://notifai.sh/install.sh | sh`), then get the Companion App
+for [iPhone](https://app.notifai.sh/setup/companion?platform=iphone) or
+[Android](https://app.notifai.sh/setup/companion?platform=android).
+
+[Website](https://notifai.sh) · [Pricing](https://app.notifai.sh/pricing) ·
+[Changelog](https://notifai.sh/changelog) · [Support](https://app.notifai.sh/support)
+
+## What is in this repository
 
 `notifai` lets software agents and local programs send native device
-notifications to their user — completion notices, answerable questions, and
-status updates that land on a lock screen or desktop instead of an unwatched
-terminal.
+notifications to their User: completion notices, answerable questions, and
+status updates that land on a lock screen instead of an unwatched terminal.
 
 This repository is the public home of:
 
@@ -178,28 +200,26 @@ a native Windows Gateway plus native Notifai CLI in one process is unproven.
 
 ## Companion App installation
 
-The iPhone Companion App is distributed only through controlled TestFlight
-invitations. Open the invitation on the iPhone you want to use, install Apple's
-TestFlight app, install Notifai, then open it once, sign in with the same Account
-as the CLI, and allow notifications. There is no public App Store link or public
-TestFlight link yet.
+Install the Companion App on your phone, open it once, sign in with the same
+Account as the CLI, and allow notifications.
 
-The Android Companion App is available as a directly downloadable signed APK
-from <https://app.notifai.sh/download/android>. Install it on a compatible
-Google Play services device, open it, sign in with the same Account, and allow
-notifications. Invited testers use Google Play closed Alpha; the [installation instructions](https://app.notifai.sh/support)
-explain how to join with your invited Google account, then install or update through Google Play.
-Test enrollment is separate from Notifai Account access.
+- **iPhone:** from the App Store, linked from
+  <https://app.notifai.sh/setup/companion?platform=iphone>.
+- **Android:** a directly downloadable signed APK from
+  <https://app.notifai.sh/download/android>, for a compatible device with
+  Google Play services. Invited testers can use Google Play closed testing
+  instead; the [installation instructions](https://app.notifai.sh/support)
+  explain how to join with your invited Google account. Test enrollment is
+  separate from Notifai Account access.
 
 ## Subscription
 
-Notifai is launching as a paid service. When public purchase opens, one
-individual subscription will cover the dashboard, this CLI, and the Companion
-Apps on a single Account, with a free trial offered once per person.
-Purchase is not open yet: access today is by invitation, and there is nothing
-to buy. Prices, trial length, renewal, cancellation, and where the service is
-sold are on the pricing page. Subscriptions will be sold and managed from the
-dashboard and the iPhone Companion App; the CLI never takes a payment.
+Notifai is a paid service. One individual subscription covers the dashboard,
+this CLI, and the Companion Apps on a single Account: USD 4.99 a month or
+USD 35.99 a year, with a 14-day free trial offered once per person. The trial
+needs a payment method. Subscribe from the dashboard or the iPhone Companion
+App; the CLI never takes a payment. Current prices, renewal, cancellation, and
+where the service is sold are on the pricing page.
 
 - Pricing — <https://app.notifai.sh/pricing>
 - Terms of Service — <https://app.notifai.sh/terms>

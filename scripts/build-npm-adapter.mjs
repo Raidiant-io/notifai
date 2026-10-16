@@ -40,7 +40,7 @@ export async function buildNpmAdapter({ sourceRevision, output = path.join(repos
   writeFileSync(path.join(output, 'package.json'), JSON.stringify(adapterPackageManifest(source), null, 2) + '\n')
   writeFileSync(path.join(output, 'data/release.json'), JSON.stringify({ version: source.version, source_revision: sourceRevision }) + '\n')
   copyFileSync(path.join(repositoryRoot, 'scripts/install.ps1'), path.join(output, 'data/install.ps1'))
-  for (const [from, to] of [['LICENSE', 'LICENSE'], ['NOTICE', 'NOTICE'], ['apps/cli/CHANGELOG.md', 'CHANGELOG.md']]) {
+  for (const [from, to] of [['LICENSE', 'LICENSE'], ['NOTICE', 'NOTICE'], ['apps/cli/CHANGELOG.md', 'CHANGELOG.md'], ['apps/cli/README.md', 'README.md']]) {
     copyFileSync(path.join(repositoryRoot, from), path.join(output, to))
   }
   const dependencies = new Set()
