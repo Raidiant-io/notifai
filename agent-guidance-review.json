@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:db94102d7dbe18ff1fca19121f67b85c1a762cdf26daeeaaf39248719f89125f",
+  "behavior_digest": "sha256:204df72510b223739732ffbe8d5acd0c4c24e84ebb8df28d9a6357eabe70a42b",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Removed the aggregate answer-driven conversation cap while preserving per-answer delivery retries, acknowledgement obligations and exact-session admission. Ask now reports background submission as scheduled rather than starting; skill and diagnostics distinguish registration from service acceptance and remove the obsolete continuation-limit gate. Setup and readiness contracts and domain terms are unchanged.",
+  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Removed the aggregate answer-driven conversation cap while preserving per-answer delivery retries, acknowledgement obligations and exact-session admission. Ask now reports background submission as scheduled rather than starting; skill and diagnostics distinguish registration from service acceptance and remove the obsolete continuation-limit gate. Preserved upstream Android Play tester documentation; its setup URLs and agent actions are unchanged. Setup and readiness contracts and domain terms are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -184,13 +184,12 @@ TestFlight app, install Notifai, then open it once, sign in with the same Accoun
 as the CLI, and allow notifications. There is no public App Store link or public
 TestFlight link yet.
 
-The Android Companion App is distributed as a directly downloadable signed APK
+The Android Companion App is available as a directly downloadable signed APK
 from <https://app.notifai.sh/download/android>. Install it on a compatible
 Google Play services device, open it, sign in with the same Account, and allow
-notifications. There is no Google Play listing yet. A separate invitation-only
-external-test lane continues through Firebase App Distribution for invited
-testers; access to that lane is controlled separately from Notifai Account
-access.
+notifications. Invited testers use Google Play closed Alpha; the [installation instructions](https://app.notifai.sh/support)
+explain how to join with your invited Google account, then install or update through Google Play.
+Test enrollment is separate from Notifai Account access.
 
 ## Subscription
 
