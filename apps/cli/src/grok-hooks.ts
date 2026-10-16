@@ -1,10 +1,11 @@
 /** Native Grok hook identity and model-visible activation. Passive startup and
  * prompt hooks never carry context; tool results and genuine Stop do. */
 import { createHash } from 'node:crypto'
-import type { EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
+import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
 import { grokActivationContext } from './session-activation.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
+import { GrokLeaderSession } from './grok-leader.js'
 
 export function grokHookEnvelope(input: HookEnvelope): HookEnvelope | null {
   const native = input.sessionId
@@ -53,16 +54,38 @@ export function grokContinuationRoute(): EscalationDeliveryRoute {
   return {
     kind: 'hook-continuation',
     deliver: async event => {
-      const context = event.context.length <= 9_000 ? event.context
-        : 'Notifai has answers for this Agent Session. Read every complete answer below, then follow each result\'s acknowledgement_command before resuming work. ' +
-          'This notice itself contains no answer or approval.\n' +
-          event.request_ids.map(id => `- Run \`notifai replies ${id} --json\`.`).join('\n')
       return {
-        stdout: stopAnswerOutput(context),
+        stdout: stopAnswerOutput(grokAnswerContext(event)),
         commitStdout: event.commitDelivery,
         notes: [],
         acknowledgement: 'stdout',
       }
+    },
+  }
+}
+
+function grokAnswerContext(event: ContinuationEvent): string {
+  return event.context.length <= 9_000 ? event.context
+    : 'Notifai has answers for this Agent Session. Read every complete answer below, then follow each result\'s acknowledgement_command before resuming work. ' +
+      'This notice itself contains no answer or approval.\n' +
+      event.request_ids.map(id => `- Run \`notifai replies ${id} --json\`.`).join('\n')
+}
+
+/** Interjection avoids Grok's eight blocking-Stop continuations per turn.
+ * Pin the resident owner before waiting, then recheck its identity at write.
+ * Without a leader the native Stop remains the only proven answer route. */
+export async function grokQuestionRoute(sessionId: string | undefined, cwd: string, env: NodeJS.ProcessEnv): Promise<EscalationDeliveryRoute> {
+  const leader = sessionId === undefined ? null : await GrokLeaderSession.discover(sessionId, cwd, env, { watch: false })
+  if (leader === null) return grokContinuationRoute()
+  return {
+    kind: 'session-queue',
+    deliver: async event => {
+      // A missing claim never becomes an unguarded write or a different route.
+      if (event.writeGuard === undefined) return { acknowledgement: 'held', notes: [], log: { reason: 'grok-answer-claim-unavailable' } }
+      const result = await leader.write(grokAnswerContext(event), () => event.commitDelivery(), event.writeGuard)
+      return result.status === 'written'
+        ? { acknowledgement: 'delivered', notes: [], log: { route: 'session-queue', stage: 'leader-interjection' } }
+        : { acknowledgement: 'held', notes: [], log: { reason: result.status === 'failed' ? 'write-unconfirmed' : result.status === 'aborted' ? 'write-aborted' : result.status } }
     },
   }
 }

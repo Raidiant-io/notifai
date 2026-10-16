@@ -533,11 +533,9 @@ function answerCloseDisposition(
   ctx: HookContext,
   route: EscalationDeliveryRoute,
 ): CloseDisposition | undefined {
-  // OpenClaw's Gateway service starts the attendant before it submits the
-  // question, but an immediate reply can beat the first lease exchange. The
-  // service retains the exact-session owner and retries after the lease is
-  // ready, so preserve the server's selected delivery claim at close.
-  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes') && route.kind === 'session-queue') return 'deliver'
+  // An immediate reply can beat the attendant's first lease exchange. These
+  // queues require a claim before writing, so preserve its selection at close.
+  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes' || ctx.harness === 'grok') && route.kind === 'session-queue') return 'deliver'
   return claimableRoute(route) && ctx.answerClaims?.lease() != null ? 'deliver' : undefined
 }
 

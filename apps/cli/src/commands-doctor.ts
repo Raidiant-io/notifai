@@ -1829,7 +1829,7 @@ function wakeRouteCheck(
       ok: false,
       reportOnly: true,
       technical: { direct_wake_optional: true },
-      detail: 'Grok questions return through the held Stop within the complete answer window. Shared-leader sessions can also receive Session Notes and Answer Edits through interjection',
+      detail: 'Grok waits for answers at Stop. Shared-leader sessions receive claimed answer interjections, Notes and Answer Edits; ordinary sessions use native Stop continuations within Grok\'s per-turn limit',
     }
   }
   return null

@@ -112,9 +112,9 @@ const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
 
 const GROK_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
-  deliveryRoutes: ['hook-continuation', 'hold-for-next-turn'],
+  deliveryRoutes: ['session-queue', 'hook-continuation', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook holds the complete answer window, then returns a decision block carrying the answer into the same Grok Agent Session; the successor Stop confirms transport delivery',
+    'the Stop hook waits for the answer; an exact shared-leader session receives a claimed interjection, otherwise a native decision block continues the same session within Grok\'s per-turn continuation limit',
 }
 
 export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {

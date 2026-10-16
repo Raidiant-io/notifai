@@ -148,7 +148,7 @@ export class GrokLeaderSession {
 
   private constructor(readonly socketPath: string, readonly sessionId: string, private cwd: string, private identity: string) {}
 
-  static async discover(sessionId: string, cwd: string, env: NodeJS.ProcessEnv): Promise<GrokLeaderSession | null> {
+  static async discover(sessionId: string, cwd: string, env: NodeJS.ProcessEnv, options: { watch?: boolean } = {}): Promise<GrokLeaderSession | null> {
     const candidates = sockets(env)
     if (candidates.length === 0 || candidates.length > 16) return null
     const found = await Promise.all(candidates.map(async file => {
@@ -165,7 +165,7 @@ export class GrokLeaderSession {
     const session = new GrokLeaderSession(owners[0]!.file, sessionId, cwd, owners[0]!.identity)
     await session.refresh()
     if (session.probe().state !== 'running') return null
-    session.timer = setInterval(() => { void session.refresh() }, 2_000)
+    if (options.watch !== false) session.timer = setInterval(() => { void session.refresh() }, 2_000)
     return session
   }
 

@@ -26,13 +26,21 @@ Keep unrelated hooks and trust decisions with their owner.
 
 ## Questions and replies
 
-`notifai ask` submits the question while independent work continues. At genuine
-turn end, the native Stop hook waits for the answer and returns a continuation
-into this same Agent Session. An explicitly delegated subagent uses its own
-SubagentStop gate. A long answer arrives as a `notifai replies <request_id>
+`notifai ask` schedules submission while independent work continues. At genuine
+turn end, the native Stop hook waits for the answer. On a shared leader, it
+claims delivery and queues an interjection into the exact resident session.
+This supports successive questions without spending Grok's blocking-Stop
+continuations. Start Grok with `--leader` for ongoing device conversations.
+
+Without a leader, the answer returns as a native Stop continuation. An
+explicitly delegated subagent uses its own SubagentStop gate. Grok permits eight
+blocking continuations per turn; after that, a pending question needs another
+User turn to resume. Notifai retains it rather than opening another session.
+A long answer arrives as a `notifai replies <request_id>
 --json` instruction: read the complete result and run its
 `acknowledgement_command` before acting. A successor Stop confirms transport
-delivery; the agent's acknowledgement confirms receipt to the User.
+delivery on the fallback route; the agent's acknowledgement confirms receipt
+to the User on either route.
 
 Keep the Grok process running while a question is pending. Cancellation can
 interrupt the held hook; a later turn can recover the durable answer. Shutdown

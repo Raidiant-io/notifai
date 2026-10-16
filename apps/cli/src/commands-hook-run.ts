@@ -23,7 +23,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { questionRoutingCapability, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS } from './hook-events.js'
-import { claimGrokActivation, grokContinuationRoute, grokHookEnvelope, resetGrokActivation } from './grok-hooks.js'
+import { claimGrokActivation, grokQuestionRoute, grokHookEnvelope, resetGrokActivation } from './grok-hooks.js'
 import {
   handleSessionEnd,
   handleStop,
@@ -935,7 +935,7 @@ export async function hookRunCommand(
         processDeadlineAt,
         event === 'openclaw-settlement' && envelope.session_id !== undefined
           ? openclawContinuationRoute(envelope.session_id, currentOpenclawOwner()!)
-          : stopWakeRoute(deps, harness, envelope.session_id, cwd, event !== 'stop'),
+          : await stopWakeRoute(deps, harness, envelope.session_id, cwd, event !== 'stop'),
         // The Gateway settlement process is not an agent turn boundary. Only
         // agent_end records Stop; a background poll must not spend the three
         // acknowledgement reminders or abandon a Session Message debt.
@@ -1012,14 +1012,14 @@ export async function hookRunCommand(
  * neither can prove anything, so the waiter falls back to the plain Stop
  * continuation.
  */
-function stopWakeRoute(
+async function stopWakeRoute(
   deps: CommandDeps,
   harness: HookInstallableHarness | undefined,
   sessionId: string | undefined,
   cwd: string,
   background: boolean,
-): EscalationDeliveryRoute | undefined {
-  if (harness === 'grok') return grokContinuationRoute()
+): Promise<EscalationDeliveryRoute | undefined> {
+  if (harness === 'grok') return grokQuestionRoute(sessionId, cwd, deps.env)
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {
