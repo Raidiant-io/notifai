@@ -85,7 +85,7 @@ describe('harness contract', () => {
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryContract.length).toBeGreaterThan(40)
   })
 
-  it('keeps Claude Code, Codex, Cursor, and OpenCode continuation contracts unchanged', () => {
+  it('keeps each harness on its supported continuation routes', () => {
     expect(HARNESS_CAPABILITIES['claude-code'].stopContinuation).toBe('decision-block')
     expect(HARNESS_CAPABILITIES['claude-code'].deliveryRoutes).toEqual([
       'hook-continuation',
@@ -113,6 +113,7 @@ describe('harness contract', () => {
     expect(HARNESS_CAPABILITIES.openclaw.deliveryRoutes).toEqual(['session-queue'])
     expect(HARNESS_CAPABILITIES.grok.stopContinuation).toBe('decision-block')
     expect(HARNESS_CAPABILITIES.grok.deliveryRoutes).toEqual([
+      'session-queue',
       'hook-continuation',
       'hold-for-next-turn',
     ])
