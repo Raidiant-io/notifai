@@ -10186,7 +10186,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readiness.states.find((state) => state.id === 'hooks-wake-route'))
       .toMatchObject({ status: 'optional-gap' })
     expect(readiness.states.find((state) => state.id === 'hooks-Grok-activation'))
-      .toMatchObject({ status: 'optional-gap' })
+      .toBeUndefined()
     env.GROK_SESSION_ID = 'another-grok-session'
     expect(askCommand(deps, 'Second question?', {})).toBe(EXIT.usage)
     expect(readSessionState('another-grok-session', env).pending).toBeUndefined()

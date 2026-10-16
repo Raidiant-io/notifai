@@ -16,6 +16,14 @@ import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
  */
 export const HOOK_EVENT_TABLE = [
   {
+    notifai: 'post-compact',
+    document: 'PostCompact',
+    cursor: null,
+    openclaw: false,
+    opencodeDiscovery: false,
+    timeoutSeconds: 5,
+  },
+  {
     notifai: 'post-tool-use',
     document: 'PostToolUse',
     cursor: null,
@@ -98,6 +106,9 @@ export type HookEvent = (typeof HOOK_EVENT_TABLE)[number]['notifai']
 
 export const HOOK_EVENTS: readonly HookEvent[] = HOOK_EVENT_TABLE.map((row) => row.notifai)
 
+/** Native Grok gates reuse the same session-scoped handlers. */
+export const GROK_DOCUMENT_ALIASES = { SubagentStop: 'Stop', PostToolUseFailure: 'PostToolUse' } as const
+
 /** Alternation of Notifai hook-event tokens for command ownership regexes. */
 export const HOOK_EVENT_PATTERN = HOOK_EVENTS.join('|')
 
@@ -168,8 +179,12 @@ export function requiredHookEvents(
 ): readonly HookEvent[] {
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
-    row.notifai === 'post-tool-use'
-      ? (harness === 'codex' && installsSessionAttendant(harness, platform)) || installsClaudePickerHooks(harness, platform)
+    row.notifai === 'post-compact'
+      ? harness === 'grok'
+      : row.notifai === 'subagent-start' && harness === 'grok'
+      ? false
+      : row.notifai === 'post-tool-use'
+      ? harness === 'grok' || (harness === 'codex' && installsSessionAttendant(harness, platform)) || installsClaudePickerHooks(harness, platform)
       : row.notifai === 'permission-request'
       ? installsClaudePickerHooks(harness, platform)
       : row.notifai === 'attend'

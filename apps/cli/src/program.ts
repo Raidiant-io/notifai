@@ -50,6 +50,7 @@ import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.
 import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 import { admitNativeCommand, portableNativeReport, type NativeAdmission } from './native-command-admission.js'
 import { resumeAttendantCommand } from './attendant-update.js'
 import { buildIdentity } from './distribution.js'
@@ -828,14 +829,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         return
       }
       const harness = HOOK_INSTALLABLE_HARNESSES.find((candidate) => candidate === opts.harness)
-      const settlementInput = deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
-      if (event === 'question-settlement' || event === 'question-submission') {
-        delete deps.env[QUESTION_SETTLEMENT_INPUT_ENV]
-      }
+      const inputKey = event === 'attend' && harness === 'grok' ? GROK_ATTEND_INPUT_ENV : QUESTION_SETTLEMENT_INPUT_ENV
+      const detached = event === 'question-settlement' || event === 'question-submission' || (event === 'attend' && harness === 'grok')
+      const settlementInput = deps.env[inputKey]
+      if (detached) delete deps.env[inputKey]
       exit(await runners.hookRun(
         deps,
         event,
-        (event === 'question-settlement' || event === 'question-submission') && settlementInput !== undefined
+        detached && settlementInput !== undefined
           ? async () => settlementInput
           : () => readStdinWithTimeout(),
         harness,

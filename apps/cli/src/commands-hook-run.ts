@@ -23,6 +23,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { questionRoutingCapability, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS } from './hook-events.js'
+import { claimGrokActivation, grokContinuationRoute, grokHookEnvelope, resetGrokActivation } from './grok-hooks.js'
 import {
   handleSessionEnd,
   handleStop,
@@ -64,6 +65,7 @@ import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { cursorStopActivationOutput, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
+import { grokAttendHook, startGrokAttendant } from './grok-attendant.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
@@ -170,9 +172,9 @@ export async function hookRunCommand(
     })
     return EXIT.ok
   }
-  // Grok loads Claude settings by default. Its native Notifai definition is
-  // the sole owner; the inherited Claude copy must stop before reading stdin.
-  if (harness === 'claude-code' && (deps.env['GROK_HOOK_EVENT'] ?? '') !== '') {
+  // Grok can import other harness settings. Its native Notifai definition is
+  // the sole owner; imported copies stop before reading stdin.
+  if ((harness === 'claude-code' || harness === 'cursor') && (deps.env['GROK_HOOK_EVENT'] ?? '') !== '') {
     start({ outcome: 'grok-compatibility-copy-skipped' })
     logger.info('hook.end', {
       hook: event,
@@ -235,12 +237,17 @@ export async function hookRunCommand(
     }
   }
   if (harness === 'grok') {
-    envelope = {
-      ...envelope,
-      ...(envelope.stop_hook_active === undefined && envelope.stopHookActive !== undefined
-        ? { stop_hook_active: envelope.stopHookActive }
-        : {}),
+    const native = grokHookEnvelope(envelope)
+    if (native === null || (event === 'stop' && native.reason !== 'end_turn')) {
+      start({ outcome: 'ignored' })
+      logger.info('hook.end', {
+        hook: event, outcome: 'ignored',
+        reason: native === null ? 'grok-session-identity-unavailable' : 'grok-stop-cannot-continue',
+        decided: false,
+      })
+      return EXIT.ok
     }
+    envelope = native
   }
 
   const cwd = envelope.cwd ?? deps.cwd
@@ -339,6 +346,7 @@ export async function hookRunCommand(
     logger.bind({ session: envelope.session_id ?? null })
     start({ cwd, event: envelope.hook_event_name ?? null, source: envelope.source ?? null })
     try {
+      if (harness === 'grok') return await grokAttendHook(deps, envelope, cwd, logger)
       return await attendHook(deps, { envelope, harness, cwd, invokedAt, logger })
     } catch (err) {
       // A resident process that throws must still hand the harness exit 0.
@@ -381,6 +389,44 @@ export async function hookRunCommand(
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'enablement-unavailable', ...failureData(err) })
       return false
+    }
+  }
+  if (harness === 'grok' && (event === 'post-tool-use' || event === 'post-compact')) {
+    start({ cwd })
+    let context: string | undefined
+    try {
+      if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env)
+      else if (lifecycleEnabled()) context = claimGrokActivation(envelope, cwd, deps.env)
+      if (context !== undefined) deps.io.out(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: envelope.hook_event_name === 'PostToolUseFailure' ? 'PostToolUseFailure' : 'PostToolUse',
+          additionalContext: context,
+        },
+      }))
+      logger.info('hook.end', { hook: event, outcome: context === undefined ? 'silent' : 'context-added', decided: false })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
+  // A tool-free first turn has no context-bearing tool hook. One genuine Stop
+  // continuation activates it; teardown and cancellation can never do so.
+  if (harness === 'grok' && event === 'stop' && typeof envelope.promptId === 'string' && lifecycleEnabled()) {
+    try {
+      // An activation block also sets stopHookActive. Never let that stand in
+      // for delivery of a question answer that is already queued or accepted.
+      const state = readSessionState(envelope.session_id!, deps.env)
+      const hasQuestion = (state.pending?.length ?? 0) > 0 || state.accepted !== undefined ||
+        (state.acknowledgement_due?.length ?? 0) > 0
+      const context = hasQuestion ? undefined : claimGrokActivation(envelope, cwd, deps.env)
+      if (context !== undefined) {
+        start({ cwd })
+        deps.io.out(JSON.stringify({ decision: 'block', reason: context }))
+        logger.info('hook.end', { hook: event, outcome: 'context-added', decided: true })
+        return EXIT.ok
+      }
+    } catch (err) {
+      logger.error('hook.gate', { stage: 'grok-activation', outcome: 'ignored', ...failureData(err) })
     }
   }
   // Generation fencing alone decides ownership. Project Enablement gates only
@@ -571,6 +617,10 @@ export async function hookRunCommand(
             )
           : undefined
         recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint, invokedAt)
+        if (harness === 'grok') {
+          resetGrokActivation(envelope.session_id, deps.env)
+          startGrokAttendant(envelope, cwd, deps.env)
+        }
         observeIntegration()
         if (harness === 'codex') {
           // Pending state is the durable handoff debt if the prior process
@@ -589,7 +639,7 @@ export async function hookRunCommand(
     logger.info('hook.end', {
       hook: event,
       outcome: stdout === undefined
-        ? harness === 'grok' ? 'activation-context-unsupported' : 'unsupported-harness'
+        ? harness === 'grok' ? 'activation-awaiting-tool' : 'unsupported-harness'
         : 'context-added',
       decided: false,
       ...settlementRecovery,
@@ -600,6 +650,10 @@ export async function hookRunCommand(
   // A Codex turn starts here. This prompt hook is synchronous, so Codex runs it
   // before the turn and one turn at a time: the Session Attendant reads the
   // thread's activity from starts recorded in that order.
+  if (event === 'user-prompt-submit' && harness === 'grok' && lifecycleEnabled()) {
+    try { startGrokAttendant(envelope, cwd, deps.env) }
+    catch (err) { logger.error('hook.gate', { stage: 'grok-attendant', outcome: 'ignored', ...failureData(err) }) }
+  }
   if (event === 'user-prompt-submit' && harness === 'codex') recordCodexTurnStart(envelope, deps.env)
   if (event === 'user-prompt-submit' || event === 'stop') observeIntegration()
 
@@ -965,7 +1019,7 @@ function stopWakeRoute(
   cwd: string,
   background: boolean,
 ): EscalationDeliveryRoute | undefined {
-  if (harness === 'grok') return undefined
+  if (harness === 'grok') return grokContinuationRoute()
   if (sessionId === undefined) return undefined
   const declaredSourcePid = declaredHookSourcePid(deps)
   if (harness === 'claude-code') {

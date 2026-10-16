@@ -1312,14 +1312,6 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   const wired = new Set(installations.map((installation) => installation.harness))
-  if (wired.has('grok')) {
-    checks.push({
-      name: 'hooks (Grok activation)',
-      ok: false,
-      reportOnly: true,
-      detail: 'Grok discards SessionStart and allowed UserPromptSubmit stdout, so hook activation context is unsupported; load the Notifai skill directly',
-    })
-  }
   const unwired = detectedHarnesses(deps.cwd, deps.env).filter((harness) => !wired.has(harness))
   if (unwired.length > 0) {
     checks.push({

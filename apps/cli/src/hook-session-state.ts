@@ -217,6 +217,8 @@ export function beginSessionIncarnation(
      */
     clearEarlierEnd?: boolean
     openclawGeneration?: string
+    /** Grok SessionStart always names a fresh actor, even for a resumed id. */
+    restart?: boolean
   },
 ): SessionIncarnation {
   const stateFile = sessionStatePath(sessionId, env)
@@ -233,8 +235,9 @@ export function beginSessionIncarnation(
       current?.openclaw_generation !== options.openclawGeneration
     const endedEarlier =
       current !== null && endsIncarnation(marker, current) && happenedBefore(marker!.stamp, options.stamp)
+    const restarted = options.restart === true && current !== null && happenedBefore(current.start, options.stamp)
     let next: SessionIncarnation
-    if (current !== null && !differentHarness && !differentOpenclawGeneration && !endedEarlier) {
+    if (current !== null && !differentHarness && !differentOpenclawGeneration && !endedEarlier && !restarted) {
       next =
         current.harness_process === undefined && options.harnessProcess !== undefined
           ? { ...current, harness_process: options.harnessProcess }
@@ -475,6 +478,7 @@ export function recordSessionStart(
   // and it clears only an end recorded before this handler started.
   beginSessionIncarnation(sessionId, env, {
     stamp,
+    ...(harness === 'grok' ? { restart: true } : {}),
     ...(openclawGeneration === undefined ? {} : { openclawGeneration }),
   })
   updateSessionState(sessionId, env, (current) => {

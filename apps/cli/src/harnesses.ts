@@ -114,7 +114,7 @@ const GROK_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['hook-continuation', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook holds the complete answer window, then returns a decision block carrying the answer into the same Grok Agent Session; the successor Stop confirms consumption',
+    'the Stop hook holds the complete answer window, then returns a decision block carrying the answer into the same Grok Agent Session; the successor Stop confirms transport delivery',
 }
 
 export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {

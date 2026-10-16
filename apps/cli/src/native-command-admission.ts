@@ -5,6 +5,7 @@ import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { accountHome } from './platform.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, sessionStatePath } from './hook-session-state.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 import { withFileLock } from './file-lock.js'
 import { RuntimeRetention } from './runtime-retention.js'
 import path from 'node:path'
@@ -20,6 +21,8 @@ function ownsRetainedWork(command: Command, env: NodeJS.ProcessEnv, reference: R
   if (command.name() === 'attendant-resume') session = command.processedArgs[0]
   else if (command.name() === 'hook' && ['question-submission', 'question-settlement'].includes(command.processedArgs[0])) {
     try { session = JSON.parse(env[QUESTION_SETTLEMENT_INPUT_ENV] ?? '')?.session_id } catch { return false }
+  } else if (command.name() === 'hook' && command.processedArgs[0] === 'attend' && command.opts()['harness'] === 'grok') {
+    try { session = JSON.parse(env[GROK_ATTEND_INPUT_ENV] ?? '')?.session_id } catch { return false }
   } else return false
   if (typeof session !== 'string' || session.length === 0) return false
   const sessionId = session, file = sessionStatePath(sessionId, env)
