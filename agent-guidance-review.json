@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:cc1e716f5a3ce6afd9efd7082f11e217fb35e878bde4a3ddd4b48db2c439fc48",
+  "behavior_digest": "sha256:11629649e0306ce4776cb85104f21f17d38aa96510543db88a7c78f86c77d29a",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms for two Claude inbox fixes: answer delivery reads session descriptors from CLAUDE_CONFIG_DIR, and the Session Attendant waits briefly at startup for Claude Code to publish its descriptor and socket instead of staying presence-only. Both make delivery match what the README and skill already describe: Claude Code sessions wake through their inbox socket, and sessions without one keep presence only. No agent instruction, setup step, readiness wording or term changes.",
+  "reason": "Reviewed lifecycle hooks, shipped skill, harness setup, CLI readiness and domain terms after the accepted native-answer settlement fix and Android onboarding documentation update. Native answer settlement follows the existing acknowledgement and native-question contract. Android testers now follow Play and public support instructions; Companion setup URLs, readiness and agent actions are unchanged. No shipped skill or hook wording needs to change for distribution retirement.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
