@@ -15,6 +15,7 @@ import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
 import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
+import { questionsAwaitingAnswer } from './native-answer-operation.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
@@ -605,7 +606,9 @@ export async function repliesCommand(
     // an agent may have several outstanding at once.
     const state = readSessionState(sessionId, deps.env)
     const pending = Array.isArray(state.pending) ? state.pending : []
-    requestIds = pending
+    // A question the Agent already answered natively stays registered only so a
+    // device can correct it; it is not pending.
+    requestIds = questionsAwaitingAnswer(state)
       .map((entry) => entry.request_id)
       .filter((id): id is string => id !== undefined)
     const unsent = pending.filter((entry) => entry.request_id === undefined)

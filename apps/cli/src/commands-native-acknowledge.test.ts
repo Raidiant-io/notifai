@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, truncateSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RecordHarnessAnswerResponse } from '@raidiant/notifai-protocol'
 import { acknowledgeCommand } from './commands-acknowledge.js'
 import { closeCommand } from './commands-close.js'
@@ -10,12 +10,13 @@ import { EXIT, type CommandDeps } from './commands-core.js'
 import type { ApiClient } from './client.js'
 import { beginSessionIncarnation, lifecycleStamp, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
 import { registerQuestion } from './hook-lifecycle.js'
-import { rememberQuestionState } from './hook-question-state.js'
+import { inspectQuestionState, rememberQuestionState } from './hook-question-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { nativeQuestionTitle } from './codex-question-bindings.js'
 import { CLAUDE_PICKER_TURN, observeClaudePicker } from './claude-question-bindings.js'
-import { recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import { questionsAwaitingAnswer, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import { repliesCommand } from './commands-send.js'
 import * as retirement from './hook-question-retirement.js'
 
 const roots: string[] = []
@@ -240,4 +241,50 @@ it('records a terminal answer to a Claude Code picker through the same report an
   expect(client.recordHarnessAnswer).toHaveBeenCalledTimes(1)
   expect(client.putAgentAcknowledgement).toHaveBeenCalledTimes(1)
   expect(JSON.parse(outputs.join('\n'))).toMatchObject({ ok: true, question_id: questionId, request_id: 'req_original' })
+})
+
+describe('a settled native answer', () => {
+  /** The picker answer lands after ordinary submission made the question live. */
+  function live() {
+    const h = fixture(); h.emit()
+    updateSessionState(h.sessionId, h.env, state => ({ ...state,
+      pending: state.pending!.map(entry => ({ ...entry, request_id: 'req_original' })) }))
+    return h
+  }
+
+  it('reads as answered while its window stays open for a device correction', async () => {
+    const h = live()
+    expect(inspectQuestionState(h.questionId, h.env)).toMatchObject({ question: { state: 'live' } })
+    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
+    const state = readSessionState(h.sessionId, h.env)
+    expect(state.native_answer_operations?.[0]?.answer_complete).toBe(true)
+    expect(state.pending?.[0]?.request_id).toBe('req_original')
+    expect(inspectQuestionState(h.questionId, h.env)).toMatchObject({
+      question: { state: 'answered', request_id: 'req_original' },
+    })
+    expect(questionsAwaitingAnswer(state)).toEqual([])
+  })
+
+  it('still reads as answered after its window retires it', async () => {
+    const h = live()
+    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
+    updateSessionState(h.sessionId, h.env, state => ({ ...rememberQuestionState(state, state.pending![0]!, 'retired'), pending: [] }))
+    expect(inspectQuestionState(h.questionId, h.env)).toMatchObject({ question: { state: 'answered' } })
+  })
+
+  it('keeps waiting when the native report left questions unanswered', async () => {
+    const h = live()
+    h.client.recordHarnessAnswer.mockImplementation(async () => ({ ...structuredClone(h.reply), complete: false }))
+    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
+    expect(inspectQuestionState(h.questionId, h.env)).toMatchObject({ question: { state: 'live' } })
+    expect(questionsAwaitingAnswer(readSessionState(h.sessionId, h.env))).toHaveLength(1)
+  })
+
+  it('is not listed by replies --pending', async () => {
+    const h = live()
+    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
+    h.outputs.length = 0
+    expect(await repliesCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.noReply)
+    expect(JSON.parse(h.outputs.at(-1)!)).toMatchObject({ replies: [] })
+  })
 })

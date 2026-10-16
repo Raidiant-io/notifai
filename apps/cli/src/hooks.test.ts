@@ -61,6 +61,7 @@ import {
   handleSessionEnd,
   runEscalationWaiter,
   submitSessionQuestions,
+  CORRECTION_POLL_MS,
   MAX_CONTINUATION_COUNT,
   MAX_HELD_DELIVERIES,
   registerQuestion as persistQuestion,
@@ -3397,6 +3398,102 @@ describe('several questions in flight', () => {
       expect(output.reason).toContain(requestId)
       expect(output.reason).toContain(`notifai acknowledge ${requestId} --text <text>`)
     }
+  })
+
+  /** A complete picker answer the Agent already reported and acknowledged. */
+  function settleNatively(h: Harness, sessionId: string, requestId: string): void {
+    const credential = h.deps.store.load()!
+    const state = readSessionState(sessionId, h.env)
+    const entry = state.pending?.find((candidate) => candidate.request_id === requestId)
+    if (entry?.question_id === undefined) throw new Error(`no live question for ${requestId}`)
+    writeSessionState(sessionId, h.env, { ...state, native_answer_operations: [...(state.native_answer_operations ?? []), {
+        question_id: entry.question_id, operation_id: 'native-1', request_id: requestId, submission_id: 'opaque-submission',
+        service_identity: { base_url: credential.baseUrl, machine_id: credential.machineId },
+        answers: [{ question_id: 'q1', text: 'Staging' }], acknowledgement_text: 'Deploying to staging.',
+        report: { reply_seq: 1, reply_id: 'rpl_native' }, answer_complete: true,
+        acknowledgement: { text: 'Deploying to staging.', created_at: new Date(NOW).toISOString() },
+      }] })
+  }
+
+  it('does not call a natively answered question still waiting', async () => {
+    const h = harness([])
+    repliesByRequest(h, new Map([['req_hook_1', [reply({ text: 'Ship it' })]]]))
+    writeSessionState('native-tail', h.env, { last_prompt_at: AWAY })
+    registerQuestion('native-tail', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('native-tail', h.env, { question: 'Deploy where?' }, NOW + 1)
+    let settled = false
+    h.recorder.beforeReplies = async () => {
+      if (settled) return
+      settled = true
+      settleNatively(h, 'native-tail', h.recorder.receipts[1]!)
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'native-tail' }))
+
+    const output = JSON.parse(h.io.outLines[0] ?? '{}') as { reason?: string }
+    expect(output.reason).toContain('Ship it')
+    expect(output.reason).not.toContain('still waiting')
+  })
+
+  it('watches a natively answered question only for a correction, without long polls', async () => {
+    const h = harness([])
+    const sessionId = '11111111-2222-4333-8444-666666666666'
+    const successors: { session_id?: string; cwd?: string }[] = []
+    const polls: number[] = []
+    const factory = h.deps.clientFactory!
+    const deps: CommandDeps = {
+      ...h.deps,
+      spawnQuestionSettlement: (launch) => { successors.push(launch.envelope) },
+      clientFactory: () => {
+        const client = factory()
+        return { ...client, replies: async (requestId, options) => {
+          polls.push(options.waitSeconds)
+          return client.replies(requestId, options)
+        } } as ApiClient
+      },
+    }
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    registerQuestion(sessionId, h.env, { question: 'Deploy where?' }, NOW)
+    await hookRunCommand(deps, 'stop', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
+    expect(successors).toHaveLength(1)
+    settleNatively(h, sessionId, h.recorder.receipts[0]!)
+    const questionId = readSessionState(sessionId, h.env).pending![0]!.question_id!
+    polls.length = 0
+
+    await hookRunCommand(deps, 'question-settlement', stdin(successors.shift()), 'codex')
+
+    // The fixture's eight-minute window: one immediate check, then one a minute.
+    expect(polls.length).toBeGreaterThanOrEqual(2)
+    expect(polls.length).toBeLessThanOrEqual(480_000 / CORRECTION_POLL_MS + 1)
+    expect(polls.every((waitSeconds) => waitSeconds === 0)).toBe(true)
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+    expect(inspectQuestionState(questionId, h.env)).toMatchObject({ question: { state: 'answered' } })
+  })
+
+  it('checks a natively answered question at a prompt without holding the prompt', async () => {
+    const h = harness([])
+    repliesByRequest(h, new Map([['req_hook_1', [reply({ text: 'Ship it' })]]]))
+    writeSessionState('native-prompt', h.env, { last_prompt_at: AWAY })
+    registerQuestion('native-prompt', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('native-prompt', h.env, { question: 'Deploy where?' }, NOW + 1)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'native-prompt' }))
+    expect(await acknowledgeCommand({ ...h.deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
+      text: 'Shipping it.',
+    })).toBe(EXIT.ok)
+    settleNatively(h, 'native-prompt', h.recorder.receipts[1]!)
+    const polls: number[] = []
+    const factory = h.deps.clientFactory!
+    const deps: CommandDeps = { ...h.deps, clientFactory: () => {
+      const client = factory()
+      return { ...client, replies: async (requestId, options) => {
+        polls.push(options.waitSeconds)
+        return client.replies(requestId, options)
+      } } as ApiClient
+    } }
+
+    await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: 'native-prompt', prompt: 'next' }))
+
+    expect(polls).toEqual([0])
   })
 
   it('resumes with a partial answer and keeps the rest registered', async () => {
