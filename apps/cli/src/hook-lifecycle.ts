@@ -807,7 +807,10 @@ async function answerPrompt(
   }
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
   let lateAnswers: AnsweredPending[] = []
-  if (live.length > 0) {
+  // Grok discards allowed UserPromptSubmit context. Leave collection and close
+  // to its Stop owner, which selects the native continuation or claimed queue.
+  // Closing here would lose the delivery selection needed by the leader route.
+  if (live.length > 0 && ctx.harness !== 'grok') {
     const { answered, transientTrouble, permanentFailures } = await pollPendingReplies(
       ctx,
       live,

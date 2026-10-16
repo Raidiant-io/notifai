@@ -4302,6 +4302,25 @@ describe('Grok native lifecycle', () => {
     expect(readSessionState('grok-parent', h.env).pending?.[0]?.request_id).toBeUndefined()
   })
 
+  it('leaves a late Grok answer for the Stop owner that selects its delivery route', async () => {
+    const h = harness([reply({ text: 'Continue after the interruption' })])
+    const sessionId = 'grok-interrupted'
+    writeSessionState(sessionId, h.env, {
+      harness: 'grok', last_prompt_at: AWAY,
+      pending: [{ question: 'Proceed?', request_id: 'req_live', asked_at: NOW,
+        collapse_key: 'grok-interrupted', device_ids: ['dev_iphone'], reply_deadline_at: NOW + 60_000 }],
+    })
+    const input = { sessionId, cwd: h.deps.cwd }
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin(input), 'grok')
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
+    expect(readSessionState(sessionId, h.env).pending?.[0]?.request_id).toBe('req_live')
+    expect(h.io.outLines).toEqual([])
+    await hookRunCommand(h.deps, 'stop', stdin({ ...input, reason: 'end_turn' }), 'grok')
+    expect(h.recorder.closed).toContain('req_live')
+    expect(JSON.parse(h.io.outLines[0] ?? '{}').reason).toContain('Continue after the interruption')
+  })
+
   it.each(['shutdown', 'channel_closed'])('never submits or consumes a question during %s', async reason => {
     const h = harness([reply({ text: 'Proceed' })])
     const sessionId = 'grok-teardown'
