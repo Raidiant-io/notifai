@@ -16,12 +16,12 @@ describe('public onboarding docs', () => {
     expect(existsSync(new URL(`../../../${installationLink?.[1]}`, import.meta.url))).toBe(true)
   })
 
-  it('states the active Android distribution without promising a Google Play listing', () => {
+  it('states the public Android download and closed Play tester distribution', () => {
     const harnesses = cliReadme.slice(cliReadme.indexOf('## Agent harnesses'))
 
     expect(harnesses).toMatch(/iPhone\s+and Android Companion Apps are both active/i)
     expect(harnesses).toMatch(/directly downloadable signed APK/i)
-    expect(harnesses).toMatch(/no Google Play listing yet/i)
-    expect(harnesses).toMatch(/Firebase App Distribution/i)
+    expect(harnesses).toMatch(/Google Play closed Alpha/i)
+    expect(harnesses).not.toMatch(/Firebase App Distribution/i)
   })
 })
