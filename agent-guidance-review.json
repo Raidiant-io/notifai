@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3a9751f038cc9a83b45026e4c51c214657db450421341ec703aac554bae8c8e2",
+  "behavior_digest": "sha256:9874d2da3eb74e934f1138f30c0ae7bc74303c2023370e77605283b55ef71dfb",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms against the bounded reply-polling change. Longer single-question holds, paced empty responses and 429 retries, and live request ownership filtering change internal traffic only. The complete answer window, independent concurrent questions, deadline recovery, native answer correction, registration versus delivery evidence, acknowledgement obligations and original question identities remain intact. The shipped skill already delegates polling to the CLI and directs agents to inspect or retire the original question. Hook installation, trusted definitions, exact-session admission, readiness remedies, public trust boundaries and domain terms are unchanged; no agent action or guidance update is needed.",
+  "reason": "Reviewed lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms against a README-only change. The README now opens with the product summary and the paste-to-agent setup line, which points agents at the existing https://app.notifai.sh/setup.md instructions, and its Companion App and subscription sections describe current availability. No command, flag, hook, skill text, setup procedure, readiness remedy, trust boundary or domain term changed; no agent action or guidance update is needed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
