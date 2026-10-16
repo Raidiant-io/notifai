@@ -1,13 +1,24 @@
-# notifai
+# Notifai for Claude Code, Codex & more
 
-Send native phone notifications from agents and local programs.
+Your agents can reach you, and you can answer from your phone. The answer goes
+back to the exact Agent Session that asked, in whichever harness it runs:
+Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok.
 
 An agent working while you are away has no way to reach you, so it either
 guesses or sits blocked in a terminal nobody is watching. `notifai` gives
 it a way to tell you something finished, and a way to ask you a question
-and get your answer back as a banner on your phone.
+and get your answer back as a banner on your phone. Notifications name the
+Project and Agent Session they come from, so you know which one needs you.
 
-Use the native installer for your computer; it installs Notifai and starts setup.
+Your agent sets it up. Paste this into any agent:
+
+```text
+Set up Notifai: https://app.notifai.sh/setup.md
+```
+
+Website: <https://notifai.sh>
+
+To do it yourself, use the native installer for your computer; it installs Notifai and starts setup.
 No Node.js or npm needed.
 
 ```sh
@@ -22,7 +33,7 @@ irm https://notifai.sh/install.ps1 | iex
 
 Setup defaults to QR approval with your signed-in Companion App; notification
 and browser approval are selectable alternatives. Run `notifai init` to resume.
-See [installation and migration](../../skills/notifai/references/installation.md) for agent-safe script inspection,
+See [installation and migration](https://github.com/Raidiant-io/notifai/blob/main/skills/notifai/references/installation.md) for agent-safe script inspection,
 platform prerequisites, channel selection and legacy npm migration.
 
 Optional Node/npm launcher, once its replacement package and matching native
@@ -117,8 +128,8 @@ send a duplicate.
 
 The CLI and managed hook adapters support macOS, Linux, and Windows. iPhone
 and Android Companion Apps are both active: Android is distributed as a
-directly downloadable signed APK (no Google Play listing yet), with a separate
-invitation-only Firebase App Distribution test lane. Native desktop Companion
+directly downloadable signed APK, with Google Play closed Alpha for invited
+testers. Native desktop Companion
 Apps are not shipped.
 
 ```sh

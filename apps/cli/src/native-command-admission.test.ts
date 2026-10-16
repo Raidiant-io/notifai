@@ -6,6 +6,7 @@ import { buildProgram, type ProgramRunners, type BuildProgramOptions } from './p
 import type { CommandDeps } from './commands.js'
 import { writeSessionState, markSessionEnded } from './hook-session-state.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 
 const roots: string[] = []
 const originalExecutable = process.execPath
@@ -139,16 +140,19 @@ it('admits explicit abandonment through a standalone launcher to the guarded ins
   expect(update).toHaveBeenCalledOnce()
 })
 
-it('retained question owners need the exact installation, build, harness and live session', async () => {
+it.each([
+  ['question-settlement', 'claude-code', QUESTION_SETTLEMENT_INPUT_ENV],
+  ['attend', 'grok', GROK_ATTEND_INPUT_ENV],
+])('retained %s owners need the exact installation, build, harness and live session', async (event, harness, inputKey) => {
   const f = fixture(), session = 'retained-session'
   f.running(f.retired)
-  const args = ['hook', 'question-settlement', '--owner', 'notifai', '--harness', 'claude-code']
-  const extraEnv = { [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify({ session_id: session, cwd: f.home }) }
+  const args = ['hook', event, '--owner', 'notifai', '--harness', harness]
+  const extraEnv = { [inputKey]: JSON.stringify({ session_id: session, cwd: f.home }) }
   const hookRun = vi.fn(async () => 0)
   expect((await f.invoke(args, { hookRun }, extraEnv)).code).toBe(1)
-  writeSessionState(session, f.env, { harness: 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.active }] })
+  writeSessionState(session, f.env, { harness: harness as 'grok' | 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.active }] })
   expect((await f.invoke(args, { hookRun }, extraEnv)).code).toBe(1)
-  writeSessionState(session, f.env, { harness: 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.retired }] })
+  writeSessionState(session, f.env, { harness: harness as 'grok' | 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.retired }] })
   expect(await f.invoke(args, { hookRun }, extraEnv)).toMatchObject({ code: 0, admitted: ['retained-owner'] })
   expect((await f.invoke([...args.slice(0, -1), 'codex'], { hookRun }, extraEnv)).code).toBe(1)
   markSessionEnded(session, f.env, Date.now())

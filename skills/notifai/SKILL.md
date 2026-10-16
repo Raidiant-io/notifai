@@ -176,8 +176,8 @@ notifai ask "Which environment should I roll out to?" \
 `--json` returns choice ids and `question_id`.
 
 `registered: true` proves local registration, not submission or
-Provider Acceptance. Submission starts immediately; never call a question sent or
-delivered from registration alone. Settlement adds `request_id`, keeping
+Provider Acceptance. `submission: scheduled` means background submission was
+scheduled; report sending or delivery only from status evidence. Settlement adds `request_id`, keeping
 `question_id`. Inspect:
 
 ```bash
@@ -187,8 +187,8 @@ notifai status <question_id> --json
 States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 
 **Registering is not the end of the turn.** Say what each answer will make you do
-and continue independent work. Submission starts immediately; dependent work
-waits for the reply.
+and continue independent work while background submission proceeds. Dependent
+work waits for the reply.
 A harness form can remain pending after a reply; never promise linked closure.
 When `ask` returns `native_question`, read [native questions](references/native-questions.md)
 before emitting its form or acting on its answer.

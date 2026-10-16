@@ -15,7 +15,7 @@ import {
 } from './harnesses.js'
 import { installHookAdapter, isNpxAdapterTarget, type HookAdapterTarget } from './hook-adapter.js'
 import type { HookEvent } from './hook-events.js'
-import { HOOK_EVENT_COMMAND_RE, HOOK_EVENT_TABLE, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
+import { HOOK_EVENT_COMMAND_RE, HOOK_EVENT_TABLE, GROK_DOCUMENT_ALIASES, HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   applyPlan,
@@ -539,7 +539,7 @@ function isOurGrokHookFile(source: string): boolean {
   const document = parsed as Record<string, unknown>
   if (Object.keys(document).length !== 1 || typeof document['hooks'] !== 'object' || document['hooks'] === null || Array.isArray(document['hooks'])) return false
   const events = Object.entries(document['hooks'] as Record<string, unknown>)
-  const knownEvents = new Set<string>(HOOK_EVENT_TABLE.flatMap((row) => row.document === null ? [] : [row.document]))
+  const knownEvents = new Set<string>([...HOOK_EVENT_TABLE.flatMap((row) => row.document === null ? [] : [row.document]), ...Object.keys(GROK_DOCUMENT_ALIASES)])
   return events.length > 0 && events.every(([event, groups]) =>
     knownEvents.has(event) && Array.isArray(groups) && groups.length > 0 && groups.every((group) =>
       typeof group === 'object' && group !== null && !Array.isArray(group) &&

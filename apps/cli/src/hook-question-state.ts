@@ -20,6 +20,7 @@ import type {
 } from './hook-types.js'
 import type { ServiceIdentity } from './credentials.js'
 import { inferInvocationContext } from './invocation-context.js'
+import { hasSettledNativeAnswer } from './native-answer-operation.js'
 export interface QuestionStateView {
   question_id: string
   state: QuestionDeliveryState
@@ -99,12 +100,13 @@ export function rememberQuestionState(
   return { ...current, question_history: history }
 }
 
-function pendingQuestionView(entry: PendingQuestion): QuestionStateView | null {
+function pendingQuestionView(entry: PendingQuestion, state: SessionState): QuestionStateView | null {
   if (entry.question_id === undefined) return null
   if (entry.request_id !== undefined) {
     return {
       question_id: entry.question_id,
-      state: 'live',
+      // A reported native answer settles it; the window stays open only for a correction.
+      state: hasSettledNativeAnswer(state, entry.question_id) ? 'answered' : 'live',
       submitted: true,
       request_id: entry.request_id,
       frozen_request_id: null,
@@ -139,7 +141,7 @@ export function inspectQuestionState(
   }
   const state = readSessionState(owner.sessionId, env)
   const pending = pendingList(state).find((entry) => entry.question_id === questionId)
-  const pendingView = pending === undefined ? null : pendingQuestionView(pending)
+  const pendingView = pending === undefined ? null : pendingQuestionView(pending, state)
   if (pendingView !== null) {
     return { found: true, session_id: owner.sessionId, question: pendingView }
   }
@@ -163,6 +165,8 @@ export function inspectQuestionState(
   const history = (state.question_history ?? []).find(
     (entry) => entry.question_id === questionId,
   )
+  // Expiry retires a natively answered question like a silent one; it was still answered.
+  const answeredNatively = hasSettledNativeAnswer(state, questionId)
   if (retiring?.question_id !== undefined) {
     const unconfirmed = history?.request_id === undefined &&
       history?.frozen_request_id === retiring.request_id
@@ -171,7 +175,7 @@ export function inspectQuestionState(
       session_id: owner.sessionId,
       question: {
         question_id: retiring.question_id,
-        state: retiring.state === 'answered' ? 'answered' : 'retired',
+        state: retiring.state === 'answered' || answeredNatively ? 'answered' : 'retired',
         submitted: unconfirmed ? null : true,
         request_id: unconfirmed ? null : retiring.request_id,
         frozen_request_id: unconfirmed ? retiring.request_id : null,
@@ -184,7 +188,7 @@ export function inspectQuestionState(
       session_id: owner.sessionId,
       question: {
         question_id: history.question_id,
-        state: history.state,
+        state: answeredNatively && history.state === 'retired' ? 'answered' : history.state,
         submitted:
           history.request_id !== undefined
             ? true

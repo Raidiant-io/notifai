@@ -2,7 +2,7 @@ import { NOTIFICATION_IMAGE_MAX_BYTES, type ListRepliesResponse } from '@raidian
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { isRetryableReplyPollError, type ApiClient } from './client.js'
+import { ApiCallError, isRetryableReplyPollError, type ApiClient } from './client.js'
 import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
 import { readSessionState } from './hook-session-state.js'
@@ -101,11 +101,14 @@ export async function waitForReply(
   let lastTransientError: Error | null = null
   let consecutiveTransientErrors = 0
   let firstPoll = true
+  let confirmAtDeadline = false
 
-  while (firstPoll || now() < deadline) {
+  while (firstPoll || now() < deadline || confirmAtDeadline) {
     firstPoll = false
+    confirmAtDeadline = false
+    const pollStartedAt = now()
     const remainingMs = Math.max(0, deadline - now())
-    const waitSeconds = Math.min(25, Math.floor(remainingMs / 1000))
+    const waitSeconds = Math.min(25, Math.ceil(remainingMs / 1000))
     try {
       const response = await client.replies(requestId, {
         waitSeconds,
@@ -116,8 +119,16 @@ export async function waitForReply(
       consecutiveTransientErrors = 0
       if (response.replies.length > 0) return { response, timedOut: false, degraded: false }
 
-      const pauseMs = Math.min(250, Math.max(0, deadline - now()))
-      if (pauseMs > 0) await sleep(pauseMs)
+      // A server/proxy can return an empty snapshot before the requested hold
+      // ends. Preserve the long-poll cadence instead of spinning on that path.
+      // Rounding up also avoids a burst of wait_seconds=0 at the deadline.
+      const pauseMs = Math.max(0, Math.min(pollStartedAt + waitSeconds * 1000, deadline) - now())
+      if (pauseMs > 0) {
+        await sleep(pauseMs)
+        // Sleeping is not evidence of silence. Recheck once if an early
+        // snapshot made us wait locally through the final deadline.
+        confirmAtDeadline = now() >= deadline
+      }
     } catch (err) {
       if (!isRetryableReplyPollError(err)) throw err
       lastTransientError = err instanceof Error ? err : new Error(String(err))
@@ -125,8 +136,9 @@ export async function waitForReply(
       const remainingAfterError = Math.max(0, deadline - now())
       if (remainingAfterError === 0) break
       const backoffMs = Math.min(
-        250 * 2 ** (consecutiveTransientErrors - 1),
-        2_000,
+        err instanceof ApiCallError && err.status === 429
+          ? 25_000
+          : Math.min(250 * 2 ** (consecutiveTransientErrors - 1), 2_000),
         remainingAfterError,
       )
       await sleep(backoffMs)

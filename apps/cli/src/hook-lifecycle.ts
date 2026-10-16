@@ -10,7 +10,12 @@ import type {
   SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
-import { confirmNativeAnswerTarget, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import {
+  confirmNativeAnswerTarget,
+  hasSettledNativeAnswer,
+  questionsAwaitingAnswer,
+  recordConfirmedNativeAnswerTarget,
+} from './native-answer-operation.js'
 import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
@@ -151,10 +156,21 @@ async function awaitTerminalFirstWindow(
 const MAX_STORED_QUESTION_CHARS = 2000
 
 /**
- * One round of the waiter's reply poll. Short enough that several questions
- * still share one wall clock, long enough not to hammer the server.
+ * One unanswered question uses the server's full hold window. Concurrent
+ * questions retain the bounded collection interval so one unanswered peer
+ * cannot hold an already available answer behind its full network wait.
  */
-const REPLY_POLL_SECONDS = 5
+const REPLY_POLL_SECONDS = 25
+const CONCURRENT_REPLY_POLL_SECONDS = 5
+
+/**
+ * How often a natively answered question is checked for a device correction.
+ * The User already answered; a correction is rare and may wait a minute.
+ */
+export const CORRECTION_POLL_MS = 60_000
+
+/** Longest rest between interruption checks while only corrections are watched. */
+const CORRECTION_IDLE_SLICE_MS = 5_000
 
 /** Avoid hot-looping while a live observer cooperatively yields its claim. */
 const CLAIM_HANDOFF_POLL_MS = 1_000
@@ -283,12 +299,19 @@ function canSubmitCompleteWindow(
  * everything found in that round, and whatever was not answered stays
  * registered. A question whose polling is permanently rejected drops out of
  * the round rather than failing the whole wait.
+ *
+ * A question the Agent already answered natively is only watched for a device
+ * correction: an immediate check at most every CORRECTION_POLL_MS, never a long
+ * poll, so it holds none of the server's shared long-poll capacity. The set is
+ * reread every round because the native answer usually lands mid-wait.
  */
 async function waitForAnyReply(
   ctx: HookContext,
   requestIds: string[],
   timeoutSeconds: number,
   interruption?: () => 'ownership-ended' | 'new-question' | null,
+  correctionOnly: () => ReadonlySet<string> = () => new Set(),
+  liveRequests: () => ReadonlySet<string> = () => new Set(requestIds),
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
@@ -299,6 +322,7 @@ async function waitForAnyReply(
   let degraded = false
   let firstPoll = true
   const permanentFailures = new Map<string, string>()
+  const lastCorrectionPollAt = new Map<string, number>()
 
   if (timeoutSeconds <= 0 || deadline <= ctx.now()) {
     return { byRequest: new Map(), degraded: false, permanentFailures, interrupted: null }
@@ -314,13 +338,32 @@ async function waitForAnyReply(
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
     }
     firstPoll = false
-    const pollSeconds = Math.min(REPLY_POLL_SECONDS, Math.max(0, Math.ceil(remainingMs / 1000)))
+    const corrections = correctionOnly()
+    const nextCorrectionAt = (requestId: string): number =>
+      (lastCorrectionPollAt.get(requestId) ?? -Infinity) + CORRECTION_POLL_MS
+    const live = liveRequests()
+    const polling = requestIds.filter((requestId) => live.has(requestId) && !permanentFailures.has(requestId))
+    if (polling.length === 0) {
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
+    }
+    const holdSeconds = polling.filter((requestId) => !corrections.has(requestId)).length > 1
+      ? CONCURRENT_REPLY_POLL_SECONDS : REPLY_POLL_SECONDS
+    const pollSeconds = Math.min(holdSeconds, Math.max(0, Math.ceil(remainingMs / 1000)))
+    const due = polling.filter((requestId) => !corrections.has(requestId) || nextCorrectionAt(requestId) <= ctx.now())
+    if (due.length === 0) {
+      // Only correction watches remain and none is due: rest, but stay
+      // responsive to SessionEnd and newly registered questions.
+      const nextDue = Math.min(...polling.map(nextCorrectionAt))
+      await ctx.sleep(Math.max(0, Math.min(nextDue - ctx.now(), deadline - ctx.now(), CORRECTION_IDLE_SLICE_MS)))
+      continue
+    }
     const results = await Promise.all(
-      requestIds
-        .filter((requestId) => !permanentFailures.has(requestId))
+      due
         .map(async (requestId) => {
+          const correction = corrections.has(requestId)
+          if (correction) lastCorrectionPollAt.set(requestId, ctx.now())
           try {
-            return { requestId, ...(await ctx.waitForFirstReply(requestId, pollSeconds)) }
+            return { requestId, ...(await ctx.waitForFirstReply(requestId, correction ? 0 : pollSeconds)) }
           } catch (err) {
             if (isRetryableReplyPollError(err)) {
               return { requestId, replies: [] as ReplyView[], degraded: true }
@@ -375,16 +418,21 @@ function waiterInterruption(
   if (sessionHasEnded(sessionId, env)) return 'ownership-ended'
   const pending = pendingList(readSessionState(sessionId, env))
   const owned = new Set(requestIds)
+  if (pending.some((entry) => entry.request_id !== undefined
+    ? !owned.has(entry.request_id)
+    : !attemptedLocal.has(entry.question_id ?? entry.question))) return 'new-question'
+  if (!pending.some((entry) => {
+    const requestId = entry.request_id ?? entry.submission?.request_id
+    return requestId !== undefined && owned.has(requestId)
+  })) {
+    // A terminal-side close removes the durable ownership while a request is
+    // in flight. Do not keep polling its stale snapshot until server expiry.
+    return 'ownership-ended'
+  }
   // One question can be retired from the terminal while this observer owns
   // several. That is a per-question change, not whole-session cancellation;
   // the caller filters the changed set after each poll and keeps the rest.
-  return pending.some(
-    (entry) =>
-      entry.request_id !== undefined ? !owned.has(entry.request_id) :
-        !attemptedLocal.has(entry.question_id ?? entry.question),
-  )
-    ? 'new-question'
-    : null
+  return null
 }
 
 /** A non-retryable replies fault, with enough server identity to act on it. */
@@ -419,21 +467,14 @@ const LATE_STOP_POLL_SECONDS = 4
 
 const LATE_PROMPT_POLL_SECONDS = 3
 
-/**
- * The one bound on answer deliveries, for every route.
- *
- * It caps two things that both used to be able to run away: how many times a
- * single accepted answer may be handed to a route before the journal gives up
- * on it, and how many answer-driven continuation generations one chain may
- * produce.
- */
-export const MAX_CONTINUATION_COUNT = 3
+/** Maximum delivery attempts for the same accepted answer, independent of conversation length. */
+export const MAX_ANSWER_DELIVERY_ATTEMPTS = 3
 
 /**
  * How many turns an answer may be *held* before it is settled unread.
  *
  * A hold is not a delivery: the route reported that it handed nothing over, so
- * the agent has not seen the answer and the wake-loop the continuation cap
+ * the agent has not seen the answer and the wake-loop the delivery cap
  * exists to stop has not happened. Counting holds against that cap meant three
  * turns where a liveness probe could not reach a busy session were enough to
  * discard an answer the user had already given.
@@ -492,11 +533,9 @@ function answerCloseDisposition(
   ctx: HookContext,
   route: EscalationDeliveryRoute,
 ): CloseDisposition | undefined {
-  // OpenClaw's Gateway service starts the attendant before it submits the
-  // question, but an immediate reply can beat the first lease exchange. The
-  // service retains the exact-session owner and retries after the lease is
-  // ready, so preserve the server's selected delivery claim at close.
-  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes') && route.kind === 'session-queue') return 'deliver'
+  // An immediate reply can beat the attendant's first lease exchange. These
+  // queues require a claim before writing, so preserve its selection at close.
+  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes' || ctx.harness === 'grok') && route.kind === 'session-queue') return 'deliver'
   return claimableRoute(route) && ctx.answerClaims?.lease() != null ? 'deliver' : undefined
 }
 
@@ -579,13 +618,16 @@ async function pollPendingReplies(
   ctx: HookContext,
   live: PendingQuestion[],
   timeoutSeconds: number,
+  state: SessionState,
 ): Promise<{
   answered: AnsweredPending[]
   transientTrouble: boolean
   permanentFailures: Map<string, string>
 }> {
   const polls = await Promise.all(
-    live.map((entry) => pollPendingReply(ctx, entry, timeoutSeconds)),
+    // A natively answered question is only checked for a correction: no wait.
+    live.map((entry) =>
+      pollPendingReply(ctx, entry, hasSettledNativeAnswer(state, entry.question_id) ? 0 : timeoutSeconds)),
   )
   const answered: AnsweredPending[] = []
   let transientTrouble = false
@@ -765,11 +807,15 @@ async function answerPrompt(
   }
   const live = pendingList(state).filter((entry) => entry.request_id !== undefined)
   let lateAnswers: AnsweredPending[] = []
-  if (live.length > 0) {
+  // Grok discards allowed UserPromptSubmit context. Leave collection and close
+  // to its Stop owner, which selects the native continuation or claimed queue.
+  // Closing here would lose the delivery selection needed by the leader route.
+  if (live.length > 0 && ctx.harness !== 'grok') {
     const { answered, transientTrouble, permanentFailures } = await pollPendingReplies(
       ctx,
       live,
       LATE_PROMPT_POLL_SECONDS,
+      state,
     )
     const finalized = await finalizePendings(
       ctx,
@@ -857,14 +903,6 @@ async function answerPrompt(
     if (retiring.length > 0) next.retiring = retiring
     else delete next.retiring
 
-    // The user typed, so whatever chain of answer-driven continuations was
-    // running, a human has taken the turn and the consecutive count starts
-    // over. Only a real prompt reaches here: the journal branch above returns
-    // first, and a wake route's injected message always arrives while its own
-    // answer is still journaled, so it can never pass for the user's presence.
-    if (current.continuation !== undefined) {
-      next.continuation = { ...current.continuation, count: 0 }
-    }
     return matchedNow.reduce(
       (remembered, entry) => rememberQuestionState(
         remembered,
@@ -889,7 +927,7 @@ async function answerPrompt(
       ctx.harness,
       withReminder(
         reminder,
-        prepareOrdinaryAnswersContext(ctx, sessionId, [...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], pendingList(updated).length),
+        prepareOrdinaryAnswersContext(ctx, sessionId, [...(readSessionState(sessionId, ctx.env).delivered_answers ?? []), ...lateAnswers], questionsAwaitingAnswer(updated).length),
       ),
     )
     if (stdout !== undefined) notes.push('the late device answer was added to the user\'s new turn')
@@ -921,7 +959,7 @@ async function answerPrompt(
   }
   const delivered = readSessionState(sessionId, ctx.env).delivered_answers ?? []
   const stdout = delivered.length > 0
-    ? userPromptContextOutput(ctx.harness, withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, delivered, pendingList(updated).length)))
+    ? userPromptContextOutput(ctx.harness, withReminder(reminder, prepareOrdinaryAnswersContext(ctx, sessionId, delivered, questionsAwaitingAnswer(updated).length)))
     : undefined
   return {
     notes,
@@ -942,6 +980,18 @@ function prepareOrdinaryAnswersContext(ctx: HookContext, sessionId: string, answ
     updateSessionState(sessionId, ctx.env, state => markCodexOrdinaryPresentation(state, ids))
   }
   return answersContext(answers, remaining)
+}
+
+function settledNativeRequestIds(state: SessionState): Set<string> {
+  return new Set(pendingList(state).flatMap((entry) =>
+    entry.request_id !== undefined && hasSettledNativeAnswer(state, entry.question_id) ? [entry.request_id] : []))
+}
+
+/** The "still waiting" count beside delivered answers: registered questions
+ * with neither a delivered answer nor a reported native one. */
+function stillAwaitingAnswer(state: SessionState, answered: AnsweredPending[]): number {
+  return questionsAwaitingAnswer(state)
+    .filter((entry) => !answered.some(({ pending }) => isSamePending(pending, entry))).length
 }
 
 function needsQuestionSettlement(state: SessionState, harness: HookContext['harness']): boolean {
@@ -1272,11 +1322,11 @@ async function deliverAcceptedAnswers(
     return { notes }
   }
   const attempt = (accepted.delivery_attempts ?? 0) + 1
-  if (attempt > MAX_CONTINUATION_COUNT) {
+  if (attempt > MAX_ANSWER_DELIVERY_ATTEMPTS) {
     gate(ctx, 'held', 'delivery-limit', {
       route: route.kind,
       attempts: accepted.delivery_attempts ?? 0,
-      limit: MAX_CONTINUATION_COUNT,
+      limit: MAX_ANSWER_DELIVERY_ATTEMPTS,
       request_ids: requestIds,
     })
     // Settle rather than journal for ever. The answer has been offered as often
@@ -1284,7 +1334,7 @@ async function deliverAcceptedAnswers(
     // those turns, and the questions it answered still deserve retirement.
     settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
     notes.push(
-      `the user's answer reached the ${route.kind} route ${MAX_CONTINUATION_COUNT} times without being acknowledged; not delivering it again`,
+      `the user's answer reached the ${route.kind} route ${MAX_ANSWER_DELIVERY_ATTEMPTS} times without being acknowledged; not delivering it again`,
     )
     return { notes }
   }
@@ -1599,7 +1649,10 @@ async function claimAnswerHandOff(
       handOff.claimed.length === 0 &&
       handOff.refused.every((refusal) => refusal.reason === 'generation_fenced')
     if (!fenced || round >= ANSWER_CLAIM_ROUNDS) {
-      if (ctx.harness === 'hermes' && handOff.claimed.length !== subjects.length) {
+      // Grok sends one interjection for the complete batch. A partial claim
+      // cannot authorize the other answers included in that same write.
+      if ((ctx.harness === 'hermes' && handOff.claimed.length !== subjects.length) ||
+          (ctx.harness === 'grok' && handOff.claimed.length !== answered.length)) {
         await handOff.finish('not-written')
         return null
       }
@@ -1649,6 +1702,7 @@ async function handleClaimedStop(
       ctx,
       live,
       LATE_STOP_POLL_SECONDS,
+      readSessionState(sessionId, ctx.env),
     )
     const permanentFailure = permanentReplyFailureNote(permanentFailures)
     if (permanentFailure !== null) notes.push(permanentFailure)
@@ -1783,11 +1837,6 @@ export async function submitSessionQuestions(
     const ceilingAt = hardDeadlineAt
     const state = readSessionState(sessionId, ctx.env)
     const pending = pendingList(state)
-    if (state.continuation !== undefined && state.continuation.count >= MAX_CONTINUATION_COUNT) {
-      gate(ctx, 'held', 'continuation-limit', { count: state.continuation.count, limit: MAX_CONTINUATION_COUNT })
-      notes.push(`answer continuation limit (${MAX_CONTINUATION_COUNT}) reached; leaving the question in the terminal`)
-      return []
-    }
     if (pending.length > 0 && pending.every((entry) => entry.request_id === undefined)) {
       await awaitTerminalFirstWindow(ctx, Math.min(...pending.map((entry) => entry.asked_at ?? ctx.now())), ceilingAt)
     }
@@ -2128,10 +2177,7 @@ async function escalate(
     )
   }
   if (staleAnswers.length > 0) {
-    const remaining = Math.max(
-      0,
-      pendingList(readSessionState(sessionId, ctx.env)).length - staleAnswers.length,
-    )
+    const remaining = stillAwaitingAnswer(readSessionState(sessionId, ctx.env), staleAnswers)
     const accepted = stageAcceptedAnswers(ctx, sessionId, staleAnswers, remaining)
     for (const answer of staleAnswers) reportAnswer(ctx, notes, answer, true)
     return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
@@ -2183,6 +2229,11 @@ async function escalate(
           [...knownRequestIds],
           attemptedLocal,
         ),
+      () => settledNativeRequestIds(readSessionState(sessionId, ctx.env)),
+      () => new Set(pendingList(readSessionState(sessionId, ctx.env)).flatMap((entry) => {
+        const requestId = entry.request_id ?? entry.submission?.request_id
+        return requestId === undefined ? [] : [requestId]
+      })),
     )
     if (waited.interrupted === 'new-question') {
       // Native observers can renew their process ceiling for a later question.
@@ -2256,10 +2307,7 @@ async function escalate(
       )
     }
     if (finalAnswers.length > 0) {
-      const remaining = Math.max(
-        0,
-        pendingList(readSessionState(sessionId, ctx.env)).length - finalAnswers.length,
-      )
+      const remaining = stillAwaitingAnswer(readSessionState(sessionId, ctx.env), finalAnswers)
       const accepted = stageAcceptedAnswers(ctx, sessionId, finalAnswers, remaining)
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
       return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
@@ -2324,10 +2372,7 @@ async function escalate(
     ctx,
     sessionId,
     answered,
-    Math.max(
-      0,
-      pendingList(readSessionState(sessionId, ctx.env)).length - answered.length,
-    ),
+    stillAwaitingAnswer(readSessionState(sessionId, ctx.env), answered),
   )
   for (const answer of answered) reportAnswer(ctx, notes, answer, false)
   return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)

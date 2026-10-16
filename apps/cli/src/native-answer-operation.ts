@@ -12,7 +12,7 @@ import type { ApiClient } from './client.js'
 import type { ServiceIdentity } from './credentials.js'
 import { withFileLock } from './file-lock.js'
 import {
-  readSessionIncarnation, readSessionState, sessionHasEnded, sessionStatePath,
+  pendingList, readSessionIncarnation, readSessionState, sessionHasEnded, sessionStatePath,
   writeSessionStateUnlocked,
 } from './hook-session-state.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
@@ -28,7 +28,26 @@ export interface NativeAnswerOperation {
   answers: ReplyAnswerT[]
   acknowledgement_text: string
   report?: { reply_seq: number; reply_id: string }
+  /** Whether that report answered every question; absent on older operations,
+   * whose single native form was always answered whole. */
+  answer_complete?: boolean
   acknowledgement?: PutAgentAcknowledgementResponse['agent_acknowledgement']
+}
+
+/** The Agent reported and acknowledged a complete native answer. The question
+ * stays registered so a later device answer can still correct it, but nobody
+ * is waiting on it any more: it reads as answered and is watched only for that
+ * correction, never long-polled.
+ */
+export function hasSettledNativeAnswer(state: SessionState, questionId: string | undefined): boolean {
+  return questionId !== undefined && (state.native_answer_operations ?? []).some(op =>
+    op.question_id === questionId && op.report !== undefined && op.acknowledgement !== undefined &&
+    op.answer_complete !== false)
+}
+
+/** Registered questions still waiting for any answer. */
+export function questionsAwaitingAnswer(state: SessionState): PendingQuestion[] {
+  return pendingList(state).filter(entry => !hasSettledNativeAnswer(state, entry.question_id))
 }
 
 export interface NativeOperationOwner {
@@ -284,7 +303,7 @@ export async function executeNativeAnswerOperation(
   const receipt = { reply_seq: report.reply_seq, reply_id: report.answer_version.version_id }
   let current = mergeReceipt(owner, env, operation, op => {
     if (op.report !== undefined && !isDeepStrictEqual(op.report, receipt)) throw new Error('Native answer report identity changed.')
-    return { ...op, report: receipt }
+    return { ...op, report: receipt, answer_complete: report.complete }
   })
   if (current.acknowledgement === undefined) {
     const result = await startPhase(owner, env, current, () => client.putAgentAcknowledgement(requestId, {

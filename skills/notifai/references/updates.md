@@ -198,7 +198,7 @@ scoped recovery evidence, not a blanket restart of every Agent Session.
 | OpenCode | The loaded plugin invokes the adapter per event and obtains guidance per model request. | Changed module code loads at startup. Arrange a restart only when that scope still needs it, then observe a natural callback. |
 | OpenClaw | The loaded Gateway plugin checks before prompts and injects guidance once per observed generation. | Changed module code needs Gateway reload. Preserve existing routes until a safe reload, then verify a prompt in the current generation. |
 | Hermes | A compatible native attendant preserves the attached classic CLI answer bridge while the owned module is refreshed. Reread guidance explicitly. | Changed Python code must be observed from a loaded plugin. Older attendants may require preserving the old file until their work finishes; follow the concrete continuity diagnosis. |
-| Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | Observe the changed SessionStart command. Hook output cannot activate model-visible context, so load the skill directly. |
+| Grok | Native hooks invoke the updated adapter; reread guidance in the current Agent Session. | Observe the changed native callbacks. The first tool result carries guidance; a tool-free turn uses one Stop continuation. Resume and compaction re-arm guidance. |
 
 Cursor and OpenCode do not gain asynchronous Question Routing merely by
 updating. Hermes needs its attached classic CLI bridge and a live attendant.

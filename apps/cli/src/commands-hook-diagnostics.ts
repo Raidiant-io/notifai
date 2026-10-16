@@ -184,7 +184,7 @@ export function hookActivationAdvice(installations: Installation[]): string {
     advice.push('Hermes: preserve the attached classic CLI bridge; if changed module loading remains unverified, arrange a new activation after preserving pending work; its native prompt section requires this Project to be enabled')
   }
   if (harnesses.has('grok')) {
-    advice.push('Grok: observe the installed SessionStart hook on a natural activation; model-visible hook activation is unsupported, so load the Notifai skill directly')
+    advice.push('Grok: the first tool hook adds guidance; a tool-free first turn uses one Stop continuation. Compaction restores guidance at the next tool or Stop')
   }
   return `${advice.join('. ')}.`
 }

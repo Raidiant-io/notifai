@@ -182,7 +182,7 @@ export function stopAnswerOutput(context: string): string {
 /**
  * Close, truthfully retire, and forget every answered pending question in one
  * state write, without dropping any other retirement debt or any question
- * still waiting. Stop answers also open one bounded continuation generation;
+ * still waiting. Stop answers also establish their delivery journal;
  * UserPromptSubmit answers ride the user's new turn.
  */
 export function stageAcceptedAnswers(
@@ -307,10 +307,6 @@ function archiveQueuedAnswers(current: SessionState, accepted: AcceptedAnswerDel
   const next: SessionState = {
     ...current,
     retiring,
-    continuation: {
-      answered_at: accepted.recorded_at,
-      count: (current.continuation?.count ?? 0) + 1,
-    },
   }
   delete next.accepted
   if (delivered.length > 0) next.delivered_answers = delivered
@@ -535,9 +531,8 @@ export async function reconcileAcknowledgementObligations<T extends OwedAcknowle
  * Retire the answered questions and close the journal.
  *
  * Called once an answer's delivery is acknowledged — by the route's own write,
- * or by the successor Stop of a blocking continuation. The continuation counter
- * grows with each settled generation, so the cap that bounds chained
- * answer-to-question loops is a real count rather than a constant 1.
+ * or by the successor Stop of a blocking continuation. Each distinct answer
+ * owns its delivery journal; settling one never limits later questions.
  */
 export function settleAcceptedAnswers(
   ctx: HookContext,
@@ -557,10 +552,6 @@ export function settleAcceptedAnswers(
     }
     const next: SessionState = { ...current, retiring }
     delete next.accepted
-    next.continuation = {
-      answered_at: accepted.recorded_at,
-      count: (current.continuation?.count ?? 0) + 1,
-    }
     return next
   })
 }

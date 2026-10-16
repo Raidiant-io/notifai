@@ -27,7 +27,7 @@ import type { WriteGuard } from './wake-support.js'
  * and Codex can continue directly from a turn-end answer. Harnesses without a
  * proven exact-session continuation fail closed at question admission.
  *
- * Submission starts at registration. Native observers and held Stop routes
+ * Registration schedules background submission. Native observers and held Stop routes
  * own answer delivery separately; neither infers notification preference from
  * keyboard presence.
  */
@@ -35,6 +35,15 @@ import type { WriteGuard } from './wake-support.js'
 /** Fields we read from harness hook JSON. Everything else is passed through. */
 export interface HookEnvelope {
   session_id?: string
+  /** Grok's native envelope; snake-case identity is only a compatibility alias. */
+  sessionId?: string
+  /** Private detached-observer handoff; must match the current local key. */
+  grok_incarnation_key?: string
+  promptId?: string
+  subagentType?: string
+  subagentId?: string
+  phase?: string
+  reason?: string
   /** OpenClaw's current transcript ID; session_id remains its stable sessionKey. */
   openclaw_session_id?: string
   openclaw_lifecycle_revision?: string
@@ -79,6 +88,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Grok's model-visible guidance, re-armed on resume and compaction. */
+  grok_activation_context?: string
   /** Literal revision received from the loaded hook/module, scoped to this incarnation. */
   integration_observation?: { incarnation: string; revision: string }
   /** Immutable native builds serving live or resumable work in this session. */
@@ -139,15 +150,6 @@ export interface SessionState {
    * costs nothing and a missed one costs a stale notification for ever.
    */
   retiring?: RetiringQuestion[]
-  /**
-   * Tracks bounded Stop continuations so a follow-up ask is delivered once.
-   * `count` is how many answer generations have run consecutively without the
-   * user taking a turn themselves; their next prompt starts it over.
-   */
-  continuation?: {
-    answered_at: number
-    count: number
-  }
   /**
    * A phone answer durably captured but not yet acknowledged. It stays here
    * until a delivery is acknowledged — by the route's own write, or by the
@@ -257,7 +259,7 @@ export interface AcceptedAnswerDelivery {
   delivered_route?: string
   /**
    * How many times this answer has been handed to any route. The route-agnostic
-   * loop backstop: bounded by `MAX_CONTINUATION_COUNT` in one place every route
+   * loop backstop: bounded by `MAX_ANSWER_DELIVERY_ATTEMPTS` in one place every route
    * passes through.
    */
   delivery_attempts?: number

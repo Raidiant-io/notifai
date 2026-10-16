@@ -728,9 +728,9 @@ describe('Codex process probe', () => {
     expect(attendantSupport('codex', 'linux')).toEqual({ supported: true })
     expect(attendantSupport('codex', 'win32')).toEqual({ supported: false, reason: 'codex-win32-unproven' })
     expect(attendantSupport('grok', 'darwin')).toEqual({
-      supported: false,
-      reason: 'grok-has-no-exact-session-writer-or-attendant',
+      supported: true,
     })
+    expect(attendantSupport('grok', 'win32')).toEqual({ supported: false, reason: 'grok-win32-unproven' })
   })
 
   it('starts an OpenClaw attendant only on the verified macOS host', () => {
