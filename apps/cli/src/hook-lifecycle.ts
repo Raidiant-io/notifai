@@ -156,10 +156,12 @@ async function awaitTerminalFirstWindow(
 const MAX_STORED_QUESTION_CHARS = 2000
 
 /**
- * One round of the waiter's reply poll, using the server's full hold window.
- * Several questions share one wall clock rather than shortening each wait.
+ * One unanswered question uses the server's full hold window. Concurrent
+ * questions retain the bounded collection interval so one unanswered peer
+ * cannot hold an already available answer behind its full network wait.
  */
 const REPLY_POLL_SECONDS = 25
+const CONCURRENT_REPLY_POLL_SECONDS = 5
 
 /**
  * How often a natively answered question is checked for a device correction.
@@ -336,7 +338,6 @@ async function waitForAnyReply(
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
     }
     firstPoll = false
-    const pollSeconds = Math.min(REPLY_POLL_SECONDS, Math.max(0, Math.ceil(remainingMs / 1000)))
     const corrections = correctionOnly()
     const nextCorrectionAt = (requestId: string): number =>
       (lastCorrectionPollAt.get(requestId) ?? -Infinity) + CORRECTION_POLL_MS
@@ -345,6 +346,9 @@ async function waitForAnyReply(
     if (polling.length === 0) {
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
     }
+    const holdSeconds = polling.filter((requestId) => !corrections.has(requestId)).length > 1
+      ? CONCURRENT_REPLY_POLL_SECONDS : REPLY_POLL_SECONDS
+    const pollSeconds = Math.min(holdSeconds, Math.max(0, Math.ceil(remainingMs / 1000)))
     const due = polling.filter((requestId) => !corrections.has(requestId) || nextCorrectionAt(requestId) <= ctx.now())
     if (due.length === 0) {
       // Only correction watches remain and none is due: rest, but stay

@@ -7497,6 +7497,38 @@ describe('escalation waiter delivery seam', () => {
     releaseQuestionPush('waiter-race-lifetime', h.env)
   })
 
+  it('does not delay an available answer behind a full hold on another question', async () => {
+    const h = harness([])
+    const sessionId = 'waiter-answer-latency'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, pending: [
+      { question: 'First?', request_id: 'req_first', reply_deadline_at: NOW + 60_000, owner_deadline_at: NOW + 120_000 },
+      { question: 'Second?', request_id: 'req_second', reply_deadline_at: NOW + 60_000, owner_deadline_at: NOW + 120_000 },
+    ] })
+    const context = waiterContext(h)
+    const polls = new Map<string, number>()
+    let answerReadyAt = NOW
+    let deliveredAt: number | undefined
+    context.waitForFirstReply = async (requestId, timeoutSeconds) => {
+      const count = (polls.get(requestId) ?? 0) + 1
+      polls.set(requestId, count)
+      if (count === 1) return { replies: [], timedOut: true }
+      if (requestId === 'req_first') {
+        answerReadyAt = context.now()
+        return { replies: [reply({ text: 'First answer' })], timedOut: false }
+      }
+      h.advanceClock(timeoutSeconds * 1000)
+      return { replies: [], timedOut: true }
+    }
+    await runEscalationWaiter(context, { sessionId, envelope: { session_id: sessionId },
+      route: { kind: 'hook-continuation', deliver: async () => {
+        deliveredAt = context.now()
+        return { acknowledgement: 'stdout', stdout: 'First answer' }
+      } }, processDeadlineAt: NOW + 120_000,
+    })
+    expect(deliveredAt).toBeDefined()
+    expect(deliveredAt! - answerReadyAt).toBeLessThanOrEqual(5_000)
+  })
+
   it('keeps an unrelated answer when another owned question is retired mid-poll', async () => {
     const h = harness([])
     const first: PendingQuestion = {
