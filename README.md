@@ -215,10 +215,9 @@ Account as the CLI, and allow notifications.
 ## Subscription
 
 Notifai is a paid service. One individual subscription covers the dashboard,
-this CLI, and the Companion Apps on a single Account: USD 4.99 a month or
-USD 35.99 a year, with a 14-day free trial offered once per person. The trial
-needs a payment method. Subscribe from the dashboard or the iPhone Companion
-App; the CLI never takes a payment. Current prices, renewal, cancellation, and
+this CLI, and the Companion Apps on a single Account, with a free trial offered
+once per person. Subscribe from the dashboard or the iPhone Companion App; the
+CLI never takes a payment. Prices, trial length, renewal, cancellation, and
 where the service is sold are on the pricing page.
 
 - Pricing — <https://app.notifai.sh/pricing>
