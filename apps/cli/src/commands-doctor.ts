@@ -1312,14 +1312,6 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   const wired = new Set(installations.map((installation) => installation.harness))
-  if (wired.has('grok')) {
-    checks.push({
-      name: 'hooks (Grok activation)',
-      ok: false,
-      reportOnly: true,
-      detail: 'Grok discards SessionStart and allowed UserPromptSubmit stdout, so hook activation context is unsupported; load the Notifai skill directly',
-    })
-  }
   const unwired = detectedHarnesses(deps.cwd, deps.env).filter((harness) => !wired.has(harness))
   if (unwired.length > 0) {
     checks.push({
@@ -1837,7 +1829,7 @@ function wakeRouteCheck(
       ok: false,
       reportOnly: true,
       technical: { direct_wake_optional: true },
-      detail: 'Grok has no out-of-band wake route; its held Stop returns the answer to this same Agent Session within the complete answer window',
+      detail: 'Grok waits for answers at Stop. Shared-leader sessions receive claimed answer interjections, Notes and Answer Edits; ordinary sessions use native Stop continuations within Grok\'s per-turn limit',
     }
   }
   return null
@@ -1869,7 +1861,7 @@ function sessionAttendantCheck(
       : reports.find((report) => report.session_id === active.sessionId)
   const attended =
     (active?.harness === 'claude-code' || active?.harness === 'codex' ||
-      active?.harness === 'hermes' || active?.harness === 'openclaw') &&
+      active?.harness === 'hermes' || active?.harness === 'openclaw' || active?.harness === 'grok') &&
     attendantSupport(active.harness, deps.hookPlatform ?? process.platform).supported
   if (reports.length === 0 && !attended) return null
   const parts: string[] = []
@@ -1878,6 +1870,8 @@ function sessionAttendantCheck(
       own === undefined
         ? active.harness === 'openclaw'
           ? 'this OpenClaw session has no attendant yet (the local Gateway service starts one after its first prompt)'
+          : active.harness === 'grok'
+            ? 'this Grok session has no attendant; Notes and Answer Edits require a live shared-leader session (`grok --leader`), while questions still use the held Stop'
           : `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
         : own.alive
           ? `this session: ${describe(own)}`

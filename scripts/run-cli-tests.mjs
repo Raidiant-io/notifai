@@ -17,6 +17,7 @@ env.USERPROFILE = home
 env.CLAUDE_CONFIG_DIR = path.join(home, '.claude')
 env.CODEX_HOME = path.join(home, '.codex')
 env.OPENCODE_CONFIG_DIR = path.join(home, '.config', 'opencode')
+env.GROK_HOME = path.join(home, '.grok')
 env.XDG_CONFIG_HOME = path.join(home, '.config')
 env.XDG_STATE_HOME = path.join(home, '.local', 'state')
 env.NOTIFAI_CREDENTIALS = 'file'
@@ -31,6 +32,9 @@ for (const key of Object.keys(env)) {
     key === 'CODEX_THREAD_ID' ||
     key === 'OPENCODE_SESSION_ID' ||
     key.startsWith('CURSOR_') ||
+    key === 'GROK_SESSION_ID' ||
+    key === 'GROK_HOOK_EVENT' ||
+    key === 'GROK_LEADER_SOCKET' ||
     key.startsWith('HERMES_SESSION_') ||
     key.startsWith('OPENCLAW_') ||
     key.startsWith('NOTIFAI_ACTIVE_')

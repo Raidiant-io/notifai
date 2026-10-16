@@ -35,6 +35,15 @@ import type { WriteGuard } from './wake-support.js'
 /** Fields we read from harness hook JSON. Everything else is passed through. */
 export interface HookEnvelope {
   session_id?: string
+  /** Grok's native envelope; snake-case identity is only a compatibility alias. */
+  sessionId?: string
+  /** Private detached-observer handoff; must match the current local key. */
+  grok_incarnation_key?: string
+  promptId?: string
+  subagentType?: string
+  subagentId?: string
+  phase?: string
+  reason?: string
   /** OpenClaw's current transcript ID; session_id remains its stable sessionKey. */
   openclaw_session_id?: string
   openclaw_lifecycle_revision?: string
@@ -79,6 +88,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Grok's model-visible guidance, re-armed on resume and compaction. */
+  grok_activation_context?: string
   /** Literal revision received from the loaded hook/module, scoped to this incarnation. */
   integration_observation?: { incarnation: string; revision: string }
   /** Immutable native builds serving live or resumable work in this session. */

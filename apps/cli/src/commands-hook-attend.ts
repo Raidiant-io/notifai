@@ -698,7 +698,7 @@ export function attendantGates(
     ...findLegacyProjectInstallations(cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform),
   ]
     .filter((installation) => installation.harness === harness)
-    .some((installation) => harness === 'openclaw'
+    .some((installation) => harness === 'openclaw' || harness === 'grok'
       ? (installation.problems ?? []).length === 0
       : installation.handlers.some((handler) => handlerEvent(handler.command) === 'attend'))
   if (!attendInstalled) return { ok: false, reason: 'attend-handler-removed' }

@@ -42,6 +42,7 @@ import {
   HOOK_EVENT_COMMAND_RE,
   HOOK_EVENT_PATTERN,
   HOOK_EVENT_TABLE,
+  GROK_DOCUMENT_ALIASES,
   OPENCLAW_EVENTS,
   OPENCODE_EVENTS,
   installsSessionAttendant,
@@ -281,6 +282,10 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   const hooks: HookConfig = Object.create(null)
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
+    if (row.notifai === 'post-compact' && options.harness !== 'grok') continue
+    // Grok's SubagentStart fires in the parent and discards output. The child's
+    // own tool hook is the place that can teach its Notification Request role.
+    if (row.notifai === 'subagent-start' && options.harness === 'grok') continue
     if (row.notifai === 'permission-request' || (row.notifai === 'post-tool-use' && options.harness === 'claude-code')) {
       if (!installsClaudePickerHooks(options.harness, options.platform)) continue
       // The waiting handler owns the picker for the complete answer window,
@@ -295,7 +300,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       }]
       continue
     }
-    if (row.notifai === 'post-tool-use' &&
+    if (row.notifai === 'post-tool-use' && options.harness !== 'grok' &&
         (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform))) continue
     if (row.notifai === 'stop') {
       hooks[row.document] = [{ hooks: [stopHandler(adapterPath, options.harness, commandOptions)] }]
@@ -312,6 +317,11 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         ],
       },
     ]
+  }
+  if (options.harness === 'grok') {
+    for (const [alias, event] of Object.entries(GROK_DOCUMENT_ALIASES)) {
+      hooks[alias] = structuredClone(hooks[event]!)
+    }
   }
   if (installsSessionAttendant(options.harness, options.platform)) {
     // A second handler in the same group, never folded into the first: the

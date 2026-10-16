@@ -29,7 +29,11 @@ export function attendantSupport(
   platform: NodeJS.Platform,
 ): AttendantSupport {
   if (harness === 'grok') {
-    return { supported: false, reason: 'grok-has-no-exact-session-writer-or-attendant' }
+    // Capability is conditional on a currently resident session in an owned
+    // local leader. Discovery never starts a daemon or loads a saved session.
+    return platform === 'darwin' || platform === 'linux'
+      ? { supported: true }
+      : { supported: false, reason: `grok-${platform}-unproven` }
   }
   if (harness === 'claude-code') {
     // The descriptor and inbox exist on macOS, Linux and native Windows; on

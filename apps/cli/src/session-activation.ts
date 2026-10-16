@@ -24,6 +24,12 @@ function rootActivationContext(cwd: string, env: NodeJS.ProcessEnv, notice?: str
   return `${opening}\n\n${guidance.ok ? guidance.content : guidance.fallback}`
 }
 
+/** Grok caps model-visible hook feedback at 10,000 characters. Leave room for
+ * the harness wrapper and bound the effective guidance before serialization. */
+export function grokActivationContext(cwd: string, env: NodeJS.ProcessEnv, worker: boolean): string {
+  return worker ? WORKER_ACTIVATION_CONTEXT : rootActivationContext(cwd, env, undefined, 9_000)
+}
+
 /** One lifecycle meaning, encoded for each harness output contract. */
 export function sessionActivationOutput(
   harness: HookHarness | undefined,

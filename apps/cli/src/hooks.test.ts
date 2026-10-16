@@ -4200,16 +4200,151 @@ describe('session-start hook', () => {
     expect(h.io.outLines).toEqual([])
   })
 
-  it('ignores Grok\'s Claude compatibility copy before reading stdin or writing state', async () => {
+  it.each(['claude-code', 'cursor'] as const)('ignores Grok\'s imported %s copy before reading stdin or writing state', async harnessName => {
     const h = harness()
     h.deps.env['GROK_HOOK_EVENT'] = 'SessionStart'
     const code = await hookRunCommand(h.deps, 'session-start', async () => {
       throw new Error('compatibility copy read stdin')
-    }, 'claude-code')
+    }, harnessName)
     expect(code).toBe(0)
     expect(h.io.outLines).toEqual([])
     expect(h.io.errLines).toEqual([])
     expect(readSessionState('grok-compat-copy', h.env)).toEqual({})
+  })
+})
+
+describe('Grok native lifecycle', () => {
+  it('fences the old observer when Grok reloads a session without a prior end hook', () => {
+    const h = harness(), id = 'grok-reloaded'
+    sessionStateModule.recordSessionStart(id, h.deps.env, 'grok', h.deps.cwd, undefined, { wall: 100, mono: '100' })
+    const first = sessionStateModule.readSessionIncarnation(id, h.deps.env)
+    sessionStateModule.recordSessionStart(id, h.deps.env, 'grok', h.deps.cwd, undefined, { wall: 200, mono: '200' })
+    const second = sessionStateModule.readSessionIncarnation(id, h.deps.env)
+    expect(second?.key).not.toBe(first?.key)
+    sessionStateModule.recordSessionStart(id, h.deps.env, 'grok', h.deps.cwd, undefined, { wall: 150, mono: '150' })
+    expect(sessionStateModule.readSessionIncarnation(id, h.deps.env)?.key).toBe(second?.key)
+  })
+
+  it('adds bounded guidance once and restores it after compaction, using native identity', async () => {
+    const h = harness()
+    const input = { sessionId: 'grok-native', cwd: h.deps.cwd, promptId: 'prompt-one' }
+    await hookRunCommand(h.deps, 'session-start', stdin(input), 'grok')
+    expect(h.io.outLines).toEqual([])
+    await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+    const context = JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput
+    expect(context).toMatchObject({ hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('You own Notification Requests') })
+    expect(context.additionalContext.length).toBeLessThanOrEqual(10_000)
+    await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+    expect(h.io.outLines).toHaveLength(1)
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'prompt-two' }), 'grok')
+    expect(h.io.outLines).toHaveLength(1)
+    await hookRunCommand(h.deps, 'post-compact', stdin(input), 'grok')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'prompt-three' }), 'grok')
+    expect(h.io.outLines).toHaveLength(2)
+  })
+
+  it('activates a tool-free turn once at genuine Stop without blocking teardown', async () => {
+    const h = harness()
+    const input = { sessionId: 'grok-no-tools', cwd: h.deps.cwd, promptId: 'prompt-one', reason: 'end_turn' }
+    await hookRunCommand(h.deps, 'session-start', stdin(input), 'grok')
+    await hookRunCommand(h.deps, 'stop', stdin(input), 'grok')
+    expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({ decision: 'block', reason: expect.stringContaining('You own Notification Requests') })
+    await hookRunCommand(h.deps, 'stop', stdin({ ...input, stopHookActive: true }), 'grok')
+    await hookRunCommand(h.deps, 'stop', stdin({ ...input, promptId: 'teardown', reason: 'shutdown' }), 'grok')
+    expect(h.io.outLines).toHaveLength(1)
+    expect(h.recorder.submitted).toEqual([])
+  })
+
+  it('keeps disabled Projects silent and teaches workers their own ownership', async () => {
+    const h = harness()
+    const input = { sessionId: 'grok-worker', cwd: h.deps.cwd, promptId: 'worker-turn', subagentType: 'explore' }
+    await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+    const context = JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput.additionalContext
+    expect(context).toContain('Report Agent Events to the parent')
+    expect(context).not.toContain('You own Notification Requests')
+    disableProject(projectBinding(h.deps.cwd, h.env)!)
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'disabled-turn' }), 'grok')
+    expect(h.io.outLines).toHaveLength(1)
+  })
+
+  it('refuses conflicting native session identities without changing either session', async () => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'session-start', stdin({ sessionId: 'native', session_id: 'other', cwd: h.deps.cwd }), 'grok')
+    expect(readSessionState('native', h.env)).toEqual({})
+    expect(readSessionState('other', h.env)).toEqual({})
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('feeds guidance through a failed tool result', async () => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({
+      sessionId: 'grok-failed-tool', cwd: h.deps.cwd, hook_event_name: 'PostToolUseFailure',
+    }), 'grok')
+    expect(JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput).toMatchObject({
+      hookEventName: 'PostToolUseFailure', additionalContext: expect.stringContaining('You own Notification Requests'),
+    })
+  })
+
+  it('routes a delegated child question only through its own native gate', async () => {
+    const h = harness([reply({ text: 'Proceed with the child task' })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    for (const sessionId of ['grok-parent', 'grok-child']) {
+      writeSessionState(sessionId, h.env, { harness: 'grok', last_prompt_at: AWAY })
+      registerQuestion(sessionId, h.env, { question: `Continue ${sessionId}?` }, NOW)
+    }
+    const input = { sessionId: 'grok-child', subagentId: 'grok-parent', subagentType: 'explore',
+      hook_event_name: 'SubagentStop', phase: 'gate', cwd: h.deps.cwd, promptId: 'child-turn' }
+    await hookRunCommand(h.deps, 'stop', stdin(input), 'grok')
+    expect(h.recorder.submitted).toEqual([])
+    await hookRunCommand(h.deps, 'stop', stdin({ ...input, subagentId: 'grok-child' }), 'grok')
+    expect(JSON.parse(h.io.outLines[0] ?? '{}').reason).toContain('Proceed with the child task')
+    expect(h.recorder.submitted).toHaveLength(1)
+    expect(readSessionState('grok-parent', h.env).pending?.[0]?.request_id).toBeUndefined()
+  })
+
+  it('leaves a late Grok answer for the Stop owner that selects its delivery route', async () => {
+    const h = harness([reply({ text: 'Continue after the interruption' })])
+    const sessionId = 'grok-interrupted'
+    writeSessionState(sessionId, h.env, {
+      harness: 'grok', last_prompt_at: AWAY,
+      pending: [{ question: 'Proceed?', request_id: 'req_live', asked_at: NOW,
+        collapse_key: 'grok-interrupted', device_ids: ['dev_iphone'], reply_deadline_at: NOW + 60_000 }],
+    })
+    const input = { sessionId, cwd: h.deps.cwd }
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin(input), 'grok')
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
+    expect(readSessionState(sessionId, h.env).pending?.[0]?.request_id).toBe('req_live')
+    expect(h.io.outLines).toEqual([])
+    await hookRunCommand(h.deps, 'stop', stdin({ ...input, reason: 'end_turn' }), 'grok')
+    expect(h.recorder.closed).toContain('req_live')
+    expect(JSON.parse(h.io.outLines[0] ?? '{}').reason).toContain('Continue after the interruption')
+  })
+
+  it.each(['shutdown', 'channel_closed'])('never submits or consumes a question during %s', async reason => {
+    const h = harness([reply({ text: 'Proceed' })])
+    const sessionId = 'grok-teardown'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, harness: 'grok' })
+    registerQuestion(sessionId, h.env, { question: 'Proceed?' }, NOW)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: sessionId, cwd: h.deps.cwd, reason }), 'grok')
+    expect(h.recorder.submitted).toEqual([])
+    expect(readSessionState(sessionId, h.env).pending).toHaveLength(1)
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('returns a retrievable answer instead of letting Grok truncate long replies', async () => {
+    const h = harness([reply({ text: 'Long answer '.repeat(1_000) + 'FINAL_INSTRUCTION' })])
+    const sessionId = 'grok-long-answer'
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, harness: 'grok' })
+    registerQuestion(sessionId, h.env, { question: 'What should happen?' }, NOW)
+    // Pending answers take priority over the first tool-free activation too.
+    await hookRunCommand(h.deps, 'stop', stdin({ sessionId, promptId: 'first-turn', cwd: h.deps.cwd, reason: 'end_turn' }), 'grok')
+    const output = JSON.parse(h.io.outLines[0] ?? '{}')
+    expect(output.reason.length).toBeLessThan(10_000)
+    expect(output.reason).toContain(`notifai replies ${h.recorder.receipts[0]} --json`)
+    expect(output.reason).toContain('acknowledgement_command')
+    expect(readSessionState(sessionId, h.env).accepted?.answers[0]?.reply.text.endsWith('FINAL_INSTRUCTION')).toBe(true)
   })
 })
 
@@ -7213,7 +7348,7 @@ describe('Codex Stop wake route', () => {
     await hookRunCommand(
       h.deps,
       'stop',
-      stdin({ session_id: sessionId, cwd: h.deps.cwd, stopHookActive: false }),
+      stdin({ session_id: sessionId, cwd: h.deps.cwd, reason: 'end_turn', stopHookActive: false }),
       'grok',
     )
     const decision = JSON.parse(h.io.outLines[0]!) as { decision: string; reason: string }
@@ -7224,7 +7359,7 @@ describe('Codex Stop wake route', () => {
     await hookRunCommand(
       h.deps,
       'stop',
-      stdin({ session_id: sessionId, cwd: h.deps.cwd, stopHookActive: true }),
+      stdin({ session_id: sessionId, cwd: h.deps.cwd, reason: 'end_turn', stopHookActive: true }),
       'grok',
     )
     expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
@@ -7316,6 +7451,46 @@ describe('escalation waiter delivery seam', () => {
       harness: 'codex' as const,
     }
   }
+
+  it.each(['unselected', 'refused'] as const)('holds a Grok answer batch when one answer is %s for delivery', async missing => {
+    const h = harness([reply({ text: 'Still awaiting acknowledgement' })])
+    const sessionId = 'grok-batch-claims'
+    writeSessionState(sessionId, h.env, {
+      harness: 'grok',
+      accepted: { remaining: 0, recorded_at: NOW, answers: ['first', 'second'].map((name, index) => {
+        const answer = reply({ text: name, seq: index + 1 })
+        return { pending: { question: name, request_id: `req_${name}`, collapse_key: `collapse_${name}`, device_ids: ['dev_iphone'] }, reply: answer, replies: [answer],
+          agent_acknowledgement_required: true,
+          ...(missing === 'unselected' && index === 1 ? {} : { delivery_claim: true as const }) }
+      }) },
+      acknowledgement_due: ['first', 'second'].map(name => ({ request_id: `req_${name}`, recorded_at: NOW, text_required: true })),
+    })
+    const context = { ...waiterContext(h), harness: 'grok' as const,
+      answerClaims: { lease: () => ({ incarnation: 'inc_grok', generation: 1 }),
+        writer: { pid: process.pid, start: 'test-writer' }, monotonic: () => performance.now() } }
+    const reports: string[] = []
+    context.client.claimDeliveryAttempt = async (_session, body) => {
+      if (body.subject.type === 'answer' && body.subject.request_id === 'req_second') {
+        throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'not_claimable' })
+      }
+      return { attempt_id: 'att_first', claim_remaining_ms: 30_000 }
+    }
+    context.client.reportDeliveryAttempt = async (id, body) => {
+      reports.push(body.outcome)
+      return { attempt_id: id, outcome: body.outcome, replayed: false }
+    }
+    let offered = false
+    await runEscalationWaiter(context, { sessionId, envelope: { session_id: sessionId },
+      route: { kind: 'session-queue', deliver: async event => {
+        offered = true
+        expect(event.writeGuard).toBeUndefined()
+        return { acknowledgement: 'held', notes: [] }
+      } },
+    })
+    expect(offered).toBe(true)
+    expect(reports).toEqual(['released'])
+    expect(readSessionState(sessionId, h.env).accepted?.answers).toHaveLength(2)
+  })
 
   it.each([
     ['codex', 'darwin', 1], ['claude-code', 'darwin', 1],
@@ -7661,8 +7836,6 @@ describe('escalation waiter delivery seam', () => {
     expect(wrote).toBe(false)
   })
 
-  // Windows Claude Code, because it is now the blocking-stdout route: Codex
-  // delivers through its thread inbox and writes no continuation to fence.
   it('fences production blocking stdout immediately before the harness write', async () => {
     const h = harness([reply({ text: 'Too late for stdout' })])
     // Grok is the harness whose answer still returns on a held Stop's stdout.
@@ -7684,7 +7857,7 @@ describe('escalation waiter delivery seam', () => {
     await hookRunCommand(
       h.deps,
       'stop',
-      stdin({ session_id: 'waiter-stdout-cancel', stopHookActive: false }),
+      stdin({ session_id: 'waiter-stdout-cancel', reason: 'end_turn', stopHookActive: false }),
       'grok',
     )
 

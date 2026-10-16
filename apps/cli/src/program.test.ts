@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildProgram, type ProgramRunners } from './program.js'
 import type { CommandDeps } from './commands.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 
 /**
  * The layer these tests own is the argv boundary: what a real command line
@@ -135,16 +136,19 @@ describe('program argv parsing', () => {
     expect(label).toBe('Hermes Support')
   })
 
-  it('hands the detached settlement input to the internal hook owner', async () => {
+  it.each([
+    ['question-settlement', 'codex', QUESTION_SETTLEMENT_INPUT_ENV],
+    ['attend', 'grok', GROK_ATTEND_INPUT_ENV],
+  ])('hands detached %s input to the internal hook owner', async (event, harness, inputKey) => {
     const deps = makeDeps()
     const input = JSON.stringify({ session_id: 'session-1', cwd: '/tmp/project' })
-    deps.env[QUESTION_SETTLEMENT_INPUT_ENV] = input
+    deps.env[inputKey] = input
     let seen:
       | { event: string; input: string; harness: string | undefined }
       | undefined
 
     const result = await parse(
-      ['hook', 'question-settlement', '--owner', 'notifai', '--harness', 'codex'],
+      ['hook', event, '--owner', 'notifai', '--harness', harness],
       {
         hookRun: (async (_deps, event, readInput, harness) => {
           seen = { event, input: await readInput(), harness }
@@ -155,8 +159,8 @@ describe('program argv parsing', () => {
     )
 
     expect(result.exitCode).toBe(0)
-    expect(seen).toEqual({ event: 'question-settlement', input, harness: 'codex' })
-    expect(deps.env[QUESTION_SETTLEMENT_INPUT_ENV]).toBeUndefined()
+    expect(seen).toEqual({ event, input, harness })
+    expect(deps.env[inputKey]).toBeUndefined()
   })
 
   it('dispatches sounds --json onto soundsCommand', async () => {

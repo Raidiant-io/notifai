@@ -165,7 +165,7 @@ not part of the current public support claim.
 | OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
 | OpenClaw hooks | Asynchronous Question Routing, Session Presence, Session Notes, and post-consumption Answer Edits through the local Gateway service and exact-session followup queue | Lifecycle hooks; asynchronous Question Routing and Session Messages unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
 | Hermes plugin | v0.21.5 local classic CLI: managed Project activation, Source Context, Question Routing, Session Presence, Session Notes, and Answer Edits through its live plugin writer | Same implementation; live Hermes verification pending | Unverified |
-| Grok hooks | Lifecycle observation, Source Context, and held Stop Question Routing; no Session Attendant | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
+| Grok hooks | Automatic guidance and Question Routing for main and delegated child sessions; live shared-leader sessions also receive Notes and Answer Edits | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
 Codex's optional native-question synchronization and exact queued-wake cleanup
 have live evidence on macOS with Codex 0.160.0. Linux and native Windows do not
