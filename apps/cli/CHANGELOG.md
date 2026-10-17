@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.1.2](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v12.1.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* **cli:** bound reply polling and retire stale observers ([#312](https://github.com/Raidiant-io/notifai/issues/312)) ([e634f3b](https://github.com/Raidiant-io/notifai/commit/e634f3b133dd8b23a9d6ed94055f7ae0bfece4ba))
+* **cli:** judge readiness per harness and refresh every Notifai skill copy ([#318](https://github.com/Raidiant-io/notifai/issues/318)) ([41a2a6a](https://github.com/Raidiant-io/notifai/commit/41a2a6a1e983e882e59b6c7bced6b5982be624be))
+* **cli:** keep acknowledged remote question conversations flowing ([#309](https://github.com/Raidiant-io/notifai/issues/309)) ([e1ccf59](https://github.com/Raidiant-io/notifai/commit/e1ccf59eae00ce35bddcc273be3c95841bc11b29))
+* **cli:** settle questions the agent answered natively ([#305](https://github.com/Raidiant-io/notifai/issues/305)) ([f660441](https://github.com/Raidiant-io/notifai/commit/f660441d8e1ca164ca6443936b36ad8e20bf6c74))
+* **grok:** repair native hooks and live session delivery ([5a5a68d](https://github.com/Raidiant-io/notifai/commit/5a5a68d43ba7d6cb36a39ccf3b39fe35f5e01165))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.3.3 to 8.4.0
+
 ## [12.1.1](https://github.com/Raidiant-io/notifai/compare/v12.1.0...v12.1.1) (2026-10-15)
 
 
