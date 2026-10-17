@@ -1,6 +1,6 @@
 {
   "name": "@raidiant/notifai",
-  "version": "12.1.1",
+  "version": "12.1.2-beta.4",
   "type": "module",
   "description": "Notifications and questions from your coding agents to your phone. Your answer goes back to the exact session that asked. Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes and Grok.",
   "bin": {

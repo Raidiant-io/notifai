@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [12.1.2-beta.4](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v12.1.2-beta.4) (2026-10-17)
+
+### Bug Fixes
+
+* Judge doctor, setup and update readiness for the harness that runs them: another harness's condition is reported as not applying and no longer fails the session, and a missing Codex shared app-server no longer turns Question Routing readiness off.
+* Keep every Notifai skill copy current: setup and updates refresh any outdated copy in a harness skill location in place, a linked skill directory counts as one copy, and project-scope writes stay inside the project.
+* Repair Grok activation and question delivery across main sessions, subagents, resume, compaction, long answers and interrupted turns.
+* Support continuing questions, Session Notes and Answer Edits in an existing Grok shared-leader session, with exact-session delivery claims and acknowledgements.
+* Avoid duplicate imported Notifai hooks and explain how to disable incompatible Cursor hook imports in Grok.
+
+* Hold unanswered reply requests longer and back off after concurrent-wait limits, reducing repeated requests while an agent waits.
+* Stop watching retired questions while preserving prompt answers to concurrent questions and recovering replies received near a wait deadline.
+* Keep remote question conversations flowing after three acknowledged answers, while preserving retry protection for the same answer.
+* Distinguish scheduled question submission from confirmed submission and delivery.
+* Settle questions answered through native harness forms so they do not remain outstanding.
+
+### Documentation
+
+* Clarify Grok capabilities and limits; improve the package setup README and npm discovery metadata.
+
+* Direct invited Android testers to the Google Play closed Alpha instructions.
+
 ## [12.1.1](https://github.com/Raidiant-io/notifai/compare/v12.1.0...v12.1.1) (2026-10-15)
 
 
