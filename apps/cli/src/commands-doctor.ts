@@ -17,6 +17,7 @@ import {
   HERMES_QUESTION_ROUTING_UNAVAILABLE,
   isHookInstallableHarness,
   questionRoutingCapability,
+  type SourceContextHarness,
 } from './harnesses.js'
 import {
   hookAdapterTargetsArtifact,
@@ -47,6 +48,7 @@ import {
 import { inferInvocationContext } from './invocation-context.js'
 import type { SkillScope } from './native-skills.js'
 import {
+  appliesHere,
   firstBlocker,
   readinessJson,
   type Readiness,
@@ -549,6 +551,9 @@ export async function assessReadiness(
   const refresh = options.refresh
   if (previous !== undefined && refresh !== undefined && refresh.length === 0) return previous
 
+  const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
+  const harness = contested.length > 1 ? null : active?.harness ?? null
+
   const reuseRemote =
     previous !== undefined &&
     refresh !== undefined &&
@@ -572,6 +577,7 @@ export async function assessReadiness(
           reused.devices,
           reused.proof,
         ],
+        harness,
       }
     }
   }
@@ -725,7 +731,7 @@ export async function assessReadiness(
 
   states.push(await setupProofState(deps, config, accountClient, accountDevices, options.readOnly === true))
 
-  return { states }
+  return { states, harness }
 }
 
 async function applyRegistryRecommendation(
@@ -943,9 +949,15 @@ export async function doctorCommand(
     return ok ? EXIT.ok : EXIT.failed
   }
 
-  const line = (s: ReadinessState) => `${s.title}: ${s.detail}`
+  const line = (s: ReadinessState) => appliesHere(readiness, s)
+    ? `${s.title}: ${s.detail}`
+    : `${s.title} (${s.harnesses!.map((h) => HARNESS_LABELS[h as SourceContextHarness] ?? h).join(', ')}, not this harness): ${s.detail}`
   await deps.io.intro?.('Notifai doctor')
-  for (const s of readiness.states) {
+  for (const reported of readiness.states) {
+    // Another harness's gap is reported, never held against this one.
+    const s = reported.status === 'gap' && !appliesHere(readiness, reported)
+      ? { ...reported, status: 'optional-gap' as const }
+      : reported
     // Working software says nothing about versions. Soft/hard update states use
     // only the closed sentence and the exact command, never schema/capability
     // vocabulary or a server-provided action.
@@ -1040,7 +1052,7 @@ export function remedyLine(state: ReadinessState): string {
 async function codexSharedServerStates(deps: CommandDeps): Promise<ReadinessState[]> {
   if (!findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).some(item => item.harness === 'codex')) return []
   const state = await codexSharedServerState(deps.env, deps.hookPlatform ?? process.platform, deps.codexDaemonVersion)
-  return state === null ? [] : [state]
+  return state === null ? [] : [{ ...state, harnesses: ['codex'] }]
 }
 
 function hookStates(deps: CommandDeps): ReadinessState[] {
@@ -1195,6 +1207,7 @@ function readinessRemedy(
           : ('gap' as const),
       detail: check.detail,
       ...(check.technical === undefined ? {} : { technical: check.technical }),
+      ...(check.harnesses === undefined || check.harnesses.length === 0 ? {} : { harnesses: check.harnesses }),
       ...(check.ok || (check.reportOnly === true && check.remedy === undefined)
         ? {}
         : {
@@ -1217,6 +1230,7 @@ function claudeCommandStates(deps: CommandDeps, installations: readonly { harnes
   return [{
     id: 'claude-commands',
     title: 'Claude Code command approval',
+    harnesses: ['claude-code'],
     status: installed ? 'ready' : 'optional-gap',
     detail: installed
       ? 'Claude Code runs the Notifai send, ask, receive and acknowledge commands without asking first'
@@ -1238,6 +1252,8 @@ interface HookCheck {
   ok: boolean
   detail: string
   technical?: unknown
+  /** The harnesses whose condition this reports; absent for the machine or the active session. */
+  harnesses?: readonly string[]
   /** A remedy truer than the generic `notifai hooks install`. */
   remedy?:
     | {
@@ -1273,6 +1289,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     const loadability = inspectOpenclawPluginLoadability(deps)
     checks.push({
       name: 'hooks (openclaw plugin)',
+      harnesses: ['openclaw'],
       ok: loadability.loadable,
       detail:
         loadability.warning ??
@@ -1295,6 +1312,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     const version = hermesVersionSupported(deps.env)
     checks.push({
       name: 'hooks (hermes plugin)',
+      harnesses: ['hermes'],
       ok: enabled && version,
       detail: !version
         ? 'Hermes v0.21.5 is required for the proven plugin activation path'
@@ -1316,6 +1334,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   if (unwired.length > 0) {
     checks.push({
       name: 'hooks (detected)',
+      harnesses: unwired,
       ok: false,
       reportOnly: true,
       detail: `${unwired.map((harness) => HARNESS_LABELS[harness]).join(', ')} detected on this machine but not wired`,
@@ -1408,13 +1427,17 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
 
   // A handler naming an event this build dropped exits 2 every time the harness
   // fires it, which the harness reports as a hook failure.
+  const staleHarnesses = new Set<string>()
   const stale = installations.flatMap((i) =>
     i.handlers
       .filter((h) => {
         const event = handlerEvent(h.command)
         return event !== null && !(HOOK_EVENTS as readonly string[]).includes(event)
       })
-      .map((h) => `${h.event} -> ${handlerEvent(h.command)} in ${i.file}`),
+      .map((h) => {
+        staleHarnesses.add(i.harness)
+        return `${h.event} -> ${handlerEvent(h.command)} in ${i.file}`
+      }),
   )
   const missing = installations.flatMap((installation) => {
     const required = requiredHookEvents(installation.harness, deps.hookPlatform)
@@ -1424,12 +1447,13 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         .filter((event): event is string => event !== null),
     )
     const absent = required.filter((event) => !installed.has(event))
-    return absent.length === 0
-      ? []
-      : [`${installation.file} is missing ${absent.join(', ')}`]
+    if (absent.length === 0) return []
+    staleHarnesses.add(installation.harness)
+    return [`${installation.file} is missing ${absent.join(', ')}`]
   })
   checks.push({
     name: 'hooks (stale)',
+    harnesses: [...staleHarnesses],
     ok: stale.length === 0 && missing.length === 0,
     detail:
       stale.length === 0 && missing.length === 0
@@ -1440,6 +1464,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const adapterProblems = installations.flatMap((installation) =>
     (installation.problems ?? []).map((problem) => `${installation.file}: ${problem}`),
   )
+  const adapterHarnesses = [...new Set(installations
+    .filter((installation) => (installation.problems ?? []).length > 0)
+    .map((installation) => installation.harness))]
   const sharedAdapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
   adapterProblems.push(...sharedAdapter.problems)
   const runningTarget = deps.hookInstallTarget
@@ -1468,6 +1495,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   if (adapterProblems.length > 0) {
     checks.push({
       name: 'hooks (adapter)',
+      // The shared adapter belongs to every harness; a harness's own file only to it.
+      ...(sharedAdapter.problems.length > 0 || adapterMismatch ? {} : { harnesses: adapterHarnesses }),
       ok: false,
       // The adapter is one Machine-level file every harness runs through, so
       // a defect in it is always this machine's to fix and always fixable.
@@ -1490,6 +1519,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   const trustProblems = codexTrustProblems(installations, deps.env)
   checks.push({
     name: 'hooks (trust)',
+    harnesses: ['codex'],
     ok: trustProblems.length === 0,
     detail:
       trustProblems.length === 0
@@ -1506,6 +1536,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         }),
   })
 
+  const shapeHarnesses = installations
+    .filter((installation) => stopShapeProblems(installation).length > 0)
+    .map((installation) => installation.harness)
   const shapeProblems = installations.flatMap((installation) =>
     stopShapeProblems(installation).map(
       (problem) =>
@@ -1514,6 +1547,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   )
   checks.push({
     name: 'hooks (stop shape)',
+    harnesses: [...new Set(shapeHarnesses)],
     ok: shapeProblems.length === 0,
     detail:
       shapeProblems.length === 0
@@ -1538,6 +1572,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       .join(' && ')
     checks.push({
       name: 'hooks (legacy project install)',
+      harnesses,
       ok: false,
       detail: `${legacy
         .map((installation) => `${installation.harness} (${installation.file})`)
@@ -1562,6 +1597,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       .join(' && ')
     checks.push({
       name: 'hooks (obsolete native plugin)',
+      harnesses,
       ok: false,
       detail: `${obsoletePlugins
         .map((entry) => `${entry.harness} (${entry.keys.join(', ')} in ${entry.file})`)
@@ -1578,6 +1614,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   if (representationProblems.length > 0) {
     checks.push({
       name: 'hooks (codex representation)',
+      harnesses: ['codex'],
       ok: false,
       detail: representationProblems.join('; '),
     })
@@ -1586,6 +1623,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     if (coexistence.length > 0) {
       checks.push({
         name: 'hooks (codex representation)',
+        harnesses: ['codex'],
         ok: true,
         detail: coexistence.join('; '),
       })
@@ -1594,7 +1632,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
 
   const codexHome = codexHomeNote(deps.env, deps.hookPlatform)
   if (codexHome !== null) {
-    checks.push({ name: 'hooks (codex home)', ok: true, detail: codexHome })
+    checks.push({ name: 'hooks (codex home)', harnesses: ['codex'], ok: true, detail: codexHome })
   }
 
   if (active !== null && activeInstallations.length > 0) {

@@ -63,32 +63,28 @@ export function changedFilesAgainstMain() {
 }
 
 async function verifyPackedSkillInstaller(prepared, scratch) {
-  // Source modules create only the existing-scope fixture. The distributed
-  // native executable performs refresh/refusal; npm carries no product modules.
-  const { nativeSkills } = await import('../apps/cli/dist/native-skills.js')
+  // The distributed native executable performs every refresh; npm carries no product modules.
   const project = path.join(scratch, 'skill project Ω')
-  mkdirSync(project)
+  const skill = path.join(project, '.agents/skills/notifai/SKILL.md')
+  mkdirSync(path.dirname(skill), { recursive: true })
+  writeFileSync(skill, 'Outdated fixture guidance\n')
   const env = { ...prepared.env, CODEX_HOME: path.join(prepared.home, 'codex'),
     XDG_CONFIG_HOME: path.join(prepared.home, 'config'), XDG_STATE_HOME: path.join(prepared.home, 'state'),
     PATH: process.platform === 'win32' ? `${process.env.SystemRoot}\\System32` : '' }
-  const seeded = await nativeSkills.add({ skill: 'notifai', scope: 'project', agents: ['codex'], cwd: project, env })
-  if (seeded !== 0) throw new Error('Could not prepare an owned existing skill scope')
-  const execute = phase => runExternal(prepared.nativeCommand, ['update', '--refresh-skill', '--json'], {
-    cwd: project, env, timeoutMs: TIMEOUTS.cliCommand, phase })
-  const first = requireStatus(execute('native-packed-skill-refresh'))
-  if (JSON.parse(first.stdout).ok !== true) throw new Error('Native bundled skill disagrees with reviewed scope fixture')
-  const skill = path.join(project, '.agents/skills/notifai/SKILL.md')
-  const original = readFileSync(skill, 'utf8')
-  writeFileSync(skill, original + '\n<!-- user edit -->\n')
-  const refused = execute('native-packed-skill-user-edit')
-  if (refused.status === 0 || !readFileSync(skill, 'utf8').endsWith('<!-- user edit -->\n')) {
-    throw new Error('Native skill refresh did not preserve a user edit')
+  const execute = phase => JSON.parse(requireStatus(runExternal(prepared.nativeCommand, ['update', '--refresh-skill', '--json'], {
+    cwd: project, env, timeoutMs: TIMEOUTS.cliCommand, phase })).stdout)
+  const first = execute('native-packed-skill-refresh')
+  const shipped = readFileSync(skill, 'utf8')
+  if (first.ok !== true || first.changed !== true || shipped === 'Outdated fixture guidance\n') {
+    throw new Error('Native refresh did not replace an outdated skill copy')
   }
-  writeFileSync(skill, original)
-  const retry = requireStatus(execute('native-packed-skill-retry'))
-  if (JSON.parse(retry.stdout).ok !== true || readFileSync(skill, 'utf8') !== original) throw new Error('Native skill refresh retry changed reviewed content')
+  writeFileSync(skill, shipped + '\n<!-- local edit -->\n')
+  const edited = execute('native-packed-skill-edited')
+  if (edited.ok !== true || readFileSync(skill, 'utf8') !== shipped) throw new Error('Native refresh did not restore the shipped skill')
+  const retry = execute('native-packed-skill-retry')
+  if (retry.ok !== true || retry.changed !== false || readFileSync(skill, 'utf8') !== shipped) throw new Error('Native skill refresh is not idempotent')
   console.log(JSON.stringify({ ok: true, build: prepared.nativeReceipt.build,
-    checks: ['signed-native-bundle', 'native-owned-scope-refresh', 'user-edit-preservation', 'idempotent-refresh'] }))
+    checks: ['signed-native-bundle', 'native-outdated-copy-refresh', 'edited-copy-restore', 'idempotent-refresh'] }))
 }
 
 async function main() {

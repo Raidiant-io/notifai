@@ -73,23 +73,18 @@ published writer fence.
 
 Run the locally generated `update_command`. The updater verifies the selected
 installation and stable adapter, then invokes the new executable for its
-handoff with `update --resume`. It refreshes an existing installer-managed skill
-in its original receipt-backed scope and recorded harness placements, and
-repairs diagnosed Notifai-owned definitions. With a selected Codex home, it
+handoff with `update --resume`. It rewrites every outdated Notifai skill copy a
+harness loads, in place, and repairs diagnosed Notifai-owned definitions. With a selected Codex home, it
 also repairs existing source-home definitions before
 the selected copy; other accounts are untouched. Foreign hooks, settings,
 Guidance Topics, native approval and pending work remain User-owned.
 
-Unmanaged guidance in other placements is preserved and remains diagnosed; it
-does not prevent refreshing the existing owned selection or independently safe
-hook repair. Healthy compatible Session Attendants keep their original runtime
-and work. With only unmanaged guidance, resume skips
-skill installation. It never creates a default placement or adopts matching
-files. `files_complete: true` means the required owned files were verified.
+Healthy compatible Session Attendants keep their original runtime and work.
+Resume never creates a skill where none was installed.
+`files_complete: true` means the required owned files were verified.
 `migration_complete` additionally requires the approval and loaded-definition
 evidence for changes this operation made. Unrelated problems remain in
-`diagnostics`; they do not widen the repair or prevent its completion. A
-successful owned refresh does not establish that every harness has current guidance.
+`diagnostics`; they do not widen the repair or prevent its completion.
 
 `integration_complete: true` confirms integration. Native updates report the
 new `version`, `integration`, and any `launcher_update_pending` separately;
@@ -103,17 +98,11 @@ Honor existing approval deferrals; repeating resume does not grant permission.
 
 1. Read the new packaged `guidance.skill_path` and this update reference. Run
    `notifai guidance` to reread the effective provenance-marked Guidance Topics.
-2. Resolve the reported `pending_actions`. Unreadable owned placements and
-   multiple receipt-backed scopes require a decision rather than guessing.
-   Preserve an unmanaged or modified skill. Ask about replacement only if that
-   placement is needed for the requested outcome; unrelated diagnostics need no
-   new approval. Matching package bytes do not establish installer
-   ownership. An interrupted installer-owned placement or a missing owned
-   destination can resume in its recorded scope through the existing installer.
-   An incomplete inspection or unverifiable bundle does not establish stale
-   guidance; resolve that diagnosis before attempting refresh. A failed native
-   installer remains incomplete; report its failure and resume only after
-   resolving it.
+2. Resolve the reported `pending_actions`. An outdated skill copy needs no
+   decision: `notifai update --refresh-skill --json` rewrites every copy with
+   the shipped guidance. An unverifiable bundle does not establish stale
+   guidance; resolve that diagnosis before refreshing. A failed refresh
+   remains incomplete; report its failure and resume only after resolving it.
    Read the refreshed skill and relevant changed references explicitly;
    replacing files does not replace the agent's existing context.
 3. Explain any diagnosed approval or restart

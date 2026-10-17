@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readinessJson, refreshAfterMenuAction } from './readiness.js'
+import { firstBlocker, readinessJson, refreshAfterMenuAction } from './readiness.js'
 
 describe('refreshAfterMenuAction', () => {
   it('does not re-assess after doctor, a test send, or a device list', () => {
@@ -84,5 +84,32 @@ describe('Question Routing readiness', () => {
 
     expect(result.question_routing_ready).toBe(false)
     expect(result.direct_wake_ready).toBe(false)
+  })
+})
+
+describe('harness-scoped verdicts', () => {
+  const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
+  const routed = [ready('question-routing-settings'), ready('hooks'), ready('hooks-active-session'), ready('hooks-fired')]
+  type Verdict = { ok: boolean; question_routing_ready: boolean; states: Array<{ id: string; applies_here: boolean }> }
+  const verdict = (readiness: Parameters<typeof readinessJson>[0]): Verdict =>
+    ({ ...readinessJson(readiness), ok: firstBlocker(readiness) === null }) as Verdict
+
+  it('reports another harness\'s gap without holding it against this one', () => {
+    const grokSkill = { id: 'skill', title: 'skill', status: 'gap' as const, detail: 'outdated', harnesses: ['grok'] }
+    const codexTrust = { id: 'hooks-trust', title: 'trust', status: 'gap' as const, detail: 'unapproved', harnesses: ['codex'] }
+    const states = [...routed, grokSkill, codexTrust]
+    expect(verdict({ states, harness: 'claude-code' })).toMatchObject({ ok: true, question_routing_ready: true,
+      states: expect.arrayContaining([{ ...grokSkill, applies_here: false, technical: null, remedy: null },
+        expect.objectContaining({ id: 'hooks-trust', applies_here: false })]) })
+    expect(verdict({ states, harness: 'codex' })).toMatchObject({ ok: false, question_routing_ready: false })
+    // With no harness to judge for, the whole machine is the subject.
+    expect(verdict({ states, harness: null })).toMatchObject({ ok: false, question_routing_ready: false })
+  })
+
+  it('keeps Question Routing ready without a Codex shared app-server', () => {
+    const states = [...routed, { id: 'hooks-codex-shared-server', title: 'forms', status: 'optional-gap' as const,
+      detail: 'no shared Codex app-server', harnesses: ['codex'] }]
+    expect(verdict({ states, harness: 'codex' }).question_routing_ready).toBe(true)
+    expect(verdict({ states, harness: 'claude-code' }).question_routing_ready).toBe(true)
   })
 })

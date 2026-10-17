@@ -38,11 +38,6 @@ export async function cliUpdateCheckCommand(
   const toolNotesVerified = owner?.harness === 'codex' && owner.sessionId !== undefined
     ? codexToolHookReady(deps, owner.sessionId) : null
   const bundle = shippedSkillBundle(version ?? undefined)
-  const installedSkill = readiness.states.find(state => state.id === 'skill')
-  if (installedSkill !== undefined && typeof installedSkill.technical === 'object' && installedSkill.technical !== null &&
-      'resolution' in installedSkill.technical && installedSkill.technical.resolution === 'installed-skill-content-mismatch') {
-    installedSkill.remedy = { by: 'cli', summary: 'refresh the existing skill without unrelated setup', command: 'notifai update --refresh-skill --json' }
-  }
   const report = {
     ok: true,
     read_only: true,

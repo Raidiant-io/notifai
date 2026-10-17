@@ -68,15 +68,32 @@ export interface ReadinessState {
   /** Structured diagnostics emitted only by --json / non-human surfaces. */
   technical?: unknown
   remedy?: Remedy
+  /**
+   * The harnesses this state is about. Absent means the machine as a whole:
+   * the credential, the service, the shared adapter, every harness at once.
+   */
+  harnesses?: readonly string[]
 }
 
 export interface Readiness {
   states: ReadinessState[]
+  /**
+   * The one harness running this invocation, or null when none is or several
+   * could be. A harness is judged on its own states; another harness's
+   * leftovers are reported to it, never held against it.
+   */
+  harness?: string | null
+}
+
+/** Whether a state bears on this invocation's verdict. */
+export function appliesHere(readiness: Readiness, state: ReadinessState): boolean {
+  const harness = readiness.harness ?? null
+  return harness === null || state.harnesses === undefined || state.harnesses.includes(harness)
 }
 
 /** The first thing standing in the way, or null when nothing is. */
 export function firstBlocker(readiness: Readiness): ReadinessState | null {
-  return readiness.states.find((s) => s.status === 'gap') ?? null
+  return readiness.states.find((s) => s.status === 'gap' && appliesHere(readiness, s)) ?? null
 }
 
 /**
@@ -108,7 +125,7 @@ export function isOptionalSetup(id: string): boolean {
 
 /** The first thing in the way that is not optional automation. */
 export function firstRequiredBlocker(readiness: Readiness): ReadinessState | null {
-  return readiness.states.find((s) => s.status === 'gap' && !isOptionalSetup(s.id)) ?? null
+  return readiness.states.find((s) => s.status === 'gap' && !isOptionalSetup(s.id) && appliesHere(readiness, s)) ?? null
 }
 
 /**
@@ -147,23 +164,27 @@ export function canSend(readiness: Readiness): boolean {
  * harnesses an unavailable direct wake costs latency, not delivery. Claude on
  * Windows still holds the Stop turn open, and Codex's answer waits in the
  * accepted journal for the session's next turn. Counting either as a routing
- * failure would report a working question route as broken.
+ * failure would report a working question route as broken. The Codex shared
+ * app-server is excluded for the same reason: without it a device answer still
+ * reaches the agent, and only the terminal's question form stays open.
  */
 export function questionRoutingReady(readiness: Readiness): boolean {
   const relevant = readiness.states.filter(
     (state) =>
-      state.id === 'question-routing-settings' ||
+      appliesHere(readiness, state) &&
+      (state.id === 'question-routing-settings' ||
       (state.id === 'hooks' || state.id.startsWith('hooks-')) &&
         state.id !== 'hooks-detected' &&
         // Native activity diagnoses presence, not the trusted answer route.
         state.id !== 'hooks-native-activity' &&
+        state.id !== 'hooks-codex-shared-server' &&
         !(
           state.id === 'hooks-wake-route' &&
           typeof state.technical === 'object' &&
           state.technical !== null &&
           'direct_wake_optional' in state.technical &&
           state.technical.direct_wake_optional === true
-        ),
+        )),
   )
   return relevant.length > 0 && relevant.every((state) => state.status === 'ready')
 }
@@ -177,6 +198,7 @@ export function directWakeReady(readiness: Readiness): boolean | null {
 /** Stable machine renderer shared by init and doctor. */
 export function readinessJson(readiness: Readiness): object {
   return {
+    harness: readiness.harness ?? null,
     ready: isReady(readiness),
     can_send: canSend(readiness),
     question_routing_ready: questionRoutingReady(readiness),
@@ -188,6 +210,8 @@ export function readinessJson(readiness: Readiness): object {
       detail: state.detail,
       technical: state.technical ?? null,
       remedy: state.remedy ?? null,
+      harnesses: state.harnesses ?? null,
+      applies_here: appliesHere(readiness, state),
     })),
   }
 }

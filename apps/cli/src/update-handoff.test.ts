@@ -61,3 +61,11 @@ it('constructs release links only from valid artifact versions', () => {
   expect(releaseNotesUrl('11.1.1')).toBe('https://github.com/Raidiant-io/notifai/releases/tag/v11.1.1')
   expect(releaseNotesUrl('11.1.1/../../other')).toBeNull()
 })
+
+it("does not ask a session to attend to another harness's gap after an update", () => {
+  const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
+  const states = [ready('hooks'), ready('hooks-active-session'), ready('hooks-fired'),
+    { id: 'skill', title: 'skill', status: 'gap' as const, detail: 'Grok loads outdated guidance', harnesses: ['grok'] }]
+  expect(updateSessionEffects('claude-code', states)).toMatchObject({ assessment: 'continue', diagnostics: states.slice(0, 3) })
+  expect(updateSessionEffects('grok', states).assessment).toBe('needs_attention')
+})

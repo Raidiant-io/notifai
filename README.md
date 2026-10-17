@@ -293,10 +293,11 @@ choosing iPhone or Android opens its setup steps and starts a bounded wait;
 Ctrl-C stops the wait, and expiry offers more time.
 
 `notifai init --skills` installs the complete first-party skill bundled with
-this CLI. It verifies the file list and content digest, copies only that skill
-to the selected harnesses, and records which copies it owns. Refreshes retain
-the selection. Modified files and unowned copies are preserved and reported;
-installation does not run npm, npx, Git, or a separate skill manager.
+this CLI. It verifies the file list and content digest and copies only that
+skill to the selected harnesses. Every `notifai` skill directory a harness loads
+is Notifai's: setup and refresh rewrite any copy that differs from the bundled
+skill. Customise guidance with Guidance Topics, not by editing the skill.
+Installation does not run npm, npx, Git, or a separate skill manager.
 
 For unattended setup, choose both scope and harnesses, for example:
 
@@ -305,10 +306,9 @@ notifai init --skills --skills-scope global --skills-harness claude-code,codex -
 ```
 
 The scope applies to guidance placement, independently of lifecycle wiring.
-Subsequent `notifai update --refresh-skill` refreshes the existing selection. Directory
-presence and content verification do not override a harness’s trust, profile,
-or skill-discovery settings. Existing external-installer locks are migration
-evidence and are never authority to overwrite user-edited guidance.
+Subsequent `notifai update --refresh-skill` rewrites every outdated copy in place.
+Directory presence and content verification do not override a harness’s trust,
+profile, or skill-discovery settings.
 
 ## The installed hooks
 

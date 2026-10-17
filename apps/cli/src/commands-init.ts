@@ -12,8 +12,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { sharedProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
-import { conventionalSkillPath, type SkillScope } from './native-skills.js'
-import { canonicalPath } from './local-path.js'
+import { type SkillScope } from './native-skills.js'
 import {
   firstRequiredBlocker,
   isOptionalAutomation,
@@ -51,7 +50,7 @@ import {
   setupProofIsStale,
   writeSetupProof,
 } from './commands-setup-proof.js'
-import { installedSkillMatchesPackage, staleInstalledSkillCopies, listScopedNotifaiSkills } from './commands-skill.js'
+import { skillInventory } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
@@ -206,96 +205,38 @@ async function closeGap(
       return 'failed'
     }
     const retry = `notifai init --skills --skills-scope ${installScope}`
-    let inventory = await listScopedNotifaiSkills(deps)
-    if (inventory.errors.length > 0) {
+    const before = skillInventory(deps)
+    if (before.error !== undefined) {
       deps.io.err(`Could not inspect installed guidance. Retry with \`${retry}\`.`)
       return 'failed'
     }
-    const scopesOverlap = () => {
-      const selected = inventory.installed.find((skill) => skill.scope === installScope)?.path
-        ?? conventionalSkillPath(installScope, 'notifai', deps.cwd, deps.env)
-      const normalize = (file: string) => {
-        const resolved = canonicalPath(file)
-        return (deps.hookPlatform ?? process.platform) === 'win32' ? resolved.toLowerCase() : resolved
-      }
-      const destination = normalize(selected)
-      return inventory.installed.some((skill) => {
-        if (skill.scope === installScope) return false
-        const old = normalize(skill.path)
-        return destination === old || destination.startsWith(`${old}${path.sep}`)
-          || old.startsWith(`${destination}${path.sep}`)
-      })
+    // Without a choice, the harnesses that already load the skill keep it.
+    let harnesses: readonly string[] = flags.skillsHarness?.split(',').map((value) => value.trim())
+      ?? [...new Set(before.copies.flatMap((copy) => copy.harnesses))]
+    if (harnesses.length === 0 && deps.io.interactive === true && deps.io.multiselect) {
+      harnesses = await deps.io.multiselect('Which agent harnesses should load the Notifai skill?',
+        SOURCE_CONTEXT_HARNESSES.map((value) => ({ value, label: HARNESS_LABELS[value] })), []) ?? []
     }
-    const refuseOverlap = () => {
-      deps.io.err('Project and global skill destinations overlap. Keep the existing scope, or run setup from a project with separate skill directories before changing scope.')
-      return 'failed' as const
+    if (harnesses.length === 0 || harnesses.some((harness) => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(harness))) {
+      deps.io.err(`Choose the harnesses for this skill with --skills-harness ${SOURCE_CONTEXT_HARNESSES.join(',')}.`)
+      return 'failed'
     }
-    if (scopesOverlap()) return refuseOverlap()
-    // A harness that loads its own older copy is not served by a verified
-    // conventional copy, so it keeps the installer in play.
-    const selectedIsVerified = () => inventory.installed.some(
-      (skill) => skill.scope === installScope && installedSkillMatchesPackage(skill) &&
-        (flags.skillsHarness === undefined || flags.skillsHarness.split(',').every(agent => skill.agents?.includes(agent.trim() as SourceContextHarness))) &&
-        staleInstalledSkillCopies(skill, deps.cwd, deps.env).length === 0,
-    )
-    // Keep the existing scope until the native installer has produced a
-    // content-verified replacement. A retry after partial cleanup can reuse
-    // this proof and finish without invoking the installer again.
-    if (!selectedIsVerified()) {
-      let agents: readonly string[] | undefined = flags.skillsHarness?.split(',').map(value => value.trim())
-        ?? inventory.installed.find(skill => skill.scope === installScope)?.agents
-        ?? inventory.installed[0]?.agents
-      if (agents !== undefined) agents = [...new Set([...(inventory.installed.find(skill => skill.scope === installScope)?.agents ?? []), ...agents])]
-      if (agents === undefined && deps.io.interactive === true && deps.io.multiselect) {
-        agents = await deps.io.multiselect('Which agent harnesses should load the Notifai skill?',
-          SOURCE_CONTEXT_HARNESSES.map(value => ({ value, label: HARNESS_LABELS[value] })), []) ?? []
-      }
-      if (!agents?.length || agents.some(agent => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(agent))) {
-        deps.io.err(`Choose the harnesses for this skill with --skills-harness ${SOURCE_CONTEXT_HARNESSES.join(',')}. Updates retain this selection.`)
-        return 'failed'
-      }
-      deps.io.out(`Installing the bundled notifai agent skill (${installScope} scope)...`)
-      const operation = await deps.nativeSkills.add({
-        skill: 'notifai',
-        cwd: deps.cwd,
-        env: deps.env,
-        scope: installScope,
-        agents: agents as SourceContextHarness[],
-      }).catch((error: unknown) => ({ code: 1, error: String(error) }))
-      const code = typeof operation === 'number' ? operation : operation.code
-      if (code !== 0) {
-        deps.io.err(
-          typeof operation === 'number'
-            ? `Skill installation failed. Retry with \`${retry}\` after checking the selected skill directories.`
-            : `Skill installation refused — ${operation.error}. Retry with \`${retry}\`.`,
-        )
-        return 'failed'
-      }
-      inventory = await listScopedNotifaiSkills(deps)
-      if (inventory.errors.length > 0 || !selectedIsVerified()) {
-        deps.io.err(`The selected skill could not be verified; the previous scope was kept. Retry with \`${retry}\`.`)
-        return 'failed'
-      }
+    deps.io.out(`Installing the bundled notifai agent skill (${installScope} scope)...`)
+    const operation = await deps.nativeSkills.place({ scope: installScope, harnesses: harnesses as SourceContextHarness[],
+      cwd: deps.cwd, env: deps.env }).catch((error: unknown) => ({ code: 1, error: String(error) }))
+    if ((typeof operation === 'number' ? operation : operation.code) !== 0) {
+      deps.io.err(typeof operation === 'number'
+        ? `Skill installation failed. Retry with \`${retry}\`.`
+        : `Skill installation refused — ${operation.error}. Retry with \`${retry}\`.`)
+      return 'failed'
     }
-    const extras = inventory.installed.filter((skill) => skill.scope !== installScope)
-    if (scopesOverlap()) return refuseOverlap()
-    for (const extra of extras) {
-      const code = await deps.nativeSkills.remove({
-        skill: 'notifai',
-        scope: extra.scope,
-        cwd: deps.cwd,
-        env: deps.env,
-      }).catch(() => 1)
-      if (code !== 0) {
-        deps.io.err(
-          `The ${installScope} skill is verified, but cleanup of the ${extra.scope} copy failed. Retry with \`${retry}\` to finish.`,
-        )
-        return 'failed'
-      }
-    }
-    inventory = await listScopedNotifaiSkills(deps)
-    if (inventory.errors.length > 0 || inventory.installed.length !== 1 || !selectedIsVerified()) {
-      deps.io.err(`Skill migration is incomplete. Retry with \`${retry}\` to finish.`)
+    // Every other copy on the machine is Notifai's too; bring it current.
+    const refreshed = await deps.nativeSkills.refresh({ cwd: deps.cwd, env: deps.env })
+    const after = skillInventory(deps)
+    const placed = harnesses.every((harness) => after.copies.some((copy) => copy.scopes.includes(installScope) &&
+      copy.condition === 'current' && copy.harnesses.includes(harness as SourceContextHarness)))
+    if (!refreshed.ok || !placed || after.copies.some((copy) => copy.condition !== 'current')) {
+      deps.io.err(refreshed.error ?? `The installed guidance could not be verified. Retry with \`${retry}\`.`)
       return 'failed'
     }
     return 'closed'

@@ -9,7 +9,6 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -110,7 +109,6 @@ import { recordTurnStart } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
   nativeSkills as realNativeSkills,
-  type NativeSkill,
   type NativeSkills,
   type SkillScope,
 } from './native-skills.js'
@@ -222,13 +220,6 @@ const RELEASE_REF = `v${
   ).version
 }`
 const CLI_VERSION = RELEASE_REF.slice(1)
-
-const RELEASE_SKILL = fileURLToPath(new URL('../../../skills/notifai/', import.meta.url))
-
-function installCurrentSkill(destination: string): void {
-  mkdirSync(path.dirname(destination), { recursive: true })
-  cpSync(RELEASE_SKILL, destination, { recursive: true })
-}
 
 const currentSupport: SupportAssessment = {
   state: 'current',
@@ -502,6 +493,14 @@ function makeDeps(io: CapturedIo, client: ApiClient): CommandDeps {
  * check that failed on that file failed only for them. Every setup case that
  * asserts on readiness therefore gets its own home.
  */
+/** A skill adapter for tests that do not exercise guidance: nothing installed, every operation succeeds. */
+const inertSkills: NativeSkills = {
+  inspect: () => ({ copies: [], expectedDigest: 'sha256:inert' }),
+  place: async () => 0,
+  refresh: async () => ({ ok: true, changed: [] }),
+  remove: async () => 0,
+}
+
 function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
   const home = path.join(cwd, 'home')
   return {
@@ -5660,6 +5659,19 @@ describe('compatibility-first update guidance', () => {
     },
   ]
 
+  it("shows another harness's gap as a line naming that harness, without failing this one", async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-other-harness-'))
+    const io = new PlainInteractiveIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    const states = [{ id: 'skill', title: 'Agent guidance skill', status: 'gap' as const,
+      detail: 'Grok loads outdated guidance', harnesses: ['grok'] }]
+    expect(await doctorCommand(deps, {}, { readiness: { states, harness: 'claude-code' } })).toBe(EXIT.ok)
+    expect(io.outLines).toEqual(['  --  Agent guidance skill (Grok, not this harness): Grok loads outdated guidance'])
+    io.outLines = []
+    expect(await doctorCommand(deps, {}, { readiness: { states, harness: 'grok' } })).toBe(EXIT.failed)
+    expect(io.outLines).toEqual(['FAIL  Agent guidance skill: Grok loads outdated guidance'])
+  })
+
   it.each(cases)(
     'maps $name policy to closed human copy and structured JSON',
     async ({ support, status, detail, exit }) => {
@@ -5965,22 +5977,6 @@ describe('init', () => {
     }
   }
 
-  function managedSkill(scope: SkillScope, cwd: string): NativeSkill {
-    const skillPath = path.join(scope === 'global' ? path.join(cwd, 'home') : cwd, '.agents', 'skills', 'notifai')
-    if (!existsSync(skillPath)) installCurrentSkill(skillPath)
-    return {
-      name: 'notifai',
-      owned: true,
-      agents: ['claude-code'],
-      scope,
-      path: skillPath,
-      source: 'Raidiant-io/notifai',
-      sourceType: 'github',
-      sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-      ref: RELEASE_REF,
-    }
-  }
-
   function setupReadyDeps(
     io: CapturedIo,
     cwd: string,
@@ -6106,11 +6102,7 @@ describe('init', () => {
   it('retargets Question Routing while the post-update init resumes', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-init-update-adapter-'))
     const io = new CapturedIo()
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async () => ({ skills: [] }),
-    }
+    const nativeSkills = inertSkills
     const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
     const oldArtifact = path.join(cwd, 'old', 'dist', 'main.js')
     const prefix = path.join(cwd, 'current')
@@ -6215,410 +6207,76 @@ describe('init', () => {
     expect(io.errLines).toEqual([])
   })
 
-  it('recognizes a skill installed from the exact immutable release', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-pinned-skill-'))
-    const io = new CapturedIo()
-    const client = {
-      health: async () => true,
-      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({ devices: [] }),
-    } as unknown as ApiClient
-    const installedPath = path.join(cwd, '.agents', 'skills', 'notifai')
-    installCurrentSkill(installedPath)
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async (scope) => ({
-        skills:
-          scope === 'project'
-            ? [
-                {
-                  name: 'notifai',
-                  owned: true,
-                  scope,
-                  path: installedPath,
-                  source: 'Raidiant-io/notifai',
-                  sourceType: 'github',
-                  sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-                  ref: RELEASE_REF,
-                },
-              ]
-            : [],
-      }),
+  /** Setup deps whose skills are real directories under the test's isolated home. */
+  function skillSetup(io: CapturedIo, calls = { submit: 0 }) {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-'))
+    const deps = setupReadyDeps(io, cwd, realNativeSkills, calls)
+    const home = deps.env.HOME!
+    const outdated = (directory: string) => {
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(path.join(directory, 'SKILL.md'), 'guidance from an older release\n')
     }
-    const readiness = await assessReadiness(
-      { ...makeDeps(io, client), cwd, nativeSkills },
-      { skillScope: 'project' },
-    )
-    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-      status: 'ready',
-      detail: `installed in the project scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
-    })
-  })
-
-  it.each(['project', 'global'] as const)(
-    'recognizes native installer provenance in the selected %s scope',
-    async (scope) => {
-      const cwd = mkdtempSync(path.join(os.tmpdir(), `init-managed-${scope}-`))
-      const io = new CapturedIo()
-      const client = {
-        health: async () => true,
-        capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-        listDevices: async () => ({ devices: [] }),
-      } as unknown as ApiClient
-      const calls: SkillScope[] = []
-      const nativeSkills: NativeSkills = {
-        add: async () => 0,
-        remove: async () => 0,
-        list: async (selected) => {
-          calls.push(selected)
-          return { skills: selected === scope ? [managedSkill(selected, cwd)] : [] }
-        },
-      }
-
-      const readiness = await assessReadiness(
-        { ...makeDeps(io, client), cwd, nativeSkills },
-        { skillScope: scope },
-      )
-      expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-        status: 'ready',
-        detail: `installed in the ${scope} scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
-      })
-      expect(calls).toEqual(['project', 'global'])
-    },
-  )
-
-  it.each(['project', 'global'] as const)(
-    'trusts exact installed content independently of mutable %s provenance metadata',
-    async (scope) => {
-      const cwd = mkdtempSync(path.join(os.tmpdir(), `init-unmanaged-${scope}-`))
-      const io = new CapturedIo()
-      const client = {
-        health: async () => true,
-        capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-        listDevices: async () => ({ devices: [] }),
-      } as unknown as ApiClient
-      const nativeSkills: NativeSkills = {
-        add: async () => 0,
-        remove: async () => 0,
-        list: async (selected) => ({
-          skills:
-            selected === scope
-              ? [{ ...managedSkill(selected, cwd), source: null, sourceType: null, ref: null }]
-              : [],
-        }),
-      }
-
-      const readiness = await assessReadiness(
-        { ...makeDeps(io, client), cwd, nativeSkills },
-        { skillScope: scope },
-      )
-      expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-        status: 'ready',
-        detail: `installed in the ${scope} scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
-      })
-    },
-  )
-
-  it('reports a duplicate notifai skill across project and global scope', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-skill-duplicate-'))
-    const io = new CapturedIo()
-    const client = {
-      health: async () => true,
-      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({ devices: [] }),
-    } as unknown as ApiClient
-    const staleGlobal = managedSkill('global', cwd)
-    writeFileSync(path.join(staleGlobal.path, 'SKILL.md'), '# stale guidance\n')
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async (scope) => ({
-        skills: [
-          {
-            ...managedSkill(scope, cwd),
-            ref: scope === 'project' ? RELEASE_REF : 'v0.2.1',
-            path:
-              scope === 'project'
-                ? path.join(cwd, '.agents', 'skills', 'notifai')
-                : path.join(cwd, 'home', '.agents', 'skills', 'notifai'),
-          },
-        ],
-      }),
-    }
-
-    const readiness = await assessReadiness({ ...makeDeps(io, client), cwd, nativeSkills })
-    const skill = readiness.states.find((state) => state.id === 'skill')
-    expect(skill).toMatchObject({
-      status: 'gap',
-      detail: `project (${RELEASE_REF}) and global (v0.2.1) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
-      technical: {
-        project: {
-          ref: RELEASE_REF,
-          path: path.join(cwd, '.agents', 'skills', 'notifai'),
-          current: true,
-        },
-        global: {
-          ref: 'v0.2.1',
-          path: path.join(cwd, 'home', '.agents', 'skills', 'notifai'),
-          current: false,
-        },
-        resolution: 'both-listed',
-      },
-    })
-
-    expect(await doctorCommand({ ...makeDeps(io, client), cwd, nativeSkills }, { json: true })).toBe(
-      EXIT.failed,
-    )
-    const payload = JSON.parse(io.outLines[0] ?? '{}') as {
-      ok: boolean
-      states: Array<{ id: string; status: string; detail: string }>
-    }
-    expect(payload.ok).toBe(false)
-    expect(payload.states.find((state) => state.id === 'skill')).toMatchObject({
-      status: 'gap',
-      detail: expect.stringContaining('harness lists both'),
-    })
-  })
-
-  it('does not treat a current pin as ready when a stale duplicate is also installed', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-skill-shadow-'))
-    const io = new CapturedIo()
-    const client = {
-      health: async () => true,
-      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({ devices: [] }),
-    } as unknown as ApiClient
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async (scope) => ({
-        skills: [
-          {
-            ...managedSkill(scope, cwd),
-            ref: scope === 'global' ? RELEASE_REF : 'v0.2.1',
-          },
-        ],
-      }),
-    }
-
-    const readiness = await assessReadiness(
-      { ...makeDeps(io, client), cwd, nativeSkills },
-      { skillScope: 'global' },
-    )
-    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-      status: 'gap',
-      detail: `project (v0.2.1) and global (${RELEASE_REF}) are both installed, so the harness lists both. Keep either project or global and uninstall the other.`,
-    })
-  })
-
-  it('verifies the chosen skill scope before uninstalling the previous one', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-prevented-'))
-    const io = new CapturedIo()
-    const removed: SkillScope[] = []
-    const added: Array<SkillScope | undefined> = []
-    let globalPresent = true
-    let projectPresent = false
-    const nativeSkills: NativeSkills = {
-      add: async (options) => {
-        added.push(options.scope)
-        projectPresent = true
-        return 0
-      },
-      remove: async (options) => {
-        expect(projectPresent).toBe(true)
-        removed.push(options.scope)
-        if (options.scope === 'global') globalPresent = false
-        return 0
-      },
-      list: async (scope) => ({
-        skills: (scope === 'global' && globalPresent) || (scope === 'project' && projectPresent)
-          ? [managedSkill(scope, cwd)] : [],
-      }),
-    }
-
-    expect(
-      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
-        skills: true,
-        skillsScope: 'project',
-        skillsHarness: 'claude-code',
-        hooks: false,
-      }),
-    ).toBe(EXIT.ok)
-    expect(removed).toEqual(['global'])
-    expect(added).toEqual(['project'])
-  })
-
-  function skillMigrationFixture() {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-migration-retry-'))
-    const io = new CapturedIo()
-    const records = new Map<SkillScope, NativeSkill>()
-    const install = (scope: SkillScope) => {
-      const destination = path.join(cwd, `installed-${scope}`)
-      installCurrentSkill(destination)
-      const record = { ...managedSkill(scope, cwd), path: destination }
-      records.set(scope, record)
-      return record
-    }
-    const old = install('global')
-    const oldContents = readFileSync(path.join(old.path, 'SKILL.md'), 'utf8')
-    const plan = { add: 'success', cleanup: 'success' }
-    const calls: string[] = []
-    const nativeSkills: NativeSkills = {
-      list: async (scope) => ({ skills: records.has(scope) ? [records.get(scope)!] : [] }),
-      add: async () => {
-        calls.push('add')
-        if (plan.add === 'throws') throw new Error('installer interrupted')
-        if (plan.add === 'offline') return 1
-        const record = install('project')
-        if (plan.add === 'invalid') writeFileSync(path.join(record.path, 'SKILL.md'), '# incomplete skill\n')
-        return 0
-      },
-      remove: async ({ scope }) => {
-        calls.push('remove')
-        if (plan.cleanup === 'throws') throw new Error('cleanup interrupted')
-        if (plan.cleanup === 'failure') return 1
-        if (plan.cleanup !== 'no-op') records.delete(scope)
-        return 0
-      },
-    }
-    const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
-    const flags = { skills: true, skillsScope: 'project' as const, skillsHarness: 'claude-code', hooks: false, json: true }
-    return { cwd, io, records, old, oldContents, plan, calls, deps, flags }
+    const copies = () => realNativeSkills.inspect(cwd, deps.env).copies
+      .map((copy) => ({ scopes: copy.scopes, harnesses: copy.harnesses, condition: copy.condition }))
+    return { cwd, deps, home, calls, outdated, copies }
   }
 
-  it.each(['account-home', 'symlink'])('refuses a skill migration whose destinations alias through %s', async (layout) => {
-    const f = skillMigrationFixture()
-    const destination = path.join(f.cwd, '.agents', 'skills', 'notifai')
-    installCurrentSkill(destination)
-    let oldPath = destination
-    if (layout === 'account-home') {
-      f.deps.env['HOME'] = f.cwd
-      f.deps.env['USERPROFILE'] = f.cwd
-    } else {
-      oldPath = path.join(f.cwd, 'alias-to-project-skill')
-      symlinkSync(destination, oldPath, 'dir')
-    }
-    f.records.set('global', { ...f.old, path: oldPath })
-    const contents = readFileSync(path.join(destination, 'SKILL.md'), 'utf8')
-    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.failed)
-    expect(f.calls).toEqual([])
-    expect(f.io.errLines.join('\n')).toContain('skill destinations overlap')
-    expect(readFileSync(path.join(destination, 'SKILL.md'), 'utf8')).toBe(contents)
-  })
-
-  it.each(['offline', 'invalid', 'throws'])('keeps the old skill when the selected install is %s', async (failure) => {
-    const f = skillMigrationFixture()
-    f.plan.add = failure
-    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.failed)
-    expect(f.calls).toEqual(['add'])
-    expect(f.records.has('global')).toBe(true)
-    expect(readFileSync(path.join(f.old.path, 'SKILL.md'), 'utf8')).toBe(f.oldContents)
-    f.plan.add = 'success'
-    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.ok)
-    expect(f.calls).toEqual(['add', 'add', 'remove'])
-    expect([...f.records.keys()]).toEqual(['project'])
-  })
-
-  it.each(['failure', 'no-op', 'throws'])('retains the verified selected skill after cleanup %s and retries without reinstalling', async (failure) => {
-    const f = skillMigrationFixture()
-    f.plan.cleanup = failure
-    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.failed)
-    expect(f.calls).toEqual(['add', 'remove'])
-    expect([...f.records.keys()]).toEqual(['global', 'project'])
-    expect(readFileSync(path.join(f.old.path, 'SKILL.md'), 'utf8')).toBe(f.oldContents)
-    const readiness = JSON.parse(f.io.outLines.at(-1)!) as { states: Array<{ id: string; technical?: unknown }> }
+  it('reports current guidance in the selected scope as ready', async () => {
+    const f = skillSetup(new CapturedIo())
+    expect(await realNativeSkills.place({ scope: 'project', harnesses: ['claude-code'], cwd: f.cwd, env: f.deps.env })).toBe(0)
+    const readiness = await assessReadiness(f.deps, { skillScope: 'project' })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-      status: 'gap',
-      technical: { resolution: 'selected-copy-verified-cleanup-required' },
+      status: 'ready',
+      detail: `Claude Code loads the guidance shipped with CLI ${CLI_VERSION}`,
     })
-    f.plan.cleanup = 'success'
-    expect(await initCommand(f.deps, f.flags)).toBe(EXIT.ok)
-    expect(f.calls).toEqual(['add', 'remove', 'remove'])
-    expect([...f.records.keys()]).toEqual(['project'])
   })
 
-  it('clears a pre-existing skill duplicate by keeping the chosen skill scope', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-clear-'))
+  it('holds outdated guidance only against the harness that loads it', async () => {
     const io = new CapturedIo()
-    const removed: SkillScope[] = []
-    const present = new Set<SkillScope>(['project', 'global'])
-    const nativeSkills: NativeSkills = {
-      add: async (options) => {
-        if (options.scope !== undefined) present.add(options.scope)
-        return 0
-      },
-      remove: async (options) => {
-        removed.push(options.scope)
-        present.delete(options.scope)
-        return 0
-      },
-      list: async (scope) => ({
-        skills: present.has(scope)
-          ? [
-              {
-                ...managedSkill(scope, cwd),
-                ref: scope === 'project' ? RELEASE_REF : 'v0.2.1',
-              },
-            ]
-          : [],
-      }),
+    const f = skillSetup(io)
+    expect(await realNativeSkills.place({ scope: 'global', harnesses: ['claude-code'], cwd: f.cwd, env: f.deps.env })).toBe(0)
+    f.outdated(path.join(f.home, '.grok', 'skills', 'notifai'))
+    const skillFor = async (env: NodeJS.ProcessEnv) => {
+      io.outLines = []
+      await doctorCommand({ ...f.deps, env: { ...f.deps.env, ...env } }, { json: true })
+      const payload = JSON.parse(io.outLines[0]!) as { harness: string | null; states: Array<Record<string, unknown>> }
+      return { harness: payload.harness, skill: payload.states.find((state) => state.id === 'skill') }
     }
-
-    expect(
-      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
-        skills: true,
-        skillsScope: 'project',
-        skillsHarness: 'claude-code',
-        hooks: false,
-      }),
-    ).toBe(EXIT.ok)
-    expect(removed).toEqual(['global'])
-    expect([...present]).toEqual(['project'])
+    expect(await skillFor({ CLAUDECODE: '1' })).toMatchObject({ harness: 'claude-code',
+      skill: { status: 'gap', harnesses: ['grok'], applies_here: false } })
+    expect(await skillFor({ GROK_SESSION_ID: 'grok-session' })).toMatchObject({ harness: 'grok',
+      skill: { status: 'gap', applies_here: true, remedy: { command: 'notifai update --refresh-skill' } } })
   })
 
-  it('does not reinstall content-current guidance because mutable ref metadata is stale', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-update-existing-'))
-    const io = new InteractiveIo()
-    const received: Array<SkillScope | undefined> = []
-    const installed = true
-    const nativeSkills: NativeSkills = {
-      add: async (options) => {
-        received.push(options.scope)
-        return 0
-      },
-      remove: async () => 0,
-      list: async (scope) => ({
-        skills: installed && scope === 'global' ? [{ ...managedSkill('global', cwd), ref: 'v0.2.1' }] : [],
-      }),
-    }
+  it('moves the selected harnesses into the chosen scope and brings every other copy current', async () => {
+    const f = skillSetup(new CapturedIo())
+    expect(await realNativeSkills.place({ scope: 'global', harnesses: ['claude-code'], cwd: f.cwd, env: f.deps.env })).toBe(0)
+    f.outdated(path.join(f.home, '.grok', 'skills', 'notifai'))
+    expect(await initCommand(f.deps, { skills: true, skillsScope: 'project', skillsHarness: 'claude-code', hooks: false }))
+      .toBe(EXIT.ok)
+    expect(f.copies()).toEqual([
+      { scopes: ['global'], harnesses: ['grok'], condition: 'current' },
+      { scopes: ['project'], harnesses: ['claude-code'], condition: 'current' },
+    ])
+  })
 
-    expect(
-      await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
-        skills: true,
-        hooks: false,
-      }),
-    ).toBe(EXIT.ok)
-    expect(received).toEqual([])
+  it('keeps the harnesses that already load the skill when none is named', async () => {
+    const f = skillSetup(new CapturedIo())
+    f.outdated(path.join(f.home, '.grok', 'skills', 'notifai'))
+    expect(await initCommand(f.deps, { skills: true, skillsScope: 'global', hooks: false })).toBe(EXIT.ok)
+    expect(f.copies()).toEqual([{ scopes: ['global'], harnesses: ['grok'], condition: 'current' }])
   })
 
   it('requires an explicit skill scope before unattended installation', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-scope-required-'))
     const io = new CapturedIo()
-    let addCalls = 0
-    const nativeSkills: NativeSkills = {
-      add: async () => {
-        addCalls += 1
-        return 0
-      },
-      remove: async () => 0,
-      list: async () => ({ skills: [] }),
-    }
+    let placed = 0
+    const nativeSkills: NativeSkills = { ...inertSkills, place: async () => { placed += 1; return 0 } }
 
     expect(await initCommand({ ...makeDeps(io, {} as ApiClient), cwd, nativeSkills }, { skills: true })).toBe(
       EXIT.usage,
     )
-    expect(addCalls).toBe(0)
+    expect(placed).toBe(0)
     expect(io.errLines.join('\n')).toContain('--skills-scope project')
   })
 
@@ -6634,60 +6292,29 @@ describe('init', () => {
   })
 
   it.each(['project', 'global'] as const)(
-    'passes an unattended %s choice to the native installer and continues setup',
+    'places an unattended %s choice and continues setup',
     async (scope) => {
-      const cwd = mkdtempSync(path.join(os.tmpdir(), `init-skill-${scope}-`))
       const io = new CapturedIo()
-      const calls: { submit: number } = { submit: 0 }
-      let installed = false
-      let receivedScope: SkillScope | undefined
-      const nativeSkills: NativeSkills = {
-        add: async (options) => {
-          receivedScope = options.scope
-          installed = true
-          return 0
-        },
-        remove: async () => 0,
-        list: async (selected) => ({
-          skills: installed && selected === scope ? [managedSkill(scope, cwd)] : [],
-        }),
-      }
-
-      const result = await initCommand(
-        setupReadyDeps(io, cwd, nativeSkills, calls),
-        { skills: true, skillsScope: scope, skillsHarness: 'claude-code', hooks: false },
-      )
-      expect(result).toBe(EXIT.ok)
-      expect(receivedScope).toBe(scope)
-      expect(calls.submit).toBe(1)
+      const f = skillSetup(io)
+      expect(await initCommand(f.deps, { skills: true, skillsScope: scope, skillsHarness: 'claude-code', hooks: false }))
+        .toBe(EXIT.ok)
+      expect(f.copies()).toEqual([{ scopes: [scope], harnesses: ['claude-code'], condition: 'current' }])
+      expect(f.calls.submit).toBe(1)
       expect(io.outLines.join('\n')).toContain('All set.')
     },
   )
 
-  it('asks for skill scope and selected harnesses before placing the bundled skill', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-scope-ask-'))
+  it('asks for skill scope and harnesses before placing the bundled skill', async () => {
     const io = new InteractiveIo()
     io.selectAnswer = 'project'
     io.multiselectAnswer = ['claude-code']
-    const calls: { submit: number } = { submit: 0 }
-    let receivedScope: SkillScope | undefined
-    const nativeSkills: NativeSkills = {
-      add: async (options) => {
-        receivedScope = options.scope
-        return 0
-      },
-      remove: async () => 0,
-      list: async (scope) => ({ skills: receivedScope === scope ? [managedSkill(scope, cwd)] : [] }),
-    }
-
-    expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, hooks: false })).toBe(
-      EXIT.ok,
-    )
+    const f = skillSetup(io)
+    expect(await initCommand(f.deps, { skills: true, hooks: false })).toBe(EXIT.ok)
     expect(io.prompts[0]).toContain(
       'agent guidance skill be installed for this project only, or for every project on this machine',
     )
-    expect(receivedScope).toBe('project')
-    expect(calls.submit).toBe(1)
+    expect(f.copies()).toEqual([{ scopes: ['project'], harnesses: ['claude-code'], condition: 'current' }])
+    expect(f.calls.submit).toBe(1)
     expect(io.outLines.join('\n')).toContain('All set.')
   })
 
@@ -6723,11 +6350,7 @@ describe('init', () => {
     mkdirSync(path.join(cwd, '.codex'))
     const io = new CapturedIo()
     const calls = { submit: 0 }
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async () => ({ skills: [] }),
-    }
+    const nativeSkills = inertSkills
     const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
     await initCommand(deps, { hooks: true, skills: false })
     const wired = findInstallations(deps.env, deps.hookAdapterHome).map(
@@ -6753,7 +6376,7 @@ describe('init', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-'))
     mkdirSync(path.join(cwd, '.claude'))
     const io = new CapturedIo()
-    const nativeSkills: NativeSkills = { add: async () => 0, remove: async () => 0, list: async () => ({ skills: [] }) }
+    const nativeSkills = inertSkills
     const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
     const settings = path.join(deps.env.CLAUDE_CONFIG_DIR!, 'settings.json')
     const allowed = (): unknown => (JSON.parse(readFileSync(settings, 'utf8')) as { permissions?: { allow?: unknown } }).permissions?.allow
@@ -6787,11 +6410,7 @@ describe('init', () => {
     const io = new InteractiveIo()
     io.multiselectAnswer = ['claude-code']
     const calls = { submit: 0 }
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async () => ({ skills: [] }),
-    }
+    const nativeSkills = inertSkills
     const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
     expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
     expect(io.prompts.some((prompt) => prompt.includes('Which agent harnesses'))).toBe(true)
@@ -6801,15 +6420,11 @@ describe('init', () => {
     expect(wired).toEqual(['claude-code'])
   })
 
-  it('reports an optional native installer failure without blocking remaining setup', async () => {
+  it('reports an optional skill placement failure without blocking remaining setup', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-failed-'))
     const io = new InteractiveIo()
     const calls: { submit: number } = { submit: 0 }
-    const nativeSkills: NativeSkills = {
-      add: async () => 1,
-      remove: async () => 0,
-      list: async () => ({ skills: [] }),
-    }
+    const nativeSkills: NativeSkills = { ...inertSkills, place: async () => 1 }
 
     expect(await initCommand(setupReadyDeps(io, cwd, nativeSkills, calls), { skills: true, skillsHarness: 'codex', hooks: false })).toBe(
       EXIT.failed,
@@ -6822,15 +6437,8 @@ describe('init', () => {
   it('explains a bundled skill placement failure without blaming the network', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-local-launch-failed-'))
     const io = new InteractiveIo()
-    const nativeSkills: NativeSkills = {
-      add: async () => ({
-        code: 1,
-        error:
-          'the harness skill directory is not writable; check its permissions, then rerun setup',
-      }),
-      remove: async () => 0,
-      list: async () => ({ skills: [] }),
-    }
+    const nativeSkills: NativeSkills = { ...inertSkills, place: async () => ({ code: 1,
+      error: 'the harness skill directory is not writable; check its permissions, then rerun setup' }) }
 
     expect(
       await initCommand(setupReadyDeps(io, cwd, nativeSkills, { submit: 0 }), {
@@ -7087,11 +6695,7 @@ describe('init', () => {
       ...makeDeps(io, client),
       cwd,
       env: isolatedEnv(cwd),
-      nativeSkills: {
-        list: async () => ({ skills: [] }),
-        add: async () => 0,
-        remove: async () => 0,
-      } satisfies NativeSkills,
+      nativeSkills: inertSkills,
     }
 
     expect(await initCommand(deps, {})).toBe(EXIT.ok)
@@ -7980,18 +7584,14 @@ describe('init', () => {
     expect(auth?.remedy).toMatchObject({ by: 'user-elsewhere', summary: nextAction })
   })
 
-  it('does not let a duplicate agent-skill install stand in front of the proof', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-duplicate-'))
+  it('does not let outdated agent guidance stand in front of the proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-skill-outdated-'))
     const io = new CapturedIo()
     const calls = { submit: 0 }
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      // Both scopes installed: the harness lists two, which is a real problem
-      // and a human decision — and still not a reason to withhold the proof.
-      list: async (scope) => ({ skills: [managedSkill(scope ?? 'project', cwd)] }),
-    }
-    const deps = setupReadyDeps(io, cwd, nativeSkills, calls)
+    const deps = setupReadyDeps(io, cwd, realNativeSkills, calls)
+    const copy = path.join(deps.env.HOME!, '.grok', 'skills', 'notifai')
+    mkdirSync(copy, { recursive: true })
+    writeFileSync(path.join(copy, 'SKILL.md'), 'guidance from an older release\n')
 
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
     const readiness = await assessReadiness(deps)
@@ -8388,10 +7988,10 @@ describe('readiness assessment cost', () => {
     expect(JSON.parse(io.outLines[0] ?? '{}')).toHaveProperty('states')
   })
 
-  it('verifies built-in skill ownership without an external installer on PATH', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-owned-skill-'))
+  it('verifies placed guidance without an external installer on PATH', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-placed-skill-'))
     const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
-    expect(await realNativeSkills.add({ skill: 'notifai', scope: 'project', agents: ['codex'], cwd, env })).toBe(0)
+    expect(await realNativeSkills.place({ scope: 'project', harnesses: ['codex'], cwd, env })).toBe(0)
     const io = new CapturedIo()
     const client = {
       health: async () => true,
@@ -8407,62 +8007,10 @@ describe('readiness assessment cost', () => {
     })
     expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
       status: 'ready',
-      detail: `installed in the project scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
+      detail: `Codex, Cursor, OpenCode load the guidance shipped with CLI ${CLI_VERSION}`,
     })
   })
 
-  it('reports lock-only project and global skill records as incomplete', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'assess-lock-skill-duplicate-'))
-    const env = { ...isolatedEnv(cwd), PATH: '/nonexistent' }
-    writeFileSync(
-      path.join(cwd, 'skills-lock.json'),
-      `${JSON.stringify({
-        skills: {
-          notifai: {
-            source: 'Raidiant-io/notifai',
-            sourceType: 'github',
-            ref: RELEASE_REF,
-          },
-        },
-      })}\n`,
-    )
-    mkdirSync(path.join(env.XDG_STATE_HOME!, 'skills'), { recursive: true })
-    writeFileSync(
-      path.join(env.XDG_STATE_HOME!, 'skills', '.skill-lock.json'),
-      `${JSON.stringify({
-        skills: {
-          notifai: {
-            source: 'Raidiant-io/notifai',
-            sourceType: 'github',
-            ref: 'v0.2.1',
-          },
-        },
-      })}\n`,
-    )
-    const io = new CapturedIo()
-    const client = {
-      health: async () => true,
-      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
-      listDevices: async () => ({ devices: [] }),
-    } as unknown as ApiClient
-
-    const readiness = await assessReadiness({
-      ...makeDeps(io, client),
-      cwd,
-      env,
-      nativeSkills: realNativeSkills,
-    })
-    expect(readiness.states.find((state) => state.id === 'skill')).toMatchObject({
-      status: 'gap',
-      detail: expect.stringContaining('Existing guidance is preserved'),
-      technical: { resolution: 'skill-incomplete' },
-    })
-    const detail = readiness.states.find((state) => state.id === 'skill')?.detail
-    expect(detail).toContain(`project: ${path.join(cwd, '.agents', 'skills', 'notifai')} (incomplete)`)
-    expect(detail).toContain(`global: ${path.join(env.HOME!, '.agents', 'skills', 'notifai')} (incomplete)`)
-    expect(existsSync(path.join(cwd, '.agents', 'skills', 'notifai'))).toBe(false)
-    expect(existsSync(path.join(env.HOME!, '.agents', 'skills', 'notifai'))).toBe(false)
-  })
 })
 
 describe('an outage is not an answer', () => {
@@ -9920,38 +9468,15 @@ describe('asking before the hooks have ever run', () => {
       capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
       listDevices: async () => ({ devices: [] }),
     } as unknown as ApiClient
-    const nativeSkills: NativeSkills = {
-      add: async () => 0,
-      remove: async () => 0,
-      list: async (scope) => ({
-        skills:
-          scope === 'global'
-            ? [
-                {
-                  name: 'notifai',
-                  owned: true,
-                  scope,
-                  path: path.join(cwd, 'global-skills', 'notifai'),
-                  source: 'Raidiant-io/notifai',
-                  sourceType: 'github',
-                  sourceUrl: 'https://github.com/Raidiant-io/notifai.git',
-                  ref: RELEASE_REF,
-                },
-              ]
-            : [],
-      }),
-    }
-    installCurrentSkill(path.join(cwd, 'global-skills', 'notifai'))
-    const deps = { ...makeDeps(io, client), cwd, env, nativeSkills }
+    expect(await realNativeSkills.place({ scope: 'global', harnesses: ['claude-code'], cwd, env })).toBe(0)
+    const deps = { ...makeDeps(io, client), cwd, env, nativeSkills: realNativeSkills }
 
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)
     const said = io.outLines.join(' ')
-    expect(said).toContain(
-      `installed in the global scope and verified against the guidance shipped with CLI ${CLI_VERSION}`,
-    )
+    expect(said).toContain(`Claude Code loads the guidance shipped with CLI ${CLI_VERSION}`)
     expect(said).toMatch(/active Codex/i)
     expect(said).toContain('notifai hooks install --harness codex')
   })
