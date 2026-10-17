@@ -22,7 +22,7 @@ export async function updateSkillCommand(deps: CommandDeps, flags: { json?: bool
     return fail(after.error ?? `Could not verify the refreshed guidance at ${outdated.map((copy) => copy.path).join(', ')}.`)
   }
   const report = { ok: true, changed: result.changed.length > 0, refreshed: result.changed,
-    copies: after.copies.map(({ scope, path, harnesses }) => ({ scope, path, harnesses })),
+    copies: after.copies.map(({ scopes, path, harnesses }) => ({ scopes, path, harnesses })),
     next_step: after.copies.length === 0
       ? 'No Notifai skill is installed. Run notifai init --skills --skills-scope global to install it.'
       : 'Read the refreshed SKILL.md and references/updates.md, then run notifai guidance in this Agent Session.' }

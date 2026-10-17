@@ -39,7 +39,7 @@ describe('nativeSkills', () => {
     const skill = path.join(home, '.claude', 'skills', 'notifai')
     expect(readFileSync(path.join(skill, 'SKILL.md'), 'utf8')).toBe(shippedSkillMd())
     expect(inspectSkillCopies(cwd, env).copies).toEqual([
-      { scope: 'global', path: skill, harnesses: ['claude-code'], condition: 'current' }])
+      { scopes: ['global'], path: skill, harnesses: ['claude-code'], condition: 'current' }])
     expect(await nativeSkills.refresh({ cwd, env, publishIntegration })).toEqual({ ok: true, changed: [] })
     expect(await nativeSkills.remove({ scopes: ['global'], cwd, env })).toBe(0)
     expect(inspectSkillCopies(cwd, env).copies).toEqual([])
@@ -71,7 +71,7 @@ describe('nativeSkills', () => {
     symlinkSync(path.join(home, '.claude', 'skills'), path.join(profile, 'skills'), 'dir')
     const linked = { ...env, CLAUDE_CONFIG_DIR: profile }
     expect(await nativeSkills.place({ scope: 'global', harnesses: ['claude-code'], cwd, env, publishIntegration })).toBe(0)
-    expect(inspectSkillCopies(cwd, linked).copies).toEqual([{ scope: 'global',
+    expect(inspectSkillCopies(cwd, linked).copies).toEqual([{ scopes: ['global'],
       path: path.join(profile, 'skills', 'notifai'), harnesses: ['claude-code'], condition: 'current' }])
 
     writeFileSync(path.join(home, '.claude', 'skills', 'notifai', 'SKILL.md'), 'older guidance\n')
@@ -83,7 +83,7 @@ describe('nativeSkills', () => {
   it('counts one copy for harnesses that share a directory', async () => {
     const { cwd, env } = fixture()
     expect(await nativeSkills.place({ scope: 'project', harnesses: ['codex', 'cursor'], cwd, env, publishIntegration })).toBe(0)
-    expect(inspectSkillCopies(cwd, env).copies).toEqual([{ scope: 'project',
+    expect(inspectSkillCopies(cwd, env).copies).toEqual([{ scopes: ['project'],
       path: path.join(cwd, '.agents', 'skills', 'notifai'), harnesses: ['codex', 'cursor', 'opencode'], condition: 'current' }])
   })
 
@@ -103,8 +103,8 @@ describe('nativeSkills', () => {
     writeCopy(path.join(home, '.claude', 'skills', 'notifai'))
     writeCopy(path.join(home, '.grok', 'skills', 'notifai'))
     expect(await nativeSkills.place({ scope: 'project', harnesses: ['claude-code'], cwd, env, publishIntegration })).toBe(0)
-    expect(inspectSkillCopies(cwd, env).copies.map((copy) => [copy.scope, copy.harnesses])).toEqual([
-      ['global', ['grok']], ['project', ['claude-code']]])
+    expect(inspectSkillCopies(cwd, env).copies.map((copy) => [copy.scopes, copy.harnesses])).toEqual([
+      [['global'], ['grok']], [['project'], ['claude-code']]])
   })
 
   it('clears staging left by an interrupted write', async () => {
@@ -114,6 +114,15 @@ describe('nativeSkills', () => {
     mkdirSync(path.join(skills, 'another-skill'))
     expect(await nativeSkills.place({ scope: 'global', harnesses: ['grok'], cwd, env, publishIntegration })).toBe(0)
     expect(readdirSync(skills).sort()).toEqual(['another-skill', 'notifai'])
+  })
+
+  it('treats a directory that is both the project and the global location as one copy in both scopes', async () => {
+    const { home, env } = fixture()
+    expect(await nativeSkills.place({ scope: 'project', harnesses: ['claude-code'], cwd: home, env, publishIntegration })).toBe(0)
+    expect(inspectSkillCopies(home, env).copies).toEqual([{ scopes: ['global', 'project'],
+      path: path.join(home, '.claude', 'skills', 'notifai'), harnesses: ['claude-code'], condition: 'current' }])
+    expect(await nativeSkills.remove({ scopes: ['project'], cwd: home, env })).toBe(0)
+    expect(inspectSkillCopies(home, env).copies).toEqual([])
   })
 
   it('honours harness home overrides', () => {

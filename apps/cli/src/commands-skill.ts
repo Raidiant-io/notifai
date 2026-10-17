@@ -43,7 +43,7 @@ export async function skillReadiness(
   }
 
   if (selectedScope !== undefined) {
-    const placed = (harness: string) => copies.some((copy) => copy.scope === selectedScope &&
+    const placed = (harness: string) => copies.some((copy) => copy.scopes.includes(selectedScope) &&
       copy.condition === 'current' && copy.harnesses.includes(harness as SourceContextHarness))
     const wanted = selectedHarnesses ?? unique(copies)
     const missing = wanted.filter((harness) => !placed(harness))
@@ -62,14 +62,17 @@ export async function skillReadiness(
     return { ...base, status: 'gap', harnesses: unique(outdated),
       detail: outdated.map((copy) => `${labels(copy.harnesses)} ${copy.harnesses.length === 1 ? 'loads' : 'load'} ` +
         `${copy.condition === 'stale' ? 'outdated' : 'unreadable'} guidance from ${copy.path}`).join('; '),
-      technical: { copies: outdated.map(({ scope, path, harnesses, condition, problem }) =>
-        ({ scope, path, harnesses, condition, problem: problem ?? null })) },
+      technical: { copies: outdated.map(({ scopes, path, harnesses, condition, problem }) =>
+        ({ scopes, path, harnesses, condition, problem: problem ?? null })) },
       remedy: { by: 'cli', summary: 'rewrite every Notifai skill copy with the guidance shipped in this CLI',
         command: REFRESH_SKILL_COMMAND } }
   }
 
-  const both = unique(copies.filter((copy) => copy.scope === 'project'))
-    .filter((harness) => copies.some((copy) => copy.scope === 'global' && copy.harnesses.includes(harness)))
+  // Two different directories, one per scope; one directory serving both is a single copy.
+  const both = unique(copies.filter((copy) => copy.scopes.includes('project'))).filter((harness) => {
+    const loaded = copies.filter((copy) => copy.harnesses.includes(harness))
+    return loaded.some((a) => a.scopes.includes('project') && loaded.some((b) => b !== a && b.scopes.includes('global')))
+  })
   if (both.length > 0) {
     return { ...base, status: 'optional-gap', harnesses: both,
       detail: `${labels(both)} ${both.length === 1 ? 'loads' : 'load'} the skill from both this project and the machine-global scope`,

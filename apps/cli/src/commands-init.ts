@@ -233,7 +233,7 @@ async function closeGap(
     // Every other copy on the machine is Notifai's too; bring it current.
     const refreshed = await deps.nativeSkills.refresh({ cwd: deps.cwd, env: deps.env })
     const after = skillInventory(deps)
-    const placed = harnesses.every((harness) => after.copies.some((copy) => copy.scope === installScope &&
+    const placed = harnesses.every((harness) => after.copies.some((copy) => copy.scopes.includes(installScope) &&
       copy.condition === 'current' && copy.harnesses.includes(harness as SourceContextHarness)))
     if (!refreshed.ok || !placed || after.copies.some((copy) => copy.condition !== 'current')) {
       deps.io.err(refreshed.error ?? `The installed guidance could not be verified. Retry with \`${retry}\`.`)

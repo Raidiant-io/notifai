@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b8a2b0f00e9829f16a0707ca106b9e92e852aee89035545862b14ae0eba592f2",
+  "behavior_digest": "sha256:2f4f54b470476398871ea072fdaf6244f64ba07eb9404600244f4bde8d9d7143",
   "outcome": "guidance-updated",
   "reason": "Reviewed lifecycle hooks, the shipped skill and its references, harness setup, CLI readiness and domain terms against two changes. Doctor, init, update handoff and integration notices now judge only harness-neutral states and the invoking harness; states for other harnesses carry `harnesses` and `applies_here: false` and are reported, never held against the invoking agent. The diagnostics reference tells agents to report such states without acting on them. Skill placement no longer records ownership: every `notifai` skill directory in a harness location is Notifai's, refresh rewrites any copy whose bytes differ from the bundle, reads follow links, and project writes must resolve inside the project. Updated TRUST.md, README, AGENTS.md, updates.md and harness-setup.md to remove preservation of unmanaged or edited copies and the receipt-backed selection. Lifecycle hook guidance, acknowledgement, question and non-exfiltration rules are unchanged.",
   "surfaces_reviewed": [

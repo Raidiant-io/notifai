@@ -65,6 +65,13 @@ describe('skill readiness', () => {
     expect(await skillReadiness(f.deps, 'project', ['claude-code'])).toMatchObject({ status: 'ready' })
   })
 
+  it('accepts a project selection made from the home directory, where both scopes are one directory', async () => {
+    const f = fixture()
+    const deps = { ...f.deps, cwd: f.home } as CommandDeps
+    expect(await nativeSkills.place({ scope: 'project', harnesses: ['claude-code'], cwd: f.home, env: f.env, publishIntegration })).toBe(0)
+    expect(await skillReadiness(deps, 'project', ['claude-code'])).toMatchObject({ status: 'ready' })
+  })
+
   it('notes a harness that loads the skill from both scopes', async () => {
     const f = fixture()
     await f.place('project', ['claude-code'])

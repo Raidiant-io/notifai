@@ -29,7 +29,8 @@ export type SkillScope = 'project' | 'global'
 
 /** One directory some harnesses load the skill from. */
 export interface SkillCopy {
-  scope: SkillScope
+  /** Every scope whose location is this directory: both, when run from the home directory. */
+  scopes: SkillScope[]
   /** The directory a harness loads, as that harness names it. */
   path: string
   /** Every harness that loads this directory. */
@@ -153,7 +154,6 @@ export function inspectSkillCopies(cwd: string, env: NodeJS.ProcessEnv, budget?:
   const expectedDigest = expectedSkillDigest()
   const byDirectory = new Map<string, SkillCopy>()
   try {
-    // Global first: run from the home directory, both scopes name one directory, and it is the machine's.
     for (const scope of ['global', 'project'] as const) {
       for (const harness of SOURCE_CONTEXT_HARNESSES) {
         const destination = skillDestination(scope, harness, cwd, env)
@@ -162,6 +162,7 @@ export function inspectSkillCopies(cwd: string, env: NodeJS.ProcessEnv, budget?:
         const known = byDirectory.get(directory)
         if (known !== undefined) {
           if (!known.harnesses.includes(harness)) known.harnesses.push(harness)
+          if (!known.scopes.includes(scope)) known.scopes.push(scope)
           continue
         }
         let condition: SkillCopy['condition']
@@ -173,7 +174,7 @@ export function inspectSkillCopies(cwd: string, env: NodeJS.ProcessEnv, budget?:
           condition = 'unreadable'
           problem = String(error)
         }
-        byDirectory.set(directory, { scope, path: destination, harnesses: [harness], condition,
+        byDirectory.set(directory, { scopes: [scope], path: destination, harnesses: [harness], condition,
           ...(problem === undefined ? {} : { problem }) })
       }
     }
@@ -229,11 +230,18 @@ function writeSkill(directory: string, bundle: VerifiedSkillBundle): void {
   if (replacing) try { rmSync(old, { recursive: true, force: true }) } catch { /* best effort */ }
 }
 
+/** A machine-global location needs no project containment, even when it is also this project's. */
+function writeScope(copy: SkillCopy): SkillScope {
+  return copy.scopes.includes('global') ? 'global' : 'project'
+}
+
 /** Remove every copy in these scopes; null on success, otherwise what stopped it. */
 export function removeSkillCopies(scopes: readonly SkillScope[], cwd: string, env: NodeJS.ProcessEnv): string | null {
   try {
     for (const copy of inspectSkillCopies(cwd, env).copies) {
-      if (scopes.includes(copy.scope)) rmSync(writableDirectory(copy.scope, copy.path, cwd), { recursive: true, force: true })
+      if (copy.scopes.some((scope) => scopes.includes(scope))) {
+        rmSync(writableDirectory(writeScope(copy), copy.path, cwd), { recursive: true, force: true })
+      }
     }
     return null
   } catch (error) {
@@ -294,7 +302,7 @@ export const nativeSkills: NativeSkills = {
     try {
       (options.publishIntegration ?? integrationPublication(options))(() => {
         for (const copy of outdated) {
-          writeSkill(writableDirectory(copy.scope, copy.path, options.cwd), bundle.bundle)
+          writeSkill(writableDirectory(writeScope(copy), copy.path, options.cwd), bundle.bundle)
           changed.push(copy.path)
         }
       })

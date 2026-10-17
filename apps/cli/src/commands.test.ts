@@ -6217,7 +6217,7 @@ describe('init', () => {
       writeFileSync(path.join(directory, 'SKILL.md'), 'guidance from an older release\n')
     }
     const copies = () => realNativeSkills.inspect(cwd, deps.env).copies
-      .map((copy) => ({ scope: copy.scope, harnesses: copy.harnesses, condition: copy.condition }))
+      .map((copy) => ({ scopes: copy.scopes, harnesses: copy.harnesses, condition: copy.condition }))
     return { cwd, deps, home, calls, outdated, copies }
   }
 
@@ -6255,8 +6255,8 @@ describe('init', () => {
     expect(await initCommand(f.deps, { skills: true, skillsScope: 'project', skillsHarness: 'claude-code', hooks: false }))
       .toBe(EXIT.ok)
     expect(f.copies()).toEqual([
-      { scope: 'global', harnesses: ['grok'], condition: 'current' },
-      { scope: 'project', harnesses: ['claude-code'], condition: 'current' },
+      { scopes: ['global'], harnesses: ['grok'], condition: 'current' },
+      { scopes: ['project'], harnesses: ['claude-code'], condition: 'current' },
     ])
   })
 
@@ -6264,7 +6264,7 @@ describe('init', () => {
     const f = skillSetup(new CapturedIo())
     f.outdated(path.join(f.home, '.grok', 'skills', 'notifai'))
     expect(await initCommand(f.deps, { skills: true, skillsScope: 'global', hooks: false })).toBe(EXIT.ok)
-    expect(f.copies()).toEqual([{ scope: 'global', harnesses: ['grok'], condition: 'current' }])
+    expect(f.copies()).toEqual([{ scopes: ['global'], harnesses: ['grok'], condition: 'current' }])
   })
 
   it('requires an explicit skill scope before unattended installation', async () => {
@@ -6298,7 +6298,7 @@ describe('init', () => {
       const f = skillSetup(io)
       expect(await initCommand(f.deps, { skills: true, skillsScope: scope, skillsHarness: 'claude-code', hooks: false }))
         .toBe(EXIT.ok)
-      expect(f.copies()).toEqual([{ scope, harnesses: ['claude-code'], condition: 'current' }])
+      expect(f.copies()).toEqual([{ scopes: [scope], harnesses: ['claude-code'], condition: 'current' }])
       expect(f.calls.submit).toBe(1)
       expect(io.outLines.join('\n')).toContain('All set.')
     },
@@ -6313,7 +6313,7 @@ describe('init', () => {
     expect(io.prompts[0]).toContain(
       'agent guidance skill be installed for this project only, or for every project on this machine',
     )
-    expect(f.copies()).toEqual([{ scope: 'project', harnesses: ['claude-code'], condition: 'current' }])
+    expect(f.copies()).toEqual([{ scopes: ['project'], harnesses: ['claude-code'], condition: 'current' }])
     expect(f.calls.submit).toBe(1)
     expect(io.outLines.join('\n')).toContain('All set.')
   })

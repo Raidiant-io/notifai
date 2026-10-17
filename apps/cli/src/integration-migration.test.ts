@@ -273,8 +273,8 @@ it('keeps a skill loaded from both scopes current while repairing hooks', async 
   }
   removeToolHook(f.installation.file)
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
-  expect(nativeSkills.inspect(f.deps.cwd, f.deps.env).copies.map(copy => [copy.scope, copy.condition])).toEqual([
-    ['global', 'current'], ['project', 'current']])
+  expect(nativeSkills.inspect(f.deps.cwd, f.deps.env).copies.map(copy => [copy.scopes, copy.condition])).toEqual([
+    [['global'], 'current'], [['project'], 'current']])
   expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
 })
 

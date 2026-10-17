@@ -31,7 +31,7 @@ it('rewrites every outdated copy without authentication or notification setup', 
   const f = fixture()
   expect(await updateSkillCommand(f.deps, { json: true }, publication)).toBe(0)
   expect(JSON.parse(f.out[0]!)).toMatchObject({ ok: true, changed: true, refreshed: [f.grok],
-    copies: [{ scope: 'global', path: f.grok, harnesses: ['grok'] }] })
+    copies: [{ scopes: ['global', 'project'], path: f.grok, harnesses: ['grok'] }] })
   expect(readFileSync(path.join(f.grok, 'SKILL.md'), 'utf8')).not.toBe('stale guidance')
   expect(await updateSkillCommand(f.deps, { json: true }, publication)).toBe(0)
   expect(JSON.parse(f.out[1]!)).toMatchObject({ ok: true, changed: false, refreshed: [] })
