@@ -68,10 +68,12 @@ which belongs to the User and says nothing about where hooks land:
 notifai init --skills --skills-scope <project|global> --skills-harness <comma-separated-harnesses> --json
 ```
 
-Choose only the intended harnesses; updates retain that selection. Project
-placement for OpenClaw requires a single, concrete configured agent workspace
-that matches the command directory. Use global scope when that workspace is
-ambiguous. Existing edits and unowned skills are preserved and reported.
+Choose only the intended harnesses; without `--skills-harness`, the harnesses
+that already load the skill keep it. Placing in one scope removes those
+harnesses' copies from the other, and every other Notifai skill copy is brought
+current. Project placement for OpenClaw requires a single, concrete configured
+agent workspace that matches the command directory. Use global scope when that
+workspace is ambiguous.
 
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.

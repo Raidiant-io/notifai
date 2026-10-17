@@ -1,5 +1,5 @@
 import { handlerEvent } from './install-hooks.js'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -11,8 +11,6 @@ import { codexHookIdentityHash, codexTrustKey, findInstallations } from './insta
 import { integrationFaultNotice, localIntegrationAssessment } from './integration-health.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
-import { createSkillManifest, shippedSkillBundle, verifySkillBundle } from './skill-integrity.js'
-import { SkillInstallation } from './skill-installation.js'
 import { markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
 import * as attendantUpdate from './attendant-update.js'
 import * as skillIntegrity from './skill-integrity.js'
@@ -98,49 +96,38 @@ function removeToolHook(file: string, event = 'PostToolUse') {
   writeFileSync(file, JSON.stringify(hooks))
 }
 
-it('resumes owned Claude guidance beside unmanaged harnesses, preserving foreign bytes, hooks and trust', async () => {
+function outdate(directory: string): void {
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(path.join(directory, 'SKILL.md'), 'guidance from an older release')
+}
+
+it('refreshes every outdated Notifai skill copy beside hook repair, preserving foreign hooks and trust', async () => {
   const f = fixture()
-  const bundle = shippedSkillBundle()
-  if (!bundle.ok) throw new Error(bundle.error)
-  const oldBundle = path.join(f.root, 'old-bundle'), oldSkill = path.join(oldBundle, 'notifai')
-  cpSync(bundle.bundle.skillRoot, oldSkill, { recursive: true })
-  writeFileSync(path.join(oldSkill, 'SKILL.md'), 'old packaged guidance')
-  writeFileSync(path.join(oldBundle, 'manifest.json'), JSON.stringify(createSkillManifest(oldSkill, '1.0.0')))
-  const verified = verifySkillBundle(oldBundle, '1.0.0')
-  if (!verified.ok) throw new Error(verified.error)
-  expect(new SkillInstallation({ cwd: f.deps.cwd, env: f.deps.env }).reconcile({
-    scope: 'global', agents: ['claude-code'], bundle: verified.bundle,
-  }).ok).toBe(true)
-  const foreign = ['.hermes', '.grok', '.openclaw'].map(harness => path.join(f.home, harness, 'skills', 'notifai'))
-  for (const target of foreign) {
-    cpSync(bundle.bundle.skillRoot, target, { recursive: true })
-    writeFileSync(path.join(target, 'SKILL.md'), 'User-owned harness guidance')
-  }
-  const foreignBefore = foreign.map(target => createSkillManifest(target, '').digest)
-  const add = vi.fn(nativeSkills.add)
-  f.deps.nativeSkills = { ...nativeSkills, add }
+  const copies = ['.claude', '.hermes', '.grok', '.openclaw'].map(harness => path.join(f.home, harness, 'skills', 'notifai'))
+  for (const copy of copies) outdate(copy)
+  const refresh = vi.fn(nativeSkills.refresh)
+  f.deps.nativeSkills = { ...nativeSkills, refresh }
   removeToolHook(f.installation.file)
   const doc = JSON.parse(readFileSync(f.installation.file, 'utf8'))
   doc.hooks.PostToolUse = [{ hooks: [{ type: 'command', command: 'foreign-tool-handler' }] }]
   writeFileSync(f.installation.file, JSON.stringify(doc))
   const trustBefore = readFileSync(f.trust, 'utf8')
-  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toEqual(expect.arrayContaining(['hooks-drift', 'skill-unmanaged']))
+  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toEqual(expect.arrayContaining(['hooks-drift', 'skill-drift']))
   const result = await updateResumeCommand(f.deps, { json: true })
   expect(result, JSON.stringify(JSON.parse(f.out.at(-1)!).pending_actions)).toBe(0)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: false,
+    changed: expect.arrayContaining(['skill']),
     pending_actions: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
-  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global', skill: 'notifai' }))
+  expect(refresh).toHaveBeenCalledTimes(1)
   expect(readFileSync(f.trust, 'utf8')).toBe(trustBefore)
   expect(readFileSync(f.installation.file, 'utf8')).toContain('foreign-tool-handler')
-  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toEqual(['native-approval-pending', 'skill-unmanaged'])
-  expect((await nativeSkills.list('global', f.deps.cwd, f.deps.env)).skills.filter(skill => skill.owned)).toMatchObject([
-    { condition: 'managed-current', agents: ['claude-code'] },
-  ])
+  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toEqual(['native-approval-pending'])
+  expect(nativeSkills.inspect(f.deps.cwd, f.deps.env).copies.map(copy => copy.condition)).toEqual(copies.map(() => 'current'))
+  // Resume never creates a copy where none was installed.
   expect(existsSync(path.join(f.home, '.agents', 'skills', 'notifai'))).toBe(false)
-  expect(foreign.map(target => createSkillManifest(target, '').digest)).toEqual(foreignBefore)
   const repaired = readFileSync(f.installation.file, 'utf8')
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
-  expect(add).toHaveBeenCalledTimes(1)
+  expect(refresh).toHaveBeenCalledTimes(1)
   expect(readFileSync(f.installation.file, 'utf8')).toBe(repaired)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: false,
     pending_actions: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
@@ -181,57 +168,39 @@ it('refuses repair through a legacy application beside native without changing h
   expect(activate).not.toHaveBeenCalled()
 })
 
-it.each(['darwin', 'win32', 'linux'] as const)('repairs owned %s hooks beside unmanaged-only guidance without installing skills or changing trust', async platform => {
+it.each(['darwin', 'win32', 'linux'] as const)('repairs %s hooks and outdated guidance without changing trust', async platform => {
   const f = fixture(platform)
   const skill = path.join(f.home, '.agents', 'skills', 'notifai')
-  mkdirSync(skill, { recursive: true })
-  writeFileSync(path.join(skill, 'SKILL.md'), 'old guidance')
-  writeFileSync(path.join(f.root, 'state', 'skills', '.skill-lock.json'), JSON.stringify({ skills: { notifai: {} } }))
-  const add = vi.fn(async () => 1)
-  f.deps.nativeSkills = { ...nativeSkills, add }
+  outdate(skill)
   // Windows has no tool-boundary callback; exercise its required start hook.
   removeToolHook(f.installation.file, platform === 'win32' ? 'SessionStart' : 'PostToolUse')
   const trust = readFileSync(f.trust, 'utf8')
-  const guidance = readFileSync(path.join(skill, 'SKILL.md'))
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
-    changed: ['codex-hooks'], pending_actions: [], diagnostics: expect.arrayContaining([expect.stringContaining('skill-unmanaged')]) })
+    changed: ['skill', 'codex-hooks'], pending_actions: [] })
   const installed = JSON.parse(readFileSync(f.installation.file, 'utf8')) as { hooks: Record<string, { hooks: { command: string }[] }[]> }
   const events = Object.values(installed.hooks).flatMap(groups => groups.flatMap(group => group.hooks.map(hook => handlerEvent(hook.command))))
   expect(events).toContain(platform === 'win32' ? 'session-start' : 'post-tool-use')
   expect(sourceIntegrationRevision(readFileSync(f.installation.file, 'utf8'))).toMatch(/^[a-f0-9]{64}$/)
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
-  expect(readFileSync(path.join(skill, 'SKILL.md'))).toEqual(guidance)
-  expect(add).not.toHaveBeenCalled()
-  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toContain('skill-unmanaged')
+  expect(readFileSync(path.join(skill, 'SKILL.md'), 'utf8')).not.toBe('guidance from an older release')
 })
 
-it('preserves residents beside current owned and unmanaged guidance without invoking installers', async () => {
-  const f = fixture(), bundle = shippedSkillBundle()
-  if (!bundle.ok) throw new Error(bundle.error)
-  expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: bundle.bundle }).ok).toBe(true)
-  const receipt = path.join(f.root, 'state', 'notifai', 'skill-installations', 'global.json')
-  const receiptBefore = readFileSync(receipt)
-  const add = vi.fn(nativeSkills.add); f.deps.nativeSkills = { ...nativeSkills, add }
-  const skill = path.join(f.home, '.grok', 'skills', 'notifai')
-  mkdirSync(skill, { recursive: true }); writeFileSync(path.join(skill, 'SKILL.md'), 'Foreign guidance')
+it('preserves residents beside current guidance without rewriting it', async () => {
+  const f = fixture()
+  expect(await nativeSkills.place({ scope: 'global', harnesses: ['claude-code', 'grok'], cwd: f.deps.cwd, env: f.deps.env })).toBe(0)
+  const refresh = vi.fn(nativeSkills.refresh); f.deps.nativeSkills = { ...nativeSkills, refresh }
   const activate = vi.spyOn(attendantUpdate, 'activateInstalledAttendants').mockResolvedValue([
     { session_id: 'existing-owner', state: 'activated', native_activity: true },
   ])
   const hooks = readFileSync(f.installation.file), trust = readFileSync(f.trust)
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(activate).not.toHaveBeenCalled()
-  expect(add).not.toHaveBeenCalled()
-  expect((await nativeSkills.list('global', f.deps.cwd, f.deps.env)).skills.filter(skill => skill.owned)).toMatchObject([
-    { condition: 'managed-current', agents: ['claude-code'] },
-  ])
-  expect(readFileSync(receipt)).toEqual(receiptBefore)
+  expect(refresh).not.toHaveBeenCalled()
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
-    changed: [], pending_actions: [], diagnostics: [expect.stringContaining('skill-unmanaged')] })
+    changed: [], pending_actions: [], diagnostics: [] })
   expect(readFileSync(f.installation.file)).toEqual(hooks)
   expect(readFileSync(f.trust)).toEqual(trust)
-  expect(readFileSync(path.join(skill, 'SKILL.md'), 'utf8')).toBe('Foreign guidance')
-  expect(existsSync(path.join(f.home, '.agents', 'skills', 'notifai'))).toBe(false)
   rmSync(f.trust)
   activate.mockClear()
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
@@ -240,47 +209,18 @@ it('preserves residents beside current owned and unmanaged guidance without invo
     diagnostics: expect.arrayContaining([expect.stringContaining('native-approval-pending')]) })
 })
 
-it.each(['edited', 'linked', 'invalid-receipt', 'invalid-bundle', 'oversized-foreign'] as const)(
-  'preserves %s skill custody or inspection gaps while repairing independent owned hooks', async kind => {
-    const f = fixture(), bundle = shippedSkillBundle()
-    if (!bundle.ok) throw new Error(bundle.error)
-    expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: bundle.bundle }).ok).toBe(true)
-    const selected = path.join(f.home, '.claude', 'skills', 'notifai')
-    const foreign = path.join(f.home, '.grok', 'skills', 'notifai')
-    mkdirSync(foreign, { recursive: true }); writeFileSync(path.join(foreign, 'SKILL.md'), 'Unmanaged guidance')
-    if (kind === 'edited') writeFileSync(path.join(selected, 'SKILL.md'), 'User edited owned guidance')
-    if (kind === 'linked') { rmSync(selected, { recursive: true }); symlinkSync(bundle.bundle.skillRoot, selected, 'dir') }
-    if (kind === 'invalid-receipt') writeFileSync(path.join(f.root, 'state', 'notifai', 'skill-installations', 'global.json'), '{}')
-    if (kind === 'invalid-bundle') vi.spyOn(skillIntegrity, 'shippedSkillBundle').mockReturnValue({ ok: false, error: 'Mismatched bundle manifest' })
-    if (kind === 'oversized-foreign') writeFileSync(path.join(foreign, 'oversized.md'), Buffer.alloc(2 * 1024 * 1024 + 1))
-    removeToolHook(f.installation.file)
-    const hooks = readFileSync(f.installation.file), trust = readFileSync(f.trust)
-    const add = vi.fn(nativeSkills.add); f.deps.nativeSkills = { ...nativeSkills, add }
-    const activate = vi.spyOn(attendantUpdate, 'activateInstalledAttendants').mockResolvedValue([])
-    expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
-    expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false, migration_complete: false })
-    expect(add).not.toHaveBeenCalled(); expect(activate).not.toHaveBeenCalled()
-    expect(readFileSync(f.installation.file).equals(hooks)).toBe(false)
-    expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
-    expect(readFileSync(f.trust)).toEqual(trust)
-    expect(readFileSync(path.join(foreign, 'SKILL.md'), 'utf8')).toBe('Unmanaged guidance')
-  },
-)
-
-it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('preserves an unreadable selected owned placement before hook or resident repair', async () => {
-  const f = fixture(), bundle = shippedSkillBundle()
-  if (!bundle.ok) throw new Error(bundle.error)
-  expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: bundle.bundle }).ok).toBe(true)
-  const selected = path.join(f.home, '.claude', 'skills', 'notifai')
-  chmodSync(selected, 0)
+it('reports an unverifiable bundle without touching guidance, while repairing hooks', async () => {
+  const f = fixture()
+  const skill = path.join(f.home, '.grok', 'skills', 'notifai')
+  outdate(skill)
+  vi.spyOn(skillIntegrity, 'shippedSkillBundle').mockReturnValue({ ok: false, error: 'Mismatched bundle manifest' })
   removeToolHook(f.installation.file)
-  const hooks = readFileSync(f.installation.file)
-  try {
-    expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
-    expect(readFileSync(f.installation.file).equals(hooks)).toBe(false)
-    expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
-  } finally { chmodSync(selected, 0o700) }
-  expect(createSkillManifest(selected, '').digest).toBe(bundle.bundle.manifest.digest)
+  const trust = readFileSync(f.trust)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false, migration_complete: false })
+  expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
+  expect(readFileSync(f.trust)).toEqual(trust)
+  expect(readFileSync(path.join(skill, 'SKILL.md'), 'utf8')).toBe('guidance from an older release')
 })
 
 it('repairs both installed source and selected Codex definitions without touching another account', async () => {
@@ -326,19 +266,15 @@ it('preserves pending exact-owner work before any integration change', async () 
   expect(readSessionState('exact-owner', f.deps.env).message_acknowledgement_due).toEqual([{ message_id: 'sm_pending', recorded_at: 1_800_000_000_000 }])
 })
 
-it('preserves duplicate skill scopes while repairing independently owned hooks', async () => {
+it('keeps a skill loaded from both scopes current while repairing hooks', async () => {
   const f = fixture()
-  const bundle = shippedSkillBundle()
-  if (!bundle.ok) throw new Error(bundle.error)
   for (const scope of ['project', 'global'] as const) {
-    expect(new SkillInstallation(f.deps).reconcile({ scope, agents: ['codex'], bundle: bundle.bundle }).ok).toBe(true)
+    outdate(scope === 'project' ? path.join(f.deps.cwd, '.agents', 'skills', 'notifai') : path.join(f.home, '.agents', 'skills', 'notifai'))
   }
   removeToolHook(f.installation.file)
-  const before = readFileSync(f.installation.file, 'utf8')
-  expect(await updateResumeCommand(f.deps, { json: true })).toBe(1)
-  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false,
-    pending_actions: [expect.stringContaining('Multiple receipt-backed')] })
-  expect(readFileSync(f.installation.file, 'utf8')).not.toBe(before)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(nativeSkills.inspect(f.deps.cwd, f.deps.env).copies.map(copy => [copy.scope, copy.condition])).toEqual([
+    ['global', 'current'], ['project', 'current']])
   expect(readFileSync(f.installation.file, 'utf8')).toContain('post-tool-use')
 })
 
@@ -374,44 +310,29 @@ it('lets a resident observer detect missing wiring without consuming the agent n
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
 })
 
-it('reports incomplete inspection for oversized guidance without accessing service or changing hooks', () => {
+it('stays quiet about guidance it could not finish inspecting, without changing hooks', () => {
   const f = fixture()
   const skill = path.join(f.home, '.agents', 'skills', 'notifai')
-  mkdirSync(skill, { recursive: true })
-  writeFileSync(path.join(skill, 'SKILL.md'), 'optional installed skill')
+  outdate(skill)
   writeFileSync(path.join(skill, 'oversized.md'), Buffer.alloc(2 * 1024 * 1024 + 1))
   const before = readFileSync(f.installation.file, 'utf8')
-  const add = vi.fn(nativeSkills.add)
-  f.deps.nativeSkills = { ...nativeSkills, add }
-  expect(integrationFaultNotice(f.deps, 'codex')).toContain('skill-inspection-incomplete')
+  const refresh = vi.fn(nativeSkills.refresh)
+  f.deps.nativeSkills = { ...nativeSkills, refresh }
   expect(integrationFaultNotice(f.deps, 'codex')).toBeUndefined()
-  expect(add).not.toHaveBeenCalled()
+  expect(refresh).not.toHaveBeenCalled()
   expect(readFileSync(f.installation.file, 'utf8')).toBe(before)
 })
 
-
-it('resumes an interrupted owned skill replacement without changing recorded harnesses or hooks', async () => {
-  const f = fixture(), bundle = shippedSkillBundle()
-  if (!bundle.ok) throw new Error(bundle.error)
-  const source = path.join(f.root, 'previous-bundle'), tree = path.join(source, 'notifai')
-  cpSync(bundle.bundle.skillRoot, tree, { recursive: true })
-  writeFileSync(path.join(tree, 'SKILL.md'), 'Previous verified release guidance')
-  writeFileSync(path.join(source, 'manifest.json'), JSON.stringify(createSkillManifest(tree, '1.0.0')))
-  const previous = verifySkillBundle(source)
-  if (!previous.ok) throw new Error(previous.error)
-  expect(new SkillInstallation(f.deps).reconcile({ scope: 'global', agents: ['claude-code'], bundle: previous.bundle }).ok).toBe(true)
-  const interrupted = new SkillInstallation({ cwd: f.deps.cwd, env: f.deps.env, observe(phase) {
-    if (phase === 'old-retained') throw new Error('simulated replacement interruption')
-  } })
-  expect(interrupted.reconcile({ scope: 'global', bundle: bundle.bundle }).ok).toBe(false)
+it('finishes after an interrupted skill write without changing hooks', async () => {
+  const f = fixture()
+  const skills = path.join(f.home, '.claude', 'skills')
+  outdate(path.join(skills, 'notifai'))
+  outdate(path.join(skills, `.notifai-${'c'.repeat(24)}.new`))
   const hooks = readFileSync(f.installation.file), trust = readFileSync(f.trust)
-  const add = vi.fn(nativeSkills.add); f.deps.nativeSkills = { ...nativeSkills, add }
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true, changed: ['skill'] })
-  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global' }))
-  expect(await nativeSkills.list('global', f.deps.cwd, f.deps.env)).toMatchObject({ skills: [
-    { owned: true, pending: false, condition: 'managed-current', agents: ['claude-code'] },
-  ] })
+  expect(readdirSync(skills)).toEqual(['notifai'])
+  expect(nativeSkills.inspect(f.deps.cwd, f.deps.env).copies).toMatchObject([{ harnesses: ['claude-code'], condition: 'current' }])
   expect(readFileSync(f.installation.file)).toEqual(hooks)
   expect(readFileSync(f.trust)).toEqual(trust)
 })
@@ -438,8 +359,8 @@ it('rejects a no-write resume superseded during final asynchronous discovery', a
     if (superseded) throw new Error('Update superseded')
     return action()
   })
-  f.deps.nativeSkills = { ...nativeSkills, list: async (...args) => {
-    const result = await nativeSkills.list(...args)
+  f.deps.nativeSkills = { ...nativeSkills, inspect: (...args) => {
+    const result = nativeSkills.inspect(...args)
     if (++calls >= 4) superseded = true
     return result
   } }

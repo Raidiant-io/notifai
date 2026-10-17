@@ -13,7 +13,7 @@ import { type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, isNpxAdapterTarget } from './hook-adapter.js'
 import { codexTrustProblems, findInstallations, handlerEvent, type Installation } from './install-hooks.js'
-import { conventionalSkillPath, discoverNotifaiSkills, skillInventoryIssue } from './native-skills.js'
+import { inspectSkillCopies } from './native-skills.js'
 import { packageVersion } from './release.js'
 import { type SkillInspectionBudget } from './skill-integrity.js'
 
@@ -90,17 +90,12 @@ export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInst
       faults.push({ code: 'native-approval-pending', detail: `Native approval is unresolved for ${installation.file}.`, remedy: '/hooks' })
     }
   }
-  // The production synchronous adapter and its async list share discovery.
-  // Custom adapters can provide inspect to exercise this same boundary in tests.
-  const results = (['project', 'global'] as const).map(scope => ({ scope,
-    ...(deps.nativeSkills?.inspect ?? discoverNotifaiSkills)(scope, deps.cwd, deps.env, budget) }))
-  const inventory = { installed: results.flatMap(result => result.skills),
-    errors: results.flatMap(result => result.error === undefined ? [] : [`${result.scope}: ${result.error}`]) }
-  const issue = skillInventoryIssue(inventory)
-  if (issue !== null) faults.push({ code: issue.code, detail: issue.detail, remedy: issue.remedy })
-  else for (const skill of inventory.installed) {
-    if (skill.condition !== 'managed-current') faults.push({ code: 'skill-drift',
-      detail: `Receipt-backed guidance differs from this CLI at ${skill.path}.`, remedy: 'notifai update --refresh-skill --json' })
+  // Only a copy this harness loads concerns it. An unfinished bounded
+  // inspection reports nothing rather than guessing.
+  const skills = (deps.nativeSkills?.inspect ?? inspectSkillCopies)(deps.cwd, deps.env, budget)
+  if (skills.error === undefined) for (const copy of skills.copies) {
+    if (copy.condition !== 'current' && (harness === undefined || copy.harnesses.includes(harness))) faults.push({ code: 'skill-drift',
+      detail: `Guidance at ${copy.path} differs from this CLI.`, remedy: 'notifai update --refresh-skill --json' })
   }
   return { cli, faults, installations }
 }
@@ -110,7 +105,7 @@ const CHECK_INTERVAL_MS = 60_000
 /** Once per changed fault, across repeated callbacks and Projects on a machine. */
 export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness, consume = true, force = false): string | undefined {
   try {
-    const projectSkill = conventionalSkillPath('project', 'notifai', deps.cwd, deps.env)
+    const projectSkill = path.join(deps.cwd, '.agents', 'skills', 'notifai')
     const key = createHash('sha256').update(JSON.stringify([harness, deps.env['CODEX_HOME'], deps.hookInstallTarget,
       existsSync(path.join(projectSkill, 'SKILL.md')) ? projectSkill : null])).digest('hex')
     const file = path.join(stateDir(deps.env), 'integration-health', `${key}.json`)

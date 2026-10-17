@@ -19,25 +19,23 @@ one for itself.
 The optional `notifai` agent skill is content-bound to the CLI package that
 installs it. Every CLI tarball carries the complete reviewed skill plus a
 manifest covering the exact relative file list, each file's SHA-256, and one
-canonical tree digest. Before placement, the CLI:
+canonical tree digest. Before writing a copy, the CLI verifies its bundled
+skill against that manifest, stages exactly those files beside the
+destination, and verifies the staged tree before swapping it in.
 
-1. verifies its bundled skill against that manifest;
-2. stages only those files beside the selected destination;
-3. records the replacement and content ownership before activating it; and
-4. retains enough verified content to recover an interrupted replacement.
+A `notifai` directory in a harness's skill location is Notifai's, whoever
+created it. Readiness hashes each copy against the bundled digest: anything
+else (an older release, an edit, an extra or missing file) is outdated, and
+refresh replaces it with the bundled skill. Customisation belongs in Guidance
+Topics, which refresh never touches. Other skills are never read or changed.
 
-Only owned, unchanged copies may be refreshed or removed. Unknown files,
-user edits, symlinks, and unrelated skills are preserved. A prior general
-skill-installer lock is migration evidence, not deletion authority.
-
-Readiness ignores mutable source/ref metadata and hashes every recorded
-placement against the bundled digest. A lock-file
-entry alone is not sufficient. An extra or missing file, changed bytes, a
-malformed package manifest, or an installer record without verified content
-fails closed. This establishes content binding to the installed npm package;
-equal bytes do not independently prove which historical Git commit first
-contained them. Release and tag immutability protect that separate public
-source-history identity.
+Reads follow links, so a harness skill directory linked to another harness's
+is one copy. Writes land on the resolved directory. A project-scope
+destination must resolve inside the project: a checkout cannot use a link to
+steer a write elsewhere on the machine. This establishes content binding to
+the installed CLI package; equal bytes do not independently prove which
+historical Git commit first contained them. Release and tag immutability
+protect that separate public source-history identity.
 
 ## Remote image URLs
 

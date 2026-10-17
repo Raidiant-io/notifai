@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compareReleasePrecedence, isSemVer } from './version.js'
 import type { SourceContextHarness } from './harnesses.js'
-import type { ReadinessState } from './readiness.js'
+import { appliesHere, type ReadinessState } from './readiness.js'
 import { buildIdentity } from './distribution.js'
 
 // Compiled modules share Bun's entrypoint URL; assets live beside that entry,
@@ -52,7 +52,9 @@ export function updateSessionEffects(harness: SourceContextHarness | null, state
   // Unsupported asynchronous routing is a capability limit, not damage caused
   // by updating. Keep that information without prescribing reinstall loops.
   const blockingOnly = harness !== null && ['cursor', 'opencode', 'openclaw', 'hermes'].includes(harness)
-  const diagnostics = states.filter(state => state.id.startsWith('hooks') || state.id === 'skill').map(state => {
+  // Another harness's condition is not this session's to act on after an update.
+  const diagnostics = states.filter(state => (state.id.startsWith('hooks') || state.id === 'skill') &&
+    appliesHere({ states, harness }, state)).map(state => {
     if (!blockingOnly || !['hooks-question-admission', 'hooks-answer-continuation'].includes(state.id)) return state
     const informational = { ...state, status: 'optional-gap' as const }
     delete informational.remedy

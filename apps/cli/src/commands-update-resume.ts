@@ -5,8 +5,7 @@ import { EXIT, type CommandDeps } from './commands-core.js'
 import { resolveActiveHarness } from './commands-harness-context.js'
 import { activeQuestionRouteProblems } from './commands-hook-diagnostics.js'
 import { hooksRefreshCommand } from './commands-hook-install.js'
-import { installedSkillMatchesPackage, listScopedNotifaiSkills } from './commands-skill.js'
-import { ownedSkillInventory, skillInventoryIssue } from './native-skills.js'
+import { skillInventory } from './commands-skill.js'
 import { updateSkillCommand } from './commands-update-skill.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter, isNpxAdapterTarget } from './hook-adapter.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
@@ -87,8 +86,6 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       pending.push(waiting)
       return report(false)
     }
-    const inventory = ownedSkillInventory(await listScopedNotifaiSkills(deps))
-    const skillIssue = skillInventoryIssue(inventory)
     const integrationArtifact = native ? assessment.cli.current.artifact_path : effective?.artifact_path
     if (assessment.installations.length > 0) {
       const adapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
@@ -101,13 +98,13 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
           deps.hookPlatform, deps.env)).changed) changed.push('hook-adapter')
       }
     }
-    if (skillIssue === null && inventory.installed.length === 1) {
+    if (skillInventory(deps).copies.some(copy => copy.condition !== 'current')) {
       let skillReport: { changed?: boolean; error?: string } = {}
       const skillResult = await updateSkillCommand({ ...repairDeps, io: { ...quietIo,
         out: (line: string) => { try { skillReport = JSON.parse(line) } catch { /* local status only */ } },
       } }, { json: true }, publish)
       if (skillResult !== EXIT.ok) {
-        pending.push(skillReport.error ?? 'Skill refresh failed; resume through the native installer in the existing scope.')
+        pending.push(skillReport.error ?? 'Skill refresh failed; run notifai update --refresh-skill --json.')
       }
       if (skillReport.changed === true) changed.push('skill')
     }
@@ -123,13 +120,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       if (!existsSync(installation.file) || readFileSync(installation.file, 'utf8') !== before) changed.push(`${installation.harness}-hooks`)
     }
     assessment = localIntegrationAssessment(deps)
-    const after = ownedSkillInventory(await listScopedNotifaiSkills(deps))
-    const afterIssue = skillInventoryIssue(after)
-    const ownedSkillGap = afterIssue !== null || after.installed.some(skill => !installedSkillMatchesPackage(skill))
-    if (ownedSkillGap) pending.push(afterIssue === null ? 'The refreshed owned guidance could not be verified.'
-      : `${afterIssue.detail} ${afterIssue.remedy}`)
-    // Unselected foreign guidance remains diagnosed, but has no authority over
-    // independent owned hooks or resident recovery. Never hide an owned gap.
+    const afterSkill = skillInventory(deps)
+    const outdatedSkill = afterSkill.copies.filter(copy => copy.condition !== 'current')
+    const skillGap = afterSkill.error !== undefined || outdatedSkill.length > 0
+    if (skillGap) {
+      pending.push(afterSkill.error ?? `Guidance at ${outdatedSkill.map(copy => copy.path).join(', ')} is not current; run notifai update --refresh-skill --json.`)
+    }
     const repairFaults = assessment.faults.filter(fault => fault.code === 'hooks-drift' && !setupPending(fault.file) ||
       (!native && fault.code === 'adapter-drift'))
     diagnostics.push(...assessment.faults.map(fault => `${fault.code}: ${fault.remedy}`))
@@ -153,7 +149,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       // visible without making unrelated owned repairs depend on its outcome.
       diagnostics.push(...(publish.pending?.() ?? []).map(item =>
         `Plugin setup remains pending at ${item.scope}; preserve its prepared source. Inspect reservation recovery with notifai install --recover-integration ${item.token} --json; the responsible agent must establish host publication quiescence before releasing it.`))
-      return report(!ownedSkillGap && repairFaults.length === 0)
+      return report(!skillGap && repairFaults.length === 0)
     })
   } catch {
     pending.push('Integration could not be verified; run notifai doctor --json and resume after the diagnosed gap is resolved.')

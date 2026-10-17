@@ -1,7 +1,7 @@
 /** Paths that warrant checking bundled placement from the exact packed CLI. */
 export const PACKED_SKILL_SMOKE_PATHS = Object.freeze([
   'apps/cli/src/native-skills.ts',
-  'apps/cli/src/skill-installation.ts',
+  'apps/cli/src/commands-update-skill.ts',
   'apps/cli/src/platform.ts',
   'apps/cli/src/skill-integrity.ts',
   'apps/cli/src/commands-skill.ts',

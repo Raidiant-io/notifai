@@ -1,49 +1,49 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { accountHome, configHome } from './platform.js'
-import { SkillInstallation, type SkillPlacement } from './skill-installation.js'
 import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 import { SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
-import { sameLocalPath } from './local-path.js'
-import { openclawStateDir } from './openclaw-plugin.js'
+import { canonicalPath, sameLocalPath } from './local-path.js'
+import { openclawConfigPath, openclawStateDir, parseOpenclawConfig } from './openclaw-plugin.js'
 import { packageVersion } from './release.js'
-import { createSkillManifest, shippedSkillBundle, skillTreeDigest, type SkillInspectionBudget } from './skill-integrity.js'
+import { createSkillManifest, shippedSkillBundle, verifySkillBundle, type SkillInspectionBudget, type VerifiedSkillBundle } from './skill-integrity.js'
 
-/** Explicit placement scope for bundled Notifai guidance. */
+/**
+ * Notifai guidance on disk.
+ *
+ * Every `notifai` skill directory in a harness's skill location is Notifai's.
+ * Nothing records who placed it: the location says whose it is, and the bytes
+ * say whether it is current. Refresh rewrites any copy that is not this CLI's
+ * bundled skill, wherever it came from. Customisation belongs in Guidance
+ * Topics, which no refresh touches.
+ *
+ * Reads follow links, so a harness whose skill directory is a link to another
+ * harness's is one copy, not two. Writes land on the resolved directory. A
+ * project-scope destination must resolve inside the project, so a checkout
+ * cannot steer a write elsewhere on the machine.
+ */
+
+/** Where guidance is placed: this checkout, or every project on the machine. */
 export type SkillScope = 'project' | 'global'
 
-export type SkillCondition = 'managed-current' | 'managed-stale' | 'managed-pending' | 'managed-missing' | 'managed-modified' | 'bundle-unavailable' | 'inspection-incomplete' | 'unmanaged' | 'incomplete' | 'unreadable'
-
-/** A receipt-backed scope or an existing unowned guidance tree. */
-export interface NativeSkill {
-  name: string
+/** One directory some harnesses load the skill from. */
+export interface SkillCopy {
   scope: SkillScope
+  /** The directory a harness loads, as that harness names it. */
   path: string
-  source: string | null
-  sourceType: string | null
-  sourceUrl: string | null
-  ref: string | null
-  pending?: boolean
-  owned?: boolean
-  agents?: SourceContextHarness[]
-  placements?: SkillPlacement[]
-  condition?: SkillCondition
+  /** Every harness that loads this directory. */
+  harnesses: SourceContextHarness[]
+  condition: 'current' | 'stale' | 'unreadable'
   problem?: string
 }
 
-export interface SkillsListResult {
-  skills: NativeSkill[]
+export interface SkillInventory {
+  copies: SkillCopy[]
+  /** The bundled skill's digest, or null when this CLI cannot verify its own bundle. */
+  expectedDigest: string | null
+  /** Inspection could not finish; the copies listed are incomplete. */
   error?: string
-}
-
-export interface SkillsAddOptions {
-  publishIntegration?: IntegrationPublication
-  /** Supported harness names for a new placement; refresh retains receipts. */
-  agents?: readonly string[]
-  skill: string
-  scope?: SkillScope
-  cwd: string
-  env: NodeJS.ProcessEnv
 }
 
 export interface SkillsOperationFailure {
@@ -53,314 +53,259 @@ export interface SkillsOperationFailure {
 
 export type SkillsOperationResult = number | SkillsOperationFailure
 
-export interface SkillsRemoveOptions {
-  skill: string
-  scope: SkillScope
-  cwd: string
-  env: NodeJS.ProcessEnv
+export interface SkillRefreshResult {
+  ok: boolean
+  /** Directories rewritten with the bundled skill. */
+  changed: string[]
+  error?: string
 }
 
 export interface NativeSkills {
-  /** Place this build’s verified bundled skill in the selected scope. */
-  add(options: SkillsAddOptions): Promise<SkillsOperationResult>
-  /** Uninstall one installer-managed skill in one scope. */
-  remove(options: SkillsRemoveOptions): Promise<number>
-  /** Synchronous local discovery for lifecycle diagnostics; adapters must share list's inventory. */
-  inspect?(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv, budget?: SkillInspectionBudget): SkillsListResult
-  /** Read ownership-aware local inventory without executing a program.
-   * Ownership must be explicit; omitted owned is treated as unmanaged. */
-  list(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): Promise<SkillsListResult>
+  /** Synchronous local discovery: every copy any harness loads, and whether it is current. */
+  inspect(cwd: string, env: NodeJS.ProcessEnv, budget?: SkillInspectionBudget): SkillInventory
+  /** Place the bundled skill for these harnesses in one scope, replacing their copies in the other. */
+  place(options: { scope: SkillScope; harnesses: readonly SourceContextHarness[]; cwd: string; env: NodeJS.ProcessEnv;
+    publishIntegration?: IntegrationPublication }): Promise<SkillsOperationResult>
+  /** Rewrite every copy that is not the bundled skill. */
+  refresh(options: { cwd: string; env: NodeJS.ProcessEnv; publishIntegration?: IntegrationPublication }): Promise<SkillRefreshResult>
+  /** Remove every copy in the given scopes. */
+  remove(options: { scopes: readonly SkillScope[]; cwd: string; env: NodeJS.ProcessEnv }): Promise<SkillsOperationResult>
 }
 
-interface LockEntry {
-  source?: unknown
-  sourceType?: unknown
-  sourceUrl?: unknown
-  ref?: unknown
-}
-
-interface LockFile {
-  skills?: Record<string, LockEntry>
-}
-
-function skillLockPath(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): string {
-  if (scope === 'project') return path.join(cwd, 'skills-lock.json')
-  const stateHome = env['XDG_STATE_HOME']
-  return stateHome !== undefined && stateHome !== ''
-    ? path.join(stateHome, 'skills', '.skill-lock.json')
-    : path.join(accountHome(env), '.agents', '.skill-lock.json')
-}
-
-function readLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): LockFile {
-  const file = skillLockPath(scope, cwd, env)
-  if (!existsSync(file)) return {}
-  try {
-    if (statSync(file).size > 64 * 1024) return {}
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as LockFile
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
+/** The directory a harness loads Notifai guidance from, or null where it has none. */
+export function skillDestination(scope: SkillScope, harness: SourceContextHarness, cwd: string, env: NodeJS.ProcessEnv): string | null {
+  if (scope === 'project') {
+    if (harness === 'openclaw' && !isOpenclawWorkspace(cwd, env)) return null
+    const relative = { codex: '.agents/skills', cursor: '.agents/skills', opencode: '.agents/skills',
+      'claude-code': '.claude/skills', hermes: '.hermes/skills', grok: '.grok/skills', openclaw: 'skills' }[harness]
+    return path.join(cwd, relative, 'notifai')
   }
-}
-
-export function conventionalSkillPath(
-  scope: SkillScope,
-  name: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): string {
-  if (scope === 'project') return path.join(cwd, '.agents', 'skills', name)
-  return path.join(accountHome(env), '.agents', 'skills', name)
-}
-
-/** One harness-specific place the pinned installer puts a skill. */
-export interface HarnessSkillCopy {
-  /** The pinned installer's name for this harness. */
-  agent: string
-  label: string
-  path: string
-  /** Whether the installer would count this harness as installed here. */
-  detected: boolean
-}
-
-/**
- * The skill directories that harnesses read instead of the conventional
- * `.agents/skills` path, as the pinned installer places them.
- *
- * Project Codex, Cursor and OpenCode share the conventional path. These harnesses have
- * their own directory, and a copy there is the one they load. The installer
- * narrows an unattended install to the agent it runs inside, so a refresh
- * started from one harness leaves every other harness's copy as it was.
- */
-export function harnessSkillCopies(
-  scope: SkillScope,
-  name: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): HarnessSkillCopy[] {
   const home = accountHome(env)
-  const configured = (key: string, fallback: string): string => {
+  const configured = (key: string, fallback: string): string | null => {
     const value = env[key]?.trim()
-    return value !== undefined && value !== '' ? value : path.join(home, fallback)
+    if (!value) return path.join(home, fallback)
+    return path.isAbsolute(value) ? value : null
   }
-  const openclawHome = openclawStateDir(env)
-  const harnesses = [
-    { agent: 'claude-code', label: 'Claude Code', home: configured('CLAUDE_CONFIG_DIR', '.claude'), project: path.join('.claude', 'skills') },
-    { agent: 'hermes-agent', label: 'Hermes', home: configured('HERMES_HOME', '.hermes'), project: path.join('.hermes', 'skills') },
-    { agent: 'grok', label: 'Grok', home: configured('GROK_HOME', '.grok'), project: path.join('.grok', 'skills') },
-    { agent: 'openclaw', label: 'OpenClaw', home: openclawHome, project: 'skills' },
-  ]
-  return harnesses.map((harness) => ({
-    agent: harness.agent,
-    label: harness.label,
-    path: scope === 'global' ? path.join(harness.home, 'skills', name) : path.join(cwd, harness.project, name),
-    detected: existsSync(harness.home),
-  }))
+  const root = {
+    codex: () => path.join(home, '.agents'),
+    cursor: () => path.join(home, '.cursor'),
+    opencode: () => path.join(configHome(env), 'opencode'),
+    'claude-code': () => configured('CLAUDE_CONFIG_DIR', '.claude'),
+    hermes: () => configured('HERMES_HOME', '.hermes'),
+    grok: () => configured('GROK_HOME', '.grok'),
+    openclaw: () => {
+      const state = openclawStateDir(env)
+      return path.isAbsolute(state) ? state : null
+    },
+  }[harness]()
+  return root === null ? null : path.join(root, 'skills', 'notifai')
 }
 
-function sameDirectory(a: string, b: string): boolean {
+/** OpenClaw loads project skills from its configured workspace, which need not be this directory. */
+function isOpenclawWorkspace(cwd: string, env: NodeJS.ProcessEnv): boolean {
   try {
-    return realpathSync(a) === realpathSync(b)
+    const config = openclawConfigPath(env)
+    let workspace = env['OPENCLAW_WORKSPACE_DIR']?.trim() || path.join(openclawStateDir(env), 'workspace')
+    if (path.isAbsolute(config) && existsSync(config)) {
+      if (lstatSync(config).size > 256 * 1024) return false
+      const parsed = parseOpenclawConfig(readFileSync(config, 'utf8'), config)
+      const object = (value: unknown): Record<string, unknown> =>
+        value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+      const agents = object(parsed['agents']), defaults = object(agents['defaults'])
+      const entries = Object.values(object(agents['entries']))
+      // Several agent workspaces, or one built from includes, name no single project.
+      if ('$include' in parsed || '$include' in agents || '$include' in defaults || agents['list'] !== undefined ||
+          entries.length > 1) return false
+      const selected = object(entries[0])['workspace'] ?? defaults['workspace']
+      if (selected !== undefined) {
+        if (typeof selected !== 'string') return false
+        workspace = selected
+      }
+    }
+    if (workspace.startsWith('~/')) workspace = path.join(accountHome(env), workspace.slice(2))
+    return path.isAbsolute(workspace) && !workspace.includes('${') && sameLocalPath(workspace, cwd)
   } catch {
     return false
   }
 }
 
-/**
- * Harness-specific copies whose content is not the expected skill.
- *
- * An existing copy is always checked. With `includeMissing`, a detected
- * harness with no copy counts too: that is what an installer run outside any
- * agent would have created. A link to the conventional directory is that
- * directory, not a second copy.
- */
-export function staleHarnessSkillCopies(
-  skill: Pick<NativeSkill, 'name' | 'scope' | 'path'>,
-  expectedDigest: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  includeMissing = false,
-): HarnessSkillCopy[] {
-  if ('placements' in skill && Array.isArray(skill.placements)) {
-    return (skill.placements as SkillPlacement[]).filter(copy => skillTreeDigest(copy.path) !== expectedDigest)
-      .map(copy => ({ agent: 'selected', label: 'selected harness', path: copy.path, detected: true }))
+function bundledSkill(): { ok: true; bundle: VerifiedSkillBundle } | { ok: false; error: string } {
+  const version = packageVersion()
+  if (version === null) return { ok: false, error: 'This CLI cannot establish which bundled skill belongs to it' }
+  const shipped = shippedSkillBundle(version)
+  if (!shipped.ok) return { ok: false, error: shipped.error }
+  const verified = verifySkillBundle(shipped.bundle.sourceRoot, shipped.bundle.manifest.package_version)
+  return verified.ok ? { ok: true, bundle: verified.bundle } : { ok: false, error: verified.error }
+}
+
+function expectedSkillDigest(): string | null {
+  const version = packageVersion()
+  if (version === null) return null
+  const shipped = shippedSkillBundle(version)
+  return shipped.ok ? shipped.bundle.manifest.digest : null
+}
+
+function inspectionLimit(error: unknown): boolean {
+  return /inspection (budget exhausted|size exceeded)/.test(String(error))
+}
+
+export function inspectSkillCopies(cwd: string, env: NodeJS.ProcessEnv, budget?: SkillInspectionBudget): SkillInventory {
+  const expectedDigest = expectedSkillDigest()
+  const byDirectory = new Map<string, SkillCopy>()
+  try {
+    // Global first: run from the home directory, both scopes name one directory, and it is the machine's.
+    for (const scope of ['global', 'project'] as const) {
+      for (const harness of SOURCE_CONTEXT_HARNESSES) {
+        const destination = skillDestination(scope, harness, cwd, env)
+        if (destination === null || !existsSync(destination)) continue
+        const directory = canonicalPath(destination)
+        const known = byDirectory.get(directory)
+        if (known !== undefined) {
+          if (!known.harnesses.includes(harness)) known.harnesses.push(harness)
+          continue
+        }
+        let condition: SkillCopy['condition']
+        let problem: string | undefined
+        try {
+          condition = createSkillManifest(directory, '', budget).digest === expectedDigest ? 'current' : 'stale'
+        } catch (error) {
+          if (inspectionLimit(error)) throw error
+          condition = 'unreadable'
+          problem = String(error)
+        }
+        byDirectory.set(directory, { scope, path: destination, harnesses: [harness], condition,
+          ...(problem === undefined ? {} : { problem }) })
+      }
+    }
+  } catch (error) {
+    return { copies: [...byDirectory.values()], expectedDigest, error: `Inspection incomplete: ${String(error)}` }
   }
-  return harnessSkillCopies(skill.scope, skill.name, cwd, env).filter((copy) => {
-    if (!existsSync(copy.path)) return includeMissing && copy.detected
-    if (sameDirectory(copy.path, skill.path)) return false
-    return skillTreeDigest(copy.path) !== expectedDigest
-  })
+  return { copies: [...byDirectory.values()], expectedDigest }
 }
 
-function skillsFromLock(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv): NativeSkill[] {
-  const lock = readLock(scope, cwd, env)
-  return Object.entries(lock.skills ?? {}).flatMap(([name, entry]): NativeSkill[] => {
-    if (entry === null || typeof entry !== 'object') return []
-    return [
-      {
-        name,
-        scope,
-        // skills@1.5.23 records the source-relative SKILL.md as `skillPath`.
-        // It is not the installed destination and is therefore not trusted for
-        // readiness. The installer contract puts skills at this conventional
-        // path for both scopes.
-        path: conventionalSkillPath(scope, name, cwd, env),
-        source: typeof entry.source === 'string' ? entry.source : null,
-        sourceType: typeof entry.sourceType === 'string' ? entry.sourceType : null,
-        sourceUrl: typeof entry.sourceUrl === 'string' ? entry.sourceUrl : null,
-        ref: typeof entry.ref === 'string' ? entry.ref : null,
-      },
-    ]
-  })
-}
-
-/** Receipt ownership and content currency are separate: matching bytes never adopt a tree. */
-export function discoverNotifaiSkills(scope: SkillScope, cwd: string, env: NodeJS.ProcessEnv,
-  budget: SkillInspectionBudget = { maxFiles: 100, maxBytes: 2 * 1024 * 1024, deadlineAt: Date.now() + 1_000 }): SkillsListResult {
-  budget = { ...budget, maxFiles: Math.min(100, budget.maxFiles), maxBytes: Math.min(2 * 1024 * 1024, budget.maxBytes) }
-  const state = new SkillInstallation({ cwd, env }).inspect(scope, budget)
-  if (state.inspectionIncomplete) return { skills: [], error: `Inspection incomplete: ${state.conflicts.join('; ')}` }
-  const skills: NativeSkill[] = []
-  const inspectTree = (root: string): { condition: 'complete' | 'missing' | 'incomplete' | 'unreadable' | 'inspection-incomplete'; digest?: string; problem?: string } => {
-    try {
-      try { lstatSync(root) } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { condition: 'missing', problem: String(error) }
-        throw error
-      }
-      // Do not traverse links, including linked parent roots. Discovery is read-only.
-      let current = path.resolve(root)
-      const anchor = scope === 'project' ? path.resolve(cwd) : path.resolve(path.dirname(path.dirname(root)))
-      while (true) {
-        if (lstatSync(current).isSymbolicLink()) return { condition: 'unreadable', problem: `Linked skill path: ${current}` }
-        if (current === anchor) break
-        const parent = path.dirname(current)
-        if (parent === current) break
-        current = parent
-      }
-      if (!lstatSync(root).isDirectory() || !lstatSync(path.join(root, 'SKILL.md')).isFile()) {
-        return { condition: 'incomplete', problem: `Skill directory needs SKILL.md: ${root}` }
-      }
-      return { condition: 'complete', digest: createSkillManifest(root, '', budget).digest }
-    } catch (error) {
-      return { condition: /inspection (budget exhausted|size exceeded)/.test(String(error)) ? 'inspection-incomplete'
-        : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'incomplete' : 'unreadable', problem: String(error) }
+/** The directory a write lands on. Project scope must stay inside the project. */
+function writableDirectory(scope: SkillScope, destination: string, cwd: string): string {
+  const directory = canonicalPath(destination)
+  if (scope === 'project') {
+    const fold = (file: string) => process.platform === 'win32' ? file.toLowerCase() : file
+    if (!fold(directory).startsWith(`${fold(canonicalPath(cwd))}${path.sep}`)) {
+      throw new Error(`Refusing a project skill destination that resolves outside the project: ${destination}`)
     }
   }
-  const placements = [...state.placements, ...(state.pendingPlacement !== undefined &&
-    !state.placements.some(item => item.path === state.pendingPlacement!.path) ? [state.pendingPlacement] : [])]
-  if (placements.length > 0) {
-    const version = packageVersion()
-    const bundle = version === null ? null : shippedSkillBundle(version, budget)
-    const expected = bundle?.ok ? bundle.bundle.manifest.digest : null
-    const bundleProblem = bundle === null ? 'This CLI cannot establish its bundled skill identity' : bundle.ok ? undefined : bundle.error
-    // inspect already compared each intact placement with its receipt digest.
-    // Re-read only conflicts to distinguish unreadable, missing and modified trees.
-    const trees: Array<{ item: SkillPlacement; tree: ReturnType<typeof inspectTree> }> = placements.map(item => ({ item, tree: state.conflicts.includes(item.path) || !state.placements.some(recorded => recorded.path === item.path)
-      ? inspectTree(item.path) : { condition: 'complete' as const, digest: item.digest } }))
-    const condition: SkillCondition = trees.some(({ tree }) => tree.condition === 'inspection-incomplete') ? 'inspection-incomplete'
-      : trees.some(({ tree }) => tree.condition === 'unreadable') ? 'unreadable'
-      : trees.some(({ tree }) => tree.condition === 'incomplete') ? 'incomplete'
-      : trees.some(({ item, tree }) => tree.condition !== 'missing' && tree.digest !== item.digest &&
-        !(state.pendingPlacement?.path === item.path && tree.digest === state.pendingPlacement.digest)) ? 'managed-modified'
-      : bundleProblem !== undefined && /inspection (budget exhausted|size exceeded)/.test(bundleProblem) ? 'inspection-incomplete'
-      : bundleProblem !== undefined ? 'bundle-unavailable'
-      : state.pending ? 'managed-pending'
-      : trees.some(({ tree }) => tree.condition === 'missing') ? 'managed-missing'
-      : expected !== null && trees.every(({ tree }) => tree.digest === expected) ? 'managed-current' : 'managed-stale'
-    const problem = trees.find(({ tree }) => tree.problem)?.tree.problem ?? bundleProblem
-    skills.push({ name: 'notifai', scope, path: placements[0]!.path, source: 'bundled', sourceType: 'bundled',
-      sourceUrl: null, ref: `v${placements[0]!.version}`, owned: true, pending: state.pending,
-      agents: state.agents, placements, condition,
-      ...(problem === undefined ? {} : { problem }) })
+  return directory
+}
+
+const LEFTOVER = /^\.notifai-[a-f0-9]{24}\.(new|old)$/
+
+/** Replace one directory with the bundled skill: stage beside it, swap, discard the old tree. */
+function writeSkill(directory: string, bundle: VerifiedSkillBundle): void {
+  const parent = path.dirname(directory)
+  mkdirSync(parent, { recursive: true })
+  // An interrupted earlier write leaves its staging directories here.
+  for (const name of readdirSync(parent)) {
+    if (LEFTOVER.test(name)) rmSync(path.join(parent, name), { recursive: true, force: true })
   }
-  const candidates = [conventionalSkillPath(scope, 'notifai', cwd, env),
-    ...harnessSkillCopies(scope, 'notifai', cwd, env).map(copy => copy.path),
-    ...(scope === 'global' ? [path.join(accountHome(env), '.cursor', 'skills', 'notifai'),
-      path.join(configHome(env), 'opencode', 'skills', 'notifai')] : [])]
-  const legacy = skillsFromLock(scope, cwd, env).find(skill => skill.name === 'notifai')
-  for (const root of new Set(candidates)) {
-    let linked = false
-    try { linked = lstatSync(root).isSymbolicLink() || lstatSync(path.dirname(root)).isSymbolicLink() } catch { /* presence/readability below */ }
-    if (!linked && placements.some(item => sameLocalPath(item.path, root))) continue
-    try { lstatSync(root) } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      skills.push({ name: 'notifai', scope, path: root, source: null, sourceType: null, sourceUrl: null,
-        ref: null, owned: false, condition: 'unreadable', problem: String(error) })
-      continue
+  const token = randomBytes(12).toString('hex')
+  const staged = path.join(parent, `.notifai-${token}.new`)
+  const old = path.join(parent, `.notifai-${token}.old`)
+  mkdirSync(staged, { mode: 0o700 })
+  // Read embedded files through the runtime: native copyfile cannot address
+  // Bun's executable filesystem. The verified manifest bounds what is copied.
+  for (const entry of bundle.manifest.files) {
+    if (entry.path.split('/').some(part => !part || part === '.' || part === '..') ||
+      entry.path.includes('\\') || path.isAbsolute(entry.path)) throw new Error('Invalid bundled skill path')
+    const target = path.join(staged, entry.path)
+    mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
+    writeFileSync(target, readFileSync(path.join(bundle.skillRoot, entry.path)), { flag: 'wx', mode: 0o600 })
+  }
+  if (createSkillManifest(staged, '').digest !== bundle.manifest.digest) {
+    rmSync(staged, { recursive: true, force: true })
+    throw new Error('Staged skill failed integrity verification')
+  }
+  const replacing = existsSync(directory)
+  if (replacing) renameSync(directory, old)
+  renameSync(staged, directory)
+  // The new copy is in place; an old tree that resists deletion is cleared by the next write here.
+  if (replacing) try { rmSync(old, { recursive: true, force: true }) } catch { /* best effort */ }
+}
+
+/** Remove every copy in these scopes; null on success, otherwise what stopped it. */
+export function removeSkillCopies(scopes: readonly SkillScope[], cwd: string, env: NodeJS.ProcessEnv): string | null {
+  try {
+    for (const copy of inspectSkillCopies(cwd, env).copies) {
+      if (scopes.includes(copy.scope)) rmSync(writableDirectory(copy.scope, copy.path, cwd), { recursive: true, force: true })
     }
-    const tree = inspectTree(root)
-    skills.push({ name: 'notifai', scope, path: root, source: legacy?.source ?? null, sourceType: legacy?.sourceType ?? null,
-      sourceUrl: legacy?.sourceUrl ?? null, ref: legacy?.ref ?? null, owned: false,
-      condition: tree.condition === 'complete' ? 'unmanaged' : tree.condition === 'missing' ? 'incomplete' : tree.condition,
-      ...(tree.problem === undefined ? {} : { problem: tree.problem }) })
+    return null
+  } catch (error) {
+    return failure(error).error
   }
-  // A legacy lock is evidence of an incomplete prior install, never an ownership receipt.
-  if (skills.length === 0 && legacy !== undefined) skills.push({ ...legacy, owned: false, condition: 'incomplete' })
-  // Modified owned content is represented above, rather than hidden behind a generic list error.
-  const errors = placements.length === 0 ? state.conflicts : []
-  return { skills, ...(errors.length === 0 ? {} : { error: errors.join('; ') }) }
 }
 
-export interface SkillInventory { installed: NativeSkill[]; errors: string[] }
-export interface SkillInventoryIssue { code: string; resolution: string; detail: string; remedy: string }
-
-/** Refresh authority comes only from receipts; incomplete discovery still fails closed. */
-export function ownedSkillInventory(inventory: SkillInventory): SkillInventory {
-  return { installed: inventory.installed.filter(skill => skill.owned === true),
-    errors: [...inventory.errors, ...inventory.installed.filter(skill => skill.owned !== true &&
-      skill.condition === 'inspection-incomplete').map(skill => `Inspection incomplete: ${skill.problem ?? skill.path}`)] }
+function failure(error: unknown): SkillsOperationFailure {
+  return { code: 1, error: error instanceof Error ? error.message : String(error) }
 }
 
-/** Common decision for diagnostic commands; presentation belongs to each caller. */
-export function skillInventoryIssue(inventory: SkillInventory): SkillInventoryIssue | null {
-  const { installed, errors } = inventory
-  const unsafe = installed.filter(skill => skill.owned !== true ||
-    skill.condition === 'bundle-unavailable' || skill.condition === 'inspection-incomplete' || skill.condition === 'managed-modified' || skill.condition === 'incomplete' || skill.condition === 'unreadable')
-  if (unsafe.length > 0 || errors.length > 0) {
-    const unreadable = errors.length > 0 || unsafe.some(skill => skill.condition === 'unreadable')
-    const incomplete = unsafe.some(skill => skill.condition === 'incomplete') || errors.some(error => error.includes('Incomplete skill installation'))
-    const modified = unsafe.some(skill => skill.condition === 'managed-modified')
-    const limited = unsafe.some(skill => skill.condition === 'inspection-incomplete') || errors.some(error => error.includes('Inspection incomplete'))
-    if (limited) return { code: 'skill-inspection-incomplete', resolution: 'skill-inspection-incomplete',
-      detail: 'The bounded local skill inspection could not finish; ownership and content currency remain unverified.',
-      remedy: 'Preserve existing guidance. Run notifai doctor --json for a separate inspection before authorizing any skill changes; refresh has not been attempted.' }
-    if (unsafe.some(skill => skill.condition === 'bundle-unavailable')) return {
-      code: 'skill-bundle-unavailable', resolution: 'skill-bundle-unavailable',
-      detail: 'This CLI cannot verify its shipped skill bundle. Existing guidance is preserved; content currency remains unverified.',
-      remedy: 'Restore a CLI package with its matching verified bundled skill before attempting refresh. Run notifai doctor --json to inspect the local CLI installation; do not replace existing guidance with an unverifiable bundle.' }
-    const resolution = incomplete ? 'skill-incomplete' : unreadable ? 'skill-unreadable' : modified ? 'skill-modified' : 'skill-unmanaged'
-    return { code: resolution, resolution,
-      detail: `${unsafe.map(skill => `${skill.scope}: ${skill.path} (${skill.condition ?? 'unmanaged'})`).join('; ')}${errors.length ? `; ${errors.join('; ')}` : ''}. Existing guidance is preserved; matching package bytes do not establish installer ownership.`,
-      remedy: 'Preserve existing guidance and ask its owner whether to keep it unmanaged or explicitly resolve the conflicting placement; do not adopt, overwrite, move or delete it automatically. Resolve unreadable or incomplete state first. Only after that custody decision and conflict resolution, select a scope and supported harnesses for setup, for example: notifai init --skills --skills-scope project --skills-harness codex. Use the chosen scope and harnesses; refresh cannot manage unowned or modified content.' }
-  }
-  if (installed.length > 1) return { code: 'skill-scope-ambiguous', resolution: 'skill-duplicates',
-    detail: 'Multiple receipt-backed skill scopes are installed.',
-    remedy: 'Choose the scope to keep, then run notifai init --skills --skills-scope project or notifai init --skills --skills-scope global with that chosen scope.' }
-  return null
-}
-
-/** The bundled installer never downloads or executes another installer. */
 export const nativeSkills: NativeSkills = {
-  async add(options) {
-    const publish = options.publishIntegration ?? integrationPublication(options)
-    if (options.skill !== 'notifai' || options.scope === undefined) return { code: 1, error: 'Choose project or global scope for the bundled Notifai skill' }
-    if (options.agents?.some(agent => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(agent))) {
-      return { code: 1, error: 'Choose supported Notifai harness names for the skill' }
+  inspect: inspectSkillCopies,
+
+  async place(options) {
+    if (options.harnesses.length === 0 || options.harnesses.some(harness => !SOURCE_CONTEXT_HARNESSES.includes(harness))) {
+      return { code: 1, error: 'Choose the supported harnesses that should load this skill' }
     }
-    const version = packageVersion()
-    if (version === null) return { code: 1, error: 'This CLI cannot establish which bundled skill belongs to it' }
-    const bundle = shippedSkillBundle(version)
+    const bundle = bundledSkill()
     if (!bundle.ok) return { code: 1, error: bundle.error }
-    const result = publish(() => new SkillInstallation(options).reconcile({ scope: options.scope!, bundle: bundle.bundle,
-      ...(options.agents === undefined ? {} : { agents: options.agents as SourceContextHarness[] }) }))
-    return result.ok ? 0 : { code: 1, error: result.conflicts.join('; ') }
+    const other: SkillScope = options.scope === 'project' ? 'global' : 'project'
+    try {
+      return (options.publishIntegration ?? integrationPublication(options))(() => {
+        const placed = new Set<string>()
+        for (const harness of options.harnesses) {
+          const destination = skillDestination(options.scope, harness, options.cwd, options.env)
+          if (destination === null) {
+            throw new Error(harness === 'openclaw'
+              ? 'Run project skill setup from the configured OpenClaw workspace, or choose global skill scope'
+              : `${harness} has no ${options.scope} skill location`)
+          }
+          const directory = writableDirectory(options.scope, destination, options.cwd)
+          if (!placed.has(directory)) writeSkill(directory, bundle.bundle)
+          placed.add(directory)
+        }
+        // A harness lists every copy it can see; one scope per harness keeps it to one.
+        for (const harness of options.harnesses) {
+          const destination = skillDestination(other, harness, options.cwd, options.env)
+          if (destination === null || !existsSync(destination)) continue
+          const directory = writableDirectory(other, destination, options.cwd)
+          if (!placed.has(directory)) rmSync(directory, { recursive: true, force: true })
+        }
+        return 0
+      })
+    } catch (error) {
+      return failure(error)
+    }
   },
+
+  async refresh(options) {
+    const inventory = inspectSkillCopies(options.cwd, options.env)
+    if (inventory.error !== undefined) return { ok: false, changed: [], error: inventory.error }
+    const outdated = inventory.copies.filter(copy => copy.condition !== 'current')
+    if (outdated.length === 0) return { ok: true, changed: [] }
+    const bundle = bundledSkill()
+    if (!bundle.ok) return { ok: false, changed: [], error: bundle.error }
+    const changed: string[] = []
+    try {
+      (options.publishIntegration ?? integrationPublication(options))(() => {
+        for (const copy of outdated) {
+          writeSkill(writableDirectory(copy.scope, copy.path, options.cwd), bundle.bundle)
+          changed.push(copy.path)
+        }
+      })
+      return { ok: true, changed }
+    } catch (error) {
+      return { ok: false, changed, error: failure(error).error }
+    }
+  },
+
   async remove(options) {
-    if (options.skill !== 'notifai') return 1
-    return new SkillInstallation(options).remove(options.scope).ok ? 0 : 1
-  },
-  inspect: discoverNotifaiSkills,
-  async list(scope, cwd, env) {
-    return discoverNotifaiSkills(scope, cwd, env)
+    const error = removeSkillCopies(options.scopes, options.cwd, options.env)
+    return error === null ? 0 : { code: 1, error }
   },
 }

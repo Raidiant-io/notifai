@@ -392,7 +392,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('Update the effective global Notifai installation and keep Question Routing on it')
     .option('--json', 'machine-readable installation and session handoff')
     .option('--check', 'inspect release notes, guidance, and session effects without installing')
-    .option('--refresh-skill', 'refresh the existing skill scope without login, hooks, or delivery setup')
+    .option('--refresh-skill', 'rewrite every outdated Notifai skill copy without login, hooks, or delivery setup')
     .option('--resume', 'finish integration in the existing installation without reinstalling or changing channel')
     .option('--channel <channel>', 'choose stable or beta (native installs otherwise keep their saved channel)')
     .option('--allow-downgrade', 'allow an explicit native beta-to-stable downgrade to the signed stable target')

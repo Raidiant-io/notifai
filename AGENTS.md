@@ -81,11 +81,11 @@ Authorization must cover the release scope and channel. A version, once
 published, cannot be taken back. Git pushes of ordinary commits are fine.
 
 The CLI carries the complete reviewed skill and its digest manifest. Its
-built-in installer verifies that bundle and owns only the explicitly selected
-Notifai placements. Preserve user edits and unrelated files; neither a mutable
-source/ref label nor an external installer lock grants deletion authority.
-Refreshes keep the recorded scope and harnesses. No external skill manager is
-part of the runtime installation path.
+built-in installer verifies that bundle before writing. Every `notifai`
+directory in a harness's skill location is Notifai's: refresh rewrites any copy
+whose bytes differ from the bundle, and never touches other skills. The policy
+is in `docs/TRUST.md`. No external skill manager is part of the runtime
+installation path.
 
 ## Publishing must verify what actually shipped
 

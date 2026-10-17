@@ -4,6 +4,8 @@ For a local integration notice, run `notifai doctor --json` to identify the lost
 capability. Read [Updating Notifai](updates.md) for safe recovery, existing
 authorization and deferrals, and exact-session tool-boundary Note evidence.
 An optional newer release is separate from a fault in installed integration.
+Doctor judges the `harness` running it: a state with `applies_here: false`
+belongs to another harness, so report it and do not act on it for this session.
 
 When something did not happen and you cannot see why — especially after `ask`,
 which schedules background submission — inspect the local log.

@@ -6,12 +6,12 @@ import type { Installation } from './installation.js'
 import { findInstallations, findLegacyProjectInstallations } from './install-hooks.js'
 import { hooksUninstallCommand } from './commands-hook-install.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
-import { SkillInstallation } from './skill-installation.js'
+import { removeSkillCopies } from './native-skills.js'
 import { inspectCliInstallations, nativeLifecycleCommand, type CliBinReadinessOptions } from './cli-bin.js'
 
 export interface NativeUninstallFlags { json?: boolean; cancel?: boolean; finish?: boolean; installationId?: string; installationRoot?: string }
 interface Seams { installation?: Installation; removeWiring?: () => { ok: boolean; conflicts: string[] }; sessions?: string; inspection?: CliBinReadinessOptions }
-function removeOwnedWiring(deps: CommandDeps, stateRoots: string[], installation: Installation, uninstallToken: string): { ok: boolean; conflicts: string[] } {
+function removeOwnedWiring(deps: CommandDeps, installation: Installation, uninstallToken: string): { ok: boolean; conflicts: string[] } {
   const conflicts: string[] = []
   // The existing uninstall barrier excludes new setup. Persist each external
   // remover as well, so a dead uninstall caller cannot forget its host work.
@@ -37,9 +37,8 @@ function removeOwnedWiring(deps: CommandDeps, stateRoots: string[], installation
   remaining.push(...findLegacyProjectInstallations(deps.cwd, deps.env, deps.hookAdapterHome, deps.hookPlatform, conflicts))
   conflicts.push(...remaining.map(item => `Notifai wiring remains in ${item.file}`))
   if (conflicts.length === 0) {
-    for (const root of new Set([stateDir(deps.env), ...stateRoots])) {
-      conflicts.push(...new SkillInstallation({ cwd: deps.cwd, env: { ...deps.env, XDG_STATE_HOME: path.dirname(root) } }).removeRecorded().conflicts)
-    }
+    const skillError = removeSkillCopies(['global', 'project'], deps.cwd, deps.env)
+    if (skillError !== null) conflicts.push(skillError)
   }
   return { ok: conflicts.length === 0, conflicts }
 }
@@ -102,7 +101,7 @@ export async function nativeUninstallCommand(deps: CommandDeps, flags: NativeUni
     if (!before?.planned && gate.status !== 'removing') return emit({ ok: false, ...gate,
       recovery_command: 'notifai uninstall --json', cancel_command: 'notifai uninstall --cancel --json' },
     'Notifai is waiting for its running commands to exit. Retry uninstall when they finish, or cancel it.')
-    const result = installation.completeUninstall(begun.token, sessions, seams.removeWiring ?? (() => removeOwnedWiring(deps, begun.owners.stateRoots, installation, begun.token)))
+    const result = installation.completeUninstall(begun.token, sessions, seams.removeWiring ?? (() => removeOwnedWiring(deps, installation, begun.token)))
     return emit({ ok: result.status === 'removed', operation: 'uninstall', ...result, adapter_cleanup: adapterCleanup }, result.status === 'removed'
       ? `Notifai was uninstalled. Your configuration and session history were preserved.${adapterCleanup.length ? ` Remove the remaining npm launcher with: ${adapterCleanup.map(item => item.command).join('; ')}` : ''}`
       : result.recovery_command ? 'Run this PowerShell command after this command exits to finish removing Notifai.'

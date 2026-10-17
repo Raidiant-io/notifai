@@ -245,8 +245,8 @@ Session-state inspection on Windows accepts inherited ACLs only when the
 current User owns the object and all write permissions belong to the User,
 SYSTEM or Administrators. It never rewrites those ACLs. Managed installation
 directories continue to require protected inheritance. Modified or unreadable
-harness wiring and skill placements prevent runtime removal. Receipt-owned skills
-are removed from all discovered state roots. Re-running the portable installer
+harness wiring prevents runtime removal. Notifai skill copies are removed from
+the machine-global harness locations and the current project. Re-running the portable installer
 authenticates its candidate first, then can cancel untouched preparation or
 resume a persisted removal plan. Incomplete wiring teardown still needs the
 uninstall command; Windows still returns its explicit cleanup command.
