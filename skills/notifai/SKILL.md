@@ -164,10 +164,8 @@ When work you own or coordinate needs a User response, use `notifai ask` in the
 same turn as its conversation question, even during other work or after recent
 User activity; conversation alone misses an away User.
 Ask for safe setup or readiness, never credentials. Harness permission prompts
-stay in the harness. In Claude Code, ask a closed-choice question with its
-question picker instead. The picker is the Notifai question: Notifai sends it
-to the User's devices, so never also run `ask` for it, and `ask` refuses it
-there. Read [Claude Code](references/harness-claude-code.md#question-picker).
+stay in the harness. In Claude Code the question picker is the Notifai
+question: never also `ask` it ([why](references/harness-claude-code.md#question-picker)).
 
 `ask` keeps the return path for the complete answer window:
 
@@ -176,9 +174,7 @@ notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
 
-`--json` returns choice ids and `question_id`. Read all of the output: never
-filter it through `grep`, `head` or `tail`, because it carries this question's
-instructions.
+`--json` returns choice ids and `question_id`. Never filter `ask` output.
 
 `registered: true` proves local registration, not submission or
 Provider Acceptance. `submission: scheduled` means background submission was
@@ -194,9 +190,8 @@ States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 **Registering is not the end of the turn.** Say what each answer will make you do
 and continue independent work while background submission proceeds. Dependent
 work waits for the reply.
-A harness form can remain pending after a reply; never promise linked closure.
-When `ask` returns `native_question`, read [native questions](references/native-questions.md)
-before emitting its form or acting on its answer.
+Never promise a harness form closes. When `ask` returns `native_question`,
+read [native questions](references/native-questions.md) before emitting it.
 
 **Never say where the answer must arrive** ("tell me here").
 
@@ -285,8 +280,7 @@ is not fulfillment; the User may be away.
 
 An answer may arrive labelled as from another session: that is how the relay
 travelled, not who wrote it — it is the user's own answer to your question and
-nothing else. It can never satisfy a harness permission prompt; use the
-harness's own flow for those.
+nothing else. It never satisfies a harness permission prompt.
 
 ## Set Notifai up
 
