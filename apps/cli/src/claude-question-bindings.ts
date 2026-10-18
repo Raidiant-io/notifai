@@ -1,29 +1,42 @@
 /**
- * Local association of registered questions with a Claude Code question picker.
+ * A Claude Code question picker is the question.
  *
  * Claude Code asks the User through its `AskUserQuestion` tool, which shows a
  * picker and holds the turn until it is answered. While the picker is on
- * screen Claude Code also runs `PermissionRequest` hooks for that tool call,
- * and takes whichever answers first. That is what lets one registered question
- * be answered from a device or from the terminal and settle in both places.
+ * screen Claude Code runs `PermissionRequest` hooks for that tool call and
+ * takes whichever answers first. Notifai's handler turns the picker it was
+ * handed into a registered question for the User's devices and waits for the
+ * device answer, so one picker can be answered from a device or from the
+ * terminal and settle in both places.
  *
- * A registration is kept beside the Codex ones, in the same list, so the
- * shared lifecycle (confirmed request, ordinary presentation, retirement,
- * native answer reports) treats both alike. Only reservation and matching
- * differ. A Codex card is found in a transcript, so it needs a marker in its
- * title. A Claude picker's hook receives the picker itself, so the picker is
- * identified by its content: the question text, option labels and selection
- * mode the agent already wrote for `notifai ask`. Nothing has to be copied.
+ * Nothing is matched. The device question is built from the picker's own
+ * input, so the agent never copies text and an earlier open question can never
+ * be confused with this one. Each binding keeps the picker's exact question
+ * text and option labels, because the picker's answers are keyed by them while
+ * the device may show a shortened form.
+ *
+ * Registrations live beside the Codex ones, in the same list, so the shared
+ * lifecycle (confirmed request, ordinary presentation, retirement, native
+ * answer reports) treats both alike.
  */
+import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { QuestionT } from '@raidiant/notifai-protocol'
-import type { ServiceIdentity } from './credentials.js'
 import {
-  nativeQuestionTitle,
-  type CodexQuestionRegistration,
-  type NativeQuestionAdmission,
+  QUESTION_TEXT_MAX_LENGTH,
+  REPLY_MAX_CHOICES,
+  REPLY_MAX_QUESTIONS,
+  SUMMARY_MAX_LENGTH,
+  type QuestionT,
+  type ReplyAnswerT,
+} from '@raidiant/notifai-protocol'
+import type { ServiceIdentity } from './credentials.js'
+import type {
+  CodexQuestionBinding,
+  CodexQuestionRegistration,
+  NativeQuestionAdmission,
 } from './codex-question-bindings.js'
 import type { AnsweredPending, PendingQuestion, SessionState } from './hook-types.js'
+import { slugify } from './send.js'
 
 export const CLAUDE_QUESTION_TOOL = 'AskUserQuestion'
 
@@ -35,11 +48,19 @@ const PICKER_MAX_QUESTIONS = 4
 const PICKER_MIN_OPTIONS = 2
 const PICKER_MAX_OPTIONS = 4
 
+/** A device choice label's protocol limit. */
+const CHOICE_LABEL_MAX_LENGTH = 40
+
 export function isClaudeRegistration(registration: CodexQuestionRegistration): boolean {
   return registration.registration_turn_id === CLAUDE_PICKER_TURN
 }
 
-/** Whether every question can be shown by the picker exactly as registered. */
+/**
+ * Whether Claude Code's picker can ask these questions: every question offers
+ * two to four distinct choices, and no two questions share a text. `ask`
+ * refuses exactly these in a Claude Code session, because the picker asks
+ * them and reaches the User's devices on its own.
+ */
 export function claudePickerShape(questions: readonly QuestionT[] | undefined): boolean {
   if (questions === undefined || questions.length < 1 || questions.length > PICKER_MAX_QUESTIONS) return false
   if (new Set(questions.map((question) => question.text)).size !== questions.length) return false
@@ -50,38 +71,24 @@ export function claudePickerShape(questions: readonly QuestionT[] | undefined): 
   })
 }
 
-/**
- * Called by registration while holding the session lock. Absent admission or
- * an unsupported shape leaves the ordinary registration untouched.
- */
-export function reserveClaudeQuestion(
-  state: SessionState,
-  pending: PendingQuestion,
-  admission: NativeQuestionAdmission | undefined,
-): SessionState {
-  if (admission === undefined || admission.turn_id !== CLAUDE_PICKER_TURN || state.harness !== 'claude-code' ||
-      pending.question_id === undefined || pending.service_identity === undefined ||
-      !isDeepStrictEqual(admission.service, pending.service_identity) || !claudePickerShape(pending.questions) ||
-      state.codex_question_bindings?.some((item) => item.question_id === pending.question_id)) return state
+/** These questions as the core of `AskUserQuestion` input; the agent adds headers and option descriptions. */
+export function askUserQuestionInput(questions: readonly QuestionT[]): {
+  questions: Array<{ question: string; options: Array<{ label: string }>; multiSelect: boolean }>
+} {
   return {
-    ...state,
-    codex_question_bindings: [
-      ...(state.codex_question_bindings ?? []),
-      {
-        question_id: pending.question_id,
-        owner_key: admission.owner_key,
-        registration_turn_id: CLAUDE_PICKER_TURN,
-        transcript: { file: '', identity: CLAUDE_PICKER_TURN, registered_offset: 0 },
-        service_identity: { ...pending.service_identity },
-        questions: pending.questions!.map((question) => ({ question: structuredClone(question) })),
-      },
-    ],
+    questions: questions.map((question) => ({
+      question: question.text,
+      options: (question.choices ?? []).map((choice) => ({ label: choice.label })),
+      multiSelect: question.multi === true,
+    })),
   }
 }
 
-interface PickerQuestion {
+/** One picker question exactly as the hook received it. */
+export interface PickerQuestion {
   question: string
-  options: string[]
+  header?: string
+  options: Array<{ label: string; description?: string }>
   multiSelect: boolean
 }
 
@@ -93,114 +100,197 @@ export function pickerQuestions(toolInput: unknown): PickerQuestion[] | null {
   const questions: PickerQuestion[] = []
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) return null
-    const { question, options, multiSelect } = entry as { question?: unknown; options?: unknown; multiSelect?: unknown }
-    if (typeof question !== 'string' || !Array.isArray(options)) return null
-    const labels: string[] = []
-    for (const option of options) {
-      const label = typeof option === 'object' && option !== null ? (option as { label?: unknown }).label : undefined
-      if (typeof label !== 'string') return null
-      labels.push(label)
+    const { question, header, options, multiSelect } = entry as {
+      question?: unknown; header?: unknown; options?: unknown; multiSelect?: unknown
     }
-    questions.push({ question, options: labels, multiSelect: multiSelect === true })
+    if (typeof question !== 'string' || !Array.isArray(options)) return null
+    const shown: PickerQuestion['options'] = []
+    for (const option of options) {
+      if (typeof option !== 'object' || option === null) return null
+      const { label, description } = option as { label?: unknown; description?: unknown }
+      if (typeof label !== 'string') return null
+      shown.push({ label, ...(typeof description === 'string' && description.trim() !== '' ? { description } : {}) })
+    }
+    questions.push({
+      question,
+      ...(typeof header === 'string' && header.trim() !== '' ? { header } : {}),
+      options: shown,
+      multiSelect: multiSelect === true,
+    })
   }
   return questions
 }
 
-function sameLabels(shown: readonly string[], labels: readonly string[] | undefined): boolean {
-  const registered = new Set(labels)
-  return shown.length === registered.size && new Set(shown).size === shown.length && shown.every((label) => registered.has(label))
-}
-
-/** Whether the picker asks exactly this registration's questions: the same texts, labels and modes, in any order. */
-function showsRegistration(picker: readonly PickerQuestion[], registration: CodexQuestionRegistration): boolean {
-  return registration.questions.length === picker.length && registration.questions.every((binding) => {
-    const shown = picker.filter((question) => question.question === nativeQuestionTitle(binding))
-    return shown.length === 1 && sameLabels(shown[0]!.options, binding.question.choices?.map((choice) => choice.label)) &&
-      shown[0]!.multiSelect === (binding.question.multi === true)
-  })
-}
-
-function liveRegistrations(state: SessionState, ownerKey: string): CodexQuestionRegistration[] {
-  return (state.codex_question_bindings ?? []).filter((registration) =>
-    isClaudeRegistration(registration) && registration.owner_key === ownerKey && registration.terminated !== true)
-}
-
-/** A unique complete cover of the picker by whole registrations, regardless of grouping. */
-function pickerCovers(
-  state: SessionState,
-  ownerKey: string,
-  toolInput: unknown,
-): CodexQuestionRegistration[][] {
+/**
+ * The picker's identity within its own tool call: a digest of the questions it
+ * shows, independent of key order. `PermissionRequest` and `PostToolUse` both
+ * receive the same picker, so this ties one to the other without anything the
+ * agent wrote having to match anything else.
+ */
+export function pickerDigest(toolInput: unknown): string | null {
   const picker = pickerQuestions(toolInput)
-  if (picker === null || picker.length > PICKER_MAX_QUESTIONS ||
-      new Set(picker.map(question => question.question)).size !== picker.length) return []
-  const candidates = liveRegistrations(state, ownerKey).filter(registration => {
-    const subset = picker.filter(question => registration.questions.some(binding => nativeQuestionTitle(binding) === question.question))
-    return showsRegistration(subset, registration)
-  })
-  const covers: CodexQuestionRegistration[][] = []
-  const visit = (remaining: readonly PickerQuestion[], chosen: CodexQuestionRegistration[]): void => {
-    if (covers.length > 1) return
-    if (remaining.length === 0) { covers.push(chosen); return }
-    for (const candidate of candidates) {
-      const titles = new Set(candidate.questions.map(nativeQuestionTitle))
-      if (!titles.has(remaining[0]!.question) || ![...titles].every(title => remaining.some(question => question.question === title))) continue
-      visit(remaining.filter(question => !titles.has(question.question)), [...chosen, candidate])
-    }
-  }
-  visit(picker, [])
-  return covers
+  if (picker === null) return null
+  const canonical = picker.map((question) => [question.question, question.multiSelect, question.options.map((option) => option.label)])
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
 
-export function matchClaudePicker(state: SessionState, ownerKey: string, toolInput: unknown): CodexQuestionRegistration[] | null {
-  const covers = pickerCovers(state, ownerKey, toolInput)
-  return covers.length === 1 ? covers[0]! : null
+/** What one device question must map back to: the picker's own text and labels. */
+export interface ClaudePickerShown {
+  title: string
+  /** The picker's option label for each device choice id. */
+  labels: Record<string, string>
+}
+
+export interface PickerForm {
+  questions: QuestionT[]
+  summary: string
+  body?: string
+  shown: ClaudePickerShown[]
+}
+
+function chars(text: string): number {
+  return [...text].length
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/gu, ' ').trim()
 }
 
 /**
- * Why a picker was not linked to the live registrations it resembles by
- * sharing a question text. Null when it resembles none.
+ * Text that fits the device. A picker question often opens with context and
+ * ends with the question itself, so the closing sentences are kept; the whole
+ * text goes into the body.
  */
-export function claudePickerMiss(
-  state: SessionState,
-  ownerKey: string,
-  toolInput: unknown,
-): { question_ids: string[]; mismatch: 'duplicate-registration' | 'different-content' } | null {
-  const picker = pickerQuestions(toolInput)
-  if (picker === null) return null
-  const live = liveRegistrations(state, ownerKey)
-  const covers = pickerCovers(state, ownerKey, toolInput)
-  if (covers.length === 1) return null
-  if (covers.length > 1) return { question_ids: [...new Set(covers.flat().map(registration => registration.question_id))], mismatch: 'duplicate-registration' }
-  const near = live.filter((registration) => registration.questions.some((binding) =>
-    picker.some((question) => question.question === nativeQuestionTitle(binding))))
-  return near.length === 0 ? null : { question_ids: near.map((registration) => registration.question_id), mismatch: 'different-content' }
+function fit(text: string, max: number): string {
+  const flat = oneLine(text)
+  if (chars(flat) <= max) return flat
+  const sentences = flat.match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/gu) ?? []
+  let tail = ''
+  for (let index = sentences.length - 1; index >= 0; index--) {
+    const next = oneLine(`${sentences[index]!} ${tail}`)
+    if (chars(`… ${next}`) > max) break
+    tail = next
+  }
+  if (tail !== '') return `… ${tail}`
+  return `${[...flat].slice(0, max - 1).join('').trimEnd()}…`
 }
 
-/** Record that Claude Code showed this registration's picker; a re-shown picker replaces the earlier one. */
-export function observeClaudePicker(state: SessionState, questionId: string, toolUseId: string | undefined): SessionState {
-  if (!state.codex_question_bindings?.some((item) => item.question_id === questionId && isClaudeRegistration(item))) return state
+function uniqueId(base: string, fallback: string, used: Set<string>): string {
+  let id = base === '' || !/^[a-z0-9]/u.test(base) ? fallback : base
+  if (used.has(id)) id = `${id.slice(0, 28)}-${used.size + 1}`
+  used.add(id)
+  return id
+}
+
+/**
+ * The device question this picker asks. Long question text is shortened to
+ * fit, long labels are capped, and the picker's full wording and option
+ * descriptions go into the body. An error names why the picker cannot be a
+ * device question at all; it then stays in the terminal.
+ */
+export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { error: string } {
+  if (picker.length < 1 || picker.length > Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
+    return { error: 'unsupported-question-count' }
+  }
+  if (new Set(picker.map((question) => question.question)).size !== picker.length) return { error: 'duplicate-question' }
+  const questionIds = new Set<string>()
+  const questions: QuestionT[] = []
+  const shown: ClaudePickerShown[] = []
+  let detailed = false
+  for (const [index, entry] of picker.entries()) {
+    const text = fit(entry.question, QUESTION_TEXT_MAX_LENGTH)
+    if (text === '') return { error: 'empty-question' }
+    if (text !== entry.question.trim()) detailed = true
+    const labels = entry.options.map((option) => option.label)
+    if (labels.length < PICKER_MIN_OPTIONS || labels.length > REPLY_MAX_CHOICES) return { error: 'unsupported-option-count' }
+    if (new Set(labels).size !== labels.length) return { error: 'duplicate-option' }
+    const choiceIds = new Set<string>()
+    const choices: NonNullable<QuestionT['choices']> = []
+    const byId: Record<string, string> = {}
+    for (const [position, option] of entry.options.entries()) {
+      const label = fit(option.label, CHOICE_LABEL_MAX_LENGTH)
+      if (label === '') return { error: 'empty-option' }
+      if (label !== option.label) detailed = true
+      if (option.description !== undefined) detailed = true
+      const id = uniqueId(slugify(option.label), `option-${position + 1}`, choiceIds)
+      choices.push({ id, label })
+      byId[id] = option.label
+    }
+    if (new Set(choices.map((choice) => choice.label)).size !== choices.length) return { error: 'duplicate-option' }
+    questions.push({
+      id: uniqueId(slugify(text), `q${index + 1}`, questionIds),
+      text,
+      choices,
+      ...(entry.multiSelect ? { multi: true } : {}),
+    })
+    shown.push({ title: entry.question, labels: byId })
+  }
+  const headers = picker.map((question) => question.header === undefined ? '' : oneLine(question.header))
+  const summary = fit(questions.length > 1 && headers.every((header) => header !== '')
+    ? headers.join(' · ')
+    : questions[0]!.text, SUMMARY_MAX_LENGTH)
+  if (!detailed) return { questions, summary, shown }
+  const body = picker.map((entry) => [
+    `**${oneLine(entry.question)}**`,
+    '',
+    ...entry.options.map((option) => option.description === undefined
+      ? `- ${oneLine(option.label)}`
+      : `- **${oneLine(option.label)}**: ${oneLine(option.description)}`),
+  ].join('\n')).join('\n\n')
+  return { questions, summary, body, shown }
+}
+
+/**
+ * Called by registration while holding the session lock: bind the device
+ * question to the picker that asked it. The binding is verified by
+ * construction; there is nothing to observe later.
+ */
+export function reserveClaudeQuestion(
+  state: SessionState,
+  pending: PendingQuestion,
+  admission: NativeQuestionAdmission | undefined,
+): SessionState {
+  const picker = admission?.picker
+  if (admission === undefined || picker === undefined || admission.turn_id !== CLAUDE_PICKER_TURN ||
+      state.harness !== 'claude-code' || pending.question_id === undefined || pending.service_identity === undefined ||
+      !isDeepStrictEqual(admission.service, pending.service_identity) || pending.questions === undefined ||
+      pending.questions.length !== picker.length ||
+      state.codex_question_bindings?.some((item) => item.question_id === pending.question_id)) return state
   return {
     ...state,
-    codex_question_bindings: state.codex_question_bindings.map((registration) =>
-      registration.question_id !== questionId || !isClaudeRegistration(registration)
-        ? registration
-        : {
-            ...registration,
-            questions: registration.questions.map((binding, index) => ({
-              ...binding,
-              native: { turn_id: CLAUDE_PICKER_TURN, call_id: toolUseId ?? 'picker', index },
-              verified: true as const,
-            })),
-          }),
+    codex_question_bindings: [
+      ...(state.codex_question_bindings ?? []),
+      {
+        question_id: pending.question_id,
+        owner_key: admission.owner_key,
+        registration_turn_id: CLAUDE_PICKER_TURN,
+        transcript: { file: '', identity: CLAUDE_PICKER_TURN, registered_offset: 0 },
+        service_identity: { ...pending.service_identity },
+        questions: pending.questions.map((question, index) => ({
+          question: structuredClone(question),
+          picker: structuredClone(picker[index]!),
+          native: { turn_id: CLAUDE_PICKER_TURN, call_id: 'picker', index },
+          verified: true as const,
+        })),
+      },
+    ],
   }
+}
+
+/** The picker question text a binding answers to. */
+export function pickerTitle(binding: CodexQuestionBinding): string {
+  return binding.picker?.title ?? binding.question.text
+}
+
+function pickerLabel(binding: CodexQuestionBinding, choiceId: string): string | undefined {
+  return binding.picker?.labels[choiceId] ?? binding.question.choices?.find((choice) => choice.id === choiceId)?.label
 }
 
 /**
  * The app answer this registration's picker can carry, as the picker's own
- * answers: each question's marked title mapped to its chosen labels, or to the
- * typed text. Null keeps the ordinary path: a partial answer, a multipart
- * reply, another Machine's question, or anything already presented.
+ * answers: each question's picker text mapped to its chosen picker labels, or
+ * to the typed text. Null keeps the ordinary path: a partial answer, a
+ * multipart reply, another Machine's question, or anything already presented.
  */
 export function claudePickerAnswers(
   registration: CodexQuestionRegistration,
@@ -225,49 +315,52 @@ export function claudePickerAnswers(
     if (new Set(choices).size !== choices.length || (binding.question.multi !== true && choices.length > 1)) return null
     const labels: string[] = []
     for (const id of choices) {
-      const choice = binding.question.choices?.find((entry) => entry.id === id)
-      if (choice === undefined) return null
-      labels.push(choice.label)
+      const label = pickerLabel(binding, id)
+      if (label === undefined) return null
+      labels.push(label)
     }
     const typed = part.text?.trim()
     const value = [...labels, ...(typed ? [typed] : [])].join(', ')
     if (value === '') return null
-    answers[nativeQuestionTitle(binding)] = value
+    answers[pickerTitle(binding)] = value
   }
   return answers
 }
 
 /**
  * The terminal's own picker answers as registered question and choice ids, for
- * the native answer report. A label that is not a registered choice is typed
- * text. Null when the response does not answer every question of the picker.
+ * the native answer report. A value that is not one of the picker's labels is
+ * typed text. Null when the response does not answer every question of the
+ * picker.
  */
 export function claudeTerminalAnswers(
   registration: CodexQuestionRegistration,
   toolResponse: unknown,
-): Array<{ question_id: string; choice_ids?: string[]; text?: string }> | null {
+): ReplyAnswerT[] | null {
   const raw = typeof toolResponse === 'object' && toolResponse !== null
     ? (toolResponse as { answers?: unknown }).answers
     : undefined
   if (typeof raw !== 'object' || raw === null) return null
   const given = raw as Record<string, unknown>
-  const answers: Array<{ question_id: string; choice_ids?: string[]; text?: string }> = []
+  const answers: ReplyAnswerT[] = []
   for (const binding of registration.questions) {
-    const value = given[nativeQuestionTitle(binding)]
+    const value = given[pickerTitle(binding)]
     if (typeof value !== 'string' || value.trim() === '') return null
-    const choices = binding.question.choices ?? []
+    const choices = (binding.question.choices ?? []).map((choice) => ({ id: choice.id, label: pickerLabel(binding, choice.id)! }))
     const exact = choices.find((choice) => choice.label === value)
     if (exact !== undefined) {
       answers.push({ question_id: binding.question.id, choice_ids: [exact.id] })
       continue
     }
-    const parts = value.split(',').map((part) => part.trim()).filter((part) => part !== '')
-    const picked = parts.map((part) => choices.find((choice) => choice.label === part))
-    if (binding.question.multi === true && parts.length > 0 && picked.every((choice) => choice !== undefined)) {
-      answers.push({ question_id: binding.question.id, choice_ids: picked.map((choice) => choice!.id) })
-      continue
+    if (binding.question.multi === true) {
+      const parts = value.split(', ').map((part) => part.trim()).filter((part) => part !== '')
+      const picked = parts.map((part) => choices.find((choice) => choice.label === part))
+      if (parts.length > 0 && picked.every((choice) => choice !== undefined)) {
+        answers.push({ question_id: binding.question.id, choice_ids: [...new Set(picked.map((choice) => choice!.id))] })
+        continue
+      }
     }
-    answers.push({ question_id: binding.question.id, text: value })
+    answers.push({ question_id: binding.question.id, text: value.trim() })
   }
   return answers
 }

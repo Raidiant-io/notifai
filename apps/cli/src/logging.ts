@@ -191,6 +191,33 @@ export function activeLogPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * The events that explain a question's fate, kept apart from the busy main
+ * log so they survive its rotation: a stuck picker or a question that never
+ * reached a device is usually investigated a day or more later, by which time
+ * the main log has turned over many times.
+ */
+export function durableEventsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(logsDir(env), 'events.jsonl')
+}
+
+/** The one previous generation of the durable events, oldest. */
+export function durableEventsArchivePath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(logsDir(env), 'events.1.jsonl')
+}
+
+/** Roughly four days of question outcomes on a busy machine, in at most two files. */
+export const DURABLE_EVENTS_MAX_BYTES = 2_000_000
+
+/** Question and hook outcomes, with their reasons. */
+const DURABLE_EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>([
+  'ask.registered', 'hook.gate', 'hook.pushed', 'hook.answer', 'hook.retirement',
+])
+
+export function isDurableEvent(event: LogEvent, data?: Record<string, unknown>): boolean {
+  return DURABLE_EVENTS.has(event) || (event === 'cli.error' && data?.['kind'] === 'ask_admission')
+}
+
+/**
  * Archives are timestamp-named so lexical order is chronological order — the
  * reader needs no `stat` to walk them, and two processes rotating at once
  * cannot collide on a name.
@@ -452,6 +479,25 @@ export function createLogger(options: LoggerOptions = {}): Logger {
         // invariant unreachable (64 KB minimum versus an 8 KB record cap).
         appendFileSync(active, payload, { mode: 0o600, flag: 'a' })
       })
+      if (isDurableEvent(event, data)) {
+        const events = durableEventsPath(env)
+        withFileLock(`${events}.lock`, () => {
+          let size = 0
+          try {
+            size = statSync(events).size
+          } catch {
+            // Not written yet.
+          }
+          if (size + bytes > DURABLE_EVENTS_MAX_BYTES) {
+            try {
+              renameSync(events, durableEventsArchivePath(env))
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+            }
+          }
+          appendFileSync(events, line, { mode: 0o600, flag: 'a' })
+        })
+      }
     } catch {
       // One failure is enough: a sink that cannot write will not start working
       // mid-command, and retrying it on every event would cost the hook path
@@ -613,6 +659,12 @@ export function readLogRecords(
   const consulted: string[] = []
   let more = false
 
+  // The durable events continue the story past the oldest main record; what
+  // is newer than that is already in the main files.
+  const durable = new Set([durableEventsPath(env), durableEventsArchivePath(env)])
+  files.push(...durable)
+  let oldestMain: number | null = null
+
   for (const file of files) {
     if (collected.length >= limit) {
       more = true
@@ -637,7 +689,10 @@ export function readLogRecords(
         continue
       }
       if (!isRecord(parsed)) continue
-      if (query.since !== undefined && Date.parse(parsed.ts) < query.since) {
+      const at = Date.parse(parsed.ts)
+      if (!durable.has(file)) oldestMain = oldestMain === null ? at : Math.min(oldestMain, at)
+      else if (oldestMain !== null && at >= oldestMain) continue
+      if (query.since !== undefined && at < query.since) {
         // Files are chronological, so everything behind this is older too.
         reachedFloor = true
         break
@@ -659,7 +714,7 @@ export function readLogRecords(
 export function logsDiskUsage(env: NodeJS.ProcessEnv = process.env): { files: number; bytes: number } {
   let bytes = 0
   let files = 0
-  for (const file of [activeLogPath(env), ...archiveLogPaths(env)]) {
+  for (const file of [activeLogPath(env), ...archiveLogPaths(env), durableEventsPath(env), durableEventsArchivePath(env)]) {
     try {
       bytes += statSync(file).size
       files += 1

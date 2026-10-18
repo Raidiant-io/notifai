@@ -25,7 +25,7 @@ import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hoo
 import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl } from './codex-answer-control.js'
 import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
-import { CLAUDE_PICKER_TURN, CLAUDE_QUESTION_TOOL, claudePickerShape, isClaudeRegistration } from './claude-question-bindings.js'
+import { askUserQuestionInput, claudePickerShape } from './claude-question-bindings.js'
 import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
@@ -75,6 +75,8 @@ export interface AskFailure {
     action: string
     message: string
   }
+  /** The `AskUserQuestion` input that asks this instead, when the picker can. */
+  ask_user_question?: ReturnType<typeof askUserQuestionInput>
 }
 
 /** One stable failure contract for every machine-readable ask refusal. */
@@ -253,7 +255,7 @@ function buildOneQuestion(
   }
 }
 
-function buildAskDraft(
+export function buildAskDraft(
   config: CliConfig,
   built: BuiltQuestions,
   flags: AskFlags,
@@ -296,20 +298,6 @@ function recordRegisteredQuestion(
   json = false,
 ): number | Promise<number> {
   const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json)
-  const picker = claudePickerOwner(deps, sessionId, built.questions)
-  if (picker !== null) {
-    const credential = deps.store.load()
-    if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) return ordinary()
-    // The same optional, bounded discovery as below: a terminal answer to a
-    // linked picker is reported to the service as a harness answer.
-    const client = makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
-    const linked = (supported: boolean) => persistRegisteredQuestion(deps, sessionId, built, draft, service, json,
-      supported ? { owner_key: picker, turn_id: CLAUDE_PICKER_TURN, service } : undefined, picker)
-    return client.compatibility().then(
-      support => linked(Array.isArray(support?.server_capabilities) && support.server_capabilities.includes('harness_answers')),
-      () => linked(false),
-    )
-  }
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
   if (local === null) return ordinary()
@@ -355,10 +343,10 @@ const NATIVE_UNAVAILABLE_DETAIL =
   'Do not explain servers, daemons or forms to the user.'
 
 /**
- * The owner of a Claude Code session whose question picker can be linked to
- * this question: both picker handlers are installed, the session is live, and
- * the picker can show these questions as registered. Null keeps the question
- * ordinary, which always works.
+ * Whether this Claude Code session's question picker asks these questions on
+ * the User's devices by itself: both picker handlers are installed, the
+ * session is live, and the picker can show every question. `ask` then refuses,
+ * so a question is never asked twice.
  */
 function claudePickerOwner(deps: CommandDeps, sessionId: string, questions: BuiltQuestions['questions']): string | null {
   if (readSessionState(sessionId, deps.env).harness !== 'claude-code' || !claudePickerShape(questions)) return null
@@ -456,11 +444,8 @@ function persistRegisteredQuestion(
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
-  const picker = native !== undefined && isClaudeRegistration(native)
-  const nativeTool = picker ? CLAUDE_QUESTION_TOOL : 'request_user_input_async'
   const nativeCommand = `notifai acknowledge ${questionId} --operation-id native-1 --native-answers '<actual answers JSON>' --text '<concrete work this answer sets in motion>' --json`
   const nativeInstruction = `If you use request_user_input_async, copy the native titles and options exactly in this turn. For an answer you actually read from that native form, your first dependent command must be: ${nativeCommand}. Use the registered question/choice IDs. Use a distinct operation ID for each distinct submission; retry the same ID and immutable body after failure, omitting answers/text only after the command confirms the operation was saved. Do not report an app answer again as a native answer. Keep the app watcher; do not close the question after native acknowledgement. If you did not emit the exact marked native form, ordinary conversation answers still retire with notifai close ${questionId}. Native linking is optional and capability-dependent; never promise form closure.`
-  const pickerInstruction = `If you ask this with ${CLAUDE_QUESTION_TOOL}, ask these same questions: each native title as a question's text and its options as the option labels, with multiSelect matching multi. Notifai links the picker by that content while the question is open. The picker then takes whichever answer comes first, from the user's devices or the terminal, and closes. Notifai context arrives with the picker's answer: follow it before any dependent work. For an answer given in the terminal that context names this command: ${nativeCommand}. Use the registered question/choice IDs, a distinct operation ID for each distinct submission, and the same ID and body on retry. Do not report an app answer again as a native answer, and do not close the question after acknowledging. If no picker asked exactly this, ordinary conversation answers still retire with notifai close ${questionId}. Linking is optional and capability-dependent.`
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same
@@ -483,11 +468,10 @@ function persistRegisteredQuestion(
             ...(entry.multi === true ? { multi: true } : {}),
           })),
           ...(native === undefined ? {} : { native_question: {
-            tool: nativeTool,
+            tool: 'request_user_input_async',
             questions: native.questions.map(binding => ({ question_id: binding.question.id, title: nativeQuestionTitle(binding),
-              ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
-              ...(picker && binding.question.multi === true ? { multi: true } : {}) })),
-            instructions: picker ? pickerInstruction : nativeInstruction,
+              ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }) })),
+            instructions: nativeInstruction,
           } }),
           ...(native === undefined && nativeUnavailable !== undefined ? { native_question_unavailable: {
             reason: nativeUnavailable, detail: NATIVE_UNAVAILABLE_DETAIL,
@@ -504,7 +488,7 @@ function persistRegisteredQuestion(
               'Acknowledge it, then resume the committed work without asking the user to confirm again.',
             answered_outside_notifai: native === undefined
               ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
-              : picker ? pickerInstruction : nativeInstruction,
+              : nativeInstruction,
           },
         },
         null,
@@ -552,10 +536,10 @@ function persistRegisteredQuestion(
     'When the answer arrives, resume the matching work without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
   )
   deps.io.out(
-    'A Notifai answer cannot answer a harness permission prompt or interactive picker; leave those to the harness and user.',
+    'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
   )
   if (native !== undefined) {
-    deps.io.out(picker ? pickerInstruction : nativeInstruction)
+    deps.io.out(nativeInstruction)
     deps.io.out(JSON.stringify({ native_questions: native.questions.map(binding => ({ title: nativeQuestionTitle(binding),
       question_id: binding.question.id, ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
       ...(binding.question.choices === undefined ? {} : { choice_ids: binding.question.choices.map(choice => choice.id) }),
@@ -859,6 +843,20 @@ export function askCommand(
       'Question routing is disabled by ask_notifications=false.',
       'enable question routing or use a blocking `notifai send --reply` question',
     )
+  }
+  // In Claude Code the picker is the question: it reaches the User's devices
+  // by itself. Registering the same question here would ask it twice.
+  if (claudePickerOwner(deps, sessionId, built.questions) !== null) {
+    const picker = askUserQuestionInput(built.questions)
+    const these = built.questions.length > 1 ? 'these questions' : 'this question'
+    return reportAskFailure(deps, flags, {
+      code: 'use_question_picker',
+      check_id: 'question_picker',
+      exit_code: EXIT.usage,
+      message: `Nothing was registered. In Claude Code, ask ${these} with the AskUserQuestion tool: Notifai sends that picker to the user's devices by itself and returns whichever answer comes first, from a device or the terminal.`,
+      remedy: `call AskUserQuestion with ${JSON.stringify(picker)}, adding a short header to each question and a description to each option. Put further context in the option descriptions or your message. Keep \`notifai ask\` for free-text questions.`,
+      ask_user_question: picker,
+    })
   }
   const source = resolveDraftInvocation(deps, flags, active)
   if (!source.ok) {

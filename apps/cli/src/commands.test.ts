@@ -8740,14 +8740,11 @@ describe('asking before the hooks have ever run', () => {
     })
   })
 
-  it.each(['supported', 'missing', 'unavailable', 'no-handlers', 'free-text', 'too-many-choices'] as const)('links a Claude Code picker only when it can carry the question (%s)', async (mode) => {
+  it.each(['picker', 'no-handlers', 'free-text', 'too-many-choices'] as const)('refuses a question the Claude Code picker asks by itself, and registers the rest (%s)', async (mode) => {
     const cwd = scratchDir('notifai-claude-picker-ask-')
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-picker' }
-    const compatibility = vi.fn(async () => {
-      if (mode === 'unavailable') throw new NetworkError('timed out')
-      return { server_capabilities: mode === 'missing' ? [] : ['harness_answers'] }
-    })
+    const compatibility = vi.fn(async () => ({ server_capabilities: ['harness_answers'] }))
     const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
     if (mode === 'no-handlers') {
@@ -8756,34 +8753,36 @@ describe('asking before the hooks have ever run', () => {
       delete document.hooks['PermissionRequest']
       writeFileSync(settings, JSON.stringify(document))
     }
-    const owner = beginSessionIncarnation('claude-picker', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    beginSessionIncarnation('claude-picker', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
     writeSessionState('claude-picker', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-picker', 42, 'claude-code')
     io.outLines = []
     const flags = mode === 'free-text' ? { json: true }
       : { choice: mode === 'too-many-choices' ? ['One', 'Two', 'Three', 'Four', 'Five'] : ['Staging', 'Production'], json: true }
-    expect(await askCommand(deps, 'Where?', flags)).toBe(EXIT.ok)
+    const exit = await askCommand(deps, 'Where?', flags)
     const output = JSON.parse(io.outLines.join('\n'))
-    expect(readSessionState('claude-picker', env).pending).toHaveLength(1)
-    if (mode !== 'supported') {
+    expect(compatibility).not.toHaveBeenCalled()
+    if (mode !== 'picker') {
+      expect(exit).toBe(EXIT.ok)
       expect(output.native_question).toBeUndefined()
+      expect(readSessionState('claude-picker', env).pending).toHaveLength(1)
       expect(readSessionState('claude-picker', env).codex_question_bindings).toBeUndefined()
-      expect(compatibility).toHaveBeenCalledTimes(mode === 'missing' || mode === 'unavailable' ? 1 : 0)
       return
     }
-    expect(output.native_question).toMatchObject({
-      tool: 'AskUserQuestion',
-      questions: [{ question_id: output.questions[0].id, title: 'Where?', options: ['Staging', 'Production'] }],
+    expect(exit).toBe(EXIT.usage)
+    expect(output).toMatchObject({
+      ok: false, registered: false, code: 'use_question_picker',
+      ask_user_question: { questions: [{ question: 'Where?', options: [{ label: 'Staging' }, { label: 'Production' }], multiSelect: false }] },
     })
-    expect(output.native_question.instructions).toContain('AskUserQuestion')
-    expect(output.native_question.instructions).toContain(`notifai acknowledge ${output.question_id}`)
-    expect(readSessionState('claude-picker', env).codex_question_bindings?.[0]).toMatchObject({
-      question_id: output.question_id, owner_key: owner.key, registration_turn_id: 'claude-code-picker',
-    })
+    expect(output.message).toContain('AskUserQuestion')
+    expect(output.message).toContain('Nothing was registered')
+    expect(output.remedy).toContain('"question":"Where?"')
+    expect(readSessionState('claude-picker', env).pending).toBeUndefined()
+    expect(deps.spawnQuestionSettlement).not.toHaveBeenCalled()
     io.outLines = []
-    expect(await askCommand(deps, 'Which checks?', { choice: ['Lint', 'Tests'], multi: true, json: true })).toBe(EXIT.ok)
-    expect(JSON.parse(io.outLines.join('\n')).native_question).toMatchObject({
-      tool: 'AskUserQuestion', questions: [{ title: 'Which checks?', options: ['Lint', 'Tests'], multi: true }],
+    expect(await askCommand(deps, 'Which checks?', { choice: ['Lint', 'Tests'], multi: true, json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.join('\n')).ask_user_question).toEqual({
+      questions: [{ question: 'Which checks?', options: [{ label: 'Lint' }, { label: 'Tests' }], multiSelect: true }],
     })
   })
 
@@ -9274,7 +9273,7 @@ describe('asking before the hooks have ever run', () => {
     expect(said).toContain('work you will resume')
     expect(said).toContain('without asking the user to confirm again')
     expect(said).toContain('not as approval')
-    expect(said).toContain('cannot answer a harness permission prompt or interactive picker')
+    expect(said).toContain('cannot answer a harness permission prompt')
   })
 
   it('requires a concrete fallback for free-text answers before the turn ends', () => {

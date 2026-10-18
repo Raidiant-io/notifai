@@ -16,6 +16,7 @@ import {
   archiveLogPaths,
   argvFlagNames,
   createLogger,
+  durableEventsPath,
   logsDiskUsage,
   nullLogger,
   readLogRecords,
@@ -297,6 +298,25 @@ describe('rotation', () => {
     for (const file of [activeLogPath(env), ...archiveLogPaths(env)]) {
       expect(statSync(file).size).toBeLessThanOrEqual(700)
     }
+  })
+
+  it('keeps question and hook outcomes long after the main log has turned over', () => {
+    const env = sandbox()
+    const logger = createLogger({ env, settings: { maxBytes: 600, maxFiles: 2 } })
+    logger.info('ask.registered', { question_id: 'q_old', origin: 'picker' })
+    logger.info('hook.gate', { hook: 'permission-request', stage: 'picker-terminal-only', reason: 'not-signed-in' })
+    logger.error('cli.error', { kind: 'ask_admission', code: 'use_question_picker' })
+    logger.error('cli.error', { kind: 'http', message: 'not a question outcome' })
+    for (let i = 0; i < 80; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
+
+    expect(lines(env).some((record) => record.event === 'hook.gate')).toBe(false)
+    const durable = readFileSync(durableEventsPath(env), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as LogRecord)
+    expect(durable.map((record) => record.event)).toEqual(['ask.registered', 'hook.gate', 'cli.error'])
+    const found = readLogRecords(env, { event: ['hook.gate', 'ask.registered'] })
+    expect(found.records.map((record) => record.data?.['reason'] ?? record.data?.['question_id'])).toEqual(['q_old', 'not-signed-in'])
+    // What the main files still hold is read once, not again from the durable copy.
+    logger.info('hook.gate', { stage: 'picker-waiting', reason: 'proceeding' })
+    expect(readLogRecords(env, { event: ['hook.gate'] }).records).toHaveLength(2)
   })
 
   it('leaves a marker in the fresh file so a gap is explained, not inferred', () => {

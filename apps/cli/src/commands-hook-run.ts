@@ -31,6 +31,7 @@ import {
   parseHookInput,
   submitSessionQuestions,
 } from './hook-lifecycle.js'
+import { drainRetirements } from './hook-question-retirement.js'
 import {
   claimCursorStopActivation,
   confirmCursorStopActivation,
@@ -73,7 +74,13 @@ import { readDeliveryJournal } from './session-delivery.js'
 import { inputWakeToken, sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
-import { claudePermissionRequest, claudePostToolUse, closeClaudePicker, takeOwedClaudePickerAnswer } from './claude-question-hooks.js'
+import {
+  claudePermissionRequest,
+  claudePostToolUse,
+  closeClaudePicker,
+  reportClaudeTerminalAnswers,
+  takeOwedClaudePickerAnswer,
+} from './claude-question-hooks.js'
 const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
@@ -272,7 +279,7 @@ export async function hookRunCommand(
   if (harness === 'claude-code' && (event === 'stop' || event === 'user-prompt-submit') &&
       envelope.session_id !== undefined && envelope.agent_id === undefined) {
     try {
-      closeClaudePicker(envelope.session_id, deps.env)
+      closeClaudePicker(deps, envelope.session_id, logger, cwd)
     } catch {
       // The waiting handler also ends with its picker or its session.
     }
@@ -893,6 +900,12 @@ export async function hookRunCommand(
       if (sessionId === undefined || harness === undefined ||
           readSessionState(sessionId, deps.env).harness !== harness) return EXIT.ok
       await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)
+      // The same owner settles what a closed Claude Code picker left behind:
+      // a withdrawn device question to retire, a terminal answer to report.
+      if (harness === 'claude-code') {
+        await reportClaudeTerminalAnswers(ctx, sessionId)
+        await drainRetirements(ctx, sessionId, deps.env)
+      }
       // Native queues can observe answers while the asking turn keeps working.
       // Held Stop and plugin routes retain their own genuine output owner.
       const nativeObserver = harness === 'codex' || harness === 'claude-code'

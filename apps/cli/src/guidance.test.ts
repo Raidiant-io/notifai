@@ -105,7 +105,8 @@ describe('shipped guidance content', () => {
     const questions = shippedGuidanceTopic('questions')!.content.replace(/\s+/g, ' ')
     expect(questions).toMatch(/register.*`notifai ask`.*same turn/i)
     expect(questions).toMatch(/safe setup or readiness, never for credentials/i)
-    expect(questions).toMatch(/permission prompts and interactive pickers stay in the harness/i)
+    expect(questions).toMatch(/permission prompts stay in the harness/i)
+    expect(questions).toMatch(/In Claude Code its question picker is the Notification Request/i)
   })
 
   it('teaches outcome-altitude titles that stand alone, without kind or project', () => {

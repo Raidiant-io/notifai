@@ -19,7 +19,10 @@ notifai logs --since 10m --json  # JSONL on stdout, for parsing
 ```
 
 An empty record can mean `log_level` is `off` — check it before concluding a
-hook never ran.
+hook never ran. Question outcomes (`ask.registered`, `hook.gate`, `hook.pushed`,
+`hook.answer`, `hook.retirement`, refused asks) are also kept in a separate,
+slower-rotating file, so `notifai logs --event hook.gate --since 2d` still
+finds them days later.
 
 `hook.gate` records carry a fixed `reason` — `notifications-off`,
 `claimed-elsewhere`, `no-question`, `no-session`, `answered`,
