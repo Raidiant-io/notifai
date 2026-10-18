@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:51ee9b85f1e6f9a4a4a2bb3b2892a76bda1191bfbf3020f3b32e855ddd166cbf",
+  "behavior_digest": "sha256:01f92ad3f09674dd32019be2975370e250d219806c984b89a1c8a5ac5b44550d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and its references, harness setup, CLI readiness and domain terms against one change: in Claude Code the question picker is the question. The PermissionRequest hook registers every main-agent AskUserQuestion picker for the User's devices from the picker's own input, so nothing is copied or matched; ask refuses a picker-capable question with use_question_picker and the picker input; a terminal answer is recorded as the native answer without agent action; Esc, chat-instead and denial withdraw the device question; pickers in a Project the User has not enabled, and subagent pickers, stay in the terminal (logged as project-not-enabled and subagent). Updated SKILL.md (ask a closed-choice question with the picker and never also ask it; read all ask output; permission prompts stay in the harness), harness-claude-code.md (Question picker section replacing linked picker), native-questions.md, diagnostics.md (durable question outcome events), the shipped questions guidance and README. Acknowledgement, non-exfiltration and Codex native rules are unchanged.",
+  "reason": "Reviewed the shipped skill after the question picker change pushed SKILL.md over its read budget. The Claude Code picker rule is now one line that links to harness-claude-code.md, 'never filter ask output' is kept as one sentence, the native-form note is shortened, and the reply-label paragraph drops a redundant clause. Meaning is unchanged: the picker is the Notifai question and is never also asked with ask, harness permission prompts stay in the harness, and a harness form is never promised to close. Hooks, guidance topics, setup and readiness are unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
