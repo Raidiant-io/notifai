@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [13.0.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v13.0.0-beta.1) (2026-10-18)
+
+### ⚠ BREAKING CHANGES
+
+* In a Claude Code session with Notifai's picker hooks installed, `notifai ask` refuses a question the question picker can show (code `use_question_picker`, exit 2) and returns the AskUserQuestion input to use instead. It no longer returns `native_question` for Claude Code.
+
+### Features
+
+* Make the Claude Code question picker the question: every picker in an enabled Project reaches the user's devices by itself, and a device answer closes it. A terminal answer is recorded so devices stop asking; Esc or chatting instead withdraws the device question. Question and hook outcomes are kept in a slower-rotating events log that `notifai logs` reads.
+
+### Bug Fixes
+
+* Log `project-not-enabled` when a picker stays in the terminal because its Project is not enabled.
+* Judge doctor, setup and update readiness for the harness that runs them: another harness's condition is reported as not applying and no longer fails the session, and a missing Codex shared app-server no longer turns Question Routing readiness off.
+* Keep every Notifai skill copy current: setup and updates refresh any outdated copy in a harness skill location in place, a linked skill directory counts as one copy, and project-scope writes stay inside the project.
+* Repair Grok activation and question delivery across main sessions, subagents, resume, compaction, long answers and interrupted turns.
+* Support continuing questions, Session Notes and Answer Edits in an existing Grok shared-leader session, with exact-session delivery claims and acknowledgements.
+* Avoid duplicate imported Notifai hooks and explain how to disable incompatible Cursor hook imports in Grok.
+
+* Hold unanswered reply requests longer and back off after concurrent-wait limits, reducing repeated requests while an agent waits.
+* Stop watching retired questions while preserving prompt answers to concurrent questions and recovering replies received near a wait deadline.
+* Keep remote question conversations flowing after three acknowledged answers, while preserving retry protection for the same answer.
+* Distinguish scheduled question submission from confirmed submission and delivery.
+* Settle questions answered through native harness forms so they do not remain outstanding.
+
+### Documentation
+
+* Clarify Grok capabilities and limits; improve the package setup README and npm discovery metadata.
+
+* Direct invited Android testers to the Google Play closed Alpha instructions.
+
 ## [12.1.1](https://github.com/Raidiant-io/notifai/compare/v12.1.0...v12.1.1) (2026-10-15)
 
 
