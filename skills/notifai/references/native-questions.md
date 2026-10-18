@@ -9,9 +9,8 @@ returns it.
 
 ## Before emitting the form
 
-On Claude Code the form is its question picker, linked by its content, and a
-device answer closes it: read
-[the Claude Code file](harness-claude-code.md#linked-question-picker).
+Claude Code never returns `native_question`: its picker is the question
+itself. Read [the Claude Code file](harness-claude-code.md#question-picker).
 
 On Codex, use the returned tool, titles and options exactly, in the
 registration turn. The short title marker identifies a registered question;

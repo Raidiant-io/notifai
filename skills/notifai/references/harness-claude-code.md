@@ -32,35 +32,36 @@ The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
 named pipe on Windows from 2.1.234. On an older Claude Code the answer is
 still delivered, at the Agent Session's next turn rather than on its own.
 
-## Linked question picker
+## Question picker
 
-When `ask` returns `native_question` with tool `AskUserQuestion`, you may ask
-the same question in Claude Code's picker: the same question text and option
-labels, with `multiSelect` matching `multi`. Notifai matches the picker by its exact question text, options and selection
-mode. A picker can combine several independently registered questions or one
-registered form; grouping and order do not matter when every question has one
-unambiguous registration. Device replies may arrive separately: the picker
-returns the complete set, and each original request still needs acknowledgement. Header and option descriptions are yours to write. A
-picker that changes a question or an option, or adds an unregistered question,
-is not linked; its result then names the question still asking on the User's
-devices, so you can retire it with `close`.
+In Claude Code, ask a question with two to four closed choices through the
+`AskUserQuestion` picker, not `notifai ask`. The picker is the Notifai
+question: Notifai turns it into a question on the User's devices by itself.
+Do not register it, or a free-text version of it, with `ask` as well; the User
+would be asked twice. `ask` refuses a question the picker can show, with exit 2,
+code `use_question_picker` and the picker input to use. Keep `notifai ask` for
+free-text questions and questions with more than four choices.
 
-The picker takes whichever answer comes first, from the User's devices or the
-terminal, and closes. Notifai context arrives with its result:
+The picker's wording is yours. Put context in option descriptions or in your
+message. Devices show the question, shortened when it is over 240 characters
+with the whole wording in the notification body, plus every label and option
+description.
 
-- **A device answer** is the picker's own result. Run the printed
-  `notifai acknowledge req_…` command before dependent work. Do not report it
-  as a native answer.
-- **A terminal answer** comes with a printed
-  `notifai acknowledge q_… --native-answers …` command. Run it first, so their
-  devices stop asking, then continue as [native questions](native-questions.md)
-  describes.
+The picker takes whichever answer comes first and closes:
 
-If the User dismisses the picker or chooses to chat instead, the question is
-still registered and still answerable from their devices; a later answer
-arrives by the ordinary route. Questions the picker cannot show (free text
-only, more than four questions, fewer than two or more than four options) are
-never linked. Linking is available on macOS and Linux.
+- **A device answer** is the picker's own result. Its context names
+  `notifai acknowledge req_…`; run that before dependent work.
+- **A terminal answer** needs nothing from you. Notifai records it, so the
+  devices stop asking.
+- **Esc, "Chat about this", or a denied picker** withdraws the device question.
+  Ask again if you still need the answer.
+
+A picker that cannot reach devices still works in the terminal. This happens
+when the machine is not signed in, question routing is off, or the picker
+belongs to a subagent. `notifai logs --event hook.gate` shows each outcome:
+`picker-terminal-only` with its `reason`, `picker-waiting`, `picker-answered`,
+`picker-dismissed` or `picker-closed`. Pickers reach devices on macOS and
+Linux.
 
 ## Command approval
 

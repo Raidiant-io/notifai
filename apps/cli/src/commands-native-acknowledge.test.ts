@@ -14,7 +14,7 @@ import { inspectQuestionState, rememberQuestionState } from './hook-question-sta
 import { currentProcessIdentity } from './process-identity.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { nativeQuestionTitle } from './codex-question-bindings.js'
-import { CLAUDE_PICKER_TURN, observeClaudePicker } from './claude-question-bindings.js'
+import { CLAUDE_PICKER_TURN } from './claude-question-bindings.js'
 import { questionsAwaitingAnswer, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import { repliesCommand } from './commands-send.js'
 import * as retirement from './hook-question-retirement.js'
@@ -203,7 +203,7 @@ it('rejects new identity-only operations and native options on ordinary request 
   expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
 })
 
-it('records a terminal answer to a Claude Code picker through the same report and acknowledgement', async () => {
+it('reports an answer to a Claude Code picker question through the same report and acknowledgement', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-claude-')); roots.push(root)
   const sessionId = '33333333-3333-4333-8333-333333333333'
   const env: NodeJS.ProcessEnv = { HOME: root, XDG_CONFIG_HOME: root, XDG_STATE_HOME: root, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: sessionId }
@@ -212,7 +212,8 @@ it('records a terminal answer to a Claude Code picker through the same report an
   const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
   const questions = [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }]
   const questionId = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service, questions },
-    Date.now(), { owner_key: owner.key, turn_id: CLAUDE_PICKER_TURN, service })
+    Date.now(), { owner_key: owner.key, turn_id: CLAUDE_PICKER_TURN, service,
+      picker: [{ title: 'Where should this go?', labels: { staging: 'Staging', production: 'Production' } }] })
   recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })
   const text = 'Deploying to staging.'
   const client = {
@@ -231,12 +232,7 @@ it('records a terminal answer to a Claude Code picker through the same report an
   }
   const flags = { operationId: 'native-1', nativeAnswers: JSON.stringify([{ question_id: 'q1', choice_ids: ['staging'] }]), text, json: true }
 
-  // Before Claude Code has shown the picker nothing proves the User saw it.
-  expect(await acknowledgeCommand(deps, questionId, flags)).toBe(EXIT.failed)
-  expect(client.recordHarnessAnswer).not.toHaveBeenCalled()
-
-  updateSessionState(sessionId, env, state => observeClaudePicker(state, questionId, 'toolu_1'))
-  outputs.length = 0
+  // The picker is the question, so its binding is verified from the moment it exists.
   expect(await acknowledgeCommand(deps, questionId, flags)).toBe(EXIT.ok)
   expect(client.recordHarnessAnswer).toHaveBeenCalledTimes(1)
   expect(client.putAgentAcknowledgement).toHaveBeenCalledTimes(1)

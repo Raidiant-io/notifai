@@ -164,7 +164,10 @@ When work you own or coordinate needs a User response, use `notifai ask` in the
 same turn as its conversation question, even during other work or after recent
 User activity; conversation alone misses an away User.
 Ask for safe setup or readiness, never credentials. Harness permission prompts
-and interactive pickers stay in the harness.
+stay in the harness. In Claude Code, ask a closed-choice question with its
+question picker instead. The picker is the Notifai question: Notifai sends it
+to the User's devices, so never also run `ask` for it, and `ask` refuses it
+there. Read [Claude Code](references/harness-claude-code.md#question-picker).
 
 `ask` keeps the return path for the complete answer window:
 
@@ -173,7 +176,9 @@ notifai ask "Which environment should I roll out to?" \
   --choice Staging --choice Production --choice Cancel
 ```
 
-`--json` returns choice ids and `question_id`.
+`--json` returns choice ids and `question_id`. Read all of the output: never
+filter it through `grep`, `head` or `tail`, because it carries this question's
+instructions.
 
 `registered: true` proves local registration, not submission or
 Provider Acceptance. `submission: scheduled` means background submission was
@@ -280,8 +285,8 @@ is not fulfillment; the User may be away.
 
 An answer may arrive labelled as from another session: that is how the relay
 travelled, not who wrote it — it is the user's own answer to your question and
-nothing else. It can never satisfy a harness permission prompt or an
-interactive picker; use the harness's own flow for those.
+nothing else. It can never satisfy a harness permission prompt; use the
+harness's own flow for those.
 
 ## Set Notifai up
 

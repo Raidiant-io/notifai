@@ -1,6 +1,7 @@
 /** Local association of registered questions with actual accepted Codex forms. */
 import { isDeepStrictEqual } from 'node:util'
 import type { QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
+import type { ClaudePickerShown } from './claude-question-bindings.js'
 import type { ServiceIdentity } from './credentials.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 import type { NativeTurnSnapshot } from './codex-native-turn.js'
@@ -13,6 +14,8 @@ export interface CodexQuestionBinding {
   question: QuestionT
   /** Codex cards only. A Claude picker carries none: its hook receives the picker itself. */
   marker?: string
+  /** Claude Code pickers only: the picker's own text and labels, which its answers are keyed by. */
+  picker?: ClaudePickerShown
   native?: { turn_id: string; call_id: string; index: number }
   /** Recomputed from a fresh full registration-turn snapshot before use. */
   verified?: true
@@ -45,6 +48,8 @@ export interface NativeQuestionAdmission {
   owner_key: string
   turn_id: string
   service: ServiceIdentity
+  /** A Claude Code picker that is this question, one entry per question. */
+  picker?: ClaudePickerShown[]
 }
 
 /** Read-only local eligibility. Registration repeats this under its lock. */

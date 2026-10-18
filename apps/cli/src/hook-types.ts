@@ -161,15 +161,19 @@ export interface SessionState {
   waiting_answers?: AnsweredPending[]
   /** The title the User gave this session in the harness itself, as its hooks last reported it. */
   harness_session_title?: string
-  /** The bound Claude Code picker now on screen, and the hook process waiting on its app answer. */
-  claude_picker?: { question_id: string; additional_question_ids?: string[]; opened_at: number; waiter: ProcessIdentity }
+  /**
+   * The Claude Code picker now on screen: the device question it registered,
+   * the digest of the questions it shows, and the hook process waiting on its
+   * app answer.
+   */
+  claude_picker?: { question_id: string; digest: string; opened_at: number; waiter: ProcessIdentity }
   /**
    * An app answer returned through a picker, until its tool result confirms
    * Claude Code took it. If the terminal answered or the picker was dismissed
    * at that instant, the same answer is still owed to the agent as context.
    */
   claude_picker_presented?: {
-    question_id: string; request_id: string; additional_request_ids?: string[]; answers: Record<string, string>
+    question_id: string; request_id: string; answers: Record<string, string>
     /** The whole answer as ordinary context, for when the tool result never confirms it. */
     context: string
     /** What the agent still needs once the tool result did carry it: the acknowledgement it owes. */

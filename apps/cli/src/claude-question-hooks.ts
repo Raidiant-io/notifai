@@ -1,39 +1,52 @@
 /**
- * The Claude Code hooks that link a registered question to its picker.
+ * The Claude Code hooks that make a question picker a device question.
  *
- * `PermissionRequest` runs while the picker is on screen. For a picker that
- * shows exactly one or more complete registered question sets, this handler waits for the app
- * answer and returns it as the picker's own result; Claude Code then closes the
- * picker and the agent reads the answer as the tool's output. If the terminal
- * answers first Claude Code takes that answer and discards anything this
- * handler returns later. An unregistered picker is left alone.
+ * `PermissionRequest` runs while the picker is on screen. The handler
+ * registers the picker's own questions for the User's devices, waits for the
+ * device answer and returns it as the picker's own result; Claude Code then
+ * closes the picker and the agent reads the answer as the tool's output. If
+ * the terminal answers first Claude Code takes that answer and discards
+ * anything this handler returns later. When the picker cannot reach devices
+ * (not signed in, question routing off, a shape the devices cannot show) the
+ * handler logs why and leaves the picker to the terminal, which always works.
  *
- * `PostToolUse` settles the other half. It confirms that an app answer
+ * `PostToolUse` settles the other half. It confirms that a device answer
  * returned through the picker was the one Claude Code took, and carries the
- * acknowledgement instruction, or it tells the agent how to report the answer
- * the User gave in the terminal.
+ * acknowledgement instruction, or it records a terminal answer as the native
+ * answer so the devices stop asking.
  *
- * Claude Code signals the waiting handler when the picker is dismissed or the
- * session ends, but not when the terminal answers or the User chooses to chat
- * instead. So the wait watches local state, which `PostToolUse`, `Stop` and
- * the next prompt all update.
+ * Claude Code signals the waiting handler when the picker is dismissed with
+ * Esc or the session ends, but not when the terminal answers or the User
+ * chooses to chat instead. So the wait watches local state, which
+ * `PostToolUse`, `Stop` and the next prompt all update. A picker that closes
+ * without an answer withdraws its device question.
  */
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import type { LifecycleEndState } from '@raidiant/notifai-protocol'
 import {
+  CLAUDE_PICKER_TURN,
   CLAUDE_QUESTION_TOOL,
   claudePickerAnswers,
-  claudePickerMiss,
   claudeTerminalAnswers,
   isClaudeRegistration,
-  matchClaudePicker,
-  observeClaudePicker,
+  pickerDigest,
+  pickerForm,
+  pickerQuestions,
+  type PickerQuestion,
 } from './claude-question-bindings.js'
+import { ApiCallError } from './client.js'
 import { CodexControlNotSent } from './codex-native-control.js'
-import type { CodexQuestionRegistration } from './codex-question-bindings.js'
+import { admitBoundNativeAnswer, terminateCodexQuestions, type CodexQuestionRegistration } from './codex-question-bindings.js'
+import { buildAskDraft } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
+import { resolveDraftInvocation } from './commands-send-support.js'
+import { loadConfig } from './config.js'
 import type { ServiceIdentity } from './credentials.js'
 import { acknowledgementContext, answersContext } from './hook-acknowledgements.js'
+import { registerQuestion } from './hook-lifecycle.js'
+import { dropPendingQuestion, questionSubmissionAttempted } from './hook-question-state.js'
+import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
 import {
   pendingList,
   readSessionIncarnation,
@@ -41,10 +54,18 @@ import {
   sessionHasEnded,
   updateSessionState,
 } from './hook-session-state.js'
-import type { AnsweredPending, HookEnvelope, SessionState } from './hook-types.js'
+import type { AnsweredPending, HookContext, HookEnvelope, SessionState } from './hook-types.js'
 import { TRANSPORT_LIMIT } from './injection-render.js'
 import type { Logger } from './logging.js'
+import {
+  executeNativeAnswerOperation,
+  hasSettledNativeAnswer,
+  prepareNativeAnswerOperation,
+  resolveNativeAnswerOperation,
+  type NativeOperationOwner,
+} from './native-answer-operation.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { readAttendantLease } from './session-attendant-state.js'
 import type { DeliveryLease } from './session-delivery.js'
 import { drainSessionInputs, type NativeInputAnswers } from './session-inputs.js'
@@ -54,6 +75,12 @@ export const CLAUDE_PICKER_POLL_MS = 500
 
 /** How long a staged answer may fail to hand over before the ordinary route takes it. */
 export const CLAUDE_PICKER_HANDOVER_MS = 15_000
+
+/** The native answer operation a terminal answer is recorded under. One picker, one terminal answer. */
+export const CLAUDE_TERMINAL_OPERATION = 'terminal'
+
+/** What the User's devices show for a picker answered in the terminal. */
+export const CLAUDE_TERMINAL_ACKNOWLEDGEMENT = 'Answered in the terminal.'
 
 function sameProcess(a: ProcessIdentity | undefined, b: ProcessIdentity): boolean {
   return a !== undefined && a.pid === b.pid && a.start === b.start
@@ -70,24 +97,77 @@ function withoutPicker(state: SessionState): SessionState {
   return next
 }
 
-/** The original registration plus any other whole registrations in this picker. */
-function pickerQuestionIds(state: SessionState): string[] {
-  const picker = state.claude_picker
-  return picker === undefined ? [] : [picker.question_id, ...(picker.additional_question_ids ?? [])]
-}
-
 /** Whether a live handler is waiting to return this session's app answer through a picker. */
 export function claudePickerHolds(state: SessionState): boolean {
   const picker = state.claude_picker
   if (picker === undefined || processIdentityLiveness(picker.waiter) === 'gone') return false
   const waiting = state.waiting_answers ?? []
-  return waiting.length > 0 && waiting.every((answer) => pickerQuestionIds(state).includes(answer.pending.question_id ?? ''))
+  return waiting.length > 0 && waiting.every((answer) => answer.pending.question_id === picker.question_id)
 }
 
-/** The picker was resolved or abandoned some other way: stop any handler still waiting on it. */
-export function closeClaudePicker(sessionId: string, env: NodeJS.ProcessEnv): void {
-  if (readSessionState(sessionId, env).claude_picker === undefined) return
-  updateSessionState(sessionId, env, withoutPicker)
+/**
+ * Retire a picker's device question that nobody answered: the picker closed
+ * without one. An answer already on its way, or already recorded, is left to
+ * its own route. Local and durable; the network close is queued.
+ */
+export function withdrawPickerQuestion(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  questionId: string,
+  end: LifecycleEndState = 'expired',
+): 'withdrawn' | 'retiring' | 'answered' | 'gone' {
+  const state = readSessionState(sessionId, env)
+  const entry = pendingList(state).find((item) => item.question_id === questionId)
+  if (entry === undefined) return 'gone'
+  if (state.waiting_answers?.some((answer) => answer.pending.question_id === questionId) ||
+      state.accepted?.answers.some((answer) => answer.pending.question_id === questionId) ||
+      state.native_answer_operations?.some((op) => op.question_id === questionId) ||
+      hasSettledNativeAnswer(state, questionId)) return 'answered'
+  if (entry.request_id === undefined) {
+    const { retiring } = retireQueuedQuestions(sessionId, env, questionId)
+    return retiring.length > 0 ? 'retiring' : 'withdrawn'
+  }
+  updateSessionState(sessionId, env, (current) => terminateCodexQuestions(current, new Set([questionId])))
+  try {
+    parkForRetirement(sessionId, env, entry, end)
+  } catch {
+    // Incomplete identifiers cannot be retired on a device; dropping the
+    // local record still stops this session waiting on it.
+  }
+  dropPendingQuestion(sessionId, env, entry)
+  return 'retiring'
+}
+
+/** Start the detached owner that submits, retires and reports this session's questions. */
+function launchSessionWork(deps: CommandDeps, sessionId: string, cwd: string | undefined, logger: Logger): void {
+  try {
+    ;(deps.spawnQuestionSettlement ?? spawnQuestionSettlement)({
+      envelope: { session_id: sessionId, cwd: cwd ?? deps.cwd }, harness: 'claude-code', purpose: 'submission',
+    })
+  } catch (err) {
+    logger.error('cli.error', { kind: 'question_submission_launch', session: sessionId,
+      message: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/**
+ * The turn moved on or the picker was dismissed: no picker of this session is
+ * still on screen. A handler that was waiting on one stops when it next looks,
+ * and the device question it was holding is withdrawn unless already answered.
+ */
+export function closeClaudePicker(
+  deps: Pick<CommandDeps, 'env' | 'cwd' | 'spawnQuestionSettlement'>,
+  sessionId: string,
+  logger: Logger,
+  cwd?: string,
+): void {
+  const picker = readSessionState(sessionId, deps.env).claude_picker
+  if (picker === undefined) return
+  updateSessionState(sessionId, deps.env, (state) =>
+    state.claude_picker?.question_id === picker.question_id ? withoutPicker(state) : state)
+  const outcome = withdrawPickerQuestion(sessionId, deps.env, picker.question_id)
+  logger.info('hook.gate', { hook: 'picker-close', reason: outcome, question_ids: [picker.question_id], stage: 'picker-closed' })
+  if (outcome === 'retiring') launchSessionWork(deps as CommandDeps, sessionId, cwd, logger)
 }
 
 /**
@@ -116,13 +196,85 @@ function pickerDecision(toolInput: unknown, answers: Record<string, string>): st
   })
 }
 
+type Registered = { questionId: string } | { reason: string; detail?: Record<string, unknown> }
+
+/**
+ * Register the picker's questions for the User's devices. Every failure is a
+ * reason to leave the picker to the terminal, never to block the agent.
+ */
+function registerPickerQuestion(
+  deps: CommandDeps,
+  envelope: HookEnvelope,
+  sessionId: string,
+  ownerKey: string,
+  picker: readonly PickerQuestion[],
+  logger: Logger,
+): Registered {
+  const credential = deps.store.load()
+  if (credential === null) return { reason: 'not-signed-in' }
+  const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
+  const cwd = envelope.cwd ?? deps.cwd
+  let config
+  try {
+    config = loadConfig({ cwd, env: deps.env, sessionId })
+  } catch {
+    return { reason: 'config-invalid' }
+  }
+  if (!config.ask_notifications.value) return { reason: 'question-routing-off' }
+  const form = pickerForm(picker)
+  if ('error' in form) return { reason: 'unsupported-picker', detail: { shape: form.error } }
+  // Hook stderr reaches nobody; a fallback-label heads-up has no reader here.
+  const source = resolveDraftInvocation({ ...deps, cwd, io: { ...deps.io, err: () => undefined } }, {},
+    { harness: 'claude-code', label: 'Claude Code', sessionId })
+  if (!source.ok) return { reason: 'source-invalid' }
+  const draft = buildAskDraft(config, form, {}, source.invocation, [])
+  if (!draft.ok) return { reason: 'invalid-draft', detail: { error: draft.error } }
+  const presentation = draft.draft.presentation
+  let questionId: string
+  try {
+    questionId = registerQuestion(
+      sessionId,
+      deps.env,
+      {
+        question: form.questions[0]!.text,
+        summary: presentation.summary,
+        service_identity: service,
+        questions: form.questions,
+        ...(presentation.body !== undefined ? { body: presentation.body } : {}),
+        ...(draft.draft.project !== undefined ? { project: draft.draft.project } : {}),
+        ...(draft.draft.source !== undefined ? { source: draft.draft.source } : {}),
+      },
+      (deps.now ?? Date.now)(),
+      { owner_key: ownerKey, turn_id: CLAUDE_PICKER_TURN, service, picker: form.shown },
+      { owner_key: ownerKey, machineStillMatches: () => {
+        const current = deps.store.load()
+        return current !== null && current.machineId === service.machine_id && current.baseUrl === service.base_url
+      } },
+    )
+  } catch (err) {
+    return { reason: 'registration-failed', detail: { error: err instanceof Error ? err.message : String(err) } }
+  }
+  // Registration and its picker binding are one transaction; check anyway,
+  // because an unbound device question would outlive the picker.
+  if (registrationOf(readSessionState(sessionId, deps.env), questionId) === undefined) {
+    withdrawPickerQuestion(sessionId, deps.env, questionId)
+    return { reason: 'binding-missing' }
+  }
+  logger.info('ask.registered', {
+    ok: true, origin: 'picker', session: sessionId, question_id: questionId, questions: form.questions.length,
+    text_chars: form.questions[0]!.text.length, choices: form.questions[0]!.choices?.length ?? 0,
+    has_body: form.body !== undefined,
+  })
+  return { questionId }
+}
+
 function pickerPresentation(input: {
   sessionId: string
   env: NodeJS.ProcessEnv
   lease: DeliveryLease | null
   incarnation: string
   ownerKey: string
-  questionIds: string[]
+  questionId: string
   toolInput: unknown
   writer: ProcessIdentity
   service: ServiceIdentity
@@ -131,26 +283,17 @@ function pickerPresentation(input: {
   wall(): number
 }): NativeInputAnswers {
   const mine = (state: SessionState): boolean =>
-    isDeepStrictEqual(pickerQuestionIds(state), input.questionIds) && sameProcess(state.claude_picker?.waiter, input.writer)
+    state.claude_picker?.question_id === input.questionId && sameProcess(state.claude_picker.waiter, input.writer)
   const answersFor = (answers: AnsweredPending[], state: SessionState): Record<string, string> | null => {
-    if (!mine(state) || answers.length !== input.questionIds.length) return null
-    const matches = matchClaudePicker(state, input.ownerKey, input.toolInput)
-    if (!isDeepStrictEqual(matches?.map(item => item.question_id), input.questionIds)) return null
-    const merged: Record<string, string> = {}
-    for (const questionId of input.questionIds) {
-      const registration = registrationOf(state, questionId)
-      const selected = answers.filter(answer => answer.pending.question_id === questionId)
-      if (registration === undefined || selected.length !== 1) return null
-      const part = claudePickerAnswers(registration, selected[0]!, input.service)
-      if (part === null || Object.keys(part).some(key => key in merged)) return null
-      Object.assign(merged, part)
-    }
-    return merged
+    if (!mine(state) || answers.length !== 1) return null
+    const registration = registrationOf(state, input.questionId)
+    if (registration === undefined || registration.owner_key !== input.ownerKey) return null
+    return claudePickerAnswers(registration, answers[0]!, input.service)
   }
   return {
-    eligible: answer => input.questionIds.includes(answer.pending.question_id ?? ''),
+    eligible: answer => answer.pending.question_id === input.questionId,
     group: (_answer, state) => {
-      const answers = (state.waiting_answers ?? []).filter(answer => input.questionIds.includes(answer.pending.question_id ?? ''))
+      const answers = (state.waiting_answers ?? []).filter(answer => answer.pending.question_id === input.questionId)
       return answersFor(answers, state) === null ? null : answers
     },
     prepare: async () => null,
@@ -158,15 +301,16 @@ function pickerPresentation(input: {
       const answers = answersFor(selected, state)
       if (answers === null) return null
       const validate = (latest: SessionState) => ({ state: latest, valid: isDeepStrictEqual(answersFor(selected, latest), answers) })
+      const answer = selected[0]!
       return {
         presentation: {
           kind: 'claude-question',
-          request_id: selected[0]!.pending.request_id!,
-          question_id: selected[0]!.pending.question_id!,
-          replies: selected[0]!.replies.map(reply => ({ reply_id: reply.reply_id, seq: reply.seq })),
-          answers: selected.map(answer => ({ request_id: answer.pending.request_id!, question_id: answer.pending.question_id!,
+          request_id: answer.pending.request_id!,
+          question_id: answer.pending.question_id!,
+          replies: answer.replies.map(reply => ({ reply_id: reply.reply_id, seq: reply.seq })),
+          answers: [{ request_id: answer.pending.request_id!, question_id: answer.pending.question_id!,
             replies: answer.replies.map(reply => ({ reply_id: reply.reply_id, seq: reply.seq })),
-          })),
+          }],
           owner_key: input.ownerKey,
           incarnation: input.lease?.incarnation ?? input.incarnation,
           generation: input.lease?.generation ?? 0,
@@ -181,9 +325,8 @@ function pickerPresentation(input: {
             valid = validate(latest).valid && mayWrite()
             if (!valid) return latest
             return { ...latest, claude_picker_presented: {
-              question_id: selected[0]!.pending.question_id!,
-              request_id: selected[0]!.pending.request_id!,
-              additional_request_ids: selected.slice(1).map(answer => answer.pending.request_id!),
+              question_id: answer.pending.question_id!,
+              request_id: answer.pending.request_id!,
               answers,
               context: answersContext(selected, pendingList(latest).length),
               receipt: acknowledgementContext(selected) + TRANSPORT_LIMIT,
@@ -211,6 +354,10 @@ export interface ClaudePickerSeams {
 /**
  * `PermissionRequest` for `AskUserQuestion`. Returns having written either one
  * decision or nothing; nothing leaves the picker to the terminal.
+ *
+ * A subagent's picker stays in the terminal: Claude Code does not give its
+ * subagents this tool, and the device answer would be owed to the agent that
+ * owns the session's Notification Requests, not to the subagent.
  */
 export async function claudePermissionRequest(
   deps: CommandDeps,
@@ -219,77 +366,83 @@ export async function claudePermissionRequest(
   seams: ClaudePickerSeams = {},
 ): Promise<'answered' | 'left-to-terminal' | 'not-bound'> {
   const sessionId = envelope.session_id
-  if (envelope.tool_name !== CLAUDE_QUESTION_TOOL || sessionId === undefined || envelope.agent_id !== undefined) return 'not-bound'
+  if (envelope.tool_name !== CLAUDE_QUESTION_TOOL || sessionId === undefined) return 'not-bound'
+  const terminalOnly = (reason: string, detail: Record<string, unknown> = {}): 'not-bound' => {
+    logger.info('hook.gate', { hook: 'permission-request', reason, ...detail, stage: 'picker-terminal-only' })
+    return 'not-bound'
+  }
+  if (envelope.agent_id !== undefined) return terminalOnly('subagent')
   const incarnation = readSessionIncarnation(sessionId, deps.env)
   const writer = currentProcessIdentity()
   if (incarnation === null || writer === null || sessionHasEnded(sessionId, deps.env) ||
-      incarnation.harness_process === undefined || processIdentityLiveness(incarnation.harness_process) !== 'alive') return 'not-bound'
-  const now = deps.now ?? Date.now
-  let questionIds: string[] | null = null
-  let miss = null as ReturnType<typeof claudePickerMiss>
-  updateSessionState(sessionId, deps.env, (state) => {
-    const match = matchClaudePicker(state, incarnation.key, envelope.tool_input)
-    if (match === null) miss = claudePickerMiss(state, incarnation.key, envelope.tool_input)
-    if (match === null || match.some(item => item.ordinary_only === true)) return state
-    questionIds = match.map(item => item.question_id)
-    return {
-      ...match.reduce((next, item) => observeClaudePicker(next, item.question_id, envelope.tool_use_id), state),
-      claude_picker: { question_id: questionIds[0]!, additional_question_ids: questionIds.slice(1), opened_at: now(), waiter: writer },
-    }
-  })
-  if (questionIds === null) {
-    // A picker resembling a live registration but not linked to it is the
-    // failure an agent cannot see; the log is where it shows.
-    if (miss !== null) logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', ...miss, stage: 'picker-unlinked' })
-    return 'not-bound'
+      incarnation.harness_process === undefined || processIdentityLiveness(incarnation.harness_process) !== 'alive') {
+    return terminalOnly('session-not-live')
   }
-  const bound: string[] = questionIds
-  logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: bound, stage: 'picker-waiting' })
+  if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return terminalOnly('session-not-admitted')
+  const picker = pickerQuestions(envelope.tool_input)
+  const digest = pickerDigest(envelope.tool_input)
+  if (picker === null || digest === null) return terminalOnly('not-a-picker')
+  const registered = registerPickerQuestion(deps, envelope, sessionId, incarnation.key, picker, logger)
+  if ('reason' in registered) return terminalOnly(registered.reason, registered.detail)
+  const questionId = registered.questionId
+  const now = deps.now ?? Date.now
+  let replaced: string | undefined
+  updateSessionState(sessionId, deps.env, (state) => {
+    replaced = state.claude_picker?.question_id
+    return { ...state, claude_picker: { question_id: questionId, digest, opened_at: now(), waiter: writer } }
+  })
+  // A picker on screen means any earlier one is gone; its question goes with it.
+  if (replaced !== undefined && replaced !== questionId) withdrawPickerQuestion(sessionId, deps.env, replaced)
+  launchSessionWork(deps, sessionId, envelope.cwd, logger)
+  logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: [questionId], stage: 'picker-waiting' })
 
   const sleep = seams.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const monotonic = seams.monotonic ?? (() => performance.now())
   const parentAlive = seams.parentAlive ?? (() => processIdentityLiveness(incarnation.harness_process!) === 'alive')
   let stopped = false
   void seams.signalled?.then(() => { stopped = true })
+  const holding = (state: SessionState): boolean =>
+    state.claude_picker?.question_id === questionId && sameProcess(state.claude_picker.waiter, writer)
   const release = (): void => {
-    updateSessionState(sessionId, deps.env, (state) =>
-      isDeepStrictEqual(pickerQuestionIds(state), bound) && sameProcess(state.claude_picker?.waiter, writer) ? withoutPicker(state) : state)
+    updateSessionState(sessionId, deps.env, (state) => holding(state) ? withoutPicker(state) : state)
   }
-  const leave = (stage: string): 'left-to-terminal' => {
+  const leave = (stage: string, withdraw = false): 'left-to-terminal' => {
     release()
-    logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: bound, stage })
+    const outcome = withdraw ? withdrawPickerQuestion(sessionId, deps.env, questionId) : undefined
+    logger.info('hook.gate', { hook: 'permission-request', reason: outcome ?? 'proceeding', question_ids: [questionId], stage })
+    if (outcome === 'retiring') launchSessionWork(deps, sessionId, envelope.cwd, logger)
     return 'left-to-terminal'
   }
 
   let stagedSince: number | null = null
   for (;;) {
-    if (stopped) return leave('picker-dismissed')
-    if (sessionHasEnded(sessionId, deps.env) || !parentAlive()) return leave('session-ended')
+    // Esc, a session ending, or this handler's own timeout: the picker has no answer to wait for.
+    if (stopped) return leave('picker-dismissed', true)
+    if (sessionHasEnded(sessionId, deps.env) || !parentAlive()) return leave('session-ended', true)
     const state = readSessionState(sessionId, deps.env)
     // Another hook resolved the picker: the terminal answered, the turn moved on, or a newer picker opened.
-    if (!isDeepStrictEqual(pickerQuestionIds(state), bound) || !sameProcess(state.claude_picker?.waiter, writer)) {
-      logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: bound, stage: 'picker-resolved-elsewhere' })
+    if (!holding(state)) {
+      logger.info('hook.gate', { hook: 'permission-request', reason: 'proceeding', question_ids: [questionId], stage: 'picker-resolved-elsewhere' })
       return 'left-to-terminal'
     }
-    const registrations = bound.map(id => registrationOf(state, id))
-    if (registrations.some(item => item === undefined || item.terminated === true || item.ordinary_only === true)) return leave('question-closed')
-    const waiting = bound.map(id => state.waiting_answers?.find(answer => answer.pending.question_id === id))
-    if (waiting.some(answer => answer === undefined)) {
-      const missing = bound.filter((_, i) => waiting[i] === undefined)
-      if (missing.some(id => !state.accepted?.answers.some(answer => answer.pending.question_id === id) &&
-          !pendingList(state).some(pending => pending.question_id === id))) return leave('question-settled')
-      if (missing.every(id => state.accepted?.answers.some(answer => answer.pending.question_id === id))) {
+    const registration = registrationOf(state, questionId)
+    if (registration === undefined || registration.terminated === true || registration.ordinary_only === true) return leave('question-closed')
+    const waiting = state.waiting_answers?.find(answer => answer.pending.question_id === questionId)
+    if (waiting === undefined) {
+      if (state.accepted?.answers.some(answer => answer.pending.question_id === questionId)) {
         stagedSince ??= monotonic()
         if (monotonic() - stagedSince >= CLAUDE_PICKER_HANDOVER_MS) return leave('handover-timed-out')
+      } else if (!pendingList(state).some(pending => pending.question_id === questionId)) {
+        return leave('question-settled')
       } else {
-        // A partial form is not a handoff timeout: other questions still await the User.
         stagedSince = null
       }
     } else {
       const credential = deps.store.load()
       const service = credential === null ? null : { base_url: credential.baseUrl, machine_id: credential.machineId }
-      if (credential === null || service === null || waiting.some((answer, i) =>
-          claudePickerAnswers(registrations[i]!, answer!, service) === null)) return leave('answer-needs-ordinary-route')
+      if (credential === null || service === null || claudePickerAnswers(registration, waiting, service) === null) {
+        return leave('answer-needs-ordinary-route')
+      }
       stagedSince ??= monotonic()
       const lease = readAttendantLease(sessionId, deps.env)
       if (lease === null || lease.incarnation === incarnation.incarnation) {
@@ -310,7 +463,7 @@ export async function claudePermissionRequest(
           nativeOnly: true,
           nativeAnswers: pickerPresentation({
             sessionId, env: deps.env, lease, incarnation: incarnation.incarnation, ownerKey: incarnation.key,
-            questionIds: bound, toolInput: envelope.tool_input,
+            questionId, toolInput: envelope.tool_input,
             writer, service, serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential),
             out: (line) => { written = true; deps.io.out(line) }, wall: now,
           }),
@@ -326,7 +479,7 @@ export async function claudePermissionRequest(
           write: () => undefined,
         })
         if (drained && written) {
-          logger.info('hook.gate', { hook: 'permission-request', reason: 'answered', question_ids: bound, stage: 'picker-answered' })
+          logger.info('hook.gate', { hook: 'permission-request', reason: 'answered', question_ids: [questionId], stage: 'picker-answered' })
           return 'answered'
         }
       }
@@ -341,6 +494,40 @@ function additionalContext(text: string): string {
 }
 
 /**
+ * Record the terminal's answer to a picker's device question as its native
+ * answer, so the devices stop asking and show what was chosen. A question that
+ * never left this machine is withdrawn instead. Local only: the detached
+ * session owner sends the report.
+ */
+function recordTerminalAnswer(
+  deps: CommandDeps,
+  sessionId: string,
+  ownerKey: string,
+  questionId: string,
+  toolResponse: unknown,
+): string {
+  const state = readSessionState(sessionId, deps.env)
+  const registration = registrationOf(state, questionId)
+  const entry = pendingList(state).find(item => item.question_id === questionId)
+  if (registration === undefined || entry === undefined) return 'question-gone'
+  if (!questionSubmissionAttempted(entry)) {
+    return withdrawPickerQuestion(sessionId, deps.env, questionId, 'answered_elsewhere')
+  }
+  const answers = claudeTerminalAnswers(registration, toolResponse)
+  if (answers === null) return withdrawPickerQuestion(sessionId, deps.env, questionId, 'answered_elsewhere')
+  try {
+    prepareNativeAnswerOperation(
+      { sessionId, key: ownerKey, service: registration.service_identity }, deps.env,
+      { questionId, operationId: CLAUDE_TERMINAL_OPERATION, answers, text: CLAUDE_TERMINAL_ACKNOWLEDGEMENT },
+      (current, actual) => admitBoundNativeAnswer(current, questionId, ownerKey, registration.service_identity, actual),
+    )
+  } catch {
+    return withdrawPickerQuestion(sessionId, deps.env, questionId, 'answered_elsewhere')
+  }
+  return 'native-answer-recorded'
+}
+
+/**
  * `PostToolUse` for `AskUserQuestion`: the picker has an answer. Writes at
  * most one context line telling the agent what that answer obliges.
  */
@@ -352,32 +539,20 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
   const given = typeof envelope.tool_response === 'object' && envelope.tool_response !== null
     ? (envelope.tool_response as { answers?: unknown }).answers
     : undefined
+  const digest = pickerDigest(envelope.tool_input)
   let context: string | null = null
   let stage = 'unbound'
+  let terminal: string | undefined
   updateSessionState(sessionId, deps.env, (state) => {
-    if (state.claude_picker === undefined && state.claude_picker_presented === undefined &&
-        matchClaudePicker(state, incarnation.key, envelope.tool_input) === null) {
-      const miss = claudePickerMiss(state, incarnation.key, envelope.tool_input)
-      if (miss !== null) {
-        stage = 'picker-unlinked'
-        const ids = miss.question_ids.join(', ')
-        context = miss.mismatch === 'duplicate-registration'
-          ? `Notifai — this picker was not linked: registered questions ${ids} all ask exactly this, and their devices are still asking each. ` +
-            'Retire every one this picker answered with `notifai close <question_id>`.'
-          : `Notifai — this picker was not linked to registered question ${ids}: its questions or options differ. ` +
-            'Their devices are still asking it. If the picker asked the same thing, retire it with `notifai close <question_id>`.'
-      }
-      return state
-    }
-    const next = withoutPicker(state)
-    const presented = next.claude_picker_presented
+    const presented = state.claude_picker_presented
     if (presented !== undefined) {
+      const next = withoutPicker(state)
       delete next.claude_picker_presented
       const taken = typeof given === 'object' && given !== null &&
         Object.entries(presented.answers).every(([title, value]) => (given as Record<string, unknown>)[title] === value)
       if (taken) {
         stage = 'app-answer-confirmed'
-        context = `Notifai — that answer came from the user's device, for request${presented.additional_request_ids?.length ? 's' : ''} ${[presented.request_id, ...(presented.additional_request_ids ?? [])].join(', ')}.${presented.receipt}`
+        context = `Notifai — that answer came from the user's device, for request ${presented.request_id}.${presented.receipt}`
       } else {
         // Claude Code took the terminal's answer instead; the device answer is still the User's.
         stage = 'app-answer-beside-terminal'
@@ -385,21 +560,54 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
       }
       return next
     }
-    const registrations = matchClaudePicker(next, incarnation.key, envelope.tool_input)
-    if (registrations === null) return next
+    if (state.claude_picker === undefined || state.claude_picker.digest !== digest) return state
+    terminal = state.claude_picker.question_id
     stage = 'terminal-answer'
-    context = registrations.map(registration => {
-      const answers = claudeTerminalAnswers(registration, envelope.tool_response)
-      const typed = answers === null || answers.some((answer) => answer.text !== undefined)
-      const reported = typed ? `'<actual answers JSON>'` : `'${JSON.stringify(answers)}'`
-      return `Notifai — the user answered registered question ${registration.question_id} in the terminal picker. ` +
-        'Before any work that depends on it, record that answer so their devices stop asking: ' +
-        `\`notifai acknowledge ${registration.question_id} --operation-id native-1 --native-answers ${reported} --text <text>\` ` +
-        'with text saying what concrete work the answer sets in motion.' +
-        (typed ? ' Fill in the answers you actually read, using the registered question and choice ids, or the typed text.' : '')
-    }).join('\n\n')
-    return next
+    return withoutPicker(state)
   })
-  logger.info('hook.gate', { hook: 'post-tool-use', reason: 'proceeding', stage })
+  let outcome: string | undefined
+  if (terminal !== undefined) {
+    outcome = recordTerminalAnswer(deps, sessionId, incarnation.key, terminal, envelope.tool_response)
+    if (outcome === 'native-answer-recorded' || outcome === 'retiring') launchSessionWork(deps, sessionId, envelope.cwd, logger)
+  }
+  logger.info('hook.gate', { hook: 'post-tool-use', reason: outcome ?? 'proceeding', stage,
+    ...(terminal === undefined ? {} : { question_ids: [terminal] }) })
   if (context !== null) deps.io.out(additionalContext(context))
+}
+
+/**
+ * Send the native reports that terminal answers left for this session, from
+ * the detached session owner. A report the service refuses for good retires
+ * the question instead, so its devices stop asking either way; anything else
+ * stays saved for the next owner to retry.
+ */
+export async function reportClaudeTerminalAnswers(ctx: Pick<HookContext, 'client' | 'env' | 'log'>, sessionId: string): Promise<void> {
+  const state = readSessionState(sessionId, ctx.env)
+  const incarnation = readSessionIncarnation(sessionId, ctx.env)
+  if (incarnation === null || sessionHasEnded(sessionId, ctx.env)) return
+  for (const operation of state.native_answer_operations ?? []) {
+    if (operation.operation_id !== CLAUDE_TERMINAL_OPERATION || operation.acknowledgement !== undefined) continue
+    const registration = registrationOf(state, operation.question_id)
+    if (registration === undefined) continue
+    const owner: NativeOperationOwner = { sessionId, key: incarnation.key, service: operation.service_identity }
+    if (operation.request_id === undefined && registration.confirmed_request_id === undefined) continue
+    try {
+      const resolved = resolveNativeAnswerOperation(owner, ctx.env, operation, current => {
+        const bound = registrationOf(current, operation.question_id)
+        return bound?.confirmed_request_id === undefined ? null : { requestId: bound.confirmed_request_id, service: bound.service_identity }
+      })
+      await executeNativeAnswerOperation(owner, ctx.env, resolved, ctx.client)
+      ctx.log?.info('hook.gate', { hook: 'question-submission', reason: 'reported', question_ids: [operation.question_id], stage: 'picker-terminal-reported' })
+    } catch (err) {
+      const permanent = err instanceof ApiCallError && err.status >= 400 && err.status < 500 && ![408, 429].includes(err.status)
+      ctx.log?.info('hook.gate', { hook: 'question-submission', reason: permanent ? 'refused' : 'retry-later',
+        question_ids: [operation.question_id], stage: 'picker-terminal-report-failed',
+        error: err instanceof Error ? err.message : String(err) })
+      if (!permanent) continue
+      updateSessionState(sessionId, ctx.env, current => ({ ...current,
+        native_answer_operations: (current.native_answer_operations ?? []).filter(op => op !== operation &&
+          !(op.question_id === operation.question_id && op.operation_id === operation.operation_id)) }))
+      withdrawPickerQuestion(sessionId, ctx.env, operation.question_id, 'answered_elsewhere')
+    }
+  }
 }
