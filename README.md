@@ -228,7 +228,7 @@ where the service is sold are on the pricing page.
 ## Status
 
 Notifai is published under Apache-2.0. The current packages are
-`@raidiant/notifai` <!--x-release-please-start-notifai-->12.1.1<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->8.3.3<!--x-release-please-end-->; their
+`@raidiant/notifai` <!--x-release-please-start-notifai-->13.0.0<!--x-release-please-end--> and `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->8.4.0<!--x-release-please-end-->; their
 versions advance independently. Released clients keep ordinary notification
 workflows during the documented compatibility window; newer work is negotiated
 as named capabilities instead of making every version mismatch a product-wide
