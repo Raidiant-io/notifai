@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.4.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.3.3...protocol-v8.4.0) (2026-10-18)
+
+
+### Features
+
+* **protocol:** expose account read state and reconciliation ([26db25e](https://github.com/Raidiant-io/notifai/commit/26db25e1986e9c3dadbff681ff62d677fd806c8f))
+
 ## [8.3.3](https://github.com/Raidiant-io/notifai/compare/protocol-v8.3.2...protocol-v8.3.3) (2026-10-15)
 
 ## [8.3.2](https://github.com/Raidiant-io/notifai/compare/protocol-v8.3.1...protocol-v8.3.2) (2026-10-13)
