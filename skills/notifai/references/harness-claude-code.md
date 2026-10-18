@@ -57,8 +57,8 @@ The picker takes whichever answer comes first and closes:
   Ask again if you still need the answer.
 
 A picker that cannot reach devices still works in the terminal. This happens
-when the machine is not signed in, question routing is off, or the picker
-belongs to a subagent. `notifai logs --event hook.gate` shows each outcome:
+when the Project is not enabled, the machine is not signed in, question routing
+is off, or the picker belongs to a subagent. `notifai logs --event hook.gate` shows each outcome:
 `picker-terminal-only` with its `reason`, `picker-waiting`, `picker-answered`,
 `picker-dismissed` or `picker-closed`. Pickers reach devices on macOS and
 Linux.

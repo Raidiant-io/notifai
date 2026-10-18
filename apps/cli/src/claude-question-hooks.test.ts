@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -33,6 +34,7 @@ import { beginSessionIncarnation, lifecycleStamp, readSessionState, updateSessio
 import type { AnsweredPending, HookEnvelope, PendingQuestion, SessionState } from './hook-types.js'
 import { createLogger, readLogRecords } from './logging.js'
 import { currentProcessIdentity } from './process-identity.js'
+import { enableProject, projectBinding } from './project-enablement.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 
@@ -62,13 +64,16 @@ const FORM = picker([
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function setup(options: { signedIn?: boolean } = {}) {
+function setup(options: { signedIn?: boolean; enabled?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-picker-'))
   roots.push(root)
   const owner = currentProcessIdentity()!
   const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
   const incarnation = beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: owner })
   writeSessionState(SESSION, env, { harness: 'claude-code', last_prompt_at: 1 })
+  // A Project is a repository the User enabled.
+  execFileSync('git', ['init', '-q'], { cwd: root })
+  if (options.enabled !== false) enableProject(projectBinding(root, env)!)
   const lease = { incarnation: incarnation.incarnation, generation: 1 }
   acquireClaimFile(attendantClaimPath(SESSION, env), { incarnation: lease.incarnation }, Date.now())
   writeAttendantStatus(SESSION, env, { ...lease, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
@@ -420,6 +425,18 @@ describe('Claude Code picker hooks', () => {
     expect(h.gates.at(-1)).toMatchObject({ stage: 'answer-needs-ordinary-route' })
     closeClaudePicker(h.deps, SESSION, h.logger)
     expect(h.state().waiting_answers).toHaveLength(1)
+  })
+
+  it('leaves every picker in a Project the User has not enabled to the terminal', async () => {
+    const h = setup({ enabled: false })
+    expect(await claudePermissionRequest(h.deps, h.envelope(), h.logger)).toBe('not-bound')
+    expect(h.gates).toEqual([expect.objectContaining({ stage: 'picker-terminal-only', reason: 'project-not-enabled' })])
+    expect(h.state().pending).toBeUndefined()
+    expect(h.launches).toEqual([])
+    enableProject(projectBinding(h.root, h.env)!)
+    expect(await claudePermissionRequest(h.deps, h.envelope(), h.logger, { sleep: async () => { closeClaudePicker(h.deps, SESSION, h.logger) } }))
+      .toBe('left-to-terminal')
+    expect(h.gates.map(gate => gate['stage'])).toContain('picker-waiting')
   })
 
   it('leaves the picker to the terminal, and says why, whenever it cannot reach a device', async () => {

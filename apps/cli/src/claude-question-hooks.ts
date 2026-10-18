@@ -42,6 +42,7 @@ import { buildAskDraft } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
 import { resolveDraftInvocation } from './commands-send-support.js'
 import { loadConfig } from './config.js'
+import { projectBinding, projectEnabled } from './project-enablement.js'
 import type { ServiceIdentity } from './credentials.js'
 import { acknowledgementContext, answersContext } from './hook-acknowledgements.js'
 import { registerQuestion } from './hook-lifecycle.js'
@@ -355,9 +356,10 @@ export interface ClaudePickerSeams {
  * `PermissionRequest` for `AskUserQuestion`. Returns having written either one
  * decision or nothing; nothing leaves the picker to the terminal.
  *
- * A subagent's picker stays in the terminal: Claude Code does not give its
- * subagents this tool, and the device answer would be owed to the agent that
- * owns the session's Notification Requests, not to the subagent.
+ * A picker in a Project the User has not enabled stays in the terminal, as
+ * does a subagent's: Claude Code does not give its subagents this tool, and
+ * the device answer would be owed to the agent that owns the session's
+ * Notification Requests, not to the subagent.
  */
 export async function claudePermissionRequest(
   deps: CommandDeps,
@@ -372,6 +374,14 @@ export async function claudePermissionRequest(
     return 'not-bound'
   }
   if (envelope.agent_id !== undefined) return terminalOnly('subagent')
+  // Project Enablement is the User's opt-in: pickers elsewhere stay in the terminal.
+  try {
+    const cwd = envelope.cwd ?? deps.cwd
+    const config = loadConfig({ cwd, env: deps.env, sessionId })
+    if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) return terminalOnly('project-not-enabled')
+  } catch {
+    return terminalOnly('config-invalid')
+  }
   const incarnation = readSessionIncarnation(sessionId, deps.env)
   const writer = currentProcessIdentity()
   if (incarnation === null || writer === null || sessionHasEnded(sessionId, deps.env) ||
